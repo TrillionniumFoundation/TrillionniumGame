@@ -3,7 +3,7 @@
 - Project ID: `trillionnium-nakama`
 - Canonical root: `/home/alex/projects/trillionnium-nakama`
 - Lane: `nakama-realtime`
-- Lifecycle: bootstrap
+- Lifecycle: active development (P0 authoritative-match slice; not production)
 - Private remote: `TrillionniumFoundation/Trillionnium-Nakama`
 
 ## Owns

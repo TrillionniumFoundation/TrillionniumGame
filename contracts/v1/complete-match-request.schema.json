@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TrillionniumFoundation/Trillionnium-Nakama/contracts/v1/complete-match-request.schema.json",
+  "title": "CompleteMatchRequestV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "operator_token", "logical_match_id", "facts"],
+  "properties": {
+    "schema": {"const": "trnm.nakama.complete-match.v1"},
+    "operator_token": {"$ref": "#/$defs/operatorToken"},
+    "logical_match_id": {"$ref": "#/$defs/logicalMatchId"},
+    "facts": {"$ref": "#/$defs/terminalFacts"}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "logicalMatchId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "operatorToken": {"type": "string", "minLength": 32, "maxLength": 4096},
+    "terminalFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result_code", "winner_slot", "outcome_hash"],
+      "properties": {
+        "result_code": {"$ref": "#/$defs/id"},
+        "winner_slot": {"enum": [0, 1, 2]},
+        "outcome_hash": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

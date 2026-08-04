@@ -1,0 +1,14 @@
+.git
+.git/**
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.seed
+*.p12
+*.pfx
+*.so
+*.log
+coverage.*
+node_modules

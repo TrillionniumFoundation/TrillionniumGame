@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TrillionniumFoundation/Trillionnium-Nakama/contracts/v1/join-metadata.schema.json",
+  "title": "AuthoritativeMatchJoinMetadataV1",
+  "description": "Metadata supplied when joining the external Nakama match. The authenticated user is taken from the session, never from metadata.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["authorization_id"],
+  "properties": {
+    "authorization_id": {"$ref": "#/$defs/id"}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"}
+  }
+}

@@ -3,7 +3,7 @@
   "project_id": "trillionnium-nakama",
   "canonical_dir": "trillionnium-nakama",
   "lane": "nakama-realtime",
-  "lifecycle": "bootstrap",
+  "lifecycle": "active-development",
   "development": true,
   "remote": {
     "policy": "required",

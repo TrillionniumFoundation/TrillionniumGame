@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TrillionniumFoundation/Trillionnium-Nakama/contracts/v1/health-response.schema.json",
+  "title": "HealthResponseV1",
+  "description": "Liveness only. A healthy response does not imply that the authoritative runtime is configured.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "healthy", "module"],
+  "properties": {
+    "schema": {"const": "trnm.nakama.health.v1"},
+    "healthy": {"const": true},
+    "module": {"const": "trnm_authoritative_v1"},
+    "nakama_version": {"$ref": "#/$defs/id"}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"}
+  }
+}
