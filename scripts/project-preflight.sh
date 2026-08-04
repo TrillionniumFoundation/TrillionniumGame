@@ -115,7 +115,16 @@ printf 'project_id=%s\nlane=%s\nphysical_root=%s\ninvoked_path=%s\nbranch=%s\n' 
   "$project_id" "$lane" "$root" "$invoked_logical" "$branch"
 
 [[ "$project_id" == "$boundary_id" ]] || error "PROJECT_ID and PROJECT_BOUNDARY.json disagree"
-[[ "$(basename "$root")" == "$canonical_dir" ]] || error "physical root basename must be $canonical_dir"
+if [[ "$(basename "$root")" != "$canonical_dir" ]]; then
+  common_dir=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  common_root=""
+  [[ "$(basename "$common_dir")" == ".git" ]] && common_root=$(dirname "$common_dir")
+  if [[ "$(basename "$common_root")" == "$canonical_dir" ]]; then
+    warn "running from an approved linked worktree of $canonical_dir"
+  else
+    error "physical root is neither $canonical_dir nor one of its linked worktrees"
+  fi
+fi
 if [[ "$invoked_logical" != "$invoked_physical" ]]; then
   warn "invoked through a symlink; use the canonical physical root: $root"
 fi
