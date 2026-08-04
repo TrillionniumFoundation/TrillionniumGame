@@ -4,6 +4,7 @@
 - Canonical root: `/home/alex/projects/trillionnium-nakama`
 - Lane: `nakama-realtime`
 - Lifecycle: bootstrap
+- Private remote: `TrillionniumFoundation/Trillionnium-Nakama`
 
 ## Owns
 

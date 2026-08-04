@@ -34,6 +34,11 @@ invoked_logical=$(pwd -L)
 invoked_physical=$(pwd -P)
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
+push_updates_file="$tmpdir/push-updates"
+: >"$push_updates_file"
+if [[ "$mode" == "--push" && ! -t 0 ]]; then
+  cat >"$push_updates_file"
+fi
 
 policy_file="$root/PROJECT_BOUNDARY.json"
 case "$mode" in
@@ -556,6 +561,44 @@ if [[ "$mode" == "--push" ]]; then
       error "unknown remote policy: $remote_policy"
       ;;
   esac
+
+  head_oid=$(git -C "$root" rev-parse HEAD 2>/dev/null || true)
+  update_count=0
+  while read -r local_ref local_oid remote_ref remote_oid; do
+    [[ -n "$local_ref" ]] || continue
+    update_count=$((update_count + 1))
+    if [[ "$local_oid" =~ ^0+$ ]]; then
+      error "remote ref deletion is disabled: $remote_ref"
+      continue
+    fi
+    if [[ "$local_oid" != "$head_oid" ]]; then
+      error "only the checked-out HEAD may be pushed; checkout the intended branch first: $local_ref"
+    fi
+    if ! git -C "$root" cat-file -e "$local_oid^{commit}" 2>/dev/null; then
+      error "push source is not a commit: $local_ref"
+      continue
+    fi
+    case "$remote_ref" in
+      refs/heads/main)
+        if [[ "${ALLOW_PRIVATE_REMOTE_BOOTSTRAP:-0}" != "1" || ! "$remote_oid" =~ ^0+$ ]]; then
+          error "direct main updates are disabled; only the explicit first empty-repo bootstrap is allowed"
+        fi
+        ;;
+      refs/heads/*)
+        remote_branch=${remote_ref#refs/heads/}
+        if [[ -z "$branch_regex" || ! "$remote_branch" =~ $branch_regex ]]; then
+          error "remote branch violates lane policy: $remote_branch"
+        fi
+        ;;
+      refs/tags/*)
+        error "tag pushes require a separate release policy: $remote_ref"
+        ;;
+      *)
+        error "unsupported remote ref namespace: $remote_ref"
+        ;;
+    esac
+  done <"$push_updates_file"
+  [[ $update_count -gt 0 ]] || warn "no pre-push ref updates were supplied; URL policy only was checked"
 fi
 
 printf 'warnings=%d errors=%d\n' "$warnings" "$errors"

@@ -6,9 +6,10 @@
   "lifecycle": "bootstrap",
   "development": true,
   "remote": {
-    "policy": "bootstrap",
-    "target_slug": null,
-    "upstream_required": false
+    "policy": "required",
+    "canonical_slug": "TrillionniumFoundation/Trillionnium-Nakama",
+    "visibility": "private",
+    "upstream_required": true
   },
   "branch": {
     "protected": [
