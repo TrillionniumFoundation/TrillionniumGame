@@ -130,7 +130,14 @@ if [[ "$invoked_logical" != "$invoked_physical" ]]; then
 fi
 case "$invoked_logical" in
   /home/alex/.openclaw/workspace/*)
-    warn "the old OpenClaw workspace path is compatibility-only; reopen from $root"
+    error "the old OpenClaw workspace path is compatibility-only; reopen from $root"
+    ;;
+  /home/alex/projects/CEX|/home/alex/projects/CEX/*|\
+  /home/alex/projects/Trillionnium|/home/alex/projects/Trillionnium/*|\
+  /home/alex/projects/TrillionniumChain|/home/alex/projects/TrillionniumChain/*|\
+  /home/alex/projects/TrillionniumRTS|/home/alex/projects/TrillionniumRTS/*|\
+  /home/alex/projects/TRNM|/home/alex/projects/TRNM/*)
+    error "capitalized compatibility aliases are not development roots; reopen from $root"
     ;;
 esac
 
