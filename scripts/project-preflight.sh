@@ -383,6 +383,11 @@ def run(*args, binary=False):
 def listed_manifests():
     if mode == "--push":
         raw = run("git", "ls-tree", "-r", "--name-only", "-z", "HEAD", binary=True)
+    elif mode == "--staged":
+        raw = run(
+            "git", "ls-files", "-c", "-z", "--",
+            "Cargo.toml", ":(glob)**/Cargo.toml", binary=True
+        )
     else:
         raw = run(
             "git", "ls-files", "-co", "--exclude-standard", "-z", "--",
