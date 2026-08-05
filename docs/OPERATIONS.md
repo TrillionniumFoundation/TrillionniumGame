@@ -94,6 +94,13 @@ The environment file must set `TRNM_NAKAMA_SOURCE_REVISION` to the exact
 abbreviated, or non-hex revisions and records the value in the OCI revision
 label.
 
+Regenerate and compare the deterministic CycloneDX dependency and base-image
+inventory before a release:
+
+```bash
+scripts/generate-nakama-sbom.sh runtime/sbom.cdx.json
+```
+
 `up --wait` covers container liveness. A deployment is usable only after
 `trnm_ready_v1` also reports `configuration`, `database`, and writable
 server-owned `storage` as `ok`.

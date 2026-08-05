@@ -1,0 +1,143 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "bom-ref": "pkg:golang/github.com%2Fgolang%2Fprotobuf@v1.5.0",
+      "name": "github.com/golang/protobuf",
+      "purl": "pkg:golang/github.com%2Fgolang%2Fprotobuf@v1.5.0",
+      "type": "library",
+      "version": "v1.5.0"
+    },
+    {
+      "bom-ref": "pkg:golang/github.com%2Fgoogle%2Fgo-cmp@v0.7.0",
+      "name": "github.com/google/go-cmp",
+      "properties": [
+        {
+          "name": "trnm:go-module-sum",
+          "value": "h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8="
+        }
+      ],
+      "purl": "pkg:golang/github.com%2Fgoogle%2Fgo-cmp@v0.7.0",
+      "type": "library",
+      "version": "v0.7.0"
+    },
+    {
+      "bom-ref": "pkg:golang/github.com%2Fheroiclabs%2Fnakama-common@v1.47.0",
+      "name": "github.com/heroiclabs/nakama-common",
+      "properties": [
+        {
+          "name": "trnm:go-module-sum",
+          "value": "h1:WjdVZ4MGmX0j/sCaLgQAUgJr7v0uA9PX5mKCDcX6CSU="
+        }
+      ],
+      "purl": "pkg:golang/github.com%2Fheroiclabs%2Fnakama-common@v1.47.0",
+      "type": "library",
+      "version": "v1.47.0"
+    },
+    {
+      "bom-ref": "pkg:golang/google.golang.org%2Fprotobuf@v1.36.11",
+      "name": "google.golang.org/protobuf",
+      "properties": [
+        {
+          "name": "trnm:go-module-sum",
+          "value": "h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE="
+        }
+      ],
+      "purl": "pkg:golang/google.golang.org%2Fprotobuf@v1.36.11",
+      "type": "library",
+      "version": "v1.36.11"
+    },
+    {
+      "bom-ref": "pkg:oci/nakama-pluginbuilder@3.40.0?digest=sha256%3A0455a119585914341672fc17f3c4195a7a21714ecb85cdf7dacbdc47769aed4c",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0455a119585914341672fc17f3c4195a7a21714ecb85cdf7dacbdc47769aed4c"
+        }
+      ],
+      "name": "heroiclabs/nakama-pluginbuilder",
+      "properties": [
+        {
+          "name": "trnm:image-stage",
+          "value": "builder"
+        }
+      ],
+      "type": "container",
+      "version": "3.40.0"
+    },
+    {
+      "bom-ref": "pkg:oci/nakama@3.40.0?digest=sha256%3A92fb184e3271be12fd4d239766afb285322a50aaf769a59433445d59624c78cd",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "92fb184e3271be12fd4d239766afb285322a50aaf769a59433445d59624c78cd"
+        }
+      ],
+      "name": "heroiclabs/nakama",
+      "properties": [
+        {
+          "name": "trnm:image-stage",
+          "value": "runtime"
+        }
+      ],
+      "type": "container",
+      "version": "3.40.0"
+    }
+  ],
+  "dependencies": [
+    {
+      "dependsOn": [
+        "pkg:golang/github.com%2Fheroiclabs%2Fnakama-common@v1.47.0",
+        "pkg:golang/google.golang.org%2Fprotobuf@v1.36.11"
+      ],
+      "ref": "pkg:golang/github.com%2FTrillionniumFoundation%2FTrillionnium-Nakama%2Fruntime@0.0.0+source"
+    },
+    {
+      "dependsOn": [
+        "pkg:golang/google.golang.org%2Fprotobuf@v1.36.11"
+      ],
+      "ref": "pkg:golang/github.com%2Fheroiclabs%2Fnakama-common@v1.47.0"
+    },
+    {
+      "dependsOn": [],
+      "ref": "pkg:golang/go@0.0.0+source"
+    },
+    {
+      "dependsOn": [
+        "pkg:golang/github.com%2Fgolang%2Fprotobuf@v1.5.0",
+        "pkg:golang/github.com%2Fgoogle%2Fgo-cmp@v0.7.0"
+      ],
+      "ref": "pkg:golang/google.golang.org%2Fprotobuf@v1.36.11"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "bom-ref": "pkg:golang/github.com%2FTrillionniumFoundation%2FTrillionnium-Nakama%2Fruntime@0.0.0%2Bsource",
+      "name": "github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime",
+      "purl": "pkg:golang/github.com%2FTrillionniumFoundation%2FTrillionnium-Nakama%2Fruntime@0.0.0%2Bsource",
+      "type": "application",
+      "version": "0.0.0+source"
+    },
+    "properties": [
+      {
+        "name": "trnm:dockerfile:sha256",
+        "value": "sha256:ea4c86c9d11499c013ebd373c4210a2927f004b86620d34050630162547fcfa2"
+      },
+      {
+        "name": "trnm:go-sum:sha256",
+        "value": "sha256:639aec4805b687e3c0ee4597a8eed07623a088bdf2d5a74f506a8c36c685374e"
+      }
+    ],
+    "tools": {
+      "components": [
+        {
+          "name": "trnm-nakama-sbom-generator",
+          "type": "application",
+          "version": "1"
+        }
+      ]
+    }
+  },
+  "specVersion": "1.5",
+  "version": 1
+}
