@@ -6,6 +6,10 @@ This module registers two independent authoritative surfaces:
 - `trnm_research_session_v1` owns Paper Raid admission, presence, ordered
   external-Agent actions, durable archive/cursor recovery, authorization-epoch
   key rotation, and signed cooperative completion for 3–5 participants.
+- `trnm_research_session_{create,resume,replace_roster,complete}_v2` accepts
+  only short-lived signed Hepta control claims and durably replays the exact
+  command response after retries or restarts. These RPCs do not accept the
+  legacy operator token.
 
 Paper/project bytes never enter Nakama state. Actions carry typed payload bytes
 and content-addressed references; Hepta owns long-lived research facts and

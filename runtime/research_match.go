@@ -272,6 +272,7 @@ type researchSignal struct {
 	LogicalSessionID  string                                 `json:"logical_session_id"`
 	RuntimeGeneration uint64                                 `json:"runtime_generation"`
 	OperatorToken     string                                 `json:"operator_token"`
+	ControlCommandID  string                                 `json:"control_command_id,omitempty"`
 	Facts             *researchcontract.TerminalFacts        `json:"facts,omitempty"`
 	Authorizations    []researchcontract.SignedAuthorization `json:"authorizations,omitempty"`
 }
@@ -288,16 +289,44 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 	if signal.LogicalSessionID != state.instanceSessionID || signal.LogicalSessionID != state.record.LogicalSessionID || signal.RuntimeGeneration != state.instanceGeneration || signal.RuntimeGeneration != state.record.RuntimeGeneration {
 		return state, `{"error":"research signal is fenced"}`
 	}
+	var control *versionedStoredResearchControl
+	if signal.ControlCommandID != "" {
+		storedControl, err := loadStoredResearchControl(ctx, nk, signal.ControlCommandID, m.module.config.controlIssuerKeys)
+		if err != nil || storedControl.record.SessionID != state.record.LogicalSessionID || storedControl.record.Operation != signal.Action {
+			return state, `{"error":"signed research control is invalid"}`
+		}
+		if storedControl.record.Status == researchControlStatusApplied {
+			response, err := storedControl.record.response()
+			if err != nil {
+				return state, `{"error":"signed research control receipt is invalid"}`
+			}
+			return state, response
+		}
+		control = &storedControl
+	}
 	before, err := state.engine.Snapshot()
 	if err != nil {
 		return nil, `{"error":"research snapshot unavailable"}`
 	}
 	switch signal.Action {
 	case "complete":
-		if signal.Facts == nil || len(signal.Authorizations) != 0 {
+		facts := signal.Facts
+		if control != nil {
+			if signal.Facts != nil || len(signal.Authorizations) != 0 ||
+				control.record.SessionRosterVersion != state.engine.View().RosterVersion ||
+				control.record.AuthorizationSetID != state.record.ControlAuthorizationSetID {
+				return state, `{"error":"signed completion control is fenced"}`
+			}
+			request, err := storedResearchCompleteRequestV2(control.record)
+			if err != nil {
+				return state, `{"error":"signed completion control payload is invalid"}`
+			}
+			facts = &request.Facts
+		} else if signal.Facts == nil || len(signal.Authorizations) != 0 {
 			return state, `{"error":"invalid completion signal"}`
 		}
-		completion, err := state.engine.Complete(*signal.Facts, time.Now().UTC())
+		now := time.Now().UTC()
+		completion, err := state.engine.Complete(*facts, now)
 		if err != nil {
 			return state, errorSignal(err.Error())
 		}
@@ -305,7 +334,17 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 		if err != nil {
 			return state, errorSignal(m.rollback(state, before, err).Error())
 		}
-		if err := m.persistWithCompletionOutbox(ctx, nk, state, before, completionOutbox); err != nil {
+		var controlResponse string
+		if control != nil {
+			if err := control.record.applyResult(researchEvidenceFor(state.record, completion, state.engine.AuthorityPublicKey()), now); err != nil {
+				return state, errorSignal(m.rollback(state, before, err).Error())
+			}
+			controlResponse, err = control.record.response()
+			if err != nil {
+				return state, errorSignal(m.rollback(state, before, err).Error())
+			}
+		}
+		if err := m.persistWithCompletionOutboxAndControl(ctx, nk, state, before, completionOutbox, control); err != nil {
 			logger.Error("research completion persistence failed: %s", err.Error())
 			return nil, `{"error":"research persistence failed"}`
 		}
@@ -316,22 +355,45 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 		if err := m.deliverPendingResearch(ctx, logger, nk, state); err != nil {
 			logger.Warn("research completion delivery pending: %s", err.Error())
 		}
+		if control != nil {
+			return state, controlResponse
+		}
 		response, _ := json.Marshal(researchEvidenceFor(state.record, completion, state.engine.AuthorityPublicKey()))
 		return state, string(response)
 	case "replace_roster":
-		if signal.Facts != nil || len(signal.Authorizations) < researchcontract.MinParticipants || len(signal.Authorizations) > researchcontract.MaxParticipants {
+		authorizations := signal.Authorizations
+		if control != nil {
+			if signal.Facts != nil || len(signal.Authorizations) != 0 || control.record.SessionRosterVersion != state.engine.View().RosterVersion+1 {
+				return state, `{"error":"signed replacement control is fenced"}`
+			}
+			request, err := storedResearchReplaceRequestV2(control.record)
+			if err != nil {
+				return state, `{"error":"signed replacement control payload is invalid"}`
+			}
+			authorizations = request.Authorizations
+		} else if signal.Facts != nil || len(signal.Authorizations) < researchcontract.MinParticipants || len(signal.Authorizations) > researchcontract.MaxParticipants {
 			return state, `{"error":"invalid replacement signal"}`
 		}
 		now := time.Now().UTC()
-		outbox, outboxErr := newStoredResearchConsumptionOutbox(signal.Authorizations, now.Unix())
+		outbox, outboxErr := newStoredResearchConsumptionOutbox(authorizations, now.Unix())
 		if outboxErr != nil {
 			return state, errorSignal(outboxErr.Error())
 		}
-		_, err := state.engine.ReplaceRoster(signal.Authorizations, now)
+		_, err := state.engine.ReplaceRoster(authorizations, now)
 		if err != nil {
 			return state, errorSignal(err.Error())
 		}
-		if err := m.persistWithConsumptionOutbox(ctx, nk, state, before, outbox); err != nil {
+		var controlResponse string
+		if control != nil {
+			if err := control.record.applyResult(researchRuntimeFor(state.record, state.engine.View(), state.record.ExternalMatchID), now); err != nil {
+				return state, errorSignal(m.rollback(state, before, err).Error())
+			}
+			controlResponse, err = control.record.response()
+			if err != nil {
+				return state, errorSignal(m.rollback(state, before, err).Error())
+			}
+		}
+		if err := m.persistWithConsumptionOutboxAndControl(ctx, nk, state, before, outbox, control); err != nil {
 			return nil, `{"error":"research persistence failed"}`
 		}
 		oldPresences := state.currentPresences()
@@ -350,6 +412,9 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 		if err := m.deliverPendingResearch(ctx, logger, nk, state); err != nil {
 			logger.Warn("research replacement authorization consumption delivery pending: %s", err.Error())
 		}
+		if control != nil {
+			return state, controlResponse
+		}
 		response, _ := json.Marshal(researchRuntimeFor(state.record, state.engine.View(), state.record.ExternalMatchID))
 		return state, string(response)
 	default:
@@ -358,18 +423,29 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 }
 
 func (m *researchMatch) persist(ctx context.Context, nk storageGateway, state *researchMatchState, before []byte) error {
-	return m.persistWithOptionalOutboxes(ctx, nk, state, before, nil, nil)
+	return m.persistWithOptionalOutboxes(ctx, nk, state, before, nil, nil, nil)
 }
 
 func (m *researchMatch) persistWithConsumptionOutbox(ctx context.Context, nk storageGateway, state *researchMatchState, before []byte, outbox storedResearchConsumptionOutbox) error {
-	return m.persistWithOptionalOutboxes(ctx, nk, state, before, &outbox, nil)
+	return m.persistWithOptionalOutboxes(ctx, nk, state, before, &outbox, nil, nil)
 }
 
 func (m *researchMatch) persistWithCompletionOutbox(ctx context.Context, nk storageGateway, state *researchMatchState, before []byte, outbox storedResearchCompletionOutbox) error {
-	return m.persistWithOptionalOutboxes(ctx, nk, state, before, nil, &outbox)
+	return m.persistWithOptionalOutboxes(ctx, nk, state, before, nil, &outbox, nil)
 }
 
-func (m *researchMatch) persistWithOptionalOutboxes(ctx context.Context, nk storageGateway, state *researchMatchState, before []byte, consumption *storedResearchConsumptionOutbox, completion *storedResearchCompletionOutbox) error {
+func (m *researchMatch) persistWithConsumptionOutboxAndControl(ctx context.Context, nk storageGateway, state *researchMatchState,
+	before []byte, outbox storedResearchConsumptionOutbox, control *versionedStoredResearchControl) error {
+	return m.persistWithOptionalOutboxes(ctx, nk, state, before, &outbox, nil, control)
+}
+
+func (m *researchMatch) persistWithCompletionOutboxAndControl(ctx context.Context, nk storageGateway, state *researchMatchState,
+	before []byte, outbox storedResearchCompletionOutbox, control *versionedStoredResearchControl) error {
+	return m.persistWithOptionalOutboxes(ctx, nk, state, before, nil, &outbox, control)
+}
+
+func (m *researchMatch) persistWithOptionalOutboxes(ctx context.Context, nk storageGateway, state *researchMatchState, before []byte,
+	consumption *storedResearchConsumptionOutbox, completion *storedResearchCompletionOutbox, control *versionedStoredResearchControl) error {
 	after, err := state.engine.Snapshot()
 	if err != nil {
 		return m.rollback(state, before, err)
@@ -388,8 +464,21 @@ func (m *researchMatch) persistWithOptionalOutboxes(ctx context.Context, nk stor
 		copy := *completion
 		updated.CompletionOutbox = &copy
 	}
+	if control != nil && control.record.Operation == researchcontract.ResearchControlOperationReplace {
+		updated.ControlAuthorizationSetID = control.record.AuthorizationSetID
+	}
 	updated.setSnapshot(after)
-	version, err := updateStoredResearch(ctx, nk, updated, state.storageVersion)
+	var version string
+	if control == nil {
+		version, err = updateStoredResearch(ctx, nk, updated, state.storageVersion)
+	} else {
+		var controlVersion string
+		version, controlVersion, err = updateStoredResearchWithControl(ctx, nk, updated, state.storageVersion,
+			control.record, control.version, m.module.config.controlIssuerKeys)
+		if err == nil {
+			control.version = controlVersion
+		}
+	}
 	if err != nil {
 		return m.rollback(state, before, err)
 	}

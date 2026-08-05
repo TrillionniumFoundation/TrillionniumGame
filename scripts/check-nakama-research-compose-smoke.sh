@@ -29,6 +29,8 @@ client_dir="$tmp/client"
 state_dir="$tmp/hepta-state"
 state_file="$tmp/blackbox-state.json"
 control_file="$state_dir/control"
+failpoint_file="$state_dir/nakama-failpoint"
+failpoint_reached="$failpoint_file.reached"
 request_log="$state_dir/requests.jsonl"
 mkdir -p "$client_dir" "$state_dir"
 chmod 700 "$tmp" "$client_dir"
@@ -39,6 +41,10 @@ cleanup() {
   trap - EXIT INT TERM
   set +e
   if [[ -s "$env_file" ]]; then
+    if (( status != 0 )); then
+      "${docker_cmd[@]}" compose --env-file "$env_file" -f "$root/compose.yaml" -f "$root/compose.research-smoke.yaml" \
+        logs --no-color --tail=240 nakama >&2 || true
+    fi
     "${docker_cmd[@]}" compose --env-file "$env_file" -f "$root/compose.yaml" -f "$root/compose.research-smoke.yaml" \
       down -v --remove-orphans --rmi local >/dev/null 2>&1
   fi
@@ -68,11 +74,13 @@ const keyPair = () => {
   };
 };
 const issuer = keyPair();
+const controlIssuer = keyPair();
 const authority = keyPair();
 const agents = Array.from({ length: 6 }, keyPair);
 const suffix = `${process.pid}-${randomBytes(4).toString("hex")}`;
 const secret = () => randomBytes(32).toString("hex");
 const issuerKeys = JSON.stringify({ "paper-raid-hepta-v1": issuer.publicKey });
+const controlIssuerKeys = JSON.stringify({ "paper-raid-hepta-control-v2": controlIssuer.publicKey });
 const lines = [
   `TRNM_NAKAMA_COMPOSE_PROJECT=trnm-nakama-paper-raid-${suffix}`,
   `TRNM_NAKAMA_HTTP_PORT=${httpPort}`,
@@ -87,6 +95,9 @@ const lines = [
   `NAKAMA_CONSOLE_PASSWORD=${secret()}`,
   `NAKAMA_CONSOLE_SIGNING_KEY=${secret()}`,
   `TRNM_HEPTA_ISSUER_KEYS='${issuerKeys}'`,
+  `TRNM_HEPTA_CONTROL_ISSUER_KEYS='${controlIssuerKeys}'`,
+  "TRNM_HEPTA_CONTROL_ISSUER_KEY_ID=paper-raid-hepta-control-v2",
+  `TRNM_HEPTA_CONTROL_PRIVATE_SEED=${controlIssuer.privateSeed}`,
   "TRNM_HEPTA_ISSUER_KEY_ID=paper-raid-hepta-v1",
   `TRNM_HEPTA_ISSUER_PRIVATE_SEED=${issuer.privateSeed}`,
   "TRNM_HEPTA_BASE_URL=http://hepta-mock:8080",
@@ -114,6 +125,10 @@ NODE
 chmod 600 "$env_file"
 printf 'down\n' >"$control_file"
 chmod 666 "$control_file"
+printf '\n' >"$failpoint_file"
+chmod 666 "$failpoint_file"
+printf '\n' >"$failpoint_reached"
+chmod 666 "$failpoint_reached"
 
 compose=("${docker_cmd[@]}" compose --env-file "$env_file" -f "$root/compose.yaml" -f "$root/compose.research-smoke.yaml")
 if ! "${compose[@]}" config --quiet; then
@@ -167,16 +182,17 @@ run_phase() {
     case "$phase" in
       health)
         ;;
-      prepare3|rotate-complete3|cardinality)
+      create-pending3|create-recover3|resume-pending3|resume-recover-replace-pending3|replace-recover-complete-pending3|complete-recover3|cardinality)
         export TRNM_BLACKBOX_STATE_FILE TRNM_HEPTA_MOCK_CONTROL_FILE TRNM_HEPTA_MOCK_LOG_FILE
-        export TRNM_NAKAMA_OPERATOR_TOKEN TRNM_NAKAMA_AUTHORITY_PUBLIC_KEY
+        export TRNM_NAKAMA_AUTHORITY_PUBLIC_KEY
         export TRNM_HEPTA_ISSUER_KEY_ID TRNM_HEPTA_ISSUER_PRIVATE_SEED
+        export TRNM_HEPTA_CONTROL_ISSUER_KEY_ID TRNM_HEPTA_CONTROL_PRIVATE_SEED
         export TRNM_AGENT_1_PRIVATE_SEED TRNM_AGENT_2_PRIVATE_SEED TRNM_AGENT_3_PRIVATE_SEED
         export TRNM_AGENT_4_PRIVATE_SEED TRNM_AGENT_5_PRIVATE_SEED TRNM_AGENT_ROTATION_PRIVATE_SEED
         ;;
       recover3)
         export TRNM_BLACKBOX_STATE_FILE TRNM_HEPTA_MOCK_LOG_FILE
-        export TRNM_NAKAMA_OPERATOR_TOKEN TRNM_NAKAMA_AUTHORITY_PUBLIC_KEY
+        export TRNM_NAKAMA_AUTHORITY_PUBLIC_KEY
         ;;
       *)
         echo "ERROR: unknown Paper Raid black-box phase: $phase" >&2
@@ -187,27 +203,119 @@ run_phase() {
   )
 }
 
-run_phase health
-run_phase prepare3
+set_failpoint() {
+  local stage=$1
+  local command_id=$2
+  printf '\n' >"$failpoint_reached"
+  chmod 666 "$failpoint_reached"
+  printf '%s:%s\n' "$stage" "$command_id" >"$failpoint_file"
+}
 
-# Keep PostgreSQL and the Hepta fixture alive, but kill Nakama without a
-# graceful termination callback. Durable recovery must create a new fenced
-# runtime generation from PostgreSQL.
-"${docker_cmd[@]}" kill --signal KILL "$nakama_id" >/dev/null
-"${compose[@]}" up -d --no-deps --wait --wait-timeout 300 nakama >/dev/null
-printf 'up\n' >"$control_file"
-run_phase rotate-complete3
+clear_failpoint() {
+  printf '\n' >"$failpoint_file"
+  printf '\n' >"$failpoint_reached"
+}
+
+wait_for_failpoint() {
+  local expected=$1
+  local deadline=$((SECONDS + 45))
+  while (( SECONDS < deadline )); do
+    if [[ -f "$failpoint_reached" ]] && [[ $(tr -d '\r\n' <"$failpoint_reached") == "$expected" ]]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "ERROR: timed out waiting for Nakama control failpoint $expected" >&2
+  "${compose[@]}" logs --no-color --tail=240 nakama >&2 || true
+  return 1
+}
+
+kill_nakama() {
+  nakama_id=$("${compose[@]}" ps -q nakama)
+  "${docker_cmd[@]}" kill --signal KILL "$nakama_id" >/dev/null
+}
+
+start_nakama() {
+  "${compose[@]}" up -d --no-deps --wait --wait-timeout 300 nakama >/dev/null
+}
+
+crash_blocked_phase() {
+  local phase=$1
+  local stage=$2
+  local command_id=$3
+  local expected="$stage:$command_id"
+  set_failpoint "$stage" "$command_id"
+  run_phase "$phase" &
+  local client_pid=$!
+  wait_for_failpoint "$expected"
+  kill_nakama
+  if wait "$client_pid"; then
+    echo "ERROR: blocked phase $phase returned successfully before SIGKILL" >&2
+    exit 1
+  fi
+  clear_failpoint
+  start_nakama
+}
+
+run_phase health
+crash_blocked_phase create-pending3 create_after_runtime 90000000-0000-4000-8000-000000000301
+run_phase create-recover3
+
+# A normal hard process loss removes the live runtime. The signed resume then
+# creates a new generation and is killed after that identity is durable but
+# before the applied command receipt is persisted.
+kill_nakama
+set_failpoint resume_after_runtime 90000000-0000-4000-8000-000000000302
+start_nakama
+run_phase resume-pending3 &
+resume_client_pid=$!
+wait_for_failpoint "resume_after_runtime:90000000-0000-4000-8000-000000000302"
+kill_nakama
+if wait "$resume_client_pid"; then
+  echo "ERROR: blocked signed resume returned successfully before SIGKILL" >&2
+  exit 1
+fi
+clear_failpoint
+start_nakama
+
+# Recover the exact signed resume, then reserve replacement and die before its
+# internal signal. After another signed resume, retry replacement atomically,
+# execute epoch-two work, reserve completion, and die in the same signal gap.
+set_failpoint replace_roster_before_signal 90000000-0000-4000-8000-000000000303
+run_phase resume-recover-replace-pending3 &
+replace_client_pid=$!
+wait_for_failpoint "replace_roster_before_signal:90000000-0000-4000-8000-000000000303"
+kill_nakama
+if wait "$replace_client_pid"; then
+  echo "ERROR: blocked signed replacement returned successfully before SIGKILL" >&2
+  exit 1
+fi
+clear_failpoint
+start_nakama
+
+set_failpoint complete_before_signal 90000000-0000-4000-8000-000000000304
+run_phase replace-recover-complete-pending3 &
+complete_client_pid=$!
+wait_for_failpoint "complete_before_signal:90000000-0000-4000-8000-000000000304"
+kill_nakama
+if wait "$complete_client_pid"; then
+  echo "ERROR: blocked signed completion returned successfully before SIGKILL" >&2
+  exit 1
+fi
+clear_failpoint
+start_nakama
+run_phase complete-recover3
 
 # Completion is now durable locally while Hepta is down. Crash Nakama again,
 # then make Hepta return one correctly-shaped but signature-tampered ACK before
-# the valid signed ACK. Evidence access must start delivery-only recovery.
-nakama_id=$("${compose[@]}" ps -q nakama)
-"${docker_cmd[@]}" kill --signal KILL "$nakama_id" >/dev/null
+# the valid signed ACK. Participant-authenticated evidence access starts the
+# delivery-only recovery; no client process receives the operator token.
+kill_nakama
 printf 'tamper_completion_once\n' >"$control_file"
-"${compose[@]}" up -d --no-deps --wait --wait-timeout 300 nakama >/dev/null
+start_nakama
 run_phase recover3
 
 printf 'up\n' >"$control_file"
 run_phase cardinality
 
-echo "Paper Raid pinned Compose: 3/4/5 keys, epoch rotation, cursor, SIGKILL, exact outbox retry, signed ACK tamper rejection, roots: PASS"
+echo "Paper Raid signed-control v2 pinned Compose: create/resume/replace/complete, four deterministic SIGKILL windows, exact replay/conflict, 3/4/5 keys, cursor, epoch fencing, signed ACK tamper rejection, roots: PASS"

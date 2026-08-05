@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/researchcontract"
 	"github.com/heroiclabs/nakama-common/runtime"
 )
 
@@ -36,6 +37,10 @@ func InitModule(ctx context.Context, logger runtime.Logger, _ *sql.DB, _ runtime
 		{name: rpcResearchArchive, fn: module.rpcResearchArchive},
 		{name: rpcResearchComplete, fn: module.rpcResearchComplete},
 		{name: rpcResearchReplace, fn: module.rpcResearchReplace},
+		{name: researchcontract.ResearchControlRPCCreateV2, fn: module.rpcResearchCreateV2},
+		{name: researchcontract.ResearchControlRPCResumeV2, fn: module.rpcResearchResumeV2},
+		{name: researchcontract.ResearchControlRPCReplaceV2, fn: module.rpcResearchReplaceV2},
+		{name: researchcontract.ResearchControlRPCCompleteV2, fn: module.rpcResearchCompleteV2},
 		{name: rpcHealth, fn: module.rpcHealth},
 		{name: rpcReady, fn: module.rpcReady},
 	}

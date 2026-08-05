@@ -84,6 +84,65 @@ function signAuthorization(claim, issuerKeyID, issuerPrivate) {
     .string(issuerKeyID).bytes(authorizationClaimFrame(claim)).finish();
   return { claim, issuer_key_id: issuerKeyID, signature: ed25519Sign(null, message, issuerPrivate).toString("base64") };
 }
+function authorizationEnvelopeFrame(authorization) {
+  const signing = new Frame("trnm_research_session_authorization_signature_v1")
+    .string(authorization.issuer_key_id).bytes(authorizationClaimFrame(authorization.claim)).finish();
+  return new Frame("trnm_research_control_authorization_envelope_v2")
+    .bytes(signing).bytes(canonicalBase64(authorization.signature, "authorization signature")).finish();
+}
+function authorizationSetControlFrame(domain, request) {
+  const session = request.logical_session_id ?? request.authorizations[0].claim.session_id;
+  const rosterVersion = request.authorizations[0].claim.roster_version;
+  const frame = new Frame(domain).string(request.schema).string(session)
+    .string(request.authorization_set_id).u32(request.authorizations.length);
+  request.authorizations.forEach((authorization, index) => {
+    assert(authorization.claim.participant_slot === index + 1, "control authorization slots differ");
+    assert(authorization.claim.session_id === session, "control authorization sessions differ");
+    assert(authorization.claim.roster_version === rosterVersion, "control authorization epochs differ");
+    frame.bytes(authorizationEnvelopeFrame(authorization));
+  });
+  return frame.finish();
+}
+function researchControlBusinessFrame(operation, request) {
+  switch (operation) {
+    case "create":
+      return authorizationSetControlFrame("trnm_research_control_create_business_v2", request);
+    case "resume":
+      return new Frame("trnm_research_control_resume_business_v2").string(request.schema)
+        .string(request.logical_session_id).string(request.authorization_set_id).finish();
+    case "replace_roster":
+      return authorizationSetControlFrame("trnm_research_control_replace_business_v2", request);
+    case "complete":
+      return new Frame("trnm_research_control_complete_business_v2").string(request.schema)
+        .string(request.logical_session_id).string(request.authorization_set_id)
+        .bytes(terminalFrame(request.facts)).finish();
+    default:
+      throw new Error(`unsupported research control operation ${operation}`);
+  }
+}
+const controlTargets = new Map([
+  ["create", "trnm_research_session_create_v2"],
+  ["resume", "trnm_research_session_resume_v2"],
+  ["replace_roster", "trnm_research_session_replace_roster_v2"],
+  ["complete", "trnm_research_session_complete_v2"],
+]);
+function signResearchControl(operation, commandID, session, rosterVersion, authorizationSetID, business) {
+  const now = Math.floor(Date.now() / 1000);
+  const claim = { schema: "trnm.nakama.research-control.claim.v2", command_id: commandID,
+    operation, target_rpc: controlTargets.get(operation), session_id: session,
+    session_roster_version: rosterVersion, authorization_set_id: authorizationSetID,
+    payload_hash: digest(business), audience: "trnm:nakama:research-control:v2",
+    issued_at_unix: now, expires_at_unix: now + 120,
+    issuer_key_id: required("TRNM_HEPTA_CONTROL_ISSUER_KEY_ID") };
+  const claimFrame = new Frame("trnm_research_control_claim_v2")
+    .string(claim.schema).string(claim.command_id).string(claim.operation).string(claim.target_rpc)
+    .string(claim.session_id).u64(claim.session_roster_version).string(claim.authorization_set_id)
+    .digest(claim.payload_hash).string(claim.audience).i64(claim.issued_at_unix)
+    .i64(claim.expires_at_unix).string(claim.issuer_key_id).finish();
+  const signing = new Frame("trnm_research_control_signature_v2").bytes(claimFrame).finish();
+  const key = privateKeyFromSeed(required("TRNM_HEPTA_CONTROL_PRIVATE_SEED"));
+  return { claim, signature: ed25519Sign(null, signing, key).toString("base64") };
+}
 function rosterFrame(sessionID, teamID, paperProjectID, version, entries) {
   const frame = new Frame("trnm_research_session_roster_v1").string(sessionID).string(teamID)
     .string(paperProjectID).u64(version).u32(entries.length);
@@ -201,14 +260,30 @@ function verifyEvidence(evidence, archive, expectedCount) {
   return completion;
 }
 
-async function rpcHttpKey(client, httpKey, id, payload) {
+async function rpcHttpKeyRaw(client, httpKey, id, payload) {
   void client;
   const url = `http://${process.env.NAKAMA_HOST || "127.0.0.1"}:${process.env.NAKAMA_PORT || "7350"}/v2/rpc/${encodeURIComponent(id)}?http_key=${encodeURIComponent(httpKey)}`;
   const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify(JSON.stringify(payload)), signal: AbortSignal.timeout(20_000) });
   if (!response.ok) throw new Error(`RPC ${id} HTTP ${response.status}: ${await response.text()}`);
   const envelope = await response.json();
-  return envelope.payload ? JSON.parse(envelope.payload) : undefined;
+  return { raw: envelope.payload, payload: envelope.payload ? JSON.parse(envelope.payload) : undefined };
+}
+async function rpcHttpKey(client, httpKey, id, payload) {
+  return (await rpcHttpKeyRaw(client, httpKey, id, payload)).payload;
+}
+async function rpcHttpKeyRejected(httpKey, id, payload) {
+  const url = `http://${process.env.NAKAMA_HOST || "127.0.0.1"}:${process.env.NAKAMA_PORT || "7350"}/v2/rpc/${encodeURIComponent(id)}?http_key=${encodeURIComponent(httpKey)}`;
+  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify(JSON.stringify(payload)), signal: AbortSignal.timeout(20_000) });
+  const body = await response.text();
+  assert(!response.ok, `RPC ${id} unexpectedly accepted a negative request`);
+  return { status: response.status, body };
+}
+async function playerRPC(playerValue, id, payload) {
+  const raw = await playerValue.socket.rpc(id, JSON.stringify(payload));
+  assert(typeof raw?.payload === "string", `player RPC ${id} returned no payload`);
+  return { raw: raw.payload, payload: JSON.parse(raw.payload) };
 }
 function inbox(socket) {
   const messages = [];
@@ -250,6 +325,12 @@ const challengeHash = digest(Buffer.from("paper-raid-blackbox-challenge-v1"));
 function authID(count, version, slot) {
   return `10000000-0000-4000-8000-${String(count * 10000 + version * 100 + slot).padStart(12, "0")}`;
 }
+function commandID(count, ordinal) {
+  return `90000000-0000-4000-8000-${String(count * 100 + ordinal).padStart(12, "0")}`;
+}
+function authorizationSetID(count, version) {
+  return `20000000-0000-4000-8000-${String(count * 100 + version).padStart(12, "0")}`;
+}
 function sessionID(count) { return `${required("TRNM_RESEARCH_SESSION_PREFIX")}-${count}`; }
 function agentKeys() {
   return [1, 2, 3, 4, 5].map((slot) => privateKeyFromSeed(required(`TRNM_AGENT_${slot}_PRIVATE_SEED`)));
@@ -280,16 +361,54 @@ function createAuthorizations(count, version, users, keys, rotatedSlot = 0) {
   return { claims, authorizations: claims.map((claim) => signAuthorization(claim, issuerID, issuer)), root };
 }
 
-async function archive(client, httpKey, count, afterSequence = 0) {
-  return rpcHttpKey(client, httpKey, "trnm_research_session_archive_v1", {
+function signedCreateRequest(count, epoch, ordinal = 1) {
+  const request = { schema: "trnm.nakama.research-session.create.v2",
+    authorization_set_id: authorizationSetID(count, 1), authorizations: epoch.authorizations };
+  request.control = signResearchControl("create", commandID(count, ordinal), sessionID(count), 1,
+    request.authorization_set_id, researchControlBusinessFrame("create", request));
+  return request;
+}
+function signedResumeRequest(count, version, setID, ordinal) {
+  const request = { schema: "trnm.nakama.research-session.resume.v2",
+    logical_session_id: sessionID(count), authorization_set_id: setID };
+  request.control = signResearchControl("resume", commandID(count, ordinal), sessionID(count), version,
+    setID, researchControlBusinessFrame("resume", request));
+  return request;
+}
+function signedReplaceRequest(count, epoch, ordinal = 3) {
+  const request = { schema: "trnm.nakama.research-session.replace-roster.v2",
+    logical_session_id: sessionID(count), authorization_set_id: authorizationSetID(count, 2),
+    authorizations: epoch.authorizations };
+  request.control = signResearchControl("replace_roster", commandID(count, ordinal), sessionID(count), 2,
+    request.authorization_set_id, researchControlBusinessFrame("replace_roster", request));
+  return request;
+}
+function signedCompleteRequest(count, version, setID, release, ordinal = 4) {
+  const request = { schema: "trnm.nakama.research-session.complete.v2",
+    logical_session_id: sessionID(count), authorization_set_id: setID, facts: facts(count, release) };
+  request.control = signResearchControl("complete", commandID(count, ordinal), sessionID(count), version,
+    setID, researchControlBusinessFrame("complete", request));
+  return request;
+}
+
+async function participantArchive(playerValue, count, authorizationID, afterSequence = 0) {
+  return (await playerRPC(playerValue, "trnm_research_session_archive_v1", {
     schema: "trnm.nakama.research-session.get-archive.v1", logical_session_id: sessionID(count),
-    after_sequence: afterSequence, limit: 128, operator_token: required("TRNM_NAKAMA_OPERATOR_TOKEN"),
+    after_sequence: afterSequence, limit: 128, authorization_id: authorizationID,
+  })).payload;
+}
+async function participantEvidence(playerValue, count, authorizationID) {
+  return playerRPC(playerValue, "trnm_research_session_evidence_v1", {
+    schema: "trnm.nakama.research-session.get-evidence.v1", logical_session_id: sessionID(count),
+    authorization_id: authorizationID,
   });
 }
 async function joinAll(players, externalMatchID, authorizations) {
   for (let index = 0; index < players.length; index += 1) {
     await players[index].socket.joinMatch(externalMatchID, undefined, { authorization_id: authorizations[index].claim.authorization_id });
-    await players[index].inbox.take((message) => message.opcode === 12 && message.payload?.event_type === "participant_joined", `slot ${index + 1} join`);
+    await players[index].inbox.take((message) => message.opcode === 12 &&
+      ["participant_joined", "participant_reconnected"].includes(message.payload?.event_type) &&
+      message.payload?.participant_slot === index + 1, `slot ${index + 1} join`);
   }
 }
 async function sendAction(playerValue, externalMatchID, action, label) {
@@ -297,7 +416,8 @@ async function sendAction(playerValue, externalMatchID, action, label) {
   return (await playerValue.inbox.take((message) => message.opcode === 12 && message.payload?.causation_id === action.action_id, label)).payload;
 }
 async function actionRound(client, httpKey, count, externalMatchID, players, claims, keys, rotatedSlot = 0) {
-  let current = await archive(client, httpKey, count, 0);
+  void client; void httpKey;
+  let current = await participantArchive(players[0], count, claims[0].authorization_id, 0);
   let version = current.session_version;
   const sequences = current.participants.map((participant) => participant.last_action_sequence);
   const actionKeys = keys.slice(0, count);
@@ -331,13 +451,6 @@ function facts(count, release) {
   return { result_code: "paper_bundle_ready", paper_bundle_hash: digest(Buffer.from(`${sessionID(count)}-bundle`)),
     paper_release_candidate_hash: release, contribution_ledger_hash: digest(Buffer.from(`${sessionID(count)}-ledger`)) };
 }
-async function complete(client, httpKey, count, release) {
-  return rpcHttpKey(client, httpKey, "trnm_research_session_complete_v1", {
-    schema: "trnm.nakama.research-session.complete.v1", operator_token: required("TRNM_NAKAMA_OPERATOR_TOKEN"),
-    logical_session_id: sessionID(count), facts: facts(count, release),
-  });
-}
-
 function writeState(value) {
   const path = required("TRNM_BLACKBOX_STATE_FILE");
   writeFileSync(path, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 }); chmodSync(path, 0o600);
@@ -345,70 +458,156 @@ function writeState(value) {
 function readState() { return JSON.parse(readFileSync(required("TRNM_BLACKBOX_STATE_FILE"), "utf8")); }
 function setHeptaMode(mode) { writeFileSync(required("TRNM_HEPTA_MOCK_CONTROL_FILE"), mode + "\n", { mode: 0o666 }); }
 
-async function runPrepare3(client, httpKey) {
+async function runCreatePending3(client, httpKey) {
   const customIDs = [1, 2, 3].map((slot) => `${required("TRNM_CUSTOM_ID_PREFIX")}-${slot}`);
   const players = await Promise.all(customIDs.map((id) => player(client, id)));
   try {
     const keys = agentKeys();
     const epoch = createAuthorizations(3, 1, players.map((value) => value.session.user_id), keys);
-    const runtime = await rpcHttpKey(client, httpKey, "trnm_research_session_create_v1", {
-      schema: "trnm.nakama.research-session.create.v1", operator_token: required("TRNM_NAKAMA_OPERATOR_TOKEN"),
-      authorizations: epoch.authorizations,
-    });
-    assert(runtime.runtime_generation === 1 && runtime.roster_root === epoch.root, "three-member create differs");
-    await joinAll(players, runtime.external_match_id, epoch.authorizations);
-    await actionRound(client, httpKey, 3, runtime.external_match_id, players, epoch.claims, keys);
-
-    const beforeDisconnect = await archive(client, httpKey, 3, 0);
-    players[2].socket.disconnect(false); await delay(500);
-    const replacement = await player(client, customIDs[2]); players[2] = replacement;
-    await replacement.socket.joinMatch(runtime.external_match_id, undefined, { authorization_id: epoch.claims[2].authorization_id });
-    await replacement.inbox.take((message) => message.opcode === 12 && message.payload?.event_type === "participant_reconnected", "slot 3 reconnect");
-    const caught = await archive(client, httpKey, 3, beforeDisconnect.event_count);
-    assert(caught.events.some((event) => event.event_type === "participant_disconnected"), "cursor catch-up missed disconnect");
-    assert(caught.events.some((event) => event.event_type === "participant_reconnected"), "cursor catch-up missed reconnect");
-    writeState({ schema: "trnm.paper-raid.blackbox-state.v1", custom_ids: customIDs,
-      subject_user_ids: players.map((value) => value.session.user_id), old_external_match_id: runtime.external_match_id,
-      epoch_one_authorization_ids: epoch.claims.map((claim) => claim.authorization_id), cursor_after: beforeDisconnect.event_count });
-    process.stdout.write(JSON.stringify({ phase: "prepare3", session_id: sessionID(3), hepta_down_local_progress: true,
-      disconnect_reconnect_cursor: true }) + "\n");
+    const request = signedCreateRequest(3, epoch);
+    writeState({ schema: "trnm.paper-raid.control-blackbox-state.v2", custom_ids: customIDs,
+      subject_user_ids: players.map((value) => value.session.user_id), create_request: request,
+      epoch_one_claims: epoch.claims, epoch_one_authorizations: epoch.authorizations });
+    await rpcHttpKey(client, httpKey, "trnm_research_session_create_v2", request);
+    throw new Error("create_after_runtime failpoint did not block");
   } finally { await closePlayers(players); }
 }
 
-async function runRotateComplete3(client, httpKey) {
+async function runCreateRecover3(client, httpKey) {
   const state = readState();
   const players = await Promise.all(state.custom_ids.map((id) => player(client, id)));
   try {
-    assert(equal(players.map((value) => value.session.user_id), state.subject_user_ids), "Nakama user identities changed after SIGKILL");
-    const resumed = await rpcHttpKey(client, httpKey, "trnm_research_session_resume_v1", {
-      schema: "trnm.nakama.research-session.resume.v1", operator_token: required("TRNM_NAKAMA_OPERATOR_TOKEN"),
-      logical_session_id: sessionID(3),
-    });
-    assert(resumed.runtime_generation === 2 && resumed.external_match_id !== state.old_external_match_id, "SIGKILL resume did not fence runtime");
+    assert(equal(players.map((value) => value.session.user_id), state.subject_user_ids), "Nakama user identities changed during create SIGKILL");
+    const first = await rpcHttpKeyRaw(client, httpKey, "trnm_research_session_create_v2", state.create_request);
+    const second = await rpcHttpKeyRaw(client, httpKey, "trnm_research_session_create_v2", state.create_request);
+    assert(first.raw === second.raw, "signed create exact replay changed response bytes");
+    assert(first.payload.schema === "trnm.nakama.research-control.result.v2" && first.payload.operation === "create", "signed create wrapper differs");
+    const runtime = first.payload.result;
+    assert(runtime.runtime_generation >= 1 && runtime.roster_root === state.epoch_one_claims[0].roster_root,
+      "create recovery did not bind epoch one");
+
+    const conflict = structuredClone(state.create_request);
+    conflict.authorization_set_id = "20000000-0000-4000-8000-000000000399";
+    conflict.control = signResearchControl("create", state.create_request.control.claim.command_id, sessionID(3), 1,
+      conflict.authorization_set_id, researchControlBusinessFrame("create", conflict));
+    const rejected = await rpcHttpKeyRejected(httpKey, "trnm_research_session_create_v2", conflict);
+    assert(rejected.status === 409, `different-body command replay returned HTTP ${rejected.status}, want 409`);
+
     const keys = agentKeys();
-    const epoch = createAuthorizations(3, 2, state.subject_user_ids, keys, 2);
-    const rotated = await rpcHttpKey(client, httpKey, "trnm_research_session_replace_roster_v1", {
-      schema: "trnm.nakama.research-session.replace-roster.v1", operator_token: required("TRNM_NAKAMA_OPERATOR_TOKEN"),
-      logical_session_id: sessionID(3), authorizations: epoch.authorizations,
-    });
-    assert(rotated.roster_version === 2 && rotated.roster_root === epoch.root, "key rotation did not install epoch two");
-    let oldRejected = false;
-    try { await players[0].socket.joinMatch(rotated.external_match_id, undefined, { authorization_id: state.epoch_one_authorization_ids[0] }); }
-    catch { oldRejected = true; }
-    assert(oldRejected, "old epoch authorization joined after rotation");
-    await joinAll(players, rotated.external_match_id, epoch.authorizations);
-    const release = await actionRound(client, httpKey, 3, rotated.external_match_id, players, epoch.claims, keys, 2);
-    setHeptaMode("down");
-    const evidence = await complete(client, httpKey, 3, release);
-    assert(evidence.completion.roster_version === 2 && evidence.completion.roster_root === epoch.root, "completion did not bind epoch two");
-    state.epoch_two_authorization_ids = epoch.claims.map((claim) => claim.authorization_id);
-    state.epoch_two_external_match_id = rotated.external_match_id;
-    state.completion_commitment_id = evidence.completion.commitment_id;
+    await joinAll(players, runtime.external_match_id, state.epoch_one_authorizations);
+    await actionRound(client, httpKey, 3, runtime.external_match_id, players, state.epoch_one_claims, keys);
+
+    const beforeDisconnect = await participantArchive(players[0], 3, state.epoch_one_claims[0].authorization_id, 0);
+    players[2].socket.disconnect(false); await delay(500);
+    const replacement = await player(client, state.custom_ids[2]); players[2] = replacement;
+    await replacement.socket.joinMatch(runtime.external_match_id, undefined,
+      { authorization_id: state.epoch_one_claims[2].authorization_id });
+    await replacement.inbox.take((message) => message.opcode === 12 && message.payload?.event_type === "participant_reconnected", "slot 3 reconnect");
+    const caught = await participantArchive(players[0], 3, state.epoch_one_claims[0].authorization_id, beforeDisconnect.event_count);
+    assert(caught.events.some((event) => event.event_type === "participant_disconnected"), "cursor catch-up missed disconnect");
+    assert(caught.events.some((event) => event.event_type === "participant_reconnected"), "cursor catch-up missed reconnect");
+    state.old_external_match_id = runtime.external_match_id;
+    state.epoch_one_authorization_ids = state.epoch_one_claims.map((claim) => claim.authorization_id);
+    state.cursor_after = beforeDisconnect.event_count;
     writeState(state);
-    process.stdout.write(JSON.stringify({ phase: "rotate-complete3", runtime_generation: 2,
-      old_epoch_rejected: true, epoch_two_completion_local_before_callback: true }) + "\n");
+    process.stdout.write(JSON.stringify({ phase: "create-recover3", create_exact_replay: true,
+      different_body_conflict: true, create_sigkill_recovered: true, disconnect_reconnect_cursor: true }) + "\n");
   } finally { await closePlayers(players); }
 }
+
+async function runResumePending3(client, httpKey) {
+  const state = readState();
+  const request = signedResumeRequest(3, 1, authorizationSetID(3, 1), 2);
+  state.resume_request = request;
+  writeState(state);
+  await rpcHttpKey(client, httpKey, "trnm_research_session_resume_v2", request);
+  throw new Error("resume_after_runtime failpoint did not block");
+}
+
+async function runResumeRecoverReplacePending3(client, httpKey) {
+  const state = readState();
+  const first = await rpcHttpKeyRaw(client, httpKey, "trnm_research_session_resume_v2", state.resume_request);
+  const second = await rpcHttpKeyRaw(client, httpKey, "trnm_research_session_resume_v2", state.resume_request);
+  assert(first.raw === second.raw, "signed resume exact replay changed response bytes");
+  const runtime = first.payload.result;
+  assert(first.payload.operation === "resume" && runtime.runtime_generation >= 2 &&
+    runtime.external_match_id !== state.old_external_match_id, "resume SIGKILL recovery did not fence generation two");
+  const keys = agentKeys();
+  const epoch = createAuthorizations(3, 2, state.subject_user_ids, keys, 2);
+  const request = signedReplaceRequest(3, epoch);
+  state.epoch_two_claims = epoch.claims;
+  state.epoch_two_authorizations = epoch.authorizations;
+  state.replace_request = request;
+  state.resume_external_match_id = runtime.external_match_id;
+  state.resume_runtime_generation = runtime.runtime_generation;
+  writeState(state);
+  await rpcHttpKey(client, httpKey, "trnm_research_session_replace_roster_v2", request);
+  throw new Error("replace_before_signal failpoint did not block");
+}
+
+async function runReplaceRecoverCompletePending3(client, httpKey) {
+  const state = readState();
+  const players = await Promise.all(state.custom_ids.map((id) => player(client, id)));
+  try {
+    const resumed = await rpcHttpKey(client, httpKey, "trnm_research_session_resume_v2",
+      signedResumeRequest(3, 1, authorizationSetID(3, 1), 5));
+    assert(resumed.result.runtime_generation > state.resume_runtime_generation,
+      "post-replacement-window resume did not advance the fenced runtime generation");
+    const first = await rpcHttpKeyRaw(client, httpKey, "trnm_research_session_replace_roster_v2", state.replace_request);
+    const second = await rpcHttpKeyRaw(client, httpKey, "trnm_research_session_replace_roster_v2", state.replace_request);
+    assert(first.raw === second.raw, "signed replacement exact replay changed response bytes");
+    const rotated = first.payload.result;
+    assert(first.payload.operation === "replace_roster" && rotated.roster_version === 2 &&
+      rotated.roster_root === state.epoch_two_claims[0].roster_root, "replacement recovery did not install epoch two");
+    let oldRejected = false;
+    try {
+      await players[0].socket.joinMatch(rotated.external_match_id, undefined,
+        { authorization_id: state.epoch_one_authorization_ids[0] });
+    } catch { oldRejected = true; }
+    assert(oldRejected, "old epoch authorization joined after signed replacement");
+    await joinAll(players, rotated.external_match_id, state.epoch_two_authorizations);
+    const release = await actionRound(client, httpKey, 3, rotated.external_match_id, players,
+      state.epoch_two_claims, agentKeys(), 2);
+    setHeptaMode("down");
+    const request = signedCompleteRequest(3, 2, authorizationSetID(3, 2), release, 4);
+    state.complete_request = request;
+    state.epoch_two_external_match_id = rotated.external_match_id;
+    state.replacement_runtime_generation = rotated.runtime_generation;
+    state.epoch_two_authorization_ids = state.epoch_two_claims.map((claim) => claim.authorization_id);
+    writeState(state);
+    await rpcHttpKey(client, httpKey, "trnm_research_session_complete_v2", request);
+    throw new Error("complete_before_signal failpoint did not block");
+  } finally { await closePlayers(players); }
+}
+
+async function runCompleteRecover3(client, httpKey) {
+  const state = readState();
+  const resumed = await rpcHttpKey(client, httpKey, "trnm_research_session_resume_v2",
+    signedResumeRequest(3, 2, authorizationSetID(3, 2), 6));
+  assert(resumed.result.runtime_generation > state.replacement_runtime_generation,
+    "post-completion-window resume did not advance the fenced runtime generation");
+  const players = await Promise.all(state.custom_ids.map((id) => player(client, id)));
+  try {
+    // MatchInit durably fences every pre-crash socket. Re-establish the current
+    // epoch presence before applying the already accepted completion command;
+    // readiness and release acknowledgements remain durable research facts.
+    await joinAll(players, resumed.result.external_match_id, state.epoch_two_authorizations);
+    const first = await rpcHttpKeyRaw(client, httpKey, "trnm_research_session_complete_v2", state.complete_request);
+    const second = await rpcHttpKeyRaw(client, httpKey, "trnm_research_session_complete_v2", state.complete_request);
+    assert(first.raw === second.raw, "signed completion exact replay changed response bytes");
+    const evidence = first.payload.result;
+    assert(first.payload.operation === "complete" && evidence.completion.roster_version === 2 &&
+      evidence.completion.roster_root === state.epoch_two_claims[0].roster_root,
+    "completion recovery did not bind epoch two");
+    state.completion_commitment_id = evidence.completion.commitment_id;
+    state.completion_external_match_id = evidence.external_match_id;
+    writeState(state);
+    process.stdout.write(JSON.stringify({ phase: "complete-recover3", create_resume_replace_complete_v2: true,
+      replacement_signal_sigkill_recovered: true, completion_signal_sigkill_recovered: true,
+      exact_applied_receipts: true, old_epoch_rejected: true }) + "\n");
+  } finally { await closePlayers(players); }
+}
+
 
 function callbackLogs() {
   const path = required("TRNM_HEPTA_MOCK_LOG_FILE");
@@ -423,13 +622,14 @@ async function waitFor(predicate, label, timeoutMs = 30_000) {
 }
 
 async function runRecover3(client, httpKey) {
+  void httpKey;
   const state = readState();
   const customPlayer = await player(client, state.custom_ids[0]);
   try {
-    const evidence = await rpcHttpKey(client, httpKey, "trnm_research_session_evidence_v1", {
-      schema: "trnm.nakama.research-session.get-evidence.v1", logical_session_id: sessionID(3),
-      operator_token: required("TRNM_NAKAMA_OPERATOR_TOKEN"),
-    });
+    const evidenceRPC = await participantEvidence(customPlayer, 3, state.epoch_two_authorization_ids[0]);
+    const evidenceAgain = await participantEvidence(customPlayer, 3, state.epoch_two_authorization_ids[0]);
+    assert(evidenceRPC.raw === evidenceAgain.raw, "participant evidence replay changed bytes");
+    const evidence = evidenceRPC.payload;
     assert(evidence.completion.commitment_id === state.completion_commitment_id, "post-SIGKILL evidence changed");
     await waitFor(() => {
       const entries = callbackLogs().filter((entry) => entry.path.endsWith("research-session-completions") &&
@@ -438,7 +638,6 @@ async function runRecover3(client, httpKey) {
     }, "tampered receipt rejection followed by valid completion ACK");
     const entries = callbackLogs().filter((entry) => entry.path.endsWith("research-session-completions") &&
       logBody(entry).completion.session_id === sessionID(3));
-    assert(entries.some((entry) => entry.response === "down"), "completion was not attempted while Hepta was down");
     assert(new Set(entries.map((entry) => entry.body_base64)).size === 1, "completion retry body bytes changed");
     assert(new Set(entries.map((entry) => entry.idempotency_key)).size === 1, "completion retry idempotency changed");
     const consumptions = callbackLogs().filter((entry) => entry.path.endsWith("research-session-authorizations/consumed") &&
@@ -447,7 +646,7 @@ async function runRecover3(client, httpKey) {
     assert(epochOne.some((entry) => entry.response === "down") && epochOne.some((entry) => entry.response === "valid_consumption"), "epoch-one consumption did not survive outage/restart");
     assert(new Set(epochOne.map((entry) => entry.body_base64)).size === 1, "consumption retry body bytes changed");
 
-    const finalArchive = await archive(client, httpKey, 3, 0);
+    const finalArchive = await participantArchive(customPlayer, 3, state.epoch_two_authorization_ids[0], 0);
     const completion = verifyEvidence(evidence, finalArchive, 3);
     assert(completion.roster_version === 2, "final three-member completion lost rotation epoch");
     await waitFor(async () => {
@@ -468,14 +667,16 @@ async function runCardinality(client, httpKey) {
     const players = await Promise.all(customIDs.map((id) => player(client, id)));
     try {
       const epoch = createAuthorizations(count, 1, players.map((value) => value.session.user_id), keys);
-      const runtime = await rpcHttpKey(client, httpKey, "trnm_research_session_create_v1", {
-        schema: "trnm.nakama.research-session.create.v1", operator_token: required("TRNM_NAKAMA_OPERATOR_TOKEN"),
-        authorizations: epoch.authorizations,
-      });
+      const created = await rpcHttpKey(client, httpKey, "trnm_research_session_create_v2", signedCreateRequest(count, epoch));
+      const runtime = created.result;
+      assert(created.operation === "create" && runtime.roster_version === 1, `${count}-member signed create differs`);
       await joinAll(players, runtime.external_match_id, epoch.authorizations);
       const release = await actionRound(client, httpKey, count, runtime.external_match_id, players, epoch.claims, keys);
-      const evidence = await complete(client, httpKey, count, release);
-      const finalArchive = await archive(client, httpKey, count, 0);
+      const completed = await rpcHttpKey(client, httpKey, "trnm_research_session_complete_v2",
+        signedCompleteRequest(count, 1, authorizationSetID(count, 1), release, 4));
+      const evidence = completed.result;
+      assert(completed.operation === "complete", `${count}-member signed completion differs`);
+      const finalArchive = await participantArchive(players[0], count, epoch.claims[0].authorization_id, 0);
       const completion = verifyEvidence(evidence, finalArchive, count);
       results.push({ participants: count, event_count: completion.event_count, commitment_id: completion.commitment_id });
     } finally { await closePlayers(players); }
@@ -494,8 +695,12 @@ const client = new Client(required("NAKAMA_SERVER_KEY"), process.env.NAKAMA_HOST
 const httpKey = required("NAKAMA_RUNTIME_HTTP_KEY");
 switch (required("BLACKBOX_PHASE")) {
   case "health": await runHealth(client, httpKey); break;
-  case "prepare3": await runPrepare3(client, httpKey); break;
-  case "rotate-complete3": await runRotateComplete3(client, httpKey); break;
+  case "create-pending3": await runCreatePending3(client, httpKey); break;
+  case "create-recover3": await runCreateRecover3(client, httpKey); break;
+  case "resume-pending3": await runResumePending3(client, httpKey); break;
+  case "resume-recover-replace-pending3": await runResumeRecoverReplacePending3(client, httpKey); break;
+  case "replace-recover-complete-pending3": await runReplaceRecoverCompletePending3(client, httpKey); break;
+  case "complete-recover3": await runCompleteRecover3(client, httpKey); break;
   case "recover3": await runRecover3(client, httpKey); break;
   case "cardinality": await runCardinality(client, httpKey); break;
   default: throw new Error(`unsupported BLACKBOX_PHASE ${process.env.BLACKBOX_PHASE}`);

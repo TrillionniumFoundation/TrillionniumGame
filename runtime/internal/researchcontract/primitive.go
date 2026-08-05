@@ -74,6 +74,10 @@ func ValidateSessionID(value string) error {
 func ValidateAuthorizationID(value string) error {
 	return validateCanonicalUUID("authorization_id", value)
 }
+func ValidateCommandID(value string) error { return validateCanonicalUUID("command_id", value) }
+func ValidateAuthorizationSetID(value string) error {
+	return validateCanonicalUUID("authorization_set_id", value)
+}
 func ValidateNakamaUserID(value string) error { return validateCanonicalUUID("subject_user_id", value) }
 func ValidateTeamID(value string) error       { return validateCanonicalUUID("team_id", value) }
 func ValidatePaperProjectID(value string) error {

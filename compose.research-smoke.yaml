@@ -39,3 +39,8 @@ services:
         condition: service_healthy
     environment:
       TRNM_HEPTA_BASE_URL: http://hepta-mock:8080
+      TRNM_RESEARCH_CONTROL_TEST_FAILPOINT_FILE: /control-test/nakama-failpoint
+    volumes:
+      - type: bind
+        source: ${TRNM_HEPTA_MOCK_STATE_DIR:?TRNM_HEPTA_MOCK_STATE_DIR is required}
+        target: /control-test

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/nakama/research-control-v2/control.schema.json",
+  "title": "Hepta to Nakama Signed Research Control V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["claim", "signature"],
+  "properties": {
+    "claim": {"$ref": "#/$defs/claim"},
+    "signature": {"type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$"}
+  },
+  "$defs": {
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "key_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$"},
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "command_id", "operation", "target_rpc", "session_id", "session_roster_version", "authorization_set_id", "payload_hash", "audience", "issued_at_unix", "expires_at_unix", "issuer_key_id"],
+      "properties": {
+        "schema": {"const": "trnm.nakama.research-control.claim.v2"},
+        "command_id": {"$ref": "#/$defs/uuid"},
+        "operation": {"enum": ["create", "resume", "replace_roster", "complete"]},
+        "target_rpc": {"enum": ["trnm_research_session_create_v2", "trnm_research_session_resume_v2", "trnm_research_session_replace_roster_v2", "trnm_research_session_complete_v2"]},
+        "session_id": {"$ref": "#/$defs/session_id"},
+        "session_roster_version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "authorization_set_id": {"$ref": "#/$defs/uuid"},
+        "payload_hash": {
+          "$ref": "#/$defs/digest",
+          "description": "SHA-256 digest of the operation-specific, length-prefixed binary business frame defined by spec.md; it is not a digest of JSON."
+        },
+        "audience": {"const": "trnm:nakama:research-control:v2"},
+        "issued_at_unix": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "expires_at_unix": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "issuer_key_id": {"$ref": "#/$defs/key_id"}
+      },
+      "oneOf": [
+        {"properties": {"operation": {"const": "create"}, "target_rpc": {"const": "trnm_research_session_create_v2"}}},
+        {"properties": {"operation": {"const": "resume"}, "target_rpc": {"const": "trnm_research_session_resume_v2"}}},
+        {"properties": {"operation": {"const": "replace_roster"}, "target_rpc": {"const": "trnm_research_session_replace_roster_v2"}}},
+        {"properties": {"operation": {"const": "complete"}, "target_rpc": {"const": "trnm_research_session_complete_v2"}}}
+      ]
+    }
+  }
+}

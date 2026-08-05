@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/nakama/research-control-v2/rpc-response.schema.json",
+  "title": "Durable Signed Research Control Result V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "command_id", "operation", "target_rpc", "result"],
+  "properties": {
+    "schema": {"const": "trnm.nakama.research-control.result.v2"},
+    "command_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "operation": {"enum": ["create", "resume", "replace_roster", "complete"]},
+    "target_rpc": {"enum": ["trnm_research_session_create_v2", "trnm_research_session_resume_v2", "trnm_research_session_replace_roster_v2", "trnm_research_session_complete_v2"]},
+    "result": {"$ref": "../research-session-v1/rpc-response.schema.json"}
+  },
+  "oneOf": [
+    {"properties": {"operation": {"const": "create"}, "target_rpc": {"const": "trnm_research_session_create_v2"}, "result": {"$ref": "../research-session-v1/rpc-response.schema.json#/$defs/runtime"}}},
+    {"properties": {"operation": {"const": "resume"}, "target_rpc": {"const": "trnm_research_session_resume_v2"}, "result": {"$ref": "../research-session-v1/rpc-response.schema.json#/$defs/runtime"}}},
+    {"properties": {"operation": {"const": "replace_roster"}, "target_rpc": {"const": "trnm_research_session_replace_roster_v2"}, "result": {"$ref": "../research-session-v1/rpc-response.schema.json#/$defs/runtime"}}},
+    {"properties": {"operation": {"const": "complete"}, "target_rpc": {"const": "trnm_research_session_complete_v2"}, "result": {"$ref": "../research-session-v1/rpc-response.schema.json#/$defs/evidence"}}}
+  ]
+}

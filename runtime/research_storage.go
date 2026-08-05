@@ -19,14 +19,15 @@ const (
 )
 
 type storedResearchSession struct {
-	Schema              string                            `json:"schema"`
-	LogicalSessionID    string                            `json:"logical_session_id"`
-	CoreSnapshot        string                            `json:"core_snapshot_base64"`
-	SnapshotSHA256      string                            `json:"snapshot_sha256"`
-	ExternalMatchID     string                            `json:"external_match_id,omitempty"`
-	RuntimeGeneration   uint64                            `json:"runtime_generation"`
-	ConsumptionOutboxes []storedResearchConsumptionOutbox `json:"consumption_outboxes"`
-	CompletionOutbox    *storedResearchCompletionOutbox   `json:"completion_outbox"`
+	Schema                    string                            `json:"schema"`
+	LogicalSessionID          string                            `json:"logical_session_id"`
+	CoreSnapshot              string                            `json:"core_snapshot_base64"`
+	SnapshotSHA256            string                            `json:"snapshot_sha256"`
+	ExternalMatchID           string                            `json:"external_match_id,omitempty"`
+	RuntimeGeneration         uint64                            `json:"runtime_generation"`
+	ControlAuthorizationSetID string                            `json:"control_authorization_set_id,omitempty"`
+	ConsumptionOutboxes       []storedResearchConsumptionOutbox `json:"consumption_outboxes"`
+	CompletionOutbox          *storedResearchCompletionOutbox   `json:"completion_outbox"`
 }
 
 type versionedStoredResearch struct {
@@ -56,6 +57,11 @@ func (record *storedResearchSession) setSnapshot(snapshot []byte) {
 func (record storedResearchSession) snapshot() ([]byte, error) {
 	if record.Schema != researchStorageSchema || researchcontract.ValidateSessionID(record.LogicalSessionID) != nil {
 		return nil, errors.New("stored research session schema or identity is invalid")
+	}
+	if record.ControlAuthorizationSetID != "" {
+		if err := researchcontract.ValidateAuthorizationSetID(record.ControlAuthorizationSetID); err != nil {
+			return nil, err
+		}
 	}
 	snapshot, err := base64.StdEncoding.Strict().DecodeString(record.CoreSnapshot)
 	if err != nil || base64.StdEncoding.EncodeToString(snapshot) != record.CoreSnapshot {
@@ -108,14 +114,11 @@ func updateStoredResearch(ctx context.Context, nk storageGateway, record storedR
 	return writeStoredResearch(ctx, nk, record, version)
 }
 func writeStoredResearch(ctx context.Context, nk storageGateway, record storedResearchSession, version string) (string, error) {
-	if _, err := record.snapshot(); err != nil {
-		return "", err
-	}
-	value, err := json.Marshal(record)
+	write, err := storedResearchWrite(record, version)
 	if err != nil {
 		return "", err
 	}
-	acks, err := nk.StorageWrite(ctx, []*runtime.StorageWrite{{Collection: researchStorageCollection, Key: record.LogicalSessionID, UserID: "", Value: string(value), Version: version, PermissionRead: 0, PermissionWrite: 0}})
+	acks, err := nk.StorageWrite(ctx, []*runtime.StorageWrite{write})
 	if err != nil {
 		if errors.Is(err, runtime.ErrStorageRejectedVersion) {
 			return "", errors.New("research storage version conflict")
@@ -126,4 +129,15 @@ func writeStoredResearch(ctx context.Context, nk storageGateway, record storedRe
 		return "", errors.New("research storage write returned no version")
 	}
 	return acks[0].Version, nil
+}
+
+func storedResearchWrite(record storedResearchSession, version string) (*runtime.StorageWrite, error) {
+	if _, err := record.snapshot(); err != nil {
+		return nil, err
+	}
+	value, err := json.Marshal(record)
+	if err != nil {
+		return nil, err
+	}
+	return &runtime.StorageWrite{Collection: researchStorageCollection, Key: record.LogicalSessionID, UserID: "", Value: string(value), Version: version, PermissionRead: 0, PermissionWrite: 0}, nil
 }

@@ -82,6 +82,13 @@ same-Agent single-slot key rotation; SIGKILL recovery; and independent
 reconstruction of roster, event, archive, commitment, and completion-signature
 facts.
 
+The same gate validates the signed Paper Raid control v2 contract: strict JSON
+Schemas; independently reconstructed Go and Node binary frames; stable golden
+request/signature vectors for create, resume, roster replacement, and complete;
+short claim lifetime and mutation rejection; durable exact replay; and conflict
+on same-command/different-body reuse. It also proves that all four public v2
+RPCs operate without exposing the legacy operator token to the client.
+
 The research Compose gate uses a loopback-only ephemeral Hepta callback fixture
 that signs the frozen consumption and completion ACK frames. It holds Hepta
 down across local commitment and Nakama restart, requires retries to reuse the
@@ -89,3 +96,11 @@ exact request body/idempotency key, deliberately returns one signature-tampered
 completion receipt, and proves Nakama remains pending until a valid signed ACK
 is received and persisted. This is protocol black-box evidence, not a claim
 that the separately versioned Hepta service or Chain finality path is deployed.
+
+The Compose black box places deterministic, test-only barriers after durable
+create/resume runtime creation and immediately before replace/complete match
+signals. It sends `SIGKILL` at each barrier, restarts the same PostgreSQL-backed
+stack, and requires recovery to apply each accepted command exactly once. The
+barrier is inactive unless the explicit absolute
+`TRNM_RESEARCH_CONTROL_TEST_FAILPOINT_FILE` path is configured; production
+deployments must leave it unset.

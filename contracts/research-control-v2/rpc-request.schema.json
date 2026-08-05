@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/nakama/research-control-v2/rpc-request.schema.json",
+  "title": "Signed Research Control RPC Requests V2",
+  "oneOf": [
+    {"$ref": "#/$defs/create"},
+    {"$ref": "#/$defs/resume"},
+    {"$ref": "#/$defs/replace"},
+    {"$ref": "#/$defs/complete"}
+  ],
+  "$defs": {
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "text": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "authorizations": {"type": "array", "minItems": 3, "maxItems": 5, "items": {"$ref": "../research-session-v1/signed-authorization.schema.json"}},
+    "terminal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["result_code", "paper_bundle_hash", "paper_release_candidate_hash", "contribution_ledger_hash"],
+      "properties": {"result_code": {"$ref": "#/$defs/text"}, "paper_bundle_hash": {"$ref": "#/$defs/digest"}, "paper_release_candidate_hash": {"$ref": "#/$defs/digest"}, "contribution_ledger_hash": {"$ref": "#/$defs/digest"}}
+    },
+    "create": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "authorization_set_id", "authorizations", "control"],
+      "properties": {"schema": {"const": "trnm.nakama.research-session.create.v2"}, "authorization_set_id": {"$ref": "#/$defs/uuid"}, "authorizations": {"$ref": "#/$defs/authorizations"}, "control": {"$ref": "control.schema.json"}}
+    },
+    "resume": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "logical_session_id", "authorization_set_id", "control"],
+      "properties": {"schema": {"const": "trnm.nakama.research-session.resume.v2"}, "logical_session_id": {"$ref": "#/$defs/session_id"}, "authorization_set_id": {"$ref": "#/$defs/uuid"}, "control": {"$ref": "control.schema.json"}}
+    },
+    "replace": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "logical_session_id", "authorization_set_id", "authorizations", "control"],
+      "properties": {"schema": {"const": "trnm.nakama.research-session.replace-roster.v2"}, "logical_session_id": {"$ref": "#/$defs/session_id"}, "authorization_set_id": {"$ref": "#/$defs/uuid"}, "authorizations": {"$ref": "#/$defs/authorizations"}, "control": {"$ref": "control.schema.json"}}
+    },
+    "complete": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "logical_session_id", "authorization_set_id", "facts", "control"],
+      "properties": {"schema": {"const": "trnm.nakama.research-session.complete.v2"}, "logical_session_id": {"$ref": "#/$defs/session_id"}, "authorization_set_id": {"$ref": "#/$defs/uuid"}, "facts": {"$ref": "#/$defs/terminal"}, "control": {"$ref": "control.schema.json"}}
+    }
+  }
+}

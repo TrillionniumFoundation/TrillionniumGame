@@ -80,12 +80,14 @@ const keyPair = () => {
   };
 };
 const issuer = keyPair();
+const controlIssuer = keyPair();
 const authority = keyPair();
 const agentOne = keyPair();
 const agentTwo = keyPair();
 const suffix = `${process.pid}-${randomBytes(4).toString("hex")}`;
 const random = () => randomBytes(32).toString("hex");
 const issuerKeys = JSON.stringify({ "blackbox-hepta-v1": issuer.publicKey });
+const controlIssuerKeys = JSON.stringify({ "blackbox-hepta-control-v2": controlIssuer.publicKey });
 
 const lines = [
   `TRNM_NAKAMA_COMPOSE_PROJECT=trnm-nakama-p0-${suffix}`,
@@ -99,6 +101,7 @@ const lines = [
   `NAKAMA_CONSOLE_PASSWORD=${random()}`,
   `NAKAMA_CONSOLE_SIGNING_KEY=${random()}`,
   `TRNM_HEPTA_ISSUER_KEYS='${issuerKeys}'`,
+  `TRNM_HEPTA_CONTROL_ISSUER_KEYS='${controlIssuerKeys}'`,
   "TRNM_HEPTA_BASE_URL=http://127.0.0.1:1",
   `TRNM_HEPTA_SERVICE_TOKEN=${random()}`,
   "TRNM_HEPTA_ISSUER_KEY_ID=blackbox-hepta-v1",

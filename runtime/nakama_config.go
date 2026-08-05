@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -16,6 +18,8 @@ import (
 
 const (
 	envIssuerKeys         = "TRNM_HEPTA_ISSUER_KEYS"
+	envControlIssuerKeys  = "TRNM_HEPTA_CONTROL_ISSUER_KEYS"
+	envControlTestHook    = "TRNM_RESEARCH_CONTROL_TEST_FAILPOINT_FILE"
 	envAuthorityKeyID     = "TRNM_NAKAMA_AUTHORITY_KEY_ID"
 	envAuthorityPrivate   = "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY"
 	envOperatorToken      = "TRNM_NAKAMA_OPERATOR_TOKEN"
@@ -29,6 +33,8 @@ const (
 
 type moduleConfig struct {
 	issuerKeys          map[string]ed25519.PublicKey
+	controlIssuerKeys   map[string]ed25519.PublicKey
+	controlTestHook     string
 	authorityKeyID      string
 	authorityPrivateKey ed25519.PrivateKey
 	operatorToken       string
@@ -64,6 +70,20 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 				}
 				cfg.issuerKeys[keyID] = ed25519.PublicKey(append([]byte(nil), key...))
 			}
+		}
+	}
+	if raw := strings.TrimSpace(env[envControlIssuerKeys]); raw == "" {
+		cfg.errors = append(cfg.errors, envControlIssuerKeys+" is required")
+	} else if keys, err := decodeControlIssuerKeys(raw); err != nil {
+		cfg.errors = append(cfg.errors, envControlIssuerKeys+": "+err.Error())
+	} else {
+		cfg.controlIssuerKeys = keys
+	}
+	if raw := env[envControlTestHook]; raw != "" {
+		if raw != strings.TrimSpace(raw) || len(raw) > 4096 || !filepath.IsAbs(raw) {
+			cfg.errors = append(cfg.errors, envControlTestHook+" must be an absolute path without surrounding whitespace")
+		} else {
+			cfg.controlTestHook = raw
 		}
 	}
 
@@ -107,6 +127,19 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 				cfg.errors = append(cfg.errors, envAuthorityPrivate+" public key must differ from Hepta issuer key "+issuerKeyID)
 			}
 		}
+		for controlKeyID, controlPublic := range cfg.controlIssuerKeys {
+			if len(controlPublic) == ed25519.PublicKeySize && subtle.ConstantTimeCompare(authorityPublic, controlPublic) == 1 {
+				cfg.errors = append(cfg.errors, envControlIssuerKeys+" key "+controlKeyID+" must differ from the Nakama completion authority")
+			}
+		}
+	}
+	for controlKeyID, controlPublic := range cfg.controlIssuerKeys {
+		for authorizationKeyID, authorizationPublic := range cfg.issuerKeys {
+			if len(controlPublic) == ed25519.PublicKeySize && len(authorizationPublic) == ed25519.PublicKeySize &&
+				subtle.ConstantTimeCompare(controlPublic, authorizationPublic) == 1 {
+				cfg.errors = append(cfg.errors, envControlIssuerKeys+" key "+controlKeyID+" must differ from authorization issuer key "+authorizationKeyID)
+			}
+		}
 	}
 
 	if raw := strings.TrimSpace(env[envMatchTickRate]); raw != "" {
@@ -119,6 +152,54 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 	}
 
 	return cfg
+}
+
+func decodeControlIssuerKeys(raw string) (map[string]ed25519.PublicKey, error) {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return nil, errors.New("must be a JSON object")
+	}
+	keys := map[string]ed25519.PublicKey{}
+	seenPublic := map[string]string{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, errors.New("invalid JSON object")
+		}
+		keyID, ok := token.(string)
+		if !ok || !validConfigKeyID(keyID) {
+			return nil, errors.New("key ids must contain 1 through 128 ASCII characters from A-Za-z0-9._:-")
+		}
+		if _, duplicate := keys[keyID]; duplicate {
+			return nil, fmt.Errorf("duplicate key id %q", keyID)
+		}
+		var encoded string
+		if err := decoder.Decode(&encoded); err != nil {
+			return nil, fmt.Errorf("key %q must be a string containing a 32-byte Ed25519 public key", keyID)
+		}
+		decoded, err := decodeKey(encoded)
+		if err != nil || len(decoded) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("key %q must contain a 32-byte Ed25519 public key", keyID)
+		}
+		fingerprint := hex.EncodeToString(decoded)
+		if existing, duplicate := seenPublic[fingerprint]; duplicate {
+			return nil, fmt.Errorf("keys %q and %q reuse one public key", existing, keyID)
+		}
+		seenPublic[fingerprint] = keyID
+		keys[keyID] = ed25519.PublicKey(append([]byte(nil), decoded...))
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') {
+		return nil, errors.New("invalid JSON object")
+	}
+	if token, err := decoder.Token(); err != io.EOF || token != nil {
+		return nil, errors.New("trailing JSON value is forbidden")
+	}
+	if len(keys) == 0 {
+		return nil, errors.New("at least one control issuer key is required")
+	}
+	return keys, nil
 }
 
 func validConfigKeyID(value string) bool {

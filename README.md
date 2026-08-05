@@ -22,6 +22,16 @@ authorization-consumption and completion requests are retried until Nakama has
 verified and durably stored a signed Hepta ACK. See
 [contracts/RESEARCH_SESSION_V1.md](contracts/RESEARCH_SESSION_V1.md).
 
+Paper Raid lifecycle control is exposed separately through the signed
+`trnm_research_session_{create,resume,replace_roster,complete}_v2` RPCs. Each
+request carries a short-lived Hepta Ed25519 control claim over the exact
+domain-separated binary business frame. Accepted commands and their exact
+responses are durable and idempotent across process death; the legacy operator
+token is not accepted by these v2 RPCs. The control keys are a trust domain
+independent from participant-authorization issuers and the Nakama completion
+authority. See
+[contracts/research-control-v2/spec.md](contracts/research-control-v2/spec.md).
+
 ## Start work
 
 1. Work only from `/home/alex/projects/trillionnium-nakama`.
