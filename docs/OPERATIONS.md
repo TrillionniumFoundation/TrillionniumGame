@@ -101,6 +101,21 @@ inventory before a release:
 scripts/generate-nakama-sbom.sh runtime/sbom.cdx.json
 ```
 
+The release gate also proves that the runtime image itself is reproducible:
+
+```bash
+make release-check
+```
+
+Its image phase downloads a version- and SHA-256-pinned Buildx binary into a
+disposable Docker configuration, builds the clean commit twice without cache,
+and requires identical image IDs and plugin hashes. The source commit time is
+used as `SOURCE_DATE_EPOCH`, including the compiled plugin file mtime. BuildKit
+attestations are disabled because this release path carries its own checked
+SBOM and provenance manifest; per-invocation attestations would otherwise make
+identical runtime bytes appear different. No Docker plugin is installed
+globally.
+
 `up --wait` covers container liveness. A deployment is usable only after
 `trnm_ready_v1` also reports `configuration`, `database`, and writable
 server-owned `storage` as `ok`.
