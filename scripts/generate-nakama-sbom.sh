@@ -17,6 +17,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+mkdir -p "$scratch/module"
+
 docker_cmd=()
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   docker_cmd=(docker)
@@ -30,9 +32,11 @@ builder_image=heroiclabs/nakama-pluginbuilder:3.40.0@sha256:0455a119585914341672
 "${docker_cmd[@]}" run --rm --pull never --network bridge --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,nodev \
   --volume "$root/runtime:/src:ro" --workdir /src \
+  --volume "$scratch/module:/out:rw" \
   --env GOCACHE=/tmp/go-build --env GOPATH=/tmp/go \
   --entrypoint /bin/sh "$builder_image" \
-  -ec 'go list -mod=readonly -m -json all' | jq -s . >"$scratch/modules.json"
+  -ec 'go list -mod=readonly -m -json all; go build --trimpath -mod=readonly -buildmode=plugin -o /out/backend.so .' \
+  | jq -s . >"$scratch/modules.json"
 "${docker_cmd[@]}" run --rm --pull never --network bridge --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,nodev \
   --volume "$root/runtime:/src:ro" --workdir /src \
@@ -42,6 +46,12 @@ builder_image=heroiclabs/nakama-pluginbuilder:3.40.0@sha256:0455a119585914341672
 
 dockerfile_sha256=$(sha256sum "$root/runtime/Dockerfile" | awk '{print $1}')
 go_sum_sha256=$(sha256sum "$root/runtime/go.sum" | awk '{print $1}')
+runtime_module_path=/nakama/data/modules/backend.so
+runtime_module_sha256=$(sha256sum "$scratch/module/backend.so" | awk '{print $1}')
+[[ "$runtime_module_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+  echo "deterministic runtime module SHA-256 is invalid" >&2
+  exit 1
+}
 runtime_base=sha256:92fb184e3271be12fd4d239766afb285322a50aaf769a59433445d59624c78cd
 builder_base=sha256:0455a119585914341672fc17f3c4195a7a21714ecb85cdf7dacbdc47769aed4c
 
@@ -50,6 +60,8 @@ jq -nS \
   --rawfile graph "$scratch/graph.txt" \
   --arg dockerfile_sha256 "$dockerfile_sha256" \
   --arg go_sum_sha256 "$go_sum_sha256" \
+  --arg runtime_module_path "$runtime_module_path" \
+  --arg runtime_module_sha256 "$runtime_module_sha256" \
   --arg runtime_base "$runtime_base" \
   --arg builder_base "$builder_base" '
   def version($module):
@@ -83,7 +95,7 @@ jq -nS \
       specVersion: "1.5",
       version: 1,
       metadata: {
-        tools: {components: [{type: "application", name: "trnm-nakama-sbom-generator", version: "1"}]},
+        tools: {components: [{type: "application", name: "trnm-nakama-sbom-generator", version: "2"}]},
         component: component($main),
         properties: [
           {name: "trnm:dockerfile:sha256", value: ("sha256:" + $dockerfile_sha256)},
@@ -93,6 +105,12 @@ jq -nS \
       components: (
         [$all[] | select(.Main | not) | component(.)]
         + [
+          {
+            type: "file",
+            "bom-ref": ("file:" + $runtime_module_path),
+            name: $runtime_module_path,
+            hashes: [{alg: "SHA-256", content: $runtime_module_sha256}]
+          },
           {
             type: "container",
             "bom-ref": ("pkg:oci/nakama@3.40.0?digest=" + ($runtime_base | @uri)),
@@ -115,6 +133,20 @@ jq -nS \
       dependencies: ($dependencies | sort_by(.ref))
     }
 ' >"$scratch/sbom.cdx.json"
+
+jq -e \
+  --arg runtime_module_path "$runtime_module_path" \
+  --arg runtime_module_sha256 "$runtime_module_sha256" '
+  [.components[]
+   | select(.type == "file"
+       and .["bom-ref"] == ("file:" + $runtime_module_path)
+       and .name == $runtime_module_path
+       and .hashes == [{"alg":"SHA-256","content":$runtime_module_sha256}])]
+  | length == 1
+' "$scratch/sbom.cdx.json" >/dev/null || {
+  echo "generated SBOM did not bind the deterministic runtime module" >&2
+  exit 1
+}
 
 mkdir -p "$(dirname "$output")"
 install -m 0644 "$scratch/sbom.cdx.json" "$output"

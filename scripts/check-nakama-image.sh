@@ -39,6 +39,7 @@ source_tree=$(git rev-parse 'HEAD^{tree}')
 source_date_epoch=$(git show -s --format=%ct HEAD)
 sbom=runtime/sbom.cdx.json
 sbom_sha256=$(sha256sum "$sbom" | cut -d' ' -f1)
+runtime_module_path=/nakama/data/modules/backend.so
 [[ "$revision" =~ ^[0-9a-f]{40}$ \
   && "$source_tree" =~ ^[0-9a-f]{40}$ \
   && "$source_date_epoch" =~ ^[0-9]+$ \
@@ -53,6 +54,19 @@ jq -e '
   and (has("serialNumber") | not)
   and ((.metadata // {}) | has("timestamp") | not)
 ' "$sbom" >/dev/null
+sbom_module_sha256=$(jq -er --arg path "$runtime_module_path" '
+  [.components[]
+   | select(.type == "file"
+       and .["bom-ref"] == ("file:" + $path)
+       and .name == $path
+       and (.hashes | type == "array" and length == 1)
+       and .hashes[0].alg == "SHA-256"
+       and (.hashes[0].content | type == "string" and test("^[0-9a-f]{64}$")))] as $matches
+  | if ($matches | length) == 1
+    then $matches[0].hashes[0].content
+    else error("SBOM must contain exactly one canonical runtime module file component")
+    end
+' "$sbom")
 
 mkdir -p "$(dirname "$buildx_plugin")"
 curl --fail --location --proto '=https' --retry 5 --retry-all-errors \
@@ -113,7 +127,13 @@ image_sbom_sha=$(sudo -n docker run --rm --network none --read-only \
 [[ "$label_revision" == "$revision" ]]
 [[ "$label_source_tree" == "$source_tree" ]]
 [[ "$label_sbom_sha256" == "$sbom_sha256" ]]
-[[ "$module_sha" =~ ^[0-9a-f]{64}$ && "$module_sha" == "$repro_module_sha" ]]
+[[ "$module_sha" =~ ^[0-9a-f]{64}$ \
+  && "$module_sha" == "$repro_module_sha" \
+  && "$module_sha" == "$sbom_module_sha256" ]] || {
+  printf 'ERROR: runtime module differs from reproducible rebuild or tracked/image SBOM: image=%s repro=%s sbom=%s\n' \
+    "$module_sha" "$repro_module_sha" "$sbom_module_sha256" >&2
+  exit 1
+}
 [[ "$image_sbom_sha" == "$sbom_sha256" ]]
 
 if sudo -n docker image inspect --format '{{json .Config.Env}}' "$image" \
