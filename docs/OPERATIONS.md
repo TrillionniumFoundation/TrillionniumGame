@@ -89,6 +89,11 @@ docker compose --env-file /secure/path/nakama.env up -d --build --wait
 docker compose --env-file /secure/path/nakama.env port nakama 7350
 ```
 
+The environment file must set `TRNM_NAKAMA_SOURCE_REVISION` to the exact
+40-character lowercase Git commit being built. The Dockerfile rejects missing,
+abbreviated, or non-hex revisions and records the value in the OCI revision
+label.
+
 `up --wait` covers container liveness. A deployment is usable only after
 `trnm_ready_v1` also reports `configuration`, `database`, and writable
 server-owned `storage` as `ok`.

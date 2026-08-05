@@ -61,11 +61,12 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
 PY
 )
 
-node - "$env_file" "$http_port" "$state_dir" <<'NODE'
+source_revision=$(git rev-parse HEAD)
+node - "$env_file" "$http_port" "$state_dir" "$source_revision" <<'NODE'
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 
-const [envFile, httpPort, stateDir] = process.argv.slice(2);
+const [envFile, httpPort, stateDir, sourceRevision] = process.argv.slice(2);
 const keyPair = () => {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   return {
@@ -85,6 +86,7 @@ const lines = [
   `TRNM_NAKAMA_COMPOSE_PROJECT=trnm-nakama-paper-raid-${suffix}`,
   `TRNM_NAKAMA_HTTP_PORT=${httpPort}`,
   `TRNM_NAKAMA_IMAGE=trillionnium-nakama:paper-raid-${suffix}`,
+  `TRNM_NAKAMA_SOURCE_REVISION=${sourceRevision}`,
   `TRNM_HEPTA_MOCK_IMAGE=trillionnium-hepta-mock:paper-raid-${suffix}`,
   `TRNM_HEPTA_MOCK_STATE_DIR=${stateDir}`,
   `TRNM_NAKAMA_DB_PASSWORD=${secret()}`,

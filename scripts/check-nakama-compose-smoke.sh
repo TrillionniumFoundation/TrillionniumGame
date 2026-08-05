@@ -66,12 +66,14 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
 PY
 )
 
-node - "$env_file" "$http_port" <<'NODE'
+source_revision=$(git rev-parse HEAD)
+node - "$env_file" "$http_port" "$source_revision" <<'NODE'
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 
 const envFile = process.argv[2];
 const httpPort = process.argv[3];
+const sourceRevision = process.argv[4];
 const keyPair = () => {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   return {
@@ -93,6 +95,7 @@ const lines = [
   `TRNM_NAKAMA_COMPOSE_PROJECT=trnm-nakama-p0-${suffix}`,
   `TRNM_NAKAMA_HTTP_PORT=${httpPort}`,
   `TRNM_NAKAMA_IMAGE=trillionnium-nakama:p0-${suffix}`,
+  `TRNM_NAKAMA_SOURCE_REVISION=${sourceRevision}`,
   `TRNM_NAKAMA_DB_PASSWORD=${random()}`,
   `NAKAMA_SERVER_KEY=${random()}`,
   `NAKAMA_SESSION_ENCRYPTION_KEY=${random()}`,

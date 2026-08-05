@@ -38,6 +38,8 @@ services:
     build:
       context: ./runtime
       dockerfile: Dockerfile
+      args:
+        PAPER_RAID_SOURCE_REVISION: ${TRNM_NAKAMA_SOURCE_REVISION:?TRNM_NAKAMA_SOURCE_REVISION is required}
     depends_on:
       postgres:
         condition: service_healthy
