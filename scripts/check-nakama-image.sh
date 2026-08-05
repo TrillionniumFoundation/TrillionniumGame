@@ -35,11 +35,24 @@ if [[ -n $(git status --porcelain=v1 --untracked-files=all) ]]; then
 fi
 
 revision=$(git rev-parse HEAD)
+source_tree=$(git rev-parse 'HEAD^{tree}')
 source_date_epoch=$(git show -s --format=%ct HEAD)
-[[ "$revision" =~ ^[0-9a-f]{40}$ && "$source_date_epoch" =~ ^[0-9]+$ ]] || {
+sbom=runtime/sbom.cdx.json
+sbom_sha256=$(sha256sum "$sbom" | cut -d' ' -f1)
+[[ "$revision" =~ ^[0-9a-f]{40}$ \
+  && "$source_tree" =~ ^[0-9a-f]{40}$ \
+  && "$source_date_epoch" =~ ^[0-9]+$ \
+  && "$sbom_sha256" =~ ^[0-9a-f]{64}$ ]] || {
   echo 'ERROR: source revision metadata is not canonical' >&2
   exit 1
 }
+jq -e '
+  .bomFormat == "CycloneDX"
+  and .specVersion == "1.5"
+  and (.components | type == "array" and length > 0)
+  and (has("serialNumber") | not)
+  and ((.metadata // {}) | has("timestamp") | not)
+' "$sbom" >/dev/null
 
 mkdir -p "$(dirname "$buildx_plugin")"
 curl --fail --location --proto '=https' --retry 5 --retry-all-errors \
@@ -64,6 +77,8 @@ build_args=(
   --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch"
   --build-arg BUILDKIT_MULTI_PLATFORM=1
   --build-arg "PAPER_RAID_SOURCE_REVISION=$revision"
+  --build-arg "PAPER_RAID_SOURCE_TREE=$source_tree"
+  --build-arg "PAPER_RAID_SBOM_SHA256=$sbom_sha256"
   --file runtime/Dockerfile
 )
 "${docker_cli[@]}" buildx build "${build_args[@]}" --tag "$image" runtime
@@ -80,15 +95,26 @@ repro_image_id=$(sudo -n docker image inspect --format '{{.Id}}' "$repro_image")
 configured_user=$(sudo -n docker image inspect --format '{{.Config.User}}' "$image")
 label_revision=$(sudo -n docker image inspect \
   --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")
+label_source_tree=$(sudo -n docker image inspect \
+  --format '{{index .Config.Labels "org.trillionnium.source.tree"}}' "$image")
+label_sbom_sha256=$(sudo -n docker image inspect \
+  --format '{{index .Config.Labels "org.trillionnium.sbom.sha256"}}' "$image")
 module_sha=$(sudo -n docker run --rm --network none --read-only \
   --entrypoint /bin/sh "$image" -c 'sha256sum /nakama/data/modules/backend.so' \
   | awk '{print $1}')
 repro_module_sha=$(sudo -n docker run --rm --network none --read-only \
   --entrypoint /bin/sh "$repro_image" -c 'sha256sum /nakama/data/modules/backend.so' \
   | awk '{print $1}')
+image_sbom_sha=$(sudo -n docker run --rm --network none --read-only \
+  --entrypoint /bin/sh "$image" \
+  -c 'sha256sum /nakama/share/doc/trnm-paper-raid/sbom.cdx.json' \
+  | awk '{print $1}')
 [[ "$configured_user" == 65532:65532 ]]
 [[ "$label_revision" == "$revision" ]]
+[[ "$label_source_tree" == "$source_tree" ]]
+[[ "$label_sbom_sha256" == "$sbom_sha256" ]]
 [[ "$module_sha" =~ ^[0-9a-f]{64}$ && "$module_sha" == "$repro_module_sha" ]]
+[[ "$image_sbom_sha" == "$sbom_sha256" ]]
 
 if sudo -n docker image inspect --format '{{json .Config.Env}}' "$image" \
   | rg -n 'TRNM_(HEPTA|NAKAMA)|NAKAMA_(CONSOLE|RUNTIME|SESSION|SOCKET)'; then
@@ -101,5 +127,5 @@ if sudo -n docker history --no-trunc --format '{{.CreatedBy}}' "$image" \
   exit 1
 fi
 
-printf 'Nakama immutable image gate: PASS image_id=%s revision=%s module_sha256=%s\n' \
-  "$image_id" "$revision" "$module_sha"
+printf 'Nakama immutable image gate: PASS image_id=%s revision=%s tree=%s module_sha256=%s sbom_sha256=%s\n' \
+  "$image_id" "$revision" "$source_tree" "$module_sha" "$sbom_sha256"
