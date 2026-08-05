@@ -68,8 +68,9 @@ PY
 
 source_revision=$(git rev-parse HEAD)
 source_tree=$(git rev-parse 'HEAD^{tree}')
+source_date_epoch=$(git show -s --format=%ct HEAD)
 sbom_sha256=$(sha256sum runtime/sbom.cdx.json | cut -d' ' -f1)
-node - "$env_file" "$http_port" "$source_revision" "$source_tree" "$sbom_sha256" <<'NODE'
+node - "$env_file" "$http_port" "$source_revision" "$source_tree" "$source_date_epoch" "$sbom_sha256" <<'NODE'
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 
@@ -77,7 +78,8 @@ const envFile = process.argv[2];
 const httpPort = process.argv[3];
 const sourceRevision = process.argv[4];
 const sourceTree = process.argv[5];
-const sbomSha256 = process.argv[6];
+const sourceDateEpoch = process.argv[6];
+const sbomSha256 = process.argv[7];
 const keyPair = () => {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   return {
@@ -101,6 +103,7 @@ const lines = [
   `TRNM_NAKAMA_IMAGE=trillionnium-nakama:p0-${suffix}`,
   `TRNM_NAKAMA_SOURCE_REVISION=${sourceRevision}`,
   `TRNM_NAKAMA_SOURCE_TREE=${sourceTree}`,
+  `TRNM_NAKAMA_SOURCE_DATE_EPOCH=${sourceDateEpoch}`,
   `TRNM_NAKAMA_SBOM_SHA256=${sbomSha256}`,
   `TRNM_NAKAMA_DB_PASSWORD=${random()}`,
   `NAKAMA_SERVER_KEY=${random()}`,
@@ -268,7 +271,7 @@ run_blackbox() {
     # allowlist. Values remain shell-local, so secrets are not placed in an
     # `env VAR=value` command line while the process is being started.
     while IFS= read -r variable_name; do
-      export -n "$variable_name"
+      export -n "${variable_name?}"
     done < <(compgen -e)
 
     NAKAMA_HOST=127.0.0.1

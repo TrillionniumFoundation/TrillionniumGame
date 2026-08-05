@@ -1,6 +1,8 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: preflight contract core restart compose-smoke research-contract research-core research-restart research-compose-smoke paper-raid-check image release-check check
+.NOTPARALLEL: release-check
+
+.PHONY: preflight contract core restart compose-smoke research-contract research-core research-restart research-compose-smoke paper-raid-check sbom-check image release-check check
 
 preflight:
 	bash scripts/project-preflight.sh --dev
@@ -31,10 +33,13 @@ research-compose-smoke: preflight
 
 paper-raid-check: research-contract research-core research-restart research-compose-smoke
 
+sbom-check: preflight
+	bash scripts/check-nakama-sbom.sh
+
 image: preflight
 	bash scripts/check-nakama-image.sh
 
-release-check: paper-raid-check image
+release-check: sbom-check paper-raid-check image
 
 check:
 	bash scripts/check-nakama-p0.sh

@@ -3,10 +3,28 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 output=${1:-}
+runtime_source=${2:-$root/runtime}
 [[ -n "$output" ]] || {
-  echo "usage: $0 OUTPUT" >&2
+  echo "usage: $0 OUTPUT [RUNTIME_SOURCE]" >&2
   exit 64
 }
+[[ -d "$runtime_source" && ! -L "$runtime_source" ]] || {
+  echo "runtime source must be a regular directory" >&2
+  exit 64
+}
+runtime_source=$(cd "$runtime_source" && pwd -P)
+for required_source in Dockerfile go.mod go.sum sbom.cdx.json; do
+  [[ -f "$runtime_source/$required_source" && ! -L "$runtime_source/$required_source" ]] || {
+    echo "runtime source requires regular non-symlink $required_source" >&2
+    exit 64
+  }
+done
+for command_name in jq python3 sha256sum tar; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "SBOM generator requires $command_name" >&2
+    exit 1
+  }
+done
 
 scratch=$(mktemp -d)
 cleanup() {
@@ -17,7 +35,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-mkdir -p "$scratch/module"
+mkdir -p "$scratch/module" "$scratch/source"
+
+# The compiler never sees the tracked SBOM whose file component binds the
+# resulting plugin. This removes even an accidental future embed/include path
+# from the runtime binary's dependency graph.
+tar -C "$runtime_source" --exclude='./sbom.cdx.json' -cf - . \
+  | tar -C "$scratch/source" -xf -
+[[ ! -e "$scratch/source/sbom.cdx.json" ]]
 
 docker_cmd=()
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
@@ -29,23 +54,27 @@ else
   exit 1
 fi
 builder_image=heroiclabs/nakama-pluginbuilder:3.40.0@sha256:0455a119585914341672fc17f3c4195a7a21714ecb85cdf7dacbdc47769aed4c
-"${docker_cmd[@]}" run --rm --pull never --network bridge --read-only \
+# Expansion is intentionally performed by the pinned container shell.
+# shellcheck disable=SC2016
+"${docker_cmd[@]}" run --rm --pull never --platform linux/amd64 --network bridge --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,nodev \
-  --volume "$root/runtime:/src:ro" --workdir /src \
+  --volume "$scratch/source:/src:ro" --workdir /src \
   --volume "$scratch/module:/out:rw" \
-  --env GOCACHE=/tmp/go-build --env GOPATH=/tmp/go \
+  --env GOCACHE=/tmp/go-build --env GOPATH=/tmp/go --env GOTOOLCHAIN=local \
   --entrypoint /bin/sh "$builder_image" \
-  -ec 'go list -mod=readonly -m -json all; go build --trimpath -mod=readonly -buildmode=plugin -o /out/backend.so .' \
+  -ec 'test "$(go version)" = "go version go1.26.5 linux/amd64"; go list -mod=readonly -m -json all; go build --trimpath -mod=readonly -buildmode=plugin -o /out/backend.so .' \
   | jq -s . >"$scratch/modules.json"
-"${docker_cmd[@]}" run --rm --pull never --network bridge --read-only \
+# Expansion is intentionally performed by the pinned container shell.
+# shellcheck disable=SC2016
+"${docker_cmd[@]}" run --rm --pull never --platform linux/amd64 --network bridge --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,nodev \
-  --volume "$root/runtime:/src:ro" --workdir /src \
-  --env GOCACHE=/tmp/go-build --env GOPATH=/tmp/go \
+  --volume "$scratch/source:/src:ro" --workdir /src \
+  --env GOCACHE=/tmp/go-build --env GOPATH=/tmp/go --env GOTOOLCHAIN=local \
   --entrypoint /bin/sh "$builder_image" \
-  -ec 'go mod graph' >"$scratch/graph.txt"
+  -ec 'test "$(go version)" = "go version go1.26.5 linux/amd64"; go mod graph' >"$scratch/graph.txt"
 
-dockerfile_sha256=$(sha256sum "$root/runtime/Dockerfile" | awk '{print $1}')
-go_sum_sha256=$(sha256sum "$root/runtime/go.sum" | awk '{print $1}')
+dockerfile_sha256=$(sha256sum "$runtime_source/Dockerfile" | awk '{print $1}')
+go_sum_sha256=$(sha256sum "$runtime_source/go.sum" | awk '{print $1}')
 runtime_module_path=/nakama/data/modules/backend.so
 runtime_module_sha256=$(sha256sum "$scratch/module/backend.so" | awk '{print $1}')
 [[ "$runtime_module_sha256" =~ ^[0-9a-f]{64}$ ]] || {
@@ -54,6 +83,7 @@ runtime_module_sha256=$(sha256sum "$scratch/module/backend.so" | awk '{print $1}
 }
 runtime_base=sha256:92fb184e3271be12fd4d239766afb285322a50aaf769a59433445d59624c78cd
 builder_base=sha256:0455a119585914341672fc17f3c4195a7a21714ecb85cdf7dacbdc47769aed4c
+dockerfile_frontend=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 
 jq -nS \
   --slurpfile modules "$scratch/modules.json" \
@@ -63,7 +93,8 @@ jq -nS \
   --arg runtime_module_path "$runtime_module_path" \
   --arg runtime_module_sha256 "$runtime_module_sha256" \
   --arg runtime_base "$runtime_base" \
-  --arg builder_base "$builder_base" '
+  --arg builder_base "$builder_base" \
+  --arg dockerfile_frontend "$dockerfile_frontend" '
   def version($module):
     if ($module.Version // "") == "" then "0.0.0+source" else $module.Version end;
   def purl($module):
@@ -81,23 +112,40 @@ jq -nS \
       } end);
   ($modules[0]) as $all
   | (first($all[] | select(.Main))) as $main
-  | ($all | map({key: (.Path + "@" + version(.)), value: purl(.)}) | from_entries) as $refs
+  | ([
+      $all[] as $module
+      | {key: ($module.Path + "@" + version($module)), value: purl($module)},
+        (if $module.Main then {key: $module.Path, value: purl($module)} else empty end)
+    ] | from_entries) as $refs
   | ($graph
       | split("\n")
       | map(select(length > 0) | split(" "))
+      | map(select(length == 2))
+      | map(select((.[0] | sub("@.*$"; "")) != "go" and (.[0] | sub("@.*$"; "")) != "toolchain"))
+      | map(select((.[1] | sub("@.*$"; "")) != "go" and (.[1] | sub("@.*$"; "")) != "toolchain"))
       | group_by(.[0])
       | map({
-          ref: ($refs[.[0][0]] // (.[0][0] | sub("@.*$"; "") as $path | "pkg:golang/\($path | @uri)@0.0.0+source")),
-          dependsOn: ([.[][1] | $refs[.] // empty] | unique | sort)
+          ref: ($refs[.[0][0]] // error("unresolved Go module graph source: " + .[0][0])),
+          dependsOn: ([.[][1] as $dependency | $refs[$dependency] // error("unresolved Go module graph dependency: " + $dependency)] | unique | sort)
         })) as $dependencies
   | {
       bomFormat: "CycloneDX",
       specVersion: "1.5",
       version: 1,
       metadata: {
-        tools: {components: [{type: "application", name: "trnm-nakama-sbom-generator", version: "2"}]},
+        tools: {components: [
+          {
+            type: "application",
+            "bom-ref": "pkg:golang/go@1.26.5",
+            name: "go",
+            version: "1.26.5",
+            purl: "pkg:golang/go@1.26.5"
+          },
+          {type: "application", name: "trnm-nakama-sbom-generator", version: "3"}
+        ]},
         component: component($main),
         properties: [
+          {name: "trnm:dockerfile-frontend", value: $dockerfile_frontend},
           {name: "trnm:dockerfile:sha256", value: ("sha256:" + $dockerfile_sha256)},
           {name: "trnm:go-sum:sha256", value: ("sha256:" + $go_sum_sha256)}
         ]
@@ -134,16 +182,9 @@ jq -nS \
     }
 ' >"$scratch/sbom.cdx.json"
 
-jq -e \
-  --arg runtime_module_path "$runtime_module_path" \
-  --arg runtime_module_sha256 "$runtime_module_sha256" '
-  [.components[]
-   | select(.type == "file"
-       and .["bom-ref"] == ("file:" + $runtime_module_path)
-       and .name == $runtime_module_path
-       and .hashes == [{"alg":"SHA-256","content":$runtime_module_sha256}])]
-  | length == 1
-' "$scratch/sbom.cdx.json" >/dev/null || {
+generated_module_sha256=$(python3 "$root/scripts/verify-nakama-sbom.py" \
+  "$scratch/sbom.cdx.json" "$runtime_source")
+[[ "$generated_module_sha256" == "$runtime_module_sha256" ]] || {
   echo "generated SBOM did not bind the deterministic runtime module" >&2
   exit 1
 }

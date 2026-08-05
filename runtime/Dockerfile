@@ -5,19 +5,23 @@ FROM heroiclabs/nakama-pluginbuilder:3.40.0@sha256:0455a119585914341672fc17f3c41
 ARG SOURCE_DATE_EPOCH
 WORKDIR /backend
 COPY go.mod go.sum ./
-RUN go mod download
+RUN test "$(GOTOOLCHAIN=local go version)" = "go version go1.26.5 linux/amd64" \
+    && GOTOOLCHAIN=local go mod download
 COPY . ./
 RUN case "$SOURCE_DATE_EPOCH" in \
       ''|*[!0-9]*) exit 64 ;; \
     esac \
-    && go build --trimpath -mod=readonly -buildmode=plugin -o backend.so . \
+    && rm -f sbom.cdx.json \
+    && test "$(GOTOOLCHAIN=local go version)" = "go version go1.26.5 linux/amd64" \
+    && GOTOOLCHAIN=local go build --trimpath -mod=readonly -buildmode=plugin -o backend.so . \
     && install -d -m 0755 \
       /release/nakama/data/modules \
       /release/nakama/share/doc/trnm-paper-raid \
     && install -m 0644 -o 65532 -g 65532 backend.so \
-      /release/nakama/data/modules/backend.so \
-    && install -m 0644 -o 65532 -g 65532 sbom.cdx.json \
-      /release/nakama/share/doc/trnm-paper-raid/sbom.cdx.json \
+      /release/nakama/data/modules/backend.so
+COPY sbom.cdx.json /release/nakama/share/doc/trnm-paper-raid/sbom.cdx.json
+RUN chown 65532:65532 /release/nakama/share/doc/trnm-paper-raid/sbom.cdx.json \
+    && chmod 0644 /release/nakama/share/doc/trnm-paper-raid/sbom.cdx.json \
     && find /release -type d -exec touch --date="@$SOURCE_DATE_EPOCH" {} + \
     && find /release -type f -exec touch --date="@$SOURCE_DATE_EPOCH" {} +
 

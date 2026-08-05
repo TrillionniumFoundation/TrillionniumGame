@@ -63,12 +63,13 @@ PY
 
 source_revision=$(git rev-parse HEAD)
 source_tree=$(git rev-parse 'HEAD^{tree}')
+source_date_epoch=$(git show -s --format=%ct HEAD)
 sbom_sha256=$(sha256sum runtime/sbom.cdx.json | cut -d' ' -f1)
-node - "$env_file" "$http_port" "$state_dir" "$source_revision" "$source_tree" "$sbom_sha256" <<'NODE'
+node - "$env_file" "$http_port" "$state_dir" "$source_revision" "$source_tree" "$source_date_epoch" "$sbom_sha256" <<'NODE'
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 
-const [envFile, httpPort, stateDir, sourceRevision, sourceTree, sbomSha256] = process.argv.slice(2);
+const [envFile, httpPort, stateDir, sourceRevision, sourceTree, sourceDateEpoch, sbomSha256] = process.argv.slice(2);
 const keyPair = () => {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   return {
@@ -90,6 +91,7 @@ const lines = [
   `TRNM_NAKAMA_IMAGE=trillionnium-nakama:paper-raid-${suffix}`,
   `TRNM_NAKAMA_SOURCE_REVISION=${sourceRevision}`,
   `TRNM_NAKAMA_SOURCE_TREE=${sourceTree}`,
+  `TRNM_NAKAMA_SOURCE_DATE_EPOCH=${sourceDateEpoch}`,
   `TRNM_NAKAMA_SBOM_SHA256=${sbomSha256}`,
   `TRNM_HEPTA_MOCK_IMAGE=trillionnium-hepta-mock:paper-raid-${suffix}`,
   `TRNM_HEPTA_MOCK_STATE_DIR=${stateDir}`,
@@ -174,7 +176,7 @@ run_phase() {
   (
     # shellcheck disable=SC1090
     source "$env_file"
-    while IFS= read -r variable_name; do export -n "$variable_name"; done < <(compgen -e)
+    while IFS= read -r variable_name; do export -n "${variable_name?}"; done < <(compgen -e)
     NAKAMA_HOST=127.0.0.1
     NAKAMA_PORT="$nakama_port"
     BLACKBOX_PHASE="$phase"

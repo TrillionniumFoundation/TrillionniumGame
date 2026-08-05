@@ -91,16 +91,17 @@ docker compose --env-file /secure/path/nakama.env port nakama 7350
 
 The environment file must set `TRNM_NAKAMA_SOURCE_REVISION` and
 `TRNM_NAKAMA_SOURCE_TREE` to the exact 40-character lowercase commit and tree
-being built, and `TRNM_NAKAMA_SBOM_SHA256` to the exact SHA-256 of
+being built, `TRNM_NAKAMA_SOURCE_DATE_EPOCH` to that commit's Unix timestamp,
+and `TRNM_NAKAMA_SBOM_SHA256` to the exact SHA-256 of
 `runtime/sbom.cdx.json`. The Dockerfile rejects missing, abbreviated, or
 non-hex values, copies the deterministic CycloneDX inventory into the image,
-and binds all three values with canonical OCI/provenance labels.
+and binds the revision, tree, and SBOM with canonical OCI/provenance labels.
 
-Regenerate and compare the deterministic CycloneDX dependency and base-image
-inventory before a release:
+Regenerate and compare the deterministic CycloneDX dependency, exact Go
+toolchain, Dockerfile frontend, and base-image inventory before a release:
 
 ```bash
-scripts/generate-nakama-sbom.sh runtime/sbom.cdx.json
+make sbom-check
 ```
 
 The release gate also proves that the runtime image itself is reproducible:

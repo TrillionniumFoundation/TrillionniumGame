@@ -101,17 +101,13 @@
         "pkg:golang/github.com%2Fheroiclabs%2Fnakama-common@v1.47.0",
         "pkg:golang/google.golang.org%2Fprotobuf@v1.36.11"
       ],
-      "ref": "pkg:golang/github.com%2FTrillionniumFoundation%2FTrillionnium-Nakama%2Fruntime@0.0.0+source"
+      "ref": "pkg:golang/github.com%2FTrillionniumFoundation%2FTrillionnium-Nakama%2Fruntime@0.0.0%2Bsource"
     },
     {
       "dependsOn": [
         "pkg:golang/google.golang.org%2Fprotobuf@v1.36.11"
       ],
       "ref": "pkg:golang/github.com%2Fheroiclabs%2Fnakama-common@v1.47.0"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:golang/go@0.0.0+source"
     },
     {
       "dependsOn": [
@@ -131,8 +127,12 @@
     },
     "properties": [
       {
+        "name": "trnm:dockerfile-frontend",
+        "value": "docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89"
+      },
+      {
         "name": "trnm:dockerfile:sha256",
-        "value": "sha256:ea4c86c9d11499c013ebd373c4210a2927f004b86620d34050630162547fcfa2"
+        "value": "sha256:c76de3a27a03cea1a42928f9603794c0b6c8cdad17ac5287d5877f421fbcc94a"
       },
       {
         "name": "trnm:go-sum:sha256",
@@ -142,9 +142,16 @@
     "tools": {
       "components": [
         {
+          "bom-ref": "pkg:golang/go@1.26.5",
+          "name": "go",
+          "purl": "pkg:golang/go@1.26.5",
+          "type": "application",
+          "version": "1.26.5"
+        },
+        {
           "name": "trnm-nakama-sbom-generator",
           "type": "application",
-          "version": "2"
+          "version": "3"
         }
       ]
     }
