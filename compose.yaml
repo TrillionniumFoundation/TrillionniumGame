@@ -40,6 +40,8 @@ services:
       dockerfile: Dockerfile
       args:
         PAPER_RAID_SOURCE_REVISION: ${TRNM_NAKAMA_SOURCE_REVISION:?TRNM_NAKAMA_SOURCE_REVISION is required}
+        PAPER_RAID_SOURCE_TREE: ${TRNM_NAKAMA_SOURCE_TREE:?TRNM_NAKAMA_SOURCE_TREE is required}
+        PAPER_RAID_SBOM_SHA256: ${TRNM_NAKAMA_SBOM_SHA256:?TRNM_NAKAMA_SBOM_SHA256 is required}
     depends_on:
       postgres:
         condition: service_healthy

@@ -89,10 +89,12 @@ docker compose --env-file /secure/path/nakama.env up -d --build --wait
 docker compose --env-file /secure/path/nakama.env port nakama 7350
 ```
 
-The environment file must set `TRNM_NAKAMA_SOURCE_REVISION` to the exact
-40-character lowercase Git commit being built. The Dockerfile rejects missing,
-abbreviated, or non-hex revisions and records the value in the OCI revision
-label.
+The environment file must set `TRNM_NAKAMA_SOURCE_REVISION` and
+`TRNM_NAKAMA_SOURCE_TREE` to the exact 40-character lowercase commit and tree
+being built, and `TRNM_NAKAMA_SBOM_SHA256` to the exact SHA-256 of
+`runtime/sbom.cdx.json`. The Dockerfile rejects missing, abbreviated, or
+non-hex values, copies the deterministic CycloneDX inventory into the image,
+and binds all three values with canonical OCI/provenance labels.
 
 Regenerate and compare the deterministic CycloneDX dependency and base-image
 inventory before a release:

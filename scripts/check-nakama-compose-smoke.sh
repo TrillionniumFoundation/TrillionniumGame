@@ -67,13 +67,17 @@ PY
 )
 
 source_revision=$(git rev-parse HEAD)
-node - "$env_file" "$http_port" "$source_revision" <<'NODE'
+source_tree=$(git rev-parse 'HEAD^{tree}')
+sbom_sha256=$(sha256sum runtime/sbom.cdx.json | cut -d' ' -f1)
+node - "$env_file" "$http_port" "$source_revision" "$source_tree" "$sbom_sha256" <<'NODE'
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 
 const envFile = process.argv[2];
 const httpPort = process.argv[3];
 const sourceRevision = process.argv[4];
+const sourceTree = process.argv[5];
+const sbomSha256 = process.argv[6];
 const keyPair = () => {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   return {
@@ -96,6 +100,8 @@ const lines = [
   `TRNM_NAKAMA_HTTP_PORT=${httpPort}`,
   `TRNM_NAKAMA_IMAGE=trillionnium-nakama:p0-${suffix}`,
   `TRNM_NAKAMA_SOURCE_REVISION=${sourceRevision}`,
+  `TRNM_NAKAMA_SOURCE_TREE=${sourceTree}`,
+  `TRNM_NAKAMA_SBOM_SHA256=${sbomSha256}`,
   `TRNM_NAKAMA_DB_PASSWORD=${random()}`,
   `NAKAMA_SERVER_KEY=${random()}`,
   `NAKAMA_SESSION_ENCRYPTION_KEY=${random()}`,
