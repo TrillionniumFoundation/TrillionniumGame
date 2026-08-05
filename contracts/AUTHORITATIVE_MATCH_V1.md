@@ -60,6 +60,7 @@ as successful result objects.
 | `trnm_match_resume_v1` | `resume-match-request` | `resume-match-response` (`match-runtime` or immutable `evidence`) |
 | `trnm_match_complete_v1` | `complete-match-request` | `complete-match-response` (`evidence`) |
 | `trnm_match_evidence_v1` | `evidence-request` | `evidence-response` |
+| `trnm_match_archive_v1` | `archive-request` | `archive-response` |
 | `trnm_health_v1` | no fields are consumed | `health-response` |
 | `trnm_ready_v1` | no fields are consumed | `readiness-response` |
 
@@ -69,6 +70,19 @@ Evidence retrieval accepts either an operator token or the authenticated
 participant's authorization id. Supplying neither is invalid; an
 authorization id alone is not a bearer credential because the runtime also
 binds it to the authenticated Nakama user.
+
+Archive retrieval uses the same access binding and requires exactly one of an
+operator token or the authenticated participant's authorization id. Its
+required `after_sequence` cursor is exclusive; the response returns events
+whose sequence is greater than that cursor, up to the optional `limit` (default
+and maximum 128). `next_after_sequence` is the last returned sequence, or the
+unchanged cursor for an empty page, and `has_more` reports whether another page
+exists. A cursor beyond `event_count` is rejected. Every response is rebuilt
+from the verified immutable durable snapshot, works before or after completion,
+and includes the roster plus joined/command-sequence participant cursors needed
+for disconnect catch-up. Consumers can fetch a completed archive from cursor
+zero and independently reproduce `event_root`, `roster_root`, and
+`archive_hash` before accepting signed completion evidence.
 
 `logical_match_id` is the durable identity. `external_match_id` identifies one
 ephemeral Nakama runtime generation and may change after resume. A completed
@@ -103,7 +117,8 @@ The runtime requests Nakama's reliable delivery flag, but realtime delivery is
 not an application acknowledgement and there is no offline broadcast queue.
 Every accepted mutation is persisted before broadcast, and a broadcast failure
 never rolls authority back. Clients must treat `command_id` as an idempotency
-key and reconcile durable completion through `trnm_match_evidence_v1`.
+key, recover missed durable events through `trnm_match_archive_v1`, and
+reconcile durable completion through `trnm_match_evidence_v1`.
 
 Exact command replay is reachable only while that authoritative runtime
 instance remains active. Completion persists evidence, broadcasts opcode 4,

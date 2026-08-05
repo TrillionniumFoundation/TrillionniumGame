@@ -24,6 +24,8 @@ root = pathlib.Path(sys.argv[1])
 schema_dir = root / "contracts" / "v1"
 expected = {
     "agent-command.schema.json",
+    "archive-request.schema.json",
+    "archive-response.schema.json",
     "command-rejected.schema.json",
     "complete-match-request.schema.json",
     "complete-match-response.schema.json",
@@ -90,6 +92,10 @@ for name in ("agent-command.schema.json", "match-event.schema.json"):
     payload = schema.get("properties", {}).get("payload", {})
     if payload.get("maxLength") != 87384 or payload.get("contentEncoding") != "base64":
         raise SystemExit(f"{name}: payload must preserve the 65,536-byte decoded wire limit")
+archive_schema = json.loads((schema_dir / "archive-response.schema.json").read_text(encoding="utf-8"))
+archive_payload = archive_schema.get("$defs", {}).get("matchEvent", {}).get("properties", {}).get("payload", {})
+if archive_payload.get("maxLength") != 87384 or archive_payload.get("contentEncoding") != "base64":
+    raise SystemExit("archive-response.schema.json: nested event payload wire limit drifted")
 
 def validator(name):
     return Draft202012Validator(json.loads((schema_dir / name).read_text(encoding="utf-8")))
@@ -154,6 +160,32 @@ expect_valid("evidence-request.schema.json", {**evidence_request, "authorization
 expect_valid("evidence-request.schema.json", {**evidence_request, "operator_token": "x" * 32})
 expect_invalid("evidence-request.schema.json", {**evidence_request, "authorization_id": "auth-1", "unexpected": True}, "unknown field")
 
+archive_request = {
+    "schema": "trnm.nakama.get-archive.v1", "logical_match_id": "match-1",
+    "after_sequence": 0, "authorization_id": "auth-1",
+}
+expect_valid("archive-request.schema.json", archive_request)
+expect_valid("archive-request.schema.json", {
+    "schema": "trnm.nakama.get-archive.v1", "logical_match_id": "match-1",
+    "after_sequence": 2, "limit": 128, "operator_token": "x" * 32,
+})
+expect_invalid("archive-request.schema.json", {
+    "schema": "trnm.nakama.get-archive.v1", "logical_match_id": "match-1",
+    "authorization_id": "auth-1",
+}, "missing cursor")
+expect_invalid("archive-request.schema.json", {
+    **archive_request, "operator_token": "x" * 32,
+}, "multiple access credentials")
+expect_invalid("archive-request.schema.json", {
+    **archive_request, "authorization_id": "",
+}, "empty access credential")
+expect_invalid("archive-request.schema.json", {
+    **archive_request, "limit": 0,
+}, "zero limit")
+expect_invalid("archive-request.schema.json", {
+    **archive_request, "limit": 129,
+}, "oversized limit")
+
 expect_valid("join-metadata.schema.json", {"authorization_id": "auth-1"})
 expect_invalid("join-metadata.schema.json", {"authorization_id": "auth-1", "participant_slot": 1}, "client-selected slot")
 expect_valid("command-rejected.schema.json", {"schema": "trnm.match.command-rejected.v1", "command_id": "cmd-1", "reason": "sequence rejected"})
@@ -187,6 +219,55 @@ for name in ("evidence-response.schema.json", "complete-match-response.schema.js
     candidate = copy.deepcopy(evidence_response)
     del candidate["completion"]["terminal_facts"]
     expect_invalid(name, candidate, "nested completion missing terminal_facts")
+
+match_event = {
+    "schema": "trnm.match.event.v1", "event_id": "event-1",
+    "event_type": "participant_joined", "match_id": "match-1",
+    "challenge_id": "challenge-1", "sequence": 1,
+    "causation_id": "auth-1", "occurred_at_unix": 1,
+    "participant_slot": 1, "match_version": 2,
+    "payload_type": "trnm.participant.joined.v1", "payload": "AA==",
+    "payload_hash": zero_digest, "event_hash": zero_digest,
+}
+roster = [
+    {
+        "participant_slot": 1, "subject_user_id": "user-1", "agent_id": "agent-1",
+        "agent_did": "did:trnm:agent-1", "agent_key_id": "agent-key-1",
+        "agent_key_hash": zero_digest, "role": "challenger",
+    },
+    {
+        "participant_slot": 2, "subject_user_id": "user-2", "agent_id": "agent-2",
+        "agent_did": "did:trnm:agent-2", "agent_key_id": "agent-key-2",
+        "agent_key_hash": zero_digest, "role": "defender",
+    },
+]
+participants = [
+    {
+        "participant_slot": 1, "authorization_id": "auth-1", "subject_user_id": "user-1",
+        "agent_id": "agent-1", "joined": True, "last_command_sequence": 1,
+    },
+    {
+        "participant_slot": 2, "authorization_id": "auth-2", "subject_user_id": "user-2",
+        "agent_id": "agent-2", "joined": True, "last_command_sequence": 0,
+    },
+]
+archive_response = {
+    "schema": "trnm.nakama.archive.v1", "logical_match_id": "match-1",
+    "external_match_id": "runtime-1", "runtime_generation": 1,
+    "status": "active", "match_version": 2, "event_count": 1,
+    "after_sequence": 0, "next_after_sequence": 1, "has_more": False,
+    "events": [match_event], "roster": roster, "participants": participants,
+}
+expect_valid("archive-response.schema.json", archive_response)
+candidate = copy.deepcopy(archive_response)
+candidate["participants"].pop()
+expect_invalid("archive-response.schema.json", candidate, "incomplete participant state")
+candidate = copy.deepcopy(archive_response)
+candidate["events"] = [copy.deepcopy(match_event) for _ in range(129)]
+expect_invalid("archive-response.schema.json", candidate, "oversized event page")
+candidate = copy.deepcopy(archive_response)
+candidate["roster"][0]["authorization_id"] = "auth-1"
+expect_invalid("archive-response.schema.json", candidate, "unknown roster field")
 
 vectors = json.loads((root / "contracts" / "golden-vectors.json").read_text(encoding="utf-8"))
 if vectors.get("schema") != "trnm.nakama.golden_vectors.v1":

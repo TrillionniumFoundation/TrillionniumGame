@@ -111,20 +111,125 @@ func (e MatchEvent) Validate() error {
 	return nil
 }
 
+// CanonicalEventID derives the stable event identifier from the immutable
+// archive key. The causation ID is part of the identifier so an event cannot be
+// rebound to a different authorization, command, or completion transition.
+func CanonicalEventID(matchID string, sequence uint64, causationID string) (string, error) {
+	if err := ValidateLogicalMatchID(matchID); err != nil {
+		return "", fmt.Errorf("match_id: %w", err)
+	}
+	if sequence == 0 {
+		return "", errors.New("event sequence must be positive")
+	}
+	if err := validateText("causation_id", causationID); err != nil {
+		return "", err
+	}
+	encoded, err := newFrame("trnm_match_event_id_v1").
+		string(matchID).
+		string(causationID).
+		u64(sequence).
+		result()
+	if err != nil {
+		return "", err
+	}
+	return string(NewDigest(encoded)), nil
+}
+
+// ValidateArchive validates the complete cross-component event contract. It
+// accepts any valid prefix (including the admission and active phases) but a
+// completion event, when present, must be the final event in the archive.
+func ValidateArchive(events []MatchEvent) error {
+	if len(events) == 0 {
+		return errors.New("event archive is empty")
+	}
+
+	matchID := events[0].MatchID
+	challengeID := events[0].ChallengeID
+	joinedSlots := [2]bool{}
+	seenEventIDs := make(map[string]struct{}, len(events))
+	seenEventHashes := make(map[Digest]struct{}, len(events))
+	commandCount := 0
+	completionSeen := false
+	var previousTime int64
+
+	for index, event := range events {
+		sequence := uint64(index + 1)
+		if event.MatchID != matchID || event.ChallengeID != challengeID {
+			return fmt.Errorf("event %d: archive match or challenge identity differs", index)
+		}
+		if event.Sequence != sequence {
+			return fmt.Errorf("event %d: event sequence is not contiguous", index)
+		}
+		if event.MatchVersion != sequence+1 {
+			return fmt.Errorf("event %d: match_version must equal sequence plus one", index)
+		}
+		if index > 0 && event.OccurredAtUnix < previousTime {
+			return fmt.Errorf("event %d: event time moves backwards", index)
+		}
+		previousTime = event.OccurredAtUnix
+		if err := event.Validate(); err != nil {
+			return fmt.Errorf("event %d: %w", index, err)
+		}
+		expectedEventID, err := CanonicalEventID(event.MatchID, event.Sequence, event.CausationID)
+		if err != nil {
+			return fmt.Errorf("event %d: could not derive canonical event ID: %w", index, err)
+		}
+		if event.EventID != expectedEventID {
+			return fmt.Errorf("event %d: event ID is not canonically derived", index)
+		}
+		if _, duplicate := seenEventIDs[event.EventID]; duplicate {
+			return fmt.Errorf("event %d: duplicate event ID", index)
+		}
+		if _, duplicate := seenEventHashes[event.EventHash]; duplicate {
+			return fmt.Errorf("event %d: duplicate event hash", index)
+		}
+		seenEventIDs[event.EventID] = struct{}{}
+		seenEventHashes[event.EventHash] = struct{}{}
+
+		switch event.EventType {
+		case "participant_joined":
+			if commandCount != 0 || completionSeen || event.ParticipantSlot < 1 || event.ParticipantSlot > 2 {
+				return fmt.Errorf("event %d: join event occurs outside the admission phase", index)
+			}
+			participantIndex := int(event.ParticipantSlot - 1)
+			if joinedSlots[participantIndex] {
+				return fmt.Errorf("event %d: participant slot joins more than once", index)
+			}
+			if event.PayloadType != "trnm.participant.joined.v1" {
+				return fmt.Errorf("event %d: join event has an unexpected payload type", index)
+			}
+			joinedSlots[participantIndex] = true
+
+		case "agent_command_applied":
+			if !joinedSlots[0] || !joinedSlots[1] || completionSeen || event.ParticipantSlot < 1 || event.ParticipantSlot > 2 {
+				return fmt.Errorf("event %d: command event occurs outside the active phase", index)
+			}
+			commandCount++
+
+		case "match_completed":
+			if completionSeen || index != len(events)-1 || commandCount == 0 || event.ParticipantSlot != 0 {
+				return fmt.Errorf("event %d: completion event occurs outside the completion transition", index)
+			}
+			if event.PayloadType != "trnm.match.terminal-facts.v1" {
+				return fmt.Errorf("event %d: completion event has an unexpected payload type", index)
+			}
+			completionSeen = true
+
+		default:
+			return fmt.Errorf("event %d: unsupported event type %q", index, event.EventType)
+		}
+	}
+	return nil
+}
+
 // EventRoot implements the audited binary Merkle algorithm. Odd nodes are
 // duplicated. There is intentionally no root for an empty event archive.
 func EventRoot(events []MatchEvent) (Digest, error) {
-	if len(events) == 0 {
-		return "", errors.New("cannot compute an event root for an empty archive")
+	if err := ValidateArchive(events); err != nil {
+		return "", err
 	}
 	commitments := make([]EventCommitment, len(events))
 	for index, event := range events {
-		if err := event.Validate(); err != nil {
-			return "", fmt.Errorf("event %d: %w", index, err)
-		}
-		if event.Sequence != uint64(index+1) {
-			return "", fmt.Errorf("event sequence is not contiguous at index %d", index)
-		}
 		commitments[index] = EventCommitment{Sequence: event.Sequence, EventHash: event.EventHash}
 	}
 	return EventRootFromCommitments(commitments)
@@ -227,17 +332,11 @@ func RosterRoot(roster []RosterEntry) (Digest, error) {
 }
 
 func CanonicalArchive(events []MatchEvent) ([]byte, error) {
-	if len(events) == 0 {
-		return nil, errors.New("event archive is empty")
+	if err := ValidateArchive(events); err != nil {
+		return nil, err
 	}
 	f := newFrame("trnm_match_event_archive_v1").u64(uint64(len(events)))
-	for index, event := range events {
-		if event.Sequence != uint64(index+1) {
-			return nil, errors.New("archive event sequence is not contiguous")
-		}
-		if err := event.Validate(); err != nil {
-			return nil, err
-		}
+	for _, event := range events {
 		facts, err := event.factsBytes()
 		if err != nil {
 			return nil, err

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"testing"
 
@@ -130,5 +131,41 @@ func TestReadinessProbeRequiresWriteAndDelete(t *testing.T) {
 	store.writeErr = runtime.ErrStorageRejectedPermission
 	if err := probeWritableStorage(context.Background(), store); err == nil {
 		t.Fatal("read-only storage was reported ready")
+	}
+}
+
+func TestDecodeJSONStrictCanonicalWire(t *testing.T) {
+	type envelope struct {
+		Schema  string `json:"schema"`
+		Payload []byte `json:"payload"`
+	}
+	validPayload := base64.StdEncoding.EncodeToString([]byte{1})
+	var decoded envelope
+	if err := decodeJSONStrict(`{"schema":"test.v1","payload":"`+validPayload+`"}`, &decoded); err != nil {
+		t.Fatalf("canonical JSON was rejected: %v", err)
+	}
+	if len(decoded.Payload) != 1 || decoded.Payload[0] != 1 {
+		t.Fatalf("canonical payload decoded incorrectly: %x", decoded.Payload)
+	}
+
+	tests := map[string]string{
+		"duplicate top-level member": `{"schema":"test.v1","schema":"test.v2","payload":"AQ=="}`,
+		"duplicate nested member":    `{"schema":"test.v1","payload":"AQ==","nested":{"key":1,"key":2}}`,
+		"line-wrapped base64":        "{\"schema\":\"test.v1\",\"payload\":\"A\\r\\nQ==\"}",
+		"unpadded base64":            `{"schema":"test.v1","payload":"AQ"}`,
+	}
+	for name, raw := range tests {
+		t.Run(name, func(t *testing.T) {
+			var value any
+			if err := decodeJSONStrict(raw, &value); err == nil {
+				t.Fatal("non-canonical JSON was accepted")
+			}
+		})
+	}
+
+	invalidUTF8 := string([]byte{'{', '"', 'x', '"', ':', '"', 0xff, '"', '}'})
+	var value any
+	if err := decodeJSONStrict(invalidUTF8, &value); err == nil {
+		t.Fatal("invalid UTF-8 was accepted")
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/contract"
 	"github.com/heroiclabs/nakama-common/api"
@@ -149,6 +150,12 @@ func writeStoredMatch(ctx context.Context, nk storageGateway, record storedMatch
 }
 
 func decodeJSONStrict(raw string, dst any) error {
+	if !utf8.ValidString(raw) {
+		return errors.New("JSON is not valid UTF-8")
+	}
+	if err := validateJSONWire(raw); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
@@ -165,4 +172,93 @@ func decodeJSONStrict(raw string, dst any) error {
 		return err
 	}
 	return nil
+}
+
+// validateJSONWire applies the canonical wire rules that encoding/json does
+// not enforce itself. In particular, encoding/json otherwise accepts duplicate
+// object members (last value wins), invalid UTF-8 (replacement runes), and
+// line-wrapped/non-canonical base64 for []byte fields.
+func validateJSONWire(raw string) error {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	if err := validateJSONValue(decoder, ""); err != nil {
+		return err
+	}
+	if token, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("multiple JSON values are not allowed: %v", token)
+		}
+		return err
+	}
+	return nil
+}
+
+func validateJSONValue(decoder *json.Decoder, fieldName string) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	switch value := token.(type) {
+	case json.Delim:
+		switch value {
+		case '{':
+			seen := make(map[string]struct{})
+			for decoder.More() {
+				nameToken, err := decoder.Token()
+				if err != nil {
+					return err
+				}
+				name, ok := nameToken.(string)
+				if !ok {
+					return errors.New("JSON object member name is not a string")
+				}
+				if _, exists := seen[name]; exists {
+					return fmt.Errorf("duplicate JSON object member %q", name)
+				}
+				seen[name] = struct{}{}
+				if err := validateJSONValue(decoder, name); err != nil {
+					return err
+				}
+			}
+			closing, err := decoder.Token()
+			if err != nil || closing != json.Delim('}') {
+				if err != nil {
+					return err
+				}
+				return errors.New("JSON object is not closed")
+			}
+		case '[':
+			for decoder.More() {
+				if err := validateJSONValue(decoder, fieldName); err != nil {
+					return err
+				}
+			}
+			closing, err := decoder.Token()
+			if err != nil || closing != json.Delim(']') {
+				if err != nil {
+					return err
+				}
+				return errors.New("JSON array is not closed")
+			}
+		default:
+			return fmt.Errorf("unexpected JSON delimiter %q", value)
+		}
+	case string:
+		if canonicalBase64Field(fieldName) {
+			decoded, err := base64.StdEncoding.Strict().DecodeString(value)
+			if err != nil || base64.StdEncoding.EncodeToString(decoded) != value {
+				return fmt.Errorf("%s is not canonical padded base64", fieldName)
+			}
+		}
+	}
+	return nil
+}
+
+func canonicalBase64Field(name string) bool {
+	switch name {
+	case "agent_public_key", "signature", "payload", "core_snapshot_base64", "authority_public_key_base64":
+		return true
+	default:
+		return false
+	}
 }

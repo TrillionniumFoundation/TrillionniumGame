@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TrillionniumFoundation/Trillionnium-Nakama/contracts/v1/archive-request.schema.json",
+  "title": "ArchiveRequestV1",
+  "description": "Authenticated cursor request for a durable authoritative event archive page.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "logical_match_id", "after_sequence"],
+  "properties": {
+    "schema": {"const": "trnm.nakama.get-archive.v1"},
+    "logical_match_id": {"$ref": "#/$defs/logicalMatchId"},
+    "after_sequence": {"type": "integer", "minimum": 0},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 128},
+    "authorization_id": {"$ref": "#/$defs/id"},
+    "operator_token": {"$ref": "#/$defs/operatorToken"}
+  },
+  "oneOf": [
+    {"required": ["authorization_id"]},
+    {"required": ["operator_token"]}
+  ],
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "logicalMatchId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "operatorToken": {"type": "string", "minLength": 32, "maxLength": 4096}
+  }
+}

@@ -25,14 +25,19 @@ const (
 	rpcCreateMatch = "trnm_match_create_v1"
 	rpcResumeMatch = "trnm_match_resume_v1"
 	rpcEvidence    = "trnm_match_evidence_v1"
+	rpcArchive     = "trnm_match_archive_v1"
 	rpcComplete    = "trnm_match_complete_v1"
 	rpcHealth      = "trnm_health_v1"
 	rpcReady       = "trnm_ready_v1"
+
+	maximumArchivePageSize uint32 = 128
 )
 
 type moduleRuntime struct {
 	config moduleConfig
 }
+
+var errInvalidArchiveCursor = errors.New("archive cursor or page limit is invalid")
 
 type createMatchRequest struct {
 	Schema         string                         `json:"schema"`
@@ -51,6 +56,15 @@ type evidenceRequest struct {
 	LogicalMatchID  string `json:"logical_match_id"`
 	AuthorizationID string `json:"authorization_id,omitempty"`
 	OperatorToken   string `json:"operator_token,omitempty"`
+}
+
+type archiveRequest struct {
+	Schema          string  `json:"schema"`
+	LogicalMatchID  string  `json:"logical_match_id"`
+	AfterSequence   *uint64 `json:"after_sequence"`
+	Limit           *uint32 `json:"limit,omitempty"`
+	AuthorizationID *string `json:"authorization_id,omitempty"`
+	OperatorToken   *string `json:"operator_token,omitempty"`
 }
 
 type completeMatchRequest struct {
@@ -76,6 +90,31 @@ type evidenceResponse struct {
 	RuntimeGeneration  uint64                    `json:"runtime_generation"`
 	Completion         contract.MatchCompletedV1 `json:"completion"`
 	AuthorityPublicKey string                    `json:"authority_public_key_base64"`
+}
+
+type archiveParticipant struct {
+	ParticipantSlot     uint32 `json:"participant_slot"`
+	AuthorizationID     string `json:"authorization_id"`
+	SubjectUserID       string `json:"subject_user_id"`
+	AgentID             string `json:"agent_id"`
+	Joined              bool   `json:"joined"`
+	LastCommandSequence uint64 `json:"last_command_sequence"`
+}
+
+type archiveResponse struct {
+	Schema            string                 `json:"schema"`
+	LogicalMatchID    string                 `json:"logical_match_id"`
+	ExternalMatchID   string                 `json:"external_match_id,omitempty"`
+	RuntimeGeneration uint64                 `json:"runtime_generation"`
+	Status            matchcore.Status       `json:"status"`
+	MatchVersion      uint64                 `json:"match_version"`
+	EventCount        uint64                 `json:"event_count"`
+	AfterSequence     uint64                 `json:"after_sequence"`
+	NextAfterSequence uint64                 `json:"next_after_sequence"`
+	HasMore           bool                   `json:"has_more"`
+	Events            []contract.MatchEvent  `json:"events"`
+	Roster            []contract.RosterEntry `json:"roster"`
+	Participants      []archiveParticipant   `json:"participants"`
 }
 
 func (m *moduleRuntime) rpcCreateMatch(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
@@ -218,6 +257,108 @@ func (m *moduleRuntime) rpcEvidence(ctx context.Context, _ runtime.Logger, _ *sq
 		return "", runtime.NewError("match is not completed", 9)
 	}
 	return marshalRPC(evidenceResponseFor(stored.record, *completion, engine.AuthorityPublicKey()))
+}
+
+func (m *moduleRuntime) rpcArchive(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
+	return m.rpcArchiveFromStorage(ctx, nk, payload)
+}
+
+// rpcArchiveFromStorage is split from the Nakama adapter so the authenticated
+// durable-read path can be tested against the same storage interface used by
+// snapshots without a broad fake NakamaModule implementation.
+func (m *moduleRuntime) rpcArchiveFromStorage(ctx context.Context, nk storageGateway, payload string) (string, error) {
+	if err := m.config.ready(); err != nil {
+		return "", runtime.NewError("authoritative runtime is not ready", 14)
+	}
+	var request archiveRequest
+	if err := decodeJSONStrict(payload, &request); err != nil || !archiveRequestWireValid(request) {
+		return "", runtime.NewError("invalid archive request", 3)
+	}
+	stored, err := loadStoredMatch(ctx, nk, request.LogicalMatchID)
+	if err != nil {
+		return "", runtime.NewError("logical match not found", 5)
+	}
+	engine, err := m.restoreStoredEngine(stored.record)
+	if err != nil {
+		return "", runtime.NewError("stored match snapshot failed verification", 13)
+	}
+	view := engine.View()
+	if request.OperatorToken != nil {
+		if !m.config.operatorAuthorized(*request.OperatorToken) {
+			return "", runtime.NewError("archive access rejected", 7)
+		}
+	} else if !participantCanReadEvidence(ctx, view, *request.AuthorizationID) {
+		return "", runtime.NewError("archive access rejected", 7)
+	}
+	limit := maximumArchivePageSize
+	if request.Limit != nil {
+		limit = *request.Limit
+	}
+	response, err := archiveResponseFor(stored.record, engine, *request.AfterSequence, limit)
+	if err != nil {
+		if errors.Is(err, errInvalidArchiveCursor) {
+			return "", runtime.NewError("invalid archive cursor", 3)
+		}
+		return "", runtime.NewError("stored archive snapshot is inconsistent", 13)
+	}
+	return marshalRPC(response)
+}
+
+func archiveRequestWireValid(request archiveRequest) bool {
+	if request.Schema != "trnm.nakama.get-archive.v1" || request.AfterSequence == nil ||
+		contract.ValidateLogicalMatchID(request.LogicalMatchID) != nil {
+		return false
+	}
+	hasAuthorization := request.AuthorizationID != nil
+	hasOperator := request.OperatorToken != nil
+	if hasAuthorization == hasOperator {
+		return false
+	}
+	if hasAuthorization && contract.ValidateAuthorizationID(*request.AuthorizationID) != nil {
+		return false
+	}
+	if hasOperator && !operatorTokenWireValid(*request.OperatorToken, false) {
+		return false
+	}
+	return request.Limit == nil || (*request.Limit >= 1 && *request.Limit <= maximumArchivePageSize)
+}
+
+func archiveResponseFor(record storedMatch, engine *matchcore.Engine, afterSequence uint64, limit uint32) (archiveResponse, error) {
+	view := engine.View()
+	events := engine.Events()
+	if record.RuntimeGeneration == 0 || uint64(len(events)) != view.EventCount {
+		return archiveResponse{}, errors.New("archive snapshot metadata is inconsistent")
+	}
+	if afterSequence > view.EventCount || limit == 0 || limit > maximumArchivePageSize {
+		return archiveResponse{}, errInvalidArchiveCursor
+	}
+	start := int(afterSequence)
+	end := start + int(limit)
+	if end > len(events) {
+		end = len(events)
+	}
+	page := make([]contract.MatchEvent, end-start)
+	copy(page, events[start:end])
+	nextAfterSequence := afterSequence
+	if len(page) > 0 {
+		nextAfterSequence = page[len(page)-1].Sequence
+	}
+	participants := make([]archiveParticipant, len(view.Participants))
+	for index, participant := range view.Participants {
+		participants[index] = archiveParticipant{
+			ParticipantSlot: participant.Slot, AuthorizationID: participant.AuthorizationID,
+			SubjectUserID: participant.SubjectUserID, AgentID: participant.AgentID,
+			Joined: participant.Joined, LastCommandSequence: participant.LastCommandSequence,
+		}
+	}
+	return archiveResponse{
+		Schema: "trnm.nakama.archive.v1", LogicalMatchID: record.LogicalMatchID,
+		ExternalMatchID: record.ExternalMatchID, RuntimeGeneration: record.RuntimeGeneration,
+		Status: view.Status, MatchVersion: view.Version, EventCount: view.EventCount,
+		AfterSequence: afterSequence, NextAfterSequence: nextAfterSequence,
+		HasMore: nextAfterSequence < view.EventCount, Events: page,
+		Roster: engine.Roster(), Participants: participants,
+	}, nil
 }
 
 func (m *moduleRuntime) rpcComplete(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {

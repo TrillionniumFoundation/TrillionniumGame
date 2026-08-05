@@ -133,6 +133,14 @@ func TestRestartRejectsNonCanonicalReplaySemantics(t *testing.T) {
 			document.Events[2], _ = contract.SealEvent(document.Events[2])
 			document.Commands[0].Event = document.Events[2]
 		},
+		"archive identity differs from snapshot": func(document *snapshotDocument) {
+			for index := range document.Events {
+				document.Events[index].MatchID = "match-2"
+				document.Events[index].EventID, _ = contract.CanonicalEventID("match-2", document.Events[index].Sequence, document.Events[index].CausationID)
+				document.Events[index], _ = contract.SealEvent(document.Events[index])
+			}
+			document.Commands[0].Event = document.Events[2]
+		},
 		"join type is forged": func(document *snapshotDocument) {
 			document.Events[0].EventType = "agent_command_applied"
 			document.Events[0], _ = contract.SealEvent(document.Events[0])
@@ -143,7 +151,7 @@ func TestRestartRejectsNonCanonicalReplaySemantics(t *testing.T) {
 		},
 		"join causation is forged": func(document *snapshotDocument) {
 			document.Events[0].CausationID = "auth-2"
-			document.Events[0].EventID = string(contract.NewDigest(encodeEventIDInput("match-1", 1, "auth-2")))
+			document.Events[0].EventID, _ = contract.CanonicalEventID("match-1", 1, "auth-2")
 			document.Events[0], _ = contract.SealEvent(document.Events[0])
 		},
 		"command expected version is not global version": func(document *snapshotDocument) {

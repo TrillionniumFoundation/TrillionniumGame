@@ -405,9 +405,12 @@ func (e *Engine) buildEvent(eventType, causationID string, now time.Time, slot u
 		return contract.MatchEvent{}, errors.New("event time cannot move backwards")
 	}
 	sequence := uint64(len(e.events) + 1)
-	eventIDInput := encodeEventIDInput(e.matchID, sequence, causationID)
+	eventID, err := contract.CanonicalEventID(e.matchID, sequence, causationID)
+	if err != nil {
+		return contract.MatchEvent{}, err
+	}
 	event, err := contract.SealEvent(contract.MatchEvent{
-		Schema: contract.EventSchema, EventID: string(contract.NewDigest(eventIDInput)), EventType: eventType,
+		Schema: contract.EventSchema, EventID: eventID, EventType: eventType,
 		MatchID: e.matchID, ChallengeID: e.challengeID, Sequence: sequence, CausationID: causationID,
 		OccurredAtUnix: now.Unix(), ParticipantSlot: slot, MatchVersion: e.version + 1,
 		PayloadType: payloadType, Payload: append([]byte(nil), payload...),
@@ -468,6 +471,12 @@ func (e *Engine) Events() []contract.MatchEvent {
 	return out
 }
 
+func (e *Engine) Roster() []contract.RosterEntry {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.roster()
+}
+
 func (e *Engine) Completion() (*contract.MatchCompletedV1, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -504,19 +513,6 @@ func encodeJoinPayload(slot uint32, userID, authorizationID, agentID string) []b
 		out = append(out, value...)
 	}
 	return out
-}
-
-func encodeEventIDInput(matchID string, sequence uint64, causationID string) []byte {
-	out := []byte("trnm_match_event_id_v1\x00")
-	for _, value := range []string{matchID, causationID} {
-		var size [4]byte
-		binary.BigEndian.PutUint32(size[:], uint32(len(value)))
-		out = append(out, size[:]...)
-		out = append(out, value...)
-	}
-	var raw [8]byte
-	binary.BigEndian.PutUint64(raw[:], sequence)
-	return append(out, raw[:]...)
 }
 
 func cloneAuthorization(in contract.SignedAuthorization) contract.SignedAuthorization {

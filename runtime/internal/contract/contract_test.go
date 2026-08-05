@@ -27,6 +27,54 @@ func contractClaim(agentPublicKey ed25519.PublicKey) AuthorizationClaim {
 	}
 }
 
+func sealCanonicalArchiveEvent(t testing.TB, event MatchEvent) MatchEvent {
+	t.Helper()
+	eventID, err := CanonicalEventID(event.MatchID, event.Sequence, event.CausationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.EventID = eventID
+	sealed, err := SealEvent(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
+
+func validContractArchive(t testing.TB) []MatchEvent {
+	t.Helper()
+	events := []MatchEvent{
+		{Schema: EventSchema, EventType: "participant_joined", MatchID: "match-1", ChallengeID: "challenge-1",
+			Sequence: 1, CausationID: "auth-1", OccurredAtUnix: 100, ParticipantSlot: 1, MatchVersion: 2,
+			PayloadType: "trnm.participant.joined.v1", Payload: []byte("join-one")},
+		{Schema: EventSchema, EventType: "participant_joined", MatchID: "match-1", ChallengeID: "challenge-1",
+			Sequence: 2, CausationID: "auth-2", OccurredAtUnix: 100, ParticipantSlot: 2, MatchVersion: 3,
+			PayloadType: "trnm.participant.joined.v1", Payload: []byte("join-two")},
+		{Schema: EventSchema, EventType: "agent_command_applied", MatchID: "match-1", ChallengeID: "challenge-1",
+			Sequence: 3, CausationID: "cmd-1", OccurredAtUnix: 101, ParticipantSlot: 1, MatchVersion: 4,
+			PayloadType: "trnm.turn.v1", Payload: []byte("move")},
+		{Schema: EventSchema, EventType: "match_completed", MatchID: "match-1", ChallengeID: "challenge-1",
+			Sequence: 4, CausationID: "complete-1", OccurredAtUnix: 102, ParticipantSlot: 0, MatchVersion: 5,
+			PayloadType: "trnm.match.terminal-facts.v1", Payload: []byte("terminal")},
+	}
+	for index := range events {
+		events[index] = sealCanonicalArchiveEvent(t, events[index])
+	}
+	return events
+}
+
+func resealArchiveEvent(t testing.TB, event MatchEvent, deriveEventID bool) MatchEvent {
+	t.Helper()
+	if deriveEventID {
+		return sealCanonicalArchiveEvent(t, event)
+	}
+	sealed, err := SealEvent(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
+
 func TestContractDigestStrictness(t *testing.T) {
 	digest := NewDigest([]byte("payload"))
 	if err := digest.Validate(); err != nil {
@@ -140,6 +188,178 @@ func TestContractEventMerkleGoldenVector(t *testing.T) {
 	}
 }
 
+func TestContractCanonicalEventIDAndArchiveValidation(t *testing.T) {
+	eventID, err := CanonicalEventID("match-1", 1, "auth-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eventID == "" {
+		t.Fatal("canonical event ID is empty")
+	}
+	for _, changed := range []struct {
+		matchID     string
+		sequence    uint64
+		causationID string
+	}{
+		{matchID: "match-2", sequence: 1, causationID: "auth-1"},
+		{matchID: "match-1", sequence: 2, causationID: "auth-1"},
+		{matchID: "match-1", sequence: 1, causationID: "auth-2"},
+	} {
+		other, deriveErr := CanonicalEventID(changed.matchID, changed.sequence, changed.causationID)
+		if deriveErr != nil {
+			t.Fatal(deriveErr)
+		}
+		if other == eventID {
+			t.Fatal("canonical event ID did not bind every archive key field")
+		}
+	}
+	if _, err := CanonicalEventID("match-1", 0, "auth-1"); err == nil {
+		t.Fatal("zero event sequence was accepted")
+	}
+	if _, err := CanonicalEventID("../outside", 1, "auth-1"); err == nil {
+		t.Fatal("invalid match ID was accepted for event ID derivation")
+	}
+
+	archive := validContractArchive(t)
+	for length := 1; length <= len(archive); length++ {
+		if err := ValidateArchive(archive[:length]); err != nil {
+			t.Fatalf("valid archive prefix of length %d was rejected: %v", length, err)
+		}
+	}
+	if err := ValidateArchive(nil); err == nil {
+		t.Fatal("empty archive was accepted")
+	}
+}
+
+func TestContractArchiveValidatorRejectsNonCanonicalSemantics(t *testing.T) {
+	base := validContractArchive(t)
+	clone := func() []MatchEvent {
+		out := append([]MatchEvent(nil), base...)
+		for index := range out {
+			out[index].Payload = append([]byte(nil), out[index].Payload...)
+		}
+		return out
+	}
+
+	tests := map[string]func() []MatchEvent{
+		"match identity differs": func() []MatchEvent {
+			events := clone()
+			events[1].MatchID = "match-2"
+			events[1] = resealArchiveEvent(t, events[1], true)
+			return events
+		},
+		"challenge identity differs": func() []MatchEvent {
+			events := clone()
+			events[1].ChallengeID = "challenge-2"
+			events[1] = resealArchiveEvent(t, events[1], false)
+			return events
+		},
+		"sequence has a gap": func() []MatchEvent {
+			events := clone()
+			events[1].Sequence = 3
+			events[1].MatchVersion = 4
+			events[1] = resealArchiveEvent(t, events[1], true)
+			return events
+		},
+		"match version is not sequence plus one": func() []MatchEvent {
+			events := clone()
+			events[2].MatchVersion++
+			events[2] = resealArchiveEvent(t, events[2], false)
+			return events
+		},
+		"event time moves backwards": func() []MatchEvent {
+			events := clone()
+			events[2].OccurredAtUnix = 99
+			events[2] = resealArchiveEvent(t, events[2], false)
+			return events
+		},
+		"event hash is invalid": func() []MatchEvent {
+			events := clone()
+			events[2].Payload = []byte("tampered")
+			return events
+		},
+		"event ID is not canonical": func() []MatchEvent {
+			events := clone()
+			events[2].EventID = "forged-event-id"
+			events[2] = resealArchiveEvent(t, events[2], false)
+			return events
+		},
+		"participant slot joins twice": func() []MatchEvent {
+			events := clone()
+			events[1].ParticipantSlot = 1
+			events[1] = resealArchiveEvent(t, events[1], false)
+			return events
+		},
+		"command precedes both joins": func() []MatchEvent {
+			events := []MatchEvent{clone()[0], clone()[2]}
+			events[1].Sequence = 2
+			events[1].MatchVersion = 3
+			events[1] = resealArchiveEvent(t, events[1], true)
+			return events
+		},
+		"command has authority slot": func() []MatchEvent {
+			events := clone()
+			events[2].ParticipantSlot = 0
+			events[2] = resealArchiveEvent(t, events[2], false)
+			return events
+		},
+		"completion precedes every command": func() []MatchEvent {
+			events := []MatchEvent{clone()[0], clone()[1], clone()[3]}
+			events[2].Sequence = 3
+			events[2].MatchVersion = 4
+			events[2] = resealArchiveEvent(t, events[2], true)
+			return events
+		},
+		"completion is not final": func() []MatchEvent {
+			events := clone()
+			extra := events[2]
+			extra.Sequence = 5
+			extra.MatchVersion = 6
+			extra.CausationID = "cmd-2"
+			extra.OccurredAtUnix = 103
+			extra = resealArchiveEvent(t, extra, true)
+			return append(events, extra)
+		},
+		"join payload type is wrong": func() []MatchEvent {
+			events := clone()
+			events[0].PayloadType = "trnm.turn.v1"
+			events[0] = resealArchiveEvent(t, events[0], false)
+			return events
+		},
+		"completion payload type is wrong": func() []MatchEvent {
+			events := clone()
+			events[3].PayloadType = "trnm.turn.v1"
+			events[3] = resealArchiveEvent(t, events[3], false)
+			return events
+		},
+		"event type is unsupported": func() []MatchEvent {
+			events := clone()
+			events[2].EventType = "turn"
+			events[2] = resealArchiveEvent(t, events[2], false)
+			return events
+		},
+	}
+
+	for name, build := range tests {
+		t.Run(name, func(t *testing.T) {
+			archive := build()
+			if err := ValidateArchive(archive); err == nil {
+				t.Fatal("non-canonical archive was accepted")
+			}
+		})
+	}
+
+	invalid := clone()
+	invalid[2].MatchVersion++
+	invalid[2] = resealArchiveEvent(t, invalid[2], false)
+	if _, err := EventRoot(invalid); err == nil {
+		t.Fatal("EventRoot did not enforce archive validation")
+	}
+	if _, err := CanonicalArchive(invalid); err == nil {
+		t.Fatal("CanonicalArchive did not enforce archive validation")
+	}
+}
+
 func TestContractRosterArchiveAndCompletion(t *testing.T) {
 	keyOne, _ := deterministicKey("roster-one")
 	keyTwo, _ := deterministicKey("roster-two")
@@ -161,21 +381,22 @@ func TestContractRosterArchiveAndCompletion(t *testing.T) {
 		t.Fatal("duplicate roster identity was accepted")
 	}
 
-	event, err := SealEvent(MatchEvent{Schema: EventSchema, EventID: "event-1", EventType: "turn", MatchID: "match-1",
-		ChallengeID: "challenge-1", Sequence: 1, CausationID: "cmd-1", OccurredAtUnix: 150,
-		ParticipantSlot: 1, MatchVersion: 2, PayloadType: "turn.v1", Payload: []byte("move")})
+	events := validContractArchive(t)
+	eventRoot, err := EventRoot(events)
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventRoot, _ := EventRoot([]MatchEvent{event})
-	archiveHash, _ := ArchiveHash([]MatchEvent{event})
+	archiveHash, err := ArchiveHash(events)
+	if err != nil {
+		t.Fatal(err)
+	}
 	commitmentID, err := CommitmentID("match-1", eventRoot, archiveHash)
 	if err != nil {
 		t.Fatal(err)
 	}
 	authorityPublic, authorityPrivate := deterministicKey("authority")
 	completion, err := SignCompletion(MatchCompletedV1{Schema: CompletionSchema, CommitmentID: commitmentID,
-		MatchID: "match-1", ChallengeID: "challenge-1", EventCount: 1, EventRoot: eventRoot,
+		MatchID: "match-1", ChallengeID: "challenge-1", EventCount: uint64(len(events)), EventRoot: eventRoot,
 		TerminalFacts: TerminalFacts{ResultCode: "decisive", WinnerSlot: 1, OutcomeHash: NewDigest([]byte("outcome"))},
 		RosterRoot:    rootOne, RulesetHash: NewDigest([]byte("rules")), DatasetHash: NewDigest([]byte("data")),
 		ChallengeSnapshotHash: NewDigest([]byte("challenge")), ArchiveHash: archiveHash,

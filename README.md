@@ -4,9 +4,10 @@ Independent real-time match authority for Trillionnium.
 
 The active P0 slice, `nakama-authoritative-match-evidence-v1`, implements a
 fixed two-participant authoritative match, durable command/event evidence,
-restart/resume, and a Nakama-signed `MatchCompletedV1`. Product gameplay remains
-in World; research authorization/evaluation remains in Hepta; consensus,
-ingress, finality, and proofs remain in Chain.
+restart/resume, authenticated cursor-based archive catch-up, and a Nakama-signed
+`MatchCompletedV1`. Product gameplay remains in World; research
+authorization/evaluation remains in Hepta; consensus, ingress, finality, and
+proofs remain in Chain.
 
 This is not yet a production or release claim. P0 is single-host, Integration
 remains blocked, and real Hepta/Chain compatibility must be locked separately.

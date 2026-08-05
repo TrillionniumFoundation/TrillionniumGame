@@ -194,6 +194,14 @@ func (e *Engine) validateRestoredState() error {
 	if e.matchID != e.participants[0].Authorization.Claim.MatchID || e.challengeID != e.participants[0].Authorization.Claim.ChallengeID {
 		return errors.New("snapshot identities differ from authorization snapshot")
 	}
+	if len(e.events) > 0 {
+		if e.events[0].MatchID != e.matchID || e.events[0].ChallengeID != e.challengeID {
+			return errors.New("snapshot archive identity differs from the match")
+		}
+		if err := contract.ValidateArchive(e.events); err != nil {
+			return fmt.Errorf("snapshot archive is invalid: %w", err)
+		}
+	}
 
 	// First bind every command record to exactly one complete event envelope.
 	// A hash-only lookup is insufficient because a forged record could retain a
@@ -237,35 +245,10 @@ func (e *Engine) validateRestoredState() error {
 
 	joinedSlots := [2]bool{}
 	participantSequences := [2]uint64{}
-	seenEventHashes := make(map[contract.Digest]struct{}, len(e.events))
-	seenEventIDs := make(map[string]struct{}, len(e.events))
 	commandEvents := 0
 	terminalSeen := false
-	var previousTime int64
 	for index, event := range e.events {
 		sequence := uint64(index + 1)
-		if event.Sequence != sequence || event.MatchVersion != sequence+1 || event.MatchID != e.matchID || event.ChallengeID != e.challengeID {
-			return errors.New("snapshot event sequence, version, or identity is inconsistent")
-		}
-		if index > 0 && event.OccurredAtUnix < previousTime {
-			return errors.New("snapshot event time moves backwards")
-		}
-		previousTime = event.OccurredAtUnix
-		if err := event.Validate(); err != nil {
-			return fmt.Errorf("snapshot event is invalid: %w", err)
-		}
-		expectedEventID := string(contract.NewDigest(encodeEventIDInput(e.matchID, sequence, event.CausationID)))
-		if event.EventID != expectedEventID {
-			return errors.New("snapshot event ID is not canonically derived")
-		}
-		if _, duplicate := seenEventHashes[event.EventHash]; duplicate {
-			return errors.New("snapshot contains a duplicate event hash")
-		}
-		if _, duplicate := seenEventIDs[event.EventID]; duplicate {
-			return errors.New("snapshot contains a duplicate event ID")
-		}
-		seenEventHashes[event.EventHash] = struct{}{}
-		seenEventIDs[event.EventID] = struct{}{}
 
 		switch event.EventType {
 		case "participant_joined":

@@ -239,6 +239,157 @@ function commitmentID(matchID, eventRoot, archiveHash) {
   );
 }
 
+function canonicalBase64(value, label) {
+  assert(typeof value === "string", `${label} is not a base64 string`);
+  const decoded = Buffer.from(value, "base64");
+  assert(decoded.toString("base64") === value, `${label} is not canonical padded base64`);
+  return decoded;
+}
+
+function eventFactsBytes(event) {
+  const payload = canonicalBase64(event.payload, `event ${event.sequence} payload`);
+  assert(event.payload_hash === digest(payload), `event ${event.sequence} payload hash mismatch`);
+  return new Frame("trnm_match_event_v1")
+    .string(event.schema)
+    .string(event.event_id)
+    .string(event.event_type)
+    .string(event.match_id)
+    .string(event.challenge_id)
+    .u64(event.sequence)
+    .string(event.causation_id)
+    .i64(event.occurred_at_unix)
+    .u32(event.participant_slot)
+    .u64(event.match_version)
+    .string(event.payload_type)
+    .bytes(payload)
+    .digest(event.payload_hash)
+    .finish();
+}
+
+function canonicalEventID(event) {
+  return digest(
+    new Frame("trnm_match_event_id_v1")
+      .string(event.match_id)
+      .string(event.causation_id)
+      .u64(event.sequence)
+      .finish(),
+  );
+}
+
+function validateEvent(event, expectedSequence, matchID, challengeID) {
+  assert(event.schema === "trnm.match.event.v1", `event ${expectedSequence} schema mismatch`);
+  assert(event.sequence === expectedSequence, `event sequence ${event.sequence} is not contiguous at ${expectedSequence}`);
+  assert(event.match_version === event.sequence + 1, `event ${expectedSequence} match version mismatch`);
+  assert(event.match_id === matchID, `event ${expectedSequence} match identity mismatch`);
+  assert(event.challenge_id === challengeID, `event ${expectedSequence} challenge identity mismatch`);
+  assert(event.event_id === canonicalEventID(event), `event ${expectedSequence} canonical ID mismatch`);
+  assert(event.event_hash === digest(eventFactsBytes(event)), `event ${expectedSequence} hash mismatch`);
+}
+
+function eventRoot(events) {
+  let level = events.map((event) => {
+    const sequence = Buffer.alloc(8);
+    sequence.writeBigUInt64BE(BigInt(event.sequence));
+    return sha256(Buffer.concat([Buffer.from("trnm_match_event_leaf_v1\0", "utf8"), sequence, digestBytes(event.event_hash)]));
+  });
+  assert(level.length > 0, "cannot compute an event root for an empty archive");
+  while (level.length > 1) {
+    const next = [];
+    for (let index = 0; index < level.length; index += 2) {
+      const right = index + 1 < level.length ? level[index + 1] : level[index];
+      next.push(sha256(Buffer.concat([Buffer.from("trnm_binary_merkle_node_v1\0", "utf8"), level[index], right])));
+    }
+    level = next;
+  }
+  return `sha256:${level[0].toString("hex")}`;
+}
+
+function rosterRoot(roster) {
+  assert(Array.isArray(roster) && roster.length === 2, "archive roster must contain exactly two participants");
+  const ordered = [...roster].sort((left, right) => left.participant_slot - right.participant_slot);
+  assert(ordered[0].participant_slot === 1 && ordered[1].participant_slot === 2, "archive roster must contain slots 1 and 2");
+  for (const field of ["subject_user_id", "agent_id", "agent_did", "agent_key_id", "agent_key_hash"]) {
+    assert(ordered[0][field] !== ordered[1][field], `archive roster ${field} values are not unique`);
+  }
+  let frame = new Frame("trnm_match_roster_v1").u32(ordered.length);
+  for (const entry of ordered) {
+    frame = frame
+      .u32(entry.participant_slot)
+      .string(entry.subject_user_id)
+      .string(entry.agent_id)
+      .string(entry.agent_did)
+      .string(entry.agent_key_id)
+      .digest(entry.agent_key_hash)
+      .string(entry.role);
+  }
+  return digest(frame.finish());
+}
+
+function canonicalArchive(events) {
+  let frame = new Frame("trnm_match_event_archive_v1").u64(events.length);
+  for (const event of events) {
+    frame = frame.bytes(eventFactsBytes(event)).bytes(digestBytes(event.event_hash));
+  }
+  return frame.finish();
+}
+
+function verifyArchive(events, roster, expectedMatchID) {
+  assert(Array.isArray(events) && events.length > 0, "archive events are empty");
+  const matchID = expectedMatchID || events[0].match_id;
+  const challengeID = events[0].challenge_id;
+  const joinedSlots = new Set();
+  let sawCommand = false;
+  let completed = false;
+  let previousTime = -1;
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    validateEvent(event, index + 1, matchID, challengeID);
+    assert(event.occurred_at_unix >= previousTime, `event ${event.sequence} time moved backwards`);
+    previousTime = event.occurred_at_unix;
+    if (event.event_type === "participant_joined") {
+      assert(!sawCommand && !completed, "participant join appeared after match activity");
+      assert(event.payload_type === "trnm.participant.joined.v1", "participant join payload type mismatch");
+      assert((event.participant_slot === 1 || event.participant_slot === 2) && !joinedSlots.has(event.participant_slot), "participant join slot is invalid or duplicated");
+      joinedSlots.add(event.participant_slot);
+    } else if (event.event_type === "agent_command_applied") {
+      assert(joinedSlots.size === 2 && !completed, "command appeared outside the active phase");
+      assert(event.participant_slot === 1 || event.participant_slot === 2, "command participant slot is invalid");
+      sawCommand = true;
+    } else if (event.event_type === "match_completed") {
+      assert(joinedSlots.size === 2 && sawCommand && !completed, "completion appeared outside the terminal phase");
+      assert(index === events.length - 1, "completion is not the final archive event");
+      assert(event.participant_slot === 0, "completion participant slot is not zero");
+      assert(event.payload_type === "trnm.match.terminal-facts.v1", "completion payload type mismatch");
+      completed = true;
+    } else {
+      throw new Error(`unsupported archive event type ${event.event_type}`);
+    }
+  }
+  assert(joinedSlots.size === 2, "archive does not contain both admissions");
+  assert(completed, "archive does not end in completion");
+  return {
+    event_root: eventRoot(events),
+    roster_root: rosterRoot(roster),
+    archive_hash: digest(canonicalArchive(events)),
+  };
+}
+
+function assertThrows(operation, label) {
+  let rejected = false;
+  try {
+    operation();
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, `${label} was accepted by the independent archive verifier`);
+}
+
+async function archiveRPC(player, request) {
+  const raw = await player.socket.rpc("trnm_match_archive_v1", JSON.stringify(request));
+  assert(typeof raw?.payload === "string", "realtime archive RPC returned no raw payload");
+  return { raw: raw.payload, payload: JSON.parse(raw.payload) };
+}
+
 function matchInbox(socket) {
   const messages = [];
   socket.onmatchdata = (message) => {
@@ -416,11 +567,37 @@ async function runPrepare(client, runtimeHttpKey, stateFile) {
     const externalMatchID = created.payload.external_match_id;
     assert(externalMatchID, "create RPC returned no external match ID");
 
+    let duplicateCreateRejected = false;
+    try {
+      await rpcHttpKey(client, runtimeHttpKey, "trnm_match_create_v1", {
+        schema: "trnm.nakama.create-match.v1",
+        operator_token: operatorToken,
+        authorizations,
+      });
+    } catch (error) {
+      duplicateCreateRejected = /logical match already exists|create-match request/.test(String(error));
+    }
+    assert(duplicateCreateRejected, "same logical match and authorizations were accepted twice");
+
+    let wrongSubjectRejected = false;
+    try {
+      await players[1].socket.joinMatch(externalMatchID, undefined, { authorization_id: claims[0].authorization_id });
+    } catch {
+      wrongSubjectRejected = true;
+    }
+    assert(wrongSubjectRejected, "another user consumed slot 1's authorization");
+    await Promise.all([
+      players[0].inbox.expectNone((message) => message.opcode === 2, "event after wrong-subject admission at slot 1"),
+      players[1].inbox.expectNone((message) => message.opcode === 2, "event after wrong-subject admission at slot 2"),
+    ]);
+
     await players[0].socket.joinMatch(externalMatchID, undefined, { authorization_id: claims[0].authorization_id });
-    await players[0].inbox.take(
+    const joinOne = await players[0].inbox.take(
       (message) => message.opcode === 2 && message.payload?.event_type === "participant_joined",
       "slot-1 durable join event",
     );
+    assert(joinOne.payload.sequence === 1, "rejected admission or duplicate create appended a hidden event");
+    assert(joinOne.payload.match_version === 2, "rejected admission or duplicate create advanced match version");
     await players[1].socket.joinMatch(externalMatchID, undefined, { authorization_id: claims[1].authorization_id });
     const joinTwoAtOne = await players[0].inbox.take(
       (message) => message.opcode === 2 && message.payload?.event_type === "participant_joined" && message.payload?.sequence === 2,
@@ -546,6 +723,8 @@ async function runPrepare(client, runtimeHttpKey, stateFile) {
         exact_replay: true,
         tamper_rejected: true,
         out_of_order_rejected: true,
+        duplicate_create_rejected: true,
+        wrong_subject_authorization_rejected_without_mutation: true,
         broadcast_scopes_verified: true,
       }) + "\n",
     );
@@ -615,18 +794,46 @@ async function runResume(client, runtimeHttpKey, stateFile) {
       },
       agentTwoKey,
     );
+    await disconnectPlayers([players[0]]);
     await players[1].socket.sendMatchState(externalMatchID, 1, textEncoder.encode(JSON.stringify(commandTwo)));
     const secondApplied = await players[1].inbox.take(
       (message) => message.opcode === 2 && message.payload?.causation_id === commandTwo.command_id,
       "post-crash new command at sender",
     );
-    const secondAppliedAtPeer = await players[0].inbox.take(
-      (message) => message.opcode === 2 && message.payload?.causation_id === commandTwo.command_id,
-      "post-crash new command at peer",
-    );
-    assert(equalJSON(secondApplied.payload, secondAppliedAtPeer.payload), "post-crash new command broadcast differed by recipient");
     assert(secondApplied.payload.sequence === 4, "post-crash replay appended a hidden event before command two");
     assert(secondApplied.payload.match_version === 5, "post-crash command did not advance version from 4 to 5");
+
+    const recoveredPlayer = await authenticatedPlayer(client, state.custom_ids[0]);
+    assert(recoveredPlayer.session.user_id === state.subject_user_ids[0], "disconnect recovery changed slot 1's user ID");
+    players[0] = recoveredPlayer;
+    await players[0].socket.joinMatch(externalMatchID, undefined, { authorization_id: state.authorization_ids[0] });
+    await players[0].inbox.expectNone(
+      (message) => message.opcode === 2 && message.payload?.event_type === "participant_joined",
+      "disconnect recovery join event",
+    );
+    const catchUpRequest = {
+      schema: "trnm.nakama.get-archive.v1",
+      logical_match_id: state.logical_match_id,
+      after_sequence: 3,
+      limit: 1,
+      authorization_id: state.authorization_ids[0],
+    };
+    const catchUp = (await archiveRPC(players[0], catchUpRequest)).payload;
+    assert(catchUp.schema === "trnm.nakama.archive.v1", "catch-up archive schema mismatch");
+    assert(catchUp.logical_match_id === state.logical_match_id, "catch-up archive logical match mismatch");
+    assert(catchUp.external_match_id === externalMatchID, "catch-up archive external match mismatch");
+    assert(catchUp.runtime_generation === 2, "catch-up archive runtime generation mismatch");
+    assert(catchUp.status === "active", "catch-up archive did not report an active match");
+    assert(catchUp.match_version === 5 && catchUp.event_count === 4, "catch-up archive state cursor is stale");
+    assert(catchUp.after_sequence === 3 && catchUp.next_after_sequence === 4 && catchUp.has_more === false, "catch-up archive cursor metadata mismatch");
+    assert(Array.isArray(catchUp.events) && catchUp.events.length === 1, "catch-up archive did not return exactly one missed event");
+    assert(equalJSON(catchUp.events[0], secondApplied.payload), "catch-up archive event differed from the authoritative sender event");
+    validateEvent(catchUp.events[0], 4, state.logical_match_id, state.challenge_id);
+    assert(Array.isArray(catchUp.roster) && catchUp.roster.length === 2, "catch-up archive omitted the roster snapshot");
+    assert(Array.isArray(catchUp.participants) && catchUp.participants.length === 2, "catch-up archive omitted participant cursors");
+    const catchUpParticipants = [...catchUp.participants].sort((left, right) => left.participant_slot - right.participant_slot);
+    assert(catchUpParticipants[0].joined === true && catchUpParticipants[1].joined === true, "catch-up archive lost consumed admissions");
+    assert(catchUpParticipants[0].last_command_sequence === 1 && catchUpParticipants[1].last_command_sequence === 1, "catch-up archive participant command cursors are stale");
 
     const completeRequest = {
       schema: "trnm.nakama.complete-match.v1",
@@ -713,6 +920,49 @@ async function runResume(client, runtimeHttpKey, stateFile) {
       "independent Node verifier rejected the commitment ID",
     );
 
+    const fullArchiveRequest = {
+      schema: "trnm.nakama.get-archive.v1",
+      logical_match_id: state.logical_match_id,
+      after_sequence: 0,
+      limit: 128,
+      authorization_id: state.authorization_ids[0],
+    };
+    const fullArchiveOne = await archiveRPC(players[0], fullArchiveRequest);
+    const fullArchiveTwo = await archiveRPC(players[0], fullArchiveRequest);
+    assert(fullArchiveOne.raw === fullArchiveTwo.raw, "repeated full archive RPC payload bytes differed");
+    const archive = fullArchiveOne.payload;
+    assert(archive.schema === "trnm.nakama.archive.v1", "full archive schema mismatch");
+    assert(archive.logical_match_id === state.logical_match_id, "full archive logical match mismatch");
+    assert(archive.external_match_id === externalMatchID, "full archive lost the completed runtime identity");
+    assert(archive.runtime_generation === 2, "full archive runtime generation mismatch");
+    assert(archive.status === "completed", "full archive did not report completed status");
+    assert(archive.match_version === 6 && archive.event_count === 5, "full archive terminal state is inconsistent");
+    assert(archive.after_sequence === 0 && archive.next_after_sequence === 5 && archive.has_more === false, "full archive cursor metadata mismatch");
+    assert(Array.isArray(archive.events) && archive.events.length === completion.event_count, "full archive event count mismatch");
+    assert(Array.isArray(archive.roster) && archive.roster.length === 2, "full archive roster is incomplete");
+    assert(Array.isArray(archive.participants) && archive.participants.length === 2, "full archive participant cursors are incomplete");
+    const archiveParticipants = [...archive.participants].sort((left, right) => left.participant_slot - right.participant_slot);
+    assert(archiveParticipants.every((participant) => participant.joined === true), "full archive participant admission state is incomplete");
+    assert(archiveParticipants.every((participant) => participant.last_command_sequence === 1), "full archive participant command cursors are incorrect");
+
+    const reconstructed = verifyArchive(archive.events, archive.roster, state.logical_match_id);
+    assert(reconstructed.event_root === completion.event_root, "independent archive event_root does not match signed completion");
+    assert(reconstructed.roster_root === completion.roster_root, "independent archive roster_root does not match signed completion");
+    assert(reconstructed.archive_hash === completion.archive_hash, "independent canonical archive_hash does not match signed completion");
+    assert(
+      canonicalBase64(archive.events.at(-1).payload, "terminal event payload").equals(terminalFactsBytes(completion.terminal_facts)),
+      "terminal archive event does not encode the signed completion facts",
+    );
+
+    const reorderedEvents = JSON.parse(JSON.stringify(archive.events));
+    [reorderedEvents[0], reorderedEvents[1]] = [reorderedEvents[1], reorderedEvents[0]];
+    assertThrows(() => verifyArchive(reorderedEvents, archive.roster, state.logical_match_id), "reordered archive");
+    const missingEvents = archive.events.filter((event) => event.sequence !== 3);
+    assertThrows(() => verifyArchive(missingEvents, archive.roster, state.logical_match_id), "archive with a missing event");
+    const tamperedEvents = JSON.parse(JSON.stringify(archive.events));
+    tamperedEvents[2].payload = Buffer.from('{"move":"tampered-archive"}', "utf8").toString("base64");
+    assertThrows(() => verifyArchive(tamperedEvents, archive.roster, state.logical_match_id), "tampered archive");
+
     const authorityRaw = completionOne.payload.authority_public_key_base64;
     assert(authorityRaw === required("TRNM_NAKAMA_AUTHORITY_PUBLIC_KEY"), "runtime exposed an unexpected authority public key");
     const authorityKey = publicKeyFromRaw(authorityRaw);
@@ -737,6 +987,13 @@ async function runResume(client, runtimeHttpKey, stateFile) {
         runtime_generation: 2,
         post_crash_replay_exact: true,
         event_count: completion.event_count,
+        disconnect_cursor_catch_up_verified: true,
+        archive_payload_byte_identical: true,
+        live_event_hashes_reconstructed: true,
+        live_event_root_reconstructed: true,
+        live_roster_root_reconstructed: true,
+        live_archive_hash_reconstructed: true,
+        reordered_missing_tampered_archives_rejected: true,
         evidence_byte_identical: true,
         conflicting_completion_rejected: true,
         completed_runtime_terminated: true,

@@ -28,6 +28,7 @@ func InitModule(ctx context.Context, logger runtime.Logger, _ *sql.DB, _ runtime
 		{name: rpcCreateMatch, fn: module.rpcCreateMatch},
 		{name: rpcResumeMatch, fn: module.rpcResumeMatch},
 		{name: rpcEvidence, fn: module.rpcEvidence},
+		{name: rpcArchive, fn: module.rpcArchive},
 		{name: rpcComplete, fn: module.rpcComplete},
 		{name: rpcHealth, fn: module.rpcHealth},
 		{name: rpcReady, fn: module.rpcReady},

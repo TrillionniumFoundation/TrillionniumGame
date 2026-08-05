@@ -42,6 +42,7 @@ The RPC wire schemas are:
 - `resume-match-{request,response}.schema.json`
 - `complete-match-{request,response}.schema.json`
 - `evidence-{request,response}.schema.json`
+- `archive-{request,response}.schema.json`
 - `match-runtime-response.schema.json`
 - `health-response.schema.json`
 - `readiness-response.schema.json`
