@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -19,6 +20,8 @@ const (
 	envAuthorityPrivate   = "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY"
 	envOperatorToken      = "TRNM_NAKAMA_OPERATOR_TOKEN"
 	envMatchTickRate      = "TRNM_NAKAMA_MATCH_TICK_RATE"
+	envHeptaBaseURL       = "TRNM_HEPTA_BASE_URL"
+	envHeptaServiceToken  = "TRNM_HEPTA_SERVICE_TOKEN"
 	defaultMatchTickRate  = 5
 	minimumOperatorLength = 32
 	maximumOperatorLength = 4096
@@ -30,6 +33,8 @@ type moduleConfig struct {
 	authorityPrivateKey ed25519.PrivateKey
 	operatorToken       string
 	matchTickRate       int
+	heptaBaseURL        string
+	heptaServiceToken   string
 	errors              []string
 }
 
@@ -77,6 +82,18 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 	cfg.operatorToken = env[envOperatorToken]
 	if len(cfg.operatorToken) < minimumOperatorLength || len(cfg.operatorToken) > maximumOperatorLength {
 		cfg.errors = append(cfg.errors, fmt.Sprintf("%s must contain between %d and %d bytes", envOperatorToken, minimumOperatorLength, maximumOperatorLength))
+	}
+
+	cfg.heptaBaseURL = env[envHeptaBaseURL]
+	parsedHeptaURL, err := url.Parse(cfg.heptaBaseURL)
+	if err != nil || cfg.heptaBaseURL == "" || strings.TrimSuffix(cfg.heptaBaseURL, "/") != cfg.heptaBaseURL ||
+		(parsedHeptaURL.Scheme != "http" && parsedHeptaURL.Scheme != "https") || parsedHeptaURL.Host == "" ||
+		parsedHeptaURL.User != nil || parsedHeptaURL.RawQuery != "" || parsedHeptaURL.Fragment != "" {
+		cfg.errors = append(cfg.errors, envHeptaBaseURL+" must be a canonical http(s) base URL without credentials, query, fragment, or trailing slash")
+	}
+	cfg.heptaServiceToken = env[envHeptaServiceToken]
+	if len(cfg.heptaServiceToken) < minimumOperatorLength || len(cfg.heptaServiceToken) > maximumOperatorLength {
+		cfg.errors = append(cfg.errors, fmt.Sprintf("%s must contain between %d and %d bytes", envHeptaServiceToken, minimumOperatorLength, maximumOperatorLength))
 	}
 
 	if raw := strings.TrimSpace(env[envMatchTickRate]); raw != "" {

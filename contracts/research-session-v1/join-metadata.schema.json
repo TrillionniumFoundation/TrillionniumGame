@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/nakama/research-session-v1/join-metadata.schema.json",
+  "title": "Research Session Join Metadata V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["authorization_id"],
+  "properties": {"authorization_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}}
+}

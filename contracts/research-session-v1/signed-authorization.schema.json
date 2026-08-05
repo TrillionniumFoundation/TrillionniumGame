@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/nakama/research-session-v1/signed-authorization.schema.json",
+  "title": "Research Session Signed Authorization V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["claim", "issuer_key_id", "signature"],
+  "properties": {
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "authorization_id", "session_id", "team_id", "paper_project_id", "challenge_id", "agent_id", "agent_did", "agent_key_id", "agent_public_key", "subject_user_id", "participant_slot", "role", "roster_version", "roster_root", "ruleset_hash", "challenge_snapshot_hash", "issued_at_unix", "expires_at_unix"],
+      "properties": {
+        "schema": {"const": "trnm.research-session.authorization.v1"},
+        "authorization_id": {"$ref": "#/$defs/uuid"},
+        "session_id": {"$ref": "#/$defs/session_id"},
+        "team_id": {"$ref": "#/$defs/uuid"},
+        "paper_project_id": {"$ref": "#/$defs/uuid"},
+        "challenge_id": {"$ref": "#/$defs/uuid"},
+        "agent_id": {"$ref": "#/$defs/text"},
+        "agent_did": {"$ref": "#/$defs/text"},
+        "agent_key_id": {"$ref": "#/$defs/text"},
+        "agent_public_key": {"type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$"},
+        "subject_user_id": {"$ref": "#/$defs/uuid"},
+        "participant_slot": {"type": "integer", "minimum": 1, "maximum": 5},
+        "role": {"$ref": "#/$defs/text"},
+        "roster_version": {"$ref": "#/$defs/positive_u64"},
+        "roster_root": {"$ref": "#/$defs/digest"},
+        "ruleset_hash": {"$ref": "#/$defs/digest"},
+        "challenge_snapshot_hash": {"$ref": "#/$defs/digest"},
+        "issued_at_unix": {"type": "integer", "minimum": 0},
+        "expires_at_unix": {"type": "integer", "minimum": 1}
+      }
+    },
+    "issuer_key_id": {"$ref": "#/$defs/text"},
+    "signature": {"$ref": "#/$defs/signature"}
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "signature": {"type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$"},
+    "positive_u64": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+  }
+}

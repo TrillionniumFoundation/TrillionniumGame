@@ -1,6 +1,6 @@
 # Trillionnium Nakama
 
-Independent real-time match authority for Trillionnium.
+Independent real-time match and Paper Raid session authority for Trillionnium.
 
 The active P0 slice, `nakama-authoritative-match-evidence-v1`, implements a
 fixed two-participant authoritative match, durable command/event evidence,
@@ -11,6 +11,16 @@ proofs remain in Chain.
 
 This is not yet a production or release claim. P0 is single-host, Integration
 remains blocked, and real Hepta/Chain compatibility must be locked separately.
+
+The additive `trnm_nakama_research_session_v1` surface implements the Paper
+Raid P0/P2 slice: complete 3–5-member Hepta authorization epochs, durable
+all-ready admission, signed and ordered external-Agent actions, reconnect and
+cursor catch-up, single-slot Agent key rotation, independently recomputable
+event/roster/archive roots, and a Nakama-signed cooperative completion. Agent
+release acknowledgement is explicitly not human authorship consent. Exact
+authorization-consumption and completion requests are retried until Nakama has
+verified and durably stored a signed Hepta ACK. See
+[contracts/RESEARCH_SESSION_V1.md](contracts/RESEARCH_SESSION_V1.md).
 
 ## Start work
 
@@ -23,6 +33,12 @@ Run all local acceptance gates with:
 
 ```bash
 bash scripts/check-nakama-p0.sh
+```
+
+Run the Paper Raid gates with:
+
+```bash
+make paper-raid-check
 ```
 
 The gate validates the contract vectors, core and restart tests, a pinned image

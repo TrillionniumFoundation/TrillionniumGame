@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/nakama/research-session-v1/completion.schema.json",
+  "title": "Research Session Cooperative Completion V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "commitment_id", "session_id", "team_id", "paper_project_id", "challenge_id", "roster_version", "roster_root", "terminal_facts", "event_count", "event_root", "archive_hash", "ruleset_hash", "challenge_snapshot_hash", "completed_at_unix", "authority_key_id", "signature"],
+  "properties": {
+    "schema": {"const": "trnm.research-session.completed.v1"},
+    "commitment_id": {"$ref": "#/$defs/digest"},
+    "session_id": {"$ref": "#/$defs/session_id"},
+    "team_id": {"$ref": "#/$defs/uuid"},
+    "paper_project_id": {"$ref": "#/$defs/uuid"},
+    "challenge_id": {"$ref": "#/$defs/uuid"},
+    "roster_version": {"$ref": "#/$defs/positive_u64"},
+    "roster_root": {"$ref": "#/$defs/digest"},
+    "terminal_facts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["result_code", "paper_bundle_hash", "paper_release_candidate_hash", "contribution_ledger_hash"],
+      "properties": {
+        "result_code": {"$ref": "#/$defs/text"},
+        "paper_bundle_hash": {"$ref": "#/$defs/digest"},
+        "paper_release_candidate_hash": {"$ref": "#/$defs/digest"},
+        "contribution_ledger_hash": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "event_count": {"$ref": "#/$defs/positive_u64"},
+    "event_root": {"$ref": "#/$defs/digest"},
+    "archive_hash": {"$ref": "#/$defs/digest"},
+    "ruleset_hash": {"$ref": "#/$defs/digest"},
+    "challenge_snapshot_hash": {"$ref": "#/$defs/digest"},
+    "completed_at_unix": {"type": "integer", "minimum": 0},
+    "authority_key_id": {"$ref": "#/$defs/text"},
+    "signature": {"$ref": "#/$defs/signature"}
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "signature": {"type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$"},
+    "positive_u64": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+  }
+}

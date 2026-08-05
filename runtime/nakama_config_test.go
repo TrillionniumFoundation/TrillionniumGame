@@ -22,11 +22,13 @@ func TestLoadModuleConfigReady(t *testing.T) {
 		"hepta-test-v1": base64.StdEncoding.EncodeToString(issuerPublic),
 	})
 	env := map[string]string{
-		envIssuerKeys:       string(issuerJSON),
-		envAuthorityKeyID:   "nakama-test-v1",
-		envAuthorityPrivate: base64.StdEncoding.EncodeToString(authorityPrivate.Seed()),
-		envOperatorToken:    "0123456789abcdef0123456789abcdef",
-		envMatchTickRate:    "10",
+		envIssuerKeys:        string(issuerJSON),
+		envAuthorityKeyID:    "nakama-test-v1",
+		envAuthorityPrivate:  base64.StdEncoding.EncodeToString(authorityPrivate.Seed()),
+		envOperatorToken:     "0123456789abcdef0123456789abcdef",
+		envMatchTickRate:     "10",
+		envHeptaBaseURL:      "http://hepta-research-league:8088",
+		envHeptaServiceToken: "abcdef0123456789abcdef0123456789",
 	}
 	cfg := loadModuleConfig(env)
 	if err := cfg.ready(); err != nil {

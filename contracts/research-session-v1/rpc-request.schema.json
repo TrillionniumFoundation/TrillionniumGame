@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/nakama/research-session-v1/rpc-request.schema.json",
+  "title": "Research Session RPC Requests V1",
+  "oneOf": [
+    {"$ref": "#/$defs/create"},
+    {"$ref": "#/$defs/resume"},
+    {"$ref": "#/$defs/evidence"},
+    {"$ref": "#/$defs/archive"},
+    {"$ref": "#/$defs/complete"},
+    {"$ref": "#/$defs/replace"}
+  ],
+  "$defs": {
+    "text": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "operator": {"type": "string", "minLength": 32, "maxLength": 4096},
+    "authorizations": {"type": "array", "minItems": 3, "maxItems": 5, "items": {"$ref": "signed-authorization.schema.json"}},
+    "create": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "operator_token", "authorizations"],
+      "properties": {"schema": {"const": "trnm.nakama.research-session.create.v1"}, "operator_token": {"$ref": "#/$defs/operator"}, "authorizations": {"$ref": "#/$defs/authorizations"}}
+    },
+    "resume": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "operator_token", "logical_session_id"],
+      "properties": {"schema": {"const": "trnm.nakama.research-session.resume.v1"}, "operator_token": {"$ref": "#/$defs/operator"}, "logical_session_id": {"$ref": "#/$defs/session_id"}}
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "logical_session_id"],
+      "properties": {"schema": {"const": "trnm.nakama.research-session.get-evidence.v1"}, "logical_session_id": {"$ref": "#/$defs/session_id"}, "authorization_id": {"$ref": "#/$defs/uuid"}, "operator_token": {"$ref": "#/$defs/operator"}},
+      "oneOf": [{"required": ["authorization_id"], "not": {"required": ["operator_token"]}}, {"required": ["operator_token"], "not": {"required": ["authorization_id"]}}]
+    },
+    "archive": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "logical_session_id", "after_sequence"],
+      "properties": {"schema": {"const": "trnm.nakama.research-session.get-archive.v1"}, "logical_session_id": {"$ref": "#/$defs/session_id"}, "after_sequence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "limit": {"type": "integer", "minimum": 1, "maximum": 128}, "authorization_id": {"$ref": "#/$defs/uuid"}, "operator_token": {"$ref": "#/$defs/operator"}},
+      "oneOf": [{"required": ["authorization_id"], "not": {"required": ["operator_token"]}}, {"required": ["operator_token"], "not": {"required": ["authorization_id"]}}]
+    },
+    "terminal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["result_code", "paper_bundle_hash", "paper_release_candidate_hash", "contribution_ledger_hash"],
+      "properties": {"result_code": {"$ref": "#/$defs/text"}, "paper_bundle_hash": {"$ref": "#/$defs/digest"}, "paper_release_candidate_hash": {"$ref": "#/$defs/digest"}, "contribution_ledger_hash": {"$ref": "#/$defs/digest"}}
+    },
+    "complete": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "operator_token", "logical_session_id", "facts"],
+      "properties": {"schema": {"const": "trnm.nakama.research-session.complete.v1"}, "operator_token": {"$ref": "#/$defs/operator"}, "logical_session_id": {"$ref": "#/$defs/session_id"}, "facts": {"$ref": "#/$defs/terminal"}}
+    },
+    "replace": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "operator_token", "logical_session_id", "authorizations"],
+      "properties": {"schema": {"const": "trnm.nakama.research-session.replace-roster.v1"}, "operator_token": {"$ref": "#/$defs/operator"}, "logical_session_id": {"$ref": "#/$defs/session_id"}, "authorizations": {"$ref": "#/$defs/authorizations"}}
+    }
+  }
+}

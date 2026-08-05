@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/nakama/research-session-v1/rpc-response.schema.json",
+  "title": "Research Session RPC Responses V1",
+  "oneOf": [{"$ref": "#/$defs/runtime"}, {"$ref": "#/$defs/evidence"}, {"$ref": "#/$defs/archive"}],
+  "$defs": {
+    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "positive": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "base": {
+      "properties": {"logical_session_id": {"$ref": "#/$defs/session_id"}, "external_match_id": {"type": "string", "minLength": 1}, "runtime_generation": {"$ref": "#/$defs/positive"}}
+    },
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "logical_session_id", "runtime_generation", "status", "session_version", "roster_version", "roster_root"],
+      "properties": {"schema": {"const": "trnm.nakama.research-session.match-runtime.v1"}, "logical_session_id": {"$ref": "#/$defs/session_id"}, "external_match_id": {"type": "string", "minLength": 1}, "runtime_generation": {"$ref": "#/$defs/positive"}, "status": {"enum": ["created", "waiting", "ready", "active", "paused", "completed"]}, "session_version": {"$ref": "#/$defs/positive"}, "roster_version": {"$ref": "#/$defs/positive"}, "roster_root": {"$ref": "#/$defs/digest"}}
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "logical_session_id", "runtime_generation", "completion", "authority_public_key_base64"],
+      "properties": {"schema": {"const": "trnm.nakama.research-session.evidence.v1"}, "logical_session_id": {"$ref": "#/$defs/session_id"}, "external_match_id": {"type": "string", "minLength": 1}, "runtime_generation": {"$ref": "#/$defs/positive"}, "completion": {"$ref": "completion.schema.json"}, "authority_public_key_base64": {"type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$"}}
+    },
+    "roster_entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["participant_slot", "authorization_id", "subject_user_id", "agent_id", "agent_did", "agent_key_id", "agent_key_hash", "role"],
+      "properties": {"participant_slot": {"type": "integer", "minimum": 1, "maximum": 5}, "authorization_id": {"$ref": "#/$defs/uuid"}, "subject_user_id": {"$ref": "#/$defs/uuid"}, "agent_id": {"type": "string", "minLength": 1}, "agent_did": {"type": "string", "minLength": 1}, "agent_key_id": {"type": "string", "minLength": 1}, "agent_key_hash": {"$ref": "#/$defs/digest"}, "role": {"type": "string", "minLength": 1}}
+    },
+    "participant": {
+      "type": "object", "additionalProperties": false,
+      "required": ["participant_slot", "authorization_id", "subject_user_id", "agent_id", "role", "joined", "connected", "ready", "last_action_sequence"],
+      "properties": {"participant_slot": {"type": "integer", "minimum": 1, "maximum": 5}, "authorization_id": {"$ref": "#/$defs/uuid"}, "subject_user_id": {"$ref": "#/$defs/uuid"}, "agent_id": {"type": "string", "minLength": 1}, "role": {"type": "string", "minLength": 1}, "joined": {"type": "boolean"}, "connected": {"type": "boolean"}, "ready": {"type": "boolean"}, "last_action_sequence": {"type": "integer", "minimum": 0}, "acknowledgement_reference_hash": {"$ref": "#/$defs/digest"}}
+    },
+    "archive": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "logical_session_id", "runtime_generation", "status", "session_version", "roster_version", "roster_root", "event_count", "after_sequence", "next_after_sequence", "has_more", "events", "roster", "participants"],
+      "properties": {"schema": {"const": "trnm.nakama.research-session.archive.v1"}, "logical_session_id": {"$ref": "#/$defs/session_id"}, "external_match_id": {"type": "string", "minLength": 1}, "runtime_generation": {"$ref": "#/$defs/positive"}, "status": {"enum": ["created", "waiting", "ready", "active", "paused", "completed"]}, "session_version": {"$ref": "#/$defs/positive"}, "roster_version": {"$ref": "#/$defs/positive"}, "roster_root": {"$ref": "#/$defs/digest"}, "event_count": {"type": "integer", "minimum": 0}, "after_sequence": {"type": "integer", "minimum": 0}, "next_after_sequence": {"type": "integer", "minimum": 0}, "has_more": {"type": "boolean"}, "events": {"type": "array", "items": {"$ref": "event.schema.json"}, "maxItems": 128}, "roster": {"type": "array", "minItems": 3, "maxItems": 5, "items": {"$ref": "#/$defs/roster_entry"}}, "participants": {"type": "array", "minItems": 3, "maxItems": 5, "items": {"$ref": "#/$defs/participant"}}}
+    }
+  }
+}

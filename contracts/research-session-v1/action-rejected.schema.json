@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/nakama/research-session-v1/action-rejected.schema.json",
+  "title": "Research Session Action Rejected V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "reason"],
+  "properties": {
+    "schema": {"const": "trnm.research-session.action-rejected.v1"},
+    "action_id": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\\u0000]+$"}
+  }
+}

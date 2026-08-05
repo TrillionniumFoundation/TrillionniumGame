@@ -25,6 +25,9 @@ must use restricted secret/config mounts or an equivalent secret manager.
 The important runtime keys are:
 
 - `TRNM_HEPTA_ISSUER_KEYS`: JSON map from trusted key id to Ed25519 public key;
+- `TRNM_HEPTA_BASE_URL` and `TRNM_HEPTA_SERVICE_TOKEN`: the HTTPS callback
+  endpoint and service credential used for durable Paper Raid consumption and
+  completion delivery;
 - `TRNM_NAKAMA_AUTHORITY_KEY_ID` and
   `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY`: completion-signing identity;
 - `TRNM_NAKAMA_OPERATOR_TOKEN`: at least 32 random bytes for privileged create,
@@ -74,12 +77,16 @@ The default host port is dynamically allocated and bound to `127.0.0.1`. Only
 the HTTP/realtime port is published. PostgreSQL, gRPC, and console ports are not
 published. Set a unique `TRNM_NAKAMA_COMPOSE_PROJECT` for each concurrent run.
 
-Nakama is configured to stop an authoritative runtime after 300 consecutive
-seconds with no presences. The P0 adapter also limits each runtime generation
-to six hours (measured by authoritative ticks); reaching it stops that in-memory
-instance without inventing completion evidence. The durable logical match
-remains operator-only resumable under a new fenced generation. These are
-resource-lifecycle limits, not gameplay timeouts or authority results.
+Nakama is configured with an eight-day (`691200` second) empty-runtime grace
+period so a seven-day Paper Raid and a temporary Hepta callback outage are not
+mistaken for abandonment. Both adapters still limit each ordinary runtime
+generation to six hours (measured by authoritative ticks); reaching it stops
+that in-memory instance without inventing completion evidence. A completed
+Paper Raid with an undelivered signed-ACK outbox stays alive beyond that
+generation boundary. Durable logical sessions remain operator-resumable, and a
+completion evidence read can start a delivery-only recovery runtime after
+SIGKILL. These are resource-lifecycle limits, not research deadlines or
+authority results.
 
 Both services use a read-only root filesystem, `no-new-privileges`, and dropped
 capabilities. PostgreSQL is attached only to the internal backend and receives
@@ -118,6 +125,14 @@ External Nakama match ids are ephemeral. Recovery addresses the stable logical
 Consumed authorization ids, command fingerprints, participant/global sequence,
 events, roots, completion bytes, and signature are durable and must be identical
 after retry or restart.
+
+Paper Raid uses the same rule with stable `session_id`, plus a complete
+authorization-consumption outbox for every session epoch and one completion
+outbox. Local state advances before network delivery. Retries retain the exact
+JSON bytes, SHA-256, and idempotency key; only an exact, pinned-issuer Ed25519
+ACK with `Content-Type: application/json` marks delivery. Redirects are never
+followed while carrying the Hepta token. Persisted receipt bytes and checksums
+are signature-verified again at every restore.
 
 P0 permits one active instance per logical match. Optimistic storage conflicts
 mean a second writer exists; alert and fail closed rather than retrying both.

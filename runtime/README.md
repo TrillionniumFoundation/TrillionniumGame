@@ -1,5 +1,16 @@
 # Runtime modules
 
-Nakama runtime implementation belongs here. Begin with an explicit module
-manifest and versioned request/event schemas. Do not migrate mixed World
-game-server code wholesale; extract one owned capability at a time with tests.
+This module registers two independent authoritative surfaces:
+
+- `trnm_authoritative_match_v1` preserves the fixed two-participant match v1.
+- `trnm_research_session_v1` owns Paper Raid admission, presence, ordered
+  external-Agent actions, durable archive/cursor recovery, authorization-epoch
+  key rotation, and signed cooperative completion for 3–5 participants.
+
+Paper/project bytes never enter Nakama state. Actions carry typed payload bytes
+and content-addressed references; Hepta owns long-lived research facts and
+human authorship consent. Completion and authorization consumption are local
+durable facts first, then exact-body outboxes retry until a signed ACK verifies
+against the pinned Hepta issuer map. A 2xx response alone never marks delivery.
+
+Run the focused short gates with `make paper-raid-check`.

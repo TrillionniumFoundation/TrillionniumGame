@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/nakama/research-session-v1/event.schema.json",
+  "title": "Research Session Event V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "event_id", "event_type", "session_id", "team_id", "paper_project_id", "challenge_id", "roster_version", "sequence", "causation_id", "occurred_at_unix", "participant_slot", "session_version", "action_type", "payload_type", "payload", "payload_hash", "reference_hash", "event_hash"],
+  "properties": {
+    "schema": {"const": "trnm.research-session.event.v1"},
+    "event_id": {"$ref": "#/$defs/digest"},
+    "event_type": {"enum": ["participant_joined", "participant_disconnected", "participant_reconnected", "research_action_applied", "roster_replaced", "research_session_completed"]},
+    "session_id": {"$ref": "#/$defs/session_id"},
+    "team_id": {"$ref": "#/$defs/uuid"},
+    "paper_project_id": {"$ref": "#/$defs/uuid"},
+    "challenge_id": {"$ref": "#/$defs/uuid"},
+    "roster_version": {"$ref": "#/$defs/positive_u64"},
+    "sequence": {"$ref": "#/$defs/positive_u64"},
+    "causation_id": {"$ref": "#/$defs/text"},
+    "occurred_at_unix": {"type": "integer", "minimum": 0},
+    "participant_slot": {"type": "integer", "minimum": 0, "maximum": 5},
+    "session_version": {"$ref": "#/$defs/positive_u64"},
+    "action_type": {"$ref": "#/$defs/text"},
+    "payload_type": {"$ref": "#/$defs/text"},
+    "payload": {"type": "string", "minLength": 4, "maxLength": 87384, "pattern": "^[A-Za-z0-9+/]+={0,2}$"},
+    "payload_hash": {"$ref": "#/$defs/digest"},
+    "reference_hash": {"$ref": "#/$defs/digest"},
+    "event_hash": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "positive_u64": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+  }
+}

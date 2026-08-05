@@ -34,7 +34,8 @@ const (
 )
 
 type moduleRuntime struct {
-	config moduleConfig
+	config     moduleConfig
+	httpClient researchHTTPClient
 }
 
 var errInvalidArchiveCursor = errors.New("archive cursor or page limit is invalid")

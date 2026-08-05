@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+cd "$root"
+bash scripts/project-preflight.sh --dev
+
+docker_cmd=()
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  docker_cmd=(docker)
+elif command -v sudo >/dev/null 2>&1 && sudo -n docker info >/dev/null 2>&1; then
+  docker_cmd=(sudo -n docker)
+else
+  echo "ERROR: Docker access is required for the pinned Go restart gate" >&2
+  exit 1
+fi
+image='heroiclabs/nakama-pluginbuilder:3.40.0@sha256:0455a119585914341672fc17f3c4195a7a21714ecb85cdf7dacbdc47769aed4c'
+pattern='Test(Restart|ConsumptionOutbox|CompletionOutbox|AdmissionExpiry|Replacement)'
+"${docker_cmd[@]}" run --rm --read-only --entrypoint go \
+  --tmpfs /tmp:rw,exec,nosuid,nodev \
+  -e GOCACHE=/tmp/go-build -e GOMODCACHE=/tmp/go-mod -e GOTOOLCHAIN=local \
+  -v "$root:/repo:ro" -w /repo/runtime "$image" \
+  test -count=1 -mod=readonly -run "$pattern" ./...
+echo "Paper Raid restart, expiry, epoch and durable callback recovery: PASS"

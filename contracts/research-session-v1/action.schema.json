@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/nakama/research-session-v1/action.schema.json",
+  "title": "Research Session Agent Action V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "action_id", "authorization_id", "session_id", "team_id", "paper_project_id", "challenge_id", "roster_version", "participant_slot", "participant_sequence", "expected_session_version", "issued_at_unix", "action_type", "payload_type", "payload", "payload_hash", "reference_hash", "agent_key_id", "signature"],
+  "properties": {
+    "schema": {"const": "trnm.research-session.action.v1"},
+    "action_id": {"$ref": "#/$defs/text"},
+    "authorization_id": {"$ref": "#/$defs/uuid"},
+    "session_id": {"$ref": "#/$defs/session_id"},
+    "team_id": {"$ref": "#/$defs/uuid"},
+    "paper_project_id": {"$ref": "#/$defs/uuid"},
+    "challenge_id": {"$ref": "#/$defs/uuid"},
+    "roster_version": {"$ref": "#/$defs/positive_u64"},
+    "participant_slot": {"type": "integer", "minimum": 1, "maximum": 5},
+    "participant_sequence": {"$ref": "#/$defs/positive_u64"},
+    "expected_session_version": {"$ref": "#/$defs/positive_u64"},
+    "issued_at_unix": {"type": "integer", "minimum": 0},
+    "action_type": {"enum": ["participant.ready", "research.task.claimed", "agent.proposal.submitted", "artifact.manifest.published", "review.submitted", "checkpoint.recorded", "paper.release.acknowledged"]},
+    "payload_type": {"enum": ["trnm.research-session.ready.v1", "trnm.paper-raid.task-claim.v1", "trnm.paper-raid.agent-proposal.v1", "trnm.paper-raid.artifact-manifest.v1", "trnm.paper-raid.review.v1", "trnm.paper-raid.checkpoint.v1", "trnm.paper-raid.release-acknowledgement.v1"]},
+    "payload": {"type": "string", "minLength": 4, "maxLength": 87384, "pattern": "^[A-Za-z0-9+/]+={0,2}$"},
+    "payload_hash": {"$ref": "#/$defs/digest"},
+    "reference_hash": {"$ref": "#/$defs/digest"},
+    "agent_key_id": {"$ref": "#/$defs/text"},
+    "signature": {"$ref": "#/$defs/signature"}
+  },
+  "oneOf": [
+    {"properties": {"action_type": {"const": "participant.ready"}, "payload_type": {"const": "trnm.research-session.ready.v1"}}, "required": ["action_type", "payload_type"]},
+    {"properties": {"action_type": {"const": "research.task.claimed"}, "payload_type": {"const": "trnm.paper-raid.task-claim.v1"}}, "required": ["action_type", "payload_type"]},
+    {"properties": {"action_type": {"const": "agent.proposal.submitted"}, "payload_type": {"const": "trnm.paper-raid.agent-proposal.v1"}}, "required": ["action_type", "payload_type"]},
+    {"properties": {"action_type": {"const": "artifact.manifest.published"}, "payload_type": {"const": "trnm.paper-raid.artifact-manifest.v1"}}, "required": ["action_type", "payload_type"]},
+    {"properties": {"action_type": {"const": "review.submitted"}, "payload_type": {"const": "trnm.paper-raid.review.v1"}}, "required": ["action_type", "payload_type"]},
+    {"properties": {"action_type": {"const": "checkpoint.recorded"}, "payload_type": {"const": "trnm.paper-raid.checkpoint.v1"}}, "required": ["action_type", "payload_type"]},
+    {"properties": {"action_type": {"const": "paper.release.acknowledged"}, "payload_type": {"const": "trnm.paper-raid.release-acknowledgement.v1"}}, "required": ["action_type", "payload_type"]}
+  ],
+  "$defs": {
+    "text": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "signature": {"type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$"},
+    "positive_u64": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+  }
+}

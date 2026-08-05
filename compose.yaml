@@ -49,6 +49,8 @@ services:
       NAKAMA_SESSION_ENCRYPTION_KEY: ${NAKAMA_SESSION_ENCRYPTION_KEY:?NAKAMA_SESSION_ENCRYPTION_KEY is required}
       NAKAMA_SESSION_REFRESH_ENCRYPTION_KEY: ${NAKAMA_SESSION_REFRESH_ENCRYPTION_KEY:?NAKAMA_SESSION_REFRESH_ENCRYPTION_KEY is required}
       TRNM_HEPTA_ISSUER_KEYS: ${TRNM_HEPTA_ISSUER_KEYS:?TRNM_HEPTA_ISSUER_KEYS is required}
+      TRNM_HEPTA_BASE_URL: ${TRNM_HEPTA_BASE_URL:?TRNM_HEPTA_BASE_URL is required}
+      TRNM_HEPTA_SERVICE_TOKEN: ${TRNM_HEPTA_SERVICE_TOKEN:?TRNM_HEPTA_SERVICE_TOKEN is required}
       TRNM_NAKAMA_AUTHORITY_KEY_ID: ${TRNM_NAKAMA_AUTHORITY_KEY_ID:?TRNM_NAKAMA_AUTHORITY_KEY_ID is required}
       TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY: ${TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY:?TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY is required}
       TRNM_NAKAMA_DB_PASSWORD: ${TRNM_NAKAMA_DB_PASSWORD:?TRNM_NAKAMA_DB_PASSWORD is required}
@@ -95,6 +97,10 @@ services:
           escaped=$$(printf '%s' "$$1" | sed "s/'/''/g")
           printf "    - '%s'\n" "$$escaped" >>"$$config"
         }
+        # A Paper Raid may span seven days, and a completed delivery-only
+        # runtime must remain available while Hepta is temporarily down.
+        # Durable resume still covers host/process outages beyond this bounded
+        # live-runtime grace period.
         printf '%s\n' \
           'name: trnm-nakama-p0' \
           'database:' \
@@ -103,7 +109,7 @@ services:
           'logger:' \
           '  level: INFO' \
           'match:' \
-          '  max_empty_sec: 300' \
+          '  max_empty_sec: 691200' \
           'console:' \
           '  username: trnm-console' \
           "  password: \"$${NAKAMA_CONSOLE_PASSWORD}\"" \
@@ -113,6 +119,8 @@ services:
           '  env:' \
           >"$$config"
         append_runtime_env "TRNM_HEPTA_ISSUER_KEYS=$${TRNM_HEPTA_ISSUER_KEYS}"
+        append_runtime_env "TRNM_HEPTA_BASE_URL=$${TRNM_HEPTA_BASE_URL}"
+        append_runtime_env "TRNM_HEPTA_SERVICE_TOKEN=$${TRNM_HEPTA_SERVICE_TOKEN}"
         append_runtime_env "TRNM_NAKAMA_AUTHORITY_KEY_ID=$${TRNM_NAKAMA_AUTHORITY_KEY_ID}"
         append_runtime_env "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY=$${TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY}"
         append_runtime_env "TRNM_NAKAMA_OPERATOR_TOKEN=$${TRNM_NAKAMA_OPERATOR_TOKEN}"

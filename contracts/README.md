@@ -57,3 +57,23 @@ another language can reproduce every signature byte. They are test fixtures,
 not credentials, and must never be copied into any deployed environment.
 `scripts/verify-nakama-golden.mjs` uses only Node.js built-ins and recomputes
 the public keys, frames, hashes, Merkle root, and signatures from those inputs.
+
+## Paper Raid research session
+
+`trnm_nakama_research_session_v1` is an additive cooperative 3–5 participant
+contract. Its normative framing and ownership boundary are in
+[RESEARCH_SESSION_V1.md](RESEARCH_SESSION_V1.md), strict Draft 2020-12 schemas
+are under `research-session-v1/`, and the full reachable three-member archive
+fixture is `research-session-golden-vectors.json`. The v1 two-participant match
+contract and its tracked vectors remain byte-for-byte compatible.
+
+The research-session contract treats `roster_version` as a Nakama session
+authorization epoch, supports only same-human/same-Agent single-slot signing
+key rotation, and requires all current Agents to acknowledge one release hash
+before cooperative completion. Human authorship consent remains a Hepta fact.
+It also freezes the two signed Hepta callback receipts that Nakama must verify
+before marking an authorization epoch or completion delivered.
+
+Run `bash scripts/check-nakama-research-contract.sh` to validate every schema,
+semantic action pair, independent Node verifier, and the exact pinned Go
+fixture generator.

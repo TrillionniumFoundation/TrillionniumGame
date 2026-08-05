@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/nakama/research-session-v1/authorization-consumption-receipt.schema.json",
+  "title": "Signed Hepta Authorization Set Consumption Receipt V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "session_id", "team_id", "paper_project_id", "challenge_id", "session_roster_version", "roster_root", "authorization_ids", "consumed_at_unix", "issuer_key_id", "signature"],
+  "properties": {
+    "schema": {"const": "hepta.paper_raid.authorization_set_consumption_receipt.v1"},
+    "session_id": {"$ref": "#/$defs/session_id"},
+    "team_id": {"$ref": "#/$defs/uuid"},
+    "paper_project_id": {"$ref": "#/$defs/uuid"},
+    "challenge_id": {"$ref": "#/$defs/uuid"},
+    "session_roster_version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "roster_root": {"$ref": "#/$defs/digest"},
+    "authorization_ids": {"type": "array", "minItems": 3, "maxItems": 5, "uniqueItems": true, "items": {"$ref": "#/$defs/uuid"}},
+    "consumed_at_unix": {"type": "integer", "minimum": 0},
+    "issuer_key_id": {"$ref": "#/$defs/text"},
+    "signature": {"$ref": "#/$defs/signature"}
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "signature": {"type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$"}
+  }
+}
