@@ -9,7 +9,8 @@ import (
 	"testing"
 )
 
-func TestLoadModuleConfigReady(t *testing.T) {
+func validModuleConfigEnv(t *testing.T) (map[string]string, ed25519.PublicKey, ed25519.PrivateKey) {
+	t.Helper()
 	issuerPublic, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -21,7 +22,7 @@ func TestLoadModuleConfigReady(t *testing.T) {
 	issuerJSON, _ := json.Marshal(map[string]string{
 		"hepta-test-v1": base64.StdEncoding.EncodeToString(issuerPublic),
 	})
-	env := map[string]string{
+	return map[string]string{
 		envIssuerKeys:        string(issuerJSON),
 		envAuthorityKeyID:    "nakama-test-v1",
 		envAuthorityPrivate:  base64.StdEncoding.EncodeToString(authorityPrivate.Seed()),
@@ -29,7 +30,11 @@ func TestLoadModuleConfigReady(t *testing.T) {
 		envMatchTickRate:     "10",
 		envHeptaBaseURL:      "http://hepta-research-league:8088",
 		envHeptaServiceToken: "abcdef0123456789abcdef0123456789",
-	}
+	}, issuerPublic, authorityPrivate
+}
+
+func TestLoadModuleConfigReady(t *testing.T) {
+	env, _, _ := validModuleConfigEnv(t)
 	cfg := loadModuleConfig(env)
 	if err := cfg.ready(); err != nil {
 		t.Fatalf("expected ready configuration, got %v", err)
@@ -68,17 +73,40 @@ func TestLoadModuleConfigRejectsOversizedOperatorToken(t *testing.T) {
 }
 
 func TestLoadModuleConfigRejectsNonCanonicalIssuerKeyID(t *testing.T) {
-	issuerPublic, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
+	tests := []string{" hepta-test-v1 ", "hepta\ntest", "hepta/test", "签名者", strings.Repeat("a", 129)}
+	for _, keyID := range tests {
+		t.Run(base64.RawURLEncoding.EncodeToString([]byte(keyID)), func(t *testing.T) {
+			env, issuerPublic, _ := validModuleConfigEnv(t)
+			issuerJSON, _ := json.Marshal(map[string]string{keyID: base64.StdEncoding.EncodeToString(issuerPublic)})
+			env[envIssuerKeys] = string(issuerJSON)
+			cfg := loadModuleConfig(env)
+			if err := cfg.ready(); err == nil || !strings.Contains(err.Error(), envIssuerKeys) {
+				t.Fatal("noncanonical issuer key id was accepted")
+			}
+		})
 	}
-	issuerJSON, _ := json.Marshal(map[string]string{
-		" hepta-test-v1 ": base64.StdEncoding.EncodeToString(issuerPublic),
+}
+
+func TestLoadModuleConfigRequiresCredentialAndKeyRoleSeparation(t *testing.T) {
+	t.Run("operator and Hepta service token", func(t *testing.T) {
+		env, _, _ := validModuleConfigEnv(t)
+		env[envHeptaServiceToken] = env[envOperatorToken]
+		cfg := loadModuleConfig(env)
+		if err := cfg.ready(); err == nil || !strings.Contains(err.Error(), "distinct credentials") {
+			t.Fatal("operator and Hepta callback credentials were allowed to alias")
+		}
 	})
-	cfg := loadModuleConfig(map[string]string{envIssuerKeys: string(issuerJSON)})
-	if err := cfg.ready(); err == nil {
-		t.Fatal("issuer key id with surrounding whitespace was accepted")
-	}
+	t.Run("Nakama authority and Hepta issuer key", func(t *testing.T) {
+		env, _, authorityPrivate := validModuleConfigEnv(t)
+		issuerJSON, _ := json.Marshal(map[string]string{
+			"hepta-test-v1": base64.StdEncoding.EncodeToString(authorityPrivate.Public().(ed25519.PublicKey)),
+		})
+		env[envIssuerKeys] = string(issuerJSON)
+		cfg := loadModuleConfig(env)
+		if err := cfg.ready(); err == nil || !strings.Contains(err.Error(), "must differ from Hepta issuer key") {
+			t.Fatal("Nakama completion authority was allowed to alias a Hepta issuer key")
+		}
+	})
 }
 
 func TestDecodePrivateKeyRejectsInconsistentSuffix(t *testing.T) {

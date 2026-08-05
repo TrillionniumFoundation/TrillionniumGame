@@ -37,6 +37,12 @@ Local Nakama service keys also include independent server, session, runtime
 HTTP, console-password, and console-signing secrets. The Compose profile sets a
 non-default console username and never publishes the console port.
 
+Cryptographic and credential roles are fail-closed: the Nakama operator token
+must differ from the Hepta callback service token, and the Nakama completion
+authority public key must differ from every pinned Hepta issuer public key.
+Issuer and authority key ids contain only `A-Za-z0-9._:-` and are limited to
+128 bytes; whitespace, controls, and non-ASCII lookalikes are rejected.
+
 The local PostgreSQL and Nakama configuration secrets are restricted to
 `A-Za-z0-9._~-`; this prevents YAML/DSN injection in the ephemeral mode-0600
 config file. Generate at least 32 random characters from that alphabet.

@@ -54,7 +54,7 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 			for rawKeyID, value := range encoded {
 				keyID := strings.TrimSpace(rawKeyID)
 				if keyID == "" || keyID != rawKeyID || !validConfigKeyID(keyID) {
-					cfg.errors = append(cfg.errors, envIssuerKeys+": key ids must be canonical non-empty UTF-8 without surrounding whitespace")
+					cfg.errors = append(cfg.errors, envIssuerKeys+": key ids must contain 1 through 128 ASCII characters from A-Za-z0-9._:-")
 					continue
 				}
 				key, err := decodeKey(value)
@@ -69,7 +69,7 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 
 	cfg.authorityKeyID = strings.TrimSpace(env[envAuthorityKeyID])
 	if cfg.authorityKeyID == "" || cfg.authorityKeyID != env[envAuthorityKeyID] || !validConfigKeyID(cfg.authorityKeyID) {
-		cfg.errors = append(cfg.errors, envAuthorityKeyID+" must be a canonical non-empty UTF-8 key id")
+		cfg.errors = append(cfg.errors, envAuthorityKeyID+" must contain 1 through 128 ASCII characters from A-Za-z0-9._:-")
 	}
 	if raw := strings.TrimSpace(env[envAuthorityPrivate]); raw == "" {
 		cfg.errors = append(cfg.errors, envAuthorityPrivate+" is required")
@@ -95,6 +95,19 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 	if len(cfg.heptaServiceToken) < minimumOperatorLength || len(cfg.heptaServiceToken) > maximumOperatorLength {
 		cfg.errors = append(cfg.errors, fmt.Sprintf("%s must contain between %d and %d bytes", envHeptaServiceToken, minimumOperatorLength, maximumOperatorLength))
 	}
+	if len(cfg.operatorToken) >= minimumOperatorLength && len(cfg.operatorToken) <= maximumOperatorLength &&
+		len(cfg.heptaServiceToken) == len(cfg.operatorToken) &&
+		subtle.ConstantTimeCompare([]byte(cfg.operatorToken), []byte(cfg.heptaServiceToken)) == 1 {
+		cfg.errors = append(cfg.errors, envOperatorToken+" and "+envHeptaServiceToken+" must use distinct credentials")
+	}
+	if len(cfg.authorityPrivateKey) == ed25519.PrivateKeySize {
+		authorityPublic := cfg.authorityPrivateKey.Public().(ed25519.PublicKey)
+		for issuerKeyID, issuerPublic := range cfg.issuerKeys {
+			if len(issuerPublic) == ed25519.PublicKeySize && subtle.ConstantTimeCompare(authorityPublic, issuerPublic) == 1 {
+				cfg.errors = append(cfg.errors, envAuthorityPrivate+" public key must differ from Hepta issuer key "+issuerKeyID)
+			}
+		}
+	}
 
 	if raw := strings.TrimSpace(env[envMatchTickRate]); raw != "" {
 		rate, err := strconv.Atoi(raw)
@@ -109,7 +122,18 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 }
 
 func validConfigKeyID(value string) bool {
-	return utf8.ValidString(value) && utf8.RuneCountInString(value) <= 512 && !strings.ContainsRune(value, '\x00')
+	if !utf8.ValidString(value) || len(value) < 1 || len(value) > 128 {
+		return false
+	}
+	for _, character := range []byte(value) {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '.' || character == '_' ||
+			character == ':' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (c moduleConfig) ready() error {

@@ -71,3 +71,21 @@ never exposed to the client process.
 The P0 gate is repository evidence, not a cross-repository release gate.
 Integration stays `blocked` / `runnable=false` until compatible immutable Chain
 and Hepta artifacts exist.
+
+## Paper Raid acceptance gates
+
+`make paper-raid-check` runs the additive research-session contract, pinned Go
+race/vet, restart/outbox recovery, and real Compose black box. It covers 3-,
+4-, and 5-member authorization epochs; independent Agent keys; all-ready
+actions; disconnect/reconnect and exclusive cursor catch-up; same-human and
+same-Agent single-slot key rotation; SIGKILL recovery; and independent
+reconstruction of roster, event, archive, commitment, and completion-signature
+facts.
+
+The research Compose gate uses a loopback-only ephemeral Hepta callback fixture
+that signs the frozen consumption and completion ACK frames. It holds Hepta
+down across local commitment and Nakama restart, requires retries to reuse the
+exact request body/idempotency key, deliberately returns one signature-tampered
+completion receipt, and proves Nakama remains pending until a valid signed ACK
+is received and persisted. This is protocol black-box evidence, not a claim
+that the separately versioned Hepta service or Chain finality path is deployed.

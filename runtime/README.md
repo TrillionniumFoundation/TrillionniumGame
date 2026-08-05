@@ -13,4 +13,7 @@ human authorship consent. Completion and authorization consumption are local
 durable facts first, then exact-body outboxes retry until a signed ACK verifies
 against the pinned Hepta issuer map. A 2xx response alone never marks delivery.
 
-Run the focused short gates with `make paper-raid-check`.
+Run the focused short gates with `make research-contract research-core
+research-restart`; `make research-compose-smoke` adds the pinned real
+PostgreSQL/Nakama/Hepta-fixture/SIGKILL black box. `make paper-raid-check` runs
+both layers.

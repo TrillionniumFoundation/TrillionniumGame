@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: preflight contract core restart compose-smoke research-contract research-core research-restart paper-raid-check check
+.PHONY: preflight contract core restart compose-smoke research-contract research-core research-restart research-compose-smoke paper-raid-check check
 
 preflight:
 	bash scripts/project-preflight.sh --dev
@@ -26,7 +26,10 @@ research-core: preflight
 research-restart: preflight
 	bash scripts/check-nakama-research-restart.sh
 
-paper-raid-check: research-contract research-core research-restart
+research-compose-smoke: preflight
+	bash scripts/check-nakama-research-compose-smoke.sh
+
+paper-raid-check: research-contract research-core research-restart research-compose-smoke
 
 check:
 	bash scripts/check-nakama-p0.sh

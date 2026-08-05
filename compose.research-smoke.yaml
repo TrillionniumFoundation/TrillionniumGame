@@ -1,0 +1,41 @@
+services:
+  hepta-mock:
+    image: ${TRNM_HEPTA_MOCK_IMAGE:?TRNM_HEPTA_MOCK_IMAGE is required}
+    build:
+      context: ./scripts/blackbox
+      dockerfile: Dockerfile.hepta-mock
+    environment:
+      HEPTA_MOCK_ISSUER_KEY_ID: ${TRNM_HEPTA_ISSUER_KEY_ID:?TRNM_HEPTA_ISSUER_KEY_ID is required}
+      HEPTA_MOCK_ISSUER_PRIVATE_SEED: ${TRNM_HEPTA_ISSUER_PRIVATE_SEED:?TRNM_HEPTA_ISSUER_PRIVATE_SEED is required}
+      HEPTA_MOCK_NAKAMA_AUTHORITY_KEY_ID: ${TRNM_NAKAMA_AUTHORITY_KEY_ID:?TRNM_NAKAMA_AUTHORITY_KEY_ID is required}
+      HEPTA_MOCK_NAKAMA_AUTHORITY_PUBLIC_KEY: ${TRNM_NAKAMA_AUTHORITY_PUBLIC_KEY:?TRNM_NAKAMA_AUTHORITY_PUBLIC_KEY is required}
+      HEPTA_MOCK_SERVICE_TOKEN: ${TRNM_HEPTA_SERVICE_TOKEN:?TRNM_HEPTA_SERVICE_TOKEN is required}
+      HEPTA_MOCK_TEAM_ID: ${TRNM_RESEARCH_TEAM_ID:?TRNM_RESEARCH_TEAM_ID is required}
+      HEPTA_MOCK_PAPER_PROJECT_ID: ${TRNM_RESEARCH_PAPER_PROJECT_ID:?TRNM_RESEARCH_PAPER_PROJECT_ID is required}
+      HEPTA_MOCK_CHALLENGE_ID: ${TRNM_RESEARCH_CHALLENGE_ID:?TRNM_RESEARCH_CHALLENGE_ID is required}
+    volumes:
+      - type: bind
+        source: ${TRNM_HEPTA_MOCK_STATE_DIR:?TRNM_HEPTA_MOCK_STATE_DIR is required}
+        target: /state
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "/hepta-callback-mock", "-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  nakama:
+    depends_on:
+      hepta-mock:
+        condition: service_healthy
+    environment:
+      TRNM_HEPTA_BASE_URL: http://hepta-mock:8080

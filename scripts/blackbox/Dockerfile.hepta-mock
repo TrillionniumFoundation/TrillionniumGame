@@ -1,0 +1,9 @@
+FROM heroiclabs/nakama-pluginbuilder:3.40.0@sha256:0455a119585914341672fc17f3c4195a7a21714ecb85cdf7dacbdc47769aed4c AS builder
+WORKDIR /src
+COPY hepta-callback-mock.go .
+RUN CGO_ENABLED=0 GO111MODULE=off go build -trimpath -ldflags='-s -w -buildid=' -o /out/hepta-callback-mock ./hepta-callback-mock.go
+
+FROM scratch
+COPY --from=builder /out/hepta-callback-mock /hepta-callback-mock
+USER 65532:65532
+ENTRYPOINT ["/hepta-callback-mock"]
