@@ -423,10 +423,10 @@ func (m *moduleRuntime) ensureResearchRuntime(ctx context.Context, nk runtime.Na
 	}
 	updated := cloneStoredResearchSession(stored.record)
 	updated.ExternalMatchID = ""
-	updated.RuntimeGeneration++
-	if updated.RuntimeGeneration == 0 {
+	if updated.RuntimeGeneration >= researchcontract.MaximumJSONSafeInteger {
 		return storedResearchSession{}, "", errors.New("research runtime generation exhausted")
 	}
+	updated.RuntimeGeneration++
 	if _, err := updateStoredResearch(ctx, nk, updated, stored.version); err != nil {
 		return storedResearchSession{}, "", errors.New("research resume fencing conflict")
 	}

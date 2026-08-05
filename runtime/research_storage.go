@@ -58,6 +58,9 @@ func (record storedResearchSession) snapshot() ([]byte, error) {
 	if record.Schema != researchStorageSchema || researchcontract.ValidateSessionID(record.LogicalSessionID) != nil {
 		return nil, errors.New("stored research session schema or identity is invalid")
 	}
+	if record.RuntimeGeneration > researchcontract.MaximumJSONSafeInteger {
+		return nil, errors.New("stored research runtime generation is outside the JSON-safe range")
+	}
 	if record.ControlAuthorizationSetID != "" {
 		if err := researchcontract.ValidateAuthorizationSetID(record.ControlAuthorizationSetID); err != nil {
 			return nil, err

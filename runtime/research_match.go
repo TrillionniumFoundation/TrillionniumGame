@@ -296,7 +296,7 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 			return state, `{"error":"signed research control is invalid"}`
 		}
 		if storedControl.record.Status == researchControlStatusApplied {
-			response, err := storedControl.record.response()
+			response, err := m.module.verifiedResearchControlResponse(ctx, nk, storedControl)
 			if err != nil {
 				return state, `{"error":"signed research control receipt is invalid"}`
 			}
@@ -336,7 +336,8 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 		}
 		var controlResponse string
 		if control != nil {
-			if err := control.record.applyResult(researchEvidenceFor(state.record, completion, state.engine.AuthorityPublicKey()), now); err != nil {
+			if err := control.record.applyResult(researchEvidenceFor(state.record, completion, state.engine.AuthorityPublicKey()),
+				now, m.module.config.authorityKeyID, m.module.config.authorityPrivateKey); err != nil {
 				return state, errorSignal(m.rollback(state, before, err).Error())
 			}
 			controlResponse, err = control.record.response()
@@ -356,7 +357,12 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 			logger.Warn("research completion delivery pending: %s", err.Error())
 		}
 		if control != nil {
-			return state, controlResponse
+			verified, verifyErr := m.module.verifiedResearchControlResponse(ctx, nk, *control)
+			if verifyErr != nil || verified != controlResponse {
+				logger.Error("signed completion control response verification failed: %v", verifyErr)
+				return state, `{"error":"signed research control receipt is invalid"}`
+			}
+			return state, verified
 		}
 		response, _ := json.Marshal(researchEvidenceFor(state.record, completion, state.engine.AuthorityPublicKey()))
 		return state, string(response)
@@ -385,7 +391,8 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 		}
 		var controlResponse string
 		if control != nil {
-			if err := control.record.applyResult(researchRuntimeFor(state.record, state.engine.View(), state.record.ExternalMatchID), now); err != nil {
+			if err := control.record.applyResult(researchRuntimeFor(state.record, state.engine.View(), state.record.ExternalMatchID),
+				now, m.module.config.authorityKeyID, m.module.config.authorityPrivateKey); err != nil {
 				return state, errorSignal(m.rollback(state, before, err).Error())
 			}
 			controlResponse, err = control.record.response()
@@ -413,7 +420,12 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 			logger.Warn("research replacement authorization consumption delivery pending: %s", err.Error())
 		}
 		if control != nil {
-			return state, controlResponse
+			verified, verifyErr := m.module.verifiedResearchControlResponse(ctx, nk, *control)
+			if verifyErr != nil || verified != controlResponse {
+				logger.Error("signed replacement control response verification failed: %v", verifyErr)
+				return state, `{"error":"signed research control receipt is invalid"}`
+			}
+			return state, verified
 		}
 		response, _ := json.Marshal(researchRuntimeFor(state.record, state.engine.View(), state.record.ExternalMatchID))
 		return state, string(response)

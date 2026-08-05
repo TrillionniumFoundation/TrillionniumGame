@@ -207,6 +207,21 @@ func (e *Engine) Roster() []researchcontract.RosterEntry {
 	return researchcontract.RosterEntries(e.currentEpoch().Authorizations)
 }
 
+// RosterRootForVersion returns the root of an authenticated historical roster
+// epoch. Signed-control responses are replayed long after a later replacement
+// may have advanced the current epoch, so response validation cannot compare
+// only with View().RosterRoot.
+func (e *Engine) RosterRootForVersion(version uint64) (researchcontract.Digest, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, epoch := range e.epochs {
+		if epoch.Version == version {
+			return epoch.Root, true
+		}
+	}
+	return "", false
+}
+
 func (e *Engine) AuthorityPublicKey() ed25519.PublicKey {
 	e.mu.Lock()
 	defer e.mu.Unlock()

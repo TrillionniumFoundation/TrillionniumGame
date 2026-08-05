@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -21,11 +22,12 @@ import (
 )
 
 const (
-	researchControlStorageCollection = "trnm_research_control_v2"
-	researchControlStorageSchema     = "trnm.nakama.stored-research-control-command.v2"
-	researchControlResultSchema      = "trnm.nakama.research-control.result.v2"
-	researchControlStatusPending     = "pending"
-	researchControlStatusApplied     = "applied"
+	researchControlStorageCollection  = "trnm_research_control_v2"
+	researchControlStorageSchema      = "trnm.nakama.stored-research-control-command.v2"
+	researchControlResultSchema       = "trnm.nakama.research-control.result.v2"
+	researchControlResponseSealSchema = "trnm.nakama.research-control.response-seal.v2"
+	researchControlStatusPending      = "pending"
+	researchControlStatusApplied      = "applied"
 )
 
 var errResearchControlNotFound = errors.New("research control command not found")
@@ -68,7 +70,7 @@ type researchControlResultV2 struct {
 	Result    json.RawMessage `json:"result"`
 }
 
-type storedResearchControlCommand struct {
+type researchControlResponseSealV2 struct {
 	Schema               string                  `json:"schema"`
 	CommandID            string                  `json:"command_id"`
 	Operation            string                  `json:"operation"`
@@ -77,13 +79,31 @@ type storedResearchControlCommand struct {
 	SessionRosterVersion uint64                  `json:"session_roster_version"`
 	AuthorizationSetID   string                  `json:"authorization_set_id"`
 	PayloadHash          researchcontract.Digest `json:"payload_hash"`
-	RequestBodyBase64    string                  `json:"request_body_base64"`
 	RequestSHA256        string                  `json:"request_sha256"`
+	ResponseSHA256       string                  `json:"response_sha256"`
 	AcceptedAtUnix       int64                   `json:"accepted_at_unix"`
-	Status               string                  `json:"status"`
-	ResponseBodyBase64   string                  `json:"response_body_base64,omitempty"`
-	ResponseSHA256       string                  `json:"response_sha256,omitempty"`
-	AppliedAtUnix        *int64                  `json:"applied_at_unix,omitempty"`
+	AppliedAtUnix        int64                   `json:"applied_at_unix"`
+	AuthorityKeyID       string                  `json:"authority_key_id"`
+}
+
+type storedResearchControlCommand struct {
+	Schema                  string                  `json:"schema"`
+	CommandID               string                  `json:"command_id"`
+	Operation               string                  `json:"operation"`
+	TargetRPC               string                  `json:"target_rpc"`
+	SessionID               string                  `json:"session_id"`
+	SessionRosterVersion    uint64                  `json:"session_roster_version"`
+	AuthorizationSetID      string                  `json:"authorization_set_id"`
+	PayloadHash             researchcontract.Digest `json:"payload_hash"`
+	RequestBodyBase64       string                  `json:"request_body_base64"`
+	RequestSHA256           string                  `json:"request_sha256"`
+	AcceptedAtUnix          int64                   `json:"accepted_at_unix"`
+	Status                  string                  `json:"status"`
+	ResponseBodyBase64      string                  `json:"response_body_base64,omitempty"`
+	ResponseSHA256          string                  `json:"response_sha256,omitempty"`
+	ResponseAuthorityKeyID  string                  `json:"response_authority_key_id,omitempty"`
+	ResponseSignatureBase64 string                  `json:"response_signature_base64,omitempty"`
+	AppliedAtUnix           *int64                  `json:"applied_at_unix,omitempty"`
 }
 
 type versionedStoredResearchControl struct {
@@ -145,7 +165,15 @@ func newStoredResearchControlCommand(control researchcontract.SignedResearchCont
 	}
 }
 
-func (record *storedResearchControlCommand) applyResult(result any, appliedAt time.Time) error {
+func (record *storedResearchControlCommand) applyResult(result any, appliedAt time.Time,
+	authorityKeyID string, authorityPrivateKey ed25519.PrivateKey) error {
+	if err := researchcontract.ValidateKeyID(authorityKeyID); err != nil {
+		return err
+	}
+	if len(authorityPrivateKey) != ed25519.PrivateKeySize ||
+		!bytes.Equal(authorityPrivateKey, ed25519.NewKeyFromSeed(authorityPrivateKey.Seed())) {
+		return errors.New("research control response authority private key is invalid")
+	}
 	resultBody, err := json.Marshal(result)
 	if err != nil {
 		return err
@@ -162,11 +190,36 @@ func (record *storedResearchControlCommand) applyResult(result any, appliedAt ti
 	if unix < record.AcceptedAtUnix {
 		unix = record.AcceptedAtUnix
 	}
+	if unix < 0 || uint64(unix) > researchcontract.MaximumJSONSafeInteger {
+		return errors.New("research control response applied_at_unix is outside the JSON-safe range")
+	}
 	record.Status = researchControlStatusApplied
 	record.ResponseBodyBase64 = base64.StdEncoding.EncodeToString(wrapper)
 	record.ResponseSHA256 = hex.EncodeToString(digest[:])
+	record.ResponseAuthorityKeyID = authorityKeyID
 	record.AppliedAtUnix = &unix
-	return nil
+	anchor, err := record.responseSealBytes()
+	if err != nil {
+		return err
+	}
+	record.ResponseSignatureBase64 = base64.StdEncoding.EncodeToString(ed25519.Sign(authorityPrivateKey, anchor))
+	_, err = record.response()
+	return err
+}
+
+func (record storedResearchControlCommand) responseSealBytes() ([]byte, error) {
+	if record.Status != researchControlStatusApplied || record.AppliedAtUnix == nil ||
+		researchcontract.ValidateKeyID(record.ResponseAuthorityKeyID) != nil {
+		return nil, errors.New("research control response seal identity is invalid")
+	}
+	return json.Marshal(researchControlResponseSealV2{
+		Schema: researchControlResponseSealSchema, CommandID: record.CommandID, Operation: record.Operation,
+		TargetRPC: record.TargetRPC, SessionID: record.SessionID, SessionRosterVersion: record.SessionRosterVersion,
+		AuthorizationSetID: record.AuthorizationSetID, PayloadHash: record.PayloadHash,
+		RequestSHA256: record.RequestSHA256, ResponseSHA256: record.ResponseSHA256,
+		AcceptedAtUnix: record.AcceptedAtUnix, AppliedAtUnix: *record.AppliedAtUnix,
+		AuthorityKeyID: record.ResponseAuthorityKeyID,
+	})
 }
 
 func (record storedResearchControlCommand) response() (string, error) {
@@ -181,6 +234,13 @@ func (record storedResearchControlCommand) response() (string, error) {
 	if record.ResponseSHA256 != hex.EncodeToString(digest[:]) {
 		return "", errors.New("research control response checksum differs")
 	}
+	if _, err := record.responseSealBytes(); err != nil {
+		return "", err
+	}
+	signature, err := base64.StdEncoding.Strict().DecodeString(record.ResponseSignatureBase64)
+	if err != nil || base64.StdEncoding.EncodeToString(signature) != record.ResponseSignatureBase64 || len(signature) != ed25519.SignatureSize {
+		return "", errors.New("research control response signature encoding is invalid")
+	}
 	var wrapper researchControlResultV2
 	if decodeJSONStrict(string(body), &wrapper) != nil || wrapper.Schema != researchControlResultSchema ||
 		wrapper.CommandID != record.CommandID || wrapper.Operation != record.Operation || wrapper.TargetRPC != record.TargetRPC || len(wrapper.Result) == 0 {
@@ -192,7 +252,10 @@ func (record storedResearchControlCommand) response() (string, error) {
 		if decodeJSONStrict(string(wrapper.Result), &result) != nil || result.Schema != "trnm.nakama.research-session.match-runtime.v1" || result.LogicalSessionID != record.SessionID {
 			return "", errors.New("research control runtime result is invalid")
 		}
-		if result.RosterVersion != record.SessionRosterVersion {
+		if result.RosterVersion != record.SessionRosterVersion ||
+			!researchControlSafePositive(result.RuntimeGeneration) || !researchControlSafePositive(result.SessionVersion) ||
+			!researchControlSafePositive(result.RosterVersion) || result.ExternalMatchID == "" ||
+			result.RosterRoot.Validate() != nil || !validResearchControlRuntimeStatus(result.Status) {
 			return "", errors.New("research control runtime result roster differs")
 		}
 	case researchcontract.ResearchControlOperationComplete:
@@ -200,7 +263,8 @@ func (record storedResearchControlCommand) response() (string, error) {
 		if decodeJSONStrict(string(wrapper.Result), &result) != nil || result.Schema != "trnm.nakama.research-session.evidence.v1" || result.LogicalSessionID != record.SessionID {
 			return "", errors.New("research control completion result is invalid")
 		}
-		if result.Completion.RosterVersion != record.SessionRosterVersion {
+		if result.Completion.RosterVersion != record.SessionRosterVersion ||
+			!researchControlSafePositive(result.RuntimeGeneration) || result.ExternalMatchID == "" {
 			return "", errors.New("research control completion result roster differs")
 		}
 	default:
@@ -211,6 +275,82 @@ func (record storedResearchControlCommand) response() (string, error) {
 		return "", errors.New("research control response is not canonical JSON")
 	}
 	return string(body), nil
+}
+
+func researchControlSafePositive(value uint64) bool {
+	return value > 0 && value <= researchcontract.MaximumJSONSafeInteger
+}
+
+func validResearchControlRuntimeStatus(status researchcore.Status) bool {
+	switch status {
+	case researchcore.StatusCreated, researchcore.StatusWaiting, researchcore.StatusReady,
+		researchcore.StatusActive, researchcore.StatusPaused, researchcore.StatusCompleted:
+		return true
+	default:
+		return false
+	}
+}
+
+// verifiedResearchControlResponse anchors an applied command response to the
+// independently authenticated durable research snapshot before any replay.
+// The response checksum detects corruption, but is not an authority boundary:
+// an attacker with direct storage access could otherwise change the result and
+// recompute that checksum. Historical epoch lookup is required because a valid
+// create/resume/replace response can be replayed after later roster rotations.
+func (m *moduleRuntime) verifiedResearchControlResponse(ctx context.Context, nk storageGateway,
+	command versionedStoredResearchControl) (string, error) {
+	raw, err := command.record.response()
+	if err != nil {
+		return "", err
+	}
+	stored, err := loadStoredResearch(ctx, nk, command.record.SessionID)
+	if err != nil {
+		return "", errors.New("research control response has no durable session")
+	}
+	engine, err := m.restoreStoredResearch(stored.record)
+	if err != nil {
+		return "", errors.New("research control response session failed verification")
+	}
+	if command.record.ResponseAuthorityKeyID != m.config.authorityKeyID {
+		return "", errors.New("research control response authority differs from durable session")
+	}
+	anchor, err := command.record.responseSealBytes()
+	if err != nil {
+		return "", err
+	}
+	signature, err := base64.StdEncoding.Strict().DecodeString(command.record.ResponseSignatureBase64)
+	if err != nil || !ed25519.Verify(engine.AuthorityPublicKey(), anchor, signature) {
+		return "", errors.New("research control response authority signature failed verification")
+	}
+	var wrapper researchControlResultV2
+	if decodeJSONStrict(raw, &wrapper) != nil {
+		return "", errors.New("research control response wrapper failed verification")
+	}
+	switch command.record.Operation {
+	case researchcontract.ResearchControlOperationCreate, researchcontract.ResearchControlOperationResume,
+		researchcontract.ResearchControlOperationReplace:
+		var result researchRuntimeResponse
+		if decodeJSONStrict(string(wrapper.Result), &result) != nil {
+			return "", errors.New("research control runtime result failed verification")
+		}
+		expectedRoot, ok := engine.RosterRootForVersion(command.record.SessionRosterVersion)
+		if !ok || result.RosterRoot != expectedRoot {
+			return "", errors.New("research control runtime result roster_root differs from durable session")
+		}
+	case researchcontract.ResearchControlOperationComplete:
+		var result researchEvidenceResponse
+		if decodeJSONStrict(string(wrapper.Result), &result) != nil {
+			return "", errors.New("research control completion result failed verification")
+		}
+		completion, ok := engine.Completion()
+		if !ok || !reflect.DeepEqual(result.Completion, *completion) ||
+			result.AuthorityPublicKey != base64.StdEncoding.EncodeToString(engine.AuthorityPublicKey()) {
+			return "", errors.New("research control completion result differs from durable signed evidence")
+		}
+	default:
+		return "", errors.New("research control response operation is invalid")
+	}
+	return raw, nil
 }
 
 func decodeStoredResearchControlRequest(record storedResearchControlCommand, trusted map[string]ed25519.PublicKey) error {
@@ -292,7 +432,9 @@ func decodeStoredResearchControlRequest(record storedResearchControlCommand, tru
 func validateStoredResearchControlCommand(record storedResearchControlCommand, trusted map[string]ed25519.PublicKey) error {
 	if record.Schema != researchControlStorageSchema || researchcontract.ValidateCommandID(record.CommandID) != nil ||
 		researchcontract.ValidateSessionID(record.SessionID) != nil || record.SessionRosterVersion == 0 ||
-		researchcontract.ValidateAuthorizationSetID(record.AuthorizationSetID) != nil || record.PayloadHash.Validate() != nil || record.AcceptedAtUnix < 0 {
+		record.SessionRosterVersion > researchcontract.MaximumJSONSafeInteger ||
+		researchcontract.ValidateAuthorizationSetID(record.AuthorizationSetID) != nil || record.PayloadHash.Validate() != nil ||
+		record.AcceptedAtUnix < 0 || uint64(record.AcceptedAtUnix) > researchcontract.MaximumJSONSafeInteger {
 		return errors.New("stored research control identity is invalid")
 	}
 	target, err := researchcontract.ResearchControlTargetRPC(record.Operation)
@@ -311,7 +453,7 @@ func validateStoredResearchControlCommand(record storedResearchControlCommand, t
 		if _, err := record.response(); err != nil {
 			return err
 		}
-		if *record.AppliedAtUnix < record.AcceptedAtUnix {
+		if *record.AppliedAtUnix < record.AcceptedAtUnix || uint64(*record.AppliedAtUnix) > researchcontract.MaximumJSONSafeInteger {
 			return errors.New("research control application predates acceptance")
 		}
 	default:
@@ -468,7 +610,7 @@ func (m *moduleRuntime) existingResearchControl(ctx context.Context, nk storageG
 		return versionedStoredResearchControl{}, "", true, errors.New("research control command_id was reused with a different request")
 	}
 	if stored.record.Status == researchControlStatusApplied {
-		response, err := stored.record.response()
+		response, err := m.verifiedResearchControlResponse(ctx, nk, stored)
 		return stored, response, true, err
 	}
 	return stored, "", true, nil
@@ -477,7 +619,7 @@ func (m *moduleRuntime) existingResearchControl(ctx context.Context, nk storageG
 func (m *moduleRuntime) recoverResearchRuntimeControl(ctx context.Context, nk runtime.NakamaModule,
 	command versionedStoredResearchControl) (string, error) {
 	if command.record.Status == researchControlStatusApplied {
-		return command.record.response()
+		return m.verifiedResearchControlResponse(ctx, nk, command)
 	}
 	stored, err := loadStoredResearch(ctx, nk, command.record.SessionID)
 	if err != nil {
@@ -508,17 +650,18 @@ func (m *moduleRuntime) recoverResearchRuntimeControl(ctx context.Context, nk ru
 	}
 	m.researchControlTestFailpoint(command.record.Operation+"_after_runtime", command.record.CommandID)
 	updated := command.record
-	if err := updated.applyResult(researchRuntimeFor(current.record, currentEngine.View(), current.record.ExternalMatchID), time.Now().UTC()); err != nil {
+	if err := updated.applyResult(researchRuntimeFor(current.record, currentEngine.View(), current.record.ExternalMatchID),
+		time.Now().UTC(), m.config.authorityKeyID, m.config.authorityPrivateKey); err != nil {
 		return "", err
 	}
 	if _, err := updateStoredResearchControl(ctx, nk, updated, command.version, m.config.controlIssuerKeys); err != nil {
 		reloaded, loadErr := loadStoredResearchControl(ctx, nk, command.record.CommandID, m.config.controlIssuerKeys)
 		if loadErr == nil && exactResearchControlRequest(reloaded.record, mustDecodeBase64(command.record.RequestBodyBase64)) && reloaded.record.Status == researchControlStatusApplied {
-			return reloaded.record.response()
+			return m.verifiedResearchControlResponse(ctx, nk, reloaded)
 		}
 		return "", errors.New("research control result persistence conflict")
 	}
-	return updated.response()
+	return m.verifiedResearchControlResponse(ctx, nk, versionedStoredResearchControl{record: updated, version: command.version})
 }
 
 func mustDecodeBase64(value string) []byte {
@@ -788,7 +931,7 @@ func (m *moduleRuntime) executePendingResearchControlSignal(ctx context.Context,
 	}
 	reloaded, loadErr := loadStoredResearchControl(ctx, nk, command.record.CommandID, m.config.controlIssuerKeys)
 	if loadErr == nil && exactResearchControlRequest(reloaded.record, mustDecodeBase64(command.record.RequestBodyBase64)) && reloaded.record.Status == researchControlStatusApplied {
-		return reloaded.record.response()
+		return m.verifiedResearchControlResponse(ctx, nk, reloaded)
 	}
 	if signalErr != nil {
 		return "", runtime.NewError("research control signal failed", 14)

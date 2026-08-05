@@ -114,11 +114,12 @@ func TestResearchControlStorageSurvivesRestartAndReturnsExactAppliedResult(t *te
 	if err != nil || restarted.version != version || restarted.record.Status != researchControlStatusPending {
 		t.Fatalf("pending command did not survive restart: %#v %v", restarted, err)
 	}
+	_, authorityPrivate := researchTestKey("research-control-storage-authority")
 	if err := restarted.record.applyResult(researchRuntimeResponse{
 		Schema: "trnm.nakama.research-session.match-runtime.v1", LogicalSessionID: record.SessionID,
 		ExternalMatchID: "runtime-1", RuntimeGeneration: 2, Status: researchcore.StatusPaused,
 		SessionVersion: 9, RosterVersion: 1, RosterRoot: researchcontract.NewDigest([]byte("roster")),
-	}, time.Unix(acceptedAt+500, 0)); err != nil {
+	}, time.Unix(acceptedAt+500, 0), "nakama-control-storage-authority", authorityPrivate); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := updateStoredResearchControl(context.Background(), store, restarted.record, restarted.version, trusted); err != nil {
@@ -142,6 +143,53 @@ func TestResearchControlStorageSurvivesRestartAndReturnsExactAppliedResult(t *te
 	changedCanonical, _ := json.Marshal(changed)
 	if exactResearchControlRequest(applied.record, changedCanonical) {
 		t.Fatal("command_id reuse with a different body was accepted")
+	}
+}
+
+func TestResearchControlAppliedRuntimeRejectsIntegersOutsideJSONSafeRange(t *testing.T) {
+	const acceptedAt = int64(1_700_000_000)
+	request, _ := signedResumeRequestV2(t, acceptedAt)
+	canonical, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, authorityPrivate := researchTestKey("research-control-safe-integer-authority")
+	valid := researchRuntimeResponse{
+		Schema: "trnm.nakama.research-session.match-runtime.v1", LogicalSessionID: request.LogicalSessionID,
+		ExternalMatchID: "runtime-safe-integers", RuntimeGeneration: 1, Status: researchcore.StatusPaused,
+		SessionVersion: 1, RosterVersion: 1, RosterRoot: researchcontract.NewDigest([]byte("safe-roster")),
+	}
+	tests := map[string]func(*researchRuntimeResponse){
+		"runtime_generation": func(result *researchRuntimeResponse) {
+			result.RuntimeGeneration = researchcontract.MaximumJSONSafeInteger + 1
+		},
+		"session_version": func(result *researchRuntimeResponse) {
+			result.SessionVersion = researchcontract.MaximumJSONSafeInteger + 1
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			record := newStoredResearchControlCommand(request.Control, canonical, acceptedAt)
+			result := valid
+			mutate(&result)
+			if err := record.applyResult(result, time.Unix(acceptedAt+1, 0),
+				"nakama-safe-integer-authority", authorityPrivate); err == nil {
+				t.Fatal("applied response with a non-JSON-safe integer was accepted")
+			}
+		})
+	}
+
+	record := newStoredResearchControlCommand(request.Control, canonical, acceptedAt)
+	if err := record.applyResult(valid, time.Unix(int64(researchcontract.MaximumJSONSafeInteger)+1, 0),
+		"nakama-safe-integer-authority", authorityPrivate); err == nil {
+		t.Fatal("applied response with a non-JSON-safe timestamp was accepted")
+	}
+	valid.RuntimeGeneration = researchcontract.MaximumJSONSafeInteger
+	valid.SessionVersion = researchcontract.MaximumJSONSafeInteger
+	record = newStoredResearchControlCommand(request.Control, canonical, acceptedAt)
+	if err := record.applyResult(valid, time.Unix(int64(researchcontract.MaximumJSONSafeInteger), 0),
+		"nakama-safe-integer-authority", authorityPrivate); err != nil {
+		t.Fatalf("JSON-safe applied response boundary was rejected: %v", err)
 	}
 }
 

@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -265,6 +268,88 @@ func TestRestartResearchControlSIGKILLCreateAndResumeAfterRuntimeBeforeReceipt(t
 	second, err := applied.record.response()
 	if err != nil || first != second || !strings.Contains(first, `"operation":"resume"`) {
 		t.Fatal("resume retry after the runtime/receipt SIGKILL window did not return exact stored bytes")
+	}
+}
+
+func TestAppliedResearchControlRejectsResponseTamperWithRecomputedChecksum(t *testing.T) {
+	fixture := newControlRestartFixture(t)
+	session := fixture.initialStoredSession(t)
+	session.RuntimeGeneration = 1
+	session.ExternalMatchID = "research-runtime-1"
+	if _, err := createStoredResearch(context.Background(), fixture.store, session); err != nil {
+		t.Fatal(err)
+	}
+
+	request := researchResumeRequestV2{
+		Schema: researchcontract.ResearchControlResumeRequestSchemaV2, LogicalSessionID: session.LogicalSessionID,
+		AuthorizationSetID: fixture.authorizationSetOne,
+	}
+	business, err := canonicalResearchResumeBusinessV2(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Control = fixture.signControl(t, researchcontract.ResearchControlOperationResume,
+		"90000000-0000-4000-8000-000000000005", fixture.authorizationSetOne, 1, business)
+	canonical, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := newStoredResearchControlCommand(request.Control, canonical, time.Now().UTC().Unix())
+	version, err := createStoredResearchControl(context.Background(), fixture.store, command,
+		fixture.module.config.controlIssuerKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.module.recoverResearchRuntimeControl(context.Background(), fixture.nakama,
+		versionedStoredResearchControl{record: command, version: version}); err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := loadStoredResearchControl(context.Background(), fixture.store, command.CommandID,
+		fixture.module.config.controlIssuerKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseBody, err := base64.StdEncoding.Strict().DecodeString(applied.record.ResponseBodyBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wrapper researchControlResultV2
+	var runtimeResult researchRuntimeResponse
+	if decodeJSONStrict(string(responseBody), &wrapper) != nil ||
+		decodeJSONStrict(string(wrapper.Result), &runtimeResult) != nil {
+		t.Fatal("could not decode applied response fixture")
+	}
+	if runtimeResult.Status == researchcore.StatusPaused {
+		runtimeResult.Status = researchcore.StatusReady
+	} else {
+		runtimeResult.Status = researchcore.StatusPaused
+	}
+	wrapper.Result, err = json.Marshal(runtimeResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tamperedBody, err := json.Marshal(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tamperedChecksum := sha256.Sum256(tamperedBody)
+	applied.record.ResponseBodyBase64 = base64.StdEncoding.EncodeToString(tamperedBody)
+	applied.record.ResponseSHA256 = hex.EncodeToString(tamperedChecksum[:])
+	if _, err := applied.record.response(); err != nil {
+		t.Fatalf("tamper fixture did not preserve checksum and structural validity: %v", err)
+	}
+	value, err := json.Marshal(applied.record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.store.objects[controlStorageKey(researchControlStorageCollection, command.CommandID)].Value = string(value)
+
+	_, response, found, err := fixture.module.existingResearchControl(context.Background(), fixture.store,
+		request.Control, canonical)
+	if !found || response != "" || err == nil || !strings.Contains(err.Error(), "authority signature") {
+		t.Fatalf("checksum-recomputed response tamper was not rejected by the semantic seal: found=%v response=%q err=%v",
+			found, response, err)
 	}
 }
 

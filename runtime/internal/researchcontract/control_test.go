@@ -126,6 +126,43 @@ func TestResearchControlV2RejectsEverySignedBindingMutation(t *testing.T) {
 	}
 }
 
+func TestResearchControlV2RejectsIntegersOutsideJSONSafeRange(t *testing.T) {
+	control, _, privateKey := validResearchControl(t)
+	tests := map[string]func(*ResearchControlClaimV2){
+		"roster_version": func(claim *ResearchControlClaimV2) {
+			claim.SessionRosterVersion = MaximumJSONSafeInteger + 1
+		},
+		"issued_at": func(claim *ResearchControlClaimV2) {
+			claim.IssuedAtUnix = int64(MaximumJSONSafeInteger) + 1
+			claim.ExpiresAtUnix = claim.IssuedAtUnix + 1
+		},
+		"expires_at": func(claim *ResearchControlClaimV2) {
+			claim.IssuedAtUnix = int64(MaximumJSONSafeInteger) - 1
+			claim.ExpiresAtUnix = int64(MaximumJSONSafeInteger) + 1
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			claim := control.Claim
+			mutate(&claim)
+			if err := claim.Validate(); err == nil {
+				t.Fatal("claim with a non-JSON-safe integer passed validation")
+			}
+			if _, err := SignResearchControlV2(claim, privateKey); err == nil {
+				t.Fatal("claim with a non-JSON-safe integer was signed")
+			}
+		})
+	}
+
+	boundary := control.Claim
+	boundary.SessionRosterVersion = MaximumJSONSafeInteger
+	boundary.IssuedAtUnix = int64(MaximumJSONSafeInteger) - ResearchControlMaximumLifetimeSeconds
+	boundary.ExpiresAtUnix = int64(MaximumJSONSafeInteger)
+	if _, err := SignResearchControlV2(boundary, privateKey); err != nil {
+		t.Fatalf("JSON-safe integer boundary was rejected: %v", err)
+	}
+}
+
 func TestResearchControlBusinessFrameRejectsMixedRosterEpochBeforeEncoding(t *testing.T) {
 	authorizations := validResearchControlAuthorizations(t)
 	authorizations[1].Claim.RosterVersion = 2

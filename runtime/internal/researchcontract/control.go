@@ -27,6 +27,11 @@ const (
 
 	ResearchControlMaximumLifetimeSeconds int64 = 120
 	ResearchControlClockSkewSeconds       int64 = 30
+	// MaximumJSONSafeInteger is the largest integer every supported JSON
+	// consumer can represent without rounding. The public v2 schemas use this
+	// bound for roster versions and control timestamps, so the runtime must
+	// enforce the same limit before it signs or accepts canonical bytes.
+	MaximumJSONSafeInteger uint64 = 1<<53 - 1
 )
 
 func researchControlAuthorizationBytesV2(authorization SignedAuthorization) ([]byte, error) {
@@ -169,8 +174,8 @@ func (claim ResearchControlClaimV2) Validate() error {
 	if err := ValidateSessionID(claim.SessionID); err != nil {
 		return err
 	}
-	if claim.SessionRosterVersion == 0 {
-		return errors.New("session_roster_version must start at 1")
+	if claim.SessionRosterVersion == 0 || claim.SessionRosterVersion > MaximumJSONSafeInteger {
+		return fmt.Errorf("session_roster_version must be from 1 through %d", MaximumJSONSafeInteger)
 	}
 	if err := ValidateAuthorizationSetID(claim.AuthorizationSetID); err != nil {
 		return err
@@ -191,9 +196,11 @@ func (claim ResearchControlClaimV2) Validate() error {
 	if err := validateText("issuer_key_id", claim.IssuerKeyID); err != nil {
 		return err
 	}
-	if claim.IssuedAtUnix < 0 || claim.ExpiresAtUnix <= claim.IssuedAtUnix ||
+	if claim.IssuedAtUnix < 0 || uint64(claim.IssuedAtUnix) > MaximumJSONSafeInteger ||
+		claim.ExpiresAtUnix < 1 || uint64(claim.ExpiresAtUnix) > MaximumJSONSafeInteger ||
+		claim.ExpiresAtUnix <= claim.IssuedAtUnix ||
 		claim.ExpiresAtUnix-claim.IssuedAtUnix > ResearchControlMaximumLifetimeSeconds {
-		return fmt.Errorf("research control validity must be from 1 through %d seconds", ResearchControlMaximumLifetimeSeconds)
+		return fmt.Errorf("research control validity must use JSON-safe timestamps and span from 1 through %d seconds", ResearchControlMaximumLifetimeSeconds)
 	}
 	return nil
 }
