@@ -6,7 +6,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "6e3c29f5f804d0c52d94720e0f15de6becb9534a8bce090ef097c804341a4ce9"
+          "content": "c12b5827f6561a899d5e7e40ed7451a09083d7c90f742392d572f9785cb5a5e0"
         }
       ],
       "name": "/nakama/data/modules/backend.so",
