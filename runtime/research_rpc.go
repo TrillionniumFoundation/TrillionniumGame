@@ -446,7 +446,14 @@ func researchEvidenceFor(record storedResearchSession, completion researchcontra
 func researchParticipantCanRead(ctx context.Context, view researchcore.View, authorizationID string) bool {
 	userID, _ := ctx.Value(runtime.RUNTIME_CTX_USER_ID).(string)
 	for _, p := range view.Participants {
-		if p.SubjectUserID == userID && p.AuthorizationID == authorizationID {
+		if p.AuthorizationID != authorizationID {
+			continue
+		}
+		// Nakama authenticates a server-side RPC with the configured HTTP key,
+		// but intentionally leaves RUNTIME_CTX_USER_ID empty. The BFF uses that
+		// trusted path with the current, player-scoped authorization_id returned
+		// by Hepta. A user-session RPC must still bind both identifiers.
+		if userID == "" || p.SubjectUserID == userID {
 			return true
 		}
 	}
