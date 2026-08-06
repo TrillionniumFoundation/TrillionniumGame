@@ -105,19 +105,6 @@ func Restore(snapshot []byte, options RestoreOptions) (*Engine, error) {
 	if subtle.ConstantTimeCompare(expected[:], checksum) != 1 {
 		return nil, errors.New("snapshot checksum verification failed")
 	}
-	authorityPublic, err := validateAuthoritySigningConfiguration(options.AuthorityKeyID, options.AuthorityPrivateKey)
-	if err != nil {
-		return nil, err
-	}
-	var checksumArray [sha256.Size]byte
-	copy(checksumArray[:], checksum)
-	signingBytes, err := snapshotSigningBytes(options.AuthorityKeyID, payload, checksumArray)
-	if err != nil {
-		return nil, err
-	}
-	if !ed25519.Verify(authorityPublic, signingBytes, snapshot[payloadEnd+sha256.Size:]) {
-		return nil, errors.New("snapshot authority signature verification failed")
-	}
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	var document snapshotDocument
@@ -131,15 +118,34 @@ func Restore(snapshot []byte, options RestoreOptions) (*Engine, error) {
 	if document.Schema != snapshotSchema {
 		return nil, fmt.Errorf("unsupported snapshot schema %q", document.Schema)
 	}
-	if options.AuthorityKeyID != document.AuthorityKeyID || !bytes.Equal(authorityPublic, document.AuthorityPublicKey) {
+	authorityKeyID := options.AuthorityKeyID
+	authorityPrivateKey := options.AuthorityPrivateKey
+	if len(options.AuthorityPrivateKeys) > 0 {
+		authorityKeyID = document.AuthorityKeyID
+		authorityPrivateKey = options.AuthorityPrivateKeys[authorityKeyID]
+	}
+	authorityPublic, err := validateAuthoritySigningConfiguration(authorityKeyID, authorityPrivateKey)
+	if err != nil {
+		return nil, errors.New("snapshot authority key is not configured")
+	}
+	var checksumArray [sha256.Size]byte
+	copy(checksumArray[:], checksum)
+	signingBytes, err := snapshotSigningBytes(authorityKeyID, payload, checksumArray)
+	if err != nil {
+		return nil, err
+	}
+	if !ed25519.Verify(authorityPublic, signingBytes, snapshot[payloadEnd+sha256.Size:]) {
+		return nil, errors.New("snapshot authority signature verification failed")
+	}
+	if authorityKeyID != document.AuthorityKeyID || !bytes.Equal(authorityPublic, document.AuthorityPublicKey) {
 		return nil, errors.New("snapshot authority does not match configured signing key")
 	}
 	engine := &Engine{
 		matchID: document.MatchID, challengeID: document.ChallengeID, status: document.Status,
 		version: document.Version, participants: document.Participants, commands: make(map[string]commandRecord),
 		events: document.Events, terminalFacts: document.TerminalFacts, completion: document.Completion,
-		trustedIssuerKeys: cloneKeyMap(options.TrustedIssuerKeys), authorityKeyID: options.AuthorityKeyID,
-		authorityPrivateKey: append(ed25519.PrivateKey(nil), options.AuthorityPrivateKey...),
+		trustedIssuerKeys: cloneKeyMap(options.TrustedIssuerKeys), authorityKeyID: authorityKeyID,
+		authorityPrivateKey: append(ed25519.PrivateKey(nil), authorityPrivateKey...),
 		authorityPublicKey:  append(ed25519.PublicKey(nil), authorityPublic...),
 	}
 	for _, record := range document.Commands {

@@ -348,7 +348,7 @@ func (m *moduleRuntime) restoreStoredResearch(record storedResearchSession) (*re
 	if err != nil {
 		return nil, err
 	}
-	engine, err := researchcore.Restore(snapshot, researchcore.RestoreOptions{TrustedIssuerKeys: m.config.issuerKeys, AuthorityKeyID: m.config.authorityKeyID, AuthorityPrivateKey: m.config.authorityPrivateKey})
+	engine, err := researchcore.Restore(snapshot, researchcore.RestoreOptions{TrustedIssuerKeys: m.config.issuerKeys, AuthorityKeyID: m.config.authorityKeyID, AuthorityPrivateKey: m.config.authorityPrivateKey, AuthorityPrivateKeys: m.config.authorityPrivateKeys})
 	if err != nil {
 		return nil, err
 	}

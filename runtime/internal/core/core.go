@@ -49,9 +49,10 @@ type NewMatchOptions struct {
 }
 
 type RestoreOptions struct {
-	TrustedIssuerKeys   map[string]ed25519.PublicKey
-	AuthorityKeyID      string
-	AuthorityPrivateKey ed25519.PrivateKey
+	TrustedIssuerKeys    map[string]ed25519.PublicKey
+	AuthorityKeyID       string
+	AuthorityPrivateKey  ed25519.PrivateKey
+	AuthorityPrivateKeys map[string]ed25519.PrivateKey
 }
 
 type participantState struct {

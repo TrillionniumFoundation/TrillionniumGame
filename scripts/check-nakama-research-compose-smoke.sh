@@ -112,6 +112,7 @@ const lines = [
   `TRNM_HEPTA_SERVICE_TOKEN=${secret()}`,
   "TRNM_NAKAMA_AUTHORITY_KEY_ID=paper-raid-nakama-v1",
   `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY=${authority.privateSeed}`,
+  `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS='${JSON.stringify({ "paper-raid-nakama-v1": authority.privateSeed })}'`,
   `TRNM_NAKAMA_AUTHORITY_PUBLIC_KEY=${authority.publicKey}`,
   `TRNM_NAKAMA_OPERATOR_TOKEN=${secret()}`,
   "TRNM_NAKAMA_MATCH_TICK_RATE=5",

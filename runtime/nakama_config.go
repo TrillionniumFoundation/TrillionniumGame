@@ -22,6 +22,7 @@ const (
 	envControlTestHook    = "TRNM_RESEARCH_CONTROL_TEST_FAILPOINT_FILE"
 	envAuthorityKeyID     = "TRNM_NAKAMA_AUTHORITY_KEY_ID"
 	envAuthorityPrivate   = "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY"
+	envAuthorityKeyRing   = "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS"
 	envOperatorToken      = "TRNM_NAKAMA_OPERATOR_TOKEN"
 	envMatchTickRate      = "TRNM_NAKAMA_MATCH_TICK_RATE"
 	envHeptaBaseURL       = "TRNM_HEPTA_BASE_URL"
@@ -32,16 +33,17 @@ const (
 )
 
 type moduleConfig struct {
-	issuerKeys          map[string]ed25519.PublicKey
-	controlIssuerKeys   map[string]ed25519.PublicKey
-	controlTestHook     string
-	authorityKeyID      string
-	authorityPrivateKey ed25519.PrivateKey
-	operatorToken       string
-	matchTickRate       int
-	heptaBaseURL        string
-	heptaServiceToken   string
-	errors              []string
+	issuerKeys           map[string]ed25519.PublicKey
+	controlIssuerKeys    map[string]ed25519.PublicKey
+	controlTestHook      string
+	authorityKeyID       string
+	authorityPrivateKey  ed25519.PrivateKey
+	authorityPrivateKeys map[string]ed25519.PrivateKey
+	operatorToken        string
+	matchTickRate        int
+	heptaBaseURL         string
+	heptaServiceToken    string
+	errors               []string
 }
 
 func loadModuleConfig(env map[string]string) moduleConfig {
@@ -98,6 +100,31 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 	} else {
 		cfg.authorityPrivateKey = key
 	}
+	if raw := strings.TrimSpace(env[envAuthorityKeyRing]); raw != "" {
+		var encoded map[string]string
+		if err := json.Unmarshal([]byte(raw), &encoded); err != nil || len(encoded) == 0 {
+			cfg.errors = append(cfg.errors, envAuthorityKeyRing+": invalid or empty JSON object")
+		} else {
+			cfg.authorityPrivateKeys = make(map[string]ed25519.PrivateKey, len(encoded))
+			for rawKeyID, value := range encoded {
+				keyID := strings.TrimSpace(rawKeyID)
+				key, err := decodePrivateKey(value)
+				if keyID == "" || keyID != rawKeyID || !validConfigKeyID(keyID) || err != nil {
+					cfg.errors = append(cfg.errors, envAuthorityKeyRing+": every entry requires a canonical key id and 32-byte Ed25519 seed")
+					continue
+				}
+				cfg.authorityPrivateKeys[keyID] = key
+			}
+		}
+	}
+	if cfg.authorityPrivateKeys == nil && len(cfg.authorityPrivateKey) == ed25519.PrivateKeySize {
+		cfg.authorityPrivateKeys = map[string]ed25519.PrivateKey{cfg.authorityKeyID: append(ed25519.PrivateKey(nil), cfg.authorityPrivateKey...)}
+	}
+	if ringActive := cfg.authorityPrivateKeys[cfg.authorityKeyID]; len(ringActive) != ed25519.PrivateKeySize {
+		cfg.errors = append(cfg.errors, envAuthorityKeyRing+" must contain the active "+envAuthorityKeyID)
+	} else if len(cfg.authorityPrivateKey) == ed25519.PrivateKeySize && subtle.ConstantTimeCompare(ringActive, cfg.authorityPrivateKey) != 1 {
+		cfg.errors = append(cfg.errors, envAuthorityPrivate+" must equal the active key in "+envAuthorityKeyRing)
+	}
 
 	cfg.operatorToken = env[envOperatorToken]
 	if len(cfg.operatorToken) < minimumOperatorLength || len(cfg.operatorToken) > maximumOperatorLength {
@@ -120,16 +147,19 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 		subtle.ConstantTimeCompare([]byte(cfg.operatorToken), []byte(cfg.heptaServiceToken)) == 1 {
 		cfg.errors = append(cfg.errors, envOperatorToken+" and "+envHeptaServiceToken+" must use distinct credentials")
 	}
-	if len(cfg.authorityPrivateKey) == ed25519.PrivateKeySize {
-		authorityPublic := cfg.authorityPrivateKey.Public().(ed25519.PublicKey)
+	for authorityKeyID, authorityPrivate := range cfg.authorityPrivateKeys {
+		if len(authorityPrivate) != ed25519.PrivateKeySize {
+			continue
+		}
+		authorityPublic := authorityPrivate.Public().(ed25519.PublicKey)
 		for issuerKeyID, issuerPublic := range cfg.issuerKeys {
 			if len(issuerPublic) == ed25519.PublicKeySize && subtle.ConstantTimeCompare(authorityPublic, issuerPublic) == 1 {
-				cfg.errors = append(cfg.errors, envAuthorityPrivate+" public key must differ from Hepta issuer key "+issuerKeyID)
+				cfg.errors = append(cfg.errors, envAuthorityKeyRing+" key "+authorityKeyID+" must differ from Hepta issuer key "+issuerKeyID)
 			}
 		}
 		for controlKeyID, controlPublic := range cfg.controlIssuerKeys {
 			if len(controlPublic) == ed25519.PublicKeySize && subtle.ConstantTimeCompare(authorityPublic, controlPublic) == 1 {
-				cfg.errors = append(cfg.errors, envControlIssuerKeys+" key "+controlKeyID+" must differ from the Nakama completion authority")
+				cfg.errors = append(cfg.errors, envControlIssuerKeys+" key "+controlKeyID+" must differ from the Nakama completion authority "+authorityKeyID)
 			}
 		}
 	}

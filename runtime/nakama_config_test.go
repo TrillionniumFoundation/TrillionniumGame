@@ -58,6 +58,32 @@ func TestLoadModuleConfigReady(t *testing.T) {
 	}
 }
 
+func TestLoadModuleConfigAcceptsAuthorityKeyOverlap(t *testing.T) {
+	env, _, active := validModuleConfigEnv(t)
+	_, retiring, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring, _ := json.Marshal(map[string]string{
+		"nakama-test-v1":     base64.StdEncoding.EncodeToString(active.Seed()),
+		"nakama-retiring-v0": base64.StdEncoding.EncodeToString(retiring.Seed()),
+	})
+	env[envAuthorityKeyRing] = string(ring)
+	cfg := loadModuleConfig(env)
+	if err := cfg.ready(); err != nil {
+		t.Fatalf("authority overlap ring was rejected: %v", err)
+	}
+	if len(cfg.authorityPrivateKeys) != 2 || !ed25519.PrivateKey(cfg.authorityPrivateKeys["nakama-retiring-v0"]).Equal(retiring) {
+		t.Fatal("authority overlap ring was not retained")
+	}
+
+	badRing, _ := json.Marshal(map[string]string{"nakama-retiring-v0": base64.StdEncoding.EncodeToString(retiring.Seed())})
+	env[envAuthorityKeyRing] = string(badRing)
+	if err := loadModuleConfig(env).ready(); err == nil || !strings.Contains(err.Error(), "must contain the active") {
+		t.Fatal("authority ring without the active key was accepted")
+	}
+}
+
 func TestLoadModuleConfigAcceptsOnlyAbsoluteOptionalControlTestHook(t *testing.T) {
 	env, _, _ := validModuleConfigEnv(t)
 	env[envControlTestHook] = "/control-test/nakama-failpoint"

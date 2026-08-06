@@ -67,6 +67,31 @@ func TestRestartPreservesIdempotencySequencesAndEvidence(t *testing.T) {
 	}
 }
 
+func TestRestartAcceptsRetiringAuthorityFromOverlapRing(t *testing.T) {
+	f := newCoreFixture(t)
+	snapshot, err := f.engine.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, active := fixtureKey("next-authority")
+	options := RestoreOptions{
+		TrustedIssuerKeys: map[string]ed25519.PublicKey{"issuer-key-1": f.issuerPublic},
+		AuthorityKeyID:    "nakama-authority-2", AuthorityPrivateKey: active,
+		AuthorityPrivateKeys: map[string]ed25519.PrivateKey{"nakama-authority-1": f.authorityPrivate, "nakama-authority-2": active},
+	}
+	restored, err := Restore(snapshot, options)
+	if err != nil {
+		t.Fatalf("retiring authority snapshot was not restored: %v", err)
+	}
+	if restored.authorityKeyID != "nakama-authority-1" {
+		t.Fatal("restored match was silently rekeyed")
+	}
+	delete(options.AuthorityPrivateKeys, "nakama-authority-1")
+	if _, err := Restore(snapshot, options); err == nil {
+		t.Fatal("retiring authority snapshot was restored after key removal")
+	}
+}
+
 func TestRestartFailsClosedOnCorruptTruncatedOrWrongKey(t *testing.T) {
 	f := newCoreFixture(t)
 	f.joinBoth(t)

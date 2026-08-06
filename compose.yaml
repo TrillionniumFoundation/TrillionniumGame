@@ -134,6 +134,9 @@ services:
         append_runtime_env "TRNM_HEPTA_SERVICE_TOKEN=$${TRNM_HEPTA_SERVICE_TOKEN}"
         append_runtime_env "TRNM_NAKAMA_AUTHORITY_KEY_ID=$${TRNM_NAKAMA_AUTHORITY_KEY_ID}"
         append_runtime_env "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY=$${TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY}"
+        if [ -n "$${TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS:-}" ]; then
+          append_runtime_env "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS=$${TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS}"
+        fi
         append_runtime_env "TRNM_NAKAMA_OPERATOR_TOKEN=$${TRNM_NAKAMA_OPERATOR_TOKEN}"
         append_runtime_env "TRNM_NAKAMA_MATCH_TICK_RATE=$${TRNM_NAKAMA_MATCH_TICK_RATE}"
         printf '%s\n' \

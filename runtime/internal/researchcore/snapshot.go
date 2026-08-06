@@ -102,19 +102,6 @@ func Restore(snapshot []byte, options RestoreOptions) (*Engine, error) {
 	if subtle.ConstantTimeCompare(checksum, expected[:]) != 1 {
 		return nil, errors.New("research snapshot checksum failed")
 	}
-	public, err := validateAuthority(options.AuthorityKeyID, options.AuthorityPrivateKey)
-	if err != nil {
-		return nil, err
-	}
-	var checksumArray [sha256.Size]byte
-	copy(checksumArray[:], checksum)
-	message, err := snapshotSigningBytes(options.AuthorityKeyID, payload, checksumArray)
-	if err != nil {
-		return nil, err
-	}
-	if !ed25519.Verify(public, message, snapshot[end+sha256.Size:]) {
-		return nil, errors.New("research snapshot signature failed")
-	}
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	var document snapshotDocument
@@ -125,7 +112,26 @@ func Restore(snapshot []byte, options RestoreOptions) (*Engine, error) {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, errors.New("research snapshot has trailing JSON")
 	}
-	if document.Schema != snapshotSchema || document.AuthorityKeyID != options.AuthorityKeyID ||
+	authorityKeyID := options.AuthorityKeyID
+	authorityPrivateKey := options.AuthorityPrivateKey
+	if len(options.AuthorityPrivateKeys) > 0 {
+		authorityKeyID = document.AuthorityKeyID
+		authorityPrivateKey = options.AuthorityPrivateKeys[authorityKeyID]
+	}
+	public, err := validateAuthority(authorityKeyID, authorityPrivateKey)
+	if err != nil {
+		return nil, errors.New("research snapshot authority key is not configured")
+	}
+	var checksumArray [sha256.Size]byte
+	copy(checksumArray[:], checksum)
+	message, err := snapshotSigningBytes(authorityKeyID, payload, checksumArray)
+	if err != nil {
+		return nil, err
+	}
+	if !ed25519.Verify(public, message, snapshot[end+sha256.Size:]) {
+		return nil, errors.New("research snapshot signature failed")
+	}
+	if document.Schema != snapshotSchema || document.AuthorityKeyID != authorityKeyID ||
 		!bytes.Equal(document.AuthorityPublicKey, public) {
 		return nil, errors.New("research snapshot schema or authority differs")
 	}
@@ -135,8 +141,8 @@ func Restore(snapshot []byte, options RestoreOptions) (*Engine, error) {
 		status: document.Status, version: document.Version, epochs: cloneEpochs(document.Epochs),
 		participants: cloneParticipants(document.Participants), actions: make(map[string]actionRecord),
 		events: cloneEvents(document.Events), completion: cloneCompletionPointer(document.Completion),
-		trustedIssuerKeys: cloneKeys(options.TrustedIssuerKeys), authorityKeyID: options.AuthorityKeyID,
-		authorityPrivateKey: append(ed25519.PrivateKey(nil), options.AuthorityPrivateKey...),
+		trustedIssuerKeys: cloneKeys(options.TrustedIssuerKeys), authorityKeyID: authorityKeyID,
+		authorityPrivateKey: append(ed25519.PrivateKey(nil), authorityPrivateKey...),
 		authorityPublicKey:  append(ed25519.PublicKey(nil), public...),
 	}
 	for _, record := range document.Actions {

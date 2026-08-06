@@ -65,12 +65,15 @@ records are both revalidated on every load. Control claims may live for at most
 already accepted command remain valid after claim expiry; a different request
 body for the same `command_id` is rejected.
 
-P0 does **not** support an overlap set for the Nakama authority private key.
-Every authenticated snapshot is bound to one authority key id and public key.
-Do not rotate `TRNM_NAKAMA_AUTHORITY_*` while any active or resumable match
-exists; first drain and complete those matches, archive their evidence, and
-verify that no recovery record depends on the old key. A future key-ring format
-must be versioned before online authority-key rotation is allowed.
+Nakama authority keys support an overlap ring through
+`TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS`, a JSON object from key id to base64
+Ed25519 seed. The ring must contain `TRNM_NAKAMA_AUTHORITY_KEY_ID`, and its
+active seed must exactly match `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY`. New sessions
+use only the active key. Restored sessions keep the authority id embedded in
+their authenticated snapshot, so rotation never silently re-signs historical
+state. Add the new key, switch the active id and seed, then remove the retiring
+key only after every snapshot and pending signed-control response using it has
+been retired and archived. Omitting the ring preserves singleton P0 behavior.
 
 Publish the authority public-key mapping through a separately versioned and
 pinned deployment registry. The `authority_public_key_base64` returned with

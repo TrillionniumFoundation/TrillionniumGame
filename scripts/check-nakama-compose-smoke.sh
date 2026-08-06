@@ -120,6 +120,7 @@ const lines = [
   `TRNM_HEPTA_ISSUER_PRIVATE_SEED=${issuer.privateSeed}`,
   "TRNM_NAKAMA_AUTHORITY_KEY_ID=blackbox-nakama-v1",
   `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY=${authority.privateSeed}`,
+  `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS='${JSON.stringify({ "blackbox-nakama-v1": authority.privateSeed })}'`,
   `TRNM_NAKAMA_AUTHORITY_PUBLIC_KEY=${authority.publicKey}`,
   `TRNM_NAKAMA_OPERATOR_TOKEN=${random()}`,
   `TRNM_AGENT_ONE_PRIVATE_SEED=${agentOne.privateSeed}`,

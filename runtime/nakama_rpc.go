@@ -429,7 +429,7 @@ func (m *moduleRuntime) restoreStoredEngine(record storedMatch) (*matchcore.Engi
 func (m *moduleRuntime) restoreEngineForRecord(record storedMatch, snapshot []byte) (*matchcore.Engine, error) {
 	engine, err := matchcore.Restore(snapshot, matchcore.RestoreOptions{
 		TrustedIssuerKeys: m.config.issuerKeys, AuthorityKeyID: m.config.authorityKeyID,
-		AuthorityPrivateKey: m.config.authorityPrivateKey,
+		AuthorityPrivateKey: m.config.authorityPrivateKey, AuthorityPrivateKeys: m.config.authorityPrivateKeys,
 	})
 	if err != nil {
 		return nil, err

@@ -31,6 +31,10 @@ token is not accepted by these v2 RPCs. The control keys are a trust domain
 independent from participant-authorization issuers and the Nakama completion
 authority. See
 [contracts/research-control-v2/spec.md](contracts/research-control-v2/spec.md).
+Authority signing supports an additive overlap key ring: new sessions use the
+configured active key while resumable snapshots remain bound to their original
+key until drained, enabling fail-closed online key rotation without rewriting
+historical evidence.
 
 ## Start work
 

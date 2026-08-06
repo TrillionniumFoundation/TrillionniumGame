@@ -311,7 +311,7 @@ func (m *moduleRuntime) verifiedResearchControlResponse(ctx context.Context, nk 
 	if err != nil {
 		return "", errors.New("research control response session failed verification")
 	}
-	if command.record.ResponseAuthorityKeyID != m.config.authorityKeyID {
+	if command.record.ResponseAuthorityKeyID != engine.AuthorityKeyID() {
 		return "", errors.New("research control response authority differs from durable session")
 	}
 	anchor, err := command.record.responseSealBytes()
@@ -351,6 +351,16 @@ func (m *moduleRuntime) verifiedResearchControlResponse(ctx context.Context, nk 
 		return "", errors.New("research control response operation is invalid")
 	}
 	return raw, nil
+}
+
+func (m *moduleRuntime) researchAuthoritySigningKey(keyID string) (ed25519.PrivateKey, error) {
+	if key := m.config.authorityPrivateKeys[keyID]; len(key) == ed25519.PrivateKeySize {
+		return key, nil
+	}
+	if keyID == m.config.authorityKeyID && len(m.config.authorityPrivateKey) == ed25519.PrivateKeySize {
+		return m.config.authorityPrivateKey, nil
+	}
+	return nil, errors.New("research session authority signing key is not configured")
 }
 
 func decodeStoredResearchControlRequest(record storedResearchControlCommand, trusted map[string]ed25519.PublicKey) error {
@@ -650,8 +660,12 @@ func (m *moduleRuntime) recoverResearchRuntimeControl(ctx context.Context, nk ru
 	}
 	m.researchControlTestFailpoint(command.record.Operation+"_after_runtime", command.record.CommandID)
 	updated := command.record
+	authorityPrivateKey, err := m.researchAuthoritySigningKey(currentEngine.AuthorityKeyID())
+	if err != nil {
+		return "", err
+	}
 	if err := updated.applyResult(researchRuntimeFor(current.record, currentEngine.View(), current.record.ExternalMatchID),
-		time.Now().UTC(), m.config.authorityKeyID, m.config.authorityPrivateKey); err != nil {
+		time.Now().UTC(), currentEngine.AuthorityKeyID(), authorityPrivateKey); err != nil {
 		return "", err
 	}
 	if _, err := updateStoredResearchControl(ctx, nk, updated, command.version, m.config.controlIssuerKeys); err != nil {

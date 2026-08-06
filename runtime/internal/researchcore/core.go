@@ -65,9 +65,10 @@ type NewSessionOptions struct {
 }
 
 type RestoreOptions struct {
-	TrustedIssuerKeys   map[string]ed25519.PublicKey
-	AuthorityKeyID      string
-	AuthorityPrivateKey ed25519.PrivateKey
+	TrustedIssuerKeys    map[string]ed25519.PublicKey
+	AuthorityKeyID       string
+	AuthorityPrivateKey  ed25519.PrivateKey
+	AuthorityPrivateKeys map[string]ed25519.PrivateKey
 }
 
 type Engine struct {
@@ -226,6 +227,12 @@ func (e *Engine) AuthorityPublicKey() ed25519.PublicKey {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return append(ed25519.PublicKey(nil), e.authorityPublicKey...)
+}
+
+func (e *Engine) AuthorityKeyID() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.authorityKeyID
 }
 
 func (e *Engine) Completion() (*researchcontract.SessionCompletedV1, bool) {

@@ -336,8 +336,12 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 		}
 		var controlResponse string
 		if control != nil {
+			authorityPrivateKey, keyErr := m.module.researchAuthoritySigningKey(state.engine.AuthorityKeyID())
+			if keyErr != nil {
+				return state, errorSignal(m.rollback(state, before, keyErr).Error())
+			}
 			if err := control.record.applyResult(researchEvidenceFor(state.record, completion, state.engine.AuthorityPublicKey()),
-				now, m.module.config.authorityKeyID, m.module.config.authorityPrivateKey); err != nil {
+				now, state.engine.AuthorityKeyID(), authorityPrivateKey); err != nil {
 				return state, errorSignal(m.rollback(state, before, err).Error())
 			}
 			controlResponse, err = control.record.response()
@@ -391,8 +395,12 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 		}
 		var controlResponse string
 		if control != nil {
+			authorityPrivateKey, keyErr := m.module.researchAuthoritySigningKey(state.engine.AuthorityKeyID())
+			if keyErr != nil {
+				return state, errorSignal(m.rollback(state, before, keyErr).Error())
+			}
 			if err := control.record.applyResult(researchRuntimeFor(state.record, state.engine.View(), state.record.ExternalMatchID),
-				now, m.module.config.authorityKeyID, m.module.config.authorityPrivateKey); err != nil {
+				now, state.engine.AuthorityKeyID(), authorityPrivateKey); err != nil {
 				return state, errorSignal(m.rollback(state, before, err).Error())
 			}
 			controlResponse, err = control.record.response()
@@ -548,7 +556,7 @@ func shouldTerminateResearchRuntime(state *researchMatchState, tick int64, tickR
 	return runtimeGenerationExpired(tick, tickRate)
 }
 func (m *researchMatch) rollback(state *researchMatchState, before []byte, cause error) error {
-	engine, err := researchcore.Restore(before, researchcore.RestoreOptions{TrustedIssuerKeys: m.module.config.issuerKeys, AuthorityKeyID: m.module.config.authorityKeyID, AuthorityPrivateKey: m.module.config.authorityPrivateKey})
+	engine, err := researchcore.Restore(before, researchcore.RestoreOptions{TrustedIssuerKeys: m.module.config.issuerKeys, AuthorityKeyID: m.module.config.authorityKeyID, AuthorityPrivateKey: m.module.config.authorityPrivateKey, AuthorityPrivateKeys: m.module.config.authorityPrivateKeys})
 	if err != nil {
 		return fmt.Errorf("%w; rollback failed: %v", cause, err)
 	}

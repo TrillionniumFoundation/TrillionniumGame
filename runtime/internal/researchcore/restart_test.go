@@ -55,6 +55,31 @@ func TestSignedSnapshotRestartFencesLiveConnectionsAndCatchesUp(t *testing.T) {
 	}
 }
 
+func TestResearchRestartAcceptsRetiringAuthorityFromOverlapRing(t *testing.T) {
+	f := newFixture(t, 3)
+	snapshot, err := f.engine.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := ed25519.NewKeyFromSeed(seed(221))
+	options := RestoreOptions{
+		TrustedIssuerKeys: map[string]ed25519.PublicKey{"issuer-test": f.issuerPrivate.Public().(ed25519.PublicKey)},
+		AuthorityKeyID:    "nakama-research-next", AuthorityPrivateKey: active,
+		AuthorityPrivateKeys: map[string]ed25519.PrivateKey{"nakama-research-test": f.authority, "nakama-research-next": active},
+	}
+	restored, err := Restore(snapshot, options)
+	if err != nil {
+		t.Fatalf("retiring research authority snapshot was not restored: %v", err)
+	}
+	if restored.authorityKeyID != "nakama-research-test" {
+		t.Fatal("restored research session was silently rekeyed")
+	}
+	delete(options.AuthorityPrivateKeys, "nakama-research-test")
+	if _, err := Restore(snapshot, options); err == nil {
+		t.Fatal("retiring research authority snapshot was restored after key removal")
+	}
+}
+
 func TestSnapshotRejectsTamperAndWrongAuthority(t *testing.T) {
 	f := newFixture(t, 4)
 	f.joinAll()
