@@ -12,7 +12,7 @@ import (
 const registeredMatchName = "trnm_authoritative_v1"
 
 // InitModule is the symbol loaded by Nakama's Go plugin runtime.
-func InitModule(ctx context.Context, logger runtime.Logger, _ *sql.DB, _ runtime.NakamaModule, initializer runtime.Initializer) error {
+func InitModule(ctx context.Context, logger runtime.Logger, db *sql.DB, _ runtime.NakamaModule, initializer runtime.Initializer) error {
 	environment, _ := ctx.Value(runtime.RUNTIME_CTX_ENV).(map[string]string)
 	module := &moduleRuntime{config: loadModuleConfig(environment), httpClient: newResearchHTTPClient()}
 	if err := module.config.ready(); err != nil {
@@ -20,6 +20,9 @@ func InitModule(ctx context.Context, logger runtime.Logger, _ *sql.DB, _ runtime
 		// readiness RPC and diagnose missing injected secrets without the module
 		// silently falling back to fixture credentials.
 		logger.Warn("Trillionnium authoritative runtime loaded unready: %s", err.Error())
+	} else if err := scanStoredResearchControlActivation(ctx, db, module.config); err != nil {
+		module.activationError = err
+		logger.Warn("Trillionnium authoritative runtime activation blocked: %s", err.Error())
 	}
 
 	registrations := []struct {

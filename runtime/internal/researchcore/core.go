@@ -65,10 +65,10 @@ type NewSessionOptions struct {
 }
 
 type RestoreOptions struct {
-	TrustedIssuerKeys    map[string]ed25519.PublicKey
-	AuthorityKeyID       string
-	AuthorityPrivateKey  ed25519.PrivateKey
-	AuthorityPrivateKeys map[string]ed25519.PrivateKey
+	TrustedIssuerKeys   map[string]ed25519.PublicKey
+	AuthorityKeyID      string
+	AuthorityPrivateKey ed25519.PrivateKey
+	AuthorityPublicKeys map[string]ed25519.PublicKey
 }
 
 type Engine struct {
@@ -92,6 +92,7 @@ type Engine struct {
 	authorityKeyID      string
 	authorityPrivateKey ed25519.PrivateKey
 	authorityPublicKey  ed25519.PublicKey
+	authorityPublicKeys map[string]ed25519.PublicKey
 }
 
 type ParticipantView struct {
@@ -156,6 +157,9 @@ func NewSession(options NewSessionOptions) (*Engine, error) {
 		trustedIssuerKeys: cloneKeys(options.TrustedIssuerKeys), authorityKeyID: options.AuthorityKeyID,
 		authorityPrivateKey: append(ed25519.PrivateKey(nil), options.AuthorityPrivateKey...),
 		authorityPublicKey:  append(ed25519.PublicKey(nil), public...),
+		authorityPublicKeys: map[string]ed25519.PublicKey{
+			options.AuthorityKeyID: append(ed25519.PublicKey(nil), public...),
+		},
 	}, nil
 }
 
@@ -227,6 +231,19 @@ func (e *Engine) AuthorityPublicKey() ed25519.PublicKey {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return append(ed25519.PublicKey(nil), e.authorityPublicKey...)
+}
+
+func (e *Engine) CompletionAuthorityPublicKey() (ed25519.PublicKey, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.completion == nil {
+		return nil, false
+	}
+	public := e.authorityPublicKeys[e.completion.AuthorityKeyID]
+	if len(public) != ed25519.PublicKeySize {
+		return nil, false
+	}
+	return append(ed25519.PublicKey(nil), public...), true
 }
 
 func (e *Engine) AuthorityKeyID() string {

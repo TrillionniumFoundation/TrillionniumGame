@@ -29,26 +29,26 @@ func validModuleConfigEnv(t *testing.T) (map[string]string, ed25519.PublicKey, e
 	controlJSON, _ := json.Marshal(map[string]string{
 		"hepta-control-test-v2": base64.StdEncoding.EncodeToString(controlPublic),
 	})
-	authorityJSON, _ := json.Marshal(map[string]string{
-		"nakama-test-v1": base64.StdEncoding.EncodeToString(authorityPrivate.Seed()),
+	authorityPublicJSON, _ := json.Marshal(map[string]string{
+		"nakama-test-v1": base64.StdEncoding.EncodeToString(authorityPrivate.Public().(ed25519.PublicKey)),
 	})
 	return map[string]string{
-		envIssuerKeys:        string(issuerJSON),
-		envControlIssuerKeys: string(controlJSON),
-		envAuthorityKeyID:    "nakama-test-v1",
-		envAuthorityPrivate:  base64.StdEncoding.EncodeToString(authorityPrivate.Seed()),
-		envAuthorityKeyRing:  string(authorityJSON),
-		envOperatorToken:     "0123456789abcdef0123456789abcdef",
-		envMatchTickRate:     "10",
-		envHeptaBaseURL:      "http://hepta-research-league:8088",
-		envHeptaServiceToken: "abcdef0123456789abcdef0123456789",
+		envIssuerKeys:          string(issuerJSON),
+		envControlIssuerKeys:   string(controlJSON),
+		envAuthorityKeyID:      "nakama-test-v1",
+		envAuthorityPrivate:    base64.StdEncoding.EncodeToString(authorityPrivate.Seed()),
+		envAuthorityPublicRing: string(authorityPublicJSON),
+		envOperatorToken:       "0123456789abcdef0123456789abcdef",
+		envMatchTickRate:       "10",
+		envHeptaBaseURL:        "http://hepta-research-league:8088",
+		envHeptaServiceToken:   "abcdef0123456789abcdef0123456789",
 	}, issuerPublic, authorityPrivate
 }
 
 func TestLoadModuleConfigLimitsSingletonAuthorityFallbackToExplicitDevTest(t *testing.T) {
 	env, _, authority := validModuleConfigEnv(t)
-	delete(env, envAuthorityKeyRing)
-	if err := loadModuleConfig(env).ready(); err == nil || !strings.Contains(err.Error(), envAuthorityKeyRing+" is required") {
+	delete(env, envAuthorityPublicRing)
+	if err := loadModuleConfig(env).ready(); err == nil || !strings.Contains(err.Error(), envAuthorityPublicRing+" is required") {
 		t.Fatal("production configuration accepted an implicit singleton authority fallback")
 	}
 
@@ -62,8 +62,8 @@ func TestLoadModuleConfigLimitsSingletonAuthorityFallbackToExplicitDevTest(t *te
 	if err := cfg.ready(); err != nil {
 		t.Fatalf("explicit isolated dev/test singleton fallback was rejected: %v", err)
 	}
-	if len(cfg.authorityPrivateKeys) != 1 || !cfg.authorityPrivateKeys[cfg.authorityKeyID].Equal(authority) {
-		t.Fatal("explicit singleton fallback did not retain the active authority")
+	if !cfg.authorityPrivateKey.Equal(authority) || !cfg.authorityPublicKeys[cfg.authorityKeyID].Equal(authority.Public().(ed25519.PublicKey)) {
+		t.Fatal("explicit singleton fallback did not derive only the active public authority")
 	}
 }
 
@@ -84,29 +84,19 @@ func TestLoadModuleConfigReady(t *testing.T) {
 	}
 }
 
-func TestLoadModuleConfigAcceptsAuthorityKeyOverlap(t *testing.T) {
-	env, _, active := validModuleConfigEnv(t)
-	_, retiring, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestLoadModuleConfigRejectsDeprecatedAuthorityPrivateRing(t *testing.T) {
+	_, _, authority := validModuleConfigEnv(t)
 	ring, _ := json.Marshal(map[string]string{
-		"nakama-test-v1":     base64.StdEncoding.EncodeToString(active.Seed()),
-		"nakama-retiring-v0": base64.StdEncoding.EncodeToString(retiring.Seed()),
+		"nakama-test-v1": base64.StdEncoding.EncodeToString(authority.Seed()),
 	})
-	env[envAuthorityKeyRing] = string(ring)
-	cfg := loadModuleConfig(env)
-	if err := cfg.ready(); err != nil {
-		t.Fatalf("authority overlap ring was rejected: %v", err)
-	}
-	if len(cfg.authorityPrivateKeys) != 2 || !ed25519.PrivateKey(cfg.authorityPrivateKeys["nakama-retiring-v0"]).Equal(retiring) {
-		t.Fatal("authority overlap ring was not retained")
-	}
-
-	badRing, _ := json.Marshal(map[string]string{"nakama-retiring-v0": base64.StdEncoding.EncodeToString(retiring.Seed())})
-	env[envAuthorityKeyRing] = string(badRing)
-	if err := loadModuleConfig(env).ready(); err == nil || !strings.Contains(err.Error(), "must contain the active") {
-		t.Fatal("authority ring without the active key was accepted")
+	for name, value := range map[string]string{"empty": "", "populated": string(ring)} {
+		t.Run(name, func(t *testing.T) {
+			env, _, _ := validModuleConfigEnv(t)
+			env[envAuthorityPrivateRing] = value
+			if err := loadModuleConfig(env).ready(); err == nil || !strings.Contains(err.Error(), envAuthorityPrivateRing+" is forbidden") {
+				t.Fatal("runtime retained a production multi-private-key ring")
+			}
+		})
 	}
 }
 
@@ -182,23 +172,112 @@ func TestLoadModuleConfigRejectsNonStrictAuthorizationIssuerRing(t *testing.T) {
 	}
 }
 
-func TestLoadModuleConfigRejectsNonStrictAuthorityPrivateRing(t *testing.T) {
+func TestLoadModuleConfigRequiresStrictAuthorityPublicRegistry(t *testing.T) {
 	env, _, authorityPrivate := validModuleConfigEnv(t)
-	seed := base64.StdEncoding.EncodeToString(authorityPrivate.Seed())
-	full := base64.StdEncoding.EncodeToString(authorityPrivate)
+	delete(env, envAuthorityPublicRing)
+	if err := loadModuleConfig(env).ready(); err == nil || !strings.Contains(err.Error(), envAuthorityPublicRing+" is required") {
+		t.Fatal("production configuration accepted a missing authority public registry")
+	}
+
+	public := base64.StdEncoding.EncodeToString(authorityPrivate.Public().(ed25519.PublicKey))
 	tests := map[string]string{
 		"empty":              `{}`,
-		"duplicate JSON key": `{"nakama-test-v1":"` + seed + `","nakama-test-v1":"` + seed + `"}`,
-		"duplicate material": `{"nakama-test-v1":"` + seed + `","nakama-retiring-v0":"` + full + `"}`,
+		"duplicate JSON key": `{"nakama-test-v1":"` + public + `","nakama-test-v1":"` + public + `"}`,
+		"duplicate material": `{"nakama-test-v1":"` + public + `","nakama-retiring-v0":"` + public + `"}`,
 		"non-string value":   `{"nakama-test-v1":7}`,
-		"trailing JSON":      `{"nakama-test-v1":"` + seed + `"} {}`,
+		"trailing JSON":      `{"nakama-test-v1":"` + public + `"} {}`,
 	}
 	for name, raw := range tests {
 		t.Run(name, func(t *testing.T) {
 			candidate := mapsClone(env)
-			candidate[envAuthorityKeyRing] = raw
-			if err := loadModuleConfig(candidate).ready(); err == nil || !strings.Contains(err.Error(), envAuthorityKeyRing) {
-				t.Fatal("non-strict authority private ring was accepted")
+			candidate[envAuthorityPublicRing] = raw
+			if err := loadModuleConfig(candidate).ready(); err == nil || !strings.Contains(err.Error(), envAuthorityPublicRing) {
+				t.Fatal("non-strict authority public registry was accepted")
+			}
+		})
+	}
+}
+
+func TestLoadModuleConfigSeparatesHistoricalPublicKeysFromPrivateRing(t *testing.T) {
+	env, _, _ := validModuleConfigEnv(t)
+	_, retiring, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activePublic, active, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env[envAuthorityKeyID] = "nakama-active-k1"
+	env[envAuthorityPrivate] = base64.StdEncoding.EncodeToString(active.Seed())
+	publicRing, _ := json.Marshal(map[string]string{
+		"nakama-retired-k0": base64.StdEncoding.EncodeToString(retiring.Public().(ed25519.PublicKey)),
+		"nakama-active-k1":  base64.StdEncoding.EncodeToString(activePublic),
+	})
+	env[envAuthorityPublicRing] = string(publicRing)
+	cfg := loadModuleConfig(env)
+	if err := cfg.ready(); err != nil {
+		t.Fatalf("historical public key without historical private material was rejected: %v", err)
+	}
+	if !cfg.authorityPublicKeys["nakama-retired-k0"].Equal(retiring.Public().(ed25519.PublicKey)) {
+		t.Fatal("historical public verification key was not retained")
+	}
+}
+
+func TestLoadModuleConfigRejectsAuthorityPublicPrivateMismatchOrAlias(t *testing.T) {
+	env, _, authorityPrivate := validModuleConfigEnv(t)
+	otherPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatch, _ := json.Marshal(map[string]string{
+		"nakama-test-v1": base64.StdEncoding.EncodeToString(otherPublic),
+	})
+	env[envAuthorityPublicRing] = string(mismatch)
+	if err := loadModuleConfig(env).ready(); err == nil || !strings.Contains(err.Error(), "must match") {
+		t.Fatal("same authority key id with mismatched public/private material was accepted")
+	}
+
+	alias, _ := json.Marshal(map[string]string{
+		"nakama-test-v1": base64.StdEncoding.EncodeToString(otherPublic),
+		"nakama-alias":   base64.StdEncoding.EncodeToString(authorityPrivate.Public().(ed25519.PublicKey)),
+	})
+	env[envAuthorityPublicRing] = string(alias)
+	if err := loadModuleConfig(env).ready(); err == nil || !strings.Contains(err.Error(), "aliases active private key") {
+		t.Fatal("authority public/private material alias under different key ids was accepted")
+	}
+}
+
+func TestKeyEncodingRejectsWhitespaceAndNonCanonicalForms(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalPrivate := base64.StdEncoding.EncodeToString(privateKey.Seed())
+	canonicalPublic := base64.StdEncoding.EncodeToString(privateKey.Public().(ed25519.PublicKey))
+	for name, encoded := range map[string]string{
+		"leading whitespace":  " " + canonicalPrivate,
+		"trailing whitespace": canonicalPrivate + "\n",
+		"uppercase hex":       strings.ToUpper(strings.Repeat("ab", ed25519.SeedSize)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodePrivateKey(encoded); err == nil {
+				t.Fatal("noncanonical private-key encoding was accepted")
+			}
+		})
+	}
+
+	env, _, _ := validModuleConfigEnv(t)
+	for name, encoded := range map[string]string{
+		"public leading whitespace":  " " + canonicalPublic,
+		"public trailing whitespace": canonicalPublic + "\t",
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := mapsClone(env)
+			ring, _ := json.Marshal(map[string]string{"nakama-test-v1": encoded})
+			candidate[envAuthorityPublicRing] = string(ring)
+			if err := loadModuleConfig(candidate).ready(); err == nil || !strings.Contains(err.Error(), envAuthorityPublicRing) {
+				t.Fatal("noncanonical public-key encoding was accepted")
 			}
 		})
 	}

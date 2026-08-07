@@ -26,6 +26,7 @@ fi
 tmp=$(mktemp -d)
 env_file="$tmp/compose.env"
 state_file_k0="$tmp/blackbox-state-k0.json"
+state_file_k0_stale="$tmp/blackbox-state-k0-stale.json"
 state_file_k1="$tmp/blackbox-state-k1.json"
 negative_log="$tmp/missing-secrets.log"
 client_dir="$tmp/client"
@@ -124,7 +125,7 @@ const lines = [
   `TRNM_HEPTA_ISSUER_PRIVATE_SEED=${issuer.privateSeed}`,
   `TRNM_NAKAMA_AUTHORITY_KEY_ID=${authorityK0ID}`,
   `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY=${authorityK0.privateSeed}`,
-  `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS='${JSON.stringify({ [authorityK0ID]: authorityK0.privateSeed })}'`,
+  `TRNM_NAKAMA_AUTHORITY_PUBLIC_KEYS='${JSON.stringify({ [authorityK0ID]: authorityK0.publicKey })}'`,
   `TRNM_BLACKBOX_AUTHORITY_K0_KEY_ID=${authorityK0ID}`,
   `TRNM_BLACKBOX_AUTHORITY_K0_PRIVATE_SEED=${authorityK0.privateSeed}`,
   `TRNM_BLACKBOX_AUTHORITY_K0_PUBLIC_KEY=${authorityK0.publicKey}`,
@@ -139,6 +140,7 @@ const lines = [
   `TRNM_BLACKBOX_CUSTOM_ID_ONE=trnm-blackbox-a-${suffix}`,
   `TRNM_BLACKBOX_CUSTOM_ID_TWO=trnm-blackbox-b-${suffix}`,
   `TRNM_BLACKBOX_LOGICAL_MATCH_ID_K0=blackbox-match-k0-${suffix}`,
+  `TRNM_BLACKBOX_LOGICAL_MATCH_ID_K0_STALE=blackbox-match-k0-stale-${suffix}`,
   `TRNM_BLACKBOX_LOGICAL_MATCH_ID_K1=blackbox-match-k1-${suffix}`,
   "TRNM_NAKAMA_MATCH_TICK_RATE=5",
   "",
@@ -146,6 +148,19 @@ const lines = [
 writeFileSync(envFile, lines.join("\n"), { mode: 0o600 });
 NODE
 chmod 600 "$env_file"
+bash scripts/lint-nakama-compose-env.sh "$env_file" >/dev/null
+obsolete_env_file="$tmp/obsolete-private-ring.env"
+cp "$env_file" "$obsolete_env_file"
+printf '%s\n' 'TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS={}' >>"$obsolete_env_file"
+if obsolete_lint_output=$(bash scripts/lint-nakama-compose-env.sh "$obsolete_env_file" 2>&1); then
+  echo "ERROR: Compose env lint accepted the obsolete authority private-key ring" >&2
+  exit 1
+fi
+if [[ "$obsolete_lint_output" != *"obsolete TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS is forbidden"* ]]; then
+  echo "ERROR: Compose env lint did not return the explicit obsolete-ring failure" >&2
+  exit 1
+fi
+rm -f "$obsolete_env_file"
 recorded_http_port=$(sed -n 's/^TRNM_NAKAMA_HTTP_PORT=//p' "$env_file")
 if [[ "$recorded_http_port" != "$http_port" ]]; then
   echo "ERROR: generated Compose env did not preserve the selected HTTP port" >&2
@@ -184,32 +199,39 @@ const raw = (name) => {
 };
 const k0 = {
   id: raw("TRNM_BLACKBOX_AUTHORITY_K0_KEY_ID"),
-  seed: raw("TRNM_BLACKBOX_AUTHORITY_K0_PRIVATE_SEED"),
+  publicKey: raw("TRNM_BLACKBOX_AUTHORITY_K0_PUBLIC_KEY"),
 };
 const k1 = {
   id: raw("TRNM_BLACKBOX_AUTHORITY_K1_KEY_ID"),
-  seed: raw("TRNM_BLACKBOX_AUTHORITY_K1_PRIVATE_SEED"),
+  publicKey: raw("TRNM_BLACKBOX_AUTHORITY_K1_PUBLIC_KEY"),
 };
-let ring;
+const activeID = raw("TRNM_NAKAMA_AUTHORITY_KEY_ID");
+const k1Seed = values.has("TRNM_BLACKBOX_AUTHORITY_K1_PRIVATE_SEED")
+  ? raw("TRNM_BLACKBOX_AUTHORITY_K1_PRIVATE_SEED")
+  : activeID === k1.id ? raw("TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY") : "";
+if (!k1Seed) throw new Error("active K1 singleton private key is unavailable");
+let publicRing;
 if (phase === "overlap-active-k1") {
-  ring = { [k0.id]: k0.seed, [k1.id]: k1.seed };
+  publicRing = { [k0.id]: k0.publicKey, [k1.id]: k1.publicKey };
 } else if (phase === "k1-only") {
-  ring = { [k1.id]: k1.seed };
+  publicRing = { [k1.id]: k1.publicKey };
 } else {
   throw new Error(`unsupported authority phase ${phase}`);
 }
 const updates = new Map([
   ["TRNM_NAKAMA_AUTHORITY_KEY_ID", k1.id],
-  ["TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY", k1.seed],
-  ["TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS", `'${JSON.stringify(ring)}'`],
+  ["TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY", k1Seed],
+  ["TRNM_NAKAMA_AUTHORITY_PUBLIC_KEYS", `'${JSON.stringify(publicRing)}'`],
 ]);
 const seen = new Set();
-const rewritten = lines.map((line) => {
+const rewritten = lines.flatMap((line) => {
   const separator = line.indexOf("=");
   const name = separator > 0 ? line.slice(0, separator) : "";
-  if (!updates.has(name)) return line;
+  if (name === "TRNM_BLACKBOX_AUTHORITY_K0_PRIVATE_SEED" ||
+      name === "TRNM_BLACKBOX_AUTHORITY_K1_PRIVATE_SEED") return [];
+  if (!updates.has(name)) return [line];
   seen.add(name);
-  return `${name}=${updates.get(name)}`;
+  return [`${name}=${updates.get(name)}`];
 });
 if (seen.size !== updates.size) throw new Error("authority phase could not update every runtime variable");
 writeFileSync(envFile, rewritten.join("\n") + "\n", { mode: 0o600 });
@@ -227,12 +249,14 @@ model = json.load(open(sys.argv[1], encoding="utf-8"))
 environment = model["services"]["nakama"].get("environment", {})
 active_id = environment.get("TRNM_NAKAMA_AUTHORITY_KEY_ID")
 active_private = environment.get("TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY")
-private_ring_raw = environment.get("TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS")
-if not active_id or not active_private or not private_ring_raw:
-    raise SystemExit("canonical Compose did not inject the complete Nakama authority ring")
-private_ring = json.loads(private_ring_raw)
-if private_ring.get(active_id) != active_private:
-    raise SystemExit("rendered Nakama authority ring does not byte-match its active singleton")
+public_ring_raw = environment.get("TRNM_NAKAMA_AUTHORITY_PUBLIC_KEYS")
+if not active_id or not active_private or not public_ring_raw:
+    raise SystemExit("canonical Compose did not inject the singleton private signer and public authority registry")
+if "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS" in environment:
+    raise SystemExit("canonical Compose still injects the forbidden multi-private-key ring")
+public_ring = json.loads(public_ring_raw)
+if active_id not in public_ring:
+    raise SystemExit("rendered public verification registry lacks the active authority")
 ports = model["services"]["nakama"].get("ports", [])
 if len(ports) != 1:
     raise SystemExit("expected exactly one rendered Nakama port")
@@ -371,6 +395,7 @@ run_blackbox() {
     esac
     case "$logical_slot" in
       k0) TRNM_BLACKBOX_LOGICAL_MATCH_ID="$TRNM_BLACKBOX_LOGICAL_MATCH_ID_K0" ;;
+      k0_stale) TRNM_BLACKBOX_LOGICAL_MATCH_ID="$TRNM_BLACKBOX_LOGICAL_MATCH_ID_K0_STALE" ;;
       k1) TRNM_BLACKBOX_LOGICAL_MATCH_ID="$TRNM_BLACKBOX_LOGICAL_MATCH_ID_K1" ;;
       *)
         echo "ERROR: unknown logical-match fixture slot: $logical_slot" >&2
@@ -394,6 +419,14 @@ run_blackbox() {
       resume)
         export TRNM_BLACKBOX_STATE_FILE TRNM_NAKAMA_OPERATOR_TOKEN
         export TRNM_AGENT_TWO_PRIVATE_SEED
+        export TRNM_BLACKBOX_EXPECTED_AUTHORITY_KEY_ID TRNM_BLACKBOX_EXPECTED_AUTHORITY_PUBLIC_KEY
+        ;;
+      seal-stale)
+        export TRNM_BLACKBOX_STATE_FILE TRNM_NAKAMA_OPERATOR_TOKEN
+        export TRNM_BLACKBOX_EXPECTED_AUTHORITY_KEY_ID TRNM_BLACKBOX_EXPECTED_AUTHORITY_PUBLIC_KEY
+        ;;
+      verify-stale)
+        export TRNM_BLACKBOX_STATE_FILE TRNM_NAKAMA_OPERATOR_TOKEN
         export TRNM_BLACKBOX_EXPECTED_AUTHORITY_KEY_ID TRNM_BLACKBOX_EXPECTED_AUTHORITY_PUBLIC_KEY
         ;;
       retired-key-rejected)
@@ -456,6 +489,52 @@ print("black-box resume state secret audit: ok")
 PY
 }
 
+capture_match_storage_row() {
+  local logical_match_id=$1
+  local output=$2
+  local raw="$tmp/storage-row.raw"
+  if [[ ! "$logical_match_id" =~ ^[A-Za-z0-9._:-]{1,128}$ ]]; then
+    echo "ERROR: invalid generated logical match id for storage capture" >&2
+    exit 64
+  fi
+  "${compose[@]}" exec -T postgres \
+    psql -X -qAt -F $'\t' -v ON_ERROR_STOP=1 -U postgres -d trillionnium_nakama \
+    -v "logical_match_id=$logical_match_id" >"$raw" <<'SQL'
+SELECT version, encode(convert_to(value::text, 'UTF8'), 'hex')
+FROM storage
+WHERE collection = 'trnm_authoritative_match_v1'
+  AND key = :'logical_match_id';
+SQL
+  python3 - "$raw" "$output" "$logical_match_id" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+raw_path, output_path, logical_match_id = sys.argv[1:]
+lines = pathlib.Path(raw_path).read_text(encoding="utf-8").splitlines()
+if len(lines) != 1:
+    raise SystemExit(f"expected exactly one persisted match row, got {len(lines)}")
+fields = lines[0].split("\t")
+if len(fields) != 2 or not fields[0] or not fields[1]:
+    raise SystemExit("persisted match row omitted version or value")
+value = bytes.fromhex(fields[1]).decode("utf-8")
+json.loads(value)
+evidence = {
+    "schema": "trnm.nakama.storage-row-proof.v1",
+    "collection": "trnm_authoritative_match_v1",
+    "logical_match_id": logical_match_id,
+    "version": fields[0],
+    "value": value,
+    "value_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+}
+pathlib.Path(output_path).write_text(
+    json.dumps(evidence, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
 wait_for_runtime_ready "initial K0 runtime"
 
 # Exercise the actual v3.40.0 HTTP and realtime interfaces. The Node client
@@ -474,9 +553,32 @@ if ! printf '%s\n' "$prepare_output" | rg '"phase":"prepare".*"exact_replay":tru
 fi
 audit_state_file "$state_file_k0"
 
+# Seal a second K0 snapshot as completed. The first K0 fixture proves active-K1
+# continuation; this one proves read-only completed restore/evidence/archive
+# before K0 public retirement and exact fail-closed reads afterwards.
+stale_prepare_output=$(run_blackbox prepare true "$state_file_k0_stale" k0 k0_stale 2>&1) || {
+  echo "ERROR: stale-K0 prepare phase failed" >&2
+  printf '%s\n' "$stale_prepare_output" >&2
+  exit 1
+}
+printf '%s\n' "$stale_prepare_output"
+audit_state_file "$state_file_k0_stale"
+stale_seal_output=$(run_blackbox seal-stale true "$state_file_k0_stale" k0 k0_stale 2>&1) || {
+  echo "ERROR: stale-K0 completion/read-path seal failed" >&2
+  printf '%s\n' "$stale_seal_output" >&2
+  exit 1
+}
+printf '%s\n' "$stale_seal_output"
+if ! printf '%s\n' "$stale_seal_output" | rg '"phase":"seal-stale".*"completion_authority_key_id":"blackbox-nakama-k0".*"evidence_bytes_pinned":true.*"archive_bytes_pinned":true' >/dev/null; then
+  echo "ERROR: stale K0 fixture was not sealed through completion/resume/evidence/archive" >&2
+  exit 1
+fi
+audit_state_file "$state_file_k0_stale"
+
 # Hard-kill only Nakama. PostgreSQL and its named volume must survive so the
 # next process can prove durable logical-match recovery and idempotency. Before
-# restart, add K1, make it active, and retain K0 for historical snapshots.
+# restart, make K1 the only private signing key, and retain K0+K1 public
+# verification material for historical snapshots and active configuration.
 postgres_before=$postgres_id
 "${docker_cmd[@]}" kill --signal KILL "$nakama_id" >/dev/null
 if [[ "$("${docker_cmd[@]}" inspect -f '{{.State.ExitCode}}' "$nakama_id")" != "137" ]]; then
@@ -487,6 +589,12 @@ if [[ "$("${docker_cmd[@]}" inspect -f '{{.State.Running}}' "$postgres_before")"
   echo "ERROR: PostgreSQL stopped during the Nakama crash test" >&2
   exit 1
 fi
+bash scripts/check-nakama-authority-private-retirement.sh \
+  --env-file "$env_file" \
+  --retiring-key-id blackbox-nakama-k0 \
+  --evidence-file "$tmp/generic-k0-private-retirement.json" \
+  --writers-fenced \
+  --compose-file "$root/compose.yaml"
 set_authority_phase overlap-active-k1
 "${compose[@]}" up -d --no-deps nakama >/dev/null
 nakama_id=$("${compose[@]}" ps -q nakama)
@@ -494,17 +602,60 @@ if [[ "$("${compose[@]}" ps -q postgres)" != "$postgres_before" ]]; then
   echo "ERROR: PostgreSQL was recreated during the Nakama-only restart" >&2
   exit 1
 fi
-wait_for_runtime_ready "K0/K1 overlap runtime with active K1"
+wait_for_runtime_ready "K0-public/K1-active runtime"
+nakama_id=$("${compose[@]}" ps -q nakama)
+"${docker_cmd[@]}" inspect "$nakama_id" >"$tmp/overlap-nakama.json"
+python3 - "$tmp/overlap-nakama.json" <<'PY'
+import json
+import sys
 
-historical_resume_output=$(run_blackbox resume true "$state_file_k0" k0 k0 2>&1) || {
+container = json.load(open(sys.argv[1], encoding="utf-8"))[0]
+environment = dict(item.split("=", 1) for item in container["Config"].get("Env", []) if "=" in item)
+if environment.get("TRNM_NAKAMA_AUTHORITY_KEY_ID") != "blackbox-nakama-k1":
+    raise SystemExit("overlap runtime did not make K1 active")
+if "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS" in environment:
+    raise SystemExit("overlap runtime retained the forbidden private-key ring")
+registry = json.loads(environment.get("TRNM_NAKAMA_AUTHORITY_PUBLIC_KEYS", "{}"))
+if set(registry) != {"blackbox-nakama-k0", "blackbox-nakama-k1"}:
+    raise SystemExit("overlap runtime did not retain exactly K0+K1 public verification keys")
+print("generic authority overlap: K1 process active, K0 public retained")
+PY
+
+stale_logical_match_id=$(python3 - "$state_file_k0_stale" <<'PY'
+import json
+import sys
+
+print(json.load(open(sys.argv[1], encoding="utf-8"))["logical_match_id"])
+PY
+)
+stale_overlap_before="$tmp/stale-overlap-before.json"
+stale_overlap_after="$tmp/stale-overlap-after.json"
+capture_match_storage_row "$stale_logical_match_id" "$stale_overlap_before"
+stale_verify_output=$(run_blackbox verify-stale true "$state_file_k0_stale" k0 k0_stale 2>&1) || {
+  echo "ERROR: completed K0 object was not readable with K1 active and K0 public retained" >&2
+  printf '%s\n' "$stale_verify_output" >&2
+  exit 1
+}
+printf '%s\n' "$stale_verify_output"
+if ! printf '%s\n' "$stale_verify_output" | rg '"phase":"verify-stale".*"completion_authority_key_id":"blackbox-nakama-k0".*"k1_active_process_read_immutable_k0_evidence":true.*"exact_pre_rotation_bytes":true' >/dev/null; then
+  echo "ERROR: K1-active process/K0 immutable completed read-path proof is incomplete" >&2
+  exit 1
+fi
+capture_match_storage_row "$stale_logical_match_id" "$stale_overlap_after"
+if ! cmp -s "$stale_overlap_before" "$stale_overlap_after"; then
+  echo "ERROR: completed K0 resume/evidence/archive reads changed storage version or value" >&2
+  exit 1
+fi
+
+historical_resume_output=$(run_blackbox resume true "$state_file_k0" k1 k0 2>&1) || {
   echo "ERROR: K0 historical crash-resume failed during K0/K1 overlap" >&2
   printf '%s\n' "$historical_resume_output" >&2
   "${compose[@]}" logs --no-color --tail=240 >&2 || true
   exit 1
 }
 printf '%s\n' "$historical_resume_output"
-if ! printf '%s\n' "$historical_resume_output" | rg '"phase":"resume".*"post_crash_replay_exact":true.*"event_count":5.*"evidence_byte_identical":true.*"conflicting_completion_rejected":true.*"completed_runtime_terminated":true.*"broadcast_scopes_verified":true.*"authority_signature_verified":true.*"authority_key_id":"blackbox-nakama-k0"' >/dev/null; then
-  echo "ERROR: historical K0 resume did not retain and verify its original authority" >&2
+if ! printf '%s\n' "$historical_resume_output" | rg '"phase":"resume".*"post_crash_replay_exact":true.*"event_count":5.*"evidence_byte_identical":true.*"conflicting_completion_rejected":true.*"completed_runtime_terminated":true.*"broadcast_scopes_verified":true.*"authority_signature_verified":true.*"authority_key_id":"blackbox-nakama-k1"' >/dev/null; then
+  echo "ERROR: historical K0 snapshot did not resume and continue with active K1" >&2
   exit 1
 fi
 
@@ -542,15 +693,26 @@ if [[ "$("${compose[@]}" ps -q postgres)" != "$postgres_before" ]]; then
 fi
 wait_for_runtime_ready "K1-only runtime"
 
-retired_output=$(run_blackbox retired-key-rejected true "$state_file_k0" k0 k0 2>&1) || {
-  echo "ERROR: removed-K0 fail-closed black box failed" >&2
+stale_retired_before="$tmp/stale-retired-before.json"
+stale_retired_after="$tmp/stale-retired-after.json"
+capture_match_storage_row "$stale_logical_match_id" "$stale_retired_before"
+if ! cmp -s "$stale_overlap_after" "$stale_retired_before"; then
+  echo "ERROR: completed K0 storage bytes changed during K0 public-key retirement" >&2
+  exit 1
+fi
+retired_output=$(run_blackbox retired-key-rejected true "$state_file_k0_stale" k0 k0_stale 2>&1) || {
+  echo "ERROR: completed K0 snapshot did not fail closed after public-key removal" >&2
   printf '%s\n' "$retired_output" >&2
-  "${compose[@]}" logs --no-color --tail=240 >&2 || true
   exit 1
 }
 printf '%s\n' "$retired_output"
-if ! printf '%s\n' "$retired_output" | rg '"phase":"retired-key-rejected".*"removed_authority_failed_closed":true' >/dev/null; then
-  echo "ERROR: K0 snapshot was not proven fail-closed after K0 removal" >&2
+if ! printf '%s\n' "$retired_output" | rg '"removed_authority_failed_closed":true.*"rejected_read_paths":\["resume","evidence","archive"\].*"explicit_missing_key_error":true' >/dev/null; then
+  echo "ERROR: stale K0 fail-closed proof is missing" >&2
+  exit 1
+fi
+capture_match_storage_row "$stale_logical_match_id" "$stale_retired_after"
+if ! cmp -s "$stale_retired_before" "$stale_retired_after"; then
+  echo "ERROR: missing-K0 resume/evidence/archive failures changed storage version or value" >&2
   exit 1
 fi
 
@@ -588,4 +750,4 @@ if [[ "$("${docker_cmd[@]}" inspect -f '{{.State.Health.Status}}' "$nakama_id")"
   exit 1
 fi
 
-echo "Nakama Compose smoke: K0 -> {K0,K1}/active K1 -> K1-only fail-closed rotation: PASS"
+echo "Nakama Compose smoke: singleton K0 private/public -> K0+K1 public with singleton K1 private -> K1-only, completed K0 read/fail-closed storage proof: PASS"

@@ -44,7 +44,7 @@ type authoritativeMatchState struct {
 var _ runtime.Match = (*authoritativeMatch)(nil)
 
 func (m *authoritativeMatch) MatchInit(ctx context.Context, logger runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, params map[string]interface{}) (interface{}, int, string) {
-	if err := m.module.config.ready(); err != nil {
+	if err := m.module.ready(); err != nil {
 		logger.Error("authoritative match init rejected unready configuration: %s", err.Error())
 		return nil, 0, ""
 	}
@@ -299,7 +299,12 @@ func (m *authoritativeMatch) completeAndTerminate(ctx context.Context, logger ru
 	} else if beforeCompletion != nil {
 		completion = *beforeCompletion
 	}
-	response, _ := json.Marshal(evidenceResponseFrom(state, completion))
+	evidence, err := evidenceResponseFrom(state, completion)
+	if err != nil {
+		logger.Error("completion authority lookup failed: %s", err.Error())
+		return state, `{"error":"match completion authority is unavailable"}`
+	}
+	response, _ := json.Marshal(evidence)
 	return state, string(response)
 }
 

@@ -21,7 +21,14 @@ const (
 	maxSnapshotPayloadBytes = 64 * 1024 * 1024
 )
 
-var snapshotMagic = [8]byte{'T', 'R', 'N', 'M', 'R', 'S', 'P', '1'}
+var (
+	snapshotMagic = [8]byte{'T', 'R', 'N', 'M', 'R', 'S', 'P', '1'}
+
+	// ErrAuthorityVerificationKeyUnavailable lets adapters distinguish an
+	// intentionally retired public key from malformed or forged state while
+	// still failing every restore closed.
+	ErrAuthorityVerificationKeyUnavailable = errors.New("research authority verification key is unavailable")
+)
 
 type snapshotDocument struct {
 	Schema             string                               `json:"schema"`
@@ -112,27 +119,29 @@ func Restore(snapshot []byte, options RestoreOptions) (*Engine, error) {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, errors.New("research snapshot has trailing JSON")
 	}
-	authorityKeyID := options.AuthorityKeyID
-	authorityPrivateKey := options.AuthorityPrivateKey
-	if len(options.AuthorityPrivateKeys) > 0 {
-		authorityKeyID = document.AuthorityKeyID
-		authorityPrivateKey = options.AuthorityPrivateKeys[authorityKeyID]
-	}
-	public, err := validateAuthority(authorityKeyID, authorityPrivateKey)
+	activePublic, err := validateAuthority(options.AuthorityKeyID, options.AuthorityPrivateKey)
 	if err != nil {
-		return nil, errors.New("research snapshot authority key is not configured")
+		return nil, errors.New("active research snapshot signing key is not configured")
+	}
+	registeredActive := options.AuthorityPublicKeys[options.AuthorityKeyID]
+	if len(registeredActive) != ed25519.PublicKeySize || !bytes.Equal(registeredActive, activePublic) {
+		return nil, errors.New("active research snapshot signing key does not match the public verification registry")
+	}
+	verificationPublic := options.AuthorityPublicKeys[document.AuthorityKeyID]
+	if len(verificationPublic) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("%w: research snapshot authority key %q is not in the public verification registry",
+			ErrAuthorityVerificationKeyUnavailable, document.AuthorityKeyID)
 	}
 	var checksumArray [sha256.Size]byte
 	copy(checksumArray[:], checksum)
-	message, err := snapshotSigningBytes(authorityKeyID, payload, checksumArray)
+	message, err := snapshotSigningBytes(document.AuthorityKeyID, payload, checksumArray)
 	if err != nil {
 		return nil, err
 	}
-	if !ed25519.Verify(public, message, snapshot[end+sha256.Size:]) {
+	if !ed25519.Verify(verificationPublic, message, snapshot[end+sha256.Size:]) {
 		return nil, errors.New("research snapshot signature failed")
 	}
-	if document.Schema != snapshotSchema || document.AuthorityKeyID != authorityKeyID ||
-		!bytes.Equal(document.AuthorityPublicKey, public) {
+	if document.Schema != snapshotSchema || !bytes.Equal(document.AuthorityPublicKey, verificationPublic) {
 		return nil, errors.New("research snapshot schema or authority differs")
 	}
 	engine := &Engine{
@@ -141,9 +150,10 @@ func Restore(snapshot []byte, options RestoreOptions) (*Engine, error) {
 		status: document.Status, version: document.Version, epochs: cloneEpochs(document.Epochs),
 		participants: cloneParticipants(document.Participants), actions: make(map[string]actionRecord),
 		events: cloneEvents(document.Events), completion: cloneCompletionPointer(document.Completion),
-		trustedIssuerKeys: cloneKeys(options.TrustedIssuerKeys), authorityKeyID: authorityKeyID,
-		authorityPrivateKey: append(ed25519.PrivateKey(nil), authorityPrivateKey...),
-		authorityPublicKey:  append(ed25519.PublicKey(nil), public...),
+		trustedIssuerKeys: cloneKeys(options.TrustedIssuerKeys), authorityKeyID: options.AuthorityKeyID,
+		authorityPrivateKey: append(ed25519.PrivateKey(nil), options.AuthorityPrivateKey...),
+		authorityPublicKey:  append(ed25519.PublicKey(nil), activePublic...),
+		authorityPublicKeys: cloneKeys(options.AuthorityPublicKeys),
 	}
 	for _, record := range document.Actions {
 		if _, exists := engine.actions[record.Action.ActionID]; exists {
@@ -409,10 +419,15 @@ func (e *Engine) validateCompletion() error {
 	if completion.SessionID != e.sessionID || completion.TeamID != e.teamID || completion.PaperProjectID != e.paperProjectID ||
 		completion.ChallengeID != e.challengeID || completion.RosterVersion != epoch.Version || completion.RosterRoot != epoch.Root ||
 		completion.EventCount != uint64(len(e.events)) || completion.RulesetHash != e.rulesetHash ||
-		completion.ChallengeSnapshotHash != e.challengeHash || completion.AuthorityKeyID != e.authorityKeyID {
+		completion.ChallengeSnapshotHash != e.challengeHash {
 		return errors.New("completion immutable identity differs")
 	}
-	return researchcontract.VerifyCompletionAgainstArchive(completion, e.events, e.authorityPublicKey)
+	completionPublic := e.authorityPublicKeys[completion.AuthorityKeyID]
+	if len(completionPublic) != ed25519.PublicKeySize {
+		return fmt.Errorf("%w: research completion authority key %q is not in the public verification registry",
+			ErrAuthorityVerificationKeyUnavailable, completion.AuthorityKeyID)
+	}
+	return researchcontract.VerifyCompletionAgainstArchive(completion, e.events, completionPublic)
 }
 
 func validateEpochReplacement(oldEpoch, next rosterEpoch, states []participantState) (int, error) {

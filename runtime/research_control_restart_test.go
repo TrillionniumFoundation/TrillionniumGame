@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,19 @@ func (nakama *controlTestNakama) StorageRead(ctx context.Context, reads []*runti
 
 func (nakama *controlTestNakama) StorageWrite(ctx context.Context, writes []*runtime.StorageWrite) ([]*api.StorageObjectAck, error) {
 	return nakama.store.StorageWrite(ctx, writes)
+}
+
+func (nakama *controlTestNakama) StorageDelete(_ context.Context, deletes []*runtime.StorageDelete) error {
+	for _, deletion := range deletes {
+		object := nakama.store.objects[controlStorageKey(deletion.Collection, deletion.Key)]
+		if object == nil || object.Version != deletion.Version {
+			return runtime.ErrStorageRejectedVersion
+		}
+	}
+	for _, deletion := range deletes {
+		delete(nakama.store.objects, controlStorageKey(deletion.Collection, deletion.Key))
+	}
+	return nil
 }
 
 func (nakama *controlTestNakama) MatchGet(_ context.Context, id string) (*api.Match, error) {
@@ -121,6 +135,9 @@ func newControlRestartFixture(t *testing.T) *controlRestartFixture {
 		issuerKeys:        map[string]ed25519.PublicKey{"hepta-authorization-restart": issuerPublic},
 		controlIssuerKeys: map[string]ed25519.PublicKey{"hepta-control-restart": controlPublic},
 		authorityKeyID:    "nakama-control-restart", authorityPrivateKey: authorityPrivate,
+		authorityPublicKeys: map[string]ed25519.PublicKey{
+			"nakama-control-restart": authorityPrivate.Public().(ed25519.PublicKey),
+		},
 		operatorToken: adapterOperatorToken, matchTickRate: 5,
 		heptaBaseURL: "http://hepta.invalid", heptaServiceToken: adapterOperatorToken,
 	}}
@@ -221,7 +238,8 @@ func TestRestartResearchControlSIGKILLCreateAndResumeAfterRuntimeBeforeReceipt(t
 	createRequest.Control = fixture.signControl(t, researchcontract.ResearchControlOperationCreate,
 		"90000000-0000-4000-8000-000000000001", fixture.authorizationSetOne, 1, createBusiness)
 	createCanonical, _ := json.Marshal(createRequest)
-	createCommand := newStoredResearchControlCommand(createRequest.Control, createCanonical, time.Now().UTC().Unix())
+	createCommand := newStoredResearchControlCommand(createRequest.Control, createCanonical,
+		time.Now().UTC().Unix(), fixture.module.config.authorityKeyID)
 	session := fixture.initialStoredSession(t)
 	sessionVersion, createCommandVersion, err := createStoredResearchWithControl(context.Background(), fixture.store,
 		session, createCommand, fixture.module.config.controlIssuerKeys)
@@ -250,7 +268,8 @@ func TestRestartResearchControlSIGKILLCreateAndResumeAfterRuntimeBeforeReceipt(t
 	resumeRequest.Control = fixture.signControl(t, researchcontract.ResearchControlOperationResume,
 		"90000000-0000-4000-8000-000000000002", fixture.authorizationSetOne, 1, resumeBusiness)
 	resumeCanonical, _ := json.Marshal(resumeRequest)
-	resumeCommand := newStoredResearchControlCommand(resumeRequest.Control, resumeCanonical, time.Now().UTC().Unix())
+	resumeCommand := newStoredResearchControlCommand(resumeRequest.Control, resumeCanonical,
+		time.Now().UTC().Unix(), fixture.module.config.authorityKeyID)
 	resumeVersion, err := createStoredResearchControl(context.Background(), fixture.store, resumeCommand, fixture.module.config.controlIssuerKeys)
 	if err != nil {
 		t.Fatal(err)
@@ -294,7 +313,8 @@ func TestAppliedResearchControlRejectsResponseTamperWithRecomputedChecksum(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := newStoredResearchControlCommand(request.Control, canonical, time.Now().UTC().Unix())
+	command := newStoredResearchControlCommand(request.Control, canonical,
+		time.Now().UTC().Unix(), fixture.module.config.authorityKeyID)
 	version, err := createStoredResearchControl(context.Background(), fixture.store, command,
 		fixture.module.config.controlIssuerKeys)
 	if err != nil {
@@ -353,10 +373,420 @@ func TestAppliedResearchControlRejectsResponseTamperWithRecomputedChecksum(t *te
 	}
 }
 
-func applyControlRestartPaperActions(t *testing.T, fixture *controlRestartFixture, state *researchMatchState) researchcontract.Digest {
+func TestAppliedResearchControlReplaysWithHistoricalPublicKeyOnly(t *testing.T) {
+	fixture := newControlRestartFixture(t)
+	session := fixture.initialStoredSession(t)
+	session.RuntimeGeneration = 1
+	session.ExternalMatchID = "research-runtime-1"
+	if _, err := createStoredResearch(context.Background(), fixture.store, session); err != nil {
+		t.Fatal(err)
+	}
+	request := researchResumeRequestV2{
+		Schema: researchcontract.ResearchControlResumeRequestSchemaV2, LogicalSessionID: session.LogicalSessionID,
+		AuthorizationSetID: fixture.authorizationSetOne,
+	}
+	business, _ := canonicalResearchResumeBusinessV2(request)
+	request.Control = fixture.signControl(t, researchcontract.ResearchControlOperationResume,
+		"90000000-0000-4000-8000-000000000006", fixture.authorizationSetOne, 1, business)
+	canonical, _ := json.Marshal(request)
+	command := newStoredResearchControlCommand(request.Control, canonical,
+		time.Now().UTC().Unix(), fixture.module.config.authorityKeyID)
+	commandVersion, err := createStoredResearchControl(context.Background(), fixture.store, command,
+		fixture.module.config.controlIssuerKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := fixture.module.recoverResearchRuntimeControl(context.Background(), fixture.nakama,
+		versionedStoredResearchControl{record: command, version: commandVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	k0Public := fixture.authorityPrivate.Public().(ed25519.PublicKey)
+	k1Public, k1Private := researchTestKey("control-restart-authority-k1")
+	fixture.module.config.authorityKeyID = "nakama-control-restart-k1"
+	fixture.module.config.authorityPrivateKey = k1Private
+	fixture.module.config.authorityPublicKeys = map[string]ed25519.PublicKey{
+		"nakama-control-restart":    k0Public,
+		"nakama-control-restart-k1": k1Public,
+	}
+	stored, err := loadStoredResearch(context.Background(), fixture.store, session.LogicalSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, err := fixture.module.restoreStoredResearch(stored.record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resigned := cloneStoredResearchSession(stored.record)
+	resigned.setSnapshot(mustResearchSnapshot(t, engine))
+	if _, err := updateStoredResearch(context.Background(), fixture.store, resigned, stored.version); err != nil {
+		t.Fatal(err)
+	}
+
+	_, replay, found, err := fixture.module.existingResearchControl(context.Background(), fixture.store, request.Control, canonical)
+	if err != nil || !found || replay != first {
+		t.Fatalf("historical applied response did not replay with K0 public only: found=%v err=%v", found, err)
+	}
+	delete(fixture.module.config.authorityPublicKeys, "nakama-control-restart")
+	_, replay, found, err = fixture.module.existingResearchControl(context.Background(), fixture.store, request.Control, canonical)
+	if !found || replay != "" || !errors.Is(err, researchcore.ErrAuthorityVerificationKeyUnavailable) {
+		t.Fatalf("historical applied response survived K0 public removal: found=%v replay=%q err=%v", found, replay, err)
+	}
+}
+
+func TestAppliedLegacyV2ControlReplaysExactBytesWithoutWrites(t *testing.T) {
+	fixture := newControlRestartFixture(t)
+	session := fixture.initialStoredSession(t)
+	session.RuntimeGeneration = 1
+	session.ExternalMatchID = "legacy-v2-runtime"
+	if _, err := createStoredResearch(context.Background(), fixture.store, session); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := fixture.module.restoreStoredResearch(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := researchResumeRequestV2{
+		Schema: researchcontract.ResearchControlResumeRequestSchemaV2, LogicalSessionID: session.LogicalSessionID,
+		AuthorizationSetID: fixture.authorizationSetOne,
+	}
+	business, err := canonicalResearchResumeBusinessV2(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Control = fixture.signControl(t, researchcontract.ResearchControlOperationResume,
+		"90000000-0000-4000-8000-000000000008", fixture.authorizationSetOne, 1, business)
+	canonical, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptedAt := time.Now().UTC().Unix()
+	legacy := appliedLegacyStoredResearchControlV2(t, request.Control, canonical, acceptedAt, acceptedAt+1,
+		researchRuntimeFor(session, engine.View(), session.ExternalMatchID), fixture.module.config.authorityKeyID,
+		fixture.authorityPrivate)
+	legacyValue, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The old v2 response remains signed by K0. Before replaying it, model the
+	// state-preserving activation: verify the K0 snapshot from the public
+	// registry, continue with active K1, and persist a K1-signed snapshot. This
+	// proves v2 replay depends on the historical public capability carried by
+	// the frozen response rather than on a retired private key or the current
+	// snapshot wrapper.
+	const historicalAuthorityKeyID = "nakama-control-restart"
+	const activeAuthorityKeyID = "nakama-control-bridge-k1"
+	activePublic, activePrivate := researchTestKey("research-control-bridge-k1")
+	fixture.module.config.authorityKeyID = activeAuthorityKeyID
+	fixture.module.config.authorityPrivateKey = activePrivate
+	fixture.module.config.authorityPublicKeys = map[string]ed25519.PublicKey{
+		historicalAuthorityKeyID: fixture.authorityPrivate.Public().(ed25519.PublicKey),
+		activeAuthorityKeyID:     activePublic,
+	}
+	storedSession, err := loadStoredResearch(context.Background(), fixture.store, session.LogicalSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuedEngine, err := fixture.module.restoreStoredResearch(storedSession.record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuedSession := cloneStoredResearchSession(storedSession.record)
+	continuedSession.setSnapshot(mustResearchSnapshot(t, continuedEngine))
+	if _, err := updateStoredResearch(context.Background(), fixture.store, continuedSession,
+		storedSession.version); err != nil {
+		t.Fatal(err)
+	}
+	continuedSessionValue, err := json.Marshal(continuedSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuedSessionRaw := string(continuedSessionValue)
+	if err := assessStoredResearchControlActivationAgainstSession(nakamaSystemStorageOwnerID,
+		legacy.CommandID, string(legacyValue), &continuedSessionRaw, fixture.module.config); err != nil {
+		t.Fatalf("valid applied legacy v2 row blocked activation: %v", err)
+	}
+	if err := assessStoredResearchControlActivationAgainstSession(nakamaSystemStorageOwnerID,
+		legacy.CommandID, string(legacyValue), nil, fixture.module.config); err == nil ||
+		!strings.Contains(err.Error(), "no durable session") {
+		t.Fatalf("applied legacy v2 row without its durable session passed activation: %v", err)
+	}
+	wrongResult := researchRuntimeFor(session, engine.View(), session.ExternalMatchID)
+	wrongResult.RosterRoot = researchcontract.NewDigest([]byte("wrong-legacy-v2-roster"))
+	wrongLegacy := appliedLegacyStoredResearchControlV2(t, request.Control, canonical, acceptedAt,
+		acceptedAt+1, wrongResult, historicalAuthorityKeyID, fixture.authorityPrivate)
+	wrongLegacyValue, err := json.Marshal(wrongLegacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := assessStoredResearchControlActivationAgainstSession(nakamaSystemStorageOwnerID,
+		wrongLegacy.CommandID, string(wrongLegacyValue), &continuedSessionRaw, fixture.module.config); err == nil ||
+		!strings.Contains(err.Error(), "roster_root differs") {
+		t.Fatalf("legacy v2 response with a wrong durable roster root passed activation: %v", err)
+	}
+	controlKey := controlStorageKey(researchControlStorageCollection, legacy.CommandID)
+	fixture.store.objects[controlKey] = &api.StorageObject{
+		Collection: researchControlStorageCollection, Key: legacy.CommandID, UserId: "",
+		Value: string(legacyValue), Version: "legacy-v2-applied",
+	}
+	expectedResponse, err := legacy.response()
+	if err != nil {
+		t.Fatal(err)
+	}
+	valuesBefore := make(map[string][2]string, len(fixture.store.objects))
+	for key, object := range fixture.store.objects {
+		valuesBefore[key] = [2]string{object.Value, object.Version}
+	}
+	versionBefore := fixture.store.version
+
+	for attempt := 0; attempt < 2; attempt++ {
+		stored, response, found, err := fixture.module.existingResearchControl(context.Background(), fixture.store,
+			request.Control, canonical)
+		if err != nil || !found || response != expectedResponse || stored.legacyV2 == nil ||
+			stored.rawValue != string(legacyValue) {
+			t.Fatalf("legacy v2 exact replay failed on attempt %d: found=%v response=%q err=%v", attempt, found,
+				response, err)
+		}
+	}
+	if fixture.store.version != versionBefore || len(fixture.store.objects) != len(valuesBefore) {
+		t.Fatal("legacy v2 replay performed a storage write")
+	}
+	for key, before := range valuesBefore {
+		object := fixture.store.objects[key]
+		if object == nil || object.Value != before[0] || object.Version != before[1] {
+			t.Fatalf("legacy v2 replay changed storage object %q", key)
+		}
+	}
+
+	delete(fixture.module.config.authorityPublicKeys, historicalAuthorityKeyID)
+	if err := assessStoredResearchControlActivationAgainstSession(nakamaSystemStorageOwnerID,
+		legacy.CommandID, string(legacyValue), &continuedSessionRaw, fixture.module.config); !errors.Is(err,
+		researchcore.ErrAuthorityVerificationKeyUnavailable) {
+		t.Fatalf("activation scan accepted legacy v2 with a missing public key: %v", err)
+	}
+	_, response, found, err := fixture.module.existingResearchControl(context.Background(), fixture.store,
+		request.Control, canonical)
+	if !found || response != "" || !errors.Is(err, researchcore.ErrAuthorityVerificationKeyUnavailable) {
+		t.Fatalf("legacy v2 replay survived missing historical public key: found=%v response=%q err=%v", found,
+			response, err)
+	}
+	if fixture.store.version != versionBefore || fixture.store.objects[controlKey].Value != string(legacyValue) ||
+		fixture.store.objects[controlKey].Version != "legacy-v2-applied" {
+		t.Fatal("missing-key legacy v2 replay failure changed persisted bytes or version")
+	}
+}
+
+func TestPendingV3ControlActivationRequiresRecoverableDurableSession(t *testing.T) {
+	fixture := newControlRestartFixture(t)
+	session := fixture.initialStoredSession(t)
+	sessionValue, err := json.Marshal(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionRaw := string(sessionValue)
+	request := researchResumeRequestV2{
+		Schema: researchcontract.ResearchControlResumeRequestSchemaV2, LogicalSessionID: session.LogicalSessionID,
+		AuthorizationSetID: fixture.authorizationSetOne,
+	}
+	business, err := canonicalResearchResumeBusinessV2(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Control = fixture.signControl(t, researchcontract.ResearchControlOperationResume,
+		"90000000-0000-4000-8000-000000000009", fixture.authorizationSetOne, 1, business)
+	canonical, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := newStoredResearchControlCommand(request.Control, canonical,
+		time.Now().UTC().Unix(), fixture.module.config.authorityKeyID)
+	commandValue, err := json.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := assessStoredResearchControlActivationAgainstSession(nakamaSystemStorageOwnerID,
+		command.CommandID, string(commandValue), &sessionRaw, fixture.module.config); err != nil {
+		t.Fatalf("recoverable pending v3 command blocked activation: %v", err)
+	}
+	if err := assessStoredResearchControlActivationAgainstSession(nakamaSystemStorageOwnerID,
+		command.CommandID, string(commandValue), nil, fixture.module.config); err == nil ||
+		!strings.Contains(err.Error(), "no durable session") {
+		t.Fatalf("pending v3 command without its durable session passed activation: %v", err)
+	}
+	corruptSession := strings.Replace(sessionRaw, session.SnapshotSHA256,
+		strings.Repeat("0", len(session.SnapshotSHA256)), 1)
+	if err := assessStoredResearchControlActivationAgainstSession(nakamaSystemStorageOwnerID,
+		command.CommandID, string(commandValue), &corruptSession, fixture.module.config); err == nil ||
+		!strings.Contains(err.Error(), "failed verification") {
+		t.Fatalf("pending v3 command with a corrupt durable session passed activation: %v", err)
+	}
+	wrongEpochSession := cloneStoredResearchSession(session)
+	wrongEpochSession.ControlAuthorizationSetID = fixture.authorizationSetTwo
+	wrongEpochValue, err := json.Marshal(wrongEpochSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongEpochRaw := string(wrongEpochValue)
+	if err := assessStoredResearchControlActivationAgainstSession(nakamaSystemStorageOwnerID,
+		command.CommandID, string(commandValue), &wrongEpochRaw, fixture.module.config); err == nil ||
+		!strings.Contains(err.Error(), "different durable roster epoch") {
+		t.Fatalf("pending v3 command with the wrong durable epoch passed activation: %v", err)
+	}
+}
+
+func TestK1ControlWrapperReplaysK0CompletionWithoutSessionOrOutboxMutation(t *testing.T) {
+	fixture := newControlRestartFixture(t)
+	session := fixture.initialStoredSession(t)
+	session.RuntimeGeneration = 1
+	session.ExternalMatchID = "research-runtime-1"
+	if _, err := createStoredResearch(context.Background(), fixture.store, session); err != nil {
+		t.Fatal(err)
+	}
+	state := fixture.reloadState(t)
+	joinAt := time.Now().UTC().Add(-time.Minute)
+	for index, authorization := range fixture.initial {
+		if _, err := state.engine.Join(authorization.Claim.SubjectUserID, authorization.Claim.AuthorizationID,
+			joinAt.Add(time.Duration(index)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release := applyControlRestartPaperActions(t, state, fixture.initial, fixture.initialAgents)
+	facts := researchcontract.TerminalFacts{
+		ResultCode: "paper_bundle_ready", PaperBundleHash: researchcontract.NewDigest([]byte("k0-control-bundle")),
+		PaperReleaseCandidateHash: release, ContributionLedgerHash: researchcontract.NewDigest([]byte("k0-control-ledger")),
+	}
+	completion, err := state.engine.Complete(facts, time.Now().UTC().Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	k0Public, ok := state.engine.CompletionAuthorityPublicKey()
+	if !ok || completion.AuthorityKeyID != fixture.module.config.authorityKeyID {
+		t.Fatal("K0 completion authority was unavailable")
+	}
+	outbox, err := newStoredResearchCompletionOutbox(completion, state.engine.Events(), k0Public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedRecord := cloneStoredResearchSession(state.record)
+	completedRecord.setSnapshot(mustResearchSnapshot(t, state.engine))
+	completedRecord.CompletionOutbox = &outbox
+	completedVersion, err := updateStoredResearch(context.Background(), fixture.store, completedRecord, state.storageVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	k1Public, k1Private := researchTestKey("control-wrapper-authority-k1")
+	fixture.module.config.authorityKeyID = "nakama-control-wrapper-k1"
+	fixture.module.config.authorityPrivateKey = k1Private
+	fixture.module.config.authorityPublicKeys = map[string]ed25519.PublicKey{
+		"nakama-control-restart":    k0Public,
+		"nakama-control-wrapper-k1": k1Public,
+	}
+	rotatedEngine, err := fixture.module.restoreStoredResearch(completedRecord)
+	if err != nil {
+		t.Fatalf("K1 failed to restore the K0 completion: %v", err)
+	}
+	rotatedRecord := cloneStoredResearchSession(completedRecord)
+	rotatedRecord.setSnapshot(mustResearchSnapshot(t, rotatedEngine))
+	rotatedVersion, err := updateStoredResearch(context.Background(), fixture.store, rotatedRecord, completedVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := researchCompleteRequestV2{
+		Schema:             researchcontract.ResearchControlCompleteRequestSchemaV2,
+		LogicalSessionID:   rotatedRecord.LogicalSessionID,
+		AuthorizationSetID: fixture.authorizationSetOne, Facts: facts,
+	}
+	business, _ := canonicalResearchCompleteBusinessV2(request)
+	request.Control = fixture.signControl(t, researchcontract.ResearchControlOperationComplete,
+		"90000000-0000-4000-8000-000000000007", fixture.authorizationSetOne, 1, business)
+	canonical, _ := json.Marshal(request)
+	pending := newStoredResearchControlCommand(request.Control, canonical, time.Now().UTC().Unix(),
+		fixture.module.config.authorityKeyID)
+	pendingVersion, err := createStoredResearchControl(context.Background(), fixture.store, pending,
+		fixture.module.config.controlIssuerKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state = &researchMatchState{
+		engine: rotatedEngine, record: rotatedRecord, storageVersion: rotatedVersion,
+		instanceSessionID: rotatedRecord.LogicalSessionID, instanceGeneration: rotatedRecord.RuntimeGeneration,
+		pendingAuthorization: map[string]pendingResearchAdmission{}, sessionAuthorization: map[string]string{},
+		authorizationSessions: map[string]map[string]struct{}{}, sessionPresences: map[string]runtime.Presence{},
+	}
+	sessionKey := controlStorageKey(researchStorageCollection, rotatedRecord.LogicalSessionID)
+	controlKey := controlStorageKey(researchControlStorageCollection, pending.CommandID)
+	sessionValueBefore := fixture.store.objects[sessionKey].Value
+	sessionVersionBefore := fixture.store.objects[sessionKey].Version
+	outboxBefore := *rotatedRecord.CompletionOutbox
+
+	_, first := fixture.signal(t, state, pending.CommandID, researchcontract.ResearchControlOperationComplete)
+	if strings.Contains(first, `"error"`) {
+		t.Fatalf("K1 control wrapper over K0 completion failed: %s", first)
+	}
+	applied := fixture.store.objects[controlKey]
+	appliedValue := applied.Value
+	appliedVersion := applied.Version
+	storeVersionAfterApply := fixture.store.version
+	_, second := fixture.signal(t, state, pending.CommandID, researchcontract.ResearchControlOperationComplete)
+	if first != second || fixture.store.version != storeVersionAfterApply ||
+		fixture.store.objects[controlKey].Value != appliedValue || fixture.store.objects[controlKey].Version != appliedVersion {
+		t.Fatal("applied K1 control command did not replay exact bytes without another write")
+	}
+	var wrapper researchControlResultV2
+	var evidence researchEvidenceResponse
+	if decodeJSONStrict(first, &wrapper) != nil || decodeJSONStrict(string(wrapper.Result), &evidence) != nil ||
+		evidence.Completion.AuthorityKeyID != "nakama-control-restart" ||
+		evidence.AuthorityPublicKey != base64.StdEncoding.EncodeToString(k0Public) {
+		t.Fatal("K1 control receipt did not preserve its embedded K0 completion evidence")
+	}
+	appliedCommand, err := loadStoredResearchControl(context.Background(), fixture.store, pending.CommandID,
+		fixture.module.config.controlIssuerKeys)
+	if err != nil || appliedCommand.record.ResponseAuthorityKeyID != "nakama-control-wrapper-k1" ||
+		appliedCommand.record.ExpectedResponseAuthorityKeyID != "nakama-control-wrapper-k1" {
+		t.Fatal("outer control response was not signed by the immutable K1 command epoch")
+	}
+	if fixture.store.objects[sessionKey].Value != sessionValueBefore ||
+		fixture.store.objects[sessionKey].Version != sessionVersionBefore ||
+		!reflect.DeepEqual(state.record.CompletionOutbox, &outboxBefore) {
+		t.Fatal("completed control replay rewrote the session snapshot or K0 completion outbox")
+	}
+
+	loser := pending
+	if err := loser.applyResult(researchEvidenceFor(rotatedRecord, completion, k0Public), time.Now().UTC(),
+		"nakama-control-wrapper-k1", k1Private); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := updateStoredResearchControl(context.Background(), fixture.store, pending, loser,
+		pendingVersion, fixture.module.config.controlIssuerKeys); err == nil ||
+		!strings.Contains(err.Error(), "version conflict") {
+		t.Fatalf("stale K1 control OCC writer was accepted: %v", err)
+	}
+	if fixture.store.objects[sessionKey].Value != sessionValueBefore ||
+		fixture.store.objects[sessionKey].Version != sessionVersionBefore ||
+		fixture.store.objects[controlKey].Value != appliedValue || fixture.store.objects[controlKey].Version != appliedVersion {
+		t.Fatal("rejected stale K1 control OCC write changed session, outbox, or receipt bytes")
+	}
+
+	delete(fixture.module.config.authorityPublicKeys, "nakama-control-restart")
+	if _, err := fixture.module.verifiedResearchControlResponse(context.Background(), fixture.store, appliedCommand); err == nil ||
+		!errors.Is(err, researchcore.ErrAuthorityVerificationKeyUnavailable) {
+		t.Fatalf("K1 control/K0 completion replay did not expose the retired K0 public key: %v", err)
+	}
+	if fixture.store.objects[sessionKey].Value != sessionValueBefore ||
+		fixture.store.objects[sessionKey].Version != sessionVersionBefore ||
+		fixture.store.objects[controlKey].Value != appliedValue || fixture.store.objects[controlKey].Version != appliedVersion {
+		t.Fatal("missing-K0 control replay changed session, outbox, or receipt bytes")
+	}
+}
+
+func applyControlRestartPaperActions(t *testing.T, state *researchMatchState,
+	authorizations []researchcontract.SignedAuthorization, agents []ed25519.PrivateKey) researchcontract.Digest {
 	t.Helper()
 	base := time.Now().UTC()
-	for _, authorization := range fixture.replacement {
+	for _, authorization := range authorizations {
 		if _, err := state.engine.Join(authorization.Claim.SubjectUserID, authorization.Claim.AuthorizationID,
 			base); err != nil {
 			t.Fatal(err)
@@ -365,7 +795,7 @@ func applyControlRestartPaperActions(t *testing.T, fixture *controlRestartFixtur
 	apply := func(slot int, actionType, payloadType string, reference researchcontract.Digest, at time.Time) {
 		view := state.engine.View()
 		participant := view.Participants[slot-1]
-		claim := fixture.replacement[slot-1].Claim
+		claim := authorizations[slot-1].Claim
 		action, err := researchcontract.SignAction(researchcontract.ActionEnvelope{
 			Schema: researchcontract.ActionSchema, ActionID: fmt.Sprintf("control-restart-action-%d-%d", slot, participant.LastActionSequence+1),
 			AuthorizationID: claim.AuthorizationID, SessionID: claim.SessionID, TeamID: claim.TeamID,
@@ -374,7 +804,7 @@ func applyControlRestartPaperActions(t *testing.T, fixture *controlRestartFixtur
 			ExpectedSessionVersion: view.Version, IssuedAtUnix: at.Unix(), ActionType: actionType, PayloadType: payloadType,
 			Payload: []byte(fmt.Sprintf("control-restart-%d-%s", slot, actionType)), ReferenceHash: reference,
 			AgentKeyID: claim.AgentKeyID,
-		}, fixture.replacementAgents[slot-1])
+		}, agents[slot-1])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -382,14 +812,14 @@ func applyControlRestartPaperActions(t *testing.T, fixture *controlRestartFixtur
 			t.Fatal(err)
 		}
 	}
-	for slot := 1; slot <= len(fixture.replacement); slot++ {
+	for slot := 1; slot <= len(authorizations); slot++ {
 		apply(slot, researchcontract.ActionParticipantReady, researchcontract.PayloadParticipantReady,
 			state.engine.View().RosterRoot, base)
 	}
 	apply(1, researchcontract.ActionProposalSubmitted, researchcontract.PayloadProposalSubmitted,
 		researchcontract.NewDigest([]byte("control-restart-proposal")), base)
 	release := researchcontract.NewDigest([]byte("control-restart-release"))
-	for slot := 1; slot <= len(fixture.replacement); slot++ {
+	for slot := 1; slot <= len(authorizations); slot++ {
 		apply(slot, researchcontract.ActionPaperReleaseAcknowledged, researchcontract.PayloadPaperReleaseAcknowledged,
 			release, base)
 	}
@@ -413,7 +843,8 @@ func TestRestartResearchControlSIGKILLReplaceAndCompleteSignalWindows(t *testing
 	replaceRequest.Control = fixture.signControl(t, researchcontract.ResearchControlOperationReplace,
 		"90000000-0000-4000-8000-000000000003", fixture.authorizationSetTwo, 2, replaceBusiness)
 	replaceCanonical, _ := json.Marshal(replaceRequest)
-	replaceCommand := newStoredResearchControlCommand(replaceRequest.Control, replaceCanonical, time.Now().UTC().Unix())
+	replaceCommand := newStoredResearchControlCommand(replaceRequest.Control, replaceCanonical,
+		time.Now().UTC().Unix(), fixture.module.config.authorityKeyID)
 	if _, err := createStoredResearchControl(context.Background(), fixture.store, replaceCommand,
 		fixture.module.config.controlIssuerKeys); err != nil {
 		t.Fatal(err)
@@ -461,7 +892,7 @@ func TestRestartResearchControlSIGKILLReplaceAndCompleteSignalWindows(t *testing
 
 	state = fixture.reloadState(t)
 	beforeActions, _ := state.engine.Snapshot()
-	release := applyControlRestartPaperActions(t, fixture, state)
+	release := applyControlRestartPaperActions(t, state, fixture.replacement, fixture.replacementAgents)
 	if err := fixture.match.persist(context.Background(), fixture.nakama, state, beforeActions); err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +908,8 @@ func TestRestartResearchControlSIGKILLReplaceAndCompleteSignalWindows(t *testing
 	completeRequest.Control = fixture.signControl(t, researchcontract.ResearchControlOperationComplete,
 		"90000000-0000-4000-8000-000000000004", fixture.authorizationSetTwo, 2, completeBusiness)
 	completeCanonical, _ := json.Marshal(completeRequest)
-	completeCommand := newStoredResearchControlCommand(completeRequest.Control, completeCanonical, time.Now().UTC().Unix())
+	completeCommand := newStoredResearchControlCommand(completeRequest.Control, completeCanonical,
+		time.Now().UTC().Unix(), fixture.module.config.authorityKeyID)
 	if _, err := createStoredResearchControl(context.Background(), fixture.store, completeCommand,
 		fixture.module.config.controlIssuerKeys); err != nil {
 		t.Fatal(err)

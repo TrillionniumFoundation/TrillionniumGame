@@ -46,7 +46,7 @@ type pendingResearchAdmission struct {
 var _ runtime.Match = (*researchMatch)(nil)
 
 func (m *researchMatch) MatchInit(ctx context.Context, logger runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, params map[string]interface{}) (interface{}, int, string) {
-	if err := m.module.config.ready(); err != nil {
+	if err := m.module.ready(); err != nil {
 		logger.Error("research match init unready: %s", err.Error())
 		return nil, 0, ""
 	}
@@ -326,22 +326,59 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 			return state, `{"error":"invalid completion signal"}`
 		}
 		now := time.Now().UTC()
+		_, completedBeforeSignal := state.engine.Completion()
 		completion, err := state.engine.Complete(*facts, now)
 		if err != nil {
 			return state, errorSignal(err.Error())
 		}
-		completionOutbox, err := newStoredResearchCompletionOutbox(completion, state.engine.Events(), state.engine.AuthorityPublicKey())
+		completionPublic, ok := state.engine.CompletionAuthorityPublicKey()
+		if !ok {
+			return state, errorSignal("research completion authority is unavailable")
+		}
+		if completedBeforeSignal {
+			if state.record.CompletionOutbox == nil {
+				return state, errorSignal("completed research session lacks its durable outbox")
+			}
+			if control != nil {
+				controlBefore := control.record
+				authorityPrivateKey, keyErr := m.module.researchAuthoritySigningKey(control.record.ExpectedResponseAuthorityKeyID)
+				if keyErr != nil {
+					return state, errorSignal(keyErr.Error())
+				}
+				if err := control.record.applyResult(researchEvidenceFor(state.record, completion, completionPublic),
+					now, control.record.ExpectedResponseAuthorityKeyID, authorityPrivateKey); err != nil {
+					return state, errorSignal(err.Error())
+				}
+				version, err := updateStoredResearchControl(ctx, nk, controlBefore, control.record,
+					control.version, m.module.config.controlIssuerKeys)
+				if err != nil {
+					return state, errorSignal("research control result persistence conflict")
+				}
+				control.version = version
+				response, err := m.module.verifiedResearchControlResponse(ctx, nk, *control)
+				if err != nil {
+					return state, errorSignal("signed research control receipt is invalid")
+				}
+				return state, response
+			}
+			response, _ := json.Marshal(researchEvidenceFor(state.record, completion, completionPublic))
+			return state, string(response)
+		}
+		completionOutbox, err := newStoredResearchCompletionOutbox(completion, state.engine.Events(), completionPublic)
 		if err != nil {
 			return state, errorSignal(m.rollback(state, before, err).Error())
 		}
 		var controlResponse string
+		var controlBefore *storedResearchControlCommand
 		if control != nil {
-			authorityPrivateKey, keyErr := m.module.researchAuthoritySigningKey(state.engine.AuthorityKeyID())
+			beforeRecord := control.record
+			controlBefore = &beforeRecord
+			authorityPrivateKey, keyErr := m.module.researchAuthoritySigningKey(control.record.ExpectedResponseAuthorityKeyID)
 			if keyErr != nil {
 				return state, errorSignal(m.rollback(state, before, keyErr).Error())
 			}
-			if err := control.record.applyResult(researchEvidenceFor(state.record, completion, state.engine.AuthorityPublicKey()),
-				now, state.engine.AuthorityKeyID(), authorityPrivateKey); err != nil {
+			if err := control.record.applyResult(researchEvidenceFor(state.record, completion, completionPublic),
+				now, control.record.ExpectedResponseAuthorityKeyID, authorityPrivateKey); err != nil {
 				return state, errorSignal(m.rollback(state, before, err).Error())
 			}
 			controlResponse, err = control.record.response()
@@ -349,7 +386,8 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 				return state, errorSignal(m.rollback(state, before, err).Error())
 			}
 		}
-		if err := m.persistWithCompletionOutboxAndControl(ctx, nk, state, before, completionOutbox, control); err != nil {
+		if err := m.persistWithCompletionOutboxAndControl(ctx, nk, state, before, completionOutbox,
+			controlBefore, control); err != nil {
 			logger.Error("research completion persistence failed: %s", err.Error())
 			return nil, `{"error":"research persistence failed"}`
 		}
@@ -368,7 +406,7 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 			}
 			return state, verified
 		}
-		response, _ := json.Marshal(researchEvidenceFor(state.record, completion, state.engine.AuthorityPublicKey()))
+		response, _ := json.Marshal(researchEvidenceFor(state.record, completion, completionPublic))
 		return state, string(response)
 	case "replace_roster":
 		authorizations := signal.Authorizations
@@ -394,13 +432,16 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 			return state, errorSignal(err.Error())
 		}
 		var controlResponse string
+		var controlBefore *storedResearchControlCommand
 		if control != nil {
-			authorityPrivateKey, keyErr := m.module.researchAuthoritySigningKey(state.engine.AuthorityKeyID())
+			beforeRecord := control.record
+			controlBefore = &beforeRecord
+			authorityPrivateKey, keyErr := m.module.researchAuthoritySigningKey(control.record.ExpectedResponseAuthorityKeyID)
 			if keyErr != nil {
 				return state, errorSignal(m.rollback(state, before, keyErr).Error())
 			}
 			if err := control.record.applyResult(researchRuntimeFor(state.record, state.engine.View(), state.record.ExternalMatchID),
-				now, state.engine.AuthorityKeyID(), authorityPrivateKey); err != nil {
+				now, control.record.ExpectedResponseAuthorityKeyID, authorityPrivateKey); err != nil {
 				return state, errorSignal(m.rollback(state, before, err).Error())
 			}
 			controlResponse, err = control.record.response()
@@ -408,7 +449,8 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 				return state, errorSignal(m.rollback(state, before, err).Error())
 			}
 		}
-		if err := m.persistWithConsumptionOutboxAndControl(ctx, nk, state, before, outbox, control); err != nil {
+		if err := m.persistWithConsumptionOutboxAndControl(ctx, nk, state, before, outbox,
+			controlBefore, control); err != nil {
 			return nil, `{"error":"research persistence failed"}`
 		}
 		oldPresences := state.currentPresences()
@@ -443,29 +485,32 @@ func (m *researchMatch) MatchSignal(ctx context.Context, logger runtime.Logger, 
 }
 
 func (m *researchMatch) persist(ctx context.Context, nk storageGateway, state *researchMatchState, before []byte) error {
-	return m.persistWithOptionalOutboxes(ctx, nk, state, before, nil, nil, nil)
+	return m.persistWithOptionalOutboxes(ctx, nk, state, before, nil, nil, nil, nil)
 }
 
 func (m *researchMatch) persistWithConsumptionOutbox(ctx context.Context, nk storageGateway, state *researchMatchState, before []byte, outbox storedResearchConsumptionOutbox) error {
-	return m.persistWithOptionalOutboxes(ctx, nk, state, before, &outbox, nil, nil)
+	return m.persistWithOptionalOutboxes(ctx, nk, state, before, &outbox, nil, nil, nil)
 }
 
 func (m *researchMatch) persistWithCompletionOutbox(ctx context.Context, nk storageGateway, state *researchMatchState, before []byte, outbox storedResearchCompletionOutbox) error {
-	return m.persistWithOptionalOutboxes(ctx, nk, state, before, nil, &outbox, nil)
+	return m.persistWithOptionalOutboxes(ctx, nk, state, before, nil, &outbox, nil, nil)
 }
 
 func (m *researchMatch) persistWithConsumptionOutboxAndControl(ctx context.Context, nk storageGateway, state *researchMatchState,
-	before []byte, outbox storedResearchConsumptionOutbox, control *versionedStoredResearchControl) error {
-	return m.persistWithOptionalOutboxes(ctx, nk, state, before, &outbox, nil, control)
+	before []byte, outbox storedResearchConsumptionOutbox, controlBefore *storedResearchControlCommand,
+	control *versionedStoredResearchControl) error {
+	return m.persistWithOptionalOutboxes(ctx, nk, state, before, &outbox, nil, controlBefore, control)
 }
 
 func (m *researchMatch) persistWithCompletionOutboxAndControl(ctx context.Context, nk storageGateway, state *researchMatchState,
-	before []byte, outbox storedResearchCompletionOutbox, control *versionedStoredResearchControl) error {
-	return m.persistWithOptionalOutboxes(ctx, nk, state, before, nil, &outbox, control)
+	before []byte, outbox storedResearchCompletionOutbox, controlBefore *storedResearchControlCommand,
+	control *versionedStoredResearchControl) error {
+	return m.persistWithOptionalOutboxes(ctx, nk, state, before, nil, &outbox, controlBefore, control)
 }
 
 func (m *researchMatch) persistWithOptionalOutboxes(ctx context.Context, nk storageGateway, state *researchMatchState, before []byte,
-	consumption *storedResearchConsumptionOutbox, completion *storedResearchCompletionOutbox, control *versionedStoredResearchControl) error {
+	consumption *storedResearchConsumptionOutbox, completion *storedResearchCompletionOutbox,
+	controlBefore *storedResearchControlCommand, control *versionedStoredResearchControl) error {
 	after, err := state.engine.Snapshot()
 	if err != nil {
 		return m.rollback(state, before, err)
@@ -492,9 +537,12 @@ func (m *researchMatch) persistWithOptionalOutboxes(ctx context.Context, nk stor
 	if control == nil {
 		version, err = updateStoredResearch(ctx, nk, updated, state.storageVersion)
 	} else {
+		if controlBefore == nil {
+			return m.rollback(state, before, errors.New("research control transition source is absent"))
+		}
 		var controlVersion string
 		version, controlVersion, err = updateStoredResearchWithControl(ctx, nk, updated, state.storageVersion,
-			control.record, control.version, m.module.config.controlIssuerKeys)
+			*controlBefore, control.record, control.version, m.module.config.controlIssuerKeys)
 		if err == nil {
 			control.version = controlVersion
 		}
@@ -556,7 +604,7 @@ func shouldTerminateResearchRuntime(state *researchMatchState, tick int64, tickR
 	return runtimeGenerationExpired(tick, tickRate)
 }
 func (m *researchMatch) rollback(state *researchMatchState, before []byte, cause error) error {
-	engine, err := researchcore.Restore(before, researchcore.RestoreOptions{TrustedIssuerKeys: m.module.config.issuerKeys, AuthorityKeyID: m.module.config.authorityKeyID, AuthorityPrivateKey: m.module.config.authorityPrivateKey, AuthorityPrivateKeys: m.module.config.authorityPrivateKeys})
+	engine, err := researchcore.Restore(before, researchcore.RestoreOptions{TrustedIssuerKeys: m.module.config.issuerKeys, AuthorityKeyID: m.module.config.authorityKeyID, AuthorityPrivateKey: m.module.config.authorityPrivateKey, AuthorityPublicKeys: m.module.config.authorityPublicKeys})
 	if err != nil {
 		return fmt.Errorf("%w; rollback failed: %v", cause, err)
 	}

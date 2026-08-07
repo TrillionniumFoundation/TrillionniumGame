@@ -31,12 +31,36 @@ token is not accepted by these v2 RPCs. The control keys are a trust domain
 independent from participant-authorization issuers and the Nakama completion
 authority. See
 [contracts/research-control-v2/spec.md](contracts/research-control-v2/spec.md).
-Authority signing supports an additive overlap key ring: new sessions use the
-configured active key while resumable snapshots remain bound to their original
-key until drained, enabling fail-closed online key rotation without rewriting
-historical evidence. Canonical Compose requires and injects that ring; the
-singleton compatibility path is available only through an explicit isolated
+Authority signing and historical verification use separate registries. New
+snapshots and completions use only the active private key; restore resolves the
+snapshot's embedded key id from the public verification registry, then
+continues with the active signer. Canonical Compose requires the active
+singleton private key plus the public registry; the public-registry fallback
+derived from that singleton is available only through an explicit isolated
 dev/test opt-in and is not a deployment contract.
+
+Private-key rotation is an offline drain ceremony, not a live key swap. Fence
+all Nakama writers, stop the service, and run
+`scripts/check-nakama-authority-private-retirement.sh` before destroying a
+retiring private key; any pending command reserved to that key blocks rotation.
+See [docs/OPERATIONS.md](docs/OPERATIONS.md) for recovery and rollback.
+
+Research-control storage activation is also fenced. The v3 writer preserves
+valid applied v2 rows as immutable, public-key-verified exact-replay evidence;
+it never rewrites their frozen response-signature domain. Pending v2 and any
+unknown/malformed legacy row block startup mutations and readiness. Run
+`scripts/check-nakama-research-control-activation.sh` while all writers are
+stopped before enabling a v3 writer, then require the candidate's own readiness
+scan; the offline script is only a structural preflight and explicitly records
+that startup/readiness cryptographic validation is still outstanding. Because
+the startup scan also requires every applied or pending control to resolve a
+strictly verified durable session in the same read-only snapshot, partial
+backup/restore state fails closed before the readiness write probe. The
+preflight's stopped-service check is an instantaneous observation, so the
+orchestrator must keep its external writer fence held through candidate
+readiness. Because old strict-v2 binaries cannot read new v3 rows, the
+Integration release must bump its storage epoch and must not auto-rollback
+after v3 writes become possible.
 
 ## Start work
 

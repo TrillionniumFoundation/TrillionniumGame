@@ -19,6 +19,7 @@ buildx_sha256=48af8a397ebd60178778bf63611dbcebe5f5e7a9be90eb9147b24b9587455778
 docker_config=$scratch/docker
 buildx_plugin=$docker_config/cli-plugins/docker-buildx
 builder_image=heroiclabs/nakama-pluginbuilder:3.40.0@sha256:0455a119585914341672fc17f3c4195a7a21714ecb85cdf7dacbdc47769aed4c
+clean_source_verifier=$root/scripts/verify-nakama-clean-source.py
 
 cleanup() {
   sudo -n docker rm -f \
@@ -39,14 +40,8 @@ for command_name in cmp curl docker find git jq mktemp python3 rg sha256sum sort
     exit 1
   }
 done
-sudo -n docker info >/dev/null
-[[ -z $(git status --porcelain=v1 --untracked-files=all) ]] || {
-  echo 'ERROR: immutable Nakama image gate requires a clean committed worktree' >&2
-  exit 1
-}
-
-revision=$(git rev-parse HEAD)
-source_tree=$(git rev-parse 'HEAD^{tree}')
+revision=$(git rev-parse --verify 'HEAD^{commit}')
+source_tree=$(git rev-parse --verify "$revision^{tree}")
 source_date_epoch=$(git show -s --format=%ct "$revision")
 [[ "$revision" =~ ^[0-9a-f]{40}$ \
   && "$source_tree" =~ ^[0-9a-f]{40}$ \
@@ -54,6 +49,16 @@ source_date_epoch=$(git show -s --format=%ct "$revision")
   echo 'ERROR: source revision metadata is not canonical' >&2
   exit 1
 }
+source_authority=$(python3 "$clean_source_verifier" \
+  --repo-dir "$root" \
+  --revision "$revision" \
+  --tree "$source_tree")
+jq -e \
+  --arg revision "$revision" \
+  --arg tree "$source_tree" \
+  '.revision == $revision and .tree == $tree and (.tracked_files | type == "number" and . > 0)' \
+  <<<"$source_authority" >/dev/null
+sudo -n docker info >/dev/null
 
 # Both independent builds consume an archive of the captured commit, never the
 # mutable worktree. The final check below additionally rejects concurrent HEAD
@@ -238,10 +243,12 @@ if sudo -n docker history --no-trunc --format '{{.CreatedBy}}' "$image_id" \
   exit 1
 fi
 
-[[ $(git rev-parse HEAD) == "$revision" \
-  && $(git rev-parse 'HEAD^{tree}') == "$source_tree" \
-  && -z $(git status --porcelain=v1 --untracked-files=all) ]] || {
-  echo 'ERROR: repository changed while the immutable Nakama image gate was running' >&2
+final_source_authority=$(python3 "$clean_source_verifier" \
+  --repo-dir "$root" \
+  --revision "$revision" \
+  --tree "$source_tree")
+[[ "$final_source_authority" == "$source_authority" ]] || {
+  echo 'ERROR: repository authority changed while the immutable Nakama image gate was running' >&2
   exit 1
 }
 [[ $(sudo -n docker image inspect --format '{{.Id}}' "$image") == "$image_id" ]] || {

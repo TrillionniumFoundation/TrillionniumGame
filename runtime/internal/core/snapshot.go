@@ -20,7 +20,14 @@ const (
 	maxSnapshotPayloadBytes = 64 * 1024 * 1024
 )
 
-var snapshotMagic = [8]byte{'T', 'R', 'N', 'M', 'S', 'N', 'P', '2'}
+var (
+	snapshotMagic = [8]byte{'T', 'R', 'N', 'M', 'S', 'N', 'P', '2'}
+
+	// ErrAuthorityVerificationKeyUnavailable distinguishes an intentionally
+	// retired public key from corruption or signature failure. Callers still
+	// fail closed, but can expose an operator-actionable rotation error.
+	ErrAuthorityVerificationKeyUnavailable = errors.New("authority verification key is unavailable")
+)
 
 type snapshotDocument struct {
 	Schema             string                     `json:"schema"`
@@ -118,35 +125,39 @@ func Restore(snapshot []byte, options RestoreOptions) (*Engine, error) {
 	if document.Schema != snapshotSchema {
 		return nil, fmt.Errorf("unsupported snapshot schema %q", document.Schema)
 	}
-	authorityKeyID := options.AuthorityKeyID
-	authorityPrivateKey := options.AuthorityPrivateKey
-	if len(options.AuthorityPrivateKeys) > 0 {
-		authorityKeyID = document.AuthorityKeyID
-		authorityPrivateKey = options.AuthorityPrivateKeys[authorityKeyID]
-	}
-	authorityPublic, err := validateAuthoritySigningConfiguration(authorityKeyID, authorityPrivateKey)
+	activePublic, err := validateAuthoritySigningConfiguration(options.AuthorityKeyID, options.AuthorityPrivateKey)
 	if err != nil {
-		return nil, errors.New("snapshot authority key is not configured")
+		return nil, errors.New("active snapshot signing key is not configured")
+	}
+	registeredActive := options.AuthorityPublicKeys[options.AuthorityKeyID]
+	if len(registeredActive) != ed25519.PublicKeySize || !bytes.Equal(registeredActive, activePublic) {
+		return nil, errors.New("active snapshot signing key does not match the public verification registry")
+	}
+	verificationPublic := options.AuthorityPublicKeys[document.AuthorityKeyID]
+	if len(verificationPublic) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("%w: snapshot authority key %q is not in the public verification registry",
+			ErrAuthorityVerificationKeyUnavailable, document.AuthorityKeyID)
 	}
 	var checksumArray [sha256.Size]byte
 	copy(checksumArray[:], checksum)
-	signingBytes, err := snapshotSigningBytes(authorityKeyID, payload, checksumArray)
+	signingBytes, err := snapshotSigningBytes(document.AuthorityKeyID, payload, checksumArray)
 	if err != nil {
 		return nil, err
 	}
-	if !ed25519.Verify(authorityPublic, signingBytes, snapshot[payloadEnd+sha256.Size:]) {
+	if !ed25519.Verify(verificationPublic, signingBytes, snapshot[payloadEnd+sha256.Size:]) {
 		return nil, errors.New("snapshot authority signature verification failed")
 	}
-	if authorityKeyID != document.AuthorityKeyID || !bytes.Equal(authorityPublic, document.AuthorityPublicKey) {
-		return nil, errors.New("snapshot authority does not match configured signing key")
+	if !bytes.Equal(verificationPublic, document.AuthorityPublicKey) {
+		return nil, errors.New("snapshot authority does not match the public verification registry")
 	}
 	engine := &Engine{
 		matchID: document.MatchID, challengeID: document.ChallengeID, status: document.Status,
 		version: document.Version, participants: document.Participants, commands: make(map[string]commandRecord),
 		events: document.Events, terminalFacts: document.TerminalFacts, completion: document.Completion,
-		trustedIssuerKeys: cloneKeyMap(options.TrustedIssuerKeys), authorityKeyID: authorityKeyID,
-		authorityPrivateKey: append(ed25519.PrivateKey(nil), authorityPrivateKey...),
-		authorityPublicKey:  append(ed25519.PublicKey(nil), authorityPublic...),
+		trustedIssuerKeys: cloneKeyMap(options.TrustedIssuerKeys), authorityKeyID: options.AuthorityKeyID,
+		authorityPrivateKey: append(ed25519.PrivateKey(nil), options.AuthorityPrivateKey...),
+		authorityPublicKey:  append(ed25519.PublicKey(nil), activePublic...),
+		authorityPublicKeys: cloneKeyMap(options.AuthorityPublicKeys),
 	}
 	for _, record := range document.Commands {
 		if _, exists := engine.commands[record.Command.CommandID]; exists {
@@ -371,7 +382,7 @@ func (e *Engine) validateRestoredState() error {
 func (e *Engine) validateCompletion() error {
 	completion := *e.completion
 	if completion.MatchID != e.matchID || completion.ChallengeID != e.challengeID ||
-		completion.EventCount != uint64(len(e.events)) || completion.AuthorityKeyID != e.authorityKeyID {
+		completion.EventCount != uint64(len(e.events)) {
 		return errors.New("snapshot completion identity is inconsistent")
 	}
 	eventRoot, err := contract.EventRoot(e.events)
@@ -391,7 +402,12 @@ func (e *Engine) validateCompletion() error {
 		completion.ChallengeSnapshotHash != claim.ChallengeSnapshotHash {
 		return errors.New("snapshot completion immutable hashes are invalid")
 	}
-	if err := contract.VerifyCompletion(completion, e.authorityPublicKey); err != nil {
+	completionPublic := e.authorityPublicKeys[completion.AuthorityKeyID]
+	if len(completionPublic) != ed25519.PublicKeySize {
+		return fmt.Errorf("%w: snapshot completion authority key %q is not in the public verification registry",
+			ErrAuthorityVerificationKeyUnavailable, completion.AuthorityKeyID)
+	}
+	if err := contract.VerifyCompletion(completion, completionPublic); err != nil {
 		return fmt.Errorf("snapshot completion signature is invalid: %w", err)
 	}
 	commitmentID, err := contract.CommitmentID(e.matchID, completion.EventRoot, completion.ArchiveHash)

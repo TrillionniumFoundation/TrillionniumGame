@@ -31,10 +31,11 @@ The important runtime keys are:
   endpoint and service credential used for durable Paper Raid consumption and
   completion delivery;
 - `TRNM_NAKAMA_AUTHORITY_KEY_ID` and
-  `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY`: completion-signing identity;
-- `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS`: required JSON key ring containing the
-  active completion-signing identity and every still-restorable historical
-  authority;
+  `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY`: the only completion-signing identity
+  loaded by the runtime. Historical private keys are forbidden;
+- `TRNM_NAKAMA_AUTHORITY_PUBLIC_KEYS`: independent JSON verification registry
+  containing the active identity and every historical key id still referenced
+  by a snapshot, completion, archive, or signed control result;
 - `TRNM_NAKAMA_OPERATOR_TOKEN`: at least 32 random bytes retained only for the
   fixed two-participant v1 create/resume/complete RPCs. Paper Raid v2 lifecycle
   RPCs do not accept it.
@@ -49,7 +50,7 @@ public key must differ from every participant-authorization issuer and from the
 Nakama completion authority; and the completion authority must also differ
 from every participant-authorization issuer. Issuer and authority key ids
 contain only `A-Za-z0-9._:-` and are limited to 128 bytes; whitespace, controls,
-and non-ASCII lookalikes are rejected. All three JSON key-ring decoders reject
+and non-ASCII lookalikes are rejected. All key-ring decoders reject
 duplicate JSON members/key ids, repeated decoded key material, non-string
 values, and trailing JSON.
 
@@ -69,19 +70,116 @@ records are both revalidated on every load. Control claims may live for at most
 already accepted command remain valid after claim expiry; a different request
 body for the same `command_id` is rejected.
 
-Nakama authority keys support an overlap ring through
-`TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS`, a JSON object from key id to base64
-Ed25519 seed. The ring must contain `TRNM_NAKAMA_AUTHORITY_KEY_ID`, and its
-active seed must exactly match `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY`. New sessions
-use only the active key. Restored sessions keep the authority id embedded in
-their authenticated snapshot, so rotation never silently re-signs historical
-state. Add the new key, switch the active id and seed, then remove the retiring
-key only after every snapshot and pending signed-control response using it has
-been retired and archived. A lingering snapshot signed by a removed key fails
-closed rather than being silently re-signed.
+The active private signer and public authority registry have different
+lifetimes. The runtime loads exactly one private key, identified by
+`TRNM_NAKAMA_AUTHORITY_KEY_ID`; the public registry must contain its matching
+public key plus every historical public key still needed for verification. New
+snapshots, completions, and control results use only the active private signer.
+Restore reads the authenticated snapshot key id, verifies it against
+`TRNM_NAKAMA_AUTHORITY_PUBLIC_KEYS`, and then continues with the active signer.
+The deprecated `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS` variable is rejected when
+it reaches the runtime configuration. Because Compose otherwise ignores an
+unreferenced env-file member, canonical operators and both live gates first run
+`scripts/lint-nakama-compose-env.sh`; that lint rejects the obsolete name even
+when its value is empty. The active public key must match the singleton private
+key, and the configuration rejects material aliases under different ids.
 
-The canonical Compose profile requires and injects the ring; it never enables
-a singleton fallback. `TRNM_NAKAMA_DEV_ALLOW_SINGLETON_AUTHORITY_KEY=true`
+K0 to K1 private-key retirement is an offline fence/drain ceremony:
+
+1. Add K1 public to the registry while K0 remains active. Fence control-command
+   issuance and ingress, stop every Nakama writer, and keep K0 private material
+   recoverable. In a multi-instance deployment, stopping one Compose service
+   is insufficient: the orchestrator must prove every writer is quiescent.
+2. Against the stopped canonical stack, run the read-only preflight. Store its
+   mode-0600 evidence under an access-controlled directory because blocker rows
+   include full stored control values:
+
+   ```sh
+   scripts/check-nakama-authority-private-retirement.sh \
+     --env-file /secure/path/nakama.env \
+     --retiring-key-id K0 \
+     --evidence-file /secure/evidence/k0-private-retirement.json \
+     --writers-fenced \
+     --compose-file compose.yaml
+   ```
+
+   The script independently confirms that this stack's Nakama container is
+   stopped, then scans `public.storage` in one repeatable-read, read-only
+   transaction. A pending v3 command whose immutable expected response signer
+   is K0 blocks retirement. Pending v2, malformed, non-system-owned, or
+   otherwise ambiguous control rows also block rather than being skipped;
+   valid applied v2 evidence does not require the retired private key.
+3. If blocked, do not switch keys or destroy K0. Restart with the original K0
+   signer behind a recovery-only ingress, submit only the exact stored retries,
+   and drain every K0 reservation from `pending` to `applied`. Fence and stop
+   all writers again, then rerun the preflight. Cross-key resealing is forbidden
+   and is not a recovery mechanism.
+4. After a zero-blocker proof, configure active K1 with public K0+K1 and no K0
+   private key loaded. Keep a separately controlled offline K0 rollback copy
+   until K1 readiness, exact replay of an applied K0 receipt, and a fresh K1
+   signature have all been independently verified. If validation fails before
+   destruction, fence K1 and restore the last K0 configuration; do not run both
+   writers concurrently.
+5. Destroy the offline K0 private copy only after those checks. After
+   destruction, rollback must keep K1 as the signer. If K0 was destroyed while
+   a K0 reservation was still pending, that command intentionally remains
+   fail-closed: there is no safe repair, signer migration, or reseal lane.
+
+The research-control v3 writer also has an explicit activation preflight. Run
+it with every Nakama writer fenced and the canonical Nakama service stopped:
+
+```sh
+scripts/check-nakama-research-control-activation.sh \
+  --env-file /secure/path/nakama.env \
+  --evidence-file /secure/evidence/research-control-v3-activation.json \
+  --writers-fenced \
+  --compose-file compose.yaml
+```
+
+The offline preflight is deliberately only the structural first half of the
+activation proof. It scans the shared collection in one repeatable-read,
+read-only transaction; unknown schemas, its enumerated ambiguous shapes, and
+every pending v2 command block. A pending v3 reservation also blocks when its
+immutable expected signer is not the configured active private signer, while
+applied v2 rows must at least reference a configured historical public id. It
+does not parse the complete strict record or verify either signature. Its
+evidence therefore records
+`candidate_startup_readiness_verified:false` and must never be called a complete
+activation authorization. Start the candidate only after this first half
+passes, then require `trnm_ready_v1` from that same candidate. On startup the
+plugin performs the full strict typed, issuer-signature, response-signature,
+public-key validation. Applied rows must also resolve their exact system-owned
+durable session in the same repeatable-read snapshot; historical roster roots
+and completion evidence are revalidated before activation can pass. Pending v3
+rows also require a strictly restorable durable session and the exact current
+or next roster epoch required by their operation, so a partial backup cannot
+appear ready while leaving an unrecoverable reservation. The writable
+readiness probe runs only after that read-only scan succeeds. Any startup
+failure is latched into every RPC and MatchInit mutation gate, and readiness
+remains false until the process is restarted after the blocker is resolved.
+
+The preflight evidence binds the database system identifier, database name,
+PostgreSQL version, repeatable-read snapshot id, active authority id, canonical
+public-registry hash, activation-script hash, query hash, and a sorted
+owner/key/version/value hash manifest for every scanned control row. Its
+`canonical_nakama_service_stopped_observed` field is only the before/after
+instantaneous Compose observation; `--writers-fenced` remains an operator
+assertion, not a lock. The orchestrator must keep the external fence held from
+before the preflight through candidate startup, bind the candidate image and
+exact config to the same activation record, and prove candidate readiness
+before releasing writers. Preserve the offline evidence and candidate
+readiness evidence as one activation closure.
+
+K0 public retirement is a later and separate operation. A K0 completion inside
+a K1-signed snapshot wrapper still verifies with K0 public material, as do
+K0-applied v3 control receipts. Remove K0 public only after all K0 snapshots,
+embedded completions, outboxes, and applied control responses have been
+archived or removed. Any lingering reference then fails closed; the live gate
+demonstrates that failure but does not make premature public-key removal safe.
+
+The canonical Compose profile requires and injects the singleton private signer
+and independent public registry; it never enables a derived-public fallback.
+`TRNM_NAKAMA_DEV_ALLOW_SINGLETON_AUTHORITY_KEY=true`
 permits a direct-runtime singleton only for an isolated dev/test harness that
 has no rotation or historical-restore claim. Do not set that escape hatch in a
 deployment or release gate.
@@ -200,7 +298,16 @@ are signature-verified again at every restore.
 
 Paper Raid lifecycle mutations use the four signed-control v2 RPCs. Nakama
 persists the canonical request bytes, SHA-256 fingerprint, accepted time,
-operation, and exact response. Create stores the initial session and pending
+operation, the active response-authority key id fixed at acceptance, and the
+exact response. That expected key id is part of the v3 signed response seal;
+pending-to-applied OCC transitions preserve it byte-for-byte. The runtime
+retains the frozen v2 decoder and response-signature domain solely for
+verification-only replay: a valid applied v2 row may return its original
+response bytes after verification with the historical public registry, but it
+is never rewritten, upgraded, resealed, or re-executed. Pending v2 rows cannot
+be assigned an unambiguous immutable response signer and therefore block
+activation. Unknown or malformed legacy rows also fail closed. Create stores
+the initial session and pending
 command atomically; resume reserves its command before creating a runtime;
 replace-roster and complete reserve their commands before signaling the match,
 then commit the session mutation/outbox and applied response in one storage
@@ -216,6 +323,21 @@ byte-identical and may be replayed after its claim expires.
 
 P0 permits one active instance per logical match. Optimistic storage conflicts
 mean a second writer exists; alert and fail closed rather than retrying both.
+The startup scan dominates match creation: the external fence remains held
+until the scan succeeds, and every admitted control writer emits only strict v3
+records. Out-of-band SQL/storage mutation after admission is a privileged
+integrity breach and requires an immediate writer fence plus a fresh process
+and activation scan; readiness is not a continuous database integrity monitor.
+
+This bridge is forward-readable, not rollback-readable. Once the new runtime
+can write a v3 control row, the old strict v2 binary will reject that row.
+Release orchestration must therefore bump the whole-stack storage epoch,
+require the activation evidence before the first v3 writer starts, and forbid
+automatic binary rollback after v3 writes are possible. A rollback requires a
+restore of the pre-activation storage snapshot or an independently reviewed
+bridge ceremony; changing a capability manifest cannot make the old binary
+read v3. Until Integration carries that epoch and writer fence, this Nakama
+source remains a blocked candidate rather than an in-place release.
 
 The runtime caps each logical match at 512 distinct commands and 2 MiB of
 cumulative decoded command payload. Before accepting a command it encodes the

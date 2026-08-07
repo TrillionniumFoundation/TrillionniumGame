@@ -601,11 +601,57 @@ async function runCompleteRecover3(client, httpKey) {
     "completion recovery did not bind epoch two");
     state.completion_commitment_id = evidence.completion.commitment_id;
     state.completion_external_match_id = evidence.external_match_id;
+    state.complete_response_raw_base64 = Buffer.from(first.raw, "utf8").toString("base64");
+    state.complete_response_sha256 = sha256(Buffer.from(first.raw, "utf8")).toString("hex");
     writeState(state);
     process.stdout.write(JSON.stringify({ phase: "complete-recover3", create_resume_replace_complete_v2: true,
       replacement_signal_sigkill_recovered: true, completion_signal_sigkill_recovered: true,
       exact_applied_receipts: true, old_epoch_rejected: true }) + "\n");
   } finally { await closePlayers(players); }
+}
+
+async function runReplayK0ControlUnderK1(client, httpKey) {
+  const state = readState();
+  const expectedRaw = canonicalBase64(state.complete_response_raw_base64,
+    "stored K0 applied control response").toString("utf8");
+  assert(sha256(Buffer.from(expectedRaw, "utf8")).toString("hex") === state.complete_response_sha256,
+    "stored K0 applied control response hash differs");
+  const first = await rpcHttpKeyRaw(client, httpKey, "trnm_research_session_complete_v2", state.complete_request);
+  const second = await rpcHttpKeyRaw(client, httpKey, "trnm_research_session_complete_v2", state.complete_request);
+  assert(first.raw === expectedRaw && second.raw === expectedRaw,
+    "K1-active exact replay changed the K0-applied control response bytes");
+  assert(first.payload.operation === "complete" &&
+    first.payload.result.completion.authority_key_id === "paper-raid-nakama-k0",
+  "K1-active replay did not preserve the embedded K0 completion epoch");
+  process.stdout.write(JSON.stringify({ phase: "replay-k0-control-under-k1",
+    exact_k0_applied_control_replay: true, completion_authority_key_id: "paper-raid-nakama-k0",
+    response_sha256: state.complete_response_sha256 }) + "\n");
+}
+
+async function runRetiredK0Rejected(client, httpKey) {
+  void client;
+  const state = readState();
+  const archiveFailure = await rpcHttpKeyRejected(httpKey, "trnm_research_session_archive_v1", {
+    schema: "trnm.nakama.research-session.get-archive.v1", logical_session_id: sessionID(3),
+    after_sequence: 0, limit: 128, authorization_id: state.epoch_two_authorization_ids[0],
+  });
+  const evidenceFailure = await rpcHttpKeyRejected(httpKey, "trnm_research_session_evidence_v1", {
+    schema: "trnm.nakama.research-session.get-evidence.v1", logical_session_id: sessionID(3),
+    authorization_id: state.epoch_two_authorization_ids[0],
+  });
+  assert(/stored research snapshot or completion authority key is missing from the public verification registry/.test(archiveFailure.body),
+    `retired K0 archive failure was not explicit: ${archiveFailure.body}`);
+  assert(/stored research snapshot or completion authority key is missing from the public verification registry/.test(evidenceFailure.body),
+    `retired K0 evidence failure was not explicit: ${evidenceFailure.body}`);
+  const controlFailure = await rpcHttpKeyRejected(httpKey, "trnm_research_session_complete_v2",
+    state.complete_request);
+  assert(/stored research control or session authority key is missing from the public verification registry/.test(controlFailure.body),
+    `retired K0 applied control replay did not fail verification: ${controlFailure.body}`);
+  process.stdout.write(JSON.stringify({ phase: "retired-k0-rejected",
+    removed_k0_public_failed_closed: true,
+    rejected_paths: ["snapshot_archive", "completion_evidence", "applied_control_replay"],
+    explicit_missing_key_errors: true,
+    database_mutation_requested: false }) + "\n");
 }
 
 
@@ -701,6 +747,8 @@ switch (required("BLACKBOX_PHASE")) {
   case "resume-recover-replace-pending3": await runResumeRecoverReplacePending3(client, httpKey); break;
   case "replace-recover-complete-pending3": await runReplaceRecoverCompletePending3(client, httpKey); break;
   case "complete-recover3": await runCompleteRecover3(client, httpKey); break;
+  case "replay-k0-control-under-k1": await runReplayK0ControlUnderK1(client, httpKey); break;
+  case "retired-k0-rejected": await runRetiredK0Rejected(client, httpKey); break;
   case "recover3": await runRecover3(client, httpKey); break;
   case "cardinality": await runCardinality(client, httpKey); break;
   default: throw new Error(`unsupported BLACKBOX_PHASE ${process.env.BLACKBOX_PHASE}`);

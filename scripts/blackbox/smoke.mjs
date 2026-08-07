@@ -56,6 +56,7 @@ async function rpcHttpKey(client, runtimeHttpKey, id, payload) {
   const envelope = await response.json();
   return {
     id: envelope.id,
+    rawPayload: envelope.payload,
     payload: envelope.payload ? JSON.parse(envelope.payload) : undefined,
   };
 }
@@ -432,6 +433,7 @@ function assertEnvironmentScope(phase) {
     "TRNM_HEPTA_ISSUER_KEYS",
     "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY",
     "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS",
+    "TRNM_NAKAMA_AUTHORITY_PUBLIC_KEYS",
     "TRNM_BLACKBOX_AUTHORITY_K0_PRIVATE_SEED",
     "TRNM_BLACKBOX_AUTHORITY_K1_PRIVATE_SEED",
     "NAKAMA_SESSION_ENCRYPTION_KEY",
@@ -453,7 +455,7 @@ function assertEnvironmentScope(phase) {
       assert(process.env[name] === undefined, `health phase unexpectedly inherited ${name}`);
     }
   }
-  if (phase === "resume" || phase === "retired-key-rejected") {
+  if (["resume", "seal-stale", "verify-stale", "retired-key-rejected"].includes(phase)) {
     for (const name of [
       "TRNM_HEPTA_ISSUER_KEY_ID",
       "TRNM_HEPTA_ISSUER_PRIVATE_SEED",
@@ -469,9 +471,15 @@ function assertEnvironmentScope(phase) {
       assert(process.env[name] === undefined, `${phase} phase unexpectedly inherited ${name}`);
     }
   }
-  if (phase === "retired-key-rejected") {
+  if (["seal-stale", "verify-stale", "retired-key-rejected"].includes(phase)) {
     for (const name of [
       "TRNM_AGENT_TWO_PRIVATE_SEED",
+    ]) {
+      assert(process.env[name] === undefined, `${phase} phase unexpectedly inherited ${name}`);
+    }
+  }
+  if (phase === "retired-key-rejected") {
+    for (const name of [
       "TRNM_BLACKBOX_EXPECTED_AUTHORITY_KEY_ID",
       "TRNM_BLACKBOX_EXPECTED_AUTHORITY_PUBLIC_KEY",
     ]) {
@@ -1024,26 +1032,162 @@ async function runResume(client, runtimeHttpKey, stateFile) {
   }
 }
 
+function verifyHistoricalEvidence(evidence, state, expectedAuthorityKeyID, expectedAuthorityPublicKey) {
+  assert(evidence?.schema === "trnm.nakama.evidence.v1", "historical evidence schema mismatch");
+  assert(evidence.logical_match_id === state.logical_match_id, "historical evidence logical match mismatch");
+  assert(evidence.authority_public_key_base64 === expectedAuthorityPublicKey, "historical evidence exposed the wrong public key");
+  const completion = evidence.completion;
+  assert(completion?.match_id === state.logical_match_id, "historical completion match identity mismatch");
+  assert(completion.authority_key_id === expectedAuthorityKeyID, "historical completion authority epoch changed");
+  const signature = Buffer.from(completion.signature, "base64");
+  assert(signature.length === 64, "historical completion signature length is invalid");
+  assert(
+    ed25519Verify(null, completionSigningBytes(completion), publicKeyFromRaw(expectedAuthorityPublicKey), signature),
+    "historical completion signature failed independent verification",
+  );
+  return completion;
+}
+
+function verifyHistoricalArchive(archive, state, completion) {
+  assert(archive?.schema === "trnm.nakama.archive.v1", "historical archive schema mismatch");
+  assert(archive.logical_match_id === state.logical_match_id, "historical archive logical match mismatch");
+  assert(archive.status === "completed", "historical archive is not terminal");
+  assert(Array.isArray(archive.events) && archive.events.length === completion.event_count, "historical archive event count mismatch");
+  const reconstructed = verifyArchive(archive.events, archive.roster, state.logical_match_id);
+  assert(reconstructed.event_root === completion.event_root, "historical archive event root differs from completion");
+  assert(reconstructed.roster_root === completion.roster_root, "historical archive roster root differs from completion");
+  assert(reconstructed.archive_hash === completion.archive_hash, "historical archive hash differs from completion");
+}
+
+function completedReadRequests(state, operatorToken) {
+  return {
+    resume: {
+      id: "trnm_match_resume_v1",
+      payload: {
+        schema: "trnm.nakama.resume-match.v1",
+        operator_token: operatorToken,
+        logical_match_id: state.logical_match_id,
+      },
+    },
+    evidence: {
+      id: "trnm_match_evidence_v1",
+      payload: {
+        schema: "trnm.nakama.get-evidence.v1",
+        logical_match_id: state.logical_match_id,
+        operator_token: operatorToken,
+      },
+    },
+    archive: {
+      id: "trnm_match_archive_v1",
+      payload: {
+        schema: "trnm.nakama.get-archive.v1",
+        logical_match_id: state.logical_match_id,
+        after_sequence: 0,
+        limit: 128,
+        operator_token: operatorToken,
+      },
+    },
+  };
+}
+
+async function runSealStale(client, runtimeHttpKey, stateFile) {
+  const operatorToken = required("TRNM_NAKAMA_OPERATOR_TOKEN");
+  const expectedAuthorityKeyID = required("TRNM_BLACKBOX_EXPECTED_AUTHORITY_KEY_ID");
+  const expectedAuthorityPublicKey = required("TRNM_BLACKBOX_EXPECTED_AUTHORITY_PUBLIC_KEY");
+  const state = JSON.parse(readFileSync(stateFile, "utf8"));
+  assert(state.schema === "trnm.nakama.blackbox-state.v1", "black-box state schema mismatch");
+  const facts = {
+    result_code: "sealed-k0-historical-fixture",
+    winner_slot: 1,
+    outcome_hash: digest(Buffer.from(`sealed-k0:${state.logical_match_id}`, "utf8")),
+  };
+  const completed = await rpcHttpKey(client, runtimeHttpKey, "trnm_match_complete_v1", {
+    schema: "trnm.nakama.complete-match.v1",
+    operator_token: operatorToken,
+    logical_match_id: state.logical_match_id,
+    facts,
+  });
+  const requests = completedReadRequests(state, operatorToken);
+  const resume = await rpcHttpKey(client, runtimeHttpKey, requests.resume.id, requests.resume.payload);
+  const evidence = await rpcHttpKey(client, runtimeHttpKey, requests.evidence.id, requests.evidence.payload);
+  const archive = await rpcHttpKey(client, runtimeHttpKey, requests.archive.id, requests.archive.payload);
+  assert(completed.rawPayload === resume.rawPayload && resume.rawPayload === evidence.rawPayload,
+    "K0 completion/resume/evidence payload bytes differ");
+  const completion = verifyHistoricalEvidence(evidence.payload, state, expectedAuthorityKeyID, expectedAuthorityPublicKey);
+  assert(equalJSON(completion.terminal_facts, facts), "sealed K0 terminal facts differ");
+  verifyHistoricalArchive(archive.payload, state, completion);
+  state.sealed_k0_proof = {
+    schema: "trnm.nakama.blackbox-sealed-k0-proof.v1",
+    evidence_sha256: sha256(Buffer.from(evidence.rawPayload, "utf8")).toString("hex"),
+    archive_sha256: sha256(Buffer.from(archive.rawPayload, "utf8")).toString("hex"),
+  };
+  writeFileSync(stateFile, JSON.stringify(state, null, 2) + "\n", { mode: 0o600 });
+  chmodSync(stateFile, 0o600);
+  process.stdout.write(JSON.stringify({
+    phase: "seal-stale",
+    logical_match_id: state.logical_match_id,
+    completion_authority_key_id: completion.authority_key_id,
+    read_paths_verified: ["resume", "evidence", "archive"],
+    evidence_bytes_pinned: true,
+    archive_bytes_pinned: true,
+  }) + "\n");
+}
+
+async function runVerifyStale(client, runtimeHttpKey, stateFile) {
+  const operatorToken = required("TRNM_NAKAMA_OPERATOR_TOKEN");
+  const expectedAuthorityKeyID = required("TRNM_BLACKBOX_EXPECTED_AUTHORITY_KEY_ID");
+  const expectedAuthorityPublicKey = required("TRNM_BLACKBOX_EXPECTED_AUTHORITY_PUBLIC_KEY");
+  const state = JSON.parse(readFileSync(stateFile, "utf8"));
+  assert(state.schema === "trnm.nakama.blackbox-state.v1", "black-box state schema mismatch");
+  assert(state.sealed_k0_proof?.schema === "trnm.nakama.blackbox-sealed-k0-proof.v1", "sealed K0 proof is missing");
+  const requests = completedReadRequests(state, operatorToken);
+  const resume = await rpcHttpKey(client, runtimeHttpKey, requests.resume.id, requests.resume.payload);
+  const evidenceOne = await rpcHttpKey(client, runtimeHttpKey, requests.evidence.id, requests.evidence.payload);
+  const evidenceTwo = await rpcHttpKey(client, runtimeHttpKey, requests.evidence.id, requests.evidence.payload);
+  const archiveOne = await rpcHttpKey(client, runtimeHttpKey, requests.archive.id, requests.archive.payload);
+  const archiveTwo = await rpcHttpKey(client, runtimeHttpKey, requests.archive.id, requests.archive.payload);
+  assert(resume.rawPayload === evidenceOne.rawPayload && evidenceOne.rawPayload === evidenceTwo.rawPayload,
+    "K1-active process changed historical K0 evidence bytes");
+  assert(archiveOne.rawPayload === archiveTwo.rawPayload, "K1-active process changed historical K0 archive bytes");
+  assert(sha256(Buffer.from(evidenceOne.rawPayload, "utf8")).toString("hex") === state.sealed_k0_proof.evidence_sha256,
+    "historical K0 evidence differs from the pre-rotation bytes");
+  assert(sha256(Buffer.from(archiveOne.rawPayload, "utf8")).toString("hex") === state.sealed_k0_proof.archive_sha256,
+    "historical K0 archive differs from the pre-rotation bytes");
+  const completion = verifyHistoricalEvidence(evidenceOne.payload, state, expectedAuthorityKeyID, expectedAuthorityPublicKey);
+  verifyHistoricalArchive(archiveOne.payload, state, completion);
+  process.stdout.write(JSON.stringify({
+    phase: "verify-stale",
+    logical_match_id: state.logical_match_id,
+    completion_authority_key_id: completion.authority_key_id,
+    read_paths_verified: ["resume", "evidence", "archive"],
+    k1_active_process_read_immutable_k0_evidence: true,
+    exact_pre_rotation_bytes: true,
+  }) + "\n");
+}
+
 async function runRetiredKeyRejected(client, runtimeHttpKey, stateFile) {
   const operatorToken = required("TRNM_NAKAMA_OPERATOR_TOKEN");
   const state = JSON.parse(readFileSync(stateFile, "utf8"));
   assert(state.schema === "trnm.nakama.blackbox-state.v1", "black-box state schema mismatch");
-  let rejected = false;
-  try {
-    await rpcHttpKey(client, runtimeHttpKey, "trnm_match_resume_v1", {
-      schema: "trnm.nakama.resume-match.v1",
-      operator_token: operatorToken,
-      logical_match_id: state.logical_match_id,
-    });
-  } catch (error) {
-    rejected = /stored match snapshot failed verification/.test(String(error));
+  const requests = completedReadRequests(state, operatorToken);
+  const rejectedPaths = [];
+  for (const [name, request] of Object.entries(requests)) {
+    let rejected = false;
+    try {
+      await rpcHttpKey(client, runtimeHttpKey, request.id, request.payload);
+    } catch (error) {
+      rejected = /stored match snapshot authority key is missing from the public verification registry/.test(String(error));
+    }
+    assert(rejected, `${name} accepted a completed snapshot whose K0 public key was removed`);
+    rejectedPaths.push(name);
   }
-  assert(rejected, "snapshot signed by the removed authority key was accepted");
   process.stdout.write(
     JSON.stringify({
       phase: "retired-key-rejected",
       logical_match_id: state.logical_match_id,
       removed_authority_failed_closed: true,
+      rejected_read_paths: rejectedPaths,
+      explicit_missing_key_error: true,
     }) + "\n",
   );
 }
@@ -1065,6 +1209,12 @@ switch (phase) {
     break;
   case "resume":
     await runResume(client, runtimeHttpKey, required("TRNM_BLACKBOX_STATE_FILE"));
+    break;
+  case "seal-stale":
+    await runSealStale(client, runtimeHttpKey, required("TRNM_BLACKBOX_STATE_FILE"));
+    break;
+  case "verify-stale":
+    await runVerifyStale(client, runtimeHttpKey, required("TRNM_BLACKBOX_STATE_FILE"));
     break;
   case "retired-key-rejected":
     await runRetiredKeyRejected(client, runtimeHttpKey, required("TRNM_BLACKBOX_STATE_FILE"));

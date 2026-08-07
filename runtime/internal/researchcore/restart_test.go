@@ -2,16 +2,32 @@ package researchcore
 
 import (
 	"crypto/ed25519"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/researchcontract"
 )
 
+func decodeResearchSnapshotForTest(t *testing.T, snapshot []byte) (snapshotDocument, []byte) {
+	t.Helper()
+	start := len(snapshotMagic) + 8
+	size := int(binary.BigEndian.Uint64(snapshot[len(snapshotMagic):start]))
+	end := start + size
+	var document snapshotDocument
+	if err := json.Unmarshal(snapshot[start:end], &document); err != nil {
+		t.Fatal(err)
+	}
+	return document, append([]byte(nil), snapshot[end+32:]...)
+}
+
 func restoreOptionsFor(f *fixture) RestoreOptions {
 	return RestoreOptions{
 		TrustedIssuerKeys: map[string]ed25519.PublicKey{"issuer-test": f.issuerPrivate.Public().(ed25519.PublicKey)},
 		AuthorityKeyID:    "nakama-research-test", AuthorityPrivateKey: f.authority,
+		AuthorityPublicKeys: map[string]ed25519.PublicKey{"nakama-research-test": f.authority.Public().(ed25519.PublicKey)},
 	}
 }
 
@@ -55,7 +71,7 @@ func TestSignedSnapshotRestartFencesLiveConnectionsAndCatchesUp(t *testing.T) {
 	}
 }
 
-func TestResearchRestartAcceptsRetiringAuthorityFromOverlapRing(t *testing.T) {
+func TestResearchRestartUsesPublicRegistryForHistoryAndActiveKeyForContinuation(t *testing.T) {
 	f := newFixture(t, 3)
 	snapshot, err := f.engine.Snapshot()
 	if err != nil {
@@ -65,18 +81,30 @@ func TestResearchRestartAcceptsRetiringAuthorityFromOverlapRing(t *testing.T) {
 	options := RestoreOptions{
 		TrustedIssuerKeys: map[string]ed25519.PublicKey{"issuer-test": f.issuerPrivate.Public().(ed25519.PublicKey)},
 		AuthorityKeyID:    "nakama-research-next", AuthorityPrivateKey: active,
-		AuthorityPrivateKeys: map[string]ed25519.PrivateKey{"nakama-research-test": f.authority, "nakama-research-next": active},
+		AuthorityPublicKeys: map[string]ed25519.PublicKey{
+			"nakama-research-test": f.authority.Public().(ed25519.PublicKey),
+			"nakama-research-next": active.Public().(ed25519.PublicKey),
+		},
 	}
 	restored, err := Restore(snapshot, options)
 	if err != nil {
-		t.Fatalf("retiring research authority snapshot was not restored: %v", err)
+		t.Fatalf("historical research snapshot was not restored without its private key: %v", err)
 	}
-	if restored.authorityKeyID != "nakama-research-test" {
-		t.Fatal("restored research session was silently rekeyed")
+	if restored.authorityKeyID != "nakama-research-next" || !restored.authorityPrivateKey.Equal(active) {
+		t.Fatal("restored research session did not continue with the active signing key")
 	}
-	delete(options.AuthorityPrivateKeys, "nakama-research-test")
+	continued, err := restored.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuedDocument, _ := decodeResearchSnapshotForTest(t, continued)
+	if continuedDocument.AuthorityKeyID != "nakama-research-next" ||
+		!ed25519.PublicKey(continuedDocument.AuthorityPublicKey).Equal(active.Public().(ed25519.PublicKey)) {
+		t.Fatal("continued research snapshot was not signed by the active authority")
+	}
+	delete(options.AuthorityPublicKeys, "nakama-research-test")
 	if _, err := Restore(snapshot, options); err == nil {
-		t.Fatal("retiring research authority snapshot was restored after key removal")
+		t.Fatal("historical research snapshot was restored after public-key removal")
 	}
 }
 
@@ -141,5 +169,40 @@ func TestCompletedSnapshotPreservesIndependentRoots(t *testing.T) {
 	}
 	if completion.EventRoot != eventRoot || completion.ArchiveHash != archiveHash || completion.RosterRoot != rosterRoot {
 		t.Fatal("restored completion roots do not independently recompute")
+	}
+
+	active := ed25519.NewKeyFromSeed(seed(222))
+	rotatedOptions := RestoreOptions{
+		TrustedIssuerKeys: map[string]ed25519.PublicKey{"issuer-test": f.issuerPrivate.Public().(ed25519.PublicKey)},
+		AuthorityKeyID:    "nakama-research-next", AuthorityPrivateKey: active,
+		AuthorityPublicKeys: map[string]ed25519.PublicKey{
+			"nakama-research-test": f.authority.Public().(ed25519.PublicKey),
+			"nakama-research-next": active.Public().(ed25519.PublicKey),
+		},
+	}
+	rotated, err := Restore(snapshot, rotatedOptions)
+	if err != nil {
+		t.Fatalf("completed historical snapshot was not verified from the public registry: %v", err)
+	}
+	completionPublic, ok := rotated.CompletionAuthorityPublicKey()
+	if !ok || !completionPublic.Equal(f.authority.Public().(ed25519.PublicKey)) {
+		t.Fatal("historical completion did not retain its K0 verification key")
+	}
+	resigned, err := rotated.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resignedDocument, _ := decodeResearchSnapshotForTest(t, resigned)
+	if resignedDocument.AuthorityKeyID != "nakama-research-next" ||
+		!ed25519.PublicKey(resignedDocument.AuthorityPublicKey).Equal(active.Public().(ed25519.PublicKey)) {
+		t.Fatal("restored completed snapshot was not re-signed with active K1")
+	}
+	if _, err := Restore(resigned, rotatedOptions); err != nil {
+		t.Fatalf("K1 snapshot containing a K0 completion was not restorable: %v", err)
+	}
+	delete(rotatedOptions.AuthorityPublicKeys, "nakama-research-test")
+	if _, err := Restore(resigned, rotatedOptions); err == nil ||
+		!errors.Is(err, ErrAuthorityVerificationKeyUnavailable) {
+		t.Fatalf("K1 snapshot containing a K0 completion did not fail with the explicit missing-key sentinel: %v", err)
 	}
 }

@@ -1,10 +1,12 @@
 package core
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -14,7 +16,8 @@ import (
 
 func restoreOptions(f *coreFixture) RestoreOptions {
 	return RestoreOptions{TrustedIssuerKeys: map[string]ed25519.PublicKey{"issuer-key-1": f.issuerPublic},
-		AuthorityKeyID: "nakama-authority-1", AuthorityPrivateKey: f.authorityPrivate}
+		AuthorityKeyID: "nakama-authority-1", AuthorityPrivateKey: f.authorityPrivate,
+		AuthorityPublicKeys: map[string]ed25519.PublicKey{"nakama-authority-1": f.authorityPublic}}
 }
 
 func TestRestartPreservesIdempotencySequencesAndEvidence(t *testing.T) {
@@ -65,30 +68,63 @@ func TestRestartPreservesIdempotencySequencesAndEvidence(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(completion, retry) {
 		t.Fatal("completion retry after restart was not byte-identical")
 	}
+
+	k1Public, k1Private := fixtureKey("completed-wrapper-k1")
+	rotatedOptions := RestoreOptions{
+		TrustedIssuerKeys: map[string]ed25519.PublicKey{"issuer-key-1": f.issuerPublic},
+		AuthorityKeyID:    "nakama-authority-2", AuthorityPrivateKey: k1Private,
+		AuthorityPublicKeys: map[string]ed25519.PublicKey{
+			"nakama-authority-1": f.authorityPublic,
+			"nakama-authority-2": k1Public,
+		},
+	}
+	rotated, err := Restore(completedSnapshot, rotatedOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k1Wrapper, err := rotated.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(k1Wrapper, rotatedOptions); err != nil {
+		t.Fatalf("K1 wrapper containing K0 completion was not restorable: %v", err)
+	}
+	delete(rotatedOptions.AuthorityPublicKeys, "nakama-authority-1")
+	if _, err := Restore(k1Wrapper, rotatedOptions); !errors.Is(err, ErrAuthorityVerificationKeyUnavailable) {
+		t.Fatalf("K1 wrapper missing K0 completion key did not return the explicit sentinel: %v", err)
+	}
 }
 
-func TestRestartAcceptsRetiringAuthorityFromOverlapRing(t *testing.T) {
+func TestRestartUsesPublicRegistryForHistoryAndActiveKeyForContinuation(t *testing.T) {
 	f := newCoreFixture(t)
 	snapshot, err := f.engine.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, active := fixtureKey("next-authority")
+	activePublic, active := fixtureKey("next-authority")
 	options := RestoreOptions{
 		TrustedIssuerKeys: map[string]ed25519.PublicKey{"issuer-key-1": f.issuerPublic},
 		AuthorityKeyID:    "nakama-authority-2", AuthorityPrivateKey: active,
-		AuthorityPrivateKeys: map[string]ed25519.PrivateKey{"nakama-authority-1": f.authorityPrivate, "nakama-authority-2": active},
+		AuthorityPublicKeys: map[string]ed25519.PublicKey{"nakama-authority-1": f.authorityPublic, "nakama-authority-2": activePublic},
 	}
 	restored, err := Restore(snapshot, options)
 	if err != nil {
-		t.Fatalf("retiring authority snapshot was not restored: %v", err)
+		t.Fatalf("historical authority snapshot was not restored without its private key: %v", err)
 	}
-	if restored.authorityKeyID != "nakama-authority-1" {
-		t.Fatal("restored match was silently rekeyed")
+	if restored.authorityKeyID != "nakama-authority-2" || !restored.authorityPrivateKey.Equal(active) {
+		t.Fatal("restored match did not continue with the active signing key")
 	}
-	delete(options.AuthorityPrivateKeys, "nakama-authority-1")
-	if _, err := Restore(snapshot, options); err == nil {
-		t.Fatal("retiring authority snapshot was restored after key removal")
+	continued, err := restored.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, _ := decodeSnapshotDocumentForTest(t, continued)
+	if document.AuthorityKeyID != "nakama-authority-2" || !bytes.Equal(document.AuthorityPublicKey, activePublic) {
+		t.Fatal("continued snapshot was not signed by the active authority")
+	}
+	delete(options.AuthorityPublicKeys, "nakama-authority-1")
+	if _, err := Restore(snapshot, options); !errors.Is(err, ErrAuthorityVerificationKeyUnavailable) {
+		t.Fatalf("historical snapshot missing K0 did not return the explicit sentinel: %v", err)
 	}
 }
 

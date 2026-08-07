@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -40,7 +41,6 @@ func newAdapterFixture(t *testing.T) *adapterFixture {
 	t.Helper()
 	issuerPublic, issuerPrivate := adapterDeterministicKey("adapter-issuer")
 	authorityPublic, authorityPrivate := adapterDeterministicKey("adapter-authority")
-	_ = authorityPublic
 	now := time.Now().UTC().Truncate(time.Second)
 	var authorizations [2]contract.SignedAuthorization
 	agentPrivate := [2]ed25519.PrivateKey{}
@@ -89,7 +89,9 @@ func newAdapterFixture(t *testing.T) *adapterFixture {
 	}
 	module := &moduleRuntime{config: moduleConfig{
 		issuerKeys: map[string]ed25519.PublicKey{"issuer-key-1": issuerPublic}, authorityKeyID: "authority-key-1",
-		authorityPrivateKey: authorityPrivate, operatorToken: adapterOperatorToken, matchTickRate: 5,
+		authorityPrivateKey: authorityPrivate,
+		authorityPublicKeys: map[string]ed25519.PublicKey{"authority-key-1": authorityPublic},
+		operatorToken:       adapterOperatorToken, matchTickRate: 5,
 	}}
 	snapshot, err := engine.Snapshot()
 	if err != nil {
@@ -223,6 +225,74 @@ func TestAdapterCompletionResponseAllowsResultCodeErrorAndBindsDurableEvidence(t
 	}
 	if err := validateCompletionSignalEvidence(evidence, loaded.record, engine, f.facts, 8); err == nil {
 		t.Fatal("completion response was accepted for a different signaled generation")
+	}
+}
+
+func TestAdapterCompletedSignalPreservesK0EvidenceInsideK1SnapshotWrapper(t *testing.T) {
+	f := newAdapterFixture(t)
+	if _, response := f.match.completeAndTerminate(context.Background(), f.logger, f.store,
+		f.dispatcher, f.state, f.facts); strings.Contains(response, `"error"`) {
+		t.Fatalf("K0 completion failed: %s", response)
+	}
+	loaded, err := loadStoredMatch(context.Background(), f.store, f.state.record.LogicalMatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k0Public := f.authorityKey.Public().(ed25519.PublicKey)
+	k1Public, k1Private := adapterDeterministicKey("adapter-authority-k1")
+	f.module.config.authorityKeyID = "authority-key-2"
+	f.module.config.authorityPrivateKey = k1Private
+	f.module.config.authorityPublicKeys = map[string]ed25519.PublicKey{
+		"authority-key-1": k0Public,
+		"authority-key-2": k1Public,
+	}
+	rotatedEngine, err := f.module.restoreStoredEngine(loaded.record)
+	if err != nil {
+		t.Fatalf("K1 could not restore the completed K0 snapshot: %v", err)
+	}
+	completion, completed := rotatedEngine.Completion()
+	if !completed || completion.AuthorityKeyID != "authority-key-1" {
+		t.Fatal("restoring under K1 rewrote the embedded K0 completion")
+	}
+	rotatedRecord := loaded.record
+	rotatedRecord.setSnapshot(mustSnapshot(t, rotatedEngine))
+	rotatedVersion, err := updateStoredMatch(context.Background(), f.store, rotatedRecord, loaded.version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &authoritativeMatchState{
+		engine: rotatedEngine, record: rotatedRecord, storageVersion: rotatedVersion,
+		instanceLogicalMatchID:    rotatedRecord.LogicalMatchID,
+		instanceRuntimeGeneration: rotatedRecord.RuntimeGeneration,
+		pendingJoinEvents:         make(map[string]contract.MatchEvent),
+	}
+	valueBefore := f.store.object.Value
+	versionBefore := f.store.object.Version
+	writesBefore := f.store.writes
+	dispatcher := &fakeDispatcher{}
+
+	returned, first := f.match.completeAndTerminate(context.Background(), f.logger, f.store,
+		dispatcher, state, f.facts)
+	if returned != state || strings.Contains(first, `"error"`) {
+		t.Fatalf("first completed K1-wrapper/K0-evidence signal failed: %s", first)
+	}
+	returned, second := f.match.completeAndTerminate(context.Background(), f.logger, f.store,
+		dispatcher, state, f.facts)
+	if returned != state || first != second {
+		t.Fatal("completed signal did not replay exact K0 evidence bytes")
+	}
+	var evidence evidenceResponse
+	if err := decodeJSONStrict(first, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Completion.AuthorityKeyID != "authority-key-1" ||
+		evidence.AuthorityPublicKey != base64.StdEncoding.EncodeToString(k0Public) ||
+		evidence.AuthorityPublicKey == base64.StdEncoding.EncodeToString(k1Public) {
+		t.Fatal("generic completed signal exposed the K1 wrapper key instead of the K0 completion key")
+	}
+	if f.store.writes != writesBefore || f.store.object.Version != versionBefore ||
+		f.store.object.Value != valueBefore || len(dispatcher.opcodes) != 0 || len(dispatcher.labels) != 0 {
+		t.Fatal("completed replay changed storage, broadcast state, or match labels")
 	}
 }
 

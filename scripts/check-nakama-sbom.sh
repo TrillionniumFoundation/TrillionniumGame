@@ -3,6 +3,7 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$root"
+clean_source_verifier=$root/scripts/verify-nakama-clean-source.py
 
 for command_name in cmp git jq mktemp python3 tar; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -10,17 +11,16 @@ for command_name in cmp git jq mktemp python3 tar; do
     exit 1
   }
 done
-[[ -z $(git status --porcelain=v1 --untracked-files=all) ]] || {
-  echo 'ERROR: immutable Nakama SBOM gate requires a clean committed worktree' >&2
-  exit 1
-}
-
-revision=$(git rev-parse HEAD)
-source_tree=$(git rev-parse 'HEAD^{tree}')
+revision=$(git rev-parse --verify 'HEAD^{commit}')
+source_tree=$(git rev-parse --verify "$revision^{tree}")
 [[ "$revision" =~ ^[0-9a-f]{40}$ && "$source_tree" =~ ^[0-9a-f]{40}$ ]] || {
   echo 'ERROR: source revision metadata is not canonical' >&2
   exit 1
 }
+source_authority=$(python3 "$clean_source_verifier" \
+  --repo-dir "$root" \
+  --revision "$revision" \
+  --tree "$source_tree")
 
 scratch=$(mktemp -d /tmp/trnm-nakama-sbom.XXXXXXXX)
 cleanup() {
@@ -73,10 +73,12 @@ jq '.dependencies += [{"ref":"pkg:golang/dangling.example@v1.0.0","dependsOn":[]
   "$tracked" >"$scratch/dangling-dependency.cdx.json"
 expect_rejected "$scratch/dangling-dependency.cdx.json" 'a dangling dependency ref'
 
-[[ $(git rev-parse HEAD) == "$revision" \
-  && $(git rev-parse 'HEAD^{tree}') == "$source_tree" \
-  && -z $(git status --porcelain=v1 --untracked-files=all) ]] || {
-  echo 'ERROR: repository changed while the immutable Nakama SBOM gate was running' >&2
+final_source_authority=$(python3 "$clean_source_verifier" \
+  --repo-dir "$root" \
+  --revision "$revision" \
+  --tree "$source_tree")
+[[ "$final_source_authority" == "$source_authority" ]] || {
+  echo 'ERROR: repository authority changed while the immutable Nakama SBOM gate was running' >&2
   exit 1
 }
 

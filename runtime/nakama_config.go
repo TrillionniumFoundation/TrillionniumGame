@@ -17,34 +17,35 @@ import (
 )
 
 const (
-	envIssuerKeys         = "TRNM_HEPTA_ISSUER_KEYS"
-	envControlIssuerKeys  = "TRNM_HEPTA_CONTROL_ISSUER_KEYS"
-	envControlTestHook    = "TRNM_RESEARCH_CONTROL_TEST_FAILPOINT_FILE"
-	envAuthorityKeyID     = "TRNM_NAKAMA_AUTHORITY_KEY_ID"
-	envAuthorityPrivate   = "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY"
-	envAuthorityKeyRing   = "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS"
-	envDevAllowSingleton  = "TRNM_NAKAMA_DEV_ALLOW_SINGLETON_AUTHORITY_KEY"
-	envOperatorToken      = "TRNM_NAKAMA_OPERATOR_TOKEN"
-	envMatchTickRate      = "TRNM_NAKAMA_MATCH_TICK_RATE"
-	envHeptaBaseURL       = "TRNM_HEPTA_BASE_URL"
-	envHeptaServiceToken  = "TRNM_HEPTA_SERVICE_TOKEN"
-	defaultMatchTickRate  = 5
-	minimumOperatorLength = 32
-	maximumOperatorLength = 4096
+	envIssuerKeys           = "TRNM_HEPTA_ISSUER_KEYS"
+	envControlIssuerKeys    = "TRNM_HEPTA_CONTROL_ISSUER_KEYS"
+	envControlTestHook      = "TRNM_RESEARCH_CONTROL_TEST_FAILPOINT_FILE"
+	envAuthorityKeyID       = "TRNM_NAKAMA_AUTHORITY_KEY_ID"
+	envAuthorityPrivate     = "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY"
+	envAuthorityPrivateRing = "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS"
+	envAuthorityPublicRing  = "TRNM_NAKAMA_AUTHORITY_PUBLIC_KEYS"
+	envDevAllowSingleton    = "TRNM_NAKAMA_DEV_ALLOW_SINGLETON_AUTHORITY_KEY"
+	envOperatorToken        = "TRNM_NAKAMA_OPERATOR_TOKEN"
+	envMatchTickRate        = "TRNM_NAKAMA_MATCH_TICK_RATE"
+	envHeptaBaseURL         = "TRNM_HEPTA_BASE_URL"
+	envHeptaServiceToken    = "TRNM_HEPTA_SERVICE_TOKEN"
+	defaultMatchTickRate    = 5
+	minimumOperatorLength   = 32
+	maximumOperatorLength   = 4096
 )
 
 type moduleConfig struct {
-	issuerKeys           map[string]ed25519.PublicKey
-	controlIssuerKeys    map[string]ed25519.PublicKey
-	controlTestHook      string
-	authorityKeyID       string
-	authorityPrivateKey  ed25519.PrivateKey
-	authorityPrivateKeys map[string]ed25519.PrivateKey
-	operatorToken        string
-	matchTickRate        int
-	heptaBaseURL         string
-	heptaServiceToken    string
-	errors               []string
+	issuerKeys          map[string]ed25519.PublicKey
+	controlIssuerKeys   map[string]ed25519.PublicKey
+	controlTestHook     string
+	authorityKeyID      string
+	authorityPrivateKey ed25519.PrivateKey
+	authorityPublicKeys map[string]ed25519.PublicKey
+	operatorToken       string
+	matchTickRate       int
+	heptaBaseURL        string
+	heptaServiceToken   string
+	errors              []string
 }
 
 func loadModuleConfig(env map[string]string) moduleConfig {
@@ -83,28 +84,46 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 	} else {
 		cfg.authorityPrivateKey = key
 	}
-	rawAuthorityKeyRing := strings.TrimSpace(env[envAuthorityKeyRing])
-	if rawAuthorityKeyRing != "" {
-		if keys, err := decodePrivateKeyRing(rawAuthorityKeyRing); err != nil {
-			cfg.errors = append(cfg.errors, envAuthorityKeyRing+": "+err.Error())
-		} else {
-			cfg.authorityPrivateKeys = keys
-		}
+	if env[envAuthorityPrivate] != strings.TrimSpace(env[envAuthorityPrivate]) {
+		cfg.errors = append(cfg.errors, envAuthorityPrivate+" must not contain surrounding whitespace")
+	}
+	if _, present := env[envAuthorityPrivateRing]; present {
+		cfg.errors = append(cfg.errors, envAuthorityPrivateRing+" is forbidden; configure only the active singleton private key and retain historical public keys in "+envAuthorityPublicRing)
 	}
 	allowSingleton := env[envDevAllowSingleton] == "true"
 	if env[envDevAllowSingleton] != "" && !allowSingleton {
 		cfg.errors = append(cfg.errors, envDevAllowSingleton+" must be exactly true when the isolated dev/test fallback is used")
 	}
-	if rawAuthorityKeyRing == "" && allowSingleton && len(cfg.authorityPrivateKey) == ed25519.PrivateKeySize {
-		cfg.authorityPrivateKeys = map[string]ed25519.PrivateKey{cfg.authorityKeyID: append(ed25519.PrivateKey(nil), cfg.authorityPrivateKey...)}
+	rawAuthorityPublicRing := strings.TrimSpace(env[envAuthorityPublicRing])
+	if rawAuthorityPublicRing != "" {
+		if keys, err := decodePublicKeyRing(rawAuthorityPublicRing); err != nil {
+			cfg.errors = append(cfg.errors, envAuthorityPublicRing+": "+err.Error())
+		} else {
+			cfg.authorityPublicKeys = keys
+		}
 	}
-	if rawAuthorityKeyRing == "" && !allowSingleton {
-		cfg.errors = append(cfg.errors, envAuthorityKeyRing+" is required; singleton fallback is limited to isolated dev/test with "+envDevAllowSingleton+"=true")
+	if rawAuthorityPublicRing == "" && allowSingleton && len(cfg.authorityPrivateKey) == ed25519.PrivateKeySize {
+		cfg.authorityPublicKeys = map[string]ed25519.PublicKey{
+			cfg.authorityKeyID: append(ed25519.PublicKey(nil), cfg.authorityPrivateKey.Public().(ed25519.PublicKey)...),
+		}
 	}
-	if ringActive := cfg.authorityPrivateKeys[cfg.authorityKeyID]; len(ringActive) != ed25519.PrivateKeySize {
-		cfg.errors = append(cfg.errors, envAuthorityKeyRing+" must contain the active "+envAuthorityKeyID)
-	} else if len(cfg.authorityPrivateKey) == ed25519.PrivateKeySize && subtle.ConstantTimeCompare(ringActive, cfg.authorityPrivateKey) != 1 {
-		cfg.errors = append(cfg.errors, envAuthorityPrivate+" must equal the active key in "+envAuthorityKeyRing)
+	if rawAuthorityPublicRing == "" && !allowSingleton {
+		cfg.errors = append(cfg.errors, envAuthorityPublicRing+" is required; singleton fallback is limited to isolated dev/test with "+envDevAllowSingleton+"=true")
+	}
+	if publicActive := cfg.authorityPublicKeys[cfg.authorityKeyID]; len(publicActive) != ed25519.PublicKeySize {
+		cfg.errors = append(cfg.errors, envAuthorityPublicRing+" must contain the active "+envAuthorityKeyID)
+	} else if len(cfg.authorityPrivateKey) == ed25519.PrivateKeySize &&
+		subtle.ConstantTimeCompare(publicActive, cfg.authorityPrivateKey.Public().(ed25519.PublicKey)) != 1 {
+		cfg.errors = append(cfg.errors, envAuthorityPublicRing+" active public key must match "+envAuthorityPrivate)
+	}
+	if len(cfg.authorityPrivateKey) == ed25519.PrivateKeySize {
+		derived := cfg.authorityPrivateKey.Public().(ed25519.PublicKey)
+		for publicKeyID, publicKey := range cfg.authorityPublicKeys {
+			if publicKeyID != cfg.authorityKeyID && len(publicKey) == ed25519.PublicKeySize &&
+				subtle.ConstantTimeCompare(derived, publicKey) == 1 {
+				cfg.errors = append(cfg.errors, envAuthorityPublicRing+" key "+publicKeyID+" aliases active private key "+cfg.authorityKeyID)
+			}
+		}
 	}
 
 	cfg.operatorToken = env[envOperatorToken]
@@ -128,14 +147,13 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 		subtle.ConstantTimeCompare([]byte(cfg.operatorToken), []byte(cfg.heptaServiceToken)) == 1 {
 		cfg.errors = append(cfg.errors, envOperatorToken+" and "+envHeptaServiceToken+" must use distinct credentials")
 	}
-	for authorityKeyID, authorityPrivate := range cfg.authorityPrivateKeys {
-		if len(authorityPrivate) != ed25519.PrivateKeySize {
+	for authorityKeyID, authorityPublic := range cfg.authorityPublicKeys {
+		if len(authorityPublic) != ed25519.PublicKeySize {
 			continue
 		}
-		authorityPublic := authorityPrivate.Public().(ed25519.PublicKey)
 		for issuerKeyID, issuerPublic := range cfg.issuerKeys {
 			if len(issuerPublic) == ed25519.PublicKeySize && subtle.ConstantTimeCompare(authorityPublic, issuerPublic) == 1 {
-				cfg.errors = append(cfg.errors, envAuthorityKeyRing+" key "+authorityKeyID+" must differ from Hepta issuer key "+issuerKeyID)
+				cfg.errors = append(cfg.errors, envAuthorityPublicRing+" key "+authorityKeyID+" must differ from Hepta issuer key "+issuerKeyID)
 			}
 		}
 		for controlKeyID, controlPublic := range cfg.controlIssuerKeys {
@@ -217,54 +235,6 @@ func decodePublicKeyRing(raw string) (map[string]ed25519.PublicKey, error) {
 	return keys, nil
 }
 
-func decodePrivateKeyRing(raw string) (map[string]ed25519.PrivateKey, error) {
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	opening, err := decoder.Token()
-	if err != nil || opening != json.Delim('{') {
-		return nil, errors.New("must be a JSON object")
-	}
-	keys := map[string]ed25519.PrivateKey{}
-	seenPrivate := map[string]string{}
-	for decoder.More() {
-		token, err := decoder.Token()
-		if err != nil {
-			return nil, errors.New("invalid JSON object")
-		}
-		keyID, ok := token.(string)
-		if !ok || !validConfigKeyID(keyID) {
-			return nil, errors.New("key ids must contain 1 through 128 ASCII characters from A-Za-z0-9._:-")
-		}
-		if _, duplicate := keys[keyID]; duplicate {
-			return nil, fmt.Errorf("duplicate key id %q", keyID)
-		}
-		var encoded string
-		if err := decoder.Decode(&encoded); err != nil {
-			return nil, fmt.Errorf("key %q must be a string containing a 32-byte Ed25519 seed or 64-byte private key", keyID)
-		}
-		key, err := decodePrivateKey(encoded)
-		if err != nil {
-			return nil, fmt.Errorf("key %q %s", keyID, err.Error())
-		}
-		fingerprint := hex.EncodeToString(key)
-		if existing, duplicate := seenPrivate[fingerprint]; duplicate {
-			return nil, fmt.Errorf("keys %q and %q reuse one private key", existing, keyID)
-		}
-		seenPrivate[fingerprint] = keyID
-		keys[keyID] = append(ed25519.PrivateKey(nil), key...)
-	}
-	closing, err := decoder.Token()
-	if err != nil || closing != json.Delim('}') {
-		return nil, errors.New("invalid JSON object")
-	}
-	if token, err := decoder.Token(); err != io.EOF || token != nil {
-		return nil, errors.New("trailing JSON value is forbidden")
-	}
-	if len(keys) == 0 {
-		return nil, errors.New("at least one key is required")
-	}
-	return keys, nil
-}
-
 func validConfigKeyID(value string) bool {
 	if !utf8.ValidString(value) || len(value) < 1 || len(value) > 128 {
 		return false
@@ -316,20 +286,19 @@ func decodePrivateKey(value string) (ed25519.PrivateKey, error) {
 }
 
 func decodeKey(value string) ([]byte, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil, errors.New("empty key")
+	if value == "" || value != strings.TrimSpace(value) {
+		return nil, errors.New("key encoding is empty or contains whitespace")
 	}
-	if b, err := hex.DecodeString(value); err == nil {
+	if b, err := hex.DecodeString(value); err == nil && hex.EncodeToString(b) == value {
 		return b, nil
 	}
-	if b, err := base64.StdEncoding.DecodeString(value); err == nil {
+	if b, err := base64.StdEncoding.Strict().DecodeString(value); err == nil && base64.StdEncoding.EncodeToString(b) == value {
 		return b, nil
 	}
-	if b, err := base64.RawStdEncoding.DecodeString(value); err == nil {
+	if b, err := base64.RawStdEncoding.Strict().DecodeString(value); err == nil && base64.RawStdEncoding.EncodeToString(b) == value {
 		return b, nil
 	}
-	if b, err := base64.RawURLEncoding.DecodeString(value); err == nil {
+	if b, err := base64.RawURLEncoding.Strict().DecodeString(value); err == nil && base64.RawURLEncoding.EncodeToString(b) == value {
 		return b, nil
 	}
 	return nil, errors.New("unsupported key encoding")

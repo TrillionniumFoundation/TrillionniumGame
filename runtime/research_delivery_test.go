@@ -141,7 +141,9 @@ func newResearchDeliveryFixture(t *testing.T) *researchDeliveryFixture {
 	}
 	module := &moduleRuntime{config: moduleConfig{
 		issuerKeys: map[string]ed25519.PublicKey{"hepta-research-test": issuerPublic}, authorityKeyID: "nakama-research-test",
-		authorityPrivateKey: authorityPrivate, operatorToken: adapterOperatorToken, matchTickRate: 5,
+		authorityPrivateKey: authorityPrivate,
+		authorityPublicKeys: map[string]ed25519.PublicKey{"nakama-research-test": authorityPrivate.Public().(ed25519.PublicKey)},
+		operatorToken:       adapterOperatorToken, matchTickRate: 5,
 		heptaBaseURL: "http://hepta.test", heptaServiceToken: adapterOperatorToken,
 	}}
 	state := &researchMatchState{engine: engine, record: record, storageVersion: version,
@@ -385,6 +387,53 @@ func TestCompletionOutboxSurvivesOutageRestartAndGenerationExpiryUntilSignedACK(
 				t.Fatal("restart accepted a checksummed but invalid completion ACK")
 			}
 		})
+	}
+}
+
+func TestDelayedCompletionSignalReplaysHistoricalEvidenceWithoutReplacingOutbox(t *testing.T) {
+	fixture := newResearchDeliveryFixture(t)
+	completion, completionOutbox := fixture.complete(t)
+	updated := cloneStoredResearchSession(fixture.state.record)
+	updated.setSnapshot(mustResearchSnapshot(t, fixture.engine))
+	updated.CompletionOutbox = &completionOutbox
+	version, err := updateStoredResearch(context.Background(), fixture.store, updated, fixture.state.storageVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	k1Public, k1Private := researchTestKey("research-delayed-completion-k1")
+	fixture.module.config.authorityKeyID = "nakama-research-k1"
+	fixture.module.config.authorityPrivateKey = k1Private
+	fixture.module.config.authorityPublicKeys = map[string]ed25519.PublicKey{
+		"nakama-research-test": fixture.authorityPrivate.Public().(ed25519.PublicKey),
+		"nakama-research-k1":   k1Public,
+	}
+	restored, err := fixture.module.restoreStoredResearch(updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &researchMatchState{
+		engine: restored, record: updated, storageVersion: version,
+		instanceSessionID: updated.LogicalSessionID, instanceGeneration: updated.RuntimeGeneration,
+	}
+	signalBody, _ := json.Marshal(researchSignal{
+		Schema: "trnm.nakama.research-session.signal.v1", Action: "complete",
+		LogicalSessionID: updated.LogicalSessionID, RuntimeGeneration: updated.RuntimeGeneration,
+		OperatorToken: adapterOperatorToken, Facts: &completion.TerminalFacts,
+	})
+	match := &researchMatch{module: fixture.module}
+	_, first := match.MatchSignal(context.Background(), &fakeLogger{}, nil, nil, &fakeDispatcher{}, 0, state, string(signalBody))
+	_, second := match.MatchSignal(context.Background(), &fakeLogger{}, nil, nil, &fakeDispatcher{}, 0, state, string(signalBody))
+	if first != second || first == "" {
+		t.Fatal("delayed completion signal did not replay exact evidence bytes")
+	}
+	var evidence researchEvidenceResponse
+	if decodeJSONStrict(first, &evidence) != nil || !reflect.DeepEqual(evidence.Completion, completion) ||
+		evidence.AuthorityPublicKey != base64.StdEncoding.EncodeToString(fixture.authorityPrivate.Public().(ed25519.PublicKey)) {
+		t.Fatal("delayed completion replay did not use the historical completion authority")
+	}
+	if state.storageVersion != version || !reflect.DeepEqual(state.record.CompletionOutbox, &completionOutbox) {
+		t.Fatal("delayed completion replay replaced or rewrote the durable completion outbox")
 	}
 }
 

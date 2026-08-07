@@ -100,7 +100,7 @@ type researchArchiveResponse struct {
 }
 
 func (m *moduleRuntime) rpcResearchCreate(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
-	if err := m.config.ready(); err != nil {
+	if err := m.ready(); err != nil {
 		return "", runtime.NewError("research runtime is not ready", 14)
 	}
 	var request researchCreateRequest
@@ -136,7 +136,7 @@ func (m *moduleRuntime) rpcResearchCreate(ctx context.Context, _ runtime.Logger,
 }
 
 func (m *moduleRuntime) rpcResearchResume(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
-	if err := m.config.ready(); err != nil {
+	if err := m.ready(); err != nil {
 		return "", runtime.NewError("research runtime is not ready", 14)
 	}
 	var request researchResumeRequest
@@ -152,10 +152,14 @@ func (m *moduleRuntime) rpcResearchResume(ctx context.Context, _ runtime.Logger,
 	}
 	engine, err := m.restoreStoredResearch(stored.record)
 	if err != nil {
-		return "", runtime.NewError("stored research snapshot failed verification", 13)
+		return "", storedResearchVerificationError(err, "stored research snapshot failed verification")
 	}
 	if completion, ok := engine.Completion(); ok && !hasPendingResearchDeliveries(stored.record) {
-		return marshalRPC(researchEvidenceFor(stored.record, *completion, engine.AuthorityPublicKey()))
+		publicKey, found := engine.CompletionAuthorityPublicKey()
+		if !found {
+			return "", runtime.NewError("stored research completion authority is unavailable", 13)
+		}
+		return marshalRPC(researchEvidenceFor(stored.record, *completion, publicKey))
 	}
 	view := engine.View()
 	record, external, err := m.ensureResearchRuntime(ctx, nk, stored)
@@ -166,7 +170,7 @@ func (m *moduleRuntime) rpcResearchResume(ctx context.Context, _ runtime.Logger,
 }
 
 func (m *moduleRuntime) rpcResearchEvidence(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
-	if err := m.config.ready(); err != nil {
+	if err := m.ready(); err != nil {
 		return "", runtime.NewError("research runtime is not ready", 14)
 	}
 	var request researchEvidenceRequest
@@ -183,7 +187,7 @@ func (m *moduleRuntime) rpcResearchEvidence(ctx context.Context, _ runtime.Logge
 	}
 	engine, err := m.restoreStoredResearch(stored.record)
 	if err != nil {
-		return "", runtime.NewError("stored research snapshot failed verification", 13)
+		return "", storedResearchVerificationError(err, "stored research snapshot failed verification")
 	}
 	if hasOperator {
 		if !m.config.operatorAuthorized(request.OperatorToken) {
@@ -203,11 +207,15 @@ func (m *moduleRuntime) rpcResearchEvidence(ctx context.Context, _ runtime.Logge
 		}
 		stored.record = updated
 	}
-	return marshalRPC(researchEvidenceFor(stored.record, *completion, engine.AuthorityPublicKey()))
+	publicKey, found := engine.CompletionAuthorityPublicKey()
+	if !found {
+		return "", runtime.NewError("stored research completion authority is unavailable", 13)
+	}
+	return marshalRPC(researchEvidenceFor(stored.record, *completion, publicKey))
 }
 
 func (m *moduleRuntime) rpcResearchArchive(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
-	if err := m.config.ready(); err != nil {
+	if err := m.ready(); err != nil {
 		return "", runtime.NewError("research runtime is not ready", 14)
 	}
 	var request researchArchiveRequest
@@ -224,7 +232,7 @@ func (m *moduleRuntime) rpcResearchArchive(ctx context.Context, _ runtime.Logger
 	}
 	engine, err := m.restoreStoredResearch(stored.record)
 	if err != nil {
-		return "", runtime.NewError("stored research snapshot failed verification", 13)
+		return "", storedResearchVerificationError(err, "stored research snapshot failed verification")
 	}
 	if hasOperator {
 		if !m.config.operatorAuthorized(*request.OperatorToken) {
@@ -256,7 +264,7 @@ func (m *moduleRuntime) rpcResearchArchive(ctx context.Context, _ runtime.Logger
 }
 
 func (m *moduleRuntime) rpcResearchComplete(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
-	if err := m.config.ready(); err != nil {
+	if err := m.ready(); err != nil {
 		return "", runtime.NewError("research runtime is not ready", 14)
 	}
 	var request researchCompleteRequest
@@ -272,13 +280,17 @@ func (m *moduleRuntime) rpcResearchComplete(ctx context.Context, _ runtime.Logge
 	}
 	engine, err := m.restoreStoredResearch(stored.record)
 	if err != nil {
-		return "", runtime.NewError("stored research snapshot failed verification", 13)
+		return "", storedResearchVerificationError(err, "stored research snapshot failed verification")
 	}
 	if existing, ok := engine.Completion(); ok {
 		if !reflect.DeepEqual(existing.TerminalFacts, request.Facts) {
 			return "", runtime.NewError("completion facts conflict", 9)
 		}
-		return marshalRPC(researchEvidenceFor(stored.record, *existing, engine.AuthorityPublicKey()))
+		publicKey, found := engine.CompletionAuthorityPublicKey()
+		if !found {
+			return "", runtime.NewError("stored research completion authority is unavailable", 13)
+		}
+		return marshalRPC(researchEvidenceFor(stored.record, *existing, publicKey))
 	}
 	if stored.record.ExternalMatchID == "" {
 		return "", runtime.NewError("research runtime is absent; resume first", 9)
@@ -297,17 +309,21 @@ func (m *moduleRuntime) rpcResearchComplete(ctx context.Context, _ runtime.Logge
 	}
 	currentEngine, err := m.restoreStoredResearch(current.record)
 	if err != nil {
-		return "", runtime.NewError("completed research snapshot failed verification", 13)
+		return "", storedResearchVerificationError(err, "completed research snapshot failed verification")
 	}
 	completion, ok := currentEngine.Completion()
 	if !ok || !reflect.DeepEqual(completion.TerminalFacts, request.Facts) {
 		return "", runtime.NewError("research completion differs from durable request", 13)
 	}
-	return marshalRPC(researchEvidenceFor(current.record, *completion, currentEngine.AuthorityPublicKey()))
+	publicKey, found := currentEngine.CompletionAuthorityPublicKey()
+	if !found {
+		return "", runtime.NewError("stored research completion authority is unavailable", 13)
+	}
+	return marshalRPC(researchEvidenceFor(current.record, *completion, publicKey))
 }
 
 func (m *moduleRuntime) rpcResearchReplace(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
-	if err := m.config.ready(); err != nil {
+	if err := m.ready(); err != nil {
 		return "", runtime.NewError("research runtime is not ready", 14)
 	}
 	var request researchReplaceRequest
@@ -338,7 +354,7 @@ func (m *moduleRuntime) rpcResearchReplace(ctx context.Context, _ runtime.Logger
 	}
 	engine, err := m.restoreStoredResearch(current.record)
 	if err != nil {
-		return "", runtime.NewError("replaced research snapshot failed verification", 13)
+		return "", storedResearchVerificationError(err, "replaced research snapshot failed verification")
 	}
 	return marshalRPC(researchRuntimeFor(current.record, engine.View(), current.record.ExternalMatchID))
 }
@@ -348,7 +364,7 @@ func (m *moduleRuntime) restoreStoredResearch(record storedResearchSession) (*re
 	if err != nil {
 		return nil, err
 	}
-	engine, err := researchcore.Restore(snapshot, researchcore.RestoreOptions{TrustedIssuerKeys: m.config.issuerKeys, AuthorityKeyID: m.config.authorityKeyID, AuthorityPrivateKey: m.config.authorityPrivateKey, AuthorityPrivateKeys: m.config.authorityPrivateKeys})
+	engine, err := researchcore.Restore(snapshot, researchcore.RestoreOptions{TrustedIssuerKeys: m.config.issuerKeys, AuthorityKeyID: m.config.authorityKeyID, AuthorityPrivateKey: m.config.authorityPrivateKey, AuthorityPublicKeys: m.config.authorityPublicKeys})
 	if err != nil {
 		return nil, err
 	}
@@ -406,6 +422,13 @@ func (m *moduleRuntime) restoreStoredResearch(record storedResearchSession) (*re
 		}
 	}
 	return engine, nil
+}
+
+func storedResearchVerificationError(err error, fallback string) error {
+	if errors.Is(err, researchcore.ErrAuthorityVerificationKeyUnavailable) {
+		return runtime.NewError("stored research snapshot or completion authority key is missing from the public verification registry", 13)
+	}
+	return runtime.NewError(fallback, 13)
 }
 
 // ensureResearchRuntime returns a live runtime generation. It is also the
@@ -480,7 +503,8 @@ func signalError(raw string) string {
 
 func verifyResearchEvidence(response researchEvidenceResponse, engine *researchcore.Engine) error {
 	key, err := base64.StdEncoding.Strict().DecodeString(response.AuthorityPublicKey)
-	if err != nil || !bytes.Equal(key, engine.AuthorityPublicKey()) {
+	expected, ok := engine.CompletionAuthorityPublicKey()
+	if err != nil || !ok || !bytes.Equal(key, expected) {
 		return errors.New("research evidence authority key differs")
 	}
 	return researchcontract.VerifyCompletionAgainstArchive(response.Completion, engine.Events(), ed25519.PublicKey(key))

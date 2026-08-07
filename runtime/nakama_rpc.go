@@ -34,8 +34,19 @@ const (
 )
 
 type moduleRuntime struct {
-	config     moduleConfig
-	httpClient researchHTTPClient
+	config          moduleConfig
+	httpClient      researchHTTPClient
+	activationError error
+}
+
+func (m *moduleRuntime) ready() error {
+	if err := m.config.ready(); err != nil {
+		return err
+	}
+	if m.activationError != nil {
+		return fmt.Errorf("research control storage activation rejected: %w", m.activationError)
+	}
+	return nil
 }
 
 var errInvalidArchiveCursor = errors.New("archive cursor or page limit is invalid")
@@ -119,7 +130,7 @@ type archiveResponse struct {
 }
 
 func (m *moduleRuntime) rpcCreateMatch(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
-	if err := m.config.ready(); err != nil {
+	if err := m.ready(); err != nil {
 		return "", runtime.NewError("authoritative runtime is not ready", 14)
 	}
 	var request createMatchRequest
@@ -175,7 +186,7 @@ func (m *moduleRuntime) rpcCreateMatch(ctx context.Context, _ runtime.Logger, _ 
 }
 
 func (m *moduleRuntime) rpcResumeMatch(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
-	if err := m.config.ready(); err != nil {
+	if err := m.ready(); err != nil {
 		return "", runtime.NewError("authoritative runtime is not ready", 14)
 	}
 	var request resumeMatchRequest
@@ -192,11 +203,15 @@ func (m *moduleRuntime) rpcResumeMatch(ctx context.Context, _ runtime.Logger, _ 
 	}
 	engine, err := m.restoreStoredEngine(stored.record)
 	if err != nil {
-		return "", runtime.NewError("stored match snapshot failed verification", 13)
+		return "", storedMatchSnapshotError(err)
 	}
 	view := engine.View()
 	if completion, completed := engine.Completion(); completed {
-		return marshalRPC(evidenceResponseFor(stored.record, *completion, engine.AuthorityPublicKey()))
+		publicKey, ok := engine.CompletionAuthorityPublicKey()
+		if !ok {
+			return "", runtime.NewError("stored completion authority is unavailable", 13)
+		}
+		return marshalRPC(evidenceResponseFor(stored.record, *completion, publicKey))
 	}
 	if stored.record.ExternalMatchID != "" {
 		active, lookupErr := nk.MatchGet(ctx, stored.record.ExternalMatchID)
@@ -234,7 +249,7 @@ func (m *moduleRuntime) rpcResumeMatch(ctx context.Context, _ runtime.Logger, _ 
 }
 
 func (m *moduleRuntime) rpcEvidence(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
-	if err := m.config.ready(); err != nil {
+	if err := m.ready(); err != nil {
 		return "", runtime.NewError("authoritative runtime is not ready", 14)
 	}
 	var request evidenceRequest
@@ -248,7 +263,7 @@ func (m *moduleRuntime) rpcEvidence(ctx context.Context, _ runtime.Logger, _ *sq
 	}
 	engine, err := m.restoreStoredEngine(stored.record)
 	if err != nil {
-		return "", runtime.NewError("stored match snapshot failed verification", 13)
+		return "", storedMatchSnapshotError(err)
 	}
 	if !m.config.operatorAuthorized(request.OperatorToken) && !participantCanReadEvidence(ctx, engine.View(), request.AuthorizationID) {
 		return "", runtime.NewError("evidence access rejected", 7)
@@ -257,7 +272,11 @@ func (m *moduleRuntime) rpcEvidence(ctx context.Context, _ runtime.Logger, _ *sq
 	if !completed {
 		return "", runtime.NewError("match is not completed", 9)
 	}
-	return marshalRPC(evidenceResponseFor(stored.record, *completion, engine.AuthorityPublicKey()))
+	publicKey, ok := engine.CompletionAuthorityPublicKey()
+	if !ok {
+		return "", runtime.NewError("stored completion authority is unavailable", 13)
+	}
+	return marshalRPC(evidenceResponseFor(stored.record, *completion, publicKey))
 }
 
 func (m *moduleRuntime) rpcArchive(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
@@ -268,7 +287,7 @@ func (m *moduleRuntime) rpcArchive(ctx context.Context, _ runtime.Logger, _ *sql
 // durable-read path can be tested against the same storage interface used by
 // snapshots without a broad fake NakamaModule implementation.
 func (m *moduleRuntime) rpcArchiveFromStorage(ctx context.Context, nk storageGateway, payload string) (string, error) {
-	if err := m.config.ready(); err != nil {
+	if err := m.ready(); err != nil {
 		return "", runtime.NewError("authoritative runtime is not ready", 14)
 	}
 	var request archiveRequest
@@ -281,7 +300,7 @@ func (m *moduleRuntime) rpcArchiveFromStorage(ctx context.Context, nk storageGat
 	}
 	engine, err := m.restoreStoredEngine(stored.record)
 	if err != nil {
-		return "", runtime.NewError("stored match snapshot failed verification", 13)
+		return "", storedMatchSnapshotError(err)
 	}
 	view := engine.View()
 	if request.OperatorToken != nil {
@@ -363,7 +382,7 @@ func archiveResponseFor(record storedMatch, engine *matchcore.Engine, afterSeque
 }
 
 func (m *moduleRuntime) rpcComplete(ctx context.Context, _ runtime.Logger, _ *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
-	if err := m.config.ready(); err != nil {
+	if err := m.ready(); err != nil {
 		return "", runtime.NewError("authoritative runtime is not ready", 14)
 	}
 	var request completeMatchRequest
@@ -380,7 +399,7 @@ func (m *moduleRuntime) rpcComplete(ctx context.Context, _ runtime.Logger, _ *sq
 	}
 	engine, err := m.restoreStoredEngine(stored.record)
 	if err != nil {
-		return "", runtime.NewError("stored match snapshot failed verification", 13)
+		return "", storedMatchSnapshotError(err)
 	}
 	if _, completed := engine.Completion(); completed {
 		response, err := completedEvidenceForFacts(stored.record, engine, request.Facts)
@@ -426,10 +445,17 @@ func (m *moduleRuntime) restoreStoredEngine(record storedMatch) (*matchcore.Engi
 	return m.restoreEngineForRecord(record, snapshot)
 }
 
+func storedMatchSnapshotError(err error) error {
+	if errors.Is(err, matchcore.ErrAuthorityVerificationKeyUnavailable) {
+		return runtime.NewError("stored match snapshot authority key is missing from the public verification registry", 13)
+	}
+	return runtime.NewError("stored match snapshot failed verification", 13)
+}
+
 func (m *moduleRuntime) restoreEngineForRecord(record storedMatch, snapshot []byte) (*matchcore.Engine, error) {
 	engine, err := matchcore.Restore(snapshot, matchcore.RestoreOptions{
 		TrustedIssuerKeys: m.config.issuerKeys, AuthorityKeyID: m.config.authorityKeyID,
-		AuthorityPrivateKey: m.config.authorityPrivateKey, AuthorityPrivateKeys: m.config.authorityPrivateKeys,
+		AuthorityPrivateKey: m.config.authorityPrivateKey, AuthorityPublicKeys: m.config.authorityPublicKeys,
 	})
 	if err != nil {
 		return nil, err
@@ -449,7 +475,11 @@ func completedEvidenceForFacts(record storedMatch, engine *matchcore.Engine, fac
 	if err != nil {
 		return evidenceResponse{}, err
 	}
-	return evidenceResponseFor(record, validated, engine.AuthorityPublicKey()), nil
+	publicKey, ok := engine.CompletionAuthorityPublicKey()
+	if !ok {
+		return evidenceResponse{}, errors.New("match completion authority is unavailable")
+	}
+	return evidenceResponseFor(record, validated, publicKey), nil
 }
 
 func completeSignalFor(record storedMatch, request completeMatchRequest) completeSignal {
@@ -502,7 +532,8 @@ func validateCompletionSignalEvidence(evidence evidenceResponse, record storedMa
 		return errors.New("completion evidence outer identity or generation is inconsistent")
 	}
 	publicKey, err := base64.StdEncoding.DecodeString(evidence.AuthorityPublicKey)
-	if err != nil || len(publicKey) != ed25519.PublicKeySize || !bytes.Equal(publicKey, engine.AuthorityPublicKey()) {
+	expectedPublic, ok := engine.CompletionAuthorityPublicKey()
+	if err != nil || !ok || len(publicKey) != ed25519.PublicKeySize || !bytes.Equal(publicKey, expectedPublic) {
 		return errors.New("completion evidence authority key is inconsistent")
 	}
 	if err := contract.VerifyCompletion(evidence.Completion, ed25519.PublicKey(publicKey)); err != nil {
@@ -551,8 +582,13 @@ func evidenceResponseFor(record storedMatch, completion contract.MatchCompletedV
 	}
 }
 
-func evidenceResponseFrom(state *authoritativeMatchState, completion contract.MatchCompletedV1) evidenceResponse {
-	return evidenceResponseFor(state.record, completion, state.engine.AuthorityPublicKey())
+func evidenceResponseFrom(state *authoritativeMatchState,
+	completion contract.MatchCompletedV1) (evidenceResponse, error) {
+	publicKey, ok := state.engine.CompletionAuthorityPublicKey()
+	if !ok {
+		return evidenceResponse{}, errors.New("match completion authority is unavailable")
+	}
+	return evidenceResponseFor(state.record, completion, publicKey), nil
 }
 
 type healthResponse struct {
@@ -595,29 +631,59 @@ func (m *moduleRuntime) rpcReady(ctx context.Context, _ runtime.Logger, db *sql.
 		Checks: readinessChecks{Configuration: "ok", Database: "ok", Storage: "ok"},
 	}
 	reasons := make([]string, 0, 3)
+	configurationReady := true
+	databaseReady := true
+	activationReady := true
 
 	if err := m.config.ready(); err != nil {
+		configurationReady = false
 		response.Ready = false
 		response.Checks.Configuration = "error"
 		reasons = append(reasons, err.Error())
 	}
 	if db == nil {
+		databaseReady = false
 		response.Ready = false
 		response.Checks.Database = "error"
 		reasons = append(reasons, "database handle is absent")
 	} else if err := db.PingContext(ctx); err != nil {
+		databaseReady = false
 		response.Ready = false
 		response.Checks.Database = "error"
 		reasons = append(reasons, "database ping failed")
 	}
+	if m.activationError != nil {
+		activationReady = false
+		response.Ready = false
+		response.Checks.Storage = "error"
+		reasons = append(reasons, "research control storage activation was rejected at module startup: "+m.activationError.Error())
+	} else if configurationReady && databaseReady {
+		if err := scanStoredResearchControlActivation(ctx, db, m.config); err != nil {
+			activationReady = false
+			response.Ready = false
+			response.Checks.Storage = "error"
+			reasons = append(reasons, "research control storage activation scan failed: "+err.Error())
+		}
+	} else {
+		activationReady = false
+	}
+	// The writable probe is itself a transient mutation. It must run only after
+	// configuration, database access, and the complete read-only activation scan
+	// have all passed. A legacy blocker therefore cannot leave even a readiness
+	// probe row behind if the process dies between the probe write and delete.
 	if nk == nil {
 		response.Ready = false
 		response.Checks.Storage = "error"
 		reasons = append(reasons, "Nakama runtime module is absent")
-	} else if err := probeWritableStorage(ctx, nk); err != nil {
+	} else if activationReady {
+		if err := probeWritableStorage(ctx, nk); err != nil {
+			response.Ready = false
+			response.Checks.Storage = "error"
+			reasons = append(reasons, "server-owned storage write probe failed")
+		}
+	} else {
 		response.Ready = false
 		response.Checks.Storage = "error"
-		reasons = append(reasons, "server-owned storage write probe failed")
 	}
 
 	response.Reason = strings.Join(reasons, "; ")
