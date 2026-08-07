@@ -32,6 +32,9 @@ The important runtime keys are:
   completion delivery;
 - `TRNM_NAKAMA_AUTHORITY_KEY_ID` and
   `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY`: completion-signing identity;
+- `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS`: required JSON key ring containing the
+  active completion-signing identity and every still-restorable historical
+  authority;
 - `TRNM_NAKAMA_OPERATOR_TOKEN`: at least 32 random bytes retained only for the
   fixed two-participant v1 create/resume/complete RPCs. Paper Raid v2 lifecycle
   RPCs do not accept it.
@@ -46,8 +49,9 @@ public key must differ from every participant-authorization issuer and from the
 Nakama completion authority; and the completion authority must also differ
 from every participant-authorization issuer. Issuer and authority key ids
 contain only `A-Za-z0-9._:-` and are limited to 128 bytes; whitespace, controls,
-and non-ASCII lookalikes are rejected. The control-key decoder additionally
-rejects duplicate key ids and duplicate public keys.
+and non-ASCII lookalikes are rejected. All three JSON key-ring decoders reject
+duplicate JSON members/key ids, repeated decoded key material, non-string
+values, and trailing JSON.
 
 The local PostgreSQL and Nakama configuration secrets are restricted to
 `A-Za-z0-9._~-`; this prevents YAML/DSN injection in the ephemeral mode-0600
@@ -73,7 +77,14 @@ use only the active key. Restored sessions keep the authority id embedded in
 their authenticated snapshot, so rotation never silently re-signs historical
 state. Add the new key, switch the active id and seed, then remove the retiring
 key only after every snapshot and pending signed-control response using it has
-been retired and archived. Omitting the ring preserves singleton P0 behavior.
+been retired and archived. A lingering snapshot signed by a removed key fails
+closed rather than being silently re-signed.
+
+The canonical Compose profile requires and injects the ring; it never enables
+a singleton fallback. `TRNM_NAKAMA_DEV_ALLOW_SINGLETON_AUTHORITY_KEY=true`
+permits a direct-runtime singleton only for an isolated dev/test harness that
+has no rotation or historical-restore claim. Do not set that escape hatch in a
+deployment or release gate.
 
 Publish the authority public-key mapping through a separately versioned and
 pinned deployment registry. The `authority_public_key_base64` returned with

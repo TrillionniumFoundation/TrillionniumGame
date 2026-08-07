@@ -23,6 +23,7 @@ const (
 	envAuthorityKeyID     = "TRNM_NAKAMA_AUTHORITY_KEY_ID"
 	envAuthorityPrivate   = "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY"
 	envAuthorityKeyRing   = "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS"
+	envDevAllowSingleton  = "TRNM_NAKAMA_DEV_ALLOW_SINGLETON_AUTHORITY_KEY"
 	envOperatorToken      = "TRNM_NAKAMA_OPERATOR_TOKEN"
 	envMatchTickRate      = "TRNM_NAKAMA_MATCH_TICK_RATE"
 	envHeptaBaseURL       = "TRNM_HEPTA_BASE_URL"
@@ -51,28 +52,10 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 
 	if raw := strings.TrimSpace(env[envIssuerKeys]); raw == "" {
 		cfg.errors = append(cfg.errors, envIssuerKeys+" is required")
+	} else if keys, err := decodePublicKeyRing(raw); err != nil {
+		cfg.errors = append(cfg.errors, envIssuerKeys+": "+err.Error())
 	} else {
-		var encoded map[string]string
-		if err := json.Unmarshal([]byte(raw), &encoded); err != nil {
-			cfg.errors = append(cfg.errors, envIssuerKeys+": invalid JSON object")
-		} else if len(encoded) == 0 {
-			cfg.errors = append(cfg.errors, envIssuerKeys+": at least one issuer key is required")
-		} else {
-			cfg.issuerKeys = make(map[string]ed25519.PublicKey, len(encoded))
-			for rawKeyID, value := range encoded {
-				keyID := strings.TrimSpace(rawKeyID)
-				if keyID == "" || keyID != rawKeyID || !validConfigKeyID(keyID) {
-					cfg.errors = append(cfg.errors, envIssuerKeys+": key ids must contain 1 through 128 ASCII characters from A-Za-z0-9._:-")
-					continue
-				}
-				key, err := decodeKey(value)
-				if err != nil || len(key) != ed25519.PublicKeySize {
-					cfg.errors = append(cfg.errors, fmt.Sprintf("%s: key %q must contain a 32-byte Ed25519 public key", envIssuerKeys, keyID))
-					continue
-				}
-				cfg.issuerKeys[keyID] = ed25519.PublicKey(append([]byte(nil), key...))
-			}
-		}
+		cfg.issuerKeys = keys
 	}
 	if raw := strings.TrimSpace(env[envControlIssuerKeys]); raw == "" {
 		cfg.errors = append(cfg.errors, envControlIssuerKeys+" is required")
@@ -100,25 +83,23 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 	} else {
 		cfg.authorityPrivateKey = key
 	}
-	if raw := strings.TrimSpace(env[envAuthorityKeyRing]); raw != "" {
-		var encoded map[string]string
-		if err := json.Unmarshal([]byte(raw), &encoded); err != nil || len(encoded) == 0 {
-			cfg.errors = append(cfg.errors, envAuthorityKeyRing+": invalid or empty JSON object")
+	rawAuthorityKeyRing := strings.TrimSpace(env[envAuthorityKeyRing])
+	if rawAuthorityKeyRing != "" {
+		if keys, err := decodePrivateKeyRing(rawAuthorityKeyRing); err != nil {
+			cfg.errors = append(cfg.errors, envAuthorityKeyRing+": "+err.Error())
 		} else {
-			cfg.authorityPrivateKeys = make(map[string]ed25519.PrivateKey, len(encoded))
-			for rawKeyID, value := range encoded {
-				keyID := strings.TrimSpace(rawKeyID)
-				key, err := decodePrivateKey(value)
-				if keyID == "" || keyID != rawKeyID || !validConfigKeyID(keyID) || err != nil {
-					cfg.errors = append(cfg.errors, envAuthorityKeyRing+": every entry requires a canonical key id and 32-byte Ed25519 seed")
-					continue
-				}
-				cfg.authorityPrivateKeys[keyID] = key
-			}
+			cfg.authorityPrivateKeys = keys
 		}
 	}
-	if cfg.authorityPrivateKeys == nil && len(cfg.authorityPrivateKey) == ed25519.PrivateKeySize {
+	allowSingleton := env[envDevAllowSingleton] == "true"
+	if env[envDevAllowSingleton] != "" && !allowSingleton {
+		cfg.errors = append(cfg.errors, envDevAllowSingleton+" must be exactly true when the isolated dev/test fallback is used")
+	}
+	if rawAuthorityKeyRing == "" && allowSingleton && len(cfg.authorityPrivateKey) == ed25519.PrivateKeySize {
 		cfg.authorityPrivateKeys = map[string]ed25519.PrivateKey{cfg.authorityKeyID: append(ed25519.PrivateKey(nil), cfg.authorityPrivateKey...)}
+	}
+	if rawAuthorityKeyRing == "" && !allowSingleton {
+		cfg.errors = append(cfg.errors, envAuthorityKeyRing+" is required; singleton fallback is limited to isolated dev/test with "+envDevAllowSingleton+"=true")
 	}
 	if ringActive := cfg.authorityPrivateKeys[cfg.authorityKeyID]; len(ringActive) != ed25519.PrivateKeySize {
 		cfg.errors = append(cfg.errors, envAuthorityKeyRing+" must contain the active "+envAuthorityKeyID)
@@ -185,6 +166,10 @@ func loadModuleConfig(env map[string]string) moduleConfig {
 }
 
 func decodeControlIssuerKeys(raw string) (map[string]ed25519.PublicKey, error) {
+	return decodePublicKeyRing(raw)
+}
+
+func decodePublicKeyRing(raw string) (map[string]ed25519.PublicKey, error) {
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	opening, err := decoder.Token()
 	if err != nil || opening != json.Delim('{') {
@@ -227,7 +212,55 @@ func decodeControlIssuerKeys(raw string) (map[string]ed25519.PublicKey, error) {
 		return nil, errors.New("trailing JSON value is forbidden")
 	}
 	if len(keys) == 0 {
-		return nil, errors.New("at least one control issuer key is required")
+		return nil, errors.New("at least one key is required")
+	}
+	return keys, nil
+}
+
+func decodePrivateKeyRing(raw string) (map[string]ed25519.PrivateKey, error) {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return nil, errors.New("must be a JSON object")
+	}
+	keys := map[string]ed25519.PrivateKey{}
+	seenPrivate := map[string]string{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, errors.New("invalid JSON object")
+		}
+		keyID, ok := token.(string)
+		if !ok || !validConfigKeyID(keyID) {
+			return nil, errors.New("key ids must contain 1 through 128 ASCII characters from A-Za-z0-9._:-")
+		}
+		if _, duplicate := keys[keyID]; duplicate {
+			return nil, fmt.Errorf("duplicate key id %q", keyID)
+		}
+		var encoded string
+		if err := decoder.Decode(&encoded); err != nil {
+			return nil, fmt.Errorf("key %q must be a string containing a 32-byte Ed25519 seed or 64-byte private key", keyID)
+		}
+		key, err := decodePrivateKey(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("key %q %s", keyID, err.Error())
+		}
+		fingerprint := hex.EncodeToString(key)
+		if existing, duplicate := seenPrivate[fingerprint]; duplicate {
+			return nil, fmt.Errorf("keys %q and %q reuse one private key", existing, keyID)
+		}
+		seenPrivate[fingerprint] = keyID
+		keys[keyID] = append(ed25519.PrivateKey(nil), key...)
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') {
+		return nil, errors.New("invalid JSON object")
+	}
+	if token, err := decoder.Token(); err != io.EOF || token != nil {
+		return nil, errors.New("trailing JSON value is forbidden")
+	}
+	if len(keys) == 0 {
+		return nil, errors.New("at least one key is required")
 	}
 	return keys, nil
 }

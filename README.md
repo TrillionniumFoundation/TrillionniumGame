@@ -34,7 +34,9 @@ authority. See
 Authority signing supports an additive overlap key ring: new sessions use the
 configured active key while resumable snapshots remain bound to their original
 key until drained, enabling fail-closed online key rotation without rewriting
-historical evidence.
+historical evidence. Canonical Compose requires and injects that ring; the
+singleton compatibility path is available only through an explicit isolated
+dev/test opt-in and is not a deployment contract.
 
 ## Start work
 

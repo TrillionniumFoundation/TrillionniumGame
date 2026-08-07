@@ -432,6 +432,8 @@ function assertEnvironmentScope(phase) {
     "TRNM_HEPTA_ISSUER_KEYS",
     "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY",
     "TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS",
+    "TRNM_BLACKBOX_AUTHORITY_K0_PRIVATE_SEED",
+    "TRNM_BLACKBOX_AUTHORITY_K1_PRIVATE_SEED",
     "NAKAMA_SESSION_ENCRYPTION_KEY",
     "NAKAMA_SESSION_REFRESH_ENCRYPTION_KEY",
     "NAKAMA_CONSOLE_PASSWORD",
@@ -451,7 +453,7 @@ function assertEnvironmentScope(phase) {
       assert(process.env[name] === undefined, `health phase unexpectedly inherited ${name}`);
     }
   }
-  if (phase === "resume") {
+  if (phase === "resume" || phase === "retired-key-rejected") {
     for (const name of [
       "TRNM_HEPTA_ISSUER_KEY_ID",
       "TRNM_HEPTA_ISSUER_PRIVATE_SEED",
@@ -461,8 +463,19 @@ function assertEnvironmentScope(phase) {
       "TRNM_BLACKBOX_CUSTOM_ID_ONE",
       "TRNM_BLACKBOX_CUSTOM_ID_TWO",
       "TRNM_BLACKBOX_LOGICAL_MATCH_ID",
+      "TRNM_NAKAMA_AUTHORITY_KEY_ID",
+      "TRNM_NAKAMA_AUTHORITY_PUBLIC_KEY",
     ]) {
-      assert(process.env[name] === undefined, `resume phase unexpectedly inherited ${name}`);
+      assert(process.env[name] === undefined, `${phase} phase unexpectedly inherited ${name}`);
+    }
+  }
+  if (phase === "retired-key-rejected") {
+    for (const name of [
+      "TRNM_AGENT_TWO_PRIVATE_SEED",
+      "TRNM_BLACKBOX_EXPECTED_AUTHORITY_KEY_ID",
+      "TRNM_BLACKBOX_EXPECTED_AUTHORITY_PUBLIC_KEY",
+    ]) {
+      assert(process.env[name] === undefined, `retired-key phase unexpectedly inherited ${name}`);
     }
   }
 }
@@ -540,7 +553,7 @@ async function runPrepare(client, runtimeHttpKey, stateFile) {
     const common = immutableHashes();
     const claims = players.map((player, index) => ({
       schema: "trnm.match.authorization.v1",
-      authorization_id: `blackbox-auth-${index + 1}`,
+      authorization_id: `${logicalMatchID}-auth-${index + 1}`,
       match_id: logicalMatchID,
       challenge_id: challengeID,
       agent_id: `blackbox-agent-${index + 1}`,
@@ -737,6 +750,8 @@ async function runPrepare(client, runtimeHttpKey, stateFile) {
 async function runResume(client, runtimeHttpKey, stateFile) {
   const operatorToken = required("TRNM_NAKAMA_OPERATOR_TOKEN");
   const agentTwoKey = privateKeyFromSeed(required("TRNM_AGENT_TWO_PRIVATE_SEED"));
+  const expectedAuthorityKeyID = required("TRNM_BLACKBOX_EXPECTED_AUTHORITY_KEY_ID");
+  const expectedAuthorityPublicKey = required("TRNM_BLACKBOX_EXPECTED_AUTHORITY_PUBLIC_KEY");
   const state = JSON.parse(readFileSync(stateFile, "utf8"));
   assert(state.schema === "trnm.nakama.blackbox-state.v1", "black-box state schema mismatch");
   const players = await Promise.all(state.custom_ids.map((id) => authenticatedPlayer(client, id)));
@@ -915,7 +930,7 @@ async function runResume(client, runtimeHttpKey, stateFile) {
     assert(completion.event_count === 5, "exact replay changed the persisted event count");
     assert(completion.match_id === state.logical_match_id, "completion logical match mismatch");
     assert(equalJSON(completion.terminal_facts, completeRequest.facts), "signed completion terminal facts mismatch");
-    assert(completion.authority_key_id === required("TRNM_NAKAMA_AUTHORITY_KEY_ID"), "completion authority key ID mismatch");
+    assert(completion.authority_key_id === expectedAuthorityKeyID, "completion authority key ID mismatch");
     assert(
       completion.commitment_id === commitmentID(completion.match_id, completion.event_root, completion.archive_hash),
       "independent Node verifier rejected the commitment ID",
@@ -965,7 +980,7 @@ async function runResume(client, runtimeHttpKey, stateFile) {
     assertThrows(() => verifyArchive(tamperedEvents, archive.roster, state.logical_match_id), "tampered archive");
 
     const authorityRaw = completionOne.payload.authority_public_key_base64;
-    assert(authorityRaw === required("TRNM_NAKAMA_AUTHORITY_PUBLIC_KEY"), "runtime exposed an unexpected authority public key");
+    assert(authorityRaw === expectedAuthorityPublicKey, "runtime exposed an unexpected authority public key");
     const authorityKey = publicKeyFromRaw(authorityRaw);
     const signature = Buffer.from(completion.signature, "base64");
     assert(signature.length === 64, "completion signature does not contain 64 bytes");
@@ -1000,12 +1015,37 @@ async function runResume(client, runtimeHttpKey, stateFile) {
         completed_runtime_terminated: true,
         broadcast_scopes_verified: true,
         authority_signature_verified: true,
+        authority_key_id: completion.authority_key_id,
         commitment_id: completion.commitment_id,
       }) + "\n",
     );
   } finally {
     await disconnectPlayers(players);
   }
+}
+
+async function runRetiredKeyRejected(client, runtimeHttpKey, stateFile) {
+  const operatorToken = required("TRNM_NAKAMA_OPERATOR_TOKEN");
+  const state = JSON.parse(readFileSync(stateFile, "utf8"));
+  assert(state.schema === "trnm.nakama.blackbox-state.v1", "black-box state schema mismatch");
+  let rejected = false;
+  try {
+    await rpcHttpKey(client, runtimeHttpKey, "trnm_match_resume_v1", {
+      schema: "trnm.nakama.resume-match.v1",
+      operator_token: operatorToken,
+      logical_match_id: state.logical_match_id,
+    });
+  } catch (error) {
+    rejected = /stored match snapshot failed verification/.test(String(error));
+  }
+  assert(rejected, "snapshot signed by the removed authority key was accepted");
+  process.stdout.write(
+    JSON.stringify({
+      phase: "retired-key-rejected",
+      logical_match_id: state.logical_match_id,
+      removed_authority_failed_closed: true,
+    }) + "\n",
+  );
 }
 
 const host = process.env.NAKAMA_HOST || "127.0.0.1";
@@ -1025,6 +1065,9 @@ switch (phase) {
     break;
   case "resume":
     await runResume(client, runtimeHttpKey, required("TRNM_BLACKBOX_STATE_FILE"));
+    break;
+  case "retired-key-rejected":
+    await runRetiredKeyRejected(client, runtimeHttpKey, required("TRNM_BLACKBOX_STATE_FILE"));
     break;
   default:
     throw new Error(`unsupported BLACKBOX_PHASE: ${phase}`);

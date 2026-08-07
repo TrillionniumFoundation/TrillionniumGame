@@ -25,7 +25,8 @@ fi
 
 tmp=$(mktemp -d)
 env_file="$tmp/compose.env"
-state_file="$tmp/blackbox-state.json"
+state_file_k0="$tmp/blackbox-state-k0.json"
+state_file_k1="$tmp/blackbox-state-k1.json"
 negative_log="$tmp/missing-secrets.log"
 client_dir="$tmp/client"
 mkdir -p "$client_dir"
@@ -89,13 +90,16 @@ const keyPair = () => {
 };
 const issuer = keyPair();
 const controlIssuer = keyPair();
-const authority = keyPair();
+const authorityK0 = keyPair();
+const authorityK1 = keyPair();
 const agentOne = keyPair();
 const agentTwo = keyPair();
 const suffix = `${process.pid}-${randomBytes(4).toString("hex")}`;
 const random = () => randomBytes(32).toString("hex");
 const issuerKeys = JSON.stringify({ "blackbox-hepta-v1": issuer.publicKey });
 const controlIssuerKeys = JSON.stringify({ "blackbox-hepta-control-v2": controlIssuer.publicKey });
+const authorityK0ID = "blackbox-nakama-k0";
+const authorityK1ID = "blackbox-nakama-k1";
 
 const lines = [
   `TRNM_NAKAMA_COMPOSE_PROJECT=trnm-nakama-p0-${suffix}`,
@@ -118,10 +122,15 @@ const lines = [
   `TRNM_HEPTA_SERVICE_TOKEN=${random()}`,
   "TRNM_HEPTA_ISSUER_KEY_ID=blackbox-hepta-v1",
   `TRNM_HEPTA_ISSUER_PRIVATE_SEED=${issuer.privateSeed}`,
-  "TRNM_NAKAMA_AUTHORITY_KEY_ID=blackbox-nakama-v1",
-  `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY=${authority.privateSeed}`,
-  `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS='${JSON.stringify({ "blackbox-nakama-v1": authority.privateSeed })}'`,
-  `TRNM_NAKAMA_AUTHORITY_PUBLIC_KEY=${authority.publicKey}`,
+  `TRNM_NAKAMA_AUTHORITY_KEY_ID=${authorityK0ID}`,
+  `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY=${authorityK0.privateSeed}`,
+  `TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS='${JSON.stringify({ [authorityK0ID]: authorityK0.privateSeed })}'`,
+  `TRNM_BLACKBOX_AUTHORITY_K0_KEY_ID=${authorityK0ID}`,
+  `TRNM_BLACKBOX_AUTHORITY_K0_PRIVATE_SEED=${authorityK0.privateSeed}`,
+  `TRNM_BLACKBOX_AUTHORITY_K0_PUBLIC_KEY=${authorityK0.publicKey}`,
+  `TRNM_BLACKBOX_AUTHORITY_K1_KEY_ID=${authorityK1ID}`,
+  `TRNM_BLACKBOX_AUTHORITY_K1_PRIVATE_SEED=${authorityK1.privateSeed}`,
+  `TRNM_BLACKBOX_AUTHORITY_K1_PUBLIC_KEY=${authorityK1.publicKey}`,
   `TRNM_NAKAMA_OPERATOR_TOKEN=${random()}`,
   `TRNM_AGENT_ONE_PRIVATE_SEED=${agentOne.privateSeed}`,
   `TRNM_AGENT_ONE_PUBLIC_KEY=${agentOne.publicKey}`,
@@ -129,7 +138,8 @@ const lines = [
   `TRNM_AGENT_TWO_PUBLIC_KEY=${agentTwo.publicKey}`,
   `TRNM_BLACKBOX_CUSTOM_ID_ONE=trnm-blackbox-a-${suffix}`,
   `TRNM_BLACKBOX_CUSTOM_ID_TWO=trnm-blackbox-b-${suffix}`,
-  `TRNM_BLACKBOX_LOGICAL_MATCH_ID=blackbox-match-${suffix}`,
+  `TRNM_BLACKBOX_LOGICAL_MATCH_ID_K0=blackbox-match-k0-${suffix}`,
+  `TRNM_BLACKBOX_LOGICAL_MATCH_ID_K1=blackbox-match-k1-${suffix}`,
   "TRNM_NAKAMA_MATCH_TICK_RATE=5",
   "",
 ];
@@ -154,6 +164,59 @@ if [[ "${docker_cmd[0]}" == "sudo" ]]; then
 else
   compose=("${docker_cmd[@]}" compose --env-file "$env_file" -f "$root/compose.yaml")
 fi
+
+set_authority_phase() {
+  local phase=$1
+  node - "$env_file" "$phase" <<'NODE'
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+
+const [envFile, phase] = process.argv.slice(2);
+const lines = readFileSync(envFile, "utf8").trimEnd().split("\n");
+const values = new Map();
+for (const line of lines) {
+  const separator = line.indexOf("=");
+  if (separator > 0) values.set(line.slice(0, separator), line.slice(separator + 1));
+}
+const raw = (name) => {
+  const value = values.get(name);
+  if (!value) throw new Error(`missing rotation fixture ${name}`);
+  return value.startsWith("'") && value.endsWith("'") ? value.slice(1, -1) : value;
+};
+const k0 = {
+  id: raw("TRNM_BLACKBOX_AUTHORITY_K0_KEY_ID"),
+  seed: raw("TRNM_BLACKBOX_AUTHORITY_K0_PRIVATE_SEED"),
+};
+const k1 = {
+  id: raw("TRNM_BLACKBOX_AUTHORITY_K1_KEY_ID"),
+  seed: raw("TRNM_BLACKBOX_AUTHORITY_K1_PRIVATE_SEED"),
+};
+let ring;
+if (phase === "overlap-active-k1") {
+  ring = { [k0.id]: k0.seed, [k1.id]: k1.seed };
+} else if (phase === "k1-only") {
+  ring = { [k1.id]: k1.seed };
+} else {
+  throw new Error(`unsupported authority phase ${phase}`);
+}
+const updates = new Map([
+  ["TRNM_NAKAMA_AUTHORITY_KEY_ID", k1.id],
+  ["TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY", k1.seed],
+  ["TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS", `'${JSON.stringify(ring)}'`],
+]);
+const seen = new Set();
+const rewritten = lines.map((line) => {
+  const separator = line.indexOf("=");
+  const name = separator > 0 ? line.slice(0, separator) : "";
+  if (!updates.has(name)) return line;
+  seen.add(name);
+  return `${name}=${updates.get(name)}`;
+});
+if (seen.size !== updates.size) throw new Error("authority phase could not update every runtime variable");
+writeFileSync(envFile, rewritten.join("\n") + "\n", { mode: 0o600 });
+chmodSync(envFile, 0o600);
+NODE
+}
+
 rendered_compose="$tmp/compose.json"
 "${compose[@]}" config --format json >"$rendered_compose"
 rendered_http_port=$(python3 - "$rendered_compose" <<'PY'
@@ -161,6 +224,15 @@ import json
 import sys
 
 model = json.load(open(sys.argv[1], encoding="utf-8"))
+environment = model["services"]["nakama"].get("environment", {})
+active_id = environment.get("TRNM_NAKAMA_AUTHORITY_KEY_ID")
+active_private = environment.get("TRNM_NAKAMA_AUTHORITY_PRIVATE_KEY")
+private_ring_raw = environment.get("TRNM_NAKAMA_AUTHORITY_PRIVATE_KEYS")
+if not active_id or not active_private or not private_ring_raw:
+    raise SystemExit("canonical Compose did not inject the complete Nakama authority ring")
+private_ring = json.loads(private_ring_raw)
+if private_ring.get(active_id) != active_private:
+    raise SystemExit("rendered Nakama authority ring does not byte-match its active singleton")
 ports = model["services"]["nakama"].get("ports", [])
 if len(ports) != 1:
     raise SystemExit("expected exactly one rendered Nakama port")
@@ -260,6 +332,9 @@ npm ci --prefix "$client_dir" --ignore-scripts --no-audit --no-fund >/dev/null
 run_blackbox() {
   local phase=$1
   local expected=${2:-true}
+  local state_path=${3:-$state_file_k0}
+  local authority_slot=${4:-k0}
+  local logical_slot=${5:-$authority_slot}
   (
     # The file is generated above from random bytes and is never supplied by a
     # caller. Source it as shell variables, then export only the credentials
@@ -279,7 +354,29 @@ run_blackbox() {
     NAKAMA_PORT="$nakama_port"
     EXPECT_READY="$expected"
     BLACKBOX_PHASE="$phase"
-    TRNM_BLACKBOX_STATE_FILE="$state_file"
+    TRNM_BLACKBOX_STATE_FILE="$state_path"
+    case "$authority_slot" in
+      k0)
+        TRNM_BLACKBOX_EXPECTED_AUTHORITY_KEY_ID="$TRNM_BLACKBOX_AUTHORITY_K0_KEY_ID"
+        TRNM_BLACKBOX_EXPECTED_AUTHORITY_PUBLIC_KEY="$TRNM_BLACKBOX_AUTHORITY_K0_PUBLIC_KEY"
+        ;;
+      k1)
+        TRNM_BLACKBOX_EXPECTED_AUTHORITY_KEY_ID="$TRNM_BLACKBOX_AUTHORITY_K1_KEY_ID"
+        TRNM_BLACKBOX_EXPECTED_AUTHORITY_PUBLIC_KEY="$TRNM_BLACKBOX_AUTHORITY_K1_PUBLIC_KEY"
+        ;;
+      *)
+        echo "ERROR: unknown authority fixture slot: $authority_slot" >&2
+        exit 64
+        ;;
+    esac
+    case "$logical_slot" in
+      k0) TRNM_BLACKBOX_LOGICAL_MATCH_ID="$TRNM_BLACKBOX_LOGICAL_MATCH_ID_K0" ;;
+      k1) TRNM_BLACKBOX_LOGICAL_MATCH_ID="$TRNM_BLACKBOX_LOGICAL_MATCH_ID_K1" ;;
+      *)
+        echo "ERROR: unknown logical-match fixture slot: $logical_slot" >&2
+        exit 64
+        ;;
+    esac
     export PATH HOME NAKAMA_HOST NAKAMA_PORT EXPECT_READY BLACKBOX_PHASE
     export NAKAMA_SERVER_KEY NAKAMA_RUNTIME_HTTP_KEY
 
@@ -297,7 +394,10 @@ run_blackbox() {
       resume)
         export TRNM_BLACKBOX_STATE_FILE TRNM_NAKAMA_OPERATOR_TOKEN
         export TRNM_AGENT_TWO_PRIVATE_SEED
-        export TRNM_NAKAMA_AUTHORITY_KEY_ID TRNM_NAKAMA_AUTHORITY_PUBLIC_KEY
+        export TRNM_BLACKBOX_EXPECTED_AUTHORITY_KEY_ID TRNM_BLACKBOX_EXPECTED_AUTHORITY_PUBLIC_KEY
+        ;;
+      retired-key-rejected)
+        export TRNM_BLACKBOX_STATE_FILE TRNM_NAKAMA_OPERATOR_TOKEN
         ;;
       *)
         echo "ERROR: unknown black-box phase: $phase" >&2
@@ -309,40 +409,31 @@ run_blackbox() {
   )
 }
 
-ready_output=""
-for _ in $(seq 1 30); do
-  if ready_output=$(run_blackbox health true 2>&1); then
-    printf '%s\n' "$ready_output"
-    break
+wait_for_runtime_ready() {
+  local label=$1
+  local ready_output=""
+  for _ in $(seq 1 45); do
+    if ready_output=$(run_blackbox health true 2>&1); then
+      break
+    fi
+    sleep 1
+  done
+  if [[ -z "$ready_output" ]] || ! printf '%s\n' "$ready_output" | rg '"ready":true' >/dev/null; then
+    echo "ERROR: $label did not become ready" >&2
+    printf '%s\n' "$ready_output" >&2
+    "${compose[@]}" logs --no-color --tail=200 >&2 || true
+    exit 1
   fi
-  sleep 1
-done
-if [[ -z "$ready_output" ]] || ! printf '%s\n' "$ready_output" | rg '"ready":true' >/dev/null; then
-  echo "ERROR: runtime did not become ready" >&2
-  printf '%s\n' "$ready_output" >&2
-  "${compose[@]}" logs --no-color --tail=160 >&2 || true
-  exit 1
-fi
-
-# Exercise the actual v3.40.0 HTTP and realtime interfaces. The Node client
-# independently implements the language-neutral Ed25519 framing and carries no
-# Go runtime code.
-prepare_output=$(run_blackbox prepare 2>&1) || {
-  echo "ERROR: authoritative prepare-phase black box failed" >&2
-  printf '%s\n' "$prepare_output" >&2
-  "${compose[@]}" logs --no-color --tail=200 >&2 || true
-  exit 1
+  printf '%s\n' "$ready_output"
 }
-printf '%s\n' "$prepare_output"
-if ! printf '%s\n' "$prepare_output" | rg '"phase":"prepare".*"exact_replay":true.*"tamper_rejected":true.*"out_of_order_rejected":true.*"broadcast_scopes_verified":true' >/dev/null; then
-  echo "ERROR: prepare phase did not report all authoritative assertions" >&2
-  exit 1
-fi
-if [[ ! -f "$state_file" || "$(stat -c '%a' "$state_file")" != "600" ]]; then
-  echo "ERROR: black-box resume state is absent or not mode 0600" >&2
-  exit 1
-fi
-python3 - "$state_file" <<'PY'
+
+audit_state_file() {
+  local candidate=$1
+  if [[ ! -f "$candidate" || "$(stat -c '%a' "$candidate")" != "600" ]]; then
+    echo "ERROR: black-box resume state is absent or not mode 0600: $candidate" >&2
+    exit 1
+  fi
+  python3 - "$candidate" <<'PY'
 import json
 import sys
 
@@ -363,9 +454,29 @@ def inspect(value, path="state"):
 inspect(state)
 print("black-box resume state secret audit: ok")
 PY
+}
+
+wait_for_runtime_ready "initial K0 runtime"
+
+# Exercise the actual v3.40.0 HTTP and realtime interfaces. The Node client
+# independently implements the language-neutral Ed25519 framing and carries no
+# Go runtime code.
+prepare_output=$(run_blackbox prepare true "$state_file_k0" k0 k0 2>&1) || {
+  echo "ERROR: authoritative prepare-phase black box failed" >&2
+  printf '%s\n' "$prepare_output" >&2
+  "${compose[@]}" logs --no-color --tail=200 >&2 || true
+  exit 1
+}
+printf '%s\n' "$prepare_output"
+if ! printf '%s\n' "$prepare_output" | rg '"phase":"prepare".*"exact_replay":true.*"tamper_rejected":true.*"out_of_order_rejected":true.*"broadcast_scopes_verified":true' >/dev/null; then
+  echo "ERROR: prepare phase did not report all authoritative assertions" >&2
+  exit 1
+fi
+audit_state_file "$state_file_k0"
 
 # Hard-kill only Nakama. PostgreSQL and its named volume must survive so the
-# next process can prove durable logical-match recovery and idempotency.
+# next process can prove durable logical-match recovery and idempotency. Before
+# restart, add K1, make it active, and retain K0 for historical snapshots.
 postgres_before=$postgres_id
 "${docker_cmd[@]}" kill --signal KILL "$nakama_id" >/dev/null
 if [[ "$("${docker_cmd[@]}" inspect -f '{{.State.ExitCode}}' "$nakama_id")" != "137" ]]; then
@@ -376,36 +487,82 @@ if [[ "$("${docker_cmd[@]}" inspect -f '{{.State.Running}}' "$postgres_before")"
   echo "ERROR: PostgreSQL stopped during the Nakama crash test" >&2
   exit 1
 fi
+set_authority_phase overlap-active-k1
 "${compose[@]}" up -d --no-deps nakama >/dev/null
 nakama_id=$("${compose[@]}" ps -q nakama)
 if [[ "$("${compose[@]}" ps -q postgres)" != "$postgres_before" ]]; then
   echo "ERROR: PostgreSQL was recreated during the Nakama-only restart" >&2
   exit 1
 fi
+wait_for_runtime_ready "K0/K1 overlap runtime with active K1"
 
-ready_output=""
-for _ in $(seq 1 45); do
-  if ready_output=$(run_blackbox health true 2>&1); then
-    break
-  fi
-  sleep 1
-done
-if [[ -z "$ready_output" ]] || ! printf '%s\n' "$ready_output" | rg '"ready":true' >/dev/null; then
-  echo "ERROR: restarted Nakama runtime did not become ready" >&2
-  printf '%s\n' "$ready_output" >&2
-  "${compose[@]}" logs --no-color --tail=200 >&2 || true
-  exit 1
-fi
-
-resume_output=$(run_blackbox resume 2>&1) || {
-  echo "ERROR: authoritative crash-resume black box failed" >&2
-  printf '%s\n' "$resume_output" >&2
+historical_resume_output=$(run_blackbox resume true "$state_file_k0" k0 k0 2>&1) || {
+  echo "ERROR: K0 historical crash-resume failed during K0/K1 overlap" >&2
+  printf '%s\n' "$historical_resume_output" >&2
   "${compose[@]}" logs --no-color --tail=240 >&2 || true
   exit 1
 }
-printf '%s\n' "$resume_output"
-if ! printf '%s\n' "$resume_output" | rg '"phase":"resume".*"post_crash_replay_exact":true.*"event_count":5.*"evidence_byte_identical":true.*"conflicting_completion_rejected":true.*"completed_runtime_terminated":true.*"broadcast_scopes_verified":true.*"authority_signature_verified":true' >/dev/null; then
-  echo "ERROR: resume phase did not report all durability/evidence assertions" >&2
+printf '%s\n' "$historical_resume_output"
+if ! printf '%s\n' "$historical_resume_output" | rg '"phase":"resume".*"post_crash_replay_exact":true.*"event_count":5.*"evidence_byte_identical":true.*"conflicting_completion_rejected":true.*"completed_runtime_terminated":true.*"broadcast_scopes_verified":true.*"authority_signature_verified":true.*"authority_key_id":"blackbox-nakama-k0"' >/dev/null; then
+  echo "ERROR: historical K0 resume did not retain and verify its original authority" >&2
+  exit 1
+fi
+
+# A session created after the active switch must be signed by K1. Persist it,
+# kill Nakama again, then remove K0 before the next process starts.
+rotated_prepare_output=$(run_blackbox prepare true "$state_file_k1" k1 k1 2>&1) || {
+  echo "ERROR: active-K1 authoritative prepare phase failed" >&2
+  printf '%s\n' "$rotated_prepare_output" >&2
+  "${compose[@]}" logs --no-color --tail=240 >&2 || true
+  exit 1
+}
+printf '%s\n' "$rotated_prepare_output"
+if ! printf '%s\n' "$rotated_prepare_output" | rg '"phase":"prepare".*"exact_replay":true.*"tamper_rejected":true.*"out_of_order_rejected":true.*"broadcast_scopes_verified":true' >/dev/null; then
+  echo "ERROR: active-K1 prepare phase did not report all authoritative assertions" >&2
+  exit 1
+fi
+audit_state_file "$state_file_k1"
+
+postgres_before=$postgres_id
+"${docker_cmd[@]}" kill --signal KILL "$nakama_id" >/dev/null
+if [[ "$("${docker_cmd[@]}" inspect -f '{{.State.ExitCode}}' "$nakama_id")" != "137" ]]; then
+  echo "ERROR: Nakama did not record SIGKILL before K0 retirement" >&2
+  exit 1
+fi
+if [[ "$("${docker_cmd[@]}" inspect -f '{{.State.Running}}' "$postgres_before")" != "true" ]]; then
+  echo "ERROR: PostgreSQL stopped before the K0 retirement test" >&2
+  exit 1
+fi
+set_authority_phase k1-only
+"${compose[@]}" up -d --no-deps nakama >/dev/null
+nakama_id=$("${compose[@]}" ps -q nakama)
+if [[ "$("${compose[@]}" ps -q postgres)" != "$postgres_before" ]]; then
+  echo "ERROR: PostgreSQL was recreated during the K0 retirement restart" >&2
+  exit 1
+fi
+wait_for_runtime_ready "K1-only runtime"
+
+retired_output=$(run_blackbox retired-key-rejected true "$state_file_k0" k0 k0 2>&1) || {
+  echo "ERROR: removed-K0 fail-closed black box failed" >&2
+  printf '%s\n' "$retired_output" >&2
+  "${compose[@]}" logs --no-color --tail=240 >&2 || true
+  exit 1
+}
+printf '%s\n' "$retired_output"
+if ! printf '%s\n' "$retired_output" | rg '"phase":"retired-key-rejected".*"removed_authority_failed_closed":true' >/dev/null; then
+  echo "ERROR: K0 snapshot was not proven fail-closed after K0 removal" >&2
+  exit 1
+fi
+
+active_resume_output=$(run_blackbox resume true "$state_file_k1" k1 k1 2>&1) || {
+  echo "ERROR: active K1 crash-resume black box failed after K0 removal" >&2
+  printf '%s\n' "$active_resume_output" >&2
+  "${compose[@]}" logs --no-color --tail=240 >&2 || true
+  exit 1
+}
+printf '%s\n' "$active_resume_output"
+if ! printf '%s\n' "$active_resume_output" | rg '"phase":"resume".*"post_crash_replay_exact":true.*"event_count":5.*"evidence_byte_identical":true.*"conflicting_completion_rejected":true.*"completed_runtime_terminated":true.*"broadcast_scopes_verified":true.*"authority_signature_verified":true.*"authority_key_id":"blackbox-nakama-k1"' >/dev/null; then
+  echo "ERROR: active K1 resume did not retain and verify K1 after K0 removal" >&2
   exit 1
 fi
 
@@ -431,4 +588,4 @@ if [[ "$("${docker_cmd[@]}" inspect -f '{{.State.Health.Status}}' "$nakama_id")"
   exit 1
 fi
 
-echo "Nakama Compose smoke: PASS"
+echo "Nakama Compose smoke: K0 -> {K0,K1}/active K1 -> K1-only fail-closed rotation: PASS"

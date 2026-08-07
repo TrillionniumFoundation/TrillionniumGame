@@ -18,8 +18,9 @@ It runs these gates in order:
    completion retries.
 4. `check-nakama-compose-smoke.sh`: pinned plugin image build, secret fail-fast,
    isolated random-port stack, hardening inspection, plugin health/readiness,
-   a real two-user authoritative-match black box, crash/resume durability, and
-   readiness failure after database loss.
+   a real two-user authoritative-match black box, crash/resume durability,
+   live K0-to-K1 authority rotation/removal, and readiness failure after
+   database loss.
 
 The Compose gate pulls large pinned images on its first run. Set
 `TRNM_NAKAMA_SKIP_COMPOSE=1` only for an explicitly documented inner-loop run;
@@ -43,30 +44,33 @@ interfaces, rather than invoking a Go handler directly:
 3. Join both users with their bound authorization IDs. Send one valid signed
    command, replay the exact bytes, then prove that same-ID mutation and an
    out-of-order participant sequence are rejected.
-4. Send `SIGKILL` to the Nakama container only. PostgreSQL and its named volume
-   remain running. Restart Nakama, call the resume RPC, require a new external
-   match ID/runtime generation, reconnect both users, and prove the pre-crash
-   command still replays to the byte-identical event without incrementing the
-   archive.
-5. Continue the match, complete it through the operator RPC, retrieve evidence
-   repeatedly, and require byte-identical responses. A separate Node Ed25519
-   verifier reconstructs the completion framing, accepts the authority
-   signature, and rejects a tampered completion.
+4. Persist the first match under K0, send `SIGKILL` to Nakama only, restart with
+   `{K0,K1}` and active K1, then prove the K0 snapshot still resumes without
+   being re-signed.
+5. Complete the historical match, retrieve byte-identical evidence, and use an
+   independent Node verifier to accept its K0 signature and reject tampering.
+6. Create a second match under active K1, crash Nakama, remove K0, and restart
+   against the same PostgreSQL volume. The retired K0 snapshot must now fail
+   closed while the K1 snapshot resumes and completes with a valid K1
+   signature.
+7. Stop PostgreSQL and require readiness to fail while Nakama liveness remains
+   healthy.
 
 Fixture private seeds and service secrets exist only in a mode-`0600` file
-inside the gate's mode-`0700` temporary directory. The prepare/resume handoff is
-a separate mode-`0600` JSON file; the gate recursively rejects private-key,
-seed, token, password, or session fields before the crash. Cleanup removes the
-Compose project, volumes, locally built test image, dependency copy, and both
-temporary files even when an assertion fails.
+inside the gate's mode-`0700` temporary directory. Each K0/K1 prepare/resume
+handoff is a separate mode-`0600` JSON file; the gate recursively rejects
+private-key, seed, token, password, or session fields before each crash.
+Cleanup removes the Compose project, volumes, locally built test image,
+dependency copy, and temporary files even when an assertion fails.
 
 Before starting the third-party JavaScript client, the gate removes all
 inherited exported variables and builds a phase-specific allowlist. Health sees
 only Nakama's public client/RPC test keys; prepare additionally receives its
 ephemeral issuer/agent fixtures and operator token; resume receives only the
-one agent key it uses, the operator token, and the externally pinned Nakama
-authority identity. Database, session, console, and authority private keys are
-never exposed to the client process.
+one agent key it uses, the operator token, and the externally pinned expected
+Nakama authority identity. The retired-key negative phase receives only its
+state file and operator token. Database, session, console, and authority
+private keys are never exposed to the client process.
 
 The P0 gate is repository evidence, not a cross-repository release gate.
 Integration stays `blocked` / `runnable=false` until compatible immutable Chain

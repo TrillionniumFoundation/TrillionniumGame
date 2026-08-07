@@ -29,16 +29,42 @@ func validModuleConfigEnv(t *testing.T) (map[string]string, ed25519.PublicKey, e
 	controlJSON, _ := json.Marshal(map[string]string{
 		"hepta-control-test-v2": base64.StdEncoding.EncodeToString(controlPublic),
 	})
+	authorityJSON, _ := json.Marshal(map[string]string{
+		"nakama-test-v1": base64.StdEncoding.EncodeToString(authorityPrivate.Seed()),
+	})
 	return map[string]string{
 		envIssuerKeys:        string(issuerJSON),
 		envControlIssuerKeys: string(controlJSON),
 		envAuthorityKeyID:    "nakama-test-v1",
 		envAuthorityPrivate:  base64.StdEncoding.EncodeToString(authorityPrivate.Seed()),
+		envAuthorityKeyRing:  string(authorityJSON),
 		envOperatorToken:     "0123456789abcdef0123456789abcdef",
 		envMatchTickRate:     "10",
 		envHeptaBaseURL:      "http://hepta-research-league:8088",
 		envHeptaServiceToken: "abcdef0123456789abcdef0123456789",
 	}, issuerPublic, authorityPrivate
+}
+
+func TestLoadModuleConfigLimitsSingletonAuthorityFallbackToExplicitDevTest(t *testing.T) {
+	env, _, authority := validModuleConfigEnv(t)
+	delete(env, envAuthorityKeyRing)
+	if err := loadModuleConfig(env).ready(); err == nil || !strings.Contains(err.Error(), envAuthorityKeyRing+" is required") {
+		t.Fatal("production configuration accepted an implicit singleton authority fallback")
+	}
+
+	env[envDevAllowSingleton] = "false"
+	if err := loadModuleConfig(env).ready(); err == nil || !strings.Contains(err.Error(), envDevAllowSingleton+" must be exactly true") {
+		t.Fatal("noncanonical singleton fallback opt-in was accepted")
+	}
+
+	env[envDevAllowSingleton] = "true"
+	cfg := loadModuleConfig(env)
+	if err := cfg.ready(); err != nil {
+		t.Fatalf("explicit isolated dev/test singleton fallback was rejected: %v", err)
+	}
+	if len(cfg.authorityPrivateKeys) != 1 || !cfg.authorityPrivateKeys[cfg.authorityKeyID].Equal(authority) {
+		t.Fatal("explicit singleton fallback did not retain the active authority")
+	}
 }
 
 func TestLoadModuleConfigReady(t *testing.T) {
@@ -130,6 +156,49 @@ func TestLoadModuleConfigRejectsNonCanonicalIssuerKeyID(t *testing.T) {
 			cfg := loadModuleConfig(env)
 			if err := cfg.ready(); err == nil || !strings.Contains(err.Error(), envIssuerKeys) {
 				t.Fatal("noncanonical issuer key id was accepted")
+			}
+		})
+	}
+}
+
+func TestLoadModuleConfigRejectsNonStrictAuthorizationIssuerRing(t *testing.T) {
+	env, issuerPublic, _ := validModuleConfigEnv(t)
+	encoded := base64.StdEncoding.EncodeToString(issuerPublic)
+	tests := map[string]string{
+		"empty":              `{}`,
+		"duplicate JSON key": `{"hepta-test-v1":"` + encoded + `","hepta-test-v1":"` + encoded + `"}`,
+		"duplicate material": `{"hepta-test-v1":"` + encoded + `","hepta-retiring-v0":"` + encoded + `"}`,
+		"non-string value":   `{"hepta-test-v1":7}`,
+		"trailing JSON":      `{"hepta-test-v1":"` + encoded + `"} {}`,
+	}
+	for name, raw := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := mapsClone(env)
+			candidate[envIssuerKeys] = raw
+			if err := loadModuleConfig(candidate).ready(); err == nil || !strings.Contains(err.Error(), envIssuerKeys) {
+				t.Fatal("non-strict authorization issuer ring was accepted")
+			}
+		})
+	}
+}
+
+func TestLoadModuleConfigRejectsNonStrictAuthorityPrivateRing(t *testing.T) {
+	env, _, authorityPrivate := validModuleConfigEnv(t)
+	seed := base64.StdEncoding.EncodeToString(authorityPrivate.Seed())
+	full := base64.StdEncoding.EncodeToString(authorityPrivate)
+	tests := map[string]string{
+		"empty":              `{}`,
+		"duplicate JSON key": `{"nakama-test-v1":"` + seed + `","nakama-test-v1":"` + seed + `"}`,
+		"duplicate material": `{"nakama-test-v1":"` + seed + `","nakama-retiring-v0":"` + full + `"}`,
+		"non-string value":   `{"nakama-test-v1":7}`,
+		"trailing JSON":      `{"nakama-test-v1":"` + seed + `"} {}`,
+	}
+	for name, raw := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := mapsClone(env)
+			candidate[envAuthorityKeyRing] = raw
+			if err := loadModuleConfig(candidate).ready(); err == nil || !strings.Contains(err.Error(), envAuthorityKeyRing) {
+				t.Fatal("non-strict authority private ring was accepted")
 			}
 		})
 	}
