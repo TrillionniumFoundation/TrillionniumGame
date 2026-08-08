@@ -125,12 +125,12 @@ blockers before the env fixture destroys K0 private material. The gate then
 captures full PostgreSQL versions/values plus hashes for the K0-applied v3
 control response, K0 snapshot, and completion outbox. Under K1 active with K0
 public retained, the original complete request must replay the exact response
-   bytes without changing either row. After delivery finalizes, the gate pins a
-   new baseline, removes K0 public, and requires startup activation to fence
-   archive/snapshot, completion evidence, and applied-control replay while both
-   database rows and versions remain byte-identical. It then recreates an empty
-   database before fresh 4- and 5-participant completions provide an independent
-   K1-only signature proof. Focused Go tests separately
+bytes without changing either row. After delivery finalizes, the gate pins a
+new baseline, removes K0 public, and requires startup activation to fence
+archive/snapshot, completion evidence, and applied-control replay while both
+database rows and versions remain byte-identical. It then recreates an empty
+database before fresh 4- and 5-participant completions provide an independent
+K1-only signature proof. Focused Go tests separately
 prove that neither the expected nor actual response authority can be rewritten
 to cross-key reseal a pending K0 reservation.
 
