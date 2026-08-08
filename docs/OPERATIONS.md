@@ -175,7 +175,8 @@ a K1-signed snapshot wrapper still verifies with K0 public material, as do
 K0-applied v3 control receipts. Remove K0 public only after all K0 snapshots,
 embedded completions, outboxes, and applied control responses have been
 archived or removed. Any lingering reference then fails closed; the live gate
-demonstrates that failure but does not make premature public-key removal safe.
+demonstrates that startup activation fences the research surface before any
+RPC-specific read can run, but does not make premature public-key removal safe.
 
 The canonical Compose profile requires and injects the singleton private signer
 and independent public registry; it never enables a derived-public fallback.

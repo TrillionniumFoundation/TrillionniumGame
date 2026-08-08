@@ -655,8 +655,8 @@ printf 'up\n' >"$control_file"
 
 # K0 public retirement is separate from private retirement: after delivery is
 # final, pin the updated outbox row, stop the writer, remove K0 public, and prove
-# archive(snapshot), evidence(completion), and applied-control replay all fail
-# without changing either row. A fresh K1-only 4/5-member run follows.
+# startup activation and therefore every research RPC fail closed without
+# changing either row. A fresh K1-only database then proves 4/5-member work.
 "${compose[@]}" stop -t 20 nakama >/dev/null
 k0_public_before="$tmp/k0-before-public-retirement.json"
 k0_public_after="$tmp/k0-after-public-retirement-failures.json"
@@ -688,7 +688,7 @@ retired_output=$(run_phase retired-k0-rejected 2>&1) || {
 printf '%s\n' "$retired_output"
 if [[ "$retired_output" != *'"removed_k0_public_failed_closed":true'* ]] ||
   [[ "$retired_output" != *'"rejected_paths":["snapshot_archive","completion_evidence","applied_control_replay"]'* ]] ||
-  [[ "$retired_output" != *'"explicit_missing_key_errors":true'* ]]; then
+  [[ "$retired_output" != *'"activation_fence_observed":true'* ]]; then
   echo "ERROR: retired K0 research failure proof is incomplete" >&2
   exit 1
 fi
@@ -698,6 +698,15 @@ if ! cmp -s "$k0_public_before" "$k0_public_after"; then
   exit 1
 fi
 
+# The blocked historical database has completed its negative proof. Recreate
+# an isolated empty database before claiming fresh K1-only signatures.
+"${compose[@]}" down -v --remove-orphans >/dev/null
+if ! "${compose[@]}" up -d --build --wait --wait-timeout 300; then
+  echo "ERROR: fresh K1-only research stack did not become healthy" >&2
+  "${compose[@]}" logs --no-color --tail=200 >&2 || true
+  exit 1
+fi
+run_phase health
 run_phase cardinality
 
-echo "Paper Raid signed-control v2 pinned Compose: four SIGKILL windows, pending-K0 retirement blocker then zero-pending drain, K1-active exact K0 v3 replay, K0-public removal fail-closed with byte-stable storage/outbox, independent K1 proof, 3/4/5 keys, cursor, ACK tamper rejection, roots: PASS"
+echo "Paper Raid signed-control v2 pinned Compose: four SIGKILL windows, pending-K0 retirement blocker then zero-pending drain, K1-active exact K0 v3 replay, K0-public removal activation-fenced with byte-stable storage/outbox, fresh-database K1 proof, 3/4/5 keys, cursor, ACK tamper rejection, roots: PASS"

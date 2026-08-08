@@ -639,18 +639,18 @@ async function runRetiredK0Rejected(client, httpKey) {
     schema: "trnm.nakama.research-session.get-evidence.v1", logical_session_id: sessionID(3),
     authorization_id: state.epoch_two_authorization_ids[0],
   });
-  assert(/stored research snapshot or completion authority key is missing from the public verification registry/.test(archiveFailure.body),
-    `retired K0 archive failure was not explicit: ${archiveFailure.body}`);
-  assert(/stored research snapshot or completion authority key is missing from the public verification registry/.test(evidenceFailure.body),
-    `retired K0 evidence failure was not explicit: ${evidenceFailure.body}`);
+  assert(/research runtime is not ready/.test(archiveFailure.body),
+    `retired K0 archive did not inherit the activation fence: ${archiveFailure.body}`);
+  assert(/research runtime is not ready/.test(evidenceFailure.body),
+    `retired K0 evidence did not inherit the activation fence: ${evidenceFailure.body}`);
   const controlFailure = await rpcHttpKeyRejected(httpKey, "trnm_research_session_complete_v2",
     state.complete_request);
-  assert(/stored research control or session authority key is missing from the public verification registry/.test(controlFailure.body),
-    `retired K0 applied control replay did not fail verification: ${controlFailure.body}`);
+  assert(/research runtime is not ready/.test(controlFailure.body),
+    `retired K0 applied control replay did not inherit the activation fence: ${controlFailure.body}`);
   process.stdout.write(JSON.stringify({ phase: "retired-k0-rejected",
     removed_k0_public_failed_closed: true,
     rejected_paths: ["snapshot_archive", "completion_evidence", "applied_control_replay"],
-    explicit_missing_key_errors: true,
+    activation_fence_observed: true,
     database_mutation_requested: false }) + "\n");
 }
 

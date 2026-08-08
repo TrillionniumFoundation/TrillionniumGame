@@ -59,8 +59,9 @@ interfaces, rather than invoking a Go handler directly:
    This live phase does not claim that a read-only request persisted a new K1
    wrapper. Focused core tests separately construct and verify an actual
    K1-signed wrapper with an embedded K0 completion. Then remove K0 public and
-   prove the same three read paths fail with the explicit missing-key error
-   while the database bytes remain unchanged.
+   prove startup activation fences the same three read paths while the database
+   bytes remain unchanged. A separately recreated empty database proves fresh
+   K1-only completions.
 7. Stop PostgreSQL and require readiness to fail while Nakama liveness remains
    healthy.
 
@@ -124,11 +125,12 @@ blockers before the env fixture destroys K0 private material. The gate then
 captures full PostgreSQL versions/values plus hashes for the K0-applied v3
 control response, K0 snapshot, and completion outbox. Under K1 active with K0
 public retained, the original complete request must replay the exact response
-bytes without changing either row. After delivery finalizes, the gate pins a
-new baseline, removes K0 public, and requires archive/snapshot, completion
-evidence, and applied-control replay all to fail while both database rows and
-versions remain byte-identical. Fresh 4- and 5-participant completions then
-provide an independent K1-only signature proof. Focused Go tests separately
+   bytes without changing either row. After delivery finalizes, the gate pins a
+   new baseline, removes K0 public, and requires startup activation to fence
+   archive/snapshot, completion evidence, and applied-control replay while both
+   database rows and versions remain byte-identical. It then recreates an empty
+   database before fresh 4- and 5-participant completions provide an independent
+   K1-only signature proof. Focused Go tests separately
 prove that neither the expected nor actual response authority can be rewritten
 to cross-key reseal a pending K0 reservation.
 
