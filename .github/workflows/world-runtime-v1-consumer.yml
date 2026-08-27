@@ -1,0 +1,65 @@
+name: world-runtime-v1-consumer
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'contracts/world-runtime-v1-consumer.json'
+      - 'testdata/world-runtime-v1/**'
+      - 'tools/world_runtime_v1_consumer.py'
+      - '.github/workflows/world-runtime-v1-consumer.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'contracts/world-runtime-v1-consumer.json'
+      - 'testdata/world-runtime-v1/**'
+      - 'tools/world_runtime_v1_consumer.py'
+      - '.github/workflows/world-runtime-v1-consumer.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-runtime-v1-consumer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  consumer-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Compile independent consumer
+        run: python3 -m py_compile tools/world_runtime_v1_consumer.py
+      - name: Verify World material inside an independent Nakama authority context
+        run: |
+          mkdir -p run/world-runtime-v1-consumer
+          python3 tools/world_runtime_v1_consumer.py \
+            | tee run/world-runtime-v1-consumer/report.json
+          jq -e '
+            .status == "ok" and
+            .contract_version == "trnm_nakama_world_runtime_consumer_v1" and
+            .authority_signing_performed == false and
+            .world_ordinal_used_as_global_sequence == false and
+            .world_authority_fields_accepted == false and
+            .nakama_global_sequence > .largest_world_batch_ordinal and
+            (.outcome_hash | test("^[0-9a-f]{64}$"))
+          ' run/world-runtime-v1-consumer/report.json >/dev/null
+      - name: Verify provisional component lock remains non-creditable
+        run: |
+          jq -e '
+            .contract_version == "trnm_nakama_world_runtime_consumer_lock_v1" and
+            .lock_state == "provisional_source_review" and
+            .world.commit == null and
+            .integration.commit == null and
+            .consumer.authority_signing == false and
+            .consumer.world_ordinal_used_as_global_sequence == false and
+            .consumer.accepted_world_authority_fields == false and
+            (.limitations | length > 0)
+          ' contracts/world-runtime-v1-consumer.json >/dev/null
+      - name: Upload exact consumer report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-runtime-v1-consumer-${{ github.sha }}
+          path: run/world-runtime-v1-consumer/report.json
+          if-no-files-found: error
