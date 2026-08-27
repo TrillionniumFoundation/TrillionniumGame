@@ -1,0 +1,124 @@
+{
+  "contract_version": "trnm_world_runtime_golden_vectors_v1",
+  "sha256_known_vectors": [
+    {
+      "name": "empty",
+      "bytes_utf8": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "abc",
+      "bytes_utf8": "abc",
+      "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    }
+  ],
+  "canonicalization_vectors": [
+    {
+      "name": "empty-object",
+      "value": {},
+      "expected_canonical": "{}",
+      "expected_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "object-key-order",
+      "value": {
+        "b": 2,
+        "a": 1
+      },
+      "expected_canonical": "{\"a\":1,\"b\":2}",
+      "expected_sha256": "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
+    },
+    {
+      "name": "array-order-and-nested-keys",
+      "value": [
+        {
+          "z": 0,
+          "a": true
+        },
+        null,
+        "text"
+      ],
+      "expected_canonical": "[{\"a\":true,\"z\":0},null,\"text\"]"
+    },
+    {
+      "name": "unicode-nfc",
+      "value": {
+        "é": "é"
+      },
+      "expected_canonical": "{\"é\":\"é\"}"
+    }
+  ],
+  "runtime_request_vector": {
+    "hash_domain": "trnm.world.runtime.v1.command_batch",
+    "value": {
+      "contract_version": "trnm_world_runtime_v1",
+      "message_type": "execute_request",
+      "ruleset": {
+        "id": "first-contact",
+        "version": "1",
+        "digest": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "content_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+      "initial_state": {
+        "tick": 0,
+        "seed": 7,
+        "units": [
+          {
+            "id": "alpha",
+            "hp": 10
+          }
+        ]
+      },
+      "commands": [
+        {
+          "batch_ordinal": 0,
+          "kind": "hold",
+          "payload": {
+            "unit_id": "alpha"
+          }
+        },
+        {
+          "batch_ordinal": 1,
+          "kind": "move",
+          "payload": {
+            "unit_id": "alpha",
+            "tile": [3, 4]
+          }
+        }
+      ]
+    },
+    "expected_canonical": "{\"commands\":[{\"batch_ordinal\":0,\"kind\":\"hold\",\"payload\":{\"unit_id\":\"alpha\"}},{\"batch_ordinal\":1,\"kind\":\"move\",\"payload\":{\"tile\":[3,4],\"unit_id\":\"alpha\"}}],\"content_digest\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"contract_version\":\"trnm_world_runtime_v1\",\"initial_state\":{\"seed\":7,\"tick\":0,\"units\":[{\"hp\":10,\"id\":\"alpha\"}]},\"message_type\":\"execute_request\",\"ruleset\":{\"digest\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"id\":\"first-contact\",\"version\":\"1\"}}"
+  },
+  "negative_vectors": [
+    {
+      "name": "float-forbidden",
+      "json": "{\"value\":1.0}",
+      "expected_error": "floating-point numbers are forbidden"
+    },
+    {
+      "name": "duplicate-key-forbidden",
+      "json": "{\"a\":1,\"a\":2}",
+      "expected_error": "duplicate object key"
+    },
+    {
+      "name": "nfc-key-collision-forbidden",
+      "json": "{\"é\":1,\"é\":2}",
+      "expected_error": "normalized object key collision"
+    },
+    {
+      "name": "ordinal-gap-forbidden",
+      "request_commands": [
+        {"batch_ordinal": 0, "kind": "hold", "payload": {}},
+        {"batch_ordinal": 2, "kind": "move", "payload": {}}
+      ],
+      "expected_error": "command ordinals must be contiguous from zero"
+    },
+    {
+      "name": "authority-field-forbidden",
+      "request_extension": {
+        "completion_signature": "forbidden"
+      },
+      "expected_error": "additional authority field"
+    }
+  ]
+}
