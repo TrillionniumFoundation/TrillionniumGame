@@ -1,0 +1,47 @@
+{
+  "contract_version": "trnm_nakama_world_runtime_consumer_lock_v1",
+  "lock_state": "exact_source_pending_integration",
+  "ready_for_cross_repository_credit": false,
+  "world": {
+    "repository": "TrillionniumFoundation/Trillionnium-World",
+    "commit": "260aff89bffd02b9c038be23613314dd9080c166",
+    "tree": "e84a8bc25dad8a172ebf5996586bc44a9fdbb58a",
+    "runtime_schema_blob": "6600abc4c1046e373f0838df1a9c5e9eaf72fa2a",
+    "shadow_schema_blob": "f8cf4757934a63d7635a689e41f69e004028d111",
+    "golden_vectors_blob": "c01d23b5baf7ee6761f1fa72bd05c0268e81df1d",
+    "shadow_vectors_blob": "cfb05ee3009114d0b19be8bdc3003d4d6c98a995",
+    "error_catalog_blob": "5f4973b658b70072e77b59b3738f48f0d42d80e3",
+    "compatibility_matrix_blob": "8ad20d3d917df8f0344d597cf76a43f02bfd32fa"
+  },
+  "nakama": {
+    "repository": "TrillionniumFoundation/Trillionnium-Nakama",
+    "consumer_source_commit": "3645ea6f30743e355fc928a77138304a2f4037c3",
+    "consumer_source_tree": "75a512594b354809f4d3f5d06886201057b21183",
+    "consumer_kind": "go-runtime-language",
+    "python_model_retained_as_independent_cross_check": true,
+    "authority_signing": false,
+    "world_ordinal_used_as_global_sequence": false,
+    "accepted_world_participant_authority": false,
+    "accepted_world_canonical_roots": false,
+    "accepted_world_finality": false,
+    "accepted_world_custody": false
+  },
+  "integration": {
+    "repository": "TrillionniumFoundation/Trillionnium-Integration",
+    "commit": null,
+    "tree": null,
+    "component_lock_state": "pending"
+  },
+  "flags": {
+    "public_online_enabled": false,
+    "public_player_market_enabled": false,
+    "canonical_cutover_complete": false,
+    "active_match_takeover_claimed": false
+  },
+  "limitations": [
+    "The World and Nakama source identities are exact, but both proposals remain unmerged.",
+    "The Integration-owned component lock and cross-repository evidence are still pending.",
+    "The Go consumer verifies deterministic World material but is not yet wired into authoritative Nakama admission, ordering, recovery, roots or completion signing.",
+    "No public-online, public-market, Chain-finality, cross-host or commercial credit is granted."
+  ]
+}
