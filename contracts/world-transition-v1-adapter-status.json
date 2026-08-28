@@ -1,0 +1,104 @@
+{
+  "contract_version": "trnm_nakama_world_transition_adapter_delivery_v1",
+  "backlog_id": "WORLD-P0-003",
+  "status": "implemented_pending_exact_head_ci",
+  "owner": "trillionnium-nakama",
+  "world_contract": {
+    "contract_version": "trnm_world_transition_v1",
+    "commit": "0d7666d4d830fa8e56c78b23d438856064182535",
+    "tree": "1619ae76fa62a5e67bc7ff94429c62eea35deb87",
+    "pull_request": 21
+  },
+  "implemented": [
+    "exact_world_schema_and_vector_lock",
+    "independent_strict_canonical_json",
+    "opaque_retry_stable_transition_and_command_ids",
+    "nakama_authority_context_binding",
+    "accepted_world_result_verification",
+    "stable_rejection_verification",
+    "authority_surface_rejection",
+    "typed_shadow_observation",
+    "fail_closed_shadow_comparison",
+    "synthetic_accepted_and_rejected_fixture_emission"
+  ],
+  "not_implemented": [
+    "production_nakama_runtime_module",
+    "authenticated_admission_state_machine",
+    "persistent_global_ordering",
+    "persistent_command_idempotency",
+    "restart_recovery",
+    "canonical_event_roster_or_archive_roots",
+    "match_completed_v1_signing",
+    "cex_or_chain_adapter",
+    "live_compatibility_corpus",
+    "authority_cutover"
+  ],
+  "authority": {
+    "world_output_is_unsigned": true,
+    "world_can_set_global_sequence": false,
+    "world_can_set_idempotency": false,
+    "world_can_sign_completion": false,
+    "world_can_claim_finality": false,
+    "world_can_settle_value": false,
+    "public_online_enabled": false
+  },
+  "acceptance": [
+    {
+      "id": "WORLD-P0-003-A1",
+      "claim": "Nakama vendors the exact World schema and vectors and pins commit/tree/blob identities",
+      "evidence_kind": "source_lock_and_hash",
+      "state": "implemented"
+    },
+    {
+      "id": "WORLD-P0-003-A2",
+      "claim": "Nakama authority context produces opaque stable correlation IDs without leaking authority fields to World",
+      "evidence_kind": "unit_and_negative",
+      "state": "implemented_pending_ci"
+    },
+    {
+      "id": "WORLD-P0-003-A3",
+      "claim": "Accepted World results are independently verified through every payload and domain-separated hash",
+      "evidence_kind": "unit",
+      "state": "implemented_pending_ci"
+    },
+    {
+      "id": "WORLD-P0-003-A4",
+      "claim": "Rejected World results use stable request-bound error and retry semantics",
+      "evidence_kind": "unit",
+      "state": "implemented_pending_ci"
+    },
+    {
+      "id": "WORLD-P0-003-A5",
+      "claim": "Shadow comparison fails closed on missing fixtures and every deterministic divergence class",
+      "evidence_kind": "unit_and_negative",
+      "state": "implemented_pending_ci"
+    },
+    {
+      "id": "WORLD-P0-003-A6",
+      "claim": "Exact-head synthetic accepted/rejected observation artifacts are emitted",
+      "evidence_kind": "remote_workflow_artifact",
+      "state": "pending_exact_head_ci"
+    },
+    {
+      "id": "WORLD-P0-003-A7",
+      "claim": "Production Nakama runtime language adapter executes the contract",
+      "evidence_kind": "runtime_integration",
+      "state": "pending"
+    },
+    {
+      "id": "WORLD-P0-003-A8",
+      "claim": "Integration locks exact World/Nakama revisions and representative corpus with zero unexplained divergence",
+      "evidence_kind": "cross_repository_integration",
+      "state": "pending"
+    }
+  ],
+  "promotion_blockers": [
+    "world_pr_21_exact_head_ci_not_bound",
+    "nakama_exact_head_ci_not_bound",
+    "production_runtime_module_missing",
+    "representative_live_shadow_corpus_missing",
+    "integration_exact_component_lock_missing",
+    "drain_cutover_rollback_rehearsal_missing"
+  ],
+  "next_dependency": "Integration exact component lock and production Nakama runtime module"
+}
