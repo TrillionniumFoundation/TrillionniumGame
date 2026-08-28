@@ -199,10 +199,13 @@ func (m *worldAuthoritativeMatch) executeTargetCommand(
 		},
 	}
 
+	afterReservation, beforeCommit := worldCommandFaultHooks(m.world.config)
 	var appliedEvent *contract.MatchEvent
 	coordinator := worldcommand.Coordinator{
-		Store:    m.store,
-		Executor: m.world.executor,
+		Store:            m.store,
+		Executor:         m.world.executor,
+		AfterReservation: afterReservation,
+		BeforeCommit:     beforeCommit,
 		Persister: func(
 			commitCtx context.Context,
 			_ string,
