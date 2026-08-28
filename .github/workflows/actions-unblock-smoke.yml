@@ -1,0 +1,31 @@
+name: trillionnium-game-actions-unblock-smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/actions-unblock-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actions-unblock-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  repository-native-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Record exact execution identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+          printf 'sha=%s\n' "$GITHUB_SHA"
+          printf 'ref=%s\n' "$GITHUB_REF"
+          printf 'event=%s\n' "$GITHUB_EVENT_NAME"
+          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
+          test -n "$GITHUB_SHA"
