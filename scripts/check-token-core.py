@@ -45,13 +45,13 @@ def main() -> None:
         r"std::time",
         r"SystemTime",
         r"rand::",
-        r"hmac",
-        r"sha2",
-        r"openssl",
-        r"jsonwebtoken",
-        r"signed_string",
-        r"secret_key",
-        r"key_bytes",
+        r"\bhmac\b",
+        r"\bsha2\b",
+        r"\bopenssl\b",
+        r"\bjsonwebtoken\b",
+        r"\bsigned_string\b",
+        r"\bsecret_key\b",
+        r"\bkey_bytes\b",
     )
     for pattern in case_insensitive_patterns:
         if re.search(pattern, source, re.IGNORECASE):
@@ -69,6 +69,10 @@ def main() -> None:
         fail("ring namespace guard rejects the local KeyRing type")
     if not re.search(namespace_patterns[0], "ring::digest"):
         fail("ring namespace guard no longer detects the external crate")
+    if re.search(r"\bkey_bytes\b", "max_var_key_bytes", re.IGNORECASE):
+        fail("raw-key guard rejects bounded variable key length fields")
+    if not re.search(r"\bkey_bytes\b", "let key_bytes = secret", re.IGNORECASE):
+        fail("raw-key guard no longer detects a raw key identifier")
     for pattern in namespace_patterns:
         if re.search(pattern, source):
             fail(f"forbidden crypto/capability namespace {pattern}")
