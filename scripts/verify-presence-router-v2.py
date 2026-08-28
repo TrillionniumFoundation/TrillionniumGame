@@ -55,7 +55,12 @@ def verify() -> dict[str, object]:
 
     cargo = read(CRATE / "Cargo.toml")
     library = read(CRATE / "src/lib.rs")
-    router = read(CRATE / "src/router.rs")
+    router_entry = read(CRATE / "src/router.rs")
+    router_module_dir = CRATE / "src/router"
+    require(router_module_dir.is_dir(), "missing router module directory")
+    router_module_paths = sorted(router_module_dir.glob("*.rs"))
+    require(router_module_paths, "router module directory is empty")
+    router = router_entry + "\n" + "\n".join(read(path) for path in router_module_paths)
     types = read(CRATE / "src/types.rs")
     tests = read(CRATE / "tests/black_box.rs")
 
