@@ -38,6 +38,8 @@ services:
     depends_on:
       tls-init:
         condition: service_completed_successfully
+    ports:
+      - 127.0.0.1:${TRNM_WORLD_FIXTURE_PORT:-17443}:7443
     networks:
       - backend
     restart: unless-stopped
