@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/worldcommand"
 	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
 )
@@ -112,13 +113,9 @@ func TestNakamaWorldCommandBackendRoundTripAndOCC(t *testing.T) {
 	if loadedVersion != version || string(loaded) != string(payload) {
 		t.Fatalf("World command storage round trip mismatch: version=%q payload=%q", loadedVersion, loaded)
 	}
-	if _, err := backend.CompareAndSwap(ctx, "adapter-match-1", "stale-version", payload); !errors.Is(err, worldCommandVersionConflict()) {
-		t.Fatalf("stale World storage version was not rejected: %v", err)
+	if _, err := backend.CompareAndSwap(ctx, "adapter-match-1", "stale-version", payload); !errors.Is(err, worldcommand.ErrVersionConflict) {
+		t.Fatalf("stale World storage version was not mapped to the coordinator contract: %v", err)
 	}
-}
-
-func worldCommandVersionConflict() error {
-	return runtime.ErrStorageRejectedVersion
 }
 
 func TestPersistWorldAndCoreAtomicWritesBothObjects(t *testing.T) {
