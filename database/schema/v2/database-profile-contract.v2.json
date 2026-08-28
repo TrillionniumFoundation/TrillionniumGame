@@ -1,0 +1,62 @@
+{
+  "schema": "trillionnium.game.database-profile.v2",
+  "version": 2,
+  "profiles": {
+    "postgresql": {
+      "migration": "database/schema/v2/postgresql/0001_persistence_core.sql",
+      "lease_query": "database/schema/v2/postgresql/lease_outbox.sql",
+      "introspection": "database/schema/v2/postgresql/introspect.sql",
+      "transaction_isolation": "serializable",
+      "retry_sqlstates": ["40001", "40P01"],
+      "lease_strategy": "select_for_update_skip_locked"
+    },
+    "cockroachdb": {
+      "migration": "database/schema/v2/cockroachdb/0001_persistence_core.sql",
+      "lease_query": "database/schema/v2/cockroachdb/lease_outbox.sql",
+      "introspection": "database/schema/v2/cockroachdb/introspect.sql",
+      "transaction_isolation": "serializable",
+      "retry_sqlstates": ["40001"],
+      "lease_strategy": "optimistic_compare_and_swap_with_transaction_retry"
+    }
+  },
+  "tables": [
+    "trnm_schema_migrations",
+    "trnm_entity_heads",
+    "trnm_command_receipts",
+    "trnm_events",
+    "trnm_outbox"
+  ],
+  "digest_bytes": 32,
+  "max_events_per_command": 64,
+  "max_outbox_intents_per_command": 64,
+  "max_outbox_attempts": 32,
+  "required_invariants": [
+    "entity_revision_and_authority_generation_are_fenced",
+    "command_id_and_fingerprint_define_exact_idempotency",
+    "entity_head_receipt_events_and_outbox_commit_atomically",
+    "event_sequences_are_contiguous_per_entity",
+    "outbox_lease_generation_is_monotonic",
+    "stale_outbox_workers_cannot_publish_completion",
+    "applied_receipt_digest_replay_is_exactly_idempotent",
+    "acknowledgement_is_emitted_only_after_commit_success",
+    "all_identifiers_are_application_supplied",
+    "database_clock_is_not_a_command_correctness_input"
+  ],
+  "forbidden_schema_features": [
+    "serial",
+    "bigserial",
+    "database_generated_command_id",
+    "database_generated_event_id",
+    "database_generated_intent_id",
+    "trigger_based_external_effect",
+    "best_effort_dual_write"
+  ],
+  "maturity": {
+    "ddl_static_contract": true,
+    "postgresql_runtime_apply": false,
+    "cockroachdb_runtime_apply": false,
+    "fault_matrix_complete": false,
+    "backup_restore_complete": false,
+    "production_ready": false
+  }
+}
