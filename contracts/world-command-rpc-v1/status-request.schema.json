@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TrillionniumFoundation/TrillionniumGame/contracts/world-command-rpc-v1/status-request.schema.json",
+  "title": "TrillionniumGame World command status request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "operator_token", "logical_match_id"],
+  "properties": {
+    "schema": {"const": "trnm.game.world-command-status-request.v1"},
+    "operator_token": {"type": "string", "minLength": 32, "maxLength": 4096},
+    "logical_match_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    }
+  }
+}
