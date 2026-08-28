@@ -1,0 +1,26 @@
+{
+  "schema": "trillionnium.oracle-hook-inventory-policy.v1",
+  "project_id": "trillionnium-game",
+  "upstream": {
+    "repository": "heroiclabs/nakama",
+    "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "tree": "f3c9cfc2726d5543da1564629170f35b98e3797d"
+  },
+  "include_roots": ["server", "social", "iap"],
+  "restricted_paths": ["console/acl/acl.go"],
+  "capabilities": {
+    "clock_capture": ["time.Now", "time.Since", "time.NewTimer", "time.NewTicker", "time.After"],
+    "random_capture": ["rand.Read", "rand.Int", "uuid.New", "uuid.NewString", "uuid.NewV4", "rand.New"],
+    "provider_intent_capture": ["http.NewRequest", "http.NewRequestWithContext", ".Do"],
+    "database_effect_capture": [".Exec", ".ExecContext", ".Query", ".QueryContext", ".QueryRow", ".QueryRowContext"],
+    "runtime_hook_capture": ["RegisterBefore", "RegisterAfter", "MatchLoop", "MatchJoin", "MatchLeave", "MatchTerminate", "MatchSignal"],
+    "trace_correlation": ["trace_id", "TraceID", ".StartSpan", ".Start"]
+  },
+  "claims": {
+    "patch_generated": false,
+    "patch_authorized": false,
+    "instrumented_image_built": false,
+    "instrumented_equivalence": false,
+    "sg2_complete": false
+  }
+}
