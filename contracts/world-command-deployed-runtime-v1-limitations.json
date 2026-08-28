@@ -1,0 +1,14 @@
+{
+  "contract_version": "trnm_game_world_command_deployed_runtime_limitations_v1",
+  "source_candidate_only": true,
+  "exact_head_ci_green": false,
+  "deployed_fault_matrix_passed": false,
+  "multi_host_fencing_proved": false,
+  "twenty_four_hour_endurance_proved": false,
+  "compatibility_drain_rehearsed": false,
+  "rollback_rehearsed": false,
+  "chain_in_scope": false,
+  "cutover_authorized": false,
+  "public_online_enabled": false,
+  "public_player_market_enabled": false
+}
