@@ -1,0 +1,41 @@
+name: trillionnium-game-sg1-denominator-review-lock
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tools/denominator/review_lock.py'
+      - 'scripts/review-denominator-bundle.py'
+      - 'scripts/check-denominator-review-lock.sh'
+      - 'config/denominator-review-policy.json'
+      - 'contracts/denominator/review-bundle.v1.schema.json'
+      - 'tests/denominator/test_review_lock.py'
+      - 'docs/development/DENOMINATOR_REVIEW_AND_LOCK.md'
+      - '.github/workflows/sg1-denominator-review-lock.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tg-sg1-review-lock-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review-lock-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Run fail-closed review lock tests
+        run: bash scripts/check-denominator-review-lock.sh
+      - name: Assert policy cannot self-close SG1
+        run: |
+          python3 - <<'PY'
+          import json
+          policy = json.load(open('config/denominator-review-policy.json'))
+          assert policy['self_approval_allowed'] is False
+          assert policy['remote_evidence_required_for_lock'] is True
+          assert policy['global_sg1_requires_independent_gate_review'] is True
+          assert len(policy['required_denominators']) == 14
+          PY

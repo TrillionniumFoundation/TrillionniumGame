@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/denominator/review-bundle.v1.schema.json",
+  "title": "Trillionnium denominator review bundle v1",
+  "type": "object",
+  "required": [
+    "schema", "denominator", "candidate_sha256", "candidate_head",
+    "author_identity", "self_approval", "reviewers", "leaf_decisions",
+    "manual_contracts"
+  ],
+  "properties": {
+    "schema": {"const": "trillionnium.denominator-review.v1"},
+    "denominator": {"type": "string", "pattern": "^DEN-[A-Z0-9-]+$"},
+    "candidate_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "candidate_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "author_identity": {"type": "string", "minLength": 1},
+    "self_approval": {"const": false},
+    "reviewers": {"type": "array", "minItems": 2},
+    "leaf_decisions": {"type": "array", "minItems": 1},
+    "manual_contracts": {"type": "array"},
+    "remote_evidence": {"type": ["object", "null"]}
+  },
+  "additionalProperties": true
+}
