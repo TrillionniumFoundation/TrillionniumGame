@@ -1,0 +1,41 @@
+{
+  "schema": "trillionnium.service-objectives.v1",
+  "project_id": "trillionnium-game",
+  "status": "provisional-until-oracle-baseline",
+  "ratification_task": "TG-W0-007",
+  "ratification_deadline": "M3",
+  "default_profile": "PROD-S-SINGLE-PROJECT-POSTGRESQL",
+  "integrity": {
+    "acknowledged_durable_writes_lost": 0,
+    "duplicate_visible_value_effects": 0,
+    "stale_owner_accepted_writes": 0,
+    "unexplained_p0_p1_divergences": 0
+  },
+  "availability": {
+    "http_grpc_monthly_percent": 99.95,
+    "realtime_session_monthly_percent": 99.9,
+    "source": "provisional; replace with product and oracle evidence"
+  },
+  "latency": {
+    "rule": "For approved scenarios candidate p99 must be <= max(1.10 * same-hardware Nakama oracle p99, absolute budget ratified at M3)",
+    "realtime_tick_jitter": "p99 <= max(2ms, 5% of tick interval) for approved profile",
+    "matchmaker": "time-to-match and fairness budgets are profile-specific; no global number before oracle corpus"
+  },
+  "recovery": {
+    "single_node_process_failure_rpo_seconds": 0,
+    "single_node_process_failure_rto_minutes": 5,
+    "database_failover_rpo_seconds": 0,
+    "database_failover_rto_minutes": 10,
+    "offsite_disaster_rpo_minutes": 15,
+    "offsite_disaster_rto_minutes": 120,
+    "status": "provisional"
+  },
+  "security": {
+    "open_critical_findings": 0,
+    "expired_high_findings": 0,
+    "known_secret_exposure": 0
+  },
+  "capacity_profiles": ["DEV","COMPAT","PROD-S","PROD-M","STRETCH"],
+  "cost_metrics": ["cost_per_ccu_hour","cost_per_million_api_requests","cost_per_match_hour","cost_per_gb_month"],
+  "evidence_rules": {"same_hardware_oracle_required":true,"confidence_intervals_required":true,"correctness_security_durability_may_not_be_traded_for_latency":true}
+}

@@ -2,11 +2,13 @@
 
 `TrillionniumGame` is the Trillionnium Foundation program to reimplement the complete Nakama OSS game backend in Rust.
 
-## Current status
+## Status
 
-**Planning baseline only. No production-readiness or compatibility claim exists yet.**
+**Audit-refined planning baseline v2. No compatibility, drop-in-replacement or production claim exists yet.**
 
-The first compatibility target is:
+The current GitHub repository is still named `Trillionnium-Nakama`; its file tree and project identity have transitioned to TrillionniumGame while the repository-name administrative mutation remains pending. Existing Git history, branches and pull requests are retained as migration evidence.
+
+Initial compatibility target:
 
 - Nakama `v3.40.0`
 - Nakama commit `d4d92f93f78bbbe62c7fc50a3f85c772ec121a09`
@@ -16,15 +18,18 @@ The first compatibility target is:
 
 The program covers HTTP/gRPC/WebSocket compatibility, authentication and sessions, accounts, storage and search, social graphs, chat and presence, notifications, leaderboards, tournaments, matchmaking, parties, relayed and authoritative multiplayer, runtime modules, IAP/subscriptions, Console, migrations, operations, security, performance, and full cutover evidence.
 
-The final production server will contain no first-party Go service code. Existing Go runtime modules must be migrated to Rust/WASM; compiled Go plugin ABI compatibility is not a final-product goal because retaining a Go loader would violate the full-Rust boundary.
+The final production server will contain no first-party Go service code. Existing Go runtime modules must be migrated to Rust/WASM. Compiled Go plugin ABI compatibility is not a final-product goal, so `drop-in` claims are scoped by the compatibility profiles rather than implied globally.
 
 ## Start here
 
-- [CURRENT_PLAN.md](CURRENT_PLAN.md)
+- [Current plan v2](CURRENT_PLAN.md)
+- [Plan audit](docs/development/PLAN_AUDIT_2026-08-28.md)
 - [Project boundary](PROJECT_BOUNDARY.md)
-- [ADR-0001](docs/adr/ADR-0001-FULL-RUST-REIMPLEMENTATION.md)
-- [Feature parity matrix](docs/development/FEATURE_PARITY_MATRIX.md)
-- [Machine-readable backlog](docs/development/EXECUTION_BACKLOG.json)
+- [Full-Rust ADR](docs/adr/ADR-0001-FULL-RUST-REIMPLEMENTATION.md)
+- [Parity denominator specification](docs/development/PARITY_DENOMINATOR_SPEC.md)
+- [Feature parity roll-up](docs/development/FEATURE_PARITY_MATRIX.md)
+- [Execution model](docs/development/PROGRAM_EXECUTION_MODEL.md)
+- [Stage gates](docs/development/CRITICAL_PATH_AND_STAGE_GATES.md)
 - [Product gates](docs/status/PRODUCT_GATES.json)
 
 Validate planning artifacts with:
@@ -32,14 +37,6 @@ Validate planning artifacts with:
 ```bash
 python3 scripts/check-plan.py
 ```
-
-After an authenticated GitHub CLI with organization repository-creation access is available, publish this exact local repository with:
-
-```bash
-bash scripts/publish-repository.sh
-```
-
-The script refuses to publish a dirty tree, re-runs the plan contract, creates a private `TrillionniumFoundation/TrillionniumGame` repository, and pushes the exact local `main` commit.
 
 ## License and attribution
 

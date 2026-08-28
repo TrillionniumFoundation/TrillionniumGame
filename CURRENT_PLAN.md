@@ -1,318 +1,290 @@
-# TrillionniumGame 全量 Rust 重写开发计划 v1
+# TrillionniumGame 全量 Rust 重写开发计划 v2
 
-状态：**规划基线**  
+状态：**审计后可执行规划基线**  
 生效日期：2026-08-28  
 项目 ID：`trillionnium-game`  
-目标仓库：`TrillionniumFoundation/TrillionniumGame`  
-首个兼容基线：Nakama OSS `v3.40.0`  
+当前远端：`TrillionniumFoundation/Trillionnium-Nakama`  
+目标名称：`TrillionniumFoundation/TrillionniumGame`  
+首个兼容基线：Nakama OSS `v3.40.0` / `d4d92f93f78bbbe62c7fc50a3f85c772ec121a09`  
+协议/Runtime 基线：nakama-common `v1.47.0` / `449b77ecc8789aa466c36b67f6e498033dfcd9c5`  
 目标版本：`TrillionniumGame 1.0`  
-规划周期：36–48 个月；峰值团队：28–36 FTE
+计划置信区间：**P50 48 个月，P80 60 个月**；峰值 **28–36 FTE**
 
-## 1. 项目使命
+## 0. v2 修订目的
 
-使用 Rust 全量重写 Nakama OSS 游戏后端服务器，而不是只重写当前 Trillionnium World 使用到的子集。最终产品必须独立拥有公开协议、数据语义、实时协调、Runtime、Console、IAP、迁移、运维、安全和发布证据。
+v1 正确地锁定了“完整 Nakama OSS server parity”和“最终无第一方 Go server”两个核心目标，但仍是战略计划：74 条 parity 行只是领域汇总，119 项 task 缺乏依赖、负责人、估算、证据和回滚字段，发布门缺少机器可判定条件。
 
-任何“已兼容”“可替换”“生产就绪”声明必须绑定精确上游基线、精确 TrillionniumGame 提交和产物、差分命令、环境、证据、审阅者、限制和有效期。
+v2 将计划升级为项目控制系统：
 
-## 2. 固定上游基线
+- 人类可读 matrix 与机器 leaf denominator 分离；
+- task 具备依赖、角色、估算、deliverables、tests、risks、gates 和 evidence paths；
+- 引入 C0–C5 compatibility claim taxonomy；
+- 建立未修改 oracle、插桩 oracle、normalizer registry 和差分严重度；
+- 为 session、party、match、IAP、scheduler 等定义迁移唯一权威；
+- 建立 P50/P80、关键路径、stage gates、SLO、容量 profile 和成本指标；
+- 在前 12 周完成 Runtime、数据库、查询、Console 和在线迁移技术尖峰；
+- 以不可变 evidence contract 关闭产品门禁。
 
-```text
-heroiclabs/nakama
-  tag: v3.40.0
-  commit: d4d92f93f78bbbe62c7fc50a3f85c772ec121a09
-  tree: f3c9cfc2726d5543da1564629170f35b98e3797d
+完整审计见 `docs/development/PLAN_AUDIT_2026-08-28.md`。
 
-heroiclabs/nakama-common
-  tag: v1.47.0
-  commit: 449b77ecc8789aa466c36b67f6e498033dfcd9c5
-  tree: c6a7b9796b9c2a6b5118c74e5f213963a5001f14
-```
+## 1. 不变使命与范围
 
-不允许以浮动 `master` 作为验收分母。复制、翻译、生成或派生的上游材料必须记录文件 blob SHA 并遵守 Apache-2.0 与商标边界。
+使用 Rust 全量重写 Nakama OSS 游戏后端服务器，而不是只覆盖 Trillionnium 当前调用到的功能。1.0 分母包含：
 
-## 3. 1.0 完整范围
+- server bootstrap、config、CLI、migrate、health/readiness、shutdown；
+- HTTP/JSON API v2、gRPC、WebSocket JSON/protobuf；
+- authentication providers、sessions、accounts、link/unlink、wallet/metadata；
+- storage、ACL、OCC、cursor、search/index；
+- friends、groups、chat、notifications、presence、streams；
+- leaderboards、tournaments、schedulers；
+- matchmaker、parties、relayed matches、authoritative matches；
+- Runtime RPC/hooks/module APIs、Rust SDK、Lua、JavaScript/TypeScript；
+- IAP/subscriptions/provider callbacks；
+- Console API、RBAC、audit 和 Rust/WASM UI；
+- PostgreSQL/CockroachDB profiles；
+- metrics/logs/traces、security、backup、HA、upgrade；
+- existing Nakama data/module migration、shadow、canary、cutover 和 retirement。
 
-### 3.1 平台与协议
+明确不属于 1.0：Heroic Cloud 托管控制面、非公开 Enterprise 实现、Satori/Hiro 产品本体、官方客户端 SDK 源码重写、World gameplay、Chain finality、CEX ledger、已编译 Go plugin ABI。
 
-- server bootstrap、配置、CLI、迁移、健康检查、优雅退出；
-- HTTP/JSON API v2；
-- gRPC API；
-- WebSocket JSON 与 protobuf 实时协议；
-- Basic server key、Bearer session、runtime HTTP key；
-- cursor、分页、错误码、连接关闭和限流语义；
-- 官方客户端 SDK 黑盒兼容矩阵。
+最终生产拓扑不包含第一方 Go server、Go sidecar 或 compiled Go plugin loader。现有 Go module 必须迁移到 Rust/WASM。该限制意味着 C5 声明是“支持范围内的协议、数据、功能、Runtime source migration 和运维替换”，而非 Go 二进制 ABI 替换。
 
-### 3.2 身份、账号与会话
+## 2. 兼容声明等级
 
-- device、custom、email/password；
-- Apple、Facebook、Facebook Instant Game、Game Center、Google、Steam 等基线 provider；
-- link/unlink；
-- session JWT、refresh、logout、revocation；
-- account read/update/delete/export/import；
-- profile、wallet、metadata、device、language、timezone、ban/restriction。
+| 等级 | 声明 | 最低证据 |
+| --- | --- | --- |
+| C0 | planning/spec only | pinned baseline、denominator plan |
+| C1 | wire-compatible subset | exact HTTP/gRPC/RT differential |
+| C2 | behavior-compatible domain | wire + DB effects + hooks + concurrency |
+| C3 | data-migration compatible | repeatable migration、semantic validation、rollback |
+| C4 | operationally replaceable | HA、security、capacity、backup、upgrade、runbooks |
+| C5 | supported full replacement | all mandatory leaves production、Go sources migrated、cutover/retirement complete |
 
-### 3.3 持久系统与社交
+任何文档、README、release、Console 或 API 不得越级使用 `drop-in`、`production-ready` 或 `replacement`。
 
-- Storage read/write/delete、ACL、OCC version、list cursor、search/index；
-- friends、requests、block、provider friend imports；
-- groups CRUD/search、members、roles、requests、bans、promotion/demotion；
-- leaderboards、records、ranks、resets；
-- tournaments、joins、records、rewards、scheduling。
+## 3. Parity denominator
 
-### 3.4 实时系统
+`FEATURE_PARITY_MATRIX.md` 的 74 行是人工导航 roll-up，不是完成率分母。SG1 必须从 pinned source 生成以下 leaf manifests：
 
-- session/socket registry；
-- presence、streams、status follow；
-- direct/group/room chat、history、update/delete；
-- persistent/realtime notifications；
-- parties、party leader、join requests、party data；
-- matchmaker query grammar、tickets、matching、hooks；
-- client-relayed matches；
-- server-authoritative matches、fixed ticks、callbacks、signals、listing、placement、drain、fencing。
+- D0 upstream identities；
+- D1 HTTP/gRPC methods/routes/messages/enums/JSON mapping；
+- D2 realtime messages/envelopes/errors/lifecycle；
+- D3 Console methods/ACL/workflows；
+- D4 Runtime initializers/hooks/functions/context/module APIs；
+- D5 config keys/defaults/validation/CLI flags/exit codes；
+- D6 migrations/tables/columns/constraints/indexes/sequences/invariants；
+- D7 metrics/health/logging/packaging/shutdown/operations；
+- D8 provider/IAP states/callbacks/retry semantics。
 
-### 3.5 Runtime Framework
+每个 leaf 必须具有 source blob、signature hash、owner、task、test、compatibility profile、status 和 evidence refs。分母项不得因“未使用”被删除；任何 remove/merge 必须有 upstream delta 或 ADR。
 
-- Rust native runtime SDK；
-- WASM component host；
-- Rust 托管的 Lua compatibility runtime；
-- Rust 托管的 JavaScript/TypeScript compatibility runtime；
-- RPC、HTTP、Console handlers；
-- before/after hooks、events、sessions、notifications、schedulers；
-- 全领域 runtime module APIs；
-- 现有 Go runtime module 的源码分析、迁移、Rust/WASM 重写和差分证明。
+## 4. Oracle 与差分
 
-最终生产产品不加载已编译 Go plugin，也不保留 Go server 或 Go sidecar。这意味着 1.0 的完整替换声明是“协议、数据、功能和迁移等价”，而不是 Go 二进制插件 ABI 等价。
+保留两条 oracle lane：
 
-### 3.6 IAP、Console 与运维
+1. **immutable oracle**：未经修改的官方 Nakama artifact；
+2. **instrumented oracle**：仅用于时钟、随机数、provider、DB 和 trace 捕获的最小审计补丁。
 
-- Apple、Google、Huawei、Facebook、Steam、Samsung 等公开基线交易适配；
-- purchase/subscription validation、persist、refund/void/renewal notifications；
-- Console API、authentication、RBAC、audit、全领域管理工作流；
-- Rust/WASM Console UI；
-- metrics、logs、traces、profiles；
-- PostgreSQL 与 CockroachDB 独立兼容；
-- backup、PITR、restore、rolling upgrade、HA、security、capacity、endurance；
-- Nakama data migration、shadow、canary、cutover、rollback 和 retirement。
+插桩 oracle 必须证明在注入字段之外与 immutable oracle 一致。两端使用由同一 seed 克隆出的隔离数据库，禁止共享可写数据库。
 
-## 4. 明确排除
+差分捕获：wire bytes、HTTP/gRPC/RT status、headers、disconnect reason、DB row/invariant changes、events、hooks、logs/metrics，以及外部 effect intent/receipt。
 
-- Heroic Cloud 托管控制面和非公开 Enterprise 实现；
-- Satori/Hiro 产品本体；
-- 官方客户端 SDK 仓库源码重写；
-- World gameplay、Chain finality、CEX ledger/custody；
-- 已编译 Go `.so` plugin 的 ABI 兼容。
+Normalizer 只允许处理登记的 non-contract fields。user ID、authorization、ACL、sequence、amount、version、cursor、error code、durable effect 等字段永远禁止 normalize。
 
-这些排除项不得被扩大为对 Nakama OSS 公开能力的删减。
+## 5. 迁移唯一权威
 
-## 5. 不可违反的系统不变量
-
-1. 一个 session、party、match、scheduler job、purchase 或 durable command 在任一时刻只有一个写入权威。
-2. 外部网络工作不得跨越持有 mutable database transaction 的边界。
-3. 已确认响应对应的 durable state 不得在 crash、retry 或 failover 后丢失。
-4. 所有 retry 使用稳定 identity；同 identity 不同内容必须冲突。
-5. 所有异步边界必须有有界队列、deadline、cancellation 和 backpressure policy。
-6. stale owner/generation/fencing token 不得写入。
-7. Redis/cache/index 可重建；PostgreSQL/CockroachDB 是 durable truth。
-8. 权限、身份、顺序、金额、版本和错误码差异不得通过 normalizer 隐藏。
-9. migration、canary 和 rollback 不得形成未受控双写。
-10. 任何 P0/P1 未解释差异阻止兼容或发布升级。
-
-## 6. 目标架构
+迁移状态：
 
 ```text
-Official/Existing Nakama Client SDKs
-            |
-  HTTP/JSON | gRPC | WebSocket JSON/protobuf
-            |
-+-----------v--------------------------------------+
-| Edge and Protocol Gateway                       |
-| auth, limits, transcoding, CID, socket lifecycle|
-+-----------+--------------------------------------+
-            |
-+-----------v--------------------------------------+
-| Domain Services                                 |
-| identity | storage | social | competition | IAP |
-+-----------+------------------------+-------------+
-            |                        |
-+-----------v----------+  +----------v-------------+
-| Realtime Fabric      |  | Runtime Host           |
-| presence/chat/party  |  | Rust/WASM/Lua/JS       |
-| relay/match routing  |  | RPC/hooks/jobs/matches |
-+-----------+----------+  +----------+-------------+
-            |                        |
-+-----------v------------------------v-------------+
-| Ownership and Coordination                      |
-| matchmaker | actors | schedulers | leases/fences|
-+-----------+--------------------------------------+
-            |
-+-----------v--------------------------------------+
-| Data Plane                                       |
-| PostgreSQL/CockroachDB | index | outbox | cache  |
-+-----------+--------------------------------------+
-            |
-+-----------v--------------------------------------+
-| Console / Admin / Observability / Migration      |
-+--------------------------------------------------+
+nakama_primary
+ -> rust_shadow_no_effect
+ -> rust_canary_new_entities
+ -> rust_primary_new_entities
+ -> nakama_read_only
+ -> nakama_retired
 ```
 
-首轮可采用模块化单体部署，但 crate 边界和所有权必须支持后续拆分。禁止业务 crate 直接依赖 binary crate。
+- session refresh family、party、ticket、match、scheduler definition、IAP transaction 和 durable command 在任一时刻只有一个 writer；
+- shadow 不签发 token、不入真实 pool、不广播、不结算、不写权威状态；
+- API handler 不得同步双写两套业务系统；允许 source transaction 写 immutable outbox/CDC，由 target 幂等 apply；
+- active party/ticket/match 默认 drain，不进行未经版本化证明的热迁移；
+- rollback 只重新路由新实体；已在 Rust 中创建的 active entity 不跨权威来回切换。
 
-## 7. 差分 Oracle
+## 6. 执行模型
 
-每个兼容能力必须通过 Nakama oracle 与 Rust candidate 的差分测试：
+四层规划：
 
-1. 从相同种子构造隔离数据库；
-2. 固定或记录时间、随机数、provider replies 与 module fixtures；
-3. 发送相同 HTTP/gRPC/WebSocket 序列；
-4. 捕获 wire bytes、status、headers、database effects、events、hooks、metrics；
-5. 仅按登记过的 non-contract fields 归一化；
-6. 输出 typed divergence；
-7. 未解释 P0/P1 divergence 阻止 PR、canary 或 release。
+1. parity leaf；
+2. 2–12 周可关闭 task；
+3. W0–W16 workstream；
+4. SG0–SG9 stage gate。
 
-Oracle 必须同时保留“未经修改的官方镜像”与“最小可审计插桩镜像”，后者不能自行成为唯一事实来源。
+禁止以 LOC、crate 数、PR 数或未加权 task 数计算完成率。进度报告必须包含：specified/implemented/verified/production leaf coverage、open P0/P1 divergences、critical-path forecast、defect escape、performance budget、migration coverage、security finding age、evidence freshness、FTE/cost variance 和 upstream delta。
 
-## 8. 工作流
+## 7. Stage gates
+
+| Gate | 目标 | 退出条件 |
+| --- | --- | --- |
+| SG0 Repository Adoption | W0–W2 | history/refs retained、plan landed、rename evidence、governance owner |
+| SG1 Denominator Lock | M0–M3 | D0–D8 manifests、100% owner/task/test classification |
+| SG2 Oracle Reproducibility | M1–M4 | immutable/instrumented oracle、10 次 normalized hash 一致 |
+| SG3 Architecture Feasibility | M2–M6 | JS/Lua/runtime/query/DB/Console/migration spikes 与 ADR |
+| SG4 Foundation Alpha | M4–M9 | config/CLI/API/socket/DB skeleton 与 R1 evidence |
+| SG5 Core Services Differential | M9–M18 | identity/storage/social/competitive C2 mandatory leaves |
+| SG6 Realtime and Runtime Alpha | M16–M30 | presence/chat/party/matches/runtime C2 + isolation |
+| SG7 Full Feature Beta / Final Upstream Freeze | M26–M36 | IAP/Console/migration complete，冻结 1.0 final upstream |
+| SG8 Migration RC | M32–M48 | C3/C4、shadow zero unexplained P0/P1、restore/rollback |
+| SG9 Production Cutover | M42–M60 | security/perf/HA/endurance/canary 全通过，完成 retirement |
+
+任何 gate 失败都会保持当前 authority 和 claim，不得通过 waiver 绕开身份、金额、权限、持久化、双权威或数据损坏问题。
+
+## 8. 关键路径
+
+```text
+repository adoption
+ -> machine denominator
+ -> reproducible oracle
+ -> protocol/config/data primitives
+ -> identity + storage
+ -> realtime ownership
+ -> runtime engine compatibility
+ -> authoritative multiplayer
+ -> full data migration
+ -> shadow/canary
+ -> retirement
+```
+
+Runtime engine、realtime ownership、data migration 和 cutover 是不可通过普通 API 人力线性压缩的瓶颈。
+
+## 9. 工作流 W0–W16
 
 ### W0 — Governance and upstream truth source
-
-锁定上游 commits/trees/blobs；提取 API、RTAPI、Console、Runtime、Config/CLI、SQL 与 operations denominator；构建 oracle；建立许可证、CODEOWNERS、required checks 和 upstream delta bot。
+锁定 source/protocol/database/config/runtime manifests；实现 extractors、oracle、license registry、branch governance 和 upstream delta lane。
 
 ### W1 — Foundation, config, CLI and migrations
-
-Rust workspace、typed config、CLI、DB primitives、migration runner、logging/metrics/tracing、readiness、shutdown、local deployment。
+Rust workspace、typed config、CLI、PostgreSQL/CockroachDB primitives、expand/contract migration、observability、shutdown/readiness。
 
 ### W2 — HTTP, gRPC and realtime protocol core
-
-导入 pinned schemas，实现 HTTP transcoding、gRPC registration、WebSocket JSON/protobuf、limits、heartbeat、compression、disconnect 和 SDK runner。
+Pinned protobuf/OpenAPI、transcoding、gRPC、WebSocket JSON/protobuf、limits、heartbeat、compression、error/disconnect、SDK matrix。
 
 ### W3 — Authentication, sessions and accounts
-
-实现全部公开 provider、identity link/unlink、sessions、accounts、wallet/metadata、ban/restriction 和 socket revocation。
+全部公开 provider、link/unlink、session issue/refresh/logout/revoke、accounts、wallet/metadata、ban 和 socket revocation。
 
 ### W4 — Storage engine and search
-
-实现 object model、batch operations、ACL、OCC、cursors、query grammar、index、rebuild 与 lag operations。
+Batch storage、ACL、OCC、server-owned objects、cursor、query grammar、index、rebuild/lag。
 
 ### W5 — Friends, groups and social graph
-
-实现 friend edge state machine、block/import/notifications、groups、roles、requests、bans 与 deletion cleanup。
+Friend/group state machines、roles/requests/bans、provider imports、notifications、deletion cleanup。
 
 ### W6 — Presence, streams, chat and notifications
-
-实现 socket ownership、streams、status、chat、history、notifications、bounded fanout、route lookup 和 fencing。
+Socket ownership、streams/status、chat/history、notification delivery、bounded fanout、routing/fencing。
 
 ### W7 — Leaderboards and tournaments
-
-实现 definitions、records、ranks、cursors、reset scheduler、tournaments、rewards 与 hooks。
+Definitions、records、ranks、cursors、reset/end schedulers、hooks、rewards。
 
 ### W8 — Matchmaker and parties
-
-实现 query parser、tickets、pool、matching、processor hooks、parties、leadership 和 party matchmaking。
+Query parser、ticket pool、matching、processor hooks、party lifecycle、leadership、atomic party matchmaking。
 
 ### W9 — Client-relayed multiplayer
-
-实现 match create/join/leave/list、tokens、presence、data routing、recipient filtering、node routing 与 cleanup。
+Create/join/leave/list、tokens、presence、match data routing、recipient filtering、node route、cleanup。
 
 ### W10 — Server-authoritative multiplayer
-
-实现 callback lifecycle、tick scheduler、dispatcher、signals、termination、limits、generation fencing、placement 和 optional durable snapshots。
+Lifecycle callbacks、fixed tick、dispatcher、signals、termination、generation fencing、placement、resource limits、optional snapshots。
 
 ### W11 — Runtime framework and module migration
-
-提取完整 runtime denominator；实现 Rust SDK、WASM、Lua、JS/TS、RPC/HTTP/Console handlers、hooks、module APIs、jobs、module ordering 和 Go source migration。
+Runtime denominator、Rust SDK、WASM extension、Lua/JS compatibility、RPC/hooks/module APIs/jobs、module ordering、Go source migration。
 
 ### W12 — IAP and subscriptions
-
-实现 provider validation、persistence、refund/void/renewal、notifications、retry、circuit breaker 和 key rotation。
+Provider validation、persistence、refund/void/renewal、notifications、idempotent effect model、timeouts/circuit breakers/key rotation。
 
 ### W13 — Console API and Rust/WASM UI
-
-实现 Console denominator、auth、roles、domain APIs、data views、dangerous actions、audit、accessibility 和 responsive UI。
+Console methods、auth/RBAC、domain APIs、audit、dangerous-action approval、large-data workflows、accessibility。
 
 ### W14 — Data migration and compatibility
-
-实现 schema introspection、planner、backfills、receipts、change capture/freeze modes、dual-read comparator、rollback exporter 和 active entity disposition。
+Schema introspection、snapshot/backfill/CDC、receipts、semantic comparator、write fence、rollback exporter、active entity disposition。
 
 ### W15 — Observability, security and operations
-
-实现 telemetry、redaction、rate/abuse controls、TLS/mTLS、key rotation、backup/PITR、SBOM/provenance、threat models、fuzz、penetration test 和 incident runbooks。
+Telemetry、redaction/privacy、rate/abuse、TLS/mTLS、key rotation、backup/PITR、supply chain、fuzz/pentest、incident runbooks。
 
 ### W16 — Performance, HA, release and retirement
+Oracle benchmark、capacity profiles、multi-node failover/fencing、rolling upgrades、shadow/canary、24h/72h/7d endurance、cutover/retirement。
 
-建立 benchmark oracle、单节点与多节点预算、placement/failover/fencing、rolling upgrade、shadow、canary、endurance、cutover、rollback 和 Nakama retirement。
+## 10. Risk-first technical spikes（前 12 周）
 
-## 9. 里程碑
+必须在扩大实现前完成：
 
-| 时间窗口 | 里程碑 | 必须交付 |
-| --- | --- | --- |
-| M0–M3 | R0 Plan/Spec Freeze | denominator、oracle、ADR、license、CI |
-| M1–M6 | R1 Foundation | workspace、config、CLI、DB、observability |
-| M3–M9 | Protocol Alpha | HTTP/gRPC/WebSocket 与 SDK skeleton |
-| M4–M12 | R2 Stateless API Alpha | auth/session/account differential |
-| M6–M18 | R3 Persistent Systems Alpha | storage/social/competitive |
-| M9–M22 | R4 Realtime Alpha | presence/chat/party/relay |
-| M12–M30 | R5 Authoritative + Runtime Alpha | matchmaker/matches/runtime engines |
-| M18–M32 | R6 Full Feature Beta | IAP/Console/full denominator |
-| M18–M36 | Migration RC | schema/data migration and dual read |
-| M24–M42 | Scale/Security RC | HA/capacity/endurance/security |
-| M36–M48 | R8 Production | canary/cutover/retirement |
+- HTTP/gRPC JSON transcoding exactness；
+- JWT/session/refresh/logout/socket revoke；
+- JavaScript Goja corpus 对候选引擎；
+- Lua GopherLua corpus 对候选引擎；
+- WASM capability/fuel/memory model；
+- 组织现有 Go module inventory；
+- PostgreSQL/CockroachDB transaction/OCC/scheduler semantics；
+- storage/group/matchmaker query architecture；
+- WebSocket/presence/fanout at 100k synthetic sockets；
+- authoritative tick scheduler isolation；
+- online migration/write fence/rollback；
+- Rust/WASM Console 大数据/RBAC/accessibility。
 
-该时间线是范围完整时的规划，不是上线承诺。任何缩短只能通过明确修改 denominator 和版本声明，不能删除测试、迁移或安全证据。
+Spike 只能关闭 feasibility risk，不能获得 parity 或 production credit。No-Go 必须触发 ADR 和 P80 重估。
 
-## 10. 团队
+## 11. 容量、SLO 与成本
 
-峰值建议：
+不使用孤立的“百万连接”作为默认承诺。环境选择 DEV、COMPAT、PROD-S、PROD-M 或 STRETCH profile，并绑定硬件、地域、DB、用户模型和预算。
 
-- 1 Program Director；
-- 2 Principal/Staff Architects；
-- 6 API/identity/persistence Rust engineers；
-- 6 realtime/distributed-systems Rust engineers；
-- 4 runtime/VM/compiler engineers；
-- 3 database/data-migration engineers；
-- 3 Console Rust/WASM engineers；
-- 3 SRE/platform/security engineers；
-- 4 QA/performance/compatibility engineers；
-- technical writing、legal/privacy/payment specialists 按阶段加入。
+必须量化：API availability/error budget、auth/storage/social p50/p95/p99、RT ingress-to-delivery、reconnect、ghost cleanup、tick jitter/overrun、matchmaker time-to-match/fairness、DB pool/txn retry/replication lag、index lag、RPO/RTO、cost per CCU/request/match-hour/GB-month。
 
-安全、数据、Runtime、IAP、Console 和 authority changes 至少需要双人 review。
+性能对比以同硬件 pinned Nakama oracle 为基线；correctness、security 和 durability 不得为性能让步。
 
-## 11. 初始验收与发布门禁
+## 12. 计划与资源
 
-`TrillionniumGame 1.0` 只有在以下全部完成后才可称为生产替换：
+- P50：48 个月；
+- P80：60 个月；
+- 峰值：28–36 FTE；
+- 初始资源包络：950–1,350 person-months，加 25% contingency；
+- M0–M3：8–12 FTE；M4–M9：16–22；M10–M18：24–32；M19–M30：28–36；M31–M42：24–32；M43–M60：14–24。
 
-- 完整机器 denominator 已生成且无静默缺口；
-- HTTP/gRPC/WebSocket/SDK 差分通过；
-- schema/data migration count/hash/semantic validation 通过；
-- Runtime APIs 与代表性 Lua/JS/Go-source migrations 通过；
-- realtime ownership、fencing 和 failure safety 通过；
-- IAP provider safety 通过；
-- Console/RBAC/audit 通过；
-- security/fuzz/key rotation 通过；
-- capacity/latency/endurance 通过；
-- backup/HA/upgrade/rollback 通过；
-- shadow/canary/cutover 通过；
-- Nakama 已无新流量、无 active owner、私钥已撤销、历史证据仍可验证。
+SG1/SG3 后必须以真实 leaf count、spike、velocity 和 defect data 重估。若超过包络，只能增加资源、延长时间或用 ADR 明确改变 profile；不得降低证据标准。
 
-## 12. 首 90 天
+## 13. Product gates
 
-1. 安全接管现有仓库，不强推、不丢历史；
-2. 锁定上游 source/protocol/database/config/runtime manifests；
-3. 建立未修改 oracle 与插桩 oracle；
-4. 生成 API、RTAPI、Console、Runtime、Config/CLI、SQL denominator；
-5. 建 Rust workspace 与 CI；
-6. 做 Runtime JS/Lua engine bake-off；
-7. 做 PostgreSQL/CockroachDB transaction semantics spike；
-8. 做 provider sandbox availability spike；
-9. 完成 device/custom authentication vertical slice；
-10. 完成 session refresh/logout；
-11. 完成 storage OCC vertical slice；
-12. 完成 WebSocket handshake/presence vertical slice；
-13. 完成 differential harness v1；
-14. 发布第一份 exact evidence manifest；
-15. 在 90 天评审中重新给出 P50/P80 预算和关键路径。
+所有门禁初始为 open：repository、scope、oracle、protocol、data、runtime、realtime、IAP、Console、privacy、security、performance、operations、upstream delta、cutover。
 
-## 13. Definition of Done
+关闭 gate 的 evidence 必须包含：evidence ID、gate、source commit/tree、artifact digests、environment lock、commands、timestamps、result、limitations、reviewers、expiry。
 
-每项工作必须同时具备：owner、reviewer、scope、Rust implementation、protocol/data impact、unit/property/fuzz、oracle differential、concurrency/retry/failure tests、metrics/logs/traces、security/privacy review、migration/rollback、current docs、exact commit CI evidence、residual limitations。
+## 14. 首 90 天
 
-代码存在、happy path 通过、本机运行、单一 SDK 成功或人工截图均不能独立关闭 parity 项。
+1. 保留 repository ID、history、branches、PR 和 Actions evidence；完成仓库重命名与治理快照；
+2. 建 D0–D8 extractors 和 `denominator.lock.json`；
+3. 建 immutable/instrumented Nakama oracle；
+4. 完成 12 个技术尖峰及 ADR；
+5. 建 Rust workspace、CI、DB/config/protocol skeleton；
+6. 完成 device/custom auth、session refresh/logout、storage OCC、WebSocket handshake/presence 四个 vertical slices；
+7. 建 differential harness v1 和 evidence schema；
+8. 发布 SG1/SG2 评审，重新给出 P50/P80、预算和关键路径。
+
+在 SG1–SG3 未通过前，不进行大规模 endpoint translation。
+
+## 15. Definition of Ready / Done
+
+Task Ready：owner、reviewers、dependencies、effort、parity IDs、gates、risks、deliverables、acceptance、rollback 和 evidence paths 完整。
+
+Task Done：Rust implementation；unit/property/fuzz；oracle differential；concurrency/retry/failure；metrics/logs/traces；security/privacy；migration/rollback；current docs；exact commit CI evidence；residual limitations。仅有代码、happy path、本机成功或人工截图不能关闭 task。
+
+## 16. 规范入口
+
+- `docs/development/PLAN_AUDIT_2026-08-28.md`
+- `docs/development/PARITY_DENOMINATOR_SPEC.md`
+- `docs/development/ORACLE_AND_DIFFERENTIAL_SPEC.md`
+- `docs/development/COMPATIBILITY_PROFILES.md`
+- `docs/development/PROGRAM_EXECUTION_MODEL.md`
+- `docs/development/CRITICAL_PATH_AND_STAGE_GATES.md`
+- `docs/development/MIGRATION_AUTHORITY_MATRIX.md`
+- `docs/development/DATA_MIGRATION_STATE_MACHINE.md`
+- `docs/development/CAPACITY_AND_SLO_SPEC.md`
+- `docs/development/TECHNICAL_SPIKES.md`
+- `docs/development/EVIDENCE_MODEL.md`
+- `docs/status/PRODUCT_GATES.json`
+- `docs/status/RISK_REGISTER.json`
+- `docs/status/SERVICE_LEVEL_OBJECTIVES.json`
+- `docs/development/backlog/`

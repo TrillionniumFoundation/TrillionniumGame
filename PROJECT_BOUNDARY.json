@@ -1,27 +1,15 @@
 {
-  "schema": "trillionnium.project-boundary.v1",
+  "schema": "trillionnium.project-boundary.v2",
   "project_id": "trillionnium-game",
-  "repository": "TrillionniumFoundation/TrillionniumGame",
+  "current_repository": "TrillionniumFoundation/Trillionnium-Nakama",
+  "target_repository": "TrillionniumFoundation/TrillionniumGame",
+  "repository_id": 1323087470,
   "lane": "game-backend-platform",
-  "lifecycle": "planning",
+  "lifecycle": "planning-v2",
   "language_boundary": {
-    "first_party_production_services": [
-      "rust"
-    ],
-    "generated_or_declarative": [
-      "protobuf",
-      "openapi",
-      "sql",
-      "html",
-      "css",
-      "yaml",
-      "json"
-    ],
-    "forbidden_final_runtime_dependencies": [
-      "go-service",
-      "go-sidecar",
-      "compiled-go-plugin-loader"
-    ]
+    "first_party_production_services": ["rust"],
+    "generated_or_declarative": ["protobuf", "openapi", "sql", "html", "css", "yaml", "json"],
+    "forbidden_final_runtime_dependencies": ["go-service", "go-sidecar", "compiled-go-plugin-loader"]
   },
   "owns": [
     "nakama-oss-functional-parity",
@@ -39,12 +27,14 @@
     "world-gameplay-rules",
     "chain-consensus-finality",
     "cex-ledger-custody",
-    "cross-repository-release-orchestration"
+    "cross-repository-release-orchestration",
+    "compiled-go-plugin-abi"
   ],
   "scope": {
     "nakama_oss_full_reimplementation": true,
     "initial_compatibility_baseline": "heroiclabs/nakama@v3.40.0",
-    "enterprise_or_hosted_private_implementations": false
+    "enterprise_or_hosted_private_implementations": false,
+    "parity_source_of_truth": "generated-leaf-denominators"
   },
   "language_policy": {
     "production_first_party": "rust",
@@ -52,5 +42,11 @@
     "go_sidecar_allowed": false,
     "compiled_go_plugin_loader_allowed": false,
     "go_module_source_migration_required": true
+  },
+  "claims": {
+    "current_level": "C0-planning",
+    "drop_in_replacement": false,
+    "production_ready": false,
+    "nakama_retired": false
   }
 }

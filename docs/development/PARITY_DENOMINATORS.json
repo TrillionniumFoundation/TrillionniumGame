@@ -1,0 +1,21 @@
+{
+  "schema": "trillionnium.parity-denominator-registry.v1",
+  "project_id": "trillionnium-game",
+  "status": "not-extracted",
+  "baseline": "nakama-v3.40.0",
+  "capability_index": "docs/development/FEATURE_PARITY_MATRIX.md",
+  "denominators": [
+    {"id":"DEN-API","name":"HTTP/gRPC API methods","status":"planned","sources":["heroiclabs/nakama:apigrpc/apigrpc.proto","heroiclabs/nakama:apigrpc/apigrpc.swagger.json"],"extractor_task":"TG-W0-002","output":"manifests/upstream/api-methods.json","leaf_count":null,"manifest_sha256":null,"unclassified_allowed":false},
+    {"id":"DEN-RTAPI","name":"Realtime messages and envelopes","status":"planned","sources":["heroiclabs/nakama-common:rtapi/realtime.proto"],"extractor_task":"TG-W0-002","output":"manifests/upstream/rtapi-messages.json","leaf_count":null,"manifest_sha256":null,"unclassified_allowed":false},
+    {"id":"DEN-RUNTIME","name":"Runtime functions, hooks and context","status":"planned","sources":["heroiclabs/nakama-common:runtime","heroiclabs/nakama:server/runtime_*"],"extractor_task":"TG-W0-002","output":"manifests/upstream/runtime-surface.json","leaf_count":null,"manifest_sha256":null,"unclassified_allowed":false},
+    {"id":"DEN-CONFIG","name":"Config keys/defaults/validation","status":"planned","sources":["heroiclabs/nakama:server/config.go","heroiclabs/nakama:flags"],"extractor_task":"TG-W0-002","output":"manifests/upstream/config-keys.json","leaf_count":null,"manifest_sha256":null,"unclassified_allowed":false},
+    {"id":"DEN-CLI","name":"CLI commands/flags/exit behavior","status":"planned","sources":["heroiclabs/nakama:main.go","heroiclabs/nakama:flags","heroiclabs/nakama:migrate"],"extractor_task":"TG-W0-002","output":"manifests/upstream/cli-surface.json","leaf_count":null,"manifest_sha256":null,"unclassified_allowed":false},
+    {"id":"DEN-DB","name":"Schema, migrations, indexes and constraints","status":"planned","sources":["heroiclabs/nakama:server/db.go","heroiclabs/nakama:migrate"],"extractor_task":"TG-W0-002","output":"manifests/upstream/database-surface.json","leaf_count":null,"manifest_sha256":null,"unclassified_allowed":false},
+    {"id":"DEN-CONSOLE","name":"Console API, ACL and operator actions","status":"planned","sources":["heroiclabs/nakama:console/console.proto","heroiclabs/nakama:console/api.swagger.json","heroiclabs/nakama:console/acl"],"extractor_task":"TG-W0-002","output":"manifests/upstream/console-surface.json","leaf_count":null,"manifest_sha256":null,"unclassified_allowed":false},
+    {"id":"DEN-METRICS","name":"Metrics names, labels and health signals","status":"planned","sources":["heroiclabs/nakama:server/metrics.go","heroiclabs/nakama:server/status.go"],"extractor_task":"TG-W0-002","output":"manifests/upstream/metrics-surface.json","leaf_count":null,"manifest_sha256":null,"unclassified_allowed":false},
+    {"id":"DEN-IAP","name":"IAP providers, states and callbacks","status":"planned","sources":["heroiclabs/nakama:iap","heroiclabs/nakama:server/api_purchase.go","heroiclabs/nakama:server/api_subscription.go"],"extractor_task":"TG-W0-002","output":"manifests/upstream/iap-surface.json","leaf_count":null,"manifest_sha256":null,"unclassified_allowed":false},
+    {"id":"DEN-SDK","name":"Official SDK versions and operations","status":"planned","sources":["official-sdk-lock"],"extractor_task":"TG-W0-002","output":"manifests/upstream/sdk-matrix.json","leaf_count":null,"manifest_sha256":null,"unclassified_allowed":false},
+    {"id":"DEN-DATA","name":"Persisted domain entities and semantic invariants","status":"planned","sources":["DEN-DB","server domain SQL"],"extractor_task":"TG-W0-002","output":"manifests/upstream/data-semantics.json","leaf_count":null,"manifest_sha256":null,"unclassified_allowed":false},
+    {"id":"DEN-OPS","name":"Packaging, startup, shutdown, backup and upgrade behaviors","status":"planned","sources":["heroiclabs/nakama:build","heroiclabs/nakama:docker-compose*.yml","server startup"],"extractor_task":"TG-W0-002","output":"manifests/upstream/operations-surface.json","leaf_count":null,"manifest_sha256":null,"unclassified_allowed":false}
+  ]
+}
