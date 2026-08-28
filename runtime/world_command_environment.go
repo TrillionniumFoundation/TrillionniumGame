@@ -19,6 +19,7 @@ var worldCommandEnvironmentKeys = []string{
 	envWorldRulesetHash,
 	envWorldContentHash,
 	envWorldInitialStateHash,
+	envWorldChallengeHash,
 	envWorldFaultLab,
 	envWorldFailpoint,
 }
