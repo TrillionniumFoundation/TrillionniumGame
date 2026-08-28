@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/runtime/engine-corpus.v1.schema.json",
+  "title": "Trillionnium runtime engine corpus v1",
+  "type": "object",
+  "required": ["schema", "cases", "claims"],
+  "properties": {
+    "schema": {"const": "trillionnium.runtime-engine-corpus.v1"},
+    "cases": {
+      "type": "array",
+      "minItems": 20,
+      "items": {
+        "type": "object",
+        "required": ["id", "engine", "category", "source", "input_sha256"]
+      }
+    },
+    "claims": {"type": "object"}
+  }
+}
