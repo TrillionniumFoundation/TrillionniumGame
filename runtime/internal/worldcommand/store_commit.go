@@ -2,11 +2,40 @@ package worldcommand
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 )
 
+// CommitPersister atomically persists a candidate World-command snapshot and
+// any owner-defined sidecar state. The callback receives the exact store key,
+// expected CAS version, serialized candidate, receipt, and candidate authority
+// state. It must return a new concrete version only after all sidecar writes
+// have committed. A failure must leave every sidecar unchanged.
+type CommitPersister func(
+	ctx context.Context,
+	key string,
+	expectedVersion string,
+	candidatePayload []byte,
+	receipt Receipt,
+	candidateState MatchState,
+) (string, error)
+
 func (s *Store) Commit(ctx context.Context, reservation Reservation, verified VerifiedTransition, now time.Time) (Receipt, error) {
+	return s.CommitWith(ctx, reservation, verified, now, nil)
+}
+
+// CommitWith applies exact stale fencing and persists the resulting candidate
+// through persister. When persister is nil, the Store's configured backend is
+// used. External World execution must already be complete before this method is
+// entered; the callback is reserved for local atomic persistence only.
+func (s *Store) CommitWith(
+	ctx context.Context,
+	reservation Reservation,
+	verified VerifiedTransition,
+	now time.Time,
+	persister CommitPersister,
+) (Receipt, error) {
 	if now.IsZero() || now.Unix() < 0 {
 		return Receipt{}, fmt.Errorf("%w: commit time is invalid", ErrInvalidState)
 	}
@@ -99,9 +128,31 @@ func (s *Store) Commit(ctx context.Context, reservation Reservation, verified Ve
 
 	delete(candidate.Reservations, current.ClientCommandID)
 	candidate.Receipts[current.ClientCommandID] = receipt
-	if err := s.persistDocumentLocked(ctx, candidate); err != nil {
-		return Receipt{}, err
+	payload, err := json.Marshal(candidate)
+	if err != nil {
+		return Receipt{}, fmt.Errorf("encode World command store: %w", err)
 	}
+
+	var nextVersion string
+	if persister == nil {
+		nextVersion, err = s.backend.CompareAndSwap(ctx, s.key, s.version, payload)
+	} else {
+		nextVersion, err = persister(
+			ctx,
+			s.key,
+			s.version,
+			append([]byte(nil), payload...),
+			cloneReceipt(receipt),
+			cloneMatchState(candidate.State),
+		)
+	}
+	if err != nil {
+		return Receipt{}, fmt.Errorf("persist World command commit: %w", err)
+	}
+	if nextVersion == "" {
+		return Receipt{}, fmt.Errorf("persist World command commit returned no version")
+	}
+	s.version = nextVersion
 	s.installDocumentLocked(candidate)
 	return cloneReceipt(receipt), nil
 }
