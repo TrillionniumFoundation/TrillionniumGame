@@ -1,0 +1,33 @@
+{
+  "schema": "trillionnium.presence-router-status.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-level-candidate",
+  "implemented": [
+    "connection identity and limits",
+    "node and route generation fencing",
+    "presence join leave and cleanup",
+    "user revocation epoch fanout",
+    "session close fanout",
+    "node drain",
+    "idle expiry selection",
+    "outbound queue budgets"
+  ],
+  "not_implemented": [
+    "WebSocket server",
+    "JSON/protobuf envelopes",
+    "distributed route registry",
+    "cross-node fanout",
+    "heartbeat scheduler",
+    "reconnect cursor",
+    "load and failover evidence"
+  ],
+  "claims": {
+    "socket_implemented": false,
+    "presence_compatible": false,
+    "socket_lifecycle_compatible": false,
+    "multi_node_verified": false,
+    "c2_earned": false,
+    "production_ready": false,
+    "public_online": false
+  }
+}

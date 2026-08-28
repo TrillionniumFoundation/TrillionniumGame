@@ -4,6 +4,7 @@ members = [
   "crates/trnm-authority-core",
   "crates/trnm-session-core",
   "crates/trnm-storage-core",
+  "crates/trnm-presence-core",
 ]
 resolver = "2"
 
