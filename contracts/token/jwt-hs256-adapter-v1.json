@@ -1,0 +1,96 @@
+{
+  "schema": "trillionnium.game.jwt-hs256-adapter.v1",
+  "version": 1,
+  "algorithm": "HS256",
+  "encoded_shape": {
+    "segments": 3,
+    "base64url_padding": false,
+    "canonical_trailing_bits": true,
+    "maximum_token_bytes": 32768,
+    "maximum_header_bytes": 1024,
+    "maximum_payload_bytes": 16384
+  },
+  "routes": {
+    "legacy": {
+      "key_id_header": "absent",
+      "key_epoch_payload_claim": "forbidden",
+      "fallback_from_malformed_key_id": false,
+      "claim_mapping": "caller_supplied_and_contract_pinned"
+    },
+    "epoch": {
+      "key_id_header_prefix": "trnm-kep-v1:",
+      "minimum_epoch": 1,
+      "key_epoch_payload_claim": "trnm_kep",
+      "header_payload_epoch_match": "required",
+      "unknown_epoch_fallback_to_legacy": false
+    }
+  },
+  "verification_order": [
+    "bound_total_token_length",
+    "split_exactly_three_nonempty_segments",
+    "decode_and_strictly_parse_bounded_header",
+    "require_alg_exactly_HS256",
+    "reject_crit_and_detached_payload_headers",
+    "select_exact_legacy_or_epoch_key",
+    "decode_exact_32_byte_signature",
+    "verify_HMAC_SHA256_over_original_encoded_header_dot_payload",
+    "decode_and_strictly_parse_bounded_payload",
+    "validate_header_payload_epoch_binding",
+    "validate_exp_nbf_iat_lifetime_issuer_audience",
+    "project_bounded_principal_and_string_variables"
+  ],
+  "strict_json": {
+    "duplicate_object_keys": "rejected_at_every_depth",
+    "floating_point_numbers": "rejected",
+    "integer_range": "signed_or_unsigned_64_bit",
+    "invalid_utf8": "rejected",
+    "lone_utf16_surrogate": "rejected",
+    "canonical_object_order": "utf8_key_lexicographic"
+  },
+  "key_policy": {
+    "minimum_key_bytes": 16,
+    "maximum_key_bytes": 4096,
+    "key_material_debug_output": "redacted",
+    "key_material_drop": "zero_filled",
+    "signature_comparison": "constant_time_for_equal_32_byte_inputs"
+  },
+  "principal_projection": {
+    "subject": "required_nonempty_bounded_string",
+    "username": "profile_optional_or_required_bounded_string",
+    "token_id": "profile_optional_bounded_string",
+    "variables": "bounded_object_of_bounded_string_pairs"
+  },
+  "forbidden": [
+    "alg_none",
+    "algorithm_negotiation",
+    "RS_HS_key_confusion",
+    "unverified_payload_decode_api",
+    "malformed_kid_legacy_fallback",
+    "unknown_epoch_legacy_fallback",
+    "epoch_claim_on_legacy_route",
+    "legacy_token_with_implicit_epoch",
+    "base64_padding",
+    "duplicate_json_claims",
+    "floating_point_numeric_date",
+    "empty_subject",
+    "unbounded_variables"
+  ],
+  "evidence": {
+    "rust_manifest": "crates/trnm-token-jwt-adapter-gate/Cargo.toml",
+    "black_box_tests": "crates/trnm-token-jwt-adapter-gate/tests/adapter.rs",
+    "python_reference": "scripts/test-jwt-hs256-adapter-v1.py"
+  },
+  "compatibility": {
+    "legacy_claim_mapping_is_configurable": true,
+    "official_nakama_claim_mapping_frozen": false,
+    "official_nakama_golden_tokens_verified": false,
+    "dual_read_shadow_traffic_verified": false
+  },
+  "maturity": {
+    "source_contract": true,
+    "rust_unit_and_black_box_gate": false,
+    "python_cross_implementation_gate": false,
+    "external_crypto_review": false,
+    "production_ready": false
+  }
+}
