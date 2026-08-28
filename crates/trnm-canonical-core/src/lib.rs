@@ -437,8 +437,10 @@ mod tests {
                 vec![CanonicalValue::Null],
             )])]);
         let frame = CanonicalFrame::new("limit.depth", version(), &nested).unwrap();
-        let mut limits = CanonicalLimits::default();
-        limits.max_depth = 1;
+        let limits = CanonicalLimits {
+            max_depth: 1,
+            ..CanonicalLimits::default()
+        };
         assert_eq!(
             encode_canonical(frame, limits).unwrap_err().reason(),
             "canonical_depth_limit_exceeded"
@@ -446,16 +448,20 @@ mod tests {
 
         let value = CanonicalValue::Array(vec![CanonicalValue::Null; 3]);
         let frame = CanonicalFrame::new("limit.nodes", version(), &value).unwrap();
-        let mut limits = CanonicalLimits::default();
-        limits.max_nodes = 2;
+        let limits = CanonicalLimits {
+            max_nodes: 2,
+            ..CanonicalLimits::default()
+        };
         assert_eq!(
             encode_canonical(frame, limits).unwrap_err().reason(),
             "canonical_node_limit_exceeded"
         );
 
         let frame = CanonicalFrame::new("limit.collection", version(), &value).unwrap();
-        let mut limits = CanonicalLimits::default();
-        limits.max_collection_items = 2;
+        let limits = CanonicalLimits {
+            max_collection_items: 2,
+            ..CanonicalLimits::default()
+        };
         assert_eq!(
             encode_canonical(frame, limits).unwrap_err().reason(),
             "canonical_collection_limit_exceeded"
@@ -463,8 +469,10 @@ mod tests {
 
         let value = CanonicalValue::Bytes(vec![1; 128]);
         let frame = CanonicalFrame::new("limit.output", version(), &value).unwrap();
-        let mut limits = CanonicalLimits::default();
-        limits.max_output_bytes = 32;
+        let limits = CanonicalLimits {
+            max_output_bytes: 32,
+            ..CanonicalLimits::default()
+        };
         assert_eq!(
             encode_canonical(frame, limits).unwrap_err().reason(),
             "canonical_output_limit_exceeded"
