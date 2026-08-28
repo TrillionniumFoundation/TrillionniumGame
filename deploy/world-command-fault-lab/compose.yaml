@@ -1,0 +1,115 @@
+services:
+  tls-init:
+    build:
+      context: ../../runtime
+      dockerfile: Dockerfile.faultlab
+      args:
+        TRNM_FAULTLAB_BINARY: trnm-tls-fixture
+    environment:
+      TRNM_TLS_FIXTURE_OUTPUT_DIR: /certs
+    volumes:
+      - fault-certs:/certs
+    networks:
+      - backend
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  world-fixture:
+    build:
+      context: ../../runtime
+      dockerfile: Dockerfile.faultlab
+      args:
+        TRNM_FAULTLAB_BINARY: trnm-world-transition-fixture
+    environment:
+      TRNM_WORLD_FIXTURE_LISTEN: :7443
+      TRNM_WORLD_FIXTURE_TLS_CERT: /certs/world.pem
+      TRNM_WORLD_FIXTURE_TLS_KEY: /certs/world-key.pem
+      TRNM_WORLD_FIXTURE_BEARER_TOKEN: ${TRNM_WORLD_FIXTURE_BEARER_TOKEN:?set TRNM_WORLD_FIXTURE_BEARER_TOKEN}
+      TRNM_WORLD_FIXTURE_CACHE_DIR: /cache
+    volumes:
+      - fault-certs:/certs:ro
+      - world-fixture-cache:/cache
+    depends_on:
+      tls-init:
+        condition: service_completed_successfully
+    networks:
+      - backend
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  response-drop-proxy:
+    build:
+      context: ../../runtime
+      dockerfile: Dockerfile.faultlab
+      args:
+        TRNM_FAULTLAB_BINARY: trnm-response-drop-proxy
+    environment:
+      TRNM_RESPONSE_PROXY_LISTEN: :7444
+      TRNM_RESPONSE_PROXY_TLS_CERT: /certs/proxy.pem
+      TRNM_RESPONSE_PROXY_TLS_KEY: /certs/proxy-key.pem
+      TRNM_RESPONSE_PROXY_UPSTREAM_URL: https://world-fixture:7443/v1/transition
+      TRNM_RESPONSE_PROXY_UPSTREAM_CA: /certs/ca.pem
+      TRNM_WORLD_FIXTURE_BEARER_TOKEN: ${TRNM_WORLD_FIXTURE_BEARER_TOKEN:?set TRNM_WORLD_FIXTURE_BEARER_TOKEN}
+      TRNM_RESPONSE_PROXY_CONTROL_TOKEN: ${TRNM_RESPONSE_PROXY_CONTROL_TOKEN:?set TRNM_RESPONSE_PROXY_CONTROL_TOKEN}
+    volumes:
+      - fault-certs:/certs:ro
+    depends_on:
+      tls-init:
+        condition: service_completed_successfully
+      world-fixture:
+        condition: service_started
+    ports:
+      - 127.0.0.1:${TRNM_FAULT_PROXY_PORT:-17444}:7444
+    networks:
+      - backend
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  nakama:
+    environment:
+      TRNM_WORLD_COMMAND_PROFILE: world_transition_v1
+      TRNM_WORLD_TRANSITION_URL: https://response-drop-proxy:7444/v1/transition
+      TRNM_WORLD_TRANSITION_BEARER_TOKEN: ${TRNM_WORLD_FIXTURE_BEARER_TOKEN:?set TRNM_WORLD_FIXTURE_BEARER_TOKEN}
+      TRNM_WORLD_TRANSITION_CA_PATH: /run/trnm/world/ca.pem
+      TRNM_WORLD_TRANSITION_TIMEOUT_MS: ${TRNM_WORLD_TRANSITION_TIMEOUT_MS:-15000}
+      TRNM_WORLD_TRANSITION_MAX_RESPONSE_BYTES: ${TRNM_WORLD_TRANSITION_MAX_RESPONSE_BYTES:-4194304}
+      TRNM_WORLD_RULESET_REVISION: ${TRNM_WORLD_RULESET_REVISION:?set TRNM_WORLD_RULESET_REVISION}
+      TRNM_WORLD_CONTENT_REVISION: ${TRNM_WORLD_CONTENT_REVISION:?set TRNM_WORLD_CONTENT_REVISION}
+      TRNM_WORLD_STATE_SCHEMA_ID: ${TRNM_WORLD_STATE_SCHEMA_ID:?set TRNM_WORLD_STATE_SCHEMA_ID}
+      TRNM_WORLD_COMMAND_SCHEMA_ID: ${TRNM_WORLD_COMMAND_SCHEMA_ID:?set TRNM_WORLD_COMMAND_SCHEMA_ID}
+      TRNM_WORLD_INITIAL_STATE_JSON_BASE64: ${TRNM_WORLD_INITIAL_STATE_JSON_BASE64:?set TRNM_WORLD_INITIAL_STATE_JSON_BASE64}
+      TRNM_WORLD_INITIAL_TICK: ${TRNM_WORLD_INITIAL_TICK:-0}
+      TRNM_WORLD_RULESET_HASH: ${TRNM_WORLD_RULESET_HASH:?set TRNM_WORLD_RULESET_HASH}
+      TRNM_WORLD_CONTENT_HASH: ${TRNM_WORLD_CONTENT_HASH:?set TRNM_WORLD_CONTENT_HASH}
+      TRNM_WORLD_INITIAL_STATE_HASH: ${TRNM_WORLD_INITIAL_STATE_HASH:?set TRNM_WORLD_INITIAL_STATE_HASH}
+      TRNM_WORLD_COMMAND_FAULT_LAB: "1"
+      TRNM_WORLD_COMMAND_FAILPOINT: ${TRNM_WORLD_COMMAND_FAILPOINT:-}
+    volumes:
+      - fault-certs:/run/trnm/world:ro
+    depends_on:
+      tls-init:
+        condition: service_completed_successfully
+      response-drop-proxy:
+        condition: service_started
+
+volumes:
+  fault-certs:
+  world-fixture-cache:
