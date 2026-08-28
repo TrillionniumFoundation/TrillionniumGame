@@ -1,0 +1,30 @@
+{
+  "schema": "trillionnium.canonical-framing-v1",
+  "magic_ascii": "TRNMCAN1",
+  "accepted": [
+    {
+      "id": "sorted-object",
+      "domain": "match.command",
+      "version": {"major": 1, "minor": 0},
+      "value": {"object": [["b", {"bool": true}], ["a", {"i64": 1}]]},
+      "expected_hex": "54524e4d43414e31000d6d617463682e636f6d6d616e640001000007000000020000000161030000000000000001000000016202"
+    },
+    {
+      "id": "bytes-array",
+      "domain": "event.payload",
+      "version": {"major": 1, "minor": 2},
+      "value": {"array": [{"bytes_hex": "00ff"}, {"string": "世界"}, null]}
+    }
+  ],
+  "rejected": [
+    {"id": "duplicate-key", "reason": "duplicate_canonical_object_key"},
+    {"id": "float-unrepresentable", "reason": "canonical type has no float variant"},
+    {"id": "invalid-domain", "domain": "Bad/Domain", "reason": "invalid_canonical_domain"}
+  ],
+  "claims": {
+    "wire_compatible": false,
+    "signature_compatible": false,
+    "sg3_complete": false,
+    "production_ready": false
+  }
+}
