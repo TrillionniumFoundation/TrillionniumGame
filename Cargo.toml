@@ -5,6 +5,18 @@ members = [
   "crates/trnm-session-core",
   "crates/trnm-storage-core",
   "crates/trnm-persistence-core",
+  "crates/trnm-persistence-pg",
+  "crates/trnm-canonical-core",
+  "crates/trnm-transport-core",
+  "crates/trnm-token-core",
+  "crates/trnm-presence-core",
+  "crates/trnm-query-core",
+]
+exclude = [
+  "crates/trnm-token-jwt-adapter",
+  "crates/trnm-token-jwt-adapter-gate",
+  "crates/trnm-token-jwt-adapter-gate-v2",
+  "crates/trnm-presence-router-v2",
 ]
 resolver = "2"
 
