@@ -8,10 +8,12 @@ import (
 )
 
 type Coordinator struct {
-	Store     *Store
-	Executor  Executor
-	Persister CommitPersister
-	Clock     func() time.Time
+	Store            *Store
+	Executor         Executor
+	Persister        CommitPersister
+	AfterReservation func(Reservation)
+	BeforeCommit     func(Reservation, VerifiedTransition)
+	Clock            func() time.Time
 }
 
 func (c Coordinator) Execute(ctx context.Context, request PrepareRequest) (Receipt, error) {
@@ -41,6 +43,12 @@ func (c Coordinator) Execute(ctx context.Context, request PrepareRequest) (Recei
 	if err != nil {
 		return Receipt{}, err
 	}
+	// Hooks are invoked only after persistence and after the Store critical
+	// section is released. Production leaves them nil; isolated fault labs may
+	// terminate the process here to prove restart recovery.
+	if c.AfterReservation != nil {
+		c.AfterReservation(cloneReservation(reservation))
+	}
 	// Store.Prepare and BeginAttempt have completed and released the Store
 	// critical section before any external execution begins.
 	rawResult, executeErr := c.Executor.Execute(ctx, append([]byte(nil), reservation.Transition.CanonicalRequest...))
@@ -67,6 +75,9 @@ func (c Coordinator) Execute(ctx context.Context, request PrepareRequest) (Recei
 		}
 		return Receipt{}, failure
 	}
+	if c.BeforeCommit != nil {
+		c.BeforeCommit(cloneReservation(reservation), cloneVerifiedTransition(verified))
+	}
 
 	// A verified external result must still pass exact stale fencing and local
 	// atomic persistence even when the caller disconnects after World responds.
@@ -81,6 +92,19 @@ func (c Coordinator) Execute(ctx context.Context, request PrepareRequest) (Recei
 		return Receipt{}, commitErr
 	}
 	return receipt, nil
+}
+
+func cloneVerifiedTransition(value VerifiedTransition) VerifiedTransition {
+	value.NextTick = cloneInt64(value.NextTick)
+	value.PreviousStateHash = cloneString(value.PreviousStateHash)
+	value.NextStateCanonicalJSON = append([]byte(nil), value.NextStateCanonicalJSON...)
+	value.NextStateHash = cloneString(value.NextStateHash)
+	value.ReplayHash = cloneString(value.ReplayHash)
+	value.WorldOutcomeHash = cloneString(value.WorldOutcomeHash)
+	value.WorldTransitionHash = cloneString(value.WorldTransitionHash)
+	value.ErrorCode = cloneString(value.ErrorCode)
+	value.Retryable = cloneBool(value.Retryable)
+	return value
 }
 
 func (c Coordinator) now() time.Time {
