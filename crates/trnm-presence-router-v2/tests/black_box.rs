@@ -1,9 +1,8 @@
 use trnm_presence_router_v2::{
-    ConnectionGeneration, ConnectionId, ConnectionRef, JoinPresenceRequest,
-    LeavePresenceRequest, MutationDisposition, NodeId, PresenceError,
-    PresenceIdentity, PresenceRouter, PresenceStatus, RemoveConnectionRequest,
-    SessionId, SnapshotVisibility, StreamKey, UpdatePresenceRequest, UserId,
-    Username, ValidationError, MAX_CONNECTION_ID_BYTES, MAX_STATUS_BYTES,
+    ConnectionGeneration, ConnectionId, ConnectionRef, JoinPresenceRequest, LeavePresenceRequest,
+    MutationDisposition, NodeId, PresenceError, PresenceIdentity, PresenceRouter, PresenceStatus,
+    RemoveConnectionRequest, SessionId, SnapshotVisibility, StreamKey, UpdatePresenceRequest,
+    UserId, Username, ValidationError, MAX_CONNECTION_ID_BYTES, MAX_STATUS_BYTES,
 };
 
 fn connection(node: &str, connection_id: &str) -> ConnectionRef {
@@ -87,7 +86,7 @@ fn exact_duplicate_and_visibility_transitions_are_deterministic() {
 
     let visible = router
         .update_presence(UpdatePresenceRequest {
-            connection,
+            connection: connection,
             generation: generation(1),
             stream: match_stream.clone(),
             status: PresenceStatus::new("back").unwrap(),
@@ -130,7 +129,10 @@ fn identity_remains_bound_after_last_stream_is_left() {
         .unwrap();
     assert_eq!(router.entry_count(), 0);
     assert_eq!(router.connection_count(), 1);
-    assert_eq!(router.established_generation(&connection), Some(generation(3)));
+    assert_eq!(
+        router.established_generation(&connection),
+        Some(generation(3))
+    );
     assert_eq!(router.established_identity(&connection), Some(&original));
 
     let revision = router.revision();
@@ -186,7 +188,10 @@ fn remove_connection_keeps_generation_and_identity_tombstone() {
         .unwrap();
     assert_eq!(removed.leaves.len(), 2);
     assert_eq!(router.entry_count(), 0);
-    assert_eq!(router.established_generation(&connection), Some(generation(5)));
+    assert_eq!(
+        router.established_generation(&connection),
+        Some(generation(5))
+    );
     assert_eq!(router.established_identity(&connection), Some(&original));
 
     assert!(matches!(
@@ -245,7 +250,10 @@ fn higher_generation_atomically_retires_all_old_streams() {
     assert_eq!(delta.joins.len(), 1);
     assert_eq!(delta.revision, Some(3));
     assert_eq!(router.entry_count(), 1);
-    assert_eq!(router.established_generation(&connection), Some(generation(8)));
+    assert_eq!(
+        router.established_generation(&connection),
+        Some(generation(8))
+    );
     assert_eq!(
         router.established_identity(&connection),
         Some(&replacement_identity)
@@ -301,7 +309,7 @@ fn stale_and_future_non_join_mutations_are_rejected_atomically() {
     ));
     assert!(matches!(
         router.remove_connection(RemoveConnectionRequest {
-            connection,
+            connection: connection,
             generation: generation(9),
         }),
         Err(PresenceError::StaleGeneration { .. })

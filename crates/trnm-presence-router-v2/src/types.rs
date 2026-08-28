@@ -10,13 +10,17 @@ pub const MAX_STREAM_LABEL_BYTES: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ValidationError {
-    Empty { field: &'static str },
+    Empty {
+        field: &'static str,
+    },
     TooLong {
         field: &'static str,
         limit: usize,
         actual: usize,
     },
-    ControlCharacter { field: &'static str },
+    ControlCharacter {
+        field: &'static str,
+    },
     ZeroGeneration,
     InvalidStreamMode,
 }
@@ -60,10 +64,7 @@ fn validate_text(
             actual: value.len(),
         });
     }
-    if value
-        .chars()
-        .any(|character| character.is_control())
-    {
+    if value.chars().any(|character| character.is_control()) {
         return Err(ValidationError::ControlCharacter { field });
     }
     Ok(())

@@ -12,15 +12,11 @@
 mod router;
 mod types;
 
-pub use router::{
-    MutationDisposition, PresenceDelta, PresenceError, PresenceRouter,
-};
+pub use router::{MutationDisposition, PresenceDelta, PresenceError, PresenceRouter};
 pub use types::{
-    ConnectionGeneration, ConnectionId, ConnectionRef, JoinPresenceRequest,
-    LeavePresenceRequest, NodeId, PresenceIdentity, PresenceRecord,
-    PresenceStatus, RemoveConnectionRequest, SessionId, SnapshotVisibility,
-    StreamKey, UpdatePresenceRequest, UserId, Username, ValidationError,
-    MAX_CONNECTION_ID_BYTES, MAX_NODE_ID_BYTES, MAX_SESSION_ID_BYTES,
-    MAX_STATUS_BYTES, MAX_STREAM_LABEL_BYTES, MAX_USERNAME_BYTES,
-    MAX_USER_ID_BYTES,
+    ConnectionGeneration, ConnectionId, ConnectionRef, JoinPresenceRequest, LeavePresenceRequest,
+    NodeId, PresenceIdentity, PresenceRecord, PresenceStatus, RemoveConnectionRequest, SessionId,
+    SnapshotVisibility, StreamKey, UpdatePresenceRequest, UserId, Username, ValidationError,
+    MAX_CONNECTION_ID_BYTES, MAX_NODE_ID_BYTES, MAX_SESSION_ID_BYTES, MAX_STATUS_BYTES,
+    MAX_STREAM_LABEL_BYTES, MAX_USERNAME_BYTES, MAX_USER_ID_BYTES,
 };

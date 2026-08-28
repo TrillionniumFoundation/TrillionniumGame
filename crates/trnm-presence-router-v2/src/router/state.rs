@@ -47,14 +47,15 @@ impl PresenceRouter {
         &self,
         connection: &ConnectionRef,
     ) -> Option<ConnectionGeneration> {
-        self.connections.get(connection).map(|state| state.generation)
+        self.connections
+            .get(connection)
+            .map(|state| state.generation)
     }
 
-    pub fn established_identity(
-        &self,
-        connection: &ConnectionRef,
-    ) -> Option<&PresenceIdentity> {
-        self.connections.get(connection).map(|state| &state.identity)
+    pub fn established_identity(&self, connection: &ConnectionRef) -> Option<&PresenceIdentity> {
+        self.connections
+            .get(connection)
+            .map(|state| &state.identity)
     }
 
     pub fn join_presence(
@@ -117,11 +118,12 @@ impl PresenceRouter {
                     connection: record.connection.clone(),
                     stream: record.stream.clone(),
                 };
-                let removed = self.entries.remove(&retired_key).ok_or(
-                    PresenceError::InvariantViolation(
-                        "entry disappeared during generation advance",
-                    ),
-                )?;
+                let removed =
+                    self.entries
+                        .remove(&retired_key)
+                        .ok_or(PresenceError::InvariantViolation(
+                            "entry disappeared during generation advance",
+                        ))?;
                 if removed.hidden {
                     hidden_changes = hidden_changes.saturating_add(1);
                 } else {

@@ -1,8 +1,7 @@
 use trnm_presence_router_v2::{
-    ConnectionGeneration, ConnectionId, ConnectionRef, JoinPresenceRequest,
-    LeavePresenceRequest, NodeId, PresenceDelta, PresenceError, PresenceIdentity,
-    PresenceRouter, PresenceStatus, SessionId, SnapshotVisibility, StreamKey,
-    UpdatePresenceRequest, UserId, Username,
+    ConnectionGeneration, ConnectionId, ConnectionRef, JoinPresenceRequest, LeavePresenceRequest,
+    NodeId, PresenceDelta, PresenceError, PresenceIdentity, PresenceRouter, PresenceStatus,
+    SessionId, SnapshotVisibility, StreamKey, UpdatePresenceRequest, UserId, Username,
 };
 
 fn connection(node: &str, id: &str) -> ConnectionRef {

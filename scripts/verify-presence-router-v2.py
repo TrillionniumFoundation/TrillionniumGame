@@ -128,8 +128,20 @@ def verify() -> dict[str, object]:
         "if mode == 0" in types and "InvalidStreamMode" in types,
         "zero stream mode guard missing",
     )
+    direct_control_guard = re.search(
+        r"value\s*\.chars\(\)\s*\.any\(\s*char::is_control\s*\)",
+        types,
+        flags=re.S,
+    )
+    closure_control_guard = re.search(
+        r"value\s*\.chars\(\)\s*\.any\(\s*\|\s*"
+        r"(?P<character>[A-Za-z_][A-Za-z0-9_]*)\s*\|\s*"
+        r"(?P=character)\.is_control\(\)\s*\)",
+        types,
+        flags=re.S,
+    )
     require(
-        "value.chars().any(char::is_control)" in types,
+        direct_control_guard is not None or closure_control_guard is not None,
         "control-character guard missing",
     )
 
