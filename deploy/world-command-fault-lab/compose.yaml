@@ -84,6 +84,7 @@ services:
       - ALL
 
   nakama:
+    restart: "no"
     environment:
       TRNM_WORLD_COMMAND_PROFILE: world_transition_v1
       TRNM_WORLD_TRANSITION_URL: https://response-drop-proxy:7444/v1/transition
