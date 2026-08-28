@@ -254,9 +254,7 @@ fn validate_domain(domain: &str) -> Result<(), DomainError> {
         || !bytes[bytes.len() - 1].is_ascii_alphanumeric()
         || bytes.windows(2).any(|pair| pair == b"..")
         || !bytes.iter().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'.' | b'_' | b'-')
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
     {
         return Err(invalid("invalid_canonical_domain"));
@@ -289,10 +287,7 @@ fn validate_key(key: &str, limits: CanonicalLimits) -> Result<(), DomainError> {
     Ok(())
 }
 
-fn validate_collection_len(
-    len: usize,
-    limits: CanonicalLimits,
-) -> Result<(), DomainError> {
+fn validate_collection_len(len: usize, limits: CanonicalLimits) -> Result<(), DomainError> {
     if len > limits.max_collection_items {
         Err(exhausted("canonical_collection_limit_exceeded"))
     } else {
@@ -414,8 +409,14 @@ mod tests {
             CanonicalLimits::default(),
         )
         .unwrap();
-        assert!(encoded.windows(8).any(|window| window == i64::MIN.to_be_bytes()));
-        assert!(encoded.windows(8).any(|window| window == i64::MAX.to_be_bytes()));
+        let min_bytes = i64::MIN.to_be_bytes();
+        let max_bytes = i64::MAX.to_be_bytes();
+        assert!(encoded
+            .windows(8)
+            .any(|window| window == min_bytes.as_slice()));
+        assert!(encoded
+            .windows(8)
+            .any(|window| window == max_bytes.as_slice()));
     }
 
     #[test]
@@ -431,9 +432,10 @@ mod tests {
 
     #[test]
     fn depth_node_collection_and_output_limits_fail_closed() {
-        let nested = CanonicalValue::Array(vec![CanonicalValue::Array(vec![
-            CanonicalValue::Array(vec![CanonicalValue::Null]),
-        ])]);
+        let nested =
+            CanonicalValue::Array(vec![CanonicalValue::Array(vec![CanonicalValue::Array(
+                vec![CanonicalValue::Null],
+            )])]);
         let frame = CanonicalFrame::new("limit.depth", version(), &nested).unwrap();
         let mut limits = CanonicalLimits::default();
         limits.max_depth = 1;
