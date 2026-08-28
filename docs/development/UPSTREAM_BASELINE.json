@@ -23,16 +23,16 @@
     "protocol_contracts": [
       {"path":"apigrpc/apigrpc.proto","blob":"1cc63aae1aaa5dc56ede9c9d0b6f9a95ff91361c"},
       {"path":"apigrpc/apigrpc.swagger.json","blob":"17dc459faa529b39278fead44fb4abafe786ccd9"},
-      {"path":"console/console.proto","blob":"1f7cc947322781a8662951140e0fb31c4c33c2ba"},
-      {"path":"console/console.swagger.json","blob":"8a5166bb6c944ff4871a5ad57219ad885396f0b3"},
-      {"path":"console/api.swagger.json","blob":"c8cf018ce776703fe5088f076f0d874f184a02ee"}
+      {"path":"console/console.proto","blob":"1f7ccf8e6dae3bc4c6c239ada23b1104002b917e"},
+      {"path":"console/console.swagger.json","blob":"8a51cb1e449a6c9392a162c92edd140e5d1aec04"},
+      {"path":"console/api.swagger.json","blob":"c8cf70d4b76af614f93a0683a3f0eb7a699674bb"}
     ],
     "implementation_contracts": [
-      {"path":"server/config.go","blob":"d9cd1f2cf7be3fb048711bc53a337555863b0d60"},
-      {"path":"flags/flags.go","blob":"9c139012662ec6a211a49cbad381d2f91064341a"},
-      {"path":"flags/vars.go","blob":"c525dd75fcfa8800526ad0b30eb1f16de3feb6cc"},
-      {"path":"migrate/migrate.go","blob":"598138369e570fac9b271c93c53bd0a440a1e54e"},
-      {"path":"migrate/sql","tree":"1eb2277ba191ad7aa6299c845f2bcf5253c1ec3d"}
+      {"path":"server/config.go","blob":"d9cd2b5c1bca3ae13a2560513a8fd99575ec4fe6"},
+      {"path":"flags/flags.go","blob":"9c139f4fdb050e6f00a323854e0c88690a8f37ef"},
+      {"path":"flags/vars.go","blob":"c5253fb37de1d2ebfb70408c8f78965bf28840a0"},
+      {"path":"migrate/migrate.go","blob":"598138cbeb8dd2832f9746aa4cd9826cc0152e96"},
+      {"path":"migrate/sql","tree":"1eb2275e187a543b8203b7b809d0d246c4a2bb6e"}
     ]
   },
   "nakama_common": {
@@ -48,7 +48,10 @@
     ],
     "protocol_contracts": [
       {"path":"api/api.proto","blob":"ddd2744739a252c268b2be004ff0e45c498adb35"},
-      {"path":"rtapi/realtime.proto","blob":"b23efef88565e0e09b3f6ee7ed8e08e9d240e27d"}
+      {"path":"rtapi/realtime.proto","blob":"b23efef88565e0e09b3f6ee7ed8e08e9d240e27d"},
+      {"path":"runtime/runtime.go","blob":"da7f2f2ad41ef5061d48f2e037678bb8397cc045"},
+      {"path":"runtime/config.go","blob":"5c0cc9b8b3a6d652ca6c40e030a6f90278e1bd7c"},
+      {"path":"index.d.ts","blob":"83a4c5fe0b87b2e4126623c8e9b86fe34d25bb2e"}
     ]
   },
   "baseline_policy": {
@@ -59,5 +62,5 @@
     "upstream_delta_lane_required": true,
     "final_1_0_baseline_freeze_gate": "SG7"
   },
-  "generated_manifests_required": ["api","rtapi","console","runtime","config","cli","database","metrics","iap","sdk","data-semantics","operations"]
+  "generated_manifests_required": ["source","api","rtapi","console","runtime","config","cli","database","data-semantics","metrics","operations","providers","iap","sdk"]
 }
