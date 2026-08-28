@@ -18,6 +18,7 @@ required=(
   runtime/world_command_storage_test.go
   runtime/world_command_rpc.go
   runtime/world_command_failpoint.go
+  runtime/cmd/trnm-fixture-signer/main.go
   runtime/cmd/trnm-world-transition-fixture/main.go
   runtime/cmd/trnm-response-drop-proxy/main.go
   runtime/cmd/trnm-tls-fixture/main.go
@@ -139,6 +140,7 @@ commit="$root/runtime/internal/worldcommand/store_commit.go"
 core="$root/runtime/internal/core/world_command.go"
 rpc="$root/runtime/world_command_rpc.go"
 failpoint="$root/runtime/world_command_failpoint.go"
+fixture_signer="$root/runtime/cmd/trnm-fixture-signer/main.go"
 world_fixture="$root/runtime/cmd/trnm-world-transition-fixture/main.go"
 proxy="$root/runtime/cmd/trnm-response-drop-proxy/main.go"
 tls_fixture="$root/runtime/cmd/trnm-tls-fixture/main.go"
@@ -185,8 +187,23 @@ grep -q 'TRNM_WORLD_COMMAND_FAULT_LAB' "$config" || fail 'fault-lab gate is miss
 grep -q 'after_reservation' "$config" || fail 'reservation failpoint is missing'
 grep -q 'after_verify' "$config" || fail 'verified-result failpoint is missing'
 grep -q 'os.Exit' "$failpoint" || fail 'process failpoint does not terminate the process'
-if grep -R -n 'os.Exit' "$root/runtime" --include='*.go' | grep -v 'world_command_failpoint.go'; then
-  fail 'process exit capability escaped the isolated fault-lab file'
+
+# Process termination remains isolated to the explicit authority fault injector.
+# The only additional direct os.Exit is the offline fixture-signing CLI's main
+# error path; it is not linked into the Nakama authority plugin or server loop.
+grep -Fq 'if err := run(os.Args[1:], os.Stdin, os.Stdout); err != nil' "$fixture_signer" \
+  || fail 'fixture signer main no longer delegates all behavior to testable run()'
+grep -Fq 'os.Exit(2)' "$fixture_signer" \
+  || fail 'fixture signer no longer returns a stable CLI error exit status'
+escaped_exit=$(
+  grep -R -n 'os.Exit' "$root/runtime" --include='*.go' \
+    | grep -v 'world_command_failpoint.go' \
+    | grep -v 'runtime/cmd/trnm-fixture-signer/main.go:' \
+    || true
+)
+if [[ -n "$escaped_exit" ]]; then
+  printf '%s\n' "$escaped_exit" >&2
+  fail 'process exit capability escaped the fault injector and fixture CLI allowlist'
 fi
 
 for token in trnm_world_command_ready_v1 trnm_world_command_status_v1 trnm_world_command_abort_v1; do
