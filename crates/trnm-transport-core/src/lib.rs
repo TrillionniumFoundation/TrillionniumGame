@@ -117,12 +117,8 @@ const fn realtime_code(code: StableCode, context: RealtimeContext) -> RealtimeEr
         RealtimeContext::MissingPayload => RealtimeErrorCode::MissingPayload,
         RealtimeContext::MatchNotFound => RealtimeErrorCode::MatchNotFound,
         RealtimeContext::MatchJoinRejected => RealtimeErrorCode::MatchJoinRejected,
-        RealtimeContext::RuntimeFunctionNotFound => {
-            RealtimeErrorCode::RuntimeFunctionNotFound
-        }
-        RealtimeContext::RuntimeFunctionException => {
-            RealtimeErrorCode::RuntimeFunctionException
-        }
+        RealtimeContext::RuntimeFunctionNotFound => RealtimeErrorCode::RuntimeFunctionNotFound,
+        RealtimeContext::RuntimeFunctionException => RealtimeErrorCode::RuntimeFunctionException,
         RealtimeContext::Generic => match code {
             StableCode::Internal | StableCode::Unavailable | StableCode::DataLoss => {
                 RealtimeErrorCode::RuntimeException
@@ -140,9 +136,9 @@ const fn websocket_action(
 ) -> WebSocketAction {
     match phase {
         TransportPhase::RequestResponse => WebSocketAction::None,
-        TransportPhase::WebSocketHandshake => {
-            WebSocketAction::RejectUpgrade { http_status: status }
-        }
+        TransportPhase::WebSocketHandshake => WebSocketAction::RejectUpgrade {
+            http_status: status,
+        },
         TransportPhase::WebSocketEstablished => match context {
             RealtimeContext::UnrecognizedPayload | RealtimeContext::MissingPayload => {
                 WebSocketAction::Close { code: 1002 }
@@ -197,7 +193,10 @@ fn validate_context(code: StableCode, context: RealtimeContext) -> Result<(), Do
         }
         RealtimeContext::MatchNotFound => code == StableCode::NotFound,
         RealtimeContext::MatchJoinRejected => {
-            matches!(code, StableCode::PermissionDenied | StableCode::FailedPrecondition)
+            matches!(
+                code,
+                StableCode::PermissionDenied | StableCode::FailedPrecondition
+            )
         }
         RealtimeContext::RuntimeFunctionNotFound => {
             matches!(code, StableCode::NotFound | StableCode::Unimplemented)
@@ -255,17 +254,39 @@ mod tests {
     #[test]
     fn rtapi_context_codes_match_pinned_enum_values() {
         let cases = [
-            (RealtimeContext::UnrecognizedPayload, RealtimeErrorCode::UnrecognizedPayload),
-            (RealtimeContext::MissingPayload, RealtimeErrorCode::MissingPayload),
-            (RealtimeContext::MatchNotFound, RealtimeErrorCode::MatchNotFound),
-            (RealtimeContext::MatchJoinRejected, RealtimeErrorCode::MatchJoinRejected),
-            (RealtimeContext::RuntimeFunctionNotFound, RealtimeErrorCode::RuntimeFunctionNotFound),
-            (RealtimeContext::RuntimeFunctionException, RealtimeErrorCode::RuntimeFunctionException),
+            (
+                RealtimeContext::UnrecognizedPayload,
+                RealtimeErrorCode::UnrecognizedPayload,
+            ),
+            (
+                RealtimeContext::MissingPayload,
+                RealtimeErrorCode::MissingPayload,
+            ),
+            (
+                RealtimeContext::MatchNotFound,
+                RealtimeErrorCode::MatchNotFound,
+            ),
+            (
+                RealtimeContext::MatchJoinRejected,
+                RealtimeErrorCode::MatchJoinRejected,
+            ),
+            (
+                RealtimeContext::RuntimeFunctionNotFound,
+                RealtimeErrorCode::RuntimeFunctionNotFound,
+            ),
+            (
+                RealtimeContext::RuntimeFunctionException,
+                RealtimeErrorCode::RuntimeFunctionException,
+            ),
         ];
         for (context, expected) in cases {
             let code = match context {
-                RealtimeContext::UnrecognizedPayload | RealtimeContext::MissingPayload => StableCode::InvalidArgument,
-                RealtimeContext::MatchNotFound | RealtimeContext::RuntimeFunctionNotFound => StableCode::NotFound,
+                RealtimeContext::UnrecognizedPayload | RealtimeContext::MissingPayload => {
+                    StableCode::InvalidArgument
+                }
+                RealtimeContext::MatchNotFound | RealtimeContext::RuntimeFunctionNotFound => {
+                    StableCode::NotFound
+                }
                 RealtimeContext::MatchJoinRejected => StableCode::PermissionDenied,
                 RealtimeContext::RuntimeFunctionException => StableCode::Internal,
                 RealtimeContext::Generic => unreachable!(),
@@ -302,7 +323,10 @@ mod tests {
             TransportPhase::WebSocketHandshake,
         )
         .unwrap();
-        assert_eq!(mapping.websocket_action, WebSocketAction::RejectUpgrade { http_status: 401 });
+        assert_eq!(
+            mapping.websocket_action,
+            WebSocketAction::RejectUpgrade { http_status: 401 }
+        );
     }
 
     #[test]
@@ -321,7 +345,10 @@ mod tests {
             TransportPhase::WebSocketEstablished,
         )
         .unwrap();
-        assert_eq!(pressure.websocket_action, WebSocketAction::Close { code: 1013 });
+        assert_eq!(
+            pressure.websocket_action,
+            WebSocketAction::Close { code: 1013 }
+        );
         assert_eq!(pressure.retry, RetryAdvice::Backoff);
     }
 
@@ -334,7 +361,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mapping.realtime_code as i32, 2);
-        assert_eq!(mapping.websocket_action, WebSocketAction::Close { code: 1002 });
+        assert_eq!(
+            mapping.websocket_action,
+            WebSocketAction::Close { code: 1002 }
+        );
     }
 
     #[test]
@@ -354,8 +384,17 @@ mod tests {
     #[test]
     fn retry_classes_map_without_transport_guessing() {
         assert_eq!(RetryAdvice::from(RetryClass::Never), RetryAdvice::None);
-        assert_eq!(RetryAdvice::from(RetryClass::SafeImmediate), RetryAdvice::Immediate);
-        assert_eq!(RetryAdvice::from(RetryClass::SafeBackoff), RetryAdvice::Backoff);
-        assert_eq!(RetryAdvice::from(RetryClass::ResyncRequired), RetryAdvice::Resync);
+        assert_eq!(
+            RetryAdvice::from(RetryClass::SafeImmediate),
+            RetryAdvice::Immediate
+        );
+        assert_eq!(
+            RetryAdvice::from(RetryClass::SafeBackoff),
+            RetryAdvice::Backoff
+        );
+        assert_eq!(
+            RetryAdvice::from(RetryClass::ResyncRequired),
+            RetryAdvice::Resync
+        );
     }
 }
