@@ -1,0 +1,47 @@
+{
+  "contract_version": "trnm_nakama_world_transition_go_delivery_v1",
+  "backlog_id": "WORLD-P0-003",
+  "owner": "trillionnium-nakama",
+  "status": "implemented_pending_exact_head_ci",
+  "source": "runtime/internal/worldtransition",
+  "world_contract": {
+    "contract_version": "trnm_world_transition_v1",
+    "commit": "0d7666d4d830fa8e56c78b23d438856064182535",
+    "tree": "1619ae76fa62a5e67bc7ff94429c62eea35deb87",
+    "pull_request": 21
+  },
+  "capabilities": {
+    "strict_canonical_json": true,
+    "prepare_request": true,
+    "reconstruct_persisted_request": true,
+    "verify_accepted_result": true,
+    "verify_rejected_result": true,
+    "typed_shadow_observation": true,
+    "fail_closed_shadow_compare": true,
+    "network_io": false,
+    "database_io": false,
+    "signing": false,
+    "wall_clock": false,
+    "randomness": false
+  },
+  "authority": {
+    "world_sets_global_sequence": false,
+    "world_sets_match_version": false,
+    "world_sets_idempotency": false,
+    "world_sets_participant_roles": false,
+    "world_signs_completion": false,
+    "cutover_authorized": false,
+    "public_online_enabled": false,
+    "public_player_market_enabled": false
+  },
+  "pending": [
+    "exact_head_remote_ci",
+    "production_world_command_store_adapter",
+    "durable_reservation_restart_recovery",
+    "target_profile_match_callback",
+    "live_executor_transport",
+    "representative_shadow_and_load_corpus",
+    "integration_final_exact_lock",
+    "cutover_and_rollback_rehearsal"
+  ]
+}
