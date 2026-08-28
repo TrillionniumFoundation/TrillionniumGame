@@ -1,0 +1,22 @@
+{
+  "schema": "trillionnium.presence-vectors.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-level-candidate",
+  "cases": [
+    {"id":"open-join-route","operations":["open:c1:s1:u1:n1:g1:e0","join:c1:n1:g1:stream1"],"expect":{"connections":1,"presences":1,"recipients":["c1:n1:g1"]}},
+    {"id":"rebind-fences-old-route","operations":["open:c1:s1:u1:n1:g1:e0","rebind:c1:n1:g1:n2","route:c1:n1:g1"],"expect_error":"route_owner_mismatch"},
+    {"id":"drain-blocks-new-presence","operations":["open:c1:s1:u1:n1:g1:e0","drain:n1","join:c1:n1:g1:stream1"],"expect_error":"connection_draining"},
+    {"id":"close-cleans-presence","operations":["open:c1:s1:u1:n1:g1:e0","join:c1:n1:g1:stream1","close:c1:n1:g1"],"expect":{"connections":0,"presences":0}},
+    {"id":"revoke-closes-user","operations":["open:c1:s1:u1:n1:g1:e0","open:c2:s2:u1:n1:g1:e0","revoke:u1:e0:e1"],"expect":{"connections":0,"closed":2}},
+    {"id":"stale-revocation-epoch-rejected","operations":["set-epoch:u1:e1","open:c1:s1:u1:n1:g1:e0"],"expect_error":"user_revocation_epoch_mismatch"},
+    {"id":"slow-consumer-budget-atomic","operations":["open:c1:s1:u1:n1:g1:e0","reserve:c1:n1:g1:6","reserve:c1:n1:g1:5"],"expect_error":"slow_consumer_budget_exceeded"},
+    {"id":"idle-expiry-bounded","operations":["open:c1:s1:u1:n1:g1:e0","open:c2:s2:u2:n1:g1:e0","expire:now200:timeout50:max1"],"expect":{"connections":1,"closed":1}}
+  ],
+  "claims": {
+    "socket_implemented": false,
+    "presence_compatible": false,
+    "multi_node_verified": false,
+    "c2_earned": false,
+    "production_ready": false
+  }
+}
