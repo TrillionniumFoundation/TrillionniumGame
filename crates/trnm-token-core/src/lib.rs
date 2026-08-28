@@ -86,10 +86,7 @@ impl KeyRing {
                 RetryClass::Never,
             ));
         }
-        if key.epoch == 0
-            || key.not_after <= key.not_before
-            || key.material_digest.is_zero()
-        {
+        if key.epoch == 0 || key.not_after <= key.not_before || key.material_digest.is_zero() {
             return Err(invalid("invalid_token_key"));
         }
         if self.keys.insert((key.role, key.epoch), key).is_some() {
@@ -137,9 +134,7 @@ impl KeyRing {
             (TokenProfile::NakamaV340Legacy, Some(_)) => {
                 Err(invalid("legacy_token_must_not_declare_key_epoch"))
             }
-            (TokenProfile::TrillionniumFamilyV1, None) => {
-                Err(invalid("token_key_epoch_required"))
-            }
+            (TokenProfile::TrillionniumFamilyV1, None) => Err(invalid("token_key_epoch_required")),
             (TokenProfile::TrillionniumFamilyV1, Some(epoch)) => {
                 let key = self
                     .get(role, epoch)
@@ -354,7 +349,10 @@ fn validate_claims(
         return Err(invalid_or_unauthenticated(mode, "invalid_token_username"));
     }
     if claims.vars.len() > policy.max_vars {
-        return Err(invalid_or_unauthenticated(mode, "token_vars_limit_exceeded"));
+        return Err(invalid_or_unauthenticated(
+            mode,
+            "token_vars_limit_exceeded",
+        ));
     }
     for (key, value) in &claims.vars {
         if key.is_empty()
@@ -410,9 +408,9 @@ fn validate_claims(
             }
         }
         TokenProfile::TrillionniumFamilyV1 => {
-            let family = claims.family_id.ok_or_else(|| {
-                invalid_or_unauthenticated(mode, "token_family_claim_required")
-            })?;
+            let family = claims
+                .family_id
+                .ok_or_else(|| invalid_or_unauthenticated(mode, "token_family_claim_required"))?;
             if family.is_zero()
                 || claims.family_generation.is_none()
                 || claims.key_epoch.unwrap_or(0) == 0
@@ -432,9 +430,7 @@ fn unique_key(
     none_reason: &'static str,
     multiple_reason: &'static str,
 ) -> Result<KeyDescriptor, DomainError> {
-    let first = keys
-        .next()
-        .ok_or_else(|| unauthenticated(none_reason))?;
+    let first = keys.next().ok_or_else(|| unauthenticated(none_reason))?;
     if keys.next().is_some() {
         return Err(error(
             StableCode::FailedPrecondition,
@@ -521,7 +517,8 @@ mod tests {
     #[test]
     fn legacy_issue_uses_one_active_key_without_emitting_epoch() {
         let mut keys = KeyRing::default();
-        keys.insert(key(KeyRole::Access, 1, KeyStatus::Active)).unwrap();
+        keys.insert(key(KeyRole::Access, 1, KeyStatus::Active))
+            .unwrap();
         let plan = prepare_issue(
             TokenKind::Access,
             TokenProfile::NakamaV340Legacy,
@@ -538,8 +535,10 @@ mod tests {
     #[test]
     fn legacy_overlap_is_ambiguous_because_no_key_epoch_is_carried() {
         let mut keys = KeyRing::default();
-        keys.insert(key(KeyRole::Access, 1, KeyStatus::VerifyOnly)).unwrap();
-        keys.insert(key(KeyRole::Access, 2, KeyStatus::Active)).unwrap();
+        keys.insert(key(KeyRole::Access, 1, KeyStatus::VerifyOnly))
+            .unwrap();
+        keys.insert(key(KeyRole::Access, 2, KeyStatus::Active))
+            .unwrap();
         assert_eq!(
             prepare_verification(
                 TokenKind::Access,
@@ -557,7 +556,8 @@ mod tests {
     #[test]
     fn family_profile_binds_explicit_epoch_and_family_generation() {
         let mut keys = KeyRing::default();
-        keys.insert(key(KeyRole::Refresh, 7, KeyStatus::Active)).unwrap();
+        keys.insert(key(KeyRole::Refresh, 7, KeyStatus::Active))
+            .unwrap();
         let mut value = claims(TokenProfile::TrillionniumFamilyV1, 7);
         value.expires_at = 2_000;
         let plan = prepare_issue(
@@ -575,7 +575,8 @@ mod tests {
     #[test]
     fn verify_only_key_can_verify_but_cannot_issue() {
         let mut keys = KeyRing::default();
-        keys.insert(key(KeyRole::Access, 3, KeyStatus::VerifyOnly)).unwrap();
+        keys.insert(key(KeyRole::Access, 3, KeyStatus::VerifyOnly))
+            .unwrap();
         let verification = prepare_verification(
             TokenKind::Access,
             TokenProfile::TrillionniumFamilyV1,
@@ -603,7 +604,9 @@ mod tests {
     #[test]
     fn retired_and_out_of_window_keys_are_rejected() {
         let mut retired = KeyRing::default();
-        retired.insert(key(KeyRole::Access, 1, KeyStatus::Retired)).unwrap();
+        retired
+            .insert(key(KeyRole::Access, 1, KeyStatus::Retired))
+            .unwrap();
         assert_eq!(
             prepare_verification(
                 TokenKind::Access,
@@ -633,7 +636,8 @@ mod tests {
     #[test]
     fn verified_claims_reject_expired_or_future_tokens() {
         let mut keys = KeyRing::default();
-        keys.insert(key(KeyRole::Access, 2, KeyStatus::Active)).unwrap();
+        keys.insert(key(KeyRole::Access, 2, KeyStatus::Active))
+            .unwrap();
         let plan = prepare_verification(
             TokenKind::Access,
             TokenProfile::TrillionniumFamilyV1,
@@ -666,7 +670,8 @@ mod tests {
     #[test]
     fn lifetime_and_variable_limits_fail_closed() {
         let mut keys = KeyRing::default();
-        keys.insert(key(KeyRole::Access, 2, KeyStatus::Active)).unwrap();
+        keys.insert(key(KeyRole::Access, 2, KeyStatus::Active))
+            .unwrap();
         let policy = TokenPolicy {
             access_lifetime_max_sec: 10,
             max_vars: 1,
@@ -692,7 +697,8 @@ mod tests {
     #[test]
     fn family_claims_and_epoch_must_match() {
         let mut keys = KeyRing::default();
-        keys.insert(key(KeyRole::Access, 2, KeyStatus::Active)).unwrap();
+        keys.insert(key(KeyRole::Access, 2, KeyStatus::Active))
+            .unwrap();
         let mut missing = claims(TokenProfile::TrillionniumFamilyV1, 2);
         missing.family_id = None;
         assert_eq!(
@@ -726,7 +732,8 @@ mod tests {
     #[test]
     fn key_ring_rejects_duplicate_epoch_and_zero_digest() {
         let mut keys = KeyRing::default();
-        keys.insert(key(KeyRole::Access, 1, KeyStatus::Active)).unwrap();
+        keys.insert(key(KeyRole::Access, 1, KeyStatus::Active))
+            .unwrap();
         assert_eq!(
             keys.insert(key(KeyRole::Access, 1, KeyStatus::VerifyOnly))
                 .unwrap_err()
@@ -741,7 +748,8 @@ mod tests {
     #[test]
     fn legacy_profile_rejects_extension_claims() {
         let mut keys = KeyRing::default();
-        keys.insert(key(KeyRole::Access, 1, KeyStatus::Active)).unwrap();
+        keys.insert(key(KeyRole::Access, 1, KeyStatus::Active))
+            .unwrap();
         let mut value = claims(TokenProfile::NakamaV340Legacy, 1);
         value.family_id = Some(family(4));
         assert_eq!(
