@@ -45,7 +45,11 @@ impl StorageObjectKey {
     ) -> Result<Self, DomainError> {
         let collection = collection.into();
         let key = key.into();
-        validate_component(&collection, MAX_COLLECTION_BYTES, "invalid_storage_collection")?;
+        validate_component(
+            &collection,
+            MAX_COLLECTION_BYTES,
+            "invalid_storage_collection",
+        )?;
         validate_component(&key, MAX_KEY_BYTES, "invalid_storage_key")?;
         Ok(Self {
             collection,
@@ -136,11 +140,7 @@ impl StorageState {
         self.objects.len()
     }
 
-    pub fn read(
-        &self,
-        actor: Actor,
-        key: &StorageObjectKey,
-    ) -> Result<StorageObject, DomainError> {
+    pub fn read(&self, actor: Actor, key: &StorageObjectKey) -> Result<StorageObject, DomainError> {
         let object = self.objects.get(key).ok_or_else(|| {
             error(
                 StableCode::NotFound,
@@ -260,13 +260,21 @@ fn validate_batch(operations: &[BatchOperation]) -> Result<(), DomainError> {
     Ok(())
 }
 
-fn validate_component(value: &str, maximum: usize, reason: &'static str) -> Result<(), DomainError> {
+fn validate_component(
+    value: &str,
+    maximum: usize,
+    reason: &'static str,
+) -> Result<(), DomainError> {
     if value.is_empty()
         || value.len() > maximum
         || value.chars().any(char::is_control)
         || value.starts_with('.')
     {
-        return Err(error(StableCode::InvalidArgument, reason, RetryClass::Never));
+        return Err(error(
+            StableCode::InvalidArgument,
+            reason,
+            RetryClass::Never,
+        ));
     }
     Ok(())
 }
@@ -403,7 +411,13 @@ mod tests {
                 )],
             )
             .unwrap();
-        assert_eq!(state.read(Actor::User(user(1)), &key(1, "main")).unwrap().value, b"v1");
+        assert_eq!(
+            state
+                .read(Actor::User(user(1)), &key(1, "main"))
+                .unwrap()
+                .value,
+            b"v1"
+        );
     }
 
     #[test]
@@ -413,34 +427,122 @@ mod tests {
             .apply_batch(
                 Actor::Server,
                 &[
-                    write(1, "public", b"p", 1, VersionCheck::Any, ReadPermission::Public, WritePermission::Owner),
-                    write(1, "private", b"s", 2, VersionCheck::Any, ReadPermission::None, WritePermission::Owner),
+                    write(
+                        1,
+                        "public",
+                        b"p",
+                        1,
+                        VersionCheck::Any,
+                        ReadPermission::Public,
+                        WritePermission::Owner,
+                    ),
+                    write(
+                        1,
+                        "private",
+                        b"s",
+                        2,
+                        VersionCheck::Any,
+                        ReadPermission::None,
+                        WritePermission::Owner,
+                    ),
                 ],
             )
             .unwrap();
-        assert_eq!(state.read(Actor::User(user(2)), &key(1, "public")).unwrap().value, b"p");
-        assert_eq!(state.read(Actor::User(user(2)), &key(1, "private")).unwrap_err().reason(), "storage_read_permission_denied");
+        assert_eq!(
+            state
+                .read(Actor::User(user(2)), &key(1, "public"))
+                .unwrap()
+                .value,
+            b"p"
+        );
+        assert_eq!(
+            state
+                .read(Actor::User(user(2)), &key(1, "private"))
+                .unwrap_err()
+                .reason(),
+            "storage_read_permission_denied"
+        );
     }
 
     #[test]
     fn stale_version_rejects_without_mutation() {
         let mut state = StorageState::default();
-        state.apply_batch(Actor::Server, &[write(1, "main", b"v1", 1, VersionCheck::Any, ReadPermission::Owner, WritePermission::Owner)]).unwrap();
-        let error = state.apply_batch(Actor::User(user(1)), &[write(1, "main", b"v2", 2, VersionCheck::Exact(digest(9)), ReadPermission::Owner, WritePermission::Owner)]).unwrap_err();
+        state
+            .apply_batch(
+                Actor::Server,
+                &[write(
+                    1,
+                    "main",
+                    b"v1",
+                    1,
+                    VersionCheck::Any,
+                    ReadPermission::Owner,
+                    WritePermission::Owner,
+                )],
+            )
+            .unwrap();
+        let error = state
+            .apply_batch(
+                Actor::User(user(1)),
+                &[write(
+                    1,
+                    "main",
+                    b"v2",
+                    2,
+                    VersionCheck::Exact(digest(9)),
+                    ReadPermission::Owner,
+                    WritePermission::Owner,
+                )],
+            )
+            .unwrap_err();
         assert_eq!(error.reason(), "storage_version_mismatch");
-        assert_eq!(state.read(Actor::Server, &key(1, "main")).unwrap().value, b"v1");
+        assert_eq!(
+            state.read(Actor::Server, &key(1, "main")).unwrap().value,
+            b"v1"
+        );
     }
 
     #[test]
     fn multi_operation_batch_rolls_back_on_any_failure() {
         let mut state = StorageState::default();
-        state.apply_batch(Actor::Server, &[write(1, "existing", b"v1", 1, VersionCheck::Any, ReadPermission::Owner, WritePermission::Owner)]).unwrap();
+        state
+            .apply_batch(
+                Actor::Server,
+                &[write(
+                    1,
+                    "existing",
+                    b"v1",
+                    1,
+                    VersionCheck::Any,
+                    ReadPermission::Owner,
+                    WritePermission::Owner,
+                )],
+            )
+            .unwrap();
         let before = state.clone();
         let operations = [
-            write(1, "new", b"new", 2, VersionCheck::MustNotExist, ReadPermission::Owner, WritePermission::Owner),
-            write(1, "existing", b"bad", 3, VersionCheck::Exact(digest(9)), ReadPermission::Owner, WritePermission::Owner),
+            write(
+                1,
+                "new",
+                b"new",
+                2,
+                VersionCheck::MustNotExist,
+                ReadPermission::Owner,
+                WritePermission::Owner,
+            ),
+            write(
+                1,
+                "existing",
+                b"bad",
+                3,
+                VersionCheck::Exact(digest(9)),
+                ReadPermission::Owner,
+                WritePermission::Owner,
+            ),
         ];
-        assert!(state.apply_batch(Actor::User(user(1)), &operations).is_err());
+        assert!(state
+            .apply_batch(Actor::User(user(1)), &operations)
+            .is_err());
         assert_eq!(state, before);
     }
 
@@ -448,27 +550,93 @@ mod tests {
     fn duplicate_key_in_batch_is_rejected() {
         let mut state = StorageState::default();
         let operations = [
-            write(1, "same", b"v1", 1, VersionCheck::Any, ReadPermission::Owner, WritePermission::Owner),
-            write(1, "same", b"v2", 2, VersionCheck::Any, ReadPermission::Owner, WritePermission::Owner),
+            write(
+                1,
+                "same",
+                b"v1",
+                1,
+                VersionCheck::Any,
+                ReadPermission::Owner,
+                WritePermission::Owner,
+            ),
+            write(
+                1,
+                "same",
+                b"v2",
+                2,
+                VersionCheck::Any,
+                ReadPermission::Owner,
+                WritePermission::Owner,
+            ),
         ];
-        assert_eq!(state.apply_batch(Actor::Server, &operations).unwrap_err().reason(), "duplicate_storage_key_in_batch");
+        assert_eq!(
+            state
+                .apply_batch(Actor::Server, &operations)
+                .unwrap_err()
+                .reason(),
+            "duplicate_storage_key_in_batch"
+        );
     }
 
     #[test]
     fn server_owned_object_cannot_be_mutated_by_user() {
         let mut state = StorageState::default();
         let server_key = StorageObjectKey::new("system", "config", UserId::new([0; 16])).unwrap();
-        state.apply_batch(Actor::Server, &[BatchOperation::Write(WriteOperation { key: server_key.clone(), value: b"v1".to_vec(), version: digest(1), expected: VersionCheck::MustNotExist, read_permission: ReadPermission::Public, write_permission: WritePermission::None })]).unwrap();
-        let attempted = BatchOperation::Write(WriteOperation { key: server_key, value: b"v2".to_vec(), version: digest(2), expected: VersionCheck::Exact(digest(1)), read_permission: ReadPermission::Public, write_permission: WritePermission::None });
-        assert_eq!(state.apply_batch(Actor::User(user(1)), &[attempted]).unwrap_err().reason(), "storage_write_permission_denied");
+        state
+            .apply_batch(
+                Actor::Server,
+                &[BatchOperation::Write(WriteOperation {
+                    key: server_key.clone(),
+                    value: b"v1".to_vec(),
+                    version: digest(1),
+                    expected: VersionCheck::MustNotExist,
+                    read_permission: ReadPermission::Public,
+                    write_permission: WritePermission::None,
+                })],
+            )
+            .unwrap();
+        let attempted = BatchOperation::Write(WriteOperation {
+            key: server_key,
+            value: b"v2".to_vec(),
+            version: digest(2),
+            expected: VersionCheck::Exact(digest(1)),
+            read_permission: ReadPermission::Public,
+            write_permission: WritePermission::None,
+        });
+        assert_eq!(
+            state
+                .apply_batch(Actor::User(user(1)), &[attempted])
+                .unwrap_err()
+                .reason(),
+            "storage_write_permission_denied"
+        );
     }
 
     #[test]
     fn delete_requires_exact_version_when_supplied() {
         let mut state = StorageState::default();
-        state.apply_batch(Actor::Server, &[write(1, "main", b"v1", 1, VersionCheck::Any, ReadPermission::Owner, WritePermission::Owner)]).unwrap();
-        let delete = BatchOperation::Delete(DeleteOperation { key: key(1, "main"), expected_version: Some(digest(1)) });
-        let receipt = state.apply_batch(Actor::User(user(1)), &[delete]).unwrap().remove(0);
+        state
+            .apply_batch(
+                Actor::Server,
+                &[write(
+                    1,
+                    "main",
+                    b"v1",
+                    1,
+                    VersionCheck::Any,
+                    ReadPermission::Owner,
+                    WritePermission::Owner,
+                )],
+            )
+            .unwrap();
+        let delete = BatchOperation::Delete(DeleteOperation {
+            key: key(1, "main"),
+            expected_version: Some(digest(1)),
+        });
+        let receipt = state
+            .apply_batch(Actor::User(user(1)), &[delete])
+            .unwrap()
+            .remove(0);
         assert_eq!(receipt.previous_version, Some(digest(1)));
         assert_eq!(receipt.current_version, None);
         assert_eq!(state.object_count(), 0);
@@ -477,15 +645,71 @@ mod tests {
     #[test]
     fn identical_version_cannot_name_different_value() {
         let mut state = StorageState::default();
-        state.apply_batch(Actor::Server, &[write(1, "main", b"v1", 1, VersionCheck::Any, ReadPermission::Owner, WritePermission::Owner)]).unwrap();
-        let error = state.apply_batch(Actor::Server, &[write(1, "main", b"different", 1, VersionCheck::Any, ReadPermission::Owner, WritePermission::Owner)]).unwrap_err();
+        state
+            .apply_batch(
+                Actor::Server,
+                &[write(
+                    1,
+                    "main",
+                    b"v1",
+                    1,
+                    VersionCheck::Any,
+                    ReadPermission::Owner,
+                    WritePermission::Owner,
+                )],
+            )
+            .unwrap();
+        let error = state
+            .apply_batch(
+                Actor::Server,
+                &[write(
+                    1,
+                    "main",
+                    b"different",
+                    1,
+                    VersionCheck::Any,
+                    ReadPermission::Owner,
+                    WritePermission::Owner,
+                )],
+            )
+            .unwrap_err();
         assert_eq!(error.reason(), "storage_version_value_mismatch");
     }
 
     #[test]
     fn must_not_exist_rejects_existing_object() {
         let mut state = StorageState::default();
-        state.apply_batch(Actor::Server, &[write(1, "main", b"v1", 1, VersionCheck::Any, ReadPermission::Owner, WritePermission::Owner)]).unwrap();
-        assert_eq!(state.apply_batch(Actor::Server, &[write(1, "main", b"v2", 2, VersionCheck::MustNotExist, ReadPermission::Owner, WritePermission::Owner)]).unwrap_err().reason(), "storage_object_already_exists");
+        state
+            .apply_batch(
+                Actor::Server,
+                &[write(
+                    1,
+                    "main",
+                    b"v1",
+                    1,
+                    VersionCheck::Any,
+                    ReadPermission::Owner,
+                    WritePermission::Owner,
+                )],
+            )
+            .unwrap();
+        assert_eq!(
+            state
+                .apply_batch(
+                    Actor::Server,
+                    &[write(
+                        1,
+                        "main",
+                        b"v2",
+                        2,
+                        VersionCheck::MustNotExist,
+                        ReadPermission::Owner,
+                        WritePermission::Owner
+                    )]
+                )
+                .unwrap_err()
+                .reason(),
+            "storage_object_already_exists"
+        );
     }
 }
