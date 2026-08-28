@@ -1,0 +1,91 @@
+name: trillionnium-game-database-data-denominator
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tools/denominator/sql_migration_surface.py'
+      - 'scripts/generate-database-denominator.py'
+      - 'scripts/check-database-denominator.sh'
+      - 'tests/denominator/test_database_denominator.py'
+      - 'docs/development/DATABASE_DATA_DENOMINATOR_IMPLEMENTATION.md'
+      - '.github/workflows/sg1-database-data-denominator.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/denominator/sql_migration_surface.py'
+      - 'scripts/generate-database-denominator.py'
+      - 'scripts/check-database-denominator.sh'
+      - 'tests/denominator/test_database_denominator.py'
+      - 'docs/development/DATABASE_DATA_DENOMINATOR_IMPLEMENTATION.md'
+      - '.github/workflows/sg1-database-data-denominator.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trillionnium-game-database-denominator-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-database-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Validate SQL lexer, extractor and negative fixtures
+        run: bash scripts/check-database-denominator.sh
+      - name: Fetch and verify exact Nakama source tree
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/fetch-pinned-upstream.py \
+            --repository heroiclabs/nakama \
+            --revision d4d92f93f78bbbe62c7fc50a3f85c772ec121a09 \
+            --tree f3c9cfc2726d5543da1564629170f35b98e3797d \
+            --output run/upstream/nakama
+      - name: Generate exact candidates twice
+        run: |
+          python3 scripts/generate-database-denominator.py \
+            --nakama-dir run/upstream/nakama \
+            --output-dir run/candidate-a
+          python3 scripts/generate-database-denominator.py \
+            --nakama-dir run/upstream/nakama \
+            --output-dir run/candidate-b
+          diff -ru run/candidate-a run/candidate-b
+      - name: Validate exact-source fail-closed candidate
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          db = json.loads(Path('run/candidate-a/database-denominator.candidate.json').read_text())
+          data = json.loads(Path('run/candidate-a/data-denominator.candidate.json').read_text())
+          assert db['migration_file_count'] == 19, db['migration_file_count']
+          assert db['leaf_count'] >= 100, db['leaf_count']
+          assert data['leaf_count'] >= 40, data['leaf_count']
+          assert db['counts_by_class'].get('db_table', 0) >= 10
+          assert db['counts_by_class'].get('db_column', 0) >= 50
+          assert db['counts_by_class'].get('db_index', 0) >= 5
+          assert data['counts_by_class'].get('data_invariant_candidate', 0) >= 25
+          for value in (db, data):
+              assert value['unclassified_count'] == value['leaf_count']
+              assert value['unreviewed_count'] == value['leaf_count']
+              assert not any(value['claims'].values())
+          PY
+      - name: Prove candidates cannot close SG1
+        run: |
+          if python3 scripts/generate-database-denominator.py \
+              --nakama-dir run/upstream/nakama \
+              --output-dir run/sg1-negative \
+              --require-sg1; then
+            echo 'Database candidates incorrectly received SG1 credit' >&2
+            exit 1
+          fi
+      - name: Upload exact-head candidate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: database-data-denominator-${{ github.sha }}
+          path: run/candidate-a
+          if-no-files-found: error
+          retention-days: 30
