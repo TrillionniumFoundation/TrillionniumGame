@@ -1,5 +1,5 @@
 {
-  "schema": "trillionnium.immutable-oracle-lock.v1",
+  "schema": "trillionnium.immutable-oracle-lock.v2",
   "project_id": "trillionnium-game",
   "status": "bootstrap-candidate",
   "oracle_lane": "immutable",
@@ -28,10 +28,12 @@
     "shared_writable_database_with_other_lane": false
   },
   "configuration_profile": "trillionnium-oracle-immutable-v1",
+  "normalizer_registry": "config/oracle-normalizers.json",
   "required_evidence": [
     "candidate_commit",
     "oracle_lock_sha256",
     "compose_sha256",
+    "normalizer_registry_sha256",
     "rendered_config_sha256",
     "nakama_image_id",
     "postgres_image_id",

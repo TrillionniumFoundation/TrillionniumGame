@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Render canonical, fail-closed immutable Nakama oracle smoke evidence."""
 from __future__ import annotations
 
 import argparse
@@ -7,6 +8,11 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from tools.oracle.normalize import load_registry  # noqa: E402
 
 
 class EvidenceError(RuntimeError):
@@ -44,12 +50,28 @@ def require_string(value: dict[str, Any], field: str) -> str:
     return item
 
 
-def render(lock_path: Path, compose_path: Path, facts_path: Path) -> dict[str, Any]:
+def require_commit(value: str, field: str) -> str:
+    if len(value) != 40 or value == "0" * 40 or any(ch not in "0123456789abcdef" for ch in value):
+        raise EvidenceError(f"{field} must be a non-zero lowercase 40-character Git commit SHA")
+    return value
+
+
+def render(
+    lock_path: Path,
+    compose_path: Path,
+    normalizers_path: Path,
+    facts_path: Path,
+) -> dict[str, Any]:
     lock = load_object(lock_path)
     facts = load_object(facts_path)
+    try:
+        registry = load_registry(normalizers_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise EvidenceError(f"normalizer registry rejected: {exc}") from exc
+
     claims = lock.get("claims")
-    if not isinstance(claims, dict) or any(claims.values()):
-        raise EvidenceError("oracle bootstrap lock must not grant compatibility or production claims")
+    if not isinstance(claims, dict) or not claims or any(claims.values()):
+        raise EvidenceError("oracle bootstrap lock must contain only explicit false claims")
 
     required = lock.get("required_evidence")
     if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
@@ -57,6 +79,7 @@ def render(lock_path: Path, compose_path: Path, facts_path: Path) -> dict[str, A
     for field in required:
         require_string(facts, field)
 
+    candidate_commit = require_commit(facts["candidate_commit"], "candidate_commit")
     if facts["health_status"] != "healthy":
         raise EvidenceError("immutable oracle is not healthy")
     try:
@@ -66,25 +89,33 @@ def render(lock_path: Path, compose_path: Path, facts_path: Path) -> dict[str, A
     if table_count < 1:
         raise EvidenceError("Nakama migration produced no public database tables")
 
-    lock_bytes = lock_path.read_bytes()
-    compose_bytes = compose_path.read_bytes()
-    expected_lock_hash = sha256(lock_bytes)
-    expected_compose_hash = sha256(compose_bytes)
-    if facts["oracle_lock_sha256"] != expected_lock_hash:
-        raise EvidenceError("oracle lock digest mismatch")
-    if facts["compose_sha256"] != expected_compose_hash:
-        raise EvidenceError("compose digest mismatch")
+    expected_lock_hash = sha256(lock_path.read_bytes())
+    expected_compose_hash = sha256(compose_path.read_bytes())
+    expected_normalizer_hash = sha256(normalizers_path.read_bytes())
+    for field, expected in (
+        ("oracle_lock_sha256", expected_lock_hash),
+        ("compose_sha256", expected_compose_hash),
+        ("normalizer_registry_sha256", expected_normalizer_hash),
+    ):
+        if facts[field] != expected:
+            raise EvidenceError(f"{field} digest mismatch")
 
     evidence = {
-        "schema": "trillionnium.immutable-oracle-evidence.v1",
+        "schema": "trillionnium.immutable-oracle-evidence.v2",
         "project_id": "trillionnium-game",
         "status": "immutable-oracle-smoke-passed",
         "credit": "diagnostic-only",
-        "candidate": {"commit": facts["candidate_commit"]},
+        "candidate": {"commit": candidate_commit},
         "oracle": {
             "lane": "immutable",
             "lock_sha256": expected_lock_hash,
             "compose_sha256": expected_compose_hash,
+            "normalizer_registry": {
+                "schema": registry["schema"],
+                "status": registry["status"],
+                "sha256": expected_normalizer_hash,
+                "allowed_rule_count": len(registry["allowed"]),
+            },
             "rendered_config_sha256": facts["rendered_config_sha256"],
             "nakama": lock["nakama"],
             "nakama_common": lock["nakama_common"],
@@ -106,6 +137,7 @@ def render(lock_path: Path, compose_path: Path, facts_path: Path) -> dict[str, A
         "limitations": [
             "No instrumented oracle exists in this slice.",
             "Immutable/instrumented equivalence is not proven.",
+            "The normalizer registry is candidate-only and not independently approved.",
             "No API, realtime, database-effect, provider or runtime differential is executed.",
             "The result cannot close SG2 or earn compatibility, production or public-online credit.",
         ],
@@ -119,11 +151,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--lock", type=Path, required=True)
     parser.add_argument("--compose", type=Path, required=True)
+    parser.add_argument("--normalizers", type=Path, required=True)
     parser.add_argument("--facts", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        evidence = render(args.lock, args.compose, args.facts)
+        evidence = render(args.lock, args.compose, args.normalizers, args.facts)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_bytes(canonical(evidence) + b"\n")
         print(json.dumps({"status": evidence["status"], "content_sha256": evidence["content_sha256"]}, sort_keys=True))

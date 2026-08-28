@@ -1,0 +1,70 @@
+{
+  "schema": "trillionnium.oracle-normalizer-registry.v1",
+  "project_id": "trillionnium-game",
+  "status": "candidate-reviewed-required",
+  "allowed": [
+    {
+      "surface": "jwt-access",
+      "path": "$.iat",
+      "reason": "issuance wall-clock claim; semantic time bounds are tested separately"
+    },
+    {
+      "surface": "jwt-access",
+      "path": "$.exp",
+      "reason": "expiry wall-clock claim; duration is tested separately"
+    },
+    {
+      "surface": "jwt-refresh",
+      "path": "$.iat",
+      "reason": "issuance wall-clock claim; semantic time bounds are tested separately"
+    },
+    {
+      "surface": "jwt-refresh",
+      "path": "$.exp",
+      "reason": "expiry wall-clock claim; duration is tested separately"
+    },
+    {
+      "surface": "account",
+      "path": "$.user.create_time",
+      "reason": "server wall-clock metadata"
+    },
+    {
+      "surface": "account",
+      "path": "$.user.update_time",
+      "reason": "server wall-clock metadata"
+    }
+  ],
+  "forbidden_path_fragments": [
+    "user.id",
+    "uid",
+    "user_id",
+    "username",
+    "custom_id",
+    "device_id",
+    "email",
+    "role",
+    "permission",
+    "owner",
+    "version",
+    "cursor",
+    "code",
+    "amount",
+    "currency",
+    "transaction",
+    "match_id",
+    "party_id",
+    "ticket",
+    "score",
+    "rank",
+    "signature",
+    "key_id"
+  ],
+  "policy": {
+    "raw_access_token_may_be_stored": false,
+    "raw_refresh_token_may_be_stored": false,
+    "identity_divergence_may_be_normalized": false,
+    "authorization_divergence_may_be_normalized": false,
+    "error_code_divergence_may_be_normalized": false,
+    "durable_effect_divergence_may_be_normalized": false
+  }
+}

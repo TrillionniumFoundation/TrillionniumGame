@@ -4,6 +4,7 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 compose="$root/oracle/immutable/compose.yml"
 lock="$root/oracle/immutable/oracle-lock.json"
+normalizers="$root/config/oracle-normalizers.json"
 output=${1:-"$root/run/immutable-oracle"}
 mkdir -p "$output"
 
@@ -12,7 +13,11 @@ for command in docker curl python3 sha256sum; do
 done
 docker compose version >/dev/null
 
-candidate_commit=${TRNM_CANDIDATE_COMMIT:-$(git -C "$root" rev-parse HEAD 2>/dev/null || printf unknown)}
+candidate_commit=${TRNM_CANDIDATE_COMMIT:-$(git -C "$root" rev-parse HEAD 2>/dev/null || true)}
+if [[ ! $candidate_commit =~ ^[0-9a-f]{40}$ || $candidate_commit == 0000000000000000000000000000000000000000 ]]; then
+  echo 'TRNM_CANDIDATE_COMMIT (or git HEAD) must be a non-zero lowercase 40-character commit SHA' >&2
+  exit 64
+fi
 project=${TRNM_ORACLE_PROJECT:-"tg-oracle-${candidate_commit:0:12}-$$"}
 work=$(mktemp -d)
 env_file="$work/oracle.env"
@@ -72,6 +77,7 @@ facts = {
   "candidate_commit": ${candidate_commit@Q},
   "oracle_lock_sha256": "sha256:$(sha256sum "$lock" | cut -d' ' -f1)",
   "compose_sha256": "sha256:$(sha256sum "$compose" | cut -d' ' -f1)",
+  "normalizer_registry_sha256": "sha256:$(sha256sum "$normalizers" | cut -d' ' -f1)",
   "rendered_config_sha256": ${rendered_config_sha256@Q},
   "nakama_image_id": ${nakama_image_id@Q},
   "postgres_image_id": ${postgres_image_id@Q},
@@ -89,6 +95,7 @@ PY
 python3 "$root/scripts/oracle/render-immutable-evidence.py" \
   --lock "$lock" \
   --compose "$compose" \
+  --normalizers "$normalizers" \
   --facts "$output/runtime-facts.json" \
   --output "$output/evidence.json"
 
