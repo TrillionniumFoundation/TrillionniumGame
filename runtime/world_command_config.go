@@ -21,6 +21,9 @@ const (
 	worldProfileLegacy = "legacy_direct"
 	worldProfileTarget = "world_transition_v1"
 
+	worldFailpointAfterReservation = "after_reservation"
+	worldFailpointAfterVerify      = "after_verify"
+
 	envWorldProfile          = "TRNM_WORLD_COMMAND_PROFILE"
 	envWorldURL              = "TRNM_WORLD_TRANSITION_URL"
 	envWorldBearer           = "TRNM_WORLD_TRANSITION_BEARER_TOKEN"
@@ -37,35 +40,47 @@ const (
 	envWorldRulesetHash      = "TRNM_WORLD_RULESET_HASH"
 	envWorldContentHash      = "TRNM_WORLD_CONTENT_HASH"
 	envWorldInitialStateHash = "TRNM_WORLD_INITIAL_STATE_HASH"
+	envWorldFaultLab         = "TRNM_WORLD_COMMAND_FAULT_LAB"
+	envWorldFailpoint        = "TRNM_WORLD_COMMAND_FAILPOINT"
 )
 
 type worldCommandRuntimeConfig struct {
-	profile             string
-	endpoint            *url.URL
-	bearerToken         string
-	caPath              string
-	caPEM               []byte
-	timeout              time.Duration
-	maxResponseBytes     int64
-	rulesetRevision     string
-	contentRevision     string
-	stateSchemaID       string
-	commandSchemaID     string
-	initialStateJSON    []byte
-	initialStateValue   any
-	initialStateHash    string
-	initialTick         int64
-	rulesetHash         contract.Digest
-	contentHash         contract.Digest
-	challengeStateHash  contract.Digest
-	errors              []string
+	profile            string
+	endpoint           *url.URL
+	bearerToken        string
+	caPath             string
+	caPEM              []byte
+	timeout            time.Duration
+	maxResponseBytes   int64
+	rulesetRevision    string
+	contentRevision    string
+	stateSchemaID      string
+	commandSchemaID    string
+	initialStateJSON   []byte
+	initialStateValue  any
+	initialStateHash   string
+	initialTick        int64
+	rulesetHash        contract.Digest
+	contentHash        contract.Digest
+	challengeStateHash contract.Digest
+	faultLab           bool
+	failpoint          string
+	errors             []string
 }
 
 func loadWorldCommandRuntimeConfig(env map[string]string) worldCommandRuntimeConfig {
 	cfg := worldCommandRuntimeConfig{
-		profile:         strings.TrimSpace(env[envWorldProfile]),
-		timeout:         5 * time.Second,
+		profile:          strings.TrimSpace(env[envWorldProfile]),
+		timeout:          5 * time.Second,
 		maxResponseBytes: 4 * 1024 * 1024,
+		failpoint:        strings.TrimSpace(env[envWorldFailpoint]),
+	}
+	switch strings.TrimSpace(env[envWorldFaultLab]) {
+	case "", "0":
+	case "1":
+		cfg.faultLab = true
+	default:
+		cfg.errors = append(cfg.errors, envWorldFaultLab+" must be empty, 0, or 1")
 	}
 	if cfg.profile == "" {
 		cfg.profile = worldProfileLegacy
@@ -75,7 +90,16 @@ func loadWorldCommandRuntimeConfig(env map[string]string) worldCommandRuntimeCon
 		return cfg
 	}
 	if cfg.profile == worldProfileLegacy {
+		if cfg.faultLab || cfg.failpoint != "" {
+			cfg.errors = append(cfg.errors, "World fault-lab controls require the world_transition_v1 profile")
+		}
 		return cfg
+	}
+	if cfg.failpoint != "" && !cfg.faultLab {
+		cfg.errors = append(cfg.errors, envWorldFailpoint+" requires "+envWorldFaultLab+"=1")
+	}
+	if cfg.failpoint != "" && cfg.failpoint != worldFailpointAfterReservation && cfg.failpoint != worldFailpointAfterVerify {
+		cfg.errors = append(cfg.errors, envWorldFailpoint+" must be after_reservation or after_verify")
 	}
 
 	rawURL := strings.TrimSpace(env[envWorldURL])
@@ -178,10 +202,7 @@ func loadWorldCommandRuntimeConfig(env map[string]string) worldCommandRuntimeCon
 }
 
 func (c worldCommandRuntimeConfig) ready() error {
-	if c.profile == worldProfileLegacy {
-		return nil
-	}
-	if c.profile != worldProfileTarget {
+	if c.profile != worldProfileLegacy && c.profile != worldProfileTarget {
 		return errors.New("World command profile is invalid")
 	}
 	if len(c.errors) != 0 {
