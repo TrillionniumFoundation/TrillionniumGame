@@ -61,8 +61,12 @@ func (m *worldAuthoritativeMatch) MatchInit(
 		return nil, 0, ""
 	}
 	binding, err := state.engine.WorldBinding()
-	if err != nil || m.world.config.targetBinding(binding) != nil {
-		logger.Error("target World command binding rejected: %v", errors.Join(err, m.world.config.targetBinding(binding)))
+	if err != nil {
+		logger.Error("target World command binding unavailable: %s", err.Error())
+		return nil, 0, ""
+	}
+	if err := m.world.config.targetBinding(binding); err != nil {
+		logger.Error("target World command binding rejected: %s", err.Error())
 		return nil, 0, ""
 	}
 	m.target = true
@@ -111,7 +115,7 @@ func (m *worldAuthoritativeMatch) MatchLoop(
 			broadcastCommandError(logger, dispatcher, message, "", "command JSON is invalid")
 			continue
 		}
-		fatal, err := m.executeTargetCommand(ctx, nk, dispatcher, state, message, command)
+		fatal, err := m.executeTargetCommand(ctx, logger, nk, dispatcher, state, message, command)
 		if err != nil {
 			broadcastCommandError(logger, dispatcher, message, command.CommandID, err.Error())
 			if fatal {
@@ -129,6 +133,7 @@ func (m *worldAuthoritativeMatch) MatchLoop(
 
 func (m *worldAuthoritativeMatch) executeTargetCommand(
 	ctx context.Context,
+	logger runtime.Logger,
 	nk runtime.NakamaModule,
 	dispatcher runtime.MatchDispatcher,
 	state *authoritativeMatchState,
@@ -149,7 +154,7 @@ func (m *worldAuthoritativeMatch) executeTargetCommand(
 			return true, errors.New("core replay has no matching committed World receipt")
 		}
 		if err := broadcastJSON(dispatcher, opCodeEvent, *preflight.Event, []runtime.Presence{message}, message); err != nil {
-			return false, err
+			logger.Warn("durable target World command replay broadcast failed: %s", err.Error())
 		}
 		return false, nil
 	}
@@ -210,18 +215,6 @@ func (m *worldAuthoritativeMatch) executeTargetCommand(
 			if snapshotErr != nil {
 				return "", snapshotErr
 			}
-			if receipt.Disposition == worldcommand.DispositionAccepted {
-				result, applyErr := state.engine.ApplyCommand(message.GetUserId(), command, time.Unix(receipt.CommittedAtUnix, 0).UTC())
-				if applyErr != nil {
-					return "", applyErr
-				}
-				if result.Replay || receipt.EventSequence == nil || result.Event.Sequence != *receipt.EventSequence ||
-					result.Event.MatchVersion != receipt.MatchVersion || result.Version != candidate.MatchVersion {
-					return "", errors.New("core event and World candidate authority cursors diverged")
-				}
-				copyEvent := result.Event
-				appliedEvent = &copyEvent
-			}
 			rollback := func(snapshot []byte) error {
 				restored, restoreErr := m.module.restoreEngineForRecord(state.record, snapshot)
 				if restoreErr != nil {
@@ -230,6 +223,25 @@ func (m *worldAuthoritativeMatch) executeTargetCommand(
 				state.engine = restored
 				appliedEvent = nil
 				return nil
+			}
+			if receipt.Disposition == worldcommand.DispositionAccepted {
+				result, applyErr := state.engine.ApplyCommand(message.GetUserId(), command, time.Unix(receipt.CommittedAtUnix, 0).UTC())
+				if applyErr != nil {
+					if rollbackErr := rollback(beforeCore); rollbackErr != nil {
+						return "", errors.Join(applyErr, fmt.Errorf("core rollback failed: %w", rollbackErr))
+					}
+					return "", applyErr
+				}
+				if result.Replay || receipt.EventSequence == nil || result.Event.Sequence != *receipt.EventSequence ||
+					result.Event.MatchVersion != receipt.MatchVersion || result.Version != candidate.MatchVersion {
+					cursorErr := errors.New("core event and World candidate authority cursors diverged")
+					if rollbackErr := rollback(beforeCore); rollbackErr != nil {
+						return "", errors.Join(cursorErr, fmt.Errorf("core rollback failed: %w", rollbackErr))
+					}
+					return "", cursorErr
+				}
+				copyEvent := result.Event
+				appliedEvent = &copyEvent
 			}
 			return persistWorldAndCoreAtomic(commitCtx, nk, state, expectedWorldVersion, worldPayload, rollback, beforeCore)
 		},
@@ -256,7 +268,9 @@ func (m *worldAuthoritativeMatch) executeTargetCommand(
 		return true, errors.New("accepted World receipt committed without a core event")
 	}
 	if err := broadcastJSON(dispatcher, opCodeEvent, *appliedEvent, nil, message); err != nil {
-		return false, err
+		// The event is already durable in the same storage transaction as the
+		// World receipt. Never report the command as rejected after commit.
+		logger.Warn("durable target World command broadcast failed: %s", err.Error())
 	}
 	return false, nil
 }
