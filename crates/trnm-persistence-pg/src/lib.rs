@@ -592,8 +592,8 @@ pub fn classify_sqlstate(code: &str) -> DomainError {
     }
 }
 
-fn map_postgres_error(error: postgres::Error) -> DomainError {
-    error
+fn map_postgres_error(source: postgres::Error) -> DomainError {
+    source
         .code()
         .map(|code| classify_sqlstate(code.code()))
         .unwrap_or_else(|| {
