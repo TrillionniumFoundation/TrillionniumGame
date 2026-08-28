@@ -5,6 +5,7 @@ members = [
   "crates/trnm-session-core",
   "crates/trnm-storage-core",
   "crates/trnm-persistence-core",
+  "crates/trnm-persistence-pg",
 ]
 resolver = "2"
 
