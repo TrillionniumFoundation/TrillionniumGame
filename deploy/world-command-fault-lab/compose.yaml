@@ -21,6 +21,7 @@ services:
       - ALL
 
   world-fixture:
+    image: ${TRNM_WORLD_FIXTURE_IMAGE:-trnm-world-transition-fixture:local}
     build:
       context: ../../runtime
       dockerfile: Dockerfile.faultlab
