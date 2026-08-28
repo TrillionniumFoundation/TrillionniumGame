@@ -52,8 +52,8 @@ type proxyServer struct {
 }
 
 type controlRequest struct {
-	Mode         proxyMode `json:"mode"`
-	DelayMillis  int64     `json:"delay_millis,omitempty"`
+	Mode        proxyMode `json:"mode"`
+	DelayMillis int64     `json:"delay_millis,omitempty"`
 }
 
 func main() {

@@ -54,13 +54,13 @@ func (r *worldCommandRPC) ready(
 ) (string, error) {
 	ready := r != nil && r.world != nil && r.world.config.ready() == nil && r.world.initErr == nil
 	response := map[string]any{
-		"schema":                       "trnm.game.world-command-ready.v1",
-		"profile":                      worldProfileLegacy,
-		"ready":                        ready,
+		"schema":                        "trnm.game.world-command-ready.v1",
+		"profile":                       worldProfileLegacy,
+		"ready":                         ready,
 		"external_execution_under_lock": false,
-		"cutover_authorized":           operatorPromotionAuthorized,
-		"public_online_enabled":        operatorPromotionAuthorized,
-		"public_player_market_enabled": operatorPromotionAuthorized,
+		"cutover_authorized":            operatorPromotionAuthorized,
+		"public_online_enabled":         operatorPromotionAuthorized,
+		"public_player_market_enabled":  operatorPromotionAuthorized,
 	}
 	if r != nil && r.world != nil {
 		response["profile"] = r.world.config.profile

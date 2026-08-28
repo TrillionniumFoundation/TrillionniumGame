@@ -165,12 +165,12 @@ type VerifiedTransition struct {
 }
 
 type Receipt struct {
-	Schema                 string       `json:"schema"`
+	Schema                string      `json:"schema"`
 	ClientCommandID       string      `json:"client_command_id"`
 	IntentFingerprint     string      `json:"intent_fingerprint"`
 	ReservationID         string      `json:"reservation_id"`
 	Generation            uint64      `json:"generation"`
-	Disposition            Disposition `json:"disposition"`
+	Disposition           Disposition `json:"disposition"`
 	EventSequence         *uint64     `json:"event_sequence,omitempty"`
 	MatchVersion          uint64      `json:"match_version"`
 	StateRevision         uint64      `json:"state_revision"`

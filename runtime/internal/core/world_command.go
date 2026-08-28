@@ -12,26 +12,26 @@ import (
 // needed to prepare a World transition. It contains no signing key or mutable
 // authority capability.
 type WorldBinding struct {
-	MatchID                  string
-	ChallengeID              string
-	RulesetHash              contract.Digest
-	DatasetHash              contract.Digest
-	ChallengeSnapshotHash    contract.Digest
-	RosterRoot               contract.Digest
-	MatchVersion             uint64
-	NextGlobalEventSequence  uint64
-	ParticipantSequences     map[string]uint64
+	MatchID                 string
+	ChallengeID             string
+	RulesetHash             contract.Digest
+	DatasetHash             contract.Digest
+	ChallengeSnapshotHash   contract.Digest
+	RosterRoot              contract.Digest
+	MatchVersion            uint64
+	NextGlobalEventSequence uint64
+	ParticipantSequences    map[string]uint64
 }
 
 // CommandPreflight is a non-mutating validation result used before reservation
 // persistence and external World execution.
 type CommandPreflight struct {
-	Replay                   bool
-	Event                    *contract.MatchEvent
-	Fingerprint              contract.Digest
-	MatchVersion             uint64
-	NextGlobalEventSequence  uint64
-	ParticipantLastSequence  uint64
+	Replay                  bool
+	Event                   *contract.MatchEvent
+	Fingerprint             contract.Digest
+	MatchVersion            uint64
+	NextGlobalEventSequence uint64
+	ParticipantLastSequence uint64
 }
 
 func (e *Engine) WorldBinding() (WorldBinding, error) {
