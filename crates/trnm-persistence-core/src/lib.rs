@@ -169,9 +169,7 @@ impl DurableState {
 
     #[must_use]
     pub fn event_count(&self, entity: EntityId) -> usize {
-        self.events
-            .range((entity, 0)..=(entity, u64::MAX))
-            .count()
+        self.events.range((entity, 0)..=(entity, u64::MAX)).count()
     }
 
     pub fn prepare(&self, intent: CommandIntent) -> Result<PrepareOutcome, DomainError> {
@@ -342,7 +340,10 @@ impl DurableState {
         if head.authority_generation != expected_generation {
             return Err(generation_mismatch());
         }
-        head.authority_generation = head.authority_generation.checked_add(1).ok_or_else(overflow)?;
+        head.authority_generation = head
+            .authority_generation
+            .checked_add(1)
+            .ok_or_else(overflow)?;
         Ok(*head)
     }
 
@@ -356,7 +357,10 @@ impl DurableState {
                 RetryClass::SafeBackoff,
             ));
         }
-        record.lease_generation = record.lease_generation.checked_add(1).ok_or_else(overflow)?;
+        record.lease_generation = record
+            .lease_generation
+            .checked_add(1)
+            .ok_or_else(overflow)?;
         record.state = OutboxState::Leased {
             owner,
             generation: record.lease_generation,
@@ -430,7 +434,10 @@ impl DurableState {
 fn validate_intent(intent: &CommandIntent) -> Result<(), DomainError> {
     nonzero(intent.entity.is_zero(), "invalid_entity_id")?;
     nonzero(intent.command.is_zero(), "invalid_command_id")?;
-    if intent.authority_generation == 0 || intent.fingerprint.is_zero() || intent.next_state.is_zero() {
+    if intent.authority_generation == 0
+        || intent.fingerprint.is_zero()
+        || intent.next_state.is_zero()
+    {
         return Err(invalid("invalid_command_intent"));
     }
     if intent.events.len() > MAX_EVENTS || intent.outbox.len() > MAX_INTENTS {
@@ -508,7 +515,11 @@ const fn outbox_not_found() -> DomainError {
 }
 
 const fn overflow() -> DomainError {
-    error(StableCode::OutOfRange, "counter_overflow", RetryClass::Never)
+    error(
+        StableCode::OutOfRange,
+        "counter_overflow",
+        RetryClass::Never,
+    )
 }
 
 const fn stale_prepare() -> DomainError {
@@ -585,7 +596,10 @@ mod tests {
         assert_eq!(receipt.revision, 1);
         assert_eq!(receipt.first_sequence, Some(1));
         assert_eq!(state.event_count(EntityId::new(id(1))), 1);
-        assert_eq!(state.outbox(IntentId::new(id(1))).unwrap().state, OutboxState::Pending);
+        assert_eq!(
+            state.outbox(IntentId::new(id(1))).unwrap().state,
+            OutboxState::Pending
+        );
     }
 
     #[test]
@@ -593,10 +607,16 @@ mod tests {
         let mut state = state();
         let original = intent(1, 0, 1);
         let receipt = state.commit(prepared(&state, original.clone())).unwrap();
-        assert_eq!(state.prepare(original).unwrap(), PrepareOutcome::Duplicate(receipt));
+        assert_eq!(
+            state.prepare(original).unwrap(),
+            PrepareOutcome::Duplicate(receipt)
+        );
         let mut changed = intent(1, 1, 1);
         changed.fingerprint = digest(88);
-        assert_eq!(state.prepare(changed).unwrap_err().reason(), "command_id_conflict");
+        assert_eq!(
+            state.prepare(changed).unwrap_err().reason(),
+            "command_id_conflict"
+        );
     }
 
     #[test]
@@ -605,7 +625,10 @@ mod tests {
         let first = prepared(&state, intent(1, 0, 1));
         let second = prepared(&state, intent(2, 0, 1));
         state.commit(first).unwrap();
-        assert_eq!(state.commit(second).unwrap_err().reason(), "entity_revision_mismatch");
+        assert_eq!(
+            state.commit(second).unwrap_err().reason(),
+            "entity_revision_mismatch"
+        );
     }
 
     #[test]
@@ -613,31 +636,83 @@ mod tests {
         let mut state = state();
         let old = prepared(&state, intent(1, 0, 1));
         state.takeover(EntityId::new(id(1)), 1).unwrap();
-        assert_eq!(state.commit(old).unwrap_err().reason(), "authority_generation_mismatch");
+        assert_eq!(
+            state.commit(old).unwrap_err().reason(),
+            "authority_generation_mismatch"
+        );
     }
 
     #[test]
     fn outbox_lease_generation_fences_stale_worker() {
         let mut state = state();
         state.commit(prepared(&state, intent(1, 0, 1))).unwrap();
-        let first = state.lease(IntentId::new(id(1)), NodeId::new(id(1))).unwrap();
-        state.retry(first.id, NodeId::new(id(1)), first.lease_generation).unwrap();
+        let first = state
+            .lease(IntentId::new(id(1)), NodeId::new(id(1)))
+            .unwrap();
+        state
+            .retry(first.id, NodeId::new(id(1)), first.lease_generation)
+            .unwrap();
         let second = state.lease(first.id, NodeId::new(id(2))).unwrap();
         assert_eq!(
-            state.apply(first.id, NodeId::new(id(1)), first.lease_generation, digest(70)).unwrap_err().reason(),
+            state
+                .apply(
+                    first.id,
+                    NodeId::new(id(1)),
+                    first.lease_generation,
+                    digest(70)
+                )
+                .unwrap_err()
+                .reason(),
             "outbox_lease_mismatch"
         );
-        state.apply(first.id, NodeId::new(id(2)), second.lease_generation, digest(70)).unwrap();
+        state
+            .apply(
+                first.id,
+                NodeId::new(id(2)),
+                second.lease_generation,
+                digest(70),
+            )
+            .unwrap();
     }
 
     #[test]
     fn applied_receipt_is_exactly_idempotent() {
         let mut state = state();
         state.commit(prepared(&state, intent(1, 0, 1))).unwrap();
-        let lease = state.lease(IntentId::new(id(1)), NodeId::new(id(1))).unwrap();
-        let applied = state.apply(lease.id, NodeId::new(id(1)), lease.lease_generation, digest(70)).unwrap();
-        assert_eq!(state.apply(lease.id, NodeId::new(id(1)), lease.lease_generation, digest(70)).unwrap(), applied);
-        assert_eq!(state.apply(lease.id, NodeId::new(id(1)), lease.lease_generation, digest(71)).unwrap_err().reason(), "outbox_receipt_mismatch");
+        let lease = state
+            .lease(IntentId::new(id(1)), NodeId::new(id(1)))
+            .unwrap();
+        let applied = state
+            .apply(
+                lease.id,
+                NodeId::new(id(1)),
+                lease.lease_generation,
+                digest(70),
+            )
+            .unwrap();
+        assert_eq!(
+            state
+                .apply(
+                    lease.id,
+                    NodeId::new(id(1)),
+                    lease.lease_generation,
+                    digest(70)
+                )
+                .unwrap(),
+            applied
+        );
+        assert_eq!(
+            state
+                .apply(
+                    lease.id,
+                    NodeId::new(id(1)),
+                    lease.lease_generation,
+                    digest(71)
+                )
+                .unwrap_err()
+                .reason(),
+            "outbox_receipt_mismatch"
+        );
     }
 
     #[test]
@@ -647,20 +722,44 @@ mod tests {
         let before = state.clone();
         let mut second = intent(2, 1, 1);
         second.outbox[0].id = IntentId::new(id(1));
-        assert_eq!(state.prepare(second).unwrap_err().reason(), "outbox_intent_already_exists");
+        assert_eq!(
+            state.prepare(second).unwrap_err().reason(),
+            "outbox_intent_already_exists"
+        );
         assert_eq!(state, before);
     }
 
     #[test]
     fn invalid_identity_and_terminal_dead_letter_fail_closed() {
         let mut invalid_state = DurableState::default();
-        assert_eq!(invalid_state.bootstrap(EntityId::new([0; 16]), 1, digest(1)).unwrap_err().reason(), "invalid_entity_id");
+        assert_eq!(
+            invalid_state
+                .bootstrap(EntityId::new([0; 16]), 1, digest(1))
+                .unwrap_err()
+                .reason(),
+            "invalid_entity_id"
+        );
 
         let mut state = state();
         state.commit(prepared(&state, intent(1, 0, 1))).unwrap();
-        let lease = state.lease(IntentId::new(id(1)), NodeId::new(id(1))).unwrap();
-        let dead = state.dead_letter(lease.id, NodeId::new(id(1)), lease.lease_generation, digest(90)).unwrap();
+        let lease = state
+            .lease(IntentId::new(id(1)), NodeId::new(id(1)))
+            .unwrap();
+        let dead = state
+            .dead_letter(
+                lease.id,
+                NodeId::new(id(1)),
+                lease.lease_generation,
+                digest(90),
+            )
+            .unwrap();
         assert!(matches!(dead.state, OutboxState::DeadLetter { .. }));
-        assert_eq!(state.lease(lease.id, NodeId::new(id(2))).unwrap_err().reason(), "outbox_not_pending");
+        assert_eq!(
+            state
+                .lease(lease.id, NodeId::new(id(2)))
+                .unwrap_err()
+                .reason(),
+            "outbox_not_pending"
+        );
     }
 }
