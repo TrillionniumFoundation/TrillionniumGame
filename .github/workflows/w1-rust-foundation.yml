@@ -1,0 +1,65 @@
+name: trillionnium-game-rust-foundation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/**'
+      - 'contracts/foundation/**'
+      - 'scripts/check-rust-foundation.py'
+      - 'tests/foundation/**'
+      - 'docs/development/RUST_FOUNDATION_ALPHA.md'
+      - 'docs/status/RUST_FOUNDATION_STATUS.json'
+      - '.github/workflows/w1-rust-foundation.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/**'
+      - 'contracts/foundation/**'
+      - 'scripts/check-rust-foundation.py'
+      - 'tests/foundation/**'
+      - 'docs/development/RUST_FOUNDATION_ALPHA.md'
+      - 'docs/status/RUST_FOUNDATION_STATUS.json'
+      - '.github/workflows/w1-rust-foundation.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trillionnium-game-rust-foundation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract-and-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Validate static Rust boundary
+        run: python3 scripts/check-rust-foundation.py
+      - name: Execute independent reference vectors
+        run: python3 -m unittest discover -s tests/foundation -p 'test_*.py' -v
+
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install exact Rust toolchain
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Unit tests
+        run: cargo test --workspace --all-targets --locked
+      - name: Strict lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
