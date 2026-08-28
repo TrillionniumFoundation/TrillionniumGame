@@ -21,6 +21,15 @@ func InitModule(ctx context.Context, logger runtime.Logger, _ *sql.DB, _ runtime
 		logger.Warn("Trillionnium authoritative runtime loaded unready: %s", err.Error())
 	}
 
+	world := newWorldCommandRuntime(loadWorldCommandRuntimeConfig(environment))
+	if err := world.config.ready(); err != nil {
+		logger.Warn("World command runtime loaded unready: %s", err.Error())
+	}
+	if world.initErr != nil {
+		logger.Warn("World command HTTPS executor failed closed: %s", world.initErr.Error())
+	}
+	worldRPC := &worldCommandRPC{module: module, world: world}
+
 	registrations := []struct {
 		name string
 		fn   func(context.Context, runtime.Logger, *sql.DB, runtime.NakamaModule, string) (string, error)
@@ -32,6 +41,9 @@ func InitModule(ctx context.Context, logger runtime.Logger, _ *sql.DB, _ runtime
 		{name: rpcComplete, fn: module.rpcComplete},
 		{name: rpcHealth, fn: module.rpcHealth},
 		{name: rpcReady, fn: module.rpcReady},
+		{name: rpcWorldCommandReady, fn: worldRPC.ready},
+		{name: rpcWorldCommandStatus, fn: worldRPC.status},
+		{name: rpcWorldCommandAbort, fn: worldRPC.abort},
 	}
 	for _, registration := range registrations {
 		if err := initializer.RegisterRpc(registration.name, registration.fn); err != nil {
@@ -39,11 +51,14 @@ func InitModule(ctx context.Context, logger runtime.Logger, _ *sql.DB, _ runtime
 		}
 	}
 	if err := initializer.RegisterMatch(registeredMatchName, func(context.Context, runtime.Logger, *sql.DB, runtime.NakamaModule) (runtime.Match, error) {
-		return &authoritativeMatch{module: module}, nil
+		return &worldAuthoritativeMatch{
+			authoritativeMatch: &authoritativeMatch{module: module},
+			world:              world,
+		}, nil
 	}); err != nil {
 		return fmt.Errorf("register match %s: %w", registeredMatchName, err)
 	}
 
-	logger.Info("Trillionnium authoritative runtime registered")
+	logger.Info("Trillionnium authoritative runtime registered with World command profile %s", world.config.profile)
 	return nil
 }
