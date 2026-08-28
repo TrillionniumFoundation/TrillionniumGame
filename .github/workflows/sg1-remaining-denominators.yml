@@ -1,0 +1,91 @@
+name: trillionnium-game-sg1-remaining-denominators
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tools/denominator/**'
+      - 'scripts/generate-remaining-denominators.py'
+      - 'scripts/check-remaining-denominators.sh'
+      - 'tests/denominator/test_remaining_denominators.py'
+      - 'docs/development/REMAINING_DENOMINATOR_CANDIDATES.md'
+      - '.github/workflows/sg1-remaining-denominators.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trillionnium-game-remaining-denominators-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-source-candidates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Run parser and fail-closed tests
+        run: bash scripts/check-remaining-denominators.sh
+      - name: Fetch and independently verify complete Nakama source tree
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/fetch-pinned-upstream.py \
+            --repository heroiclabs/nakama \
+            --revision d4d92f93f78bbbe62c7fc50a3f85c772ec121a09 \
+            --tree f3c9cfc2726d5543da1564629170f35b98e3797d \
+            --output run/upstream/nakama
+      - name: Generate candidate set A
+        run: |
+          python3 scripts/generate-remaining-denominators.py \
+            --source-dir run/upstream/nakama \
+            --output-dir run/candidate-a
+      - name: Generate candidate set B and require byte identity
+        run: |
+          python3 scripts/generate-remaining-denominators.py \
+            --source-dir run/upstream/nakama \
+            --output-dir run/candidate-b
+          diff -ru run/candidate-a run/candidate-b
+      - name: Prove candidate cannot close SG1
+        run: |
+          if python3 scripts/generate-remaining-denominators.py \
+              --source-dir run/upstream/nakama \
+              --output-dir run/sg1-negative \
+              --require-sg1; then
+            echo 'candidate incorrectly received SG1 credit' >&2
+            exit 1
+          fi
+      - name: Validate nonempty fail-closed outputs and restricted ACL boundary
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          minimums = {
+              'console-denominator.candidate.json': 50,
+              'providers-denominator.candidate.json': 20,
+              'iap-denominator.candidate.json': 20,
+              'metrics-denominator.candidate.json': 5,
+              'operations-denominator.candidate.json': 10,
+          }
+          root = Path('run/candidate-a')
+          for name, minimum in minimums.items():
+              value = json.loads((root / name).read_text())
+              assert value['leaf_count'] >= minimum, (name, value['leaf_count'])
+              assert value['unclassified_count'] == value['leaf_count']
+              assert value['status'] == 'candidate-unclassified'
+              assert value['sg1_eligible'] is False
+              assert value['compatibility_credit'] is False
+              assert value['production_ready'] is False
+          console = json.loads((root / 'console-denominator.candidate.json').read_text())
+          restricted = [item for item in console['manual_contracts'] if item['class'] == 'restricted_console_acl_source']
+          assert len(restricted) == 1, restricted
+          assert 'CheckACL' not in json.dumps(restricted)
+          PY
+      - name: Upload exact-head candidate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: remaining-denominators-${{ github.sha }}
+          path: run/candidate-a
+          if-no-files-found: error
+          retention-days: 30
