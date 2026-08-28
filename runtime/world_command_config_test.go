@@ -50,6 +50,7 @@ func TestWorldCommandTargetBindingUsesImmutableAuthorizationHashes(t *testing.T)
 	stateSum := sha256.Sum256(state)
 	ruleset := contract.NewDigest([]byte("ruleset"))
 	content := contract.NewDigest([]byte("content"))
+	challenge := contract.NewDigest([]byte("challenge-snapshot"))
 	stateDigest := contract.Digest("sha256:" + hex.EncodeToString(stateSum[:]))
 	env := map[string]string{
 		envWorldProfile:          worldProfileTarget,
@@ -65,6 +66,7 @@ func TestWorldCommandTargetBindingUsesImmutableAuthorizationHashes(t *testing.T)
 		envWorldRulesetHash:      string(ruleset),
 		envWorldContentHash:      string(content),
 		envWorldInitialStateHash: string(stateDigest),
+		envWorldChallengeHash:    string(challenge),
 		envWorldFaultLab:         "1",
 		envWorldFailpoint:        worldFailpointAfterVerify,
 	}
@@ -72,10 +74,13 @@ func TestWorldCommandTargetBindingUsesImmutableAuthorizationHashes(t *testing.T)
 	if err := config.ready(); err != nil {
 		t.Fatal(err)
 	}
+	if config.initialStateDigest != stateDigest || config.challengeSnapshotHash != challenge {
+		t.Fatalf("initial-state and challenge commitments were conflated: %+v", config)
+	}
 	binding := matchcore.WorldBinding{
 		RulesetHash:           ruleset,
 		DatasetHash:           content,
-		ChallengeSnapshotHash: stateDigest,
+		ChallengeSnapshotHash: challenge,
 	}
 	if err := config.targetBinding(binding); err != nil {
 		t.Fatal(err)
@@ -83,5 +88,10 @@ func TestWorldCommandTargetBindingUsesImmutableAuthorizationHashes(t *testing.T)
 	binding.DatasetHash = contract.NewDigest([]byte("different"))
 	if err := config.targetBinding(binding); err == nil {
 		t.Fatal("target profile accepted a different immutable content hash")
+	}
+	binding.DatasetHash = content
+	binding.ChallengeSnapshotHash = stateDigest
+	if err := config.targetBinding(binding); err == nil {
+		t.Fatal("target profile accepted the initial-state hash as the authorization challenge snapshot")
 	}
 }
