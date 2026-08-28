@@ -20,6 +20,7 @@ on:
       - 'scripts/check-world-command-deployed-runtime-v1.sh'
       - 'scripts/test-world-command-deployed-runtime-v1-negative.sh'
       - 'scripts/run-world-command-deployed-fault-lab.sh'
+      - 'scripts/run-world-command-deployed-fault-lab-v2.sh'
       - 'scripts/verify-world-command-storage-atomicity.py'
       - '.github/workflows/world-command-deployed-runtime-v1.yml'
   push:
@@ -43,6 +44,7 @@ on:
       - 'scripts/check-world-command-deployed-runtime-v1.sh'
       - 'scripts/test-world-command-deployed-runtime-v1-negative.sh'
       - 'scripts/run-world-command-deployed-fault-lab.sh'
+      - 'scripts/run-world-command-deployed-fault-lab-v2.sh'
       - 'scripts/verify-world-command-storage-atomicity.py'
       - '.github/workflows/world-command-deployed-runtime-v1.yml'
 
@@ -72,6 +74,7 @@ jobs:
           bash -n scripts/check-world-command-deployed-runtime-v1.sh
           bash -n scripts/test-world-command-deployed-runtime-v1-negative.sh
           bash -n scripts/run-world-command-deployed-fault-lab.sh
+          bash -n scripts/run-world-command-deployed-fault-lab-v2.sh
           python3 -m py_compile scripts/verify-world-command-storage-atomicity.py
           node --check scripts/blackbox/world-command-fault.mjs
 
@@ -129,7 +132,7 @@ jobs:
       - name: Execute isolated PostgreSQL + Game + World HTTPS fault lab
         env:
           TRNM_WORLD_COMMAND_EVIDENCE_DIR: ${{ github.workspace }}/run/world-command-deployed-runtime-v1
-        run: timeout 40m bash scripts/run-world-command-deployed-fault-lab.sh
+        run: timeout 40m bash scripts/run-world-command-deployed-fault-lab-v2.sh
 
       - name: Validate exact-head evidence posture
         env:
