@@ -21,7 +21,7 @@ func InitModule(ctx context.Context, logger runtime.Logger, _ *sql.DB, _ runtime
 		logger.Warn("Trillionnium authoritative runtime loaded unready: %s", err.Error())
 	}
 
-	world := newWorldCommandRuntime(loadWorldCommandRuntimeConfig(environment))
+	world := newWorldCommandRuntime(loadWorldCommandRuntimeConfig(worldCommandEnvironment(environment)))
 	if err := world.config.ready(); err != nil {
 		logger.Warn("World command runtime loaded unready: %s", err.Error())
 	}
