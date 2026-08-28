@@ -11,8 +11,13 @@ on:
       - 'AGENTS.md'
       - 'CONTRIBUTING.md'
       - 'docs/**'
+      - 'manifests/**'
       - 'scripts/check-plan.py'
+      - 'scripts/generate-api-rtapi-denominator.py'
+      - 'scripts/check-api-rtapi-denominator.sh'
+      - 'tests/test_api_rtapi_denominator.py'
       - '.github/workflows/plan-contract.yml'
+      - '.github/workflows/denominator-api-rtapi.yml'
   push:
     branches: [main]
     paths:
@@ -24,8 +29,13 @@ on:
       - 'AGENTS.md'
       - 'CONTRIBUTING.md'
       - 'docs/**'
+      - 'manifests/**'
       - 'scripts/check-plan.py'
+      - 'scripts/generate-api-rtapi-denominator.py'
+      - 'scripts/check-api-rtapi-denominator.sh'
+      - 'tests/test_api_rtapi_denominator.py'
       - '.github/workflows/plan-contract.yml'
+      - '.github/workflows/denominator-api-rtapi.yml'
   workflow_dispatch:
 
 permissions:
@@ -44,3 +54,53 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Validate complete Rust rewrite plan
         run: python3 scripts/check-plan.py
+
+  exact-api-rtapi-denominator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Run unit and syntax tests
+        run: bash scripts/check-api-rtapi-denominator.sh
+      - name: Fetch exact upstream sources and generate candidate A
+        run: |
+          python3 scripts/generate-api-rtapi-denominator.py \
+            --fetch \
+            --source-dir run/upstream \
+            --output-dir run/candidate-a
+      - name: Re-run offline and require byte-identical output
+        run: |
+          python3 scripts/generate-api-rtapi-denominator.py \
+            --source-dir run/upstream \
+            --output-dir run/candidate-b
+          diff -ru run/candidate-a run/candidate-b
+      - name: Prove candidate cannot close SG1
+        run: |
+          if python3 scripts/generate-api-rtapi-denominator.py \
+              --source-dir run/upstream \
+              --output-dir run/sg1-negative \
+              --require-sg1; then
+            echo 'candidate incorrectly received SG1 credit' >&2
+            exit 1
+          fi
+      - name: Validate fail-closed candidate metadata
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          for name, minimum in [('api-denominator.candidate.json', 100), ('rtapi-denominator.candidate.json', 50)]:
+              value = json.loads((Path('run/candidate-a') / name).read_text())
+              assert value['leaf_count'] >= minimum, (name, value['leaf_count'])
+              assert value['unclassified_count'] == value['leaf_count']
+              assert value['status'] == 'candidate-unclassified'
+              assert value['sg1_eligible'] is False
+              assert value['compatibility_credit'] is False
+          PY
+      - name: Upload exact-head candidate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: api-rtapi-denominator-${{ github.sha }}
+          path: run/candidate-a
+          if-no-files-found: error
+          retention-days: 30
