@@ -19,6 +19,9 @@ on:
       - 'scripts/blackbox/world-command-fault.mjs'
       - 'scripts/check-world-command-deployed-runtime-v1.sh'
       - 'scripts/test-world-command-deployed-runtime-v1-negative.sh'
+      - 'scripts/check-world-command-faultlab-postgres-binding.sh'
+      - 'scripts/test-world-command-faultlab-postgres-binding-negative.sh'
+      - 'scripts/check-world-command-deployed-runtime-v1-local.sh'
       - 'scripts/run-world-command-deployed-fault-lab.sh'
       - 'scripts/run-world-command-deployed-fault-lab-v2.sh'
       - 'scripts/verify-world-command-storage-atomicity.py'
@@ -43,6 +46,9 @@ on:
       - 'scripts/blackbox/world-command-fault.mjs'
       - 'scripts/check-world-command-deployed-runtime-v1.sh'
       - 'scripts/test-world-command-deployed-runtime-v1-negative.sh'
+      - 'scripts/check-world-command-faultlab-postgres-binding.sh'
+      - 'scripts/test-world-command-faultlab-postgres-binding-negative.sh'
+      - 'scripts/check-world-command-deployed-runtime-v1-local.sh'
       - 'scripts/run-world-command-deployed-fault-lab.sh'
       - 'scripts/run-world-command-deployed-fault-lab-v2.sh'
       - 'scripts/verify-world-command-storage-atomicity.py'
@@ -73,6 +79,9 @@ jobs:
         run: |
           bash -n scripts/check-world-command-deployed-runtime-v1.sh
           bash -n scripts/test-world-command-deployed-runtime-v1-negative.sh
+          bash -n scripts/check-world-command-faultlab-postgres-binding.sh
+          bash -n scripts/test-world-command-faultlab-postgres-binding-negative.sh
+          bash -n scripts/check-world-command-deployed-runtime-v1-local.sh
           bash -n scripts/run-world-command-deployed-fault-lab.sh
           bash -n scripts/run-world-command-deployed-fault-lab-v2.sh
           python3 -m py_compile scripts/verify-world-command-storage-atomicity.py
@@ -80,6 +89,11 @@ jobs:
 
       - name: Verify deployed-runtime authority and storage boundary
         run: bash scripts/check-world-command-deployed-runtime-v1.sh
+
+      - name: Verify canonical fault-lab PostgreSQL binding
+        run: |
+          bash scripts/check-world-command-faultlab-postgres-binding.sh
+          bash scripts/test-world-command-faultlab-postgres-binding-negative.sh
 
       - name: Prove malicious deployed-runtime fixtures fail closed
         run: bash scripts/test-world-command-deployed-runtime-v1-negative.sh
