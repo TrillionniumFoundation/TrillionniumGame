@@ -1,0 +1,42 @@
+{
+  "schema": "trillionnium.nakama-token-source-lock.v1",
+  "project_id": "trillionnium-game",
+  "status": "exact-source-observed",
+  "upstream": {
+    "repository": "heroiclabs/nakama",
+    "tag": "v3.40.0",
+    "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "tree": "f3c9cfc2726d5543da1564629170f35b98e3797d",
+    "server_tree": "7e93ec2a475f57fdeb041efe40a1b0db45b3cd81"
+  },
+  "sources": [
+    {
+      "path": "server/api_authenticate.go",
+      "blob": "1f938603160ef1dc7f6546926de5481622139dd2",
+      "observed_contract": ["tid", "uid", "usn", "vrs", "exp", "iat"]
+    },
+    {
+      "path": "server/jwt.go",
+      "blob": "ab0c53aef5152429370ffe1d3ec9d273007132be",
+      "observed_contract": ["HS256", "expiration-required", "valid-method-restriction"]
+    },
+    {
+      "path": "server/api_session.go",
+      "blob": "1cef7b9d967e93745b19bdd048ff203fc212acea",
+      "observed_contract": ["refresh-required", "same-token-id-refresh", "session-cache-validation"]
+    }
+  ],
+  "legacy_limitations": [
+    "No key ID or key epoch is carried in the legacy token.",
+    "Access and refresh tokens use distinct configured signing keys.",
+    "The same token ID and original issued-at value are reused during refresh in the pinned implementation.",
+    "Legacy overlap rotation is ambiguous unless verification tries external key policy; this candidate fails closed instead of guessing."
+  ],
+  "claims": {
+    "token_serialization_compatible": false,
+    "signature_compatible": false,
+    "refresh_behavior_compatible": false,
+    "c1_earned": false,
+    "production_ready": false
+  }
+}

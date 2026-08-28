@@ -1,0 +1,22 @@
+{
+  "schema": "trillionnium.token-policy-vectors.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-level-candidate",
+  "cases": [
+    {"id":"legacy-single-active-issue","operation":"issue","profile":"legacy","role":"access","now":1000,"declared_epoch":null,"keys":[{"epoch":1,"status":"active","not_before":900,"not_after":2000}],"claims":{"issued_at":1000,"expires_at":1300,"family":false,"epoch":null},"expect":{"selected_epoch":1,"emitted_epoch":null}},
+    {"id":"legacy-overlap-verify-ambiguous","operation":"verify-key","profile":"legacy","role":"access","now":1000,"declared_epoch":null,"keys":[{"epoch":1,"status":"verify-only","not_before":900,"not_after":2000},{"epoch":2,"status":"active","not_before":900,"not_after":2000}],"expect_error":"ambiguous_legacy_key_epoch"},
+    {"id":"family-explicit-active","operation":"issue","profile":"family-v1","role":"refresh","now":1000,"declared_epoch":7,"keys":[{"epoch":7,"status":"active","not_before":900,"not_after":2000}],"claims":{"issued_at":1000,"expires_at":2000,"family":true,"epoch":7},"expect":{"selected_epoch":7,"emitted_epoch":7}},
+    {"id":"verify-only-cannot-issue","operation":"issue","profile":"family-v1","role":"access","now":1000,"declared_epoch":3,"keys":[{"epoch":3,"status":"verify-only","not_before":900,"not_after":2000}],"claims":{"issued_at":1000,"expires_at":1300,"family":true,"epoch":3},"expect_error":"token_issue_key_unavailable"},
+    {"id":"explicit-verify-only-verifies","operation":"verify-key","profile":"family-v1","role":"access","now":1000,"declared_epoch":3,"keys":[{"epoch":3,"status":"verify-only","not_before":900,"not_after":2000}],"expect":{"selected_epoch":3}},
+    {"id":"retired-key-rejected","operation":"verify-key","profile":"family-v1","role":"access","now":1000,"declared_epoch":3,"keys":[{"epoch":3,"status":"retired","not_before":900,"not_after":2000}],"expect_error":"token_key_unavailable"},
+    {"id":"expired-token-rejected","operation":"verify-claims","profile":"family-v1","role":"access","now":1000,"declared_epoch":2,"keys":[{"epoch":2,"status":"active","not_before":900,"not_after":2000}],"claims":{"issued_at":500,"expires_at":600,"family":true,"epoch":2},"expect_error":"token_expired"},
+    {"id":"future-token-rejected","operation":"verify-claims","profile":"family-v1","role":"access","now":1000,"declared_epoch":2,"keys":[{"epoch":2,"status":"active","not_before":900,"not_after":2000}],"claims":{"issued_at":1100,"expires_at":1200,"family":true,"epoch":2},"expect_error":"token_issued_in_future"}
+  ],
+  "claims": {
+    "raw_key_handling_implemented": false,
+    "jwt_serialization_implemented": false,
+    "signature_compatible": false,
+    "refresh_behavior_compatible": false,
+    "production_ready": false
+  }
+}
