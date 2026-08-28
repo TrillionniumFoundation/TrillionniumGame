@@ -29,6 +29,7 @@ def main() -> None:
         "pub struct RouterState",
         "pub struct ConnectionRecord",
         "pub struct PresenceRecord",
+        "pub struct JoinPresenceRequest",
         "pub struct RouteTarget",
         "pub fn open",
         "pub fn route",
