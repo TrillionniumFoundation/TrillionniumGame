@@ -1,0 +1,43 @@
+name: trillionnium-game-token-policy-core
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/trnm-token-core/**'
+      - 'contracts/session/nakama-v340-token-source-lock.json'
+      - 'contracts/session/token-policy-vectors.v1.json'
+      - 'scripts/check-token-core.py'
+      - 'tests/session/test_token_policy_vectors.py'
+      - 'docs/development/TOKEN_POLICY_CORE.md'
+      - 'docs/status/TOKEN_POLICY_STATUS.json'
+      - '.github/workflows/w3-token-policy-core.yml'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  contract-and-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: python3 scripts/check-token-core.py
+      - run: python3 -m unittest discover -s tests/session -p 'test_token_policy_vectors.py' -v
+      - run: python3 -m compileall -q scripts tests/session
+
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@1.85.1
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo test --workspace --all-targets --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
