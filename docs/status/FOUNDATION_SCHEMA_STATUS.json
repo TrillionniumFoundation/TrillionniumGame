@@ -1,0 +1,29 @@
+{
+  "schema": "trillionnium.foundation-schema-status.v1",
+  "project_id": "trillionnium-game",
+  "status": "ddl-candidate-unexecuted",
+  "profiles": ["postgresql", "cockroachdb"],
+  "logical_table_count": 10,
+  "implemented": [
+    "entity heads",
+    "command receipts",
+    "events",
+    "transactional outbox",
+    "command-to-outbox ordering",
+    "authority leases",
+    "session families",
+    "refresh token digests",
+    "storage objects"
+  ],
+  "claims": {
+    "postgresql_verified": false,
+    "cockroachdb_verified": false,
+    "schema_equivalent": false,
+    "database_durable": false,
+    "migration_compatible": false,
+    "rollback_proven": false,
+    "sg4_complete": false,
+    "production_ready": false,
+    "public_online": false
+  }
+}
