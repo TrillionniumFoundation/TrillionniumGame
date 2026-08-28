@@ -19,3 +19,10 @@ version = "0.1.0"
 dependencies = [
  "trnm-contracts",
 ]
+
+[[package]]
+name = "trnm-transport-core"
+version = "0.1.0"
+dependencies = [
+ "trnm-contracts",
+]

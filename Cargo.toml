@@ -3,6 +3,7 @@ members = [
   "crates/trnm-contracts",
   "crates/trnm-authority-core",
   "crates/trnm-session-core",
+  "crates/trnm-transport-core",
 ]
 resolver = "2"
 
