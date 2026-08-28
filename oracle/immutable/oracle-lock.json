@@ -1,0 +1,53 @@
+{
+  "schema": "trillionnium.immutable-oracle-lock.v1",
+  "project_id": "trillionnium-game",
+  "status": "bootstrap-candidate",
+  "oracle_lane": "immutable",
+  "nakama": {
+    "repository": "heroiclabs/nakama",
+    "tag": "v3.40.0",
+    "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "tree": "f3c9cfc2726d5543da1564629170f35b98e3797d",
+    "image": "heroiclabs/nakama:3.40.0@sha256:92fb184e3271be12fd4d239766afb285322a50aaf769a59433445d59624c78cd"
+  },
+  "nakama_common": {
+    "tag": "v1.47.0",
+    "commit": "449b77ecc8789aa466c36b67f6e498033dfcd9c5",
+    "tree": "c6a7b9796b9c2a6b5118c74e5f213963a5001f14"
+  },
+  "database": {
+    "profile": "postgresql",
+    "version": "17.6-alpine3.22",
+    "image": "postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94",
+    "database": "nakama",
+    "user": "postgres"
+  },
+  "network_policy": {
+    "client_listener_host": "127.0.0.1",
+    "postgres_published": false,
+    "shared_writable_database_with_other_lane": false
+  },
+  "configuration_profile": "trillionnium-oracle-immutable-v1",
+  "required_evidence": [
+    "candidate_commit",
+    "oracle_lock_sha256",
+    "compose_sha256",
+    "rendered_config_sha256",
+    "nakama_image_id",
+    "postgres_image_id",
+    "container_runtime",
+    "kernel",
+    "architecture",
+    "health_status",
+    "database_table_count",
+    "started_at_utc",
+    "completed_at_utc"
+  ],
+  "claims": {
+    "instrumented_equivalence": false,
+    "sg2_complete": false,
+    "compatibility_credit": false,
+    "production_ready": false,
+    "public_online": false
+  }
+}

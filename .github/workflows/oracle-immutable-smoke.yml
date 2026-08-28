@@ -1,0 +1,55 @@
+name: trillionnium-game-immutable-oracle
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'oracle/immutable/**'
+      - 'scripts/oracle/**'
+      - 'tests/oracle/**'
+      - 'docs/development/IMMUTABLE_ORACLE_BOOTSTRAP.md'
+      - '.github/workflows/oracle-immutable-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'oracle/immutable/**'
+      - 'scripts/oracle/**'
+      - 'tests/oracle/**'
+      - 'docs/development/IMMUTABLE_ORACLE_BOOTSTRAP.md'
+      - '.github/workflows/oracle-immutable-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trillionnium-game-oracle-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  immutable-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Validate static oracle contract
+        run: bash scripts/oracle/check-immutable-oracle.sh
+      - name: Run digest-pinned immutable Nakama oracle
+        env:
+          TRNM_CANDIDATE_COMMIT: ${{ github.sha }}
+        run: scripts/oracle/run-immutable-smoke.sh run/immutable-oracle
+      - name: Revalidate emitted evidence
+        run: |
+          python3 scripts/oracle/render-immutable-evidence.py \
+            --lock oracle/immutable/oracle-lock.json \
+            --compose oracle/immutable/compose.yml \
+            --facts run/immutable-oracle/runtime-facts.json \
+            --output run/immutable-oracle/evidence.revalidated.json
+          cmp run/immutable-oracle/evidence.json run/immutable-oracle/evidence.revalidated.json
+      - name: Upload exact-head immutable oracle evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: immutable-oracle-${{ github.sha }}
+          path: run/immutable-oracle
+          if-no-files-found: error
+          retention-days: 30
