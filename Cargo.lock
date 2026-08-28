@@ -10,6 +10,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "trnm-canonical-core"
+version = "0.1.0"
+dependencies = [
+ "trnm-contracts",
+]
+
+[[package]]
 name = "trnm-contracts"
 version = "0.1.0"
 
