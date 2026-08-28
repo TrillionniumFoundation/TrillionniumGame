@@ -10,7 +10,7 @@ Every route is bound to `(connection, node, route_generation)`. Rebind increment
 
 ## Presence
 
-Presence identity binds stream, user and session. Join requires an active non-draining connection. Close, session revoke, user revoke and idle expiry remove all associated presence indexes atomically in the pure model.
+Presence identity binds stream, user and session. Join requires an active non-draining connection. The join boundary accepts a typed `JoinPresenceRequest` that binds connection identity, route owner, route generation, stream, username, status and visibility/persistence flags into one adapter-ready validation object. Close, session revoke, user revoke and idle expiry remove all associated presence indexes atomically in the pure model.
 
 ## Revocation and drain
 
