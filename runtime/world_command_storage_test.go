@@ -9,6 +9,7 @@ import (
 	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/worldcommand"
 	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
+	"google.golang.org/protobuf/proto"
 )
 
 type multiStorage struct {
@@ -30,8 +31,7 @@ func cloneStorageObject(value *api.StorageObject) *api.StorageObject {
 	if value == nil {
 		return nil
 	}
-	copyValue := *value
-	return &copyValue
+	return proto.Clone(value).(*api.StorageObject)
 }
 
 func (s *multiStorage) StorageRead(_ context.Context, reads []*runtime.StorageRead) ([]*api.StorageObject, error) {
