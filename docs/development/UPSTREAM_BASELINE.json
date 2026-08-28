@@ -1,0 +1,87 @@
+{
+  "schema": "trillionnium.upstream-baseline.v1",
+  "captured_at": "2026-08-28",
+  "license": "Apache-2.0",
+  "nakama": {
+    "repository": "heroiclabs/nakama",
+    "tag": "v3.40.0",
+    "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "tree": "f3c9cfc2726d5543da1564629170f35b98e3797d",
+    "release_published_at": "2026-07-13T21:12:38Z",
+    "source_roots": [
+      "apigrpc",
+      "console",
+      "data",
+      "flags",
+      "iap",
+      "internal",
+      "migrate",
+      "se",
+      "server",
+      "social"
+    ],
+    "protocol_files": [
+      {
+        "path": "apigrpc/apigrpc.proto",
+        "blob": "1cc63aae1aaa5dc56ede9c9d0b6f9a95ff91361c"
+      },
+      {
+        "path": "apigrpc/apigrpc.swagger.json",
+        "blob": "17dc459faa529b39278fead44fb4abafe786ccd9"
+      }
+    ],
+    "notes": [
+      "OSS baseline only",
+      "Enterprise implementations not present in the repository are excluded",
+      "External client SDKs are compatibility consumers, not source scope"
+    ]
+  },
+  "nakama_common": {
+    "repository": "heroiclabs/nakama-common",
+    "tag": "v1.47.0",
+    "commit": "449b77ecc8789aa466c36b67f6e498033dfcd9c5",
+    "tree": "c6a7b9796b9c2a6b5118c74e5f213963a5001f14",
+    "role": [
+      "API messages",
+      "Realtime messages",
+      "runtime interfaces"
+    ],
+    "source_roots": [
+      {
+        "path": "api",
+        "tree": "73a0c679586464323ce6a5c494b4d10741484149"
+      },
+      {
+        "path": "rtapi",
+        "tree": "4a0573804fd25f4f27b1d4246a70fe057e601e86"
+      },
+      {
+        "path": "runtime",
+        "tree": "0de249e148dd2d3ca2e2923baf51d92f83727084"
+      },
+      {
+        "path": "index.d.ts",
+        "blob": "83a4c5fe0b87b2e4126623c8e9b86fe34d25bb2e"
+      }
+    ],
+    "protocol_files": [
+      {
+        "path": "api/api.proto",
+        "blob": "ddd2744739a252c268b2be004ff0e45c498adb35"
+      },
+      {
+        "path": "rtapi/realtime.proto",
+        "blob": "b23efef88565e0e09b3f6ee7ed8e08e9d240e27d"
+      },
+      {
+        "path": "index.d.ts",
+        "blob": "83a4c5fe0b87b2e4126623c8e9b86fe34d25bb2e"
+      }
+    ]
+  },
+  "baseline_policy": {
+    "floating_master_allowed": false,
+    "blob_sha_required_for_copied_or_derived_material": true,
+    "new_upstream_release_requires_impact_report": true
+  }
+}

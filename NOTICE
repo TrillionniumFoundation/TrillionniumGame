@@ -1,0 +1,29 @@
+TrillionniumGame
+Copyright 2026 Trillionnium Foundation
+
+This product is an independent Rust reimplementation program whose initial
+behavioral and protocol compatibility baseline is Nakama OSS v3.40.0.
+
+Nakama OSS is Copyright The Nakama Authors & Contributors and is made available
+under the Apache License, Version 2.0. The pinned source baseline is:
+
+  repository: https://github.com/heroiclabs/nakama
+  tag: v3.40.0
+  commit: d4d92f93f78bbbe62c7fc50a3f85c772ec121a09
+  tree: f3c9cfc2726d5543da1564629170f35b98e3797d
+
+The matching protocol/runtime definition baseline is:
+
+  repository: https://github.com/heroiclabs/nakama-common
+  tag: v1.47.0
+  commit: 449b77ecc8789aa466c36b67f6e498033dfcd9c5
+  tree: c6a7b9796b9c2a6b5118c74e5f213963a5001f14
+
+Any future copied or modified upstream source or protocol file must retain its
+applicable copyright and license header, carry a prominent modification notice,
+and be registered in the repository's machine-readable source manifest.
+
+"Nakama", "Heroic Labs", and related names and marks are the property of their
+respective owners. The Apache License does not grant trademark rights. This
+project is not represented as endorsed by, sponsored by, or affiliated with
+Heroic Labs.

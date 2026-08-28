@@ -1,0 +1,78 @@
+{
+  "schema": "trillionnium.product-gates.v1",
+  "project_id": "trillionnium-game",
+  "generated_at": "2026-08-28",
+  "release_claim": "planning-only",
+  "public_online": false,
+  "drop_in_replacement": false,
+  "production_ready": false,
+  "nakama_retired": false,
+  "gates": [
+    {
+      "id": "GATE-SCOPE",
+      "name": "Complete parity denominator",
+      "status": "open",
+      "required": true
+    },
+    {
+      "id": "GATE-PROTOCOL",
+      "name": "HTTP/gRPC/WebSocket differential parity",
+      "status": "open",
+      "required": true
+    },
+    {
+      "id": "GATE-DATA",
+      "name": "Schema and data migration parity",
+      "status": "open",
+      "required": true
+    },
+    {
+      "id": "GATE-RUNTIME",
+      "name": "Runtime framework parity and Go module migration",
+      "status": "open",
+      "required": true
+    },
+    {
+      "id": "GATE-REALTIME",
+      "name": "Realtime ownership, fencing and failure safety",
+      "status": "open",
+      "required": true
+    },
+    {
+      "id": "GATE-IAP",
+      "name": "IAP and subscription safety",
+      "status": "open",
+      "required": true
+    },
+    {
+      "id": "GATE-CONSOLE",
+      "name": "Console and RBAC parity",
+      "status": "open",
+      "required": true
+    },
+    {
+      "id": "GATE-SECURITY",
+      "name": "Security review, fuzz and key rotation",
+      "status": "open",
+      "required": true
+    },
+    {
+      "id": "GATE-PERFORMANCE",
+      "name": "Capacity, latency and endurance",
+      "status": "open",
+      "required": true
+    },
+    {
+      "id": "GATE-OPERATIONS",
+      "name": "Backup, HA, upgrade and rollback",
+      "status": "open",
+      "required": true
+    },
+    {
+      "id": "GATE-CUTOVER",
+      "name": "Shadow, canary, cutover and Nakama retirement",
+      "status": "open",
+      "required": true
+    }
+  ]
+}
