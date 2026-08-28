@@ -1,0 +1,71 @@
+name: trillionnium-game-oracle-differential
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tools/oracle/differential.py'
+      - 'scripts/oracle/compare-differential.py'
+      - 'scripts/oracle/emit-synthetic-differential-corpus.py'
+      - 'scripts/oracle/check-differential-engine.sh'
+      - 'tests/oracle/test_differential.py'
+      - 'docs/evidence/schemas/oracle-observation-v1.schema.json'
+      - 'docs/development/ORACLE_DIFFERENTIAL_ENGINE.md'
+      - '.github/workflows/sg2-oracle-differential.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/oracle/differential.py'
+      - 'scripts/oracle/compare-differential.py'
+      - 'scripts/oracle/emit-synthetic-differential-corpus.py'
+      - 'scripts/oracle/check-differential-engine.sh'
+      - 'tests/oracle/test_differential.py'
+      - 'docs/evidence/schemas/oracle-observation-v1.schema.json'
+      - 'docs/development/ORACLE_DIFFERENTIAL_ENGINE.md'
+      - '.github/workflows/sg2-oracle-differential.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trillionnium-game-oracle-differential-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  synthetic-differential-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Run differential engine unit and negative tests
+        run: bash scripts/oracle/check-differential-engine.sh
+      - name: Emit exact-head zero-divergence synthetic corpus
+        run: |
+          python3 scripts/oracle/emit-synthetic-differential-corpus.py \
+            --output-dir run/equivalent
+          python3 scripts/oracle/compare-differential.py \
+            --input-dir run/equivalent \
+            --normalizers config/oracle-normalizers.json \
+            --output run/equivalent-evidence.json
+      - name: Emit and require rejection of a P0 corpus
+        run: |
+          python3 scripts/oracle/emit-synthetic-differential-corpus.py \
+            --output-dir run/divergent \
+            --database-divergence
+          if python3 scripts/oracle/compare-differential.py \
+              --input-dir run/divergent \
+              --normalizers config/oracle-normalizers.json \
+              --output run/divergent-evidence.json; then
+            echo 'P0 corpus incorrectly passed' >&2
+            exit 1
+          fi
+      - name: Upload exact-head differential contract evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: oracle-differential-${{ github.sha }}
+          path: |
+            run/equivalent-evidence.json
+            run/divergent-evidence.json
+          if-no-files-found: error
+          retention-days: 30
