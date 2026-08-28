@@ -39,7 +39,7 @@ def main() -> None:
         if symbol not in source:
             fail(f"missing {symbol}")
 
-    for pattern in (
+    case_insensitive_patterns = (
         r"\bunsafe\b(?!_code)",
         r"std::net",
         r"std::time",
@@ -47,15 +47,31 @@ def main() -> None:
         r"rand::",
         r"hmac",
         r"sha2",
-        r"ring::",
         r"openssl",
         r"jsonwebtoken",
         r"signed_string",
         r"secret_key",
         r"key_bytes",
-    ):
+    )
+    for pattern in case_insensitive_patterns:
         if re.search(pattern, source, re.IGNORECASE):
             fail(f"forbidden crypto/capability pattern {pattern}")
+
+    # Namespace checks are deliberately case-sensitive and boundary-aware. The
+    # policy model owns a `KeyRing` type; matching its `KeyRing::...` calls as
+    # the external `ring::...` crypto namespace would be a false positive.
+    namespace_patterns = (
+        r"(?<![A-Za-z0-9_])ring::",
+        r"(?<![A-Za-z0-9_])openssl::",
+        r"(?<![A-Za-z0-9_])jsonwebtoken::",
+    )
+    if re.search(namespace_patterns[0], "KeyRing::default()"):
+        fail("ring namespace guard rejects the local KeyRing type")
+    if not re.search(namespace_patterns[0], "ring::digest"):
+        fail("ring namespace guard no longer detects the external crate")
+    for pattern in namespace_patterns:
+        if re.search(pattern, source):
+            fail(f"forbidden crypto/capability namespace {pattern}")
 
     expected = {
         "server/api_authenticate.go": "1f938603160ef1dc7f6546926de5481622139dd2",
