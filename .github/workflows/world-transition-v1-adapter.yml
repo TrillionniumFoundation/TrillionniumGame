@@ -7,6 +7,7 @@ on:
       - 'contracts/world-transition-v1*'
       - 'docs/WORLD_TRANSITION_V1_**'
       - 'runtime/world_transition_v1/**'
+      - 'runtime/internal/worldtransition/**'
       - 'scripts/check-world-transition-v1-boundary.sh'
       - 'scripts/test-world-transition-v1-boundary-negative.sh'
       - 'testdata/world-transition-v1/**'
@@ -17,10 +18,12 @@ on:
     branches:
       - main
       - feature/nakama-world-transition-v1-adapter
+      - feature/nakama-authority-world-transition-v1
     paths:
       - 'contracts/world-transition-v1*'
       - 'docs/WORLD_TRANSITION_V1_**'
       - 'runtime/world_transition_v1/**'
+      - 'runtime/internal/worldtransition/**'
       - 'scripts/check-world-transition-v1-boundary.sh'
       - 'scripts/test-world-transition-v1-boundary-negative.sh'
       - 'testdata/world-transition-v1/**'
@@ -38,11 +41,16 @@ concurrency:
 jobs:
   adapter-contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout exact revision
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Compile standard-library adapter
+      - name: Set up exact Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: runtime/go.mod
+          cache: false
+      - name: Compile standard-library Python adapter
         run: >-
           python3 -S -m compileall -q
           runtime/world_transition_v1
@@ -52,10 +60,28 @@ jobs:
         run: bash scripts/check-world-transition-v1-boundary.sh
       - name: Prove forbidden capabilities and divergence fail closed
         run: bash scripts/test-world-transition-v1-boundary-negative.sh
-      - name: Run adapter and shadow unit tests
+      - name: Run Python adapter and shadow unit tests
         run: >-
           PYTHONPATH=. python3 -S -m unittest
           discover -s tests -p 'test_world_transition_v1.py' -v
+      - name: Verify Go transition package formatting
+        run: |
+          unformatted=$(gofmt -l runtime/internal/worldtransition)
+          test -z "$unformatted" || {
+            printf 'unformatted Go files:\n%s\n' "$unformatted" >&2
+            exit 1
+          }
+      - name: Run independent Go transition tests and vet
+        working-directory: runtime
+        run: |
+          go test ./internal/worldtransition -count=1
+          go vet ./internal/worldtransition
+      - name: Reject forbidden Go capabilities
+        run: |
+          if grep -R -nE '"(net|net/http|database/sql|crypto/ed25519|os/exec|time|math/rand)"' runtime/internal/worldtransition --include='*.go'; then
+            echo 'Go transition verifier acquired a forbidden capability' >&2
+            exit 1
+          fi
       - name: Emit exact-head accepted and rejected fixtures
         run: |
           mkdir -p run/world-transition-v1
@@ -93,6 +119,13 @@ jobs:
             .canonical_completion_signing_performed == false and
             .public_online_enabled == false
           ' run/world-transition-v1/shadow-summary.json >/dev/null
+          jq -e '
+            .status == "implemented_python_and_go_pending_exact_head_ci" and
+            .authority.cutover_authorized == false and
+            .authority.public_online_enabled == false and
+            .authority.public_player_market_enabled == false and
+            (.not_implemented | index("production_world_command_store_adapter")) != null
+          ' contracts/world-transition-v1-adapter-status.json >/dev/null
       - name: Record exact artifact digests
         run: |
           find run/world-transition-v1 -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
