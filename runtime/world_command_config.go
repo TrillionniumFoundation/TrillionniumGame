@@ -24,48 +24,50 @@ const (
 	worldFailpointAfterReservation = "after_reservation"
 	worldFailpointAfterVerify      = "after_verify"
 
-	envWorldProfile          = "TRNM_WORLD_COMMAND_PROFILE"
-	envWorldURL              = "TRNM_WORLD_TRANSITION_URL"
-	envWorldBearer           = "TRNM_WORLD_TRANSITION_BEARER_TOKEN"
-	envWorldCAPath           = "TRNM_WORLD_TRANSITION_CA_PATH"
-	envWorldCAPEMBase64      = "TRNM_WORLD_TRANSITION_CA_PEM_BASE64"
-	envWorldTimeoutMS        = "TRNM_WORLD_TRANSITION_TIMEOUT_MS"
-	envWorldMaxResponseBytes = "TRNM_WORLD_TRANSITION_MAX_RESPONSE_BYTES"
-	envWorldRulesetRevision  = "TRNM_WORLD_RULESET_REVISION"
-	envWorldContentRevision  = "TRNM_WORLD_CONTENT_REVISION"
-	envWorldStateSchema      = "TRNM_WORLD_STATE_SCHEMA_ID"
-	envWorldCommandSchema    = "TRNM_WORLD_COMMAND_SCHEMA_ID"
-	envWorldInitialState     = "TRNM_WORLD_INITIAL_STATE_JSON_BASE64"
-	envWorldInitialTick      = "TRNM_WORLD_INITIAL_TICK"
-	envWorldRulesetHash      = "TRNM_WORLD_RULESET_HASH"
-	envWorldContentHash      = "TRNM_WORLD_CONTENT_HASH"
-	envWorldInitialStateHash = "TRNM_WORLD_INITIAL_STATE_HASH"
-	envWorldFaultLab         = "TRNM_WORLD_COMMAND_FAULT_LAB"
-	envWorldFailpoint        = "TRNM_WORLD_COMMAND_FAILPOINT"
+	envWorldProfile           = "TRNM_WORLD_COMMAND_PROFILE"
+	envWorldURL               = "TRNM_WORLD_TRANSITION_URL"
+	envWorldBearer            = "TRNM_WORLD_TRANSITION_BEARER_TOKEN"
+	envWorldCAPath            = "TRNM_WORLD_TRANSITION_CA_PATH"
+	envWorldCAPEMBase64       = "TRNM_WORLD_TRANSITION_CA_PEM_BASE64"
+	envWorldTimeoutMS         = "TRNM_WORLD_TRANSITION_TIMEOUT_MS"
+	envWorldMaxResponseBytes  = "TRNM_WORLD_TRANSITION_MAX_RESPONSE_BYTES"
+	envWorldRulesetRevision   = "TRNM_WORLD_RULESET_REVISION"
+	envWorldContentRevision   = "TRNM_WORLD_CONTENT_REVISION"
+	envWorldStateSchema       = "TRNM_WORLD_STATE_SCHEMA_ID"
+	envWorldCommandSchema     = "TRNM_WORLD_COMMAND_SCHEMA_ID"
+	envWorldInitialState      = "TRNM_WORLD_INITIAL_STATE_JSON_BASE64"
+	envWorldInitialTick       = "TRNM_WORLD_INITIAL_TICK"
+	envWorldRulesetHash       = "TRNM_WORLD_RULESET_HASH"
+	envWorldContentHash       = "TRNM_WORLD_CONTENT_HASH"
+	envWorldInitialStateHash  = "TRNM_WORLD_INITIAL_STATE_HASH"
+	envWorldChallengeHash     = "TRNM_WORLD_CHALLENGE_SNAPSHOT_HASH"
+	envWorldFaultLab          = "TRNM_WORLD_COMMAND_FAULT_LAB"
+	envWorldFailpoint         = "TRNM_WORLD_COMMAND_FAILPOINT"
 )
 
 type worldCommandRuntimeConfig struct {
-	profile            string
-	endpoint           *url.URL
-	bearerToken        string
-	caPath             string
-	caPEM              []byte
-	timeout            time.Duration
-	maxResponseBytes   int64
-	rulesetRevision    string
-	contentRevision    string
-	stateSchemaID      string
-	commandSchemaID    string
-	initialStateJSON   []byte
-	initialStateValue  any
-	initialStateHash   string
-	initialTick        int64
-	rulesetHash        contract.Digest
-	contentHash        contract.Digest
-	challengeStateHash contract.Digest
-	faultLab           bool
-	failpoint          string
-	errors             []string
+	profile               string
+	endpoint              *url.URL
+	bearerToken           string
+	caPath                string
+	caPEM                 []byte
+	timeout               time.Duration
+	maxResponseBytes      int64
+	rulesetRevision       string
+	contentRevision       string
+	stateSchemaID         string
+	commandSchemaID       string
+	initialStateJSON      []byte
+	initialStateValue     any
+	initialStateHash      string
+	initialStateDigest    contract.Digest
+	initialTick           int64
+	rulesetHash           contract.Digest
+	contentHash           contract.Digest
+	challengeSnapshotHash contract.Digest
+	faultLab              bool
+	failpoint             string
+	errors                []string
 }
 
 func loadWorldCommandRuntimeConfig(env map[string]string) worldCommandRuntimeConfig {
@@ -185,17 +187,19 @@ func loadWorldCommandRuntimeConfig(env map[string]string) worldCommandRuntimeCon
 
 	cfg.rulesetHash = contract.Digest(strings.TrimSpace(env[envWorldRulesetHash]))
 	cfg.contentHash = contract.Digest(strings.TrimSpace(env[envWorldContentHash]))
-	cfg.challengeStateHash = contract.Digest(strings.TrimSpace(env[envWorldInitialStateHash]))
+	cfg.initialStateDigest = contract.Digest(strings.TrimSpace(env[envWorldInitialStateHash]))
+	cfg.challengeSnapshotHash = contract.Digest(strings.TrimSpace(env[envWorldChallengeHash]))
 	for name, value := range map[string]contract.Digest{
 		envWorldRulesetHash:      cfg.rulesetHash,
 		envWorldContentHash:      cfg.contentHash,
-		envWorldInitialStateHash: cfg.challengeStateHash,
+		envWorldInitialStateHash: cfg.initialStateDigest,
+		envWorldChallengeHash:    cfg.challengeSnapshotHash,
 	} {
 		if err := value.Validate(); err != nil {
 			cfg.errors = append(cfg.errors, name+": "+err.Error())
 		}
 	}
-	if len(cfg.initialStateJSON) != 0 && cfg.challengeStateHash != contract.Digest("sha256:"+cfg.initialStateHash) {
+	if len(cfg.initialStateJSON) != 0 && cfg.initialStateDigest != contract.Digest("sha256:"+cfg.initialStateHash) {
 		cfg.errors = append(cfg.errors, envWorldInitialStateHash+" does not match the canonical initial state bytes")
 	}
 	return cfg
@@ -218,7 +222,7 @@ func (c worldCommandRuntimeConfig) targetBinding(binding matchcore.WorldBinding)
 	if err := c.ready(); err != nil {
 		return err
 	}
-	if binding.RulesetHash != c.rulesetHash || binding.DatasetHash != c.contentHash || binding.ChallengeSnapshotHash != c.challengeStateHash {
+	if binding.RulesetHash != c.rulesetHash || binding.DatasetHash != c.contentHash || binding.ChallengeSnapshotHash != c.challengeSnapshotHash {
 		return fmt.Errorf("match immutable hashes do not match the configured World target profile")
 	}
 	return nil
