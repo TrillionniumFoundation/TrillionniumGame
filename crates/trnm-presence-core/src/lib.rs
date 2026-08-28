@@ -117,6 +117,18 @@ pub struct PresenceRecord {
     pub persistence: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JoinPresenceRequest {
+    pub connection: ConnectionId,
+    pub node: NodeId,
+    pub route_generation: u64,
+    pub stream: StreamId,
+    pub username: String,
+    pub status: String,
+    pub hidden: bool,
+    pub persistence: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RouteTarget {
     pub connection: ConnectionId,
@@ -230,7 +242,10 @@ impl RouterState {
         node: NodeId,
         generation: u64,
     ) -> Result<RouteTarget, DomainError> {
-        let record = self.connections.get(&connection).ok_or_else(connection_not_found)?;
+        let record = self
+            .connections
+            .get(&connection)
+            .ok_or_else(connection_not_found)?;
         route_fence(record, node, generation)?;
         Ok(target(*record))
     }
@@ -245,10 +260,20 @@ impl RouterState {
         if new_node.is_zero() {
             return Err(invalid("invalid_node_id"));
         }
-        let current = self.connections.get(&connection).copied().ok_or_else(connection_not_found)?;
+        let current = self
+            .connections
+            .get(&connection)
+            .copied()
+            .ok_or_else(connection_not_found)?;
         route_fence(&current, node, generation)?;
-        let next_generation = current.route_generation.checked_add(1).ok_or_else(overflow)?;
-        let record = self.connections.get_mut(&connection).ok_or_else(connection_not_found)?;
+        let next_generation = current
+            .route_generation
+            .checked_add(1)
+            .ok_or_else(overflow)?;
+        let record = self
+            .connections
+            .get_mut(&connection)
+            .ok_or_else(connection_not_found)?;
         record.node = new_node;
         record.route_generation = next_generation;
         record.state = ConnectionState::Connected;
@@ -262,12 +287,19 @@ impl RouterState {
         generation: u64,
         now_ms: u64,
     ) -> Result<ConnectionRecord, DomainError> {
-        let current = self.connections.get(&connection).copied().ok_or_else(connection_not_found)?;
+        let current = self
+            .connections
+            .get(&connection)
+            .copied()
+            .ok_or_else(connection_not_found)?;
         route_fence(&current, node, generation)?;
         if now_ms < current.last_seen_ms {
             return Err(invalid("heartbeat_time_regression"));
         }
-        let record = self.connections.get_mut(&connection).ok_or_else(connection_not_found)?;
+        let record = self
+            .connections
+            .get_mut(&connection)
+            .ok_or_else(connection_not_found)?;
         record.last_seen_ms = now_ms;
         Ok(*record)
     }
@@ -288,15 +320,18 @@ impl RouterState {
 
     pub fn join_presence(
         &mut self,
-        connection: ConnectionId,
-        node: NodeId,
-        generation: u64,
-        stream: StreamId,
-        username: String,
-        status: String,
-        hidden: bool,
-        persistence: bool,
+        request: JoinPresenceRequest,
     ) -> Result<PresenceRecord, DomainError> {
+        let JoinPresenceRequest {
+            connection,
+            node,
+            route_generation,
+            stream,
+            username,
+            status,
+            hidden,
+            persistence,
+        } = request;
         if stream.is_zero() || username.is_empty() || username.len() > 128 {
             return Err(invalid("invalid_presence_identity"));
         }
@@ -311,7 +346,7 @@ impl RouterState {
             .get(&connection)
             .copied()
             .ok_or_else(connection_not_found)?;
-        route_fence(&connection_record, node, generation)?;
+        route_fence(&connection_record, node, route_generation)?;
         if connection_record.state != ConnectionState::Connected {
             return Err(error(
                 StableCode::FailedPrecondition,
@@ -355,7 +390,11 @@ impl RouterState {
         generation: u64,
         stream: StreamId,
     ) -> Result<PresenceRecord, DomainError> {
-        let record = self.connections.get(&connection).copied().ok_or_else(connection_not_found)?;
+        let record = self
+            .connections
+            .get(&connection)
+            .copied()
+            .ok_or_else(connection_not_found)?;
         route_fence(&record, node, generation)?;
         let key = PresenceKey {
             stream,
@@ -381,16 +420,29 @@ impl RouterState {
         if bytes == 0 {
             return Err(invalid("outbound_bytes_must_be_positive"));
         }
-        let current = self.connections.get(&connection).copied().ok_or_else(connection_not_found)?;
+        let current = self
+            .connections
+            .get(&connection)
+            .copied()
+            .ok_or_else(connection_not_found)?;
         route_fence(&current, node, generation)?;
-        let messages = current.queued_messages.checked_add(1).ok_or_else(overflow)?;
-        let queued_bytes = current.queued_bytes.checked_add(bytes).ok_or_else(overflow)?;
+        let messages = current
+            .queued_messages
+            .checked_add(1)
+            .ok_or_else(overflow)?;
+        let queued_bytes = current
+            .queued_bytes
+            .checked_add(bytes)
+            .ok_or_else(overflow)?;
         if messages > self.limits.max_outbound_messages
             || queued_bytes > self.limits.max_outbound_bytes
         {
             return Err(exhausted("slow_consumer_budget_exceeded"));
         }
-        let record = self.connections.get_mut(&connection).ok_or_else(connection_not_found)?;
+        let record = self
+            .connections
+            .get_mut(&connection)
+            .ok_or_else(connection_not_found)?;
         record.queued_messages = messages;
         record.queued_bytes = queued_bytes;
         Ok(*record)
@@ -406,11 +458,24 @@ impl RouterState {
         if bytes == 0 {
             return Err(invalid("outbound_bytes_must_be_positive"));
         }
-        let current = self.connections.get(&connection).copied().ok_or_else(connection_not_found)?;
+        let current = self
+            .connections
+            .get(&connection)
+            .copied()
+            .ok_or_else(connection_not_found)?;
         route_fence(&current, node, generation)?;
-        let messages = current.queued_messages.checked_sub(1).ok_or_else(queue_underflow)?;
-        let queued_bytes = current.queued_bytes.checked_sub(bytes).ok_or_else(queue_underflow)?;
-        let record = self.connections.get_mut(&connection).ok_or_else(connection_not_found)?;
+        let messages = current
+            .queued_messages
+            .checked_sub(1)
+            .ok_or_else(queue_underflow)?;
+        let queued_bytes = current
+            .queued_bytes
+            .checked_sub(bytes)
+            .ok_or_else(queue_underflow)?;
+        let record = self
+            .connections
+            .get_mut(&connection)
+            .ok_or_else(connection_not_found)?;
         record.queued_messages = messages;
         record.queued_bytes = queued_bytes;
         Ok(*record)
@@ -422,20 +487,21 @@ impl RouterState {
         node: NodeId,
         generation: u64,
     ) -> Result<CloseResult, DomainError> {
-        let record = self.connections.get(&connection).copied().ok_or_else(connection_not_found)?;
+        let record = self
+            .connections
+            .get(&connection)
+            .copied()
+            .ok_or_else(connection_not_found)?;
         route_fence(&record, node, generation)?;
-        self.remove_connection(connection).ok_or_else(connection_not_found)
+        self.remove_connection(connection)
+            .ok_or_else(connection_not_found)
     }
 
     pub fn close_session(&mut self, session: SessionId) -> Result<Vec<CloseResult>, DomainError> {
         if session.is_zero() {
             return Err(invalid("invalid_session_id"));
         }
-        let connections = self
-            .sessions
-            .get(&session)
-            .cloned()
-            .unwrap_or_default();
+        let connections = self.sessions.get(&session).cloned().unwrap_or_default();
         Ok(connections
             .into_iter()
             .filter_map(|connection| self.remove_connection(connection))
@@ -625,7 +691,11 @@ const fn queue_underflow() -> DomainError {
 }
 
 const fn overflow() -> DomainError {
-    error(StableCode::OutOfRange, "counter_overflow", RetryClass::Never)
+    error(
+        StableCode::OutOfRange,
+        "counter_overflow",
+        RetryClass::Never,
+    )
 }
 
 const fn error(code: StableCode, reason: &'static str, retry: RetryClass) -> DomainError {
@@ -671,16 +741,16 @@ mod tests {
 
     fn join(router: &mut RouterState, connection: u8, stream: u8) -> PresenceRecord {
         router
-            .join_presence(
-                ConnectionId::new(id(connection)),
-                NodeId::new(id(1)),
-                1,
-                StreamId::new(id(stream)),
-                "player".to_owned(),
-                "ready".to_owned(),
-                false,
-                true,
-            )
+            .join_presence(JoinPresenceRequest {
+                connection: ConnectionId::new(id(connection)),
+                node: NodeId::new(id(1)),
+                route_generation: 1,
+                stream: StreamId::new(id(stream)),
+                username: "player".to_owned(),
+                status: "ready".to_owned(),
+                hidden: false,
+                persistence: true,
+            })
             .unwrap()
     }
 
@@ -691,7 +761,10 @@ mod tests {
         join(&mut router, 1, 9);
         assert_eq!(router.connection_count(), 1);
         assert_eq!(router.presence_count(), 1);
-        assert_eq!(router.recipients(StreamId::new(id(9)))[0].connection, ConnectionId::new(id(1)));
+        assert_eq!(
+            router.recipients(StreamId::new(id(9)))[0].connection,
+            ConnectionId::new(id(1))
+        );
     }
 
     #[test]
@@ -699,20 +772,41 @@ mod tests {
         let mut router = router();
         router.open(open(1, 1, 1, 1)).unwrap();
         let before = router.clone();
-        assert_eq!(router.open(open(1, 2, 2, 1)).unwrap_err().reason(), "connection_id_exists");
+        assert_eq!(
+            router.open(open(1, 2, 2, 1)).unwrap_err().reason(),
+            "connection_id_exists"
+        );
         assert_eq!(router, before);
         router.open(open(2, 1, 1, 1)).unwrap();
-        assert_eq!(router.open(open(3, 1, 1, 1)).unwrap_err().reason(), "session_connection_limit_exceeded");
+        assert_eq!(
+            router.open(open(3, 1, 1, 1)).unwrap_err().reason(),
+            "session_connection_limit_exceeded"
+        );
     }
 
     #[test]
     fn rebind_increments_generation_and_fences_old_node() {
         let mut router = router();
         router.open(open(1, 1, 1, 1)).unwrap();
-        let target = router.rebind(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, NodeId::new(id(2))).unwrap();
+        let target = router
+            .rebind(
+                ConnectionId::new(id(1)),
+                NodeId::new(id(1)),
+                1,
+                NodeId::new(id(2)),
+            )
+            .unwrap();
         assert_eq!(target.route_generation, 2);
-        assert_eq!(router.route(ConnectionId::new(id(1)), NodeId::new(id(1)), 1).unwrap_err().reason(), "route_owner_mismatch");
-        assert!(router.route(ConnectionId::new(id(1)), NodeId::new(id(2)), 2).is_ok());
+        assert_eq!(
+            router
+                .route(ConnectionId::new(id(1)), NodeId::new(id(1)), 1)
+                .unwrap_err()
+                .reason(),
+            "route_owner_mismatch"
+        );
+        assert!(router
+            .route(ConnectionId::new(id(1)), NodeId::new(id(2)), 2)
+            .is_ok());
     }
 
     #[test]
@@ -720,8 +814,25 @@ mod tests {
         let mut router = router();
         router.open(open(1, 1, 1, 1)).unwrap();
         router.begin_node_drain(NodeId::new(id(1))).unwrap();
-        assert_eq!(router.join_presence(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, StreamId::new(id(2)), "player".to_owned(), "".to_owned(), false, false).unwrap_err().reason(), "connection_draining");
-        assert!(router.touch(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, 101).is_ok());
+        assert_eq!(
+            router
+                .join_presence(JoinPresenceRequest {
+                    connection: ConnectionId::new(id(1)),
+                    node: NodeId::new(id(1)),
+                    route_generation: 1,
+                    stream: StreamId::new(id(2)),
+                    username: "player".to_owned(),
+                    status: String::new(),
+                    hidden: false,
+                    persistence: false,
+                })
+                .unwrap_err()
+                .reason(),
+            "connection_draining"
+        );
+        assert!(router
+            .touch(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, 101)
+            .is_ok());
     }
 
     #[test]
@@ -729,7 +840,9 @@ mod tests {
         let mut router = router();
         router.open(open(1, 1, 1, 1)).unwrap();
         join(&mut router, 1, 8);
-        let result = router.close_connection(ConnectionId::new(id(1)), NodeId::new(id(1)), 1).unwrap();
+        let result = router
+            .close_connection(ConnectionId::new(id(1)), NodeId::new(id(1)), 1)
+            .unwrap();
         assert_eq!(result.removed_presences, 1);
         assert_eq!(router.connection_count(), 0);
         assert!(router.recipients(StreamId::new(id(8))).is_empty());
@@ -744,7 +857,10 @@ mod tests {
         assert_eq!(closed.len(), 2);
         let mut stale = open(3, 3, 1, 1);
         stale.user_revocation_epoch = 0;
-        assert_eq!(router.open(stale).unwrap_err().reason(), "user_revocation_epoch_mismatch");
+        assert_eq!(
+            router.open(stale).unwrap_err().reason(),
+            "user_revocation_epoch_mismatch"
+        );
         let mut current = open(3, 3, 1, 1);
         current.user_revocation_epoch = 1;
         assert!(router.open(current).is_ok());
@@ -754,18 +870,34 @@ mod tests {
     fn outbound_budget_failure_has_zero_partial_mutation() {
         let mut router = router();
         router.open(open(1, 1, 1, 1)).unwrap();
-        router.reserve_outbound(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, 6).unwrap();
+        router
+            .reserve_outbound(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, 6)
+            .unwrap();
         let before = router.connection(ConnectionId::new(id(1))).unwrap();
-        assert_eq!(router.reserve_outbound(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, 5).unwrap_err().reason(), "slow_consumer_budget_exceeded");
+        assert_eq!(
+            router
+                .reserve_outbound(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, 5)
+                .unwrap_err()
+                .reason(),
+            "slow_consumer_budget_exceeded"
+        );
         assert_eq!(router.connection(ConnectionId::new(id(1))).unwrap(), before);
-        router.release_outbound(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, 6).unwrap();
+        router
+            .release_outbound(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, 6)
+            .unwrap();
     }
 
     #[test]
     fn outbound_accounting_underflow_is_data_loss() {
         let mut router = router();
         router.open(open(1, 1, 1, 1)).unwrap();
-        assert_eq!(router.release_outbound(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, 1).unwrap_err().reason(), "outbound_queue_accounting_underflow");
+        assert_eq!(
+            router
+                .release_outbound(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, 1)
+                .unwrap_err()
+                .reason(),
+            "outbound_queue_accounting_underflow"
+        );
     }
 
     #[test]
@@ -784,7 +916,10 @@ mod tests {
         let mut router = router();
         router.open(open(1, 1, 1, 1)).unwrap();
         router.open(open(2, 2, 1, 1)).unwrap();
-        assert_eq!(router.close_session(SessionId::new(id(1))).unwrap().len(), 1);
+        assert_eq!(
+            router.close_session(SessionId::new(id(1))).unwrap().len(),
+            1
+        );
         assert!(router.connection(ConnectionId::new(id(1))).is_none());
         assert!(router.connection(ConnectionId::new(id(2))).is_some());
     }
@@ -794,14 +929,50 @@ mod tests {
         let mut router = router();
         router.open(open(1, 1, 1, 1)).unwrap();
         join(&mut router, 1, 2);
-        assert_eq!(router.join_presence(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, StreamId::new(id(2)), "player".to_owned(), "".to_owned(), false, false).unwrap_err().reason(), "presence_exists");
-        assert_eq!(router.join_presence(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, StreamId::new(id(3)), "player".to_owned(), "status-is-longer-than-limit".to_owned(), false, false).unwrap_err().reason(), "presence_status_limit_exceeded");
+        assert_eq!(
+            router
+                .join_presence(JoinPresenceRequest {
+                    connection: ConnectionId::new(id(1)),
+                    node: NodeId::new(id(1)),
+                    route_generation: 1,
+                    stream: StreamId::new(id(2)),
+                    username: "player".to_owned(),
+                    status: String::new(),
+                    hidden: false,
+                    persistence: false,
+                })
+                .unwrap_err()
+                .reason(),
+            "presence_exists"
+        );
+        assert_eq!(
+            router
+                .join_presence(JoinPresenceRequest {
+                    connection: ConnectionId::new(id(1)),
+                    node: NodeId::new(id(1)),
+                    route_generation: 1,
+                    stream: StreamId::new(id(3)),
+                    username: "player".to_owned(),
+                    status: "status-is-longer-than-limit".to_owned(),
+                    hidden: false,
+                    persistence: false,
+                })
+                .unwrap_err()
+                .reason(),
+            "presence_status_limit_exceeded"
+        );
     }
 
     #[test]
     fn heartbeat_time_regression_is_rejected() {
         let mut router = router();
         router.open(open(1, 1, 1, 1)).unwrap();
-        assert_eq!(router.touch(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, 99).unwrap_err().reason(), "heartbeat_time_regression");
+        assert_eq!(
+            router
+                .touch(ConnectionId::new(id(1)), NodeId::new(id(1)), 1, 99)
+                .unwrap_err()
+                .reason(),
+            "heartbeat_time_regression"
+        );
     }
 }
