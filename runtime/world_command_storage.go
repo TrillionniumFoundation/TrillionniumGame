@@ -20,6 +20,8 @@ const (
 	maxWorldCommandSnapshotBytes  = 16 * 1024 * 1024
 )
 
+var errAtomicWorldCommitAmbiguous = errors.New("atomic World/core commit acknowledgement is ambiguous; runtime restart is required")
+
 type storedWorldCommand struct {
 	Schema         string `json:"schema"`
 	LogicalMatchID string `json:"logical_match_id"`
@@ -139,21 +141,32 @@ func persistWorldAndCoreAtomic(
 	if state == nil || expectedWorldVersion == "" || state.storageVersion == "" || rollback == nil {
 		return "", errors.New("atomic World/core persistence is not initialized")
 	}
+	rollbackBeforeWrite := func(cause error) (string, error) {
+		if rollbackErr := rollback(beforeCore); rollbackErr != nil {
+			return "", fmt.Errorf("%w; core rollback failed: %v", cause, rollbackErr)
+		}
+		return "", cause
+	}
+
 	afterCore, err := state.engine.Snapshot()
 	if err != nil {
-		return "", fmt.Errorf("encode mutated core snapshot: %w", err)
+		return rollbackBeforeWrite(fmt.Errorf("encode mutated core snapshot: %w", err))
 	}
 	updatedMatch := state.record
 	updatedMatch.setSnapshot(afterCore)
 	matchValue, err := json.Marshal(updatedMatch)
 	if err != nil {
-		return "", fmt.Errorf("encode stored match: %w", err)
+		return rollbackBeforeWrite(fmt.Errorf("encode stored match: %w", err))
 	}
 	worldValue, err := encodeStoredWorldCommand(state.instanceLogicalMatchID, worldPayload)
 	if err != nil {
-		return "", err
+		return rollbackBeforeWrite(err)
 	}
 
+	// From this call onward the outcome must be treated as potentially
+	// committed. Never restore an older in-memory snapshot and continue the
+	// generation after an error or malformed acknowledgement; terminate and
+	// reload both objects from storage instead.
 	acks, err := nk.StorageWrite(ctx, []*runtime.StorageWrite{
 		{
 			Collection:      matchStorageCollection,
@@ -175,19 +188,10 @@ func persistWorldAndCoreAtomic(
 		},
 	})
 	if err != nil {
-		if rollbackErr := rollback(beforeCore); rollbackErr != nil {
-			return "", fmt.Errorf("atomic storage write failed: %w; core rollback failed: %v", err, rollbackErr)
-		}
-		if errors.Is(err, runtime.ErrStorageRejectedVersion) {
-			return "", worldcommand.ErrVersionConflict
-		}
-		return "", fmt.Errorf("atomic World/core storage write: %w", err)
+		return "", fmt.Errorf("%w: %v", errAtomicWorldCommitAmbiguous, err)
 	}
 	if len(acks) != 2 {
-		if rollbackErr := rollback(beforeCore); rollbackErr != nil {
-			return "", fmt.Errorf("atomic storage acknowledgement count is invalid; core rollback failed: %v", rollbackErr)
-		}
-		return "", errors.New("atomic storage write returned an invalid acknowledgement count")
+		return "", fmt.Errorf("%w: expected two acknowledgements, received %d", errAtomicWorldCommitAmbiguous, len(acks))
 	}
 	versions := map[string]string{}
 	for _, ack := range acks {
@@ -199,10 +203,7 @@ func persistWorldAndCoreAtomic(
 	matchVersion := versions[matchStorageCollection+"/"+state.instanceLogicalMatchID]
 	worldVersion := versions[worldCommandStorageCollection+"/"+state.instanceLogicalMatchID]
 	if matchVersion == "" || worldVersion == "" {
-		if rollbackErr := rollback(beforeCore); rollbackErr != nil {
-			return "", fmt.Errorf("atomic storage acknowledgements are incomplete; core rollback failed: %v", rollbackErr)
-		}
-		return "", errors.New("atomic storage acknowledgements are incomplete")
+		return "", fmt.Errorf("%w: acknowledgement identities are incomplete", errAtomicWorldCommitAmbiguous)
 	}
 	state.record = updatedMatch
 	state.storageVersion = matchVersion
