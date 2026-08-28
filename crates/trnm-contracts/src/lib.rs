@@ -54,6 +54,7 @@ macro_rules! counter {
 
 byte_id!(CommandId, 16);
 byte_id!(ParticipantId, 16);
+byte_id!(UserId, 16);
 byte_id!(SessionFamilyId, 16);
 byte_id!(RefreshTokenId, 16);
 byte_id!(Digest32, 32);

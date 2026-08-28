@@ -12,6 +12,7 @@ EXPECTED_MEMBERS = {
     "crates/trnm-contracts",
     "crates/trnm-authority-core",
     "crates/trnm-session-core",
+    "crates/trnm-storage-core",
 }
 FORBIDDEN_PURE_CORE = (
     "unsafe {",
@@ -54,10 +55,10 @@ def main() -> int:
         fail("rust-toolchain.toml is not exact")
 
     rust_sources = sorted((ROOT / "crates").glob("*/src/*.rs"))
-    if len(rust_sources) != 3:
-        fail(f"expected 3 Rust source files, found {len(rust_sources)}")
+    if len(rust_sources) != 4:
+        fail(f"expected 4 Rust source files, found {len(rust_sources)}")
     combined = "\n".join(path.read_text(encoding="utf-8") for path in rust_sources)
-    if combined.count("#![forbid(unsafe_code)]") != 3:
+    if combined.count("#![forbid(unsafe_code)]") != 4:
         fail("every crate must forbid unsafe code")
     for marker in FORBIDDEN_PURE_CORE:
         if marker in combined:
@@ -66,8 +67,8 @@ def main() -> int:
     missing = sorted(REQUIRED_TESTS - test_names)
     if missing:
         fail(f"required Rust tests missing: {missing}")
-    if combined.count("#[test]") < 15:
-        fail("expected at least 15 Rust unit tests")
+    if combined.count("#[test]") < 24:
+        fail("expected at least 24 Rust unit tests")
 
     for vector_name in ("authority-vectors.json", "session-vectors.json"):
         document = json.loads((ROOT / "contracts/foundation" / vector_name).read_text())
