@@ -1,0 +1,48 @@
+{
+  "schema": "trillionnium.query-upstream-lock.v1",
+  "project_id": "trillionnium-game",
+  "nakama": {
+    "repository": "heroiclabs/nakama",
+    "tag": "v3.40.0",
+    "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "tree": "f3c9cfc2726d5543da1564629170f35b98e3797d",
+    "wrapper": {
+      "path": "server/match_common.go",
+      "blob": "6b17452a50e323c0c4e06d130639bd1119bf0491",
+      "behavior": ["empty delegates to match-none", "exact star maps to match-all", "keyword analyzer"]
+    },
+    "dependency_manifest": {
+      "path": "go.mod",
+      "blob": "05584b9e0e80787e424428701281207b7cd3d881",
+      "module": "github.com/blugelabs/query_string",
+      "version": "v0.3.0"
+    }
+  },
+  "query_string": {
+    "repository": "blugelabs/query_string",
+    "tag": "v0.3.0",
+    "tag_object": "c97ff167534fb0e9a50f291d7aae4f017e290f34",
+    "commit": "e2a05d85a1f2d8e34ce9b9863ce1f867c7d00288",
+    "tree": "2de5178bf27b6418eafd15cac74c910868f14b34",
+    "files": [
+      {"path":"query_string.y","blob":"4c3372068564c98e86e54a02e13d09679aab23d9"},
+      {"path":"query_string_lex.go","blob":"bc6e578b05db4e9dcc2d90ad6966347208d4545c"},
+      {"path":"query_string_parser.go","blob":"35e3f3047d06ebf338280e674d27841ad80c7656"},
+      {"path":"query_string_lex_test.go","blob":"61a8239d16388a9a869ce81c99c582ea87d1c2fb"},
+      {"path":"query_string_parser_test.go","blob":"4755c19ac5437d38b7fa753c9cfe231b1664ba15"}
+    ]
+  },
+  "candidate_limits": {
+    "max_query_bytes": 4096,
+    "max_token_bytes": 1024,
+    "max_tokens": 256,
+    "max_clauses": 64,
+    "compatibility_status": "unreviewed-extension"
+  },
+  "claims": {
+    "query_behavior_compatible": false,
+    "search_execution_compatible": false,
+    "sg3_complete": false,
+    "production_ready": false
+  }
+}

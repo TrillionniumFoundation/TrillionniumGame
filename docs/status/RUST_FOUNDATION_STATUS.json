@@ -6,7 +6,9 @@
   "workspace_members": [
     "trnm-contracts",
     "trnm-authority-core",
-    "trnm-session-core"
+    "trnm-session-core",
+    "trnm-storage-core",
+    "trnm-query-core"
   ],
   "local_validation": {
     "python_reference_vectors": true,

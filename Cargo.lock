@@ -14,6 +14,13 @@ name = "trnm-contracts"
 version = "0.1.0"
 
 [[package]]
+name = "trnm-query-core"
+version = "0.1.0"
+dependencies = [
+ "trnm-contracts",
+]
+
+[[package]]
 name = "trnm-session-core"
 version = "0.1.0"
 dependencies = [
