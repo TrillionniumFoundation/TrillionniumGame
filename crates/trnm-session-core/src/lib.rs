@@ -164,11 +164,7 @@ mod tests {
     use super::*;
 
     fn family() -> RefreshFamily {
-        RefreshFamily::new(
-            SessionFamilyId::new([1; 16]),
-            RefreshTokenId::new([2; 16]),
-        )
-        .unwrap()
+        RefreshFamily::new(SessionFamilyId::new([1; 16]), RefreshTokenId::new([2; 16])).unwrap()
     }
 
     #[test]
@@ -197,7 +193,10 @@ mod tests {
             FamilyStatus::Revoked(RevocationReason::RefreshReplay)
         );
         assert_eq!(
-            value.verify_active(RefreshTokenId::new([3; 16])).unwrap_err().reason(),
+            value
+                .verify_active(RefreshTokenId::new([3; 16]))
+                .unwrap_err()
+                .reason(),
             "session_family_revoked"
         );
     }
@@ -218,7 +217,10 @@ mod tests {
         let mut value = family();
         value.revoke(RevocationReason::Logout);
         assert_eq!(
-            value.verify_active(RefreshTokenId::new([2; 16])).unwrap_err().reason(),
+            value
+                .verify_active(RefreshTokenId::new([2; 16]))
+                .unwrap_err()
+                .reason(),
             "session_family_revoked"
         );
     }

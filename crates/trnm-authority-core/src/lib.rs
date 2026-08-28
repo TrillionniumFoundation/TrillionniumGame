@@ -314,11 +314,17 @@ mod tests {
     fn stale_version_and_sequence_gap_fail_closed() {
         let state = MatchState::new(AuthorityGeneration::new(1));
         assert_eq!(
-            state.prepare(command(1, 1, 1, 1, 1, 7)).unwrap_err().reason(),
+            state
+                .prepare(command(1, 1, 1, 1, 1, 7))
+                .unwrap_err()
+                .reason(),
             "stale_match_version"
         );
         assert_eq!(
-            state.prepare(command(1, 1, 2, 0, 1, 7)).unwrap_err().reason(),
+            state
+                .prepare(command(1, 1, 2, 0, 1, 7))
+                .unwrap_err()
+                .reason(),
             "participant_sequence_mismatch"
         );
     }
@@ -336,7 +342,10 @@ mod tests {
             "stale_pending_generation"
         );
         assert_eq!(
-            state.prepare(command(2, 1, 1, 0, 1, 8)).unwrap_err().reason(),
+            state
+                .prepare(command(2, 1, 1, 0, 1, 8))
+                .unwrap_err()
+                .reason(),
             "stale_authority_generation"
         );
     }
