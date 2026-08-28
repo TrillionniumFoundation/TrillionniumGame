@@ -1,0 +1,46 @@
+{
+  "schema": "trillionnium.oracle-instrumentation-policy.v1",
+  "project_id": "trillionnium-game",
+  "status": "candidate-review-required",
+  "upstream": {
+    "repository": "heroiclabs/nakama",
+    "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "tree": "f3c9cfc2726d5543da1564629170f35b98e3797d"
+  },
+  "allowed_capabilities": [
+    "clock_capture",
+    "random_capture",
+    "provider_intent_capture",
+    "database_effect_capture",
+    "runtime_hook_capture",
+    "trace_correlation"
+  ],
+  "allowed_added_prefixes": [
+    "internal/trnm_oracle/",
+    "server/trnm_oracle_"
+  ],
+  "allowed_modified_paths": [],
+  "forbidden_prefixes": [
+    "migrate/",
+    "data/",
+    "console/acl/",
+    "iap/",
+    "social/",
+    "se/"
+  ],
+  "forbidden_exact_paths": [
+    "server/api_authenticate.go",
+    "server/api_link.go",
+    "server/api_unlink.go",
+    "server/api_purchase.go",
+    "server/api_subscription.go"
+  ],
+  "policy": {
+    "deletions_allowed": false,
+    "semantic_behavior_change_allowed": false,
+    "networked_build_allowed": false,
+    "floating_image_or_dependency_allowed": false,
+    "self_approval_allowed": false,
+    "positive_equivalence_claim_allowed": false
+  }
+}
