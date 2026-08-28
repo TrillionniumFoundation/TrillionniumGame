@@ -1,4 +1,4 @@
-FROM heroiclabs/nakama-pluginbuilder:3.36.0@sha256:3d0d9c212a0775546baca420cfaa23062064870d309476e1d6e64fdbfae11e50 AS build
+FROM heroiclabs/nakama-pluginbuilder:3.40.0@sha256:0455a119585914341672fc17f3c4195a7a21714ecb85cdf7dacbdc47769aed4c AS build
 
 ARG TRNM_FAULTLAB_BINARY
 WORKDIR /backend
