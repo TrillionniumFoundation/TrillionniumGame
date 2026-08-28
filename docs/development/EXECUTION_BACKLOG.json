@@ -1,0 +1,42 @@
+{
+  "schema": "trillionnium.execution-backlog-index.v2",
+  "project_id": "trillionnium-game",
+  "status": "planning-audited",
+  "effective_date": "2026-08-28",
+  "plan_version": 2,
+  "compatibility_goal": "C5-supported-full-replacement",
+  "baseline": "heroiclabs/nakama@v3.40.0",
+  "duration_months": {"p50": 48, "p80": 60},
+  "peak_fte": {"min": 28, "max": 36},
+  "resource_envelope_person_months_including_contingency": {"min": 971.0, "max": 1344.4},
+  "task_count": 120,
+  "workstreams": [
+    {"id":"W0","name":"Governance and upstream truth source","task_count":7,"critical_path":true},
+    {"id":"W1","name":"Foundation, config, CLI and migrations","task_count":7,"critical_path":true},
+    {"id":"W2","name":"HTTP, gRPC and realtime protocol core","task_count":7,"critical_path":true},
+    {"id":"W3","name":"Authentication, sessions and accounts","task_count":8,"critical_path":true},
+    {"id":"W4","name":"Storage engine and search","task_count":7,"critical_path":true},
+    {"id":"W5","name":"Friends, groups and social graph","task_count":5,"critical_path":false},
+    {"id":"W6","name":"Presence, streams, chat and notifications","task_count":7,"critical_path":true},
+    {"id":"W7","name":"Leaderboards and tournaments","task_count":5,"critical_path":false},
+    {"id":"W8","name":"Matchmaker and parties","task_count":7,"critical_path":true},
+    {"id":"W9","name":"Client-relayed multiplayer","task_count":5,"critical_path":false},
+    {"id":"W10","name":"Server-authoritative multiplayer","task_count":7,"critical_path":true},
+    {"id":"W11","name":"Runtime framework and module migration","task_count":11,"critical_path":true},
+    {"id":"W12","name":"IAP and subscriptions","task_count":6,"critical_path":false},
+    {"id":"W13","name":"Console API and Rust/WASM UI","task_count":7,"critical_path":false},
+    {"id":"W14","name":"Data migration and compatibility","task_count":7,"critical_path":true},
+    {"id":"W15","name":"Observability, security and operations","task_count":8,"critical_path":true},
+    {"id":"W16","name":"Performance, HA, release and retirement","task_count":9,"critical_path":true}
+  ],
+  "stage_gates": ["SG0","SG1","SG2","SG3","SG4","SG5","SG6","SG7","SG8","SG9"],
+  "full_backlog_artifact": {
+    "path": "docs/development/backlog/EXECUTION_BACKLOG.v2.json.gz",
+    "format": "gzip-compressed UTF-8 JSON",
+    "uncompressed_schema": "trillionnium.execution-backlog.v2",
+    "uncompressed_task_count": 120,
+    "sha256": "6a3b94c1c76a44b31966e2d5919aa3c5ebc87822fc6169377b174a4a3a50c114"
+  },
+  "reader": "python3 scripts/read-backlog.py",
+  "rule": "The compressed artifact is the detailed 120-task machine source. This index is a human and CI navigation layer; task status may not be changed without regenerating the artifact and updating its SHA-256."
+}

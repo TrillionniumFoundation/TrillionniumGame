@@ -1,0 +1,36 @@
+{
+  "schema": "trillionnium.product-gates.v2",
+  "project_id": "trillionnium-game",
+  "plan_version": 2,
+  "generated_at": "2026-08-28",
+  "release_claim": "planning-only",
+  "compatibility_level": "C0-not-earned",
+  "public_online": false,
+  "drop_in_replacement": false,
+  "production_ready": false,
+  "nakama_retired": false,
+  "gate_policy": {
+    "exact_commit_artifact_environment_evidence_required": true,
+    "self_approval_allowed": false,
+    "required_gate_waiver_closes_gate": false,
+    "expired_evidence_counts": false,
+    "p0_p1_unexplained_divergence_allowed": false
+  },
+  "gates": [
+    {"id":"GATE-REPOSITORY","owner":"program-governance","status":"open","depends_on":[],"stage_gates":["SG0"],"pass_criteria":["repository ID unchanged","history and refs retained","GitHub name is TrillionniumGame","governance snapshot reviewed"],"evidence_types":["manifest"],"freshness_days":null,"blocked_claims":["C0"]},
+    {"id":"GATE-SCOPE","owner":"compatibility-architecture","status":"open","depends_on":["GATE-REPOSITORY"],"stage_gates":["SG1","SG3"],"pass_criteria":["D0-D8 manifests generated","every leaf has owner task test and status","denominator digest reproducible"],"evidence_types":["manifest"],"freshness_days":null,"blocked_claims":["C1","C2","C3","C4","C5"]},
+    {"id":"GATE-ORACLE","owner":"compatibility-qa","status":"open","depends_on":["GATE-SCOPE"],"stage_gates":["SG2","SG3"],"pass_criteria":["immutable oracle reproducible","instrumented oracle equivalent outside declared fields","normalizer registry reviewed"],"evidence_types":["manifest","wire-differential","database-differential"],"freshness_days":180,"blocked_claims":["C1","C2","C3","C5"]},
+    {"id":"GATE-UPSTREAM","owner":"compatibility-architecture","status":"open","depends_on":["GATE-SCOPE"],"stage_gates":["SG2","SG7"],"pass_criteria":["baseline and blobs exact","delta lane has no unclassified mandatory changes","1.0 final baseline frozen at SG7"],"evidence_types":["manifest"],"freshness_days":30,"blocked_claims":["C5"]},
+    {"id":"GATE-PROTOCOL","owner":"protocol","status":"open","depends_on":["GATE-ORACLE"],"stage_gates":["SG4","SG5"],"pass_criteria":["mandatory HTTP gRPC JSON WS protobuf leaves verified","official SDK matrix passes","no open P0/P1 wire divergence"],"evidence_types":["wire-differential","sdk-blackbox","fuzz"],"freshness_days":90,"blocked_claims":["C1","C2","C5"]},
+    {"id":"GATE-DATA","owner":"database-migration","status":"open","depends_on":["GATE-SCOPE","GATE-ORACLE"],"stage_gates":["SG5","SG8"],"pass_criteria":["schema and semantic data denominator verified","migration repeatable and idempotent","rollback barrier rehearsed","zero unclassified or corrupt records"],"evidence_types":["database-differential","migration-rehearsal","backup-restore"],"freshness_days":90,"blocked_claims":["C2","C3","C4","C5"]},
+    {"id":"GATE-PRIVACY","owner":"privacy-security","status":"open","depends_on":["GATE-SCOPE"],"stage_gates":["SG5"],"pass_criteria":["data classification approved","fixture sanitization validated","retention deletion and access controls tested"],"evidence_types":["security-review"],"freshness_days":180,"blocked_claims":["C2","C3","C4","C5"]},
+    {"id":"GATE-REALTIME","owner":"realtime-distributed-systems","status":"open","depends_on":["GATE-PROTOCOL","GATE-DATA"],"stage_gates":["SG6"],"pass_criteria":["one-owner generation and fencing proven","disconnect reconnect slow-consumer node-loss matrix passes","bounded memory and queue budgets pass"],"evidence_types":["wire-differential","fault-injection","performance","endurance"],"freshness_days":60,"blocked_claims":["C2","C4","C5"]},
+    {"id":"GATE-RUNTIME","owner":"runtime-vm","status":"open","depends_on":["GATE-PROTOCOL","GATE-REALTIME"],"stage_gates":["SG6"],"pass_criteria":["runtime denominator verified","Lua and JS corpus pass approved profile","Rust WASM capabilities bounded","all production Go module sources migrated"],"evidence_types":["runtime-differential","fuzz","security-review","performance"],"freshness_days":90,"blocked_claims":["C2","C5"]},
+    {"id":"GATE-IAP","owner":"payments","status":"open","depends_on":["GATE-PROTOCOL","GATE-DATA","GATE-SECURITY"],"stage_gates":["SG7"],"pass_criteria":["provider sandbox and signed fixture matrix passes","duplicate visible value is impossible","refund void renewal and ambiguous outcomes reconcile"],"evidence_types":["wire-differential","database-differential","fault-injection","security-review"],"freshness_days":60,"blocked_claims":["C2","C4","C5"]},
+    {"id":"GATE-CONSOLE","owner":"console-admin","status":"open","depends_on":["GATE-PROTOCOL","GATE-DATA","GATE-SECURITY"],"stage_gates":["SG7"],"pass_criteria":["Console API denominator verified","RBAC MFA dangerous-action and audit matrix passes","large-data and accessibility workflows pass"],"evidence_types":["wire-differential","security-review","sdk-blackbox"],"freshness_days":90,"blocked_claims":["C2","C4","C5"]},
+    {"id":"GATE-SECURITY","owner":"security","status":"open","depends_on":["GATE-SCOPE","GATE-PROTOCOL","GATE-DATA"],"stage_gates":["SG8","SG9"],"pass_criteria":["threat models reviewed","no open critical or expired high finding","fuzz penetration key rotation and supply-chain gates pass"],"evidence_types":["security-review","penetration-test","fuzz"],"freshness_days":90,"blocked_claims":["C4","C5"]},
+    {"id":"GATE-PERFORMANCE","owner":"performance-sre","status":"open","depends_on":["GATE-ORACLE","GATE-REALTIME"],"stage_gates":["SG8","SG9"],"pass_criteria":["approved capacity profile meets SLO","same-hardware oracle comparison passes","24h 72h and 7d required endurance passes","cost budgets ratified"],"evidence_types":["performance","endurance"],"freshness_days":60,"blocked_claims":["C4","C5"]},
+    {"id":"GATE-OPERATIONS","owner":"sre","status":"open","depends_on":["GATE-DATA","GATE-REALTIME","GATE-SECURITY"],"stage_gates":["SG8","SG9"],"pass_criteria":["backup PITR restore pass independently","node DB cache and dependency failure matrix passes","rolling upgrade downgrade and incident runbooks rehearsed"],"evidence_types":["backup-restore","fault-injection","endurance"],"freshness_days":90,"blocked_claims":["C4","C5"]},
+    {"id":"GATE-CUTOVER","owner":"program-sre","status":"open","depends_on":["GATE-UPSTREAM","GATE-DATA","GATE-RUNTIME","GATE-IAP","GATE-CONSOLE","GATE-SECURITY","GATE-PERFORMANCE","GATE-OPERATIONS"],"stage_gates":["SG9"],"pass_criteria":["shadow has zero unexplained P0/P1 divergence","canary cohorts meet SLO","rollback rehearsal passes","Nakama has no new traffic active owner or private authority key","historical evidence remains verifiable"],"evidence_types":["canary","cutover","retirement"],"freshness_days":30,"blocked_claims":["C5"]}
+  ]
+}

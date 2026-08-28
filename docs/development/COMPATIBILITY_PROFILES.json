@@ -1,0 +1,27 @@
+{
+  "schema": "trillionnium.compatibility-profiles.v1",
+  "project_id": "trillionnium-game",
+  "current_level": "C0-planning",
+  "claim_levels": [
+    {"id":"C0","name":"Build/Schema","status":"open"},
+    {"id":"C1","name":"Wire","status":"open"},
+    {"id":"C2","name":"Behavioral","status":"open"},
+    {"id":"C3","name":"Data Migration","status":"open"},
+    {"id":"C4","name":"Operational","status":"open"},
+    {"id":"C5","name":"Supported Full Replacement","status":"open"}
+  ],
+  "profiles": [
+    {"id":"CP-BASELINE","name":"Exact upstream and environment identity","status":"open"},
+    {"id":"CP-CONFIG-CLI","name":"Configuration and CLI behavior","status":"open"},
+    {"id":"CP-API-WIRE","name":"HTTP and gRPC wire behavior","status":"open"},
+    {"id":"CP-REALTIME-WIRE","name":"WebSocket wire and lifecycle behavior","status":"open"},
+    {"id":"CP-DATA-READ","name":"Nakama schema read compatibility","status":"open"},
+    {"id":"CP-DATA-MIGRATION","name":"Native migration and rollback compatibility","status":"open"},
+    {"id":"CP-RUNTIME-SOURCE","name":"Rust/WASM/Lua/JS and Go source migration compatibility","status":"open"},
+    {"id":"CP-OPERATIONS","name":"Operational behavior and workflows","status":"open"},
+    {"id":"CP-OFFICIAL-SDK","name":"Declared official SDK matrix","status":"open"},
+    {"id":"CP-PERFORMANCE","name":"Approved performance profile","status":"open"},
+    {"id":"CP-SECURITY","name":"Security profile","status":"open"},
+    {"id":"CP-DROP-IN-SUPPORTED","name":"Supported drop-in replacement profile","status":"open"}
+  ]
+}

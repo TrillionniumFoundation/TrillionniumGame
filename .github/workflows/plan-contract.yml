@@ -1,0 +1,46 @@
+name: trillionnium-game-plan-contract
+
+on:
+  pull_request:
+    paths:
+      - 'CURRENT_PLAN.md'
+      - 'PROJECT_*'
+      - 'README.md'
+      - 'NOTICE'
+      - 'LICENSE'
+      - 'AGENTS.md'
+      - 'CONTRIBUTING.md'
+      - 'docs/**'
+      - 'scripts/check-plan.py'
+      - '.github/workflows/plan-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'CURRENT_PLAN.md'
+      - 'PROJECT_*'
+      - 'README.md'
+      - 'NOTICE'
+      - 'LICENSE'
+      - 'AGENTS.md'
+      - 'CONTRIBUTING.md'
+      - 'docs/**'
+      - 'scripts/check-plan.py'
+      - '.github/workflows/plan-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trillionnium-game-plan-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Validate complete Rust rewrite plan
+        run: python3 scripts/check-plan.py
