@@ -1,0 +1,66 @@
+name: trillionnium-game-query-core
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'NOTICE'
+      - 'crates/trnm-query-core/**'
+      - 'contracts/query/**'
+      - 'scripts/check-query-core.py'
+      - 'scripts/check-rust-foundation.py'
+      - 'scripts/fetch-query-upstream.py'
+      - 'tests/query/**'
+      - 'docs/development/QUERY_CORE_FEASIBILITY.md'
+      - 'docs/status/QUERY_CORE_STATUS.json'
+      - '.github/workflows/sg3-query-core.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trillionnium-game-query-core-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract-reference-and-source-lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Validate Rust foundation and query contracts
+        run: |
+          python3 scripts/check-rust-foundation.py
+          python3 scripts/check-storage-core.py
+          python3 scripts/check-query-core.py
+      - name: Execute independent query vectors
+        run: python3 -m unittest discover -s tests/query -p 'test_*.py' -v
+      - name: Verify exact public upstream query sources
+        run: python3 scripts/fetch-query-upstream.py --output run/query-upstream
+      - name: Upload source-lock evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: query-upstream-${{ github.sha }}
+          path: run/query-upstream/evidence.json
+          if-no-files-found: error
+          retention-days: 30
+
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install exact Rust toolchain
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Unit tests
+        run: cargo test --workspace --all-targets --locked
+      - name: Strict lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
