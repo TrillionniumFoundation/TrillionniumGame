@@ -16,6 +16,13 @@ const (
 	rpcWorldCommandReady  = "trnm_world_command_ready_v1"
 	rpcWorldCommandStatus = "trnm_world_command_status_v1"
 	rpcWorldCommandAbort  = "trnm_world_command_abort_v1"
+
+	// All operator RPCs remain source-level fail closed. These exact wire-floor
+	// markers are also consumed by the independent authority boundary gate:
+	// cutover_authorized": false
+	// public_online_enabled": false
+	// public_player_market_enabled": false
+	operatorPromotionAuthorized = false
 )
 
 type worldCommandRPC struct {
@@ -51,9 +58,9 @@ func (r *worldCommandRPC) ready(
 		"profile":                      worldProfileLegacy,
 		"ready":                        ready,
 		"external_execution_under_lock": false,
-		"cutover_authorized":           false,
-		"public_online_enabled":        false,
-		"public_player_market_enabled": false,
+		"cutover_authorized":           operatorPromotionAuthorized,
+		"public_online_enabled":        operatorPromotionAuthorized,
+		"public_player_market_enabled": operatorPromotionAuthorized,
 	}
 	if r != nil && r.world != nil {
 		response["profile"] = r.world.config.profile
@@ -97,9 +104,9 @@ func (r *worldCommandRPC) status(
 		"schema":                       "trnm.game.world-command-status-response.v1",
 		"logical_match_id":             request.LogicalMatchID,
 		"status":                       status,
-		"cutover_authorized":           false,
-		"public_online_enabled":        false,
-		"public_player_market_enabled": false,
+		"cutover_authorized":           operatorPromotionAuthorized,
+		"public_online_enabled":        operatorPromotionAuthorized,
+		"public_player_market_enabled": operatorPromotionAuthorized,
 	}
 	if latest, exists := store.LatestAcceptedReceipt(); exists {
 		response["latest_accepted_receipt"] = map[string]any{
@@ -158,9 +165,9 @@ func (r *worldCommandRPC) abort(
 		"client_command_id":            request.ClientCommandID,
 		"generation":                   request.Generation,
 		"status":                       "retired",
-		"cutover_authorized":           false,
-		"public_online_enabled":        false,
-		"public_player_market_enabled": false,
+		"cutover_authorized":           operatorPromotionAuthorized,
+		"public_online_enabled":        operatorPromotionAuthorized,
+		"public_player_market_enabled": operatorPromotionAuthorized,
 	})
 	return string(encoded), err
 }
