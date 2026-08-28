@@ -8,9 +8,10 @@ import (
 )
 
 type Coordinator struct {
-	Store    *Store
-	Executor Executor
-	Clock    func() time.Time
+	Store     *Store
+	Executor  Executor
+	Persister CommitPersister
+	Clock     func() time.Time
 }
 
 func (c Coordinator) Execute(ctx context.Context, request PrepareRequest) (Receipt, error) {
@@ -40,6 +41,8 @@ func (c Coordinator) Execute(ctx context.Context, request PrepareRequest) (Recei
 	if err != nil {
 		return Receipt{}, err
 	}
+	// Store.Prepare and BeginAttempt have completed and released the Store
+	// critical section before any external execution begins.
 	rawResult, executeErr := c.Executor.Execute(ctx, append([]byte(nil), reservation.Transition.CanonicalRequest...))
 	if executeErr != nil {
 		failure := classifyExecutionError(ctx, executeErr)
@@ -65,9 +68,15 @@ func (c Coordinator) Execute(ctx context.Context, request PrepareRequest) (Recei
 		return Receipt{}, failure
 	}
 
-	// A verified external result must still pass exact stale fencing and
-	// cleanup even when the caller disconnects after World has responded.
-	receipt, commitErr := c.Store.Commit(context.WithoutCancel(ctx), reservation, verified, c.now())
+	// A verified external result must still pass exact stale fencing and local
+	// atomic persistence even when the caller disconnects after World responds.
+	receipt, commitErr := c.Store.CommitWith(
+		context.WithoutCancel(ctx),
+		reservation,
+		verified,
+		c.now(),
+		c.Persister,
+	)
 	if commitErr != nil {
 		return Receipt{}, commitErr
 	}
