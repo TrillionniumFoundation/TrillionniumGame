@@ -1,6 +1,4 @@
-use crate::{
-    parse_query, Clause, Comparison, Expression, Occur, Query, QueryLimits, TermKind,
-};
+use crate::{parse_query, Clause, Comparison, Expression, Occur, Query, QueryLimits, TermKind};
 
 fn parse(input: &str) -> Query {
     parse_query(input, QueryLimits::default()).unwrap()
@@ -31,10 +29,7 @@ fn fielded_terms_phrases_and_occurrence_are_parsed() {
     assert_eq!(clauses.len(), 3);
     assert_eq!(clauses[0].occur, Occur::Must);
     assert_eq!(clauses[1].occur, Occur::MustNot);
-    assert!(matches!(
-        clauses[2].expression,
-        Expression::Phrase { .. }
-    ));
+    assert!(matches!(clauses[2].expression, Expression::Phrase { .. }));
 }
 
 #[test]
@@ -211,11 +206,7 @@ fn rfc3339_leap_year_and_offsets_are_validated() {
         QueryLimits::default()
     )
     .is_ok());
-    assert!(parse_query(
-        "created:>=\"2023-02-29T23:59:59Z\"",
-        QueryLimits::default()
-    )
-    .is_err());
+    assert!(parse_query("created:>=\"2023-02-29T23:59:59Z\"", QueryLimits::default()).is_err());
 }
 
 #[test]

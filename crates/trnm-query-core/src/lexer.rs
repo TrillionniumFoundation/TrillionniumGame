@@ -59,12 +59,7 @@ pub(crate) fn lex(input: &str, limits: QueryLimits) -> Result<Vec<Token>, Domain
                     ));
                 };
                 let mut value = unescape(escaped);
-                let next = read_string_continuation(
-                    &characters,
-                    index + 2,
-                    &mut value,
-                    limits,
-                )?;
+                let next = read_string_continuation(&characters, index + 2, &mut value, limits)?;
                 (Token::String(value), next)
             }
             value if value.is_ascii_digit() => {

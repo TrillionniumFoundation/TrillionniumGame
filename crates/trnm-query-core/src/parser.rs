@@ -261,10 +261,7 @@ fn validate_rfc3339(value: &str) -> Result<(), DomainError> {
     if bytes.get(index) == Some(&b'.') {
         index += 1;
         let fractional_start = index;
-        while bytes
-            .get(index)
-            .is_some_and(|byte| byte.is_ascii_digit())
-        {
+        while bytes.get(index).is_some_and(|byte| byte.is_ascii_digit()) {
             index += 1;
         }
         if index == fractional_start {
