@@ -1,0 +1,31 @@
+{
+  "schema": "trillionnium.transport-error-status.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-level-candidate",
+  "implemented": [
+    "stable HTTP status candidates",
+    "canonical gRPC numeric codes",
+    "pinned RTAPI error enum mapping",
+    "typed realtime contexts",
+    "WebSocket phase and close candidates",
+    "retry advice",
+    "public/internal message separation"
+  ],
+  "not_implemented": [
+    "HTTP adapter",
+    "gRPC adapter",
+    "JSON realtime adapter",
+    "protobuf realtime adapter",
+    "socket lifecycle",
+    "immutable Nakama differential"
+  ],
+  "claims": {
+    "http_compatible": false,
+    "grpc_compatible": false,
+    "realtime_compatible": false,
+    "disconnect_compatible": false,
+    "c1_earned": false,
+    "production_ready": false,
+    "public_online": false
+  }
+}
