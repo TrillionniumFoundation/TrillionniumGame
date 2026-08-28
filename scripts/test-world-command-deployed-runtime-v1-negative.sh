@@ -3,53 +3,24 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 checker="$root/scripts/check-world-command-deployed-runtime-v1.sh"
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+work=""
 
-mkdir -p \
-  "$work/runtime/internal/core" \
-  "$work/runtime/internal/worldcommand" \
-  "$work/contracts/world-command-rpc-v1" \
-  "$work/contracts" \
-  "$work/docs"
-cp "$root/runtime/main.go" "$work/runtime/main.go"
-cp "$root/runtime/world_authoritative_match.go" "$work/runtime/world_authoritative_match.go"
-cp "$root/runtime/world_command_config.go" "$work/runtime/world_command_config.go"
-cp "$root/runtime/world_command_http.go" "$work/runtime/world_command_http.go"
-cp "$root/runtime/world_command_storage.go" "$work/runtime/world_command_storage.go"
-cp "$root/runtime/world_command_rpc.go" "$work/runtime/world_command_rpc.go"
-cp "$root/runtime/world_command_failpoint.go" "$work/runtime/world_command_failpoint.go"
-cp "$root/runtime/internal/core/world_command.go" "$work/runtime/internal/core/world_command.go"
-cp "$root/runtime/internal/worldcommand/coordinator.go" "$work/runtime/internal/worldcommand/coordinator.go"
-cp "$root/runtime/internal/worldcommand/store_commit.go" "$work/runtime/internal/worldcommand/store_commit.go"
-cp "$root/runtime/internal/worldcommand/atomic_commit_test.go" "$work/runtime/internal/worldcommand/atomic_commit_test.go"
-cp "$root/contracts/world-command-deployed-runtime-v1-status.json" "$work/contracts/world-command-deployed-runtime-v1-status.json"
-cp -a "$root/contracts/world-command-rpc-v1/." "$work/contracts/world-command-rpc-v1/"
-cp "$root/docs/WORLD_COMMAND_DEPLOYED_RUNTIME_V1.md" "$work/docs/WORLD_COMMAND_DEPLOYED_RUNTIME_V1.md"
+cleanup() {
+  [[ -z "$work" ]] || rm -rf "$work"
+}
+trap cleanup EXIT INT TERM
 
 reset_fixture() {
-  rm -rf "$work"
+  cleanup
   work=$(mktemp -d)
-  mkdir -p \
-    "$work/runtime/internal/core" \
-    "$work/runtime/internal/worldcommand" \
-    "$work/contracts/world-command-rpc-v1" \
-    "$work/contracts" \
-    "$work/docs"
-  cp "$root/runtime/main.go" "$work/runtime/main.go"
-  cp "$root/runtime/world_authoritative_match.go" "$work/runtime/world_authoritative_match.go"
-  cp "$root/runtime/world_command_config.go" "$work/runtime/world_command_config.go"
-  cp "$root/runtime/world_command_http.go" "$work/runtime/world_command_http.go"
-  cp "$root/runtime/world_command_storage.go" "$work/runtime/world_command_storage.go"
-  cp "$root/runtime/world_command_rpc.go" "$work/runtime/world_command_rpc.go"
-  cp "$root/runtime/world_command_failpoint.go" "$work/runtime/world_command_failpoint.go"
-  cp "$root/runtime/internal/core/world_command.go" "$work/runtime/internal/core/world_command.go"
-  cp "$root/runtime/internal/worldcommand/coordinator.go" "$work/runtime/internal/worldcommand/coordinator.go"
-  cp "$root/runtime/internal/worldcommand/store_commit.go" "$work/runtime/internal/worldcommand/store_commit.go"
-  cp "$root/runtime/internal/worldcommand/atomic_commit_test.go" "$work/runtime/internal/worldcommand/atomic_commit_test.go"
-  cp "$root/contracts/world-command-deployed-runtime-v1-status.json" "$work/contracts/world-command-deployed-runtime-v1-status.json"
-  cp -a "$root/contracts/world-command-rpc-v1/." "$work/contracts/world-command-rpc-v1/"
-  cp "$root/docs/WORLD_COMMAND_DEPLOYED_RUNTIME_V1.md" "$work/docs/WORLD_COMMAND_DEPLOYED_RUNTIME_V1.md"
+  cp -a "$root/runtime" "$work/runtime"
+  cp -a "$root/contracts" "$work/contracts"
+  cp -a "$root/docs" "$work/docs"
+  cp -a "$root/deploy" "$work/deploy"
+  mkdir -p "$work/scripts/blackbox"
+  cp "$root/scripts/blackbox/world-command-fault.mjs" "$work/scripts/blackbox/world-command-fault.mjs"
+  cp "$root/scripts/run-world-command-deployed-fault-lab.sh" "$work/scripts/run-world-command-deployed-fault-lab.sh"
+  cp "$root/scripts/verify-world-command-storage-atomicity.py" "$work/scripts/verify-world-command-storage-atomicity.py"
 }
 
 expect_rejected() {
@@ -60,6 +31,7 @@ expect_rejected() {
   fi
 }
 
+reset_fixture
 python3 - "$work/contracts/world-command-deployed-runtime-v1-status.json" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
@@ -122,5 +94,14 @@ cat >> "$work/runtime/world_authoritative_match.go" <<'GO'
 const automaticFallbackToLegacy = true
 GO
 expect_rejected 'target automatic legacy fallback'
+
+reset_fixture
+python3 - "$work/runtime/world_command_config.go" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text().replace("envWorldChallengeHash", "envWorldInitialStateHash", 1)
+path.write_text(text)
+PY
+expect_rejected 'challenge snapshot conflated with initial state'
 
 printf '%s\n' 'World command deployed runtime negative fixtures: rejected as expected'
