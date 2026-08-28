@@ -719,10 +719,10 @@ mod tests {
 
     #[test]
     fn canonical_round_trip_is_stable() {
-        let source = br#" { "b" : [true,null,-0], "a":"é" } "#;
+        let source = br#" { "b" : [true,null,-0], "a":"\u00e9" } "#;
         let value = parse(source, JsonLimits::default()).unwrap();
         let first = to_canonical_bytes(&value, 1_024).unwrap();
-        assert_eq!(first, br#"{"a":"é","b":[true,null,0]}"#);
+        assert_eq!(first, b"{\"a\":\"\xc3\xa9\",\"b\":[true,null,0]}");
         let reparsed = parse(&first, JsonLimits::default()).unwrap();
         let second = to_canonical_bytes(&reparsed, 1_024).unwrap();
         assert_eq!(first, second);
