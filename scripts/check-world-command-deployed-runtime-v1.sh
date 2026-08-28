@@ -12,14 +12,22 @@ required=(
   runtime/main.go
   runtime/world_authoritative_match.go
   runtime/world_command_config.go
+  runtime/world_command_environment.go
   runtime/world_command_http.go
   runtime/world_command_storage.go
+  runtime/world_command_storage_test.go
   runtime/world_command_rpc.go
   runtime/world_command_failpoint.go
+  runtime/cmd/trnm-world-transition-fixture/main.go
+  runtime/cmd/trnm-response-drop-proxy/main.go
+  runtime/cmd/trnm-tls-fixture/main.go
+  runtime/Dockerfile.faultlab
   runtime/internal/core/world_command.go
   runtime/internal/worldcommand/coordinator.go
   runtime/internal/worldcommand/store_commit.go
   runtime/internal/worldcommand/atomic_commit_test.go
+  runtime/internal/worldcommand/fault_hook_test.go
+  deploy/world-command-fault-lab/compose.yaml
   contracts/world-command-deployed-runtime-v1-status.json
   docs/WORLD_COMMAND_DEPLOYED_RUNTIME_V1.md
   contracts/world-command-rpc-v1/ready-response.schema.json
@@ -74,6 +82,8 @@ required_pending = {
 }
 if not required_pending.issubset(set(status.get("pending_evidence", []))):
     raise SystemExit("deployed evidence blockers were removed")
+if "Trillionnium Chain" not in set(status.get("scope_exclusions", [])):
+    raise SystemExit("explicit Chain exclusion was removed")
 
 schema_dir = root / "contracts/world-command-rpc-v1"
 expected = {
@@ -121,6 +131,7 @@ PY
 main="$root/runtime/main.go"
 wrapper="$root/runtime/world_authoritative_match.go"
 config="$root/runtime/world_command_config.go"
+environment="$root/runtime/world_command_environment.go"
 http="$root/runtime/world_command_http.go"
 storage="$root/runtime/world_command_storage.go"
 coordinator="$root/runtime/internal/worldcommand/coordinator.go"
@@ -128,6 +139,10 @@ commit="$root/runtime/internal/worldcommand/store_commit.go"
 core="$root/runtime/internal/core/world_command.go"
 rpc="$root/runtime/world_command_rpc.go"
 failpoint="$root/runtime/world_command_failpoint.go"
+world_fixture="$root/runtime/cmd/trnm-world-transition-fixture/main.go"
+proxy="$root/runtime/cmd/trnm-response-drop-proxy/main.go"
+tls_fixture="$root/runtime/cmd/trnm-tls-fixture/main.go"
+compose="$root/deploy/world-command-fault-lab/compose.yaml"
 
 for token in rpcWorldCommandReady rpcWorldCommandStatus rpcWorldCommandAbort worldAuthoritativeMatch; do
   grep -q "$token" "$main" || fail "main.go does not register $token"
@@ -138,9 +153,15 @@ done
 
 grep -q 'profile == worldProfileLegacy' "$wrapper" || fail 'legacy profile is not explicit'
 grep -q 'worldProfileTarget' "$config" || fail 'target profile is missing'
-if grep -R -nE 'fallback.*legacy|legacy.*fallback' "$wrapper" "$config"; then
+if grep -Ri -nE 'fallback.*legacy|legacy.*fallback' "$wrapper" "$config"; then
   fail 'target source contains an automatic legacy fallback'
 fi
+
+for token in TRNM_WORLD_INITIAL_STATE_HASH TRNM_WORLD_CHALLENGE_SNAPSHOT_HASH; do
+  grep -q "$token" "$config" || fail "separate commitment is missing: $token"
+  grep -q "$token" "$compose" || fail "fault-lab compose omits $token"
+done
+grep -q 'envWorldChallengeHash' "$environment" || fail 'challenge snapshot is not process-env allowlisted'
 
 grep -q 'tls.VersionTLS13' "$http" || fail 'World HTTPS executor does not require TLS 1.3'
 grep -q 'CheckRedirect' "$http" || fail 'World HTTPS executor does not reject redirects'
@@ -175,9 +196,23 @@ for token in 'cutover_authorized": false' 'public_online_enabled": false' 'publi
   grep -q "$token" "$rpc" || fail "operator RPC can overclaim: $token"
 done
 
+for token in 'ListenAndServeTLS' 'cacheHits' 'storeCached' 'directory.Sync'; do
+  grep -q "$token" "$world_fixture" || fail "World HTTPS fixture lacks $token"
+done
+for token in drop_next delay_next Hijack TLSClientConfig; do
+  grep -q "$token" "$proxy" || fail "response-drop proxy lacks $token"
+done
+for token in 'IsCA:                  true' 'ExtKeyUsageServerAuth' 'writeAtomic'; do
+  grep -q "$token" "$tls_fixture" || fail "TLS fixture lacks $token"
+done
+for service in tls-init world-fixture response-drop-proxy nakama; do
+  grep -q "^  $service:" "$compose" || fail "fault-lab compose omits service $service"
+done
+grep -q 'https://response-drop-proxy:7444/v1/transition' "$compose" || fail 'Nakama is not routed through the response-drop proxy'
+
 new_files=(
-  "$wrapper" "$config" "$http" "$storage" "$rpc" "$failpoint"
-  "$core" "$coordinator" "$commit"
+  "$wrapper" "$config" "$environment" "$http" "$storage" "$rpc" "$failpoint"
+  "$core" "$coordinator" "$commit" "$world_fixture" "$proxy" "$tls_fixture" "$compose"
 )
 if grep -R -nE 'Trillionnium-Chain|trillionnium-chain|chain/finality|chain/inclusion' "${new_files[@]}"; then
   fail 'Trillionnium Chain entered the excluded deployed-runtime tranche'
