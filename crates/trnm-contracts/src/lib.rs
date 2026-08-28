@@ -43,10 +43,13 @@ macro_rules! counter {
             }
 
             pub fn checked_next(self) -> Result<Self, DomainError> {
-                self.0
-                    .checked_add(1)
-                    .map(Self)
-                    .ok_or_else(|| DomainError::new(StableCode::OutOfRange, "counter_overflow", RetryClass::Never))
+                self.0.checked_add(1).map(Self).ok_or_else(|| {
+                    DomainError::new(
+                        StableCode::OutOfRange,
+                        "counter_overflow",
+                        RetryClass::Never,
+                    )
+                })
             }
         }
     };
@@ -144,7 +147,11 @@ pub struct DomainError {
 impl DomainError {
     #[must_use]
     pub const fn new(code: StableCode, reason: &'static str, retry: RetryClass) -> Self {
-        Self { code, reason, retry }
+        Self {
+            code,
+            reason,
+            retry,
+        }
     }
 
     #[must_use]
