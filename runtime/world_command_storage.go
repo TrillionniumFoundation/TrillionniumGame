@@ -133,9 +133,10 @@ func persistWorldAndCoreAtomic(
 	state *authoritativeMatchState,
 	expectedWorldVersion string,
 	worldPayload []byte,
+	rollback func([]byte) error,
 	beforeCore []byte,
 ) (string, error) {
-	if state == nil || expectedWorldVersion == "" || state.storageVersion == "" {
+	if state == nil || expectedWorldVersion == "" || state.storageVersion == "" || rollback == nil {
 		return "", errors.New("atomic World/core persistence is not initialized")
 	}
 	afterCore, err := state.engine.Snapshot()
@@ -174,7 +175,7 @@ func persistWorldAndCoreAtomic(
 		},
 	})
 	if err != nil {
-		if rollbackErr := rollbackCoreSnapshot(state, beforeCore); rollbackErr != nil {
+		if rollbackErr := rollback(beforeCore); rollbackErr != nil {
 			return "", fmt.Errorf("atomic storage write failed: %w; core rollback failed: %v", err, rollbackErr)
 		}
 		if errors.Is(err, runtime.ErrStorageRejectedVersion) {
@@ -183,7 +184,7 @@ func persistWorldAndCoreAtomic(
 		return "", fmt.Errorf("atomic World/core storage write: %w", err)
 	}
 	if len(acks) != 2 {
-		if rollbackErr := rollbackCoreSnapshot(state, beforeCore); rollbackErr != nil {
+		if rollbackErr := rollback(beforeCore); rollbackErr != nil {
 			return "", fmt.Errorf("atomic storage acknowledgement count is invalid; core rollback failed: %v", rollbackErr)
 		}
 		return "", errors.New("atomic storage write returned an invalid acknowledgement count")
@@ -198,7 +199,7 @@ func persistWorldAndCoreAtomic(
 	matchVersion := versions[matchStorageCollection+"/"+state.instanceLogicalMatchID]
 	worldVersion := versions[worldCommandStorageCollection+"/"+state.instanceLogicalMatchID]
 	if matchVersion == "" || worldVersion == "" {
-		if rollbackErr := rollbackCoreSnapshot(state, beforeCore); rollbackErr != nil {
+		if rollbackErr := rollback(beforeCore); rollbackErr != nil {
 			return "", fmt.Errorf("atomic storage acknowledgements are incomplete; core rollback failed: %v", rollbackErr)
 		}
 		return "", errors.New("atomic storage acknowledgements are incomplete")
@@ -206,18 +207,4 @@ func persistWorldAndCoreAtomic(
 	state.record = updatedMatch
 	state.storageVersion = matchVersion
 	return worldVersion, nil
-}
-
-func rollbackCoreSnapshot(state *authoritativeMatchState, before []byte) error {
-	restored, err := state.record.snapshot()
-	if err != nil {
-		return err
-	}
-	_ = restored
-	engine, err := state.engineFromSnapshot(before)
-	if err != nil {
-		return err
-	}
-	state.engine = engine
-	return nil
 }
