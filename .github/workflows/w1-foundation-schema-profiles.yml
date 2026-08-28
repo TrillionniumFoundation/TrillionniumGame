@@ -1,0 +1,45 @@
+name: trillionnium-game-foundation-schema-profiles
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'migrations/postgresql/**'
+      - 'migrations/cockroachdb/**'
+      - 'contracts/database/foundation-schema.v1.json'
+      - 'scripts/check-foundation-schema.py'
+      - 'tests/schema/**'
+      - 'docs/development/FOUNDATION_SCHEMA_*.md'
+      - 'docs/status/FOUNDATION_SCHEMA_STATUS.json'
+      - '.github/workflows/w1-foundation-schema-profiles.yml'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  static-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: python3 scripts/check-foundation-schema.py
+      - run: python3 -m unittest discover -s tests/schema -p 'test_*.py' -v
+      - run: python3 -m compileall -q scripts tests/schema
+
+  runtime-profiles-blocked:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Prove runtime database evidence is not claimed
+        run: |
+          python3 - <<'PY'
+          import json
+          status = json.load(open('docs/status/FOUNDATION_SCHEMA_STATUS.json'))
+          assert not any(status['claims'].values())
+          contract = json.load(open('contracts/database/foundation-schema.v1.json'))
+          assert contract['profiles']['postgresql']['runtime_execution_verified'] is False
+          assert contract['profiles']['cockroachdb']['runtime_execution_verified'] is False
+          PY

@@ -1,0 +1,22 @@
+{
+  "schema": "trillionnium.storage-core-status.v1",
+  "project_id": "trillionnium-game",
+  "stage": "storage-core-candidate",
+  "invariants": [
+    "atomic_batch",
+    "optimistic_concurrency_control",
+    "owner_public_private_read_acl",
+    "owner_server_write_acl",
+    "server_owned_object",
+    "exact_delete_version",
+    "version_value_identity"
+  ],
+  "claims": {
+    "sg4_complete": false,
+    "storage_behavior_compatible": false,
+    "database_durable": false,
+    "search_compatible": false,
+    "production_ready": false,
+    "public_online": false
+  }
+}

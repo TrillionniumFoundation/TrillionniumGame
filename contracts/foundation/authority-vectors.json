@@ -1,0 +1,10 @@
+{
+  "schema": "trillionnium.authority-core-vectors.v1",
+  "cases": [
+    {"id":"accept-first","steps":[{"op":"prepare_commit","command":"01","participant":"11","sequence":1,"version":0,"generation":1,"fingerprint":"a1","result":"b1"}],"expect":{"version":1,"generation":1,"receipts":1}},
+    {"id":"exact-replay","steps":[{"op":"prepare_commit","command":"01","participant":"11","sequence":1,"version":0,"generation":1,"fingerprint":"a1","result":"b1"},{"op":"prepare","command":"01","participant":"11","sequence":1,"version":0,"generation":1,"fingerprint":"a1","expect":"replay"}],"expect":{"version":1,"generation":1,"receipts":1}},
+    {"id":"fingerprint-conflict","steps":[{"op":"prepare_commit","command":"01","participant":"11","sequence":1,"version":0,"generation":1,"fingerprint":"a1","result":"b1"},{"op":"prepare","command":"01","participant":"11","sequence":1,"version":0,"generation":1,"fingerprint":"a2","expect_error":"command_id_conflict"}],"expect":{"version":1,"generation":1,"receipts":1}},
+    {"id":"takeover-fences-pending","steps":[{"op":"prepare_only","name":"pending","command":"01","participant":"11","sequence":1,"version":0,"generation":1,"fingerprint":"a1"},{"op":"takeover","expected_generation":1},{"op":"commit_pending","name":"pending","result":"b1","expect_error":"stale_pending_generation"}],"expect":{"version":0,"generation":2,"receipts":0}}
+  ],
+  "claims": {"behavior_compatible":false,"production_ready":false}
+}

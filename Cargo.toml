@@ -1,0 +1,27 @@
+[workspace]
+members = [
+  "crates/trnm-contracts",
+  "crates/trnm-authority-core",
+  "crates/trnm-session-core",
+  "crates/trnm-storage-core",
+  "crates/trnm-persistence-core",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.1"
+license = "Apache-2.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+wildcard_imports = "deny"

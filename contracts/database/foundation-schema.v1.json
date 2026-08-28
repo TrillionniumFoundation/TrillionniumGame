@@ -1,0 +1,53 @@
+{
+  "schema": "trillionnium.foundation-schema-contract.v1",
+  "project_id": "trillionnium-game",
+  "status": "ddl-candidate-unexecuted",
+  "profiles": {
+    "postgresql": {
+      "path": "migrations/postgresql/0001_foundation_up.sql",
+      "binary_type": "BYTEA",
+      "integer_64_type": "BIGINT",
+      "runtime_execution_verified": false
+    },
+    "cockroachdb": {
+      "path": "migrations/cockroachdb/0001_foundation_up.sql",
+      "binary_type": "BYTES",
+      "integer_64_type": "INT8",
+      "runtime_execution_verified": false
+    }
+  },
+  "required_tables": [
+    "trnm_schema_metadata",
+    "trnm_entity_heads",
+    "trnm_command_receipts",
+    "trnm_events",
+    "trnm_outbox",
+    "trnm_command_outbox",
+    "trnm_authority_leases",
+    "trnm_session_families",
+    "trnm_refresh_tokens",
+    "trnm_storage_objects"
+  ],
+  "security": {
+    "raw_session_token_storage_allowed": false,
+    "raw_refresh_token_storage_allowed": false,
+    "token_digest_length": 32,
+    "opaque_id_length": 16,
+    "digest_length": 32
+  },
+  "rollback": {
+    "automatic_destructive_down_migration": false,
+    "requires_export_and_empty_database_rebuild": true,
+    "runtime_rollback_proven": false
+  },
+  "claims": {
+    "postgresql_verified": false,
+    "cockroachdb_verified": false,
+    "schema_equivalent": false,
+    "database_durable": false,
+    "migration_compatible": false,
+    "rollback_proven": false,
+    "sg4_complete": false,
+    "production_ready": false
+  }
+}
