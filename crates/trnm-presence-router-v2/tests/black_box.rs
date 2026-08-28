@@ -86,7 +86,7 @@ fn exact_duplicate_and_visibility_transitions_are_deterministic() {
 
     let visible = router
         .update_presence(UpdatePresenceRequest {
-            connection: connection,
+            connection,
             generation: generation(1),
             stream: match_stream.clone(),
             status: PresenceStatus::new("back").unwrap(),
@@ -309,7 +309,7 @@ fn stale_and_future_non_join_mutations_are_rejected_atomically() {
     ));
     assert!(matches!(
         router.remove_connection(RemoveConnectionRequest {
-            connection: connection,
+            connection,
             generation: generation(9),
         }),
         Err(PresenceError::StaleGeneration { .. })
