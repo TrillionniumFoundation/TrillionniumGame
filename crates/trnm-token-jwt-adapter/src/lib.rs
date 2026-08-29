@@ -11,11 +11,11 @@
 
 pub mod base64url;
 pub mod json;
+#[path = "jwt/mod.rs"]
 mod jwt;
 mod sha256;
 
 pub use jwt::{
-    issue_epoch, issue_legacy, verify, ClaimMapping, JwtError, KeyRing, SecretKey,
-    TokenRoute, VerificationProfile, VerifiedPrincipal, VerifiedToken,
-    EPOCH_KEY_ID_PREFIX,
+    issue_epoch, issue_legacy, verify, ClaimMapping, JwtError, KeyRing, SecretKey, TokenRoute,
+    VerificationProfile, VerifiedPrincipal, VerifiedToken, EPOCH_KEY_ID_PREFIX,
 };
