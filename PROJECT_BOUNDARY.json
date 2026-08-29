@@ -1,11 +1,12 @@
 {
   "schema": "trillionnium.project-boundary.v2",
   "project_id": "trillionnium-game",
-  "current_repository": "TrillionniumFoundation/Trillionnium-Nakama",
+  "current_repository": "TrillionniumFoundation/TrillionniumGame",
   "target_repository": "TrillionniumFoundation/TrillionniumGame",
+  "previous_repository_names": ["TrillionniumFoundation/Trillionnium-Nakama"],
   "repository_id": 1323087470,
   "lane": "game-backend-platform",
-  "lifecycle": "planning-v2",
+  "lifecycle": "planning-v2-renamed",
   "language_boundary": {
     "first_party_production_services": ["rust"],
     "generated_or_declarative": ["protobuf", "openapi", "sql", "html", "css", "yaml", "json"],
