@@ -1,0 +1,167 @@
+name: trillionnium-game-merge-gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trillionnium-game-merge-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  control-plane:
+    name: control-plane
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify exact source identity
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git show -s --format='commit=%H%ntree=%T' "$GITHUB_SHA"
+      - name: Validate plan, status, gates and schema authority
+        run: python3 scripts/check-plan.py
+      - name: Compile control scripts
+        run: |
+          python3 -m py_compile \
+            scripts/check-plan.py \
+            scripts/check-status-transitions.py \
+            scripts/derive-gates.py \
+            scripts/check-schema-authority.py
+
+  rust-workspace:
+    name: rust-workspace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install exact Rust
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Test
+        run: cargo test --workspace --all-targets --locked
+      - name: Strict lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  security-critical-rust:
+    name: security-critical-rust (${{ matrix.component }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: token-jwt-adapter
+            manifest: crates/trnm-token-jwt-adapter/Cargo.toml
+          - component: token-jwt-adapter-gate
+            manifest: crates/trnm-token-jwt-adapter-gate/Cargo.toml
+          - component: token-jwt-adapter-gate-v2
+            manifest: crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml
+          - component: presence-router-v2
+            manifest: crates/trnm-presence-router-v2/Cargo.toml
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install exact Rust
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+      - name: Format
+        run: cargo fmt --manifest-path '${{ matrix.manifest }}' -- --check
+      - name: Test
+        run: cargo test --manifest-path '${{ matrix.manifest }}' --all-targets --locked
+      - name: Strict lint
+        run: cargo clippy --manifest-path '${{ matrix.manifest }}' --all-targets --locked -- -D warnings
+
+  python-contracts:
+    name: python-contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Compile Python sources
+        run: python3 -m compileall -q scripts tools tests
+      - name: Run Python test corpus
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Run API and realtime denominator contract
+        run: bash scripts/check-api-rtapi-denominator.sh
+
+  legacy-go-migration-input:
+    name: legacy-go-migration-input
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: runtime/go.mod
+          cache: false
+      - name: Verify formatting
+        run: |
+          set -euo pipefail
+          files=$(find runtime -type f -name '*.go' -print | sort)
+          test -n "$files"
+          unformatted=$(printf '%s\n' "$files" | xargs gofmt -l)
+          test -z "$unformatted" || { printf '%s\n' "$unformatted" >&2; exit 1; }
+      - name: Test, race and vet
+        working-directory: runtime
+        run: |
+          set -euo pipefail
+          go test ./... -count=1
+          go test -race ./... -count=1
+          go vet ./...
+
+  trillionnium-game-merge-gate:
+    name: trillionnium-game-merge-gate
+    if: always()
+    needs:
+      - control-plane
+      - rust-workspace
+      - security-critical-rust
+      - python-contracts
+      - legacy-go-migration-input
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Reject missing, skipped, cancelled or failed lanes
+        env:
+          CONTROL_PLANE: ${{ needs.control-plane.result }}
+          RUST_WORKSPACE: ${{ needs.rust-workspace.result }}
+          SECURITY_CRITICAL_RUST: ${{ needs.security-critical-rust.result }}
+          PYTHON_CONTRACTS: ${{ needs.python-contracts.result }}
+          LEGACY_GO: ${{ needs.legacy-go-migration-input.result }}
+        run: |
+          set -euo pipefail
+          test "$CONTROL_PLANE" = success
+          test "$RUST_WORKSPACE" = success
+          test "$SECURITY_CRITICAL_RUST" = success
+          test "$PYTHON_CONTRACTS" = success
+          test "$LEGACY_GO" = success
+          printf 'repository=%s\nsha=%s\nrun_id=%s\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_RUN_ID"
