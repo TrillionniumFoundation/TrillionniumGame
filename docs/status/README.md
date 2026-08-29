@@ -14,7 +14,14 @@ The status directory contains current machine-readable execution and claim state
 
 ## Component snapshots
 
-Files such as `FOUNDATION_SCHEMA_STATUS.json`, `PERSISTENCE_FOUNDATION_STATUS.json`, `PRESENCE_ROUTER_STATUS.json`, `QUERY_CORE_STATUS.json` and `STORAGE_CORE_STATUS.json` describe narrower source or test slices. Their claims remain bounded by the current state, gap register and accepted evidence index.
+- [`TRNM_SERVER_STATUS.json`](TRNM_SERVER_STATUS.json) — first-party Rust binary source, execution gaps and claim boundary.
+- [`FOUNDATION_SCHEMA_STATUS.json`](FOUNDATION_SCHEMA_STATUS.json) — separate single-node schema-profile evidence.
+- [`PERSISTENCE_FOUNDATION_STATUS.json`](PERSISTENCE_FOUNDATION_STATUS.json) — command/event/outbox foundation state.
+- [`STORAGE_CORE_STATUS.json`](STORAGE_CORE_STATUS.json) — storage state machine and Nakama public-version source candidate.
+- [`PRESENCE_ROUTER_STATUS.json`](PRESENCE_ROUTER_STATUS.json) — presence/route source candidate.
+- [`QUERY_CORE_STATUS.json`](QUERY_CORE_STATUS.json) — query feasibility candidate.
+
+Every component snapshot remains bounded by the current state, gap register and accepted evidence index. `source_candidate: true` is not remote execution, differential compatibility, database durability or production credit.
 
 ## Historical narrow status
 
