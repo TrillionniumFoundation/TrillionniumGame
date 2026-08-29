@@ -45,6 +45,8 @@ jobs:
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
       - name: Validate plan, status, gates and schema authority
         run: python3 scripts/check-plan.py
+      - name: Validate repository-native workflow action policy
+        run: python3 scripts/check-workflow-action-policy.py
       - name: Validate complete Rust package and target inventory
         run: python3 scripts/check-rust-package-inventory.py
       - name: Validate Rust server source contract
@@ -56,6 +58,7 @@ jobs:
             scripts/check-status-transitions.py \
             scripts/derive-gates.py \
             scripts/check-schema-authority.py \
+            scripts/check-workflow-action-policy.py \
             scripts/check-rust-package-inventory.py \
             scripts/check-trnm-server.py
 
