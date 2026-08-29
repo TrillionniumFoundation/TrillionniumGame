@@ -20,6 +20,7 @@ REQUIRED_FILES = {
     MODULE_ROOT / "error.rs",
     MODULE_ROOT / "http.rs",
     MODULE_ROOT / "json.rs",
+    MODULE_ROOT / "retry.rs",
     MODULE_ROOT / "schema.rs",
     MODULE_ROOT / "server.rs",
 }
@@ -34,6 +35,9 @@ REQUIRED_TESTS = {
     "internal_domain_reason_is_never_exposed",
     "authenticated_drain_stops_new_mutations",
     "admin_token_comparison_rejects_a_256_byte_length_delta",
+    "safe_immediate_failure_is_retried_within_attempt_budget",
+    "never_and_resync_errors_are_not_retried",
+    "exhausted_retry_returns_stable_unavailable_error",
 }
 FORBIDDEN_SOURCE = (
     "database/schema/v2",
@@ -108,6 +112,17 @@ def main() -> int:
             "acknowledgement-after-commit fence",
             "CommitOutcome::Duplicate",
         ],
+        "crates/trnm-persistence-pg/src/bin/trnm_server/retry.rs": [
+            "max_attempts: 3",
+            "total_budget: Duration::from_secs(2)",
+            "RetryClass::SafeImmediate",
+            "RetryClass::SafeBackoff",
+            "database_retry_budget_exhausted",
+        ],
+        "crates/trnm-persistence-pg/src/bin/trnm_server/server.rs": [
+            "RetryingRepository::new",
+            "RetryPolicy::candidate_default",
+        ],
     }
     for relative, markers in required_markers.items():
         text = sources[Path(relative)]
@@ -120,8 +135,8 @@ def main() -> int:
     if missing_tests:
         fail(f"missing tests: {missing_tests}")
     test_count = combined.count("#[test]")
-    if test_count < 20:
-        fail(f"expected at least 20 server source tests, got {test_count}")
+    if test_count < 24:
+        fail(f"expected at least 24 server source tests, got {test_count}")
 
     workflow = (
         ROOT / ".github/workflows/trillionnium-game-merge-gate.yml"
@@ -130,6 +145,8 @@ def main() -> int:
         fail("aggregate gate does not compile/test the binary target")
     if "cargo clippy --workspace --all-targets --locked -- -D warnings" not in workflow:
         fail("aggregate gate does not strictly lint the binary target")
+    if "python3 scripts/check-trnm-server.py" not in workflow:
+        fail("aggregate gate does not execute the server source contract")
 
     status = json.loads(
         (ROOT / "docs/status/TRNM_SERVER_STATUS.json").read_text(encoding="utf-8")
@@ -152,6 +169,8 @@ def main() -> int:
         fail("server status overclaims execution, compatibility or production")
     if claims.get("source_candidate") is not True:
         fail("server source candidate claim missing")
+    if claims.get("bounded_retry_source_candidate") is not True:
+        fail("bounded retry source candidate claim missing")
 
     print(
         json.dumps(
@@ -160,6 +179,7 @@ def main() -> int:
                 "source_files": len(sources),
                 "source_tests": test_count,
                 "source_candidate": True,
+                "bounded_retry_source_candidate": True,
                 "cargo_executed_here": False,
                 "live_database_executed_here": False,
                 "compatibility_credit": False,
