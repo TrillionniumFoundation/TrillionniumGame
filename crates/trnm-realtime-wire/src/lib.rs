@@ -205,6 +205,9 @@ pub fn decode_client_frame(input: &[u8]) -> Result<(ClientFrame, usize), FrameEr
             }
             (value, 10)
         }
+        // `indicator` is masked with 0x7f above, but Rust deliberately does
+        // not infer that value range for exhaustiveness checking.
+        128..=u8::MAX => unreachable!("masked payload indicator is at most 127"),
     };
     if opcode.is_control() && payload_length > 125 {
         return Err(FrameError::ControlPayloadTooLarge);
