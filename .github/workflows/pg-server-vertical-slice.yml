@@ -1,0 +1,79 @@
+name: pg-server-vertical-slice
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/trnm-contracts/**'
+      - 'crates/trnm-persistence-core/**'
+      - 'crates/trnm-persistence-pg/**'
+      - 'migrations/postgresql/**'
+      - 'scripts/check-pg-server-vertical-slice.sh'
+      - '.github/workflows/pg-server-vertical-slice.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/trnm-contracts/**'
+      - 'crates/trnm-persistence-core/**'
+      - 'crates/trnm-persistence-pg/**'
+      - 'migrations/postgresql/**'
+      - 'scripts/check-pg-server-vertical-slice.sh'
+      - '.github/workflows/pg-server-vertical-slice.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pg-server-vertical-slice-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-postgresql-process:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install exact Rust
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+      - name: Run live PostgreSQL server slice
+        env:
+          TRNM_PG_SERVER_EVIDENCE_ROOT: run/pg-server-vertical-slice
+        run: bash scripts/check-pg-server-vertical-slice.sh
+      - name: Validate claim boundary
+        run: |
+          set -euo pipefail
+          jq -e \
+            --arg sha "$GITHUB_SHA" \
+            '.repository == "TrillionniumFoundation/TrillionniumGame" and
+             .commit == $sha and
+             .profile == "postgresql" and
+             .assertions.first_command_applied == true and
+             .assertions.restart_replayed_exact_duplicate == true and
+             .assertions.stale_revision_rejected == true and
+             .assertions.receipt_count == 1 and
+             .assertions.event_count == 1 and
+             .assertions.outbox_count == 1 and
+             .claims.live_postgresql_slice_passed == true and
+             .claims.cockroachdb_slice_passed == false and
+             .claims.nakama_wire_compatible == false and
+             .claims.sg4_complete == false and
+             .claims.production_ready == false' \
+            run/pg-server-vertical-slice/result.json >/dev/null
+      - name: Upload exact-head PostgreSQL slice evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pg-server-vertical-slice-${{ github.sha }}
+          path: run/pg-server-vertical-slice
+          if-no-files-found: error
+          retention-days: 30
