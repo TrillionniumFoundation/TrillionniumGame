@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -10,6 +11,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def owner_from_key(key: str) -> str:
     return key.rsplit("/", 1)[-1]
+
+
+def content_version(value: str) -> str:
+    """Reproduce the pinned Nakama public storage version for exact UTF-8 bytes."""
+    return hashlib.md5(value.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def apply_case(case: dict) -> tuple[dict, str | None]:
@@ -36,13 +42,19 @@ def apply_case(case: dict) -> tuple[dict, str | None]:
                     raise ValueError("storage_write_permission_denied")
             if operation["op"] == "write":
                 expected = operation["expected"]
-                if expected == "missing" and existing is not None:
+                if expected == "*" and existing is not None:
                     raise ValueError("storage_object_already_exists")
-                if expected not in {"any", "missing"} and (existing is None or existing["version"] != expected):
+                if expected not in {"", "*"} and (
+                    existing is None or existing["version"] != expected
+                ):
                     raise ValueError("storage_version_mismatch")
-                if existing is not None and existing["version"] == operation["version"] and existing["value"] != operation["value"]:
-                    raise ValueError("storage_version_value_mismatch")
-                staged[key] = {k: operation[k] for k in ("value", "version", "read", "write")}
+                version = content_version(operation["value"])
+                staged[key] = {
+                    "value": operation["value"],
+                    "version": version,
+                    "read": operation["read"],
+                    "write": operation["write"],
+                }
             elif operation["op"] == "delete":
                 if existing is None:
                     raise ValueError("storage_object_not_found")
@@ -59,17 +71,32 @@ def apply_case(case: dict) -> tuple[dict, str | None]:
 class StorageVectorTests(unittest.TestCase):
     def test_storage_vectors(self) -> None:
         document = json.loads((ROOT / "contracts/storage/storage-vectors.json").read_text())
-        self.assertFalse(any(document["claims"].values()))
+        self.assertTrue(document["claims"]["public_version_source_candidate"])
+        for claim in (
+            "storage_behavior_compatible",
+            "database_durable",
+            "production_ready",
+        ):
+            self.assertFalse(document["claims"][claim], claim)
         for case in document["cases"]:
             with self.subTest(case=case["id"]):
                 objects, error = apply_case(case)
                 self.assertEqual(error, case.get("expect_error"))
                 expected_objects = {
-                    key: {**value, "read": objects.get(key, {}).get("read"), "write": objects.get(key, {}).get("write")}
+                    key: {
+                        **value,
+                        "read": objects.get(key, {}).get("read"),
+                        "write": objects.get(key, {}).get("write"),
+                    }
                     for key, value in case["expect"]["objects"].items()
                 }
                 projected = {
-                    key: {"value": value["value"], "version": value["version"], "read": value["read"], "write": value["write"]}
+                    key: {
+                        "value": value["value"],
+                        "version": value["version"],
+                        "read": value["read"],
+                        "write": value["write"],
+                    }
                     for key, value in objects.items()
                 }
                 self.assertEqual(projected, expected_objects)
