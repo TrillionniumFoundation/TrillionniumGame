@@ -1,5 +1,6 @@
 name: native-workflow-migration-autofix
 
+# One-shot registered-workflow trigger. Delete after the migration commit lands.
 on:
   push:
     branches:
