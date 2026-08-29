@@ -1,0 +1,37 @@
+name: source-candidate-boundaries
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-candidate-boundaries-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  structured-claim-boundary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate source-candidate promotion boundary
+        run: |
+          set -euo pipefail
+          python3 scripts/check-source-candidate-boundaries.py \
+            | tee source-candidate-boundaries.json
+          jq -e '
+            .status == "passed" and
+            .candidate_count > 0 and
+            .claims.structured_boundaries_valid == true and
+            .claims.remote_verified == false and
+            .claims.compatibility_credit == false and
+            .claims.production_ready == false
+          ' source-candidate-boundaries.json >/dev/null
