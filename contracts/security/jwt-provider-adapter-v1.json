@@ -1,0 +1,47 @@
+{
+  "schema": "trillionnium.jwt-provider-adapter.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-candidate",
+  "crate": "crates/trnm-token-jwt-provider-adapter",
+  "provider_contract": "contracts/security/jwt-crypto-provider-v1.json",
+  "adr": "docs/adr/ADR-0002-JWT-CRYPTO-PROVIDER.md",
+  "pre_authentication_parsing": [
+    "bounded token segmentation",
+    "bounded base64url JOSE header",
+    "strict JSON header",
+    "alg must equal HS256",
+    "optional typ must equal JWT",
+    "legacy or strict trnm-kep-v1 epoch routing"
+  ],
+  "post_authentication_processing": [
+    "payload base64url decoding",
+    "claims JSON parsing by the caller",
+    "principal and time/provider policy validation"
+  ],
+  "invariants": [
+    "the exact encoded header.payload input is sent to the provider",
+    "payload bytes are not decoded before provider acceptance",
+    "signature length is exactly 32 bytes before provider invocation",
+    "unknown header fields fail when strict mode is active",
+    "unknown or malformed epoch never falls back to legacy",
+    "key reference carries an explicit domain and optional epoch"
+  ],
+  "required_next": [
+    "reviewed RustCrypto software provider",
+    "optional remote KMS/HSM provider",
+    "full Nakama claim mapping after authentication",
+    "legacy and epoch exact issue/verify differential",
+    "malformed, duplicate-key and fuzz corpus",
+    "rotation, revoke, refresh replay and socket disconnect",
+    "independent security review"
+  ],
+  "gap_ids": ["GAP-P0-CRYPTO-001"],
+  "claims": {
+    "source_candidate": true,
+    "provider_authentication_boundary_exists": true,
+    "production_provider_exists": false,
+    "full_claim_compatibility_verified": false,
+    "security_review_accepted": false,
+    "production_ready": false
+  }
+}
