@@ -15,15 +15,21 @@
       "id": "DIV-STORAGE-VERSION-001",
       "severity": "P1",
       "category": "storage",
-      "status": "open",
+      "status": "fixed-source",
       "expected": "The public storage object version is produced by the pinned Nakama behavior from the stored value and participates in empty/star/exact OCC semantics.",
-      "observed": "The Rust storage core currently accepts a caller-supplied 32-byte Digest32 version and does not separate the public content version from an internal integrity digest.",
+      "observed": "The previous Rust core accepted a caller-supplied Digest32 public version. Candidate commit cabf58ba2267ca486318ad673aa2717c8121f5dc introduces a distinct ContentVersion derived as lowercase hexadecimal MD5 of the exact value bytes, maps empty/star/exact OCC explicitly, separates IntegrityDigest, and adds pinned MD5 vectors.",
       "owner_role": "storage",
       "gap_id": "GAP-P1-STORAGE-001",
       "parity_ids": ["TG-PAR-021", "TG-PAR-023"],
       "normalization_rule": null,
       "blocking_claims": ["C2", "C3", "C5"],
-      "evidence_ids": []
+      "evidence_ids": [],
+      "verification_required": [
+        "exact-head Rust format/test/strict Clippy",
+        "HTTP and runtime storage validation differential",
+        "database effect differential",
+        "independent storage compatibility review"
+      ]
     },
     {
       "id": "DIV-SCHEMA-AUTHORITY-001",
@@ -157,6 +163,6 @@
     }
   ],
   "open_p0_count": 1,
-  "open_p1_count": 4,
+  "open_p1_count": 3,
   "claim_boundary": "A fixed-source divergence still blocks claims until exact-head tests and required independent review promote it to verified-fixed."
 }
