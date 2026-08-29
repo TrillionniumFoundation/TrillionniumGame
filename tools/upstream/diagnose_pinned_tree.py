@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.upstream.pinned_archive import (  # noqa: E402
-    ArchiveVerificationError,
+    SourceArchiveError,
     extract_github_tarball,
     git_blob_sha1,
     http_bytes,
@@ -113,7 +113,13 @@ def local_inventory(
                     "type": "commit",
                     "sha": link_sha.hex(),
                 }
-                encoded_entries.append((os.fsencode(name), False, b"160000 " + os.fsencode(name) + b"\0" + link_sha))
+                encoded_entries.append(
+                    (
+                        os.fsencode(name),
+                        False,
+                        b"160000 " + os.fsencode(name) + b"\0" + link_sha,
+                    )
+                )
                 continue
 
             if child is None:
@@ -242,7 +248,11 @@ def compare(
         elif right is None:
             classification = "missing"
         else:
-            changed = [field for field in ("mode", "type", "sha") if left[field] != right[field]]
+            changed = [
+                field
+                for field in ("mode", "type", "sha")
+                if left[field] != right[field]
+            ]
             classification = "+".join(changed)
         differences.append(
             {
@@ -259,7 +269,11 @@ def load_profile(registry: Path, profile_id: str) -> dict[str, Any]:
     value = json.loads(registry.read_text(encoding="utf-8"))
     profiles = value.get("profiles") if isinstance(value, dict) else None
     require(isinstance(profiles, list), "SDK registry profiles must be an array")
-    matching = [row for row in profiles if isinstance(row, dict) and row.get("id") == profile_id]
+    matching = [
+        row
+        for row in profiles
+        if isinstance(row, dict) and row.get("id") == profile_id
+    ]
     require(len(matching) == 1, f"expected exactly one SDK profile {profile_id!r}")
     return matching[0]
 
@@ -337,7 +351,7 @@ def main() -> int:
         OSError,
         UnicodeDecodeError,
         json.JSONDecodeError,
-        ArchiveVerificationError,
+        SourceArchiveError,
         DiagnosticError,
         ValueError,
     ) as error:
