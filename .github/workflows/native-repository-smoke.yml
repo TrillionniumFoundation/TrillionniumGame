@@ -1,0 +1,24 @@
+name: TrillionniumGame native repository smoke
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/native-repository-smoke.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Bind repository and exact revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "TrillionniumFoundation/TrillionniumGame"
+          test -n "$GITHUB_SHA"
+          printf 'repository=%s\nsha=%s\nref=%s\nevent=%s\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_REF" "$GITHUB_EVENT_NAME"
