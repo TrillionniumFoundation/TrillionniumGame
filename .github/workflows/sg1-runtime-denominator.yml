@@ -24,31 +24,44 @@ permissions:
   contents: read
 
 concurrency:
-  group: trillionnium-game-runtime-denominator-${{ github.workflow }}-${{ github.ref }}
+  group: trillionnium-game-runtime-denominator-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  CANDIDATE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+  CANDIDATE_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   exact-runtime-candidate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
-      - name: Checkout exact candidate
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Fetch exact candidate without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
+            "refs/heads/${CANDIDATE_REF}"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
       - name: Validate extractors and negative fixtures
         run: bash scripts/check-runtime-denominator.sh
-      - name: Fetch and verify exact Nakama source tree
+      - name: Fetch and verify exact upstream trees
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           python3 scripts/fetch-pinned-upstream.py \
             --repository heroiclabs/nakama \
             --revision d4d92f93f78bbbe62c7fc50a3f85c772ec121a09 \
             --tree f3c9cfc2726d5543da1564629170f35b98e3797d \
             --output run/upstream/nakama
-      - name: Fetch and verify exact nakama-common source tree
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
           python3 scripts/fetch-pinned-upstream.py \
             --repository heroiclabs/nakama-common \
             --revision 449b77ecc8789aa466c36b67f6e498033dfcd9c5 \
@@ -56,6 +69,7 @@ jobs:
             --output run/upstream/nakama-common
       - name: Generate exact Runtime candidate twice
         run: |
+          set -euo pipefail
           python3 scripts/generate-runtime-denominator.py \
             --nakama-dir run/upstream/nakama \
             --common-dir run/upstream/nakama-common \
@@ -67,6 +81,7 @@ jobs:
           diff -ru run/candidate-a run/candidate-b
       - name: Validate nonempty fail-closed surface
         run: |
+          set -euo pipefail
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -83,6 +98,7 @@ jobs:
           PY
       - name: Prove candidate cannot close SG1
         run: |
+          set -euo pipefail
           if python3 scripts/generate-runtime-denominator.py \
               --nakama-dir run/upstream/nakama \
               --common-dir run/upstream/nakama-common \
@@ -91,10 +107,14 @@ jobs:
             echo 'Runtime candidate incorrectly received SG1 credit' >&2
             exit 1
           fi
-      - name: Upload exact-head candidate evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: runtime-denominator-${{ github.sha }}
-          path: run/candidate-a
-          if-no-files-found: error
-          retention-days: 30
+      - name: Seal exact-head candidate evidence in immutable log
+        run: |
+          set -euo pipefail
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf run/runtime-denominator-${CANDIDATE_SHA}.tar.gz \
+            -C run/candidate-a .
+          printf 'repository=%s\nhead_sha=%s\nrun_id=%s\n' \
+            "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" "$GITHUB_RUN_ID"
+          sha256sum run/runtime-denominator-${CANDIDATE_SHA}.tar.gz
+          find run/candidate-a -type f -print0 | sort -z | xargs -0 sha256sum
