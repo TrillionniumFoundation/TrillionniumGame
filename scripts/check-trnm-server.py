@@ -40,6 +40,7 @@ REQUIRED_TESTS = {
     "safe_immediate_failure_is_retried_within_attempt_budget",
     "never_and_resync_errors_are_not_retried",
     "exhausted_retry_returns_stable_unavailable_error",
+    "elapsed_budget_prevents_an_additional_attempt",
     "rfc6455_handshake_accept_matches_the_published_vector",
     "malformed_key_version_and_subprotocol_fail_closed",
     "masked_single_text_frame_is_unmasked_exactly",
@@ -92,6 +93,9 @@ def main() -> int:
             "Command::Serve",
             "open_verified_repository",
         ],
+        "crates/trnm-persistence-pg/src/bin/trnm_server/mod.rs": [
+            "pub(crate) mod websocket;",
+        ],
         "crates/trnm-persistence-pg/src/bin/trnm_server/config.rs": [
             "127.0.0.1:7350",
             "TRNM_SERVER_ALLOW_NON_LOOPBACK",
@@ -127,6 +131,7 @@ def main() -> int:
             "RetryClass::SafeImmediate",
             "RetryClass::SafeBackoff",
             "database_retry_budget_exhausted",
+            "if attempt > 0 && started.elapsed() >= policy.total_budget",
         ],
         "crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs": [
             "/v1/realtime",
@@ -139,6 +144,7 @@ def main() -> int:
         "crates/trnm-persistence-pg/src/bin/trnm_server/server.rs": [
             "RetryingRepository::new",
             "RetryPolicy::candidate_default",
+            "websocket::is_route",
             "websocket::serve_once",
         ],
     }
@@ -153,8 +159,8 @@ def main() -> int:
     if missing_tests:
         fail(f"missing tests: {missing_tests}")
     test_count = combined.count("#[test]")
-    if test_count < 30:
-        fail(f"expected at least 30 server source tests, got {test_count}")
+    if test_count < 31:
+        fail(f"expected at least 31 server source tests, got {test_count}")
 
     workflow = (
         ROOT / ".github/workflows/trillionnium-game-merge-gate.yml"
@@ -165,6 +171,17 @@ def main() -> int:
         fail("aggregate gate does not strictly lint the binary target")
     if "python3 scripts/check-trnm-server.py" not in workflow:
         fail("aggregate gate does not execute the server source contract")
+
+    authority = json.loads(
+        (ROOT / "docs/development/RUST_PACKAGE_AUTHORITY.json").read_text(encoding="utf-8")
+    )
+    server = authority.get("server_binary_authority", {})
+    if server.get("name") != "trnm-server":
+        fail("Rust package authority does not name trnm-server")
+    if server.get("manifest") != "crates/trnm-persistence-pg/Cargo.toml":
+        fail("Rust package authority points to another server manifest")
+    if server.get("source") != "crates/trnm-persistence-pg/src/bin/trnm-server.rs":
+        fail("Rust package authority points to another server source")
 
     status = json.loads(
         (ROOT / "docs/status/TRNM_SERVER_STATUS.json").read_text(encoding="utf-8")
