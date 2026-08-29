@@ -149,8 +149,17 @@ def _capability(call: str, line: str, policy: Mapping[str, Any]) -> str | None:
         for marker in markers:
             if not isinstance(marker, str):
                 raise InventoryError(f"capability {capability} marker must be a string")
-            if marker.startswith(".") and call.endswith(marker):
-                return capability
+            # Dotted markers describe one concrete call. Match them only against
+            # the current CALL_RE token; using the whole source line causes the
+            # first call on a multi-call line to misclassify every later call.
+            if "." in marker:
+                if marker.startswith(".") and call.endswith(marker):
+                    return capability
+                if call == marker or call.endswith("." + marker) or marker in call:
+                    return capability
+                continue
+            # Non-call markers such as TraceID may intentionally be discovered
+            # from their surrounding source line.
             if marker in call or marker in line:
                 return capability
     return None
