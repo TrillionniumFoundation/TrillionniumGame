@@ -1,7 +1,6 @@
 package worldtransition
 
 import (
-	"go/ast"
 	"go/parser"
 	"go/token"
 	"path/filepath"
@@ -20,7 +19,7 @@ func TestPackageImportsRemainPure(t *testing.T) {
 	}
 	set := token.NewFileSet()
 	for _, file := range files {
-		parsed, err := parser.ParseFile(set, file, nil, ast.ImportsOnly)
+		parsed, err := parser.ParseFile(set, file, nil, parser.ImportsOnly)
 		if err != nil {
 			t.Fatal(err)
 		}
