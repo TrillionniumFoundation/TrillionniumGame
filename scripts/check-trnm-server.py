@@ -23,6 +23,7 @@ REQUIRED_FILES = {
     MODULE_ROOT / "retry.rs",
     MODULE_ROOT / "schema.rs",
     MODULE_ROOT / "server.rs",
+    MODULE_ROOT / "websocket.rs",
 }
 REQUIRED_TESTS = {
     "fixed_hex_round_trip_is_lowercase_and_exact_width",
@@ -34,10 +35,17 @@ REQUIRED_TESTS = {
     "health_ready_bootstrap_and_commit_form_one_in_process_vertical_slice",
     "internal_domain_reason_is_never_exposed",
     "authenticated_drain_stops_new_mutations",
+    "unauthenticated_mutations_fail_closed",
     "admin_token_comparison_rejects_a_256_byte_length_delta",
     "safe_immediate_failure_is_retried_within_attempt_budget",
     "never_and_resync_errors_are_not_retried",
     "exhausted_retry_returns_stable_unavailable_error",
+    "rfc6455_handshake_accept_matches_the_published_vector",
+    "malformed_key_version_and_subprotocol_fail_closed",
+    "masked_single_text_frame_is_unmasked_exactly",
+    "unmasked_fragmented_and_oversized_frames_are_rejected",
+    "server_text_and_close_frames_are_unmasked_and_canonical",
+    "sha1_and_base64_helpers_match_known_vectors",
 }
 FORBIDDEN_SOURCE = (
     "database/schema/v2",
@@ -111,6 +119,7 @@ def main() -> int:
             "/v1/authority/commit",
             "acknowledgement-after-commit fence",
             "CommitOutcome::Duplicate",
+            "if !self.authorized(request)",
         ],
         "crates/trnm-persistence-pg/src/bin/trnm_server/retry.rs": [
             "max_attempts: 3",
@@ -119,9 +128,18 @@ def main() -> int:
             "RetryClass::SafeBackoff",
             "database_retry_budget_exhausted",
         ],
+        "crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs": [
+            "/v1/realtime",
+            "trnm.json.v1",
+            "Sec-WebSocket-Accept",
+            "websocket_client_frame_unmasked",
+            "websocket_length_not_canonical",
+            '"POST",\n        "/v1/authority/commit"',
+        ],
         "crates/trnm-persistence-pg/src/bin/trnm_server/server.rs": [
             "RetryingRepository::new",
             "RetryPolicy::candidate_default",
+            "websocket::serve_once",
         ],
     }
     for relative, markers in required_markers.items():
@@ -135,8 +153,8 @@ def main() -> int:
     if missing_tests:
         fail(f"missing tests: {missing_tests}")
     test_count = combined.count("#[test]")
-    if test_count < 24:
-        fail(f"expected at least 24 server source tests, got {test_count}")
+    if test_count < 30:
+        fail(f"expected at least 30 server source tests, got {test_count}")
 
     workflow = (
         ROOT / ".github/workflows/trillionnium-game-merge-gate.yml"
@@ -151,15 +169,16 @@ def main() -> int:
     status = json.loads(
         (ROOT / "docs/status/TRNM_SERVER_STATUS.json").read_text(encoding="utf-8")
     )
-    if status.get("stage") != "http-database-vertical-source-candidate":
+    if status.get("stage") != "http-websocket-database-vertical-source-candidate":
         fail("unexpected server status stage")
     claims = status.get("claims", {})
     forbidden_positive_claims = [
         "remote_verified",
         "live_database_verified",
         "http_wire_compatible",
+        "websocket_wire_compatible",
         "grpc_implemented",
-        "websocket_implemented",
+        "websocket_protobuf_implemented",
         "sg4_complete",
         "production_ready",
         "public_online",
@@ -171,6 +190,8 @@ def main() -> int:
         fail("server source candidate claim missing")
     if claims.get("bounded_retry_source_candidate") is not True:
         fail("bounded retry source candidate claim missing")
+    if claims.get("websocket_json_source_candidate") is not True:
+        fail("WebSocket JSON source candidate claim missing")
 
     print(
         json.dumps(
@@ -180,6 +201,7 @@ def main() -> int:
                 "source_tests": test_count,
                 "source_candidate": True,
                 "bounded_retry_source_candidate": True,
+                "websocket_json_source_candidate": True,
                 "cargo_executed_here": False,
                 "live_database_executed_here": False,
                 "compatibility_credit": False,
