@@ -54,6 +54,12 @@ isolated=(
   crates/trnm-token-jwt-adapter-gate/Cargo.toml
   crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml
   crates/trnm-presence-router-v2/Cargo.toml
+  crates/trnm-server/Cargo.toml
+  crates/trnm-persistence-runtime-policy/Cargo.toml
+  crates/trnm-realtime-wire/Cargo.toml
+  crates/trnm-storage-nakama-version/Cargo.toml
+  crates/trnm-token-crypto-provider/Cargo.toml
+  crates/trnm-token-jwt-provider-adapter/Cargo.toml
 )
 for manifest in "${isolated[@]}"; do
   label=$(basename "$(dirname "$manifest")")
