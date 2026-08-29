@@ -79,6 +79,7 @@ jobs:
             "refs/heads/${CANDIDATE_REF}"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+          cd "$GITHUB_WORKSPACE"
           go version
       - name: Verify formatting
         run: |
