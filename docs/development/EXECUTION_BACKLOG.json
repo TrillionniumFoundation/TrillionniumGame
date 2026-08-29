@@ -35,7 +35,7 @@
     "format": "gzip-compressed UTF-8 JSON",
     "uncompressed_schema": "trillionnium.execution-backlog.v2",
     "uncompressed_task_count": 120,
-    "sha256": "be4217d91352b36bdf220e640ab0a169250429ccf3beab8d2fca6a8216a25fb7"
+    "sha256": "6a3b94c1c76a44b31966e2d5919aa3c5ebc87822fc6169377b174a4a3a50c114"
   },
   "reader": "python3 scripts/read-backlog.py",
   "rule": "The compressed artifact is the detailed 120-task machine source. This index is a human and CI navigation layer; task status may not be changed without regenerating the artifact and updating its SHA-256."
