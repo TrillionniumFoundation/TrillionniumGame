@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/worldcommand"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/worldcommand"
 )
 
 func newTLSWorldTestServer(t *testing.T, handler http.Handler) (*httptest.Server, []byte) {

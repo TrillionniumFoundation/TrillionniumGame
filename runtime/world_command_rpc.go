@@ -7,8 +7,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/contract"
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/worldcommand"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/contract"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/worldcommand"
 	"github.com/heroiclabs/nakama-common/runtime"
 )
 

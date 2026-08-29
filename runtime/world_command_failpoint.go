@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/worldcommand"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/worldcommand"
 )
 
 const (

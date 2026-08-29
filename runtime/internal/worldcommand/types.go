@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/worldtransition"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/worldtransition"
 )
 
 const (

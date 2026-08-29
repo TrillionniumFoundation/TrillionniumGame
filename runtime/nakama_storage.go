@@ -12,7 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/contract"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/contract"
 	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
 )

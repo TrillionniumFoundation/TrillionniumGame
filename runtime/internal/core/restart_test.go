@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/contract"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/contract"
 )
 
 func restoreOptions(f *coreFixture) RestoreOptions {

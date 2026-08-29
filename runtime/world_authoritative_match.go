@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/contract"
-	matchcore "github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/core"
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/worldcommand"
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/worldtransition"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/contract"
+	matchcore "github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/core"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/worldcommand"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/worldtransition"
 	"github.com/heroiclabs/nakama-common/runtime"
 )
 

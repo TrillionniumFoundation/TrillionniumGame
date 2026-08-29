@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/contract"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/contract"
 )
 
 func TestContractPublicGoldenVectors(t *testing.T) {

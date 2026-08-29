@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/contract"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/contract"
 )
 
 type Status string
