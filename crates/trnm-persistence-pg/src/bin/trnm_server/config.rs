@@ -60,7 +60,11 @@ impl ServerConfig {
             [_, value] if value == "check-config" => Command::CheckConfig,
             [_, value] if value == "migrate" => Command::Migrate,
             [_, value] if value == "serve" => Command::Serve,
-            _ => return Err(ServerError::Configuration("command_must_be_check_config_migrate_or_serve")),
+            _ => {
+                return Err(ServerError::Configuration(
+                    "command_must_be_check_config_migrate_or_serve",
+                ));
+            }
         };
 
         let bind = lookup("TRNM_SERVER_BIND")
@@ -73,12 +77,16 @@ impl ServerConfig {
             "allow_non_loopback_invalid",
         )?;
         if !bind.ip().is_loopback() && !allow_non_loopback {
-            return Err(ServerError::Configuration("non_loopback_bind_requires_explicit_opt_in"));
+            return Err(ServerError::Configuration(
+                "non_loopback_bind_requires_explicit_opt_in",
+            ));
         }
 
         let database_url = required(&lookup, "TRNM_SERVER_DATABASE_URL", "database_url_missing")?;
         if database_url.len() > 4096
-            || database_url.bytes().any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+            || database_url
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
         {
             return Err(ServerError::Configuration("database_url_invalid"));
         }
@@ -113,18 +121,14 @@ impl ServerConfig {
             "schema_source_commit_missing",
         )?;
         if schema_source_commit.len() != 40
-            || !schema_source_commit
-                .bytes()
-                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+            || !schema_source_commit.bytes().all(is_lower_hex)
         {
             return Err(ServerError::Configuration("schema_source_commit_invalid"));
         }
 
         let admin_token = required(&lookup, "TRNM_SERVER_ADMIN_TOKEN", "admin_token_missing")?;
         if !(32..=512).contains(&admin_token.len())
-            || !admin_token
-                .bytes()
-                .all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'~' | b'-'))
+            || !admin_token.bytes().all(is_token_byte)
         {
             return Err(ServerError::Configuration("admin_token_invalid"));
         }
@@ -227,6 +231,14 @@ fn parse_u64(
     Ok(value)
 }
 
+fn is_lower_hex(byte: u8) -> bool {
+    byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()
+}
+
+fn is_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'~' | b'-')
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -279,24 +291,42 @@ mod tests {
     fn accidental_public_bind_and_implicit_plaintext_database_fail_closed() {
         let mut values = base();
         values.insert("TRNM_SERVER_BIND".to_owned(), "0.0.0.0:7350".to_owned());
-        assert!(matches!(load(&values), Err(ServerError::Configuration("non_loopback_bind_requires_explicit_opt_in"))));
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration(
+                "non_loopback_bind_requires_explicit_opt_in"
+            ))
+        ));
 
         let mut values = base();
         values.remove("TRNM_SERVER_ALLOW_PLAINTEXT_DATABASE");
-        assert!(matches!(load(&values), Err(ServerError::Configuration("plaintext_database_requires_explicit_candidate_opt_in"))));
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration(
+                "plaintext_database_requires_explicit_candidate_opt_in"
+            ))
+        ));
     }
 
     #[test]
     fn secrets_and_source_identity_are_strictly_validated() {
         let mut values = base();
         values.insert("TRNM_SERVER_ADMIN_TOKEN".to_owned(), "short".to_owned());
-        assert!(matches!(load(&values), Err(ServerError::Configuration("admin_token_invalid"))));
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration("admin_token_invalid"))
+        ));
 
         let mut values = base();
         values.insert(
             "TRNM_SERVER_SCHEMA_SOURCE_COMMIT".to_owned(),
             "0123456789ABCDEF0123456789ABCDEF01234567".to_owned(),
         );
-        assert!(matches!(load(&values), Err(ServerError::Configuration("schema_source_commit_invalid"))));
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration(
+                "schema_source_commit_invalid"
+            ))
+        ));
     }
 }
