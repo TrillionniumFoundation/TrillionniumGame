@@ -11,12 +11,15 @@ Status: plan-v3 navigation. Historical tranche documents remain useful evidence,
 - [`../roadmap/NEXT_MILESTONE.json`](../roadmap/NEXT_MILESTONE.json) — current blocker-first milestone.
 - [`EXECUTION_BACKLOG.json`](EXECUTION_BACKLOG.json) — immutable long-range backlog index.
 
-## First Rust process vertical slice
+## Rust package and process authority
 
+- [`RUST_PACKAGE_AUTHORITY.json`](RUST_PACKAGE_AUTHORITY.json) — machine inventory of root members, isolated workspaces and the unique current server binary.
+- [`RUST_PACKAGE_AUTHORITY.md`](RUST_PACKAGE_AUTHORITY.md) — package discovery, extraction and claim-boundary rules.
+- [`../../scripts/check-rust-package-inventory.py`](../../scripts/check-rust-package-inventory.py) — rejects untracked manifests, missing targets and duplicate server authority.
 - [`TRNM_SERVER_VERTICAL_SLICE.md`](TRNM_SERVER_VERTICAL_SLICE.md) — current config/migrate/HTTP/database/acknowledgement source contract.
 - [`../status/TRNM_SERVER_STATUS.json`](../status/TRNM_SERVER_STATUS.json) — machine-readable source/verification boundary.
 - [`../architecture/RUST_SERVER_REFERENCE_ARCHITECTURE.md`](../architecture/RUST_SERVER_REFERENCE_ARCHITECTURE.md) — target process architecture beyond the narrow slice.
-- [`../../scripts/check-trnm-server.py`](../../scripts/check-trnm-server.py) — fail-closed source checker.
+- [`../../scripts/check-trnm-server.py`](../../scripts/check-trnm-server.py) — fail-closed server source checker.
 
 ## Compatibility scope and oracle
 
