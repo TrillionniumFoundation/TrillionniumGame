@@ -1,0 +1,52 @@
+name: candidate-identity-manifest
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-identity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-candidate-identity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Generate exact manifest
+        env:
+          TRNM_EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/generate-candidate-manifest.py \
+            --output run/candidate/candidate-manifest.json
+          python3 -m json.tool run/candidate/candidate-manifest.json >/dev/null
+          jq -e \
+            --arg sha "$GITHUB_SHA" \
+            '.repository == "TrillionniumFoundation/TrillionniumGame" and
+             .commit == $sha and
+             (.tree | length) == 40 and
+             .claim_boundary.exact_source_identity_recorded == true and
+             .claim_boundary.source_validation_executed == false and
+             .claim_boundary.independently_reviewed == false and
+             .claim_boundary.compatibility_credit == false and
+             .claim_boundary.production_ready == false' \
+            run/candidate/candidate-manifest.json >/dev/null
+          sha256sum run/candidate/candidate-manifest.json \
+            > run/candidate/SHA256SUMS
+      - name: Upload immutable candidate identity
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-identity-${{ github.sha }}
+          path: run/candidate
+          if-no-files-found: error
+          retention-days: 30
