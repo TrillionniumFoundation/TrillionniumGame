@@ -1,0 +1,21 @@
+[package]
+name = "trnm-server"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Fail-closed TrillionniumGame Rust server vertical-slice candidate"
+publish = false
+
+[dependencies]
+trnm-contracts = { path = "../trnm-contracts" }
+trnm-persistence-core = { path = "../trnm-persistence-core" }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "trnm-server"
+path = "src/main.rs"
+
+[workspace]
