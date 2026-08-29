@@ -42,10 +42,10 @@ jobs:
       - name: Validate exact identity and claim boundary
         run: |
           set -euo pipefail
-          tree=$(git show -s --format=%T "$GITHUB_SHA")
+          tree=$(git show -s --format=%T "$CANDIDATE_SHA")
           python3 scripts/check-pull-request-contract.py \
             --body-file pull-request-body.md \
-            --head "$GITHUB_SHA" \
+            --head "$CANDIDATE_SHA" \
             --tree "$tree" \
             --draft "$(cat pull-request-draft.txt)" \
             | tee pull-request-contract.json

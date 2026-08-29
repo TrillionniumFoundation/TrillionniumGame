@@ -38,14 +38,14 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
       - name: Generate exact manifest
         env:
-          TRNM_EXPECTED_HEAD: ${{ github.sha }}
+          TRNM_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           python3 scripts/generate-candidate-manifest.py \
             --output run/candidate/candidate-manifest.json
           python3 -m json.tool run/candidate/candidate-manifest.json >/dev/null
           jq -e \
-            --arg sha "$GITHUB_SHA" \
+            --arg sha "$CANDIDATE_SHA" \
             '.repository == "TrillionniumFoundation/TrillionniumGame" and
              .commit == $sha and
              (.tree | length) == 40 and

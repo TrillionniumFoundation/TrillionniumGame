@@ -52,13 +52,13 @@ jobs:
           python3 scripts/check-schema-authority.py
       - name: Generate exact candidate identity
         env:
-          TRNM_EXPECTED_HEAD: ${{ github.sha }}
+          TRNM_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           python3 scripts/generate-candidate-manifest.py \
             --output run/v3-control/candidate-manifest.json
           jq -e \
-            --arg sha "$GITHUB_SHA" \
+            --arg sha "$CANDIDATE_SHA" \
             '.commit == $sha and
              .claim_boundary.exact_source_identity_recorded == true and
              .claim_boundary.source_validation_executed == false and
@@ -172,4 +172,4 @@ jobs:
           test "$STORAGE_VERSION" = success
           test "$CRYPTO_PROVIDER" = success
           printf 'repository=%s\nsha=%s\nrun_id=%s\n' \
-            "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_RUN_ID"
+            "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" "$GITHUB_RUN_ID"

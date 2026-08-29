@@ -67,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           jq -e \
-            --arg sha "$GITHUB_SHA" \
+            --arg sha "$CANDIDATE_SHA" \
             '.repository == "TrillionniumFoundation/TrillionniumGame" and
              .commit == $sha and
              .profile == "postgresql" and

@@ -39,6 +39,11 @@ chmod 600 "$env_file"
 
 cleanup() {
   status=$?
+  if [[ $status -ne 0 ]]; then
+    docker compose --env-file "$env_file" -f "$compose" ps -a       >"$output/compose-ps.txt" 2>&1 || true
+    docker compose --env-file "$env_file" -f "$compose" logs --no-color       >"$output/compose-logs.txt" 2>&1 || true
+    printf 'immutable oracle failed; diagnostics: %s and %s\n'       "$output/compose-ps.txt" "$output/compose-logs.txt" >&2
+  fi
   if [[ ${TRNM_KEEP_ORACLE:-0} != 1 ]]; then
     docker compose --env-file "$env_file" -f "$compose" down -v --remove-orphans >/dev/null 2>&1 || true
   fi
