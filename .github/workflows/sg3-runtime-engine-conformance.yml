@@ -17,20 +17,37 @@ permissions:
   contents: read
 
 concurrency:
-  group: tg-sg3-runtime-conformance-${{ github.workflow }}-${{ github.ref }}
+  group: tg-sg3-runtime-conformance-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  CANDIDATE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+  CANDIDATE_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   conformance-contract:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - name: Checkout exact candidate
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Fetch exact candidate without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
+            "refs/heads/${CANDIDATE_REF}"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
       - name: Execute comparison and malicious-evidence tests
         run: bash scripts/runtime/check-conformance.sh
       - name: Prove no engine or Runtime gate is selected
         run: |
+          set -euo pipefail
           python3 - <<'PY'
           import json
           policy=json.load(open('config/runtime-engine-conformance-policy.json'))
@@ -40,3 +57,5 @@ jobs:
           assert policy['self_approval_allowed'] is False
           assert policy['attempts_per_lane'] == 10
           PY
+          printf 'repository=%s\nhead_sha=%s\nrun_id=%s\n' \
+            "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" "$GITHUB_RUN_ID"
