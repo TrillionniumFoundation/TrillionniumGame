@@ -1,11 +1,8 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use trnm_contracts::{DomainError, RetryClass, StableCode};
-use trnm_persistence_pg::{
-    CommitOutcome, CommitRequest, EntityHead, EntityId, PgRepository,
-};
-use trnm_contracts::Digest32;
+use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode};
+use trnm_persistence_pg::{CommitOutcome, CommitRequest, EntityHead, EntityId, PgRepository};
 
 use super::app::Repository;
 
@@ -85,6 +82,9 @@ pub fn execute<T>(
     let mut attempt = 0_u8;
     let mut backoff = policy.initial_backoff;
     loop {
+        if attempt > 0 && started.elapsed() >= policy.total_budget {
+            return Err(retry_budget_exhausted());
+        }
         attempt = attempt.saturating_add(1);
         match operation() {
             Ok(value) => return Ok(value),
@@ -93,11 +93,7 @@ pub fn execute<T>(
                     return Err(error);
                 }
                 if attempt >= policy.max_attempts || started.elapsed() >= policy.total_budget {
-                    return Err(DomainError::new(
-                        StableCode::Unavailable,
-                        "database_retry_budget_exhausted",
-                        RetryClass::SafeBackoff,
-                    ));
+                    return Err(retry_budget_exhausted());
                 }
                 if error.retry() == RetryClass::SafeBackoff {
                     let remaining = policy.total_budget.saturating_sub(started.elapsed());
@@ -110,6 +106,14 @@ pub fn execute<T>(
             }
         }
     }
+}
+
+const fn retry_budget_exhausted() -> DomainError {
+    DomainError::new(
+        StableCode::Unavailable,
+        "database_retry_budget_exhausted",
+        RetryClass::SafeBackoff,
+    )
 }
 
 #[cfg(test)]
@@ -171,6 +175,27 @@ mod tests {
         assert_eq!(returned.code(), StableCode::Unavailable);
         assert_eq!(returned.reason(), "database_retry_budget_exhausted");
         assert_eq!(returned.retry(), RetryClass::SafeBackoff);
+    }
+
+    #[test]
+    fn elapsed_budget_prevents_an_additional_attempt() {
+        let mut calls = 0;
+        let returned = execute(
+            RetryPolicy {
+                max_attempts: 3,
+                total_budget: Duration::from_millis(1),
+                initial_backoff: Duration::ZERO,
+                maximum_backoff: Duration::ZERO,
+            },
+            || {
+                calls += 1;
+                thread::sleep(Duration::from_millis(2));
+                Err::<(), _>(error(RetryClass::SafeImmediate))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(returned.reason(), "database_retry_budget_exhausted");
     }
 
     #[test]
