@@ -317,7 +317,10 @@ def validate_inventory(
             require(bool(evidence_ids), f"{component_id}: claim credit requires evidence")
             require(evidence_ids <= accepted, f"{component_id}: claim credit evidence not accepted")
     server = components["COMP-TRNM-SERVER"]
-    require(server.get("status") == "source-candidate", "server inventory stage")
+    require(
+        server.get("status") == "http-websocket-source-candidate",
+        "server inventory stage",
+    )
     require(server.get("claim_credit") is False, "server inventory must not claim credit")
     require(
         (ROOT / "crates/trnm-persistence-pg/src/bin/trnm-server.rs").is_file(),
@@ -332,7 +335,7 @@ def validate_server_status(gaps: dict[str, dict[str, Any]]) -> None:
     document = load_json("docs/status/TRNM_SERVER_STATUS.json")
     require(document.get("schema") == "trillionnium.trnm-server-status.v1", "server status schema")
     require(
-        document.get("stage") == "http-database-vertical-source-candidate",
+        document.get("stage") == "http-websocket-database-vertical-source-candidate",
         "server status stage",
     )
     for path in document.get("source_paths", []):
@@ -350,7 +353,8 @@ def validate_server_status(gaps: dict[str, dict[str, Any]]) -> None:
         "live_database_verified",
         "http_wire_compatible",
         "grpc_implemented",
-        "websocket_implemented",
+        "websocket_wire_compatible",
+        "websocket_protobuf_implemented",
         "session_integrated",
         "outbox_delivery_verified",
         "sg4_complete",

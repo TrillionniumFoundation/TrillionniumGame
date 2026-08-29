@@ -109,11 +109,7 @@ impl<'a> Parser<'a> {
         Ok(Object { values })
     }
 
-    fn parse_string(
-        &mut self,
-        maximum: usize,
-        key: bool,
-    ) -> Result<String, InputError> {
+    fn parse_string(&mut self, maximum: usize, key: bool) -> Result<String, InputError> {
         self.expect(b'\"')?;
         let start = self.position;
         loop {
@@ -193,7 +189,9 @@ mod tests {
     #[test]
     fn strict_object_parses_strings_and_unsigned_values() {
         let object = Object::parse(br#"{"entity_id":"01","revision":7}"#).unwrap();
-        object.require_exact_keys(&["entity_id", "revision"]).unwrap();
+        object
+            .require_exact_keys(&["entity_id", "revision"])
+            .unwrap();
         assert_eq!(object.string("entity_id").unwrap(), "01");
         assert_eq!(object.unsigned("revision").unwrap(), 7);
     }
@@ -217,6 +215,9 @@ mod tests {
             object.require_exact_keys(&["a"]).unwrap_err().reason(),
             "json_field_set_mismatch"
         );
-        assert_eq!(object.string("missing").unwrap_err().reason(), "json_field_missing");
+        assert_eq!(
+            object.string("missing").unwrap_err().reason(),
+            "json_field_missing"
+        );
     }
 }

@@ -68,7 +68,9 @@ fn migration_for(profile: DatabaseProfile) -> &'static str {
 fn verify_required_tables(client: &mut Client) -> Result<(), ServerError> {
     for table in REQUIRED_TABLES {
         if !table_exists(client, table)? {
-            return Err(ServerError::Configuration("authoritative_schema_table_missing"));
+            return Err(ServerError::Configuration(
+                "authoritative_schema_table_missing",
+            ));
         }
     }
     Ok(())
@@ -100,7 +102,10 @@ mod tests {
         for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
             let migration = migration_for(profile);
             for table in REQUIRED_TABLES {
-                assert!(migration.contains(&format!("CREATE TABLE {table}")), "{profile:?}:{table}");
+                assert!(
+                    migration.contains(&format!("CREATE TABLE {table}")),
+                    "{profile:?}:{table}"
+                );
             }
             assert!(migration.contains("BEGIN;"));
             assert!(migration.contains("COMMIT;"));

@@ -25,12 +25,9 @@ pub fn serve(config: &ServerConfig, repository: PgRepository) -> Result<(), Serv
         configure_connection(&stream, config)?;
         match read_request(&mut stream, config.max_request_bytes) {
             Ok(request) if websocket::is_route(&request) => {
-                if let Err(error) = websocket::serve_once(
-                    &mut stream,
-                    &request,
-                    &mut app,
-                    config.max_request_bytes,
-                ) {
+                if let Err(error) =
+                    websocket::serve_once(&mut stream, &request, &mut app, config.max_request_bytes)
+                {
                     // WebSocket delivery can fail after the shared application
                     // path has durably committed. The stable command receipt is
                     // the retry fence; never repeat an external effect here.
@@ -79,8 +76,7 @@ fn configure_connection(stream: &TcpStream, config: &ServerConfig) -> Result<(),
 fn bad_request() -> Response {
     Response::json(
         400,
-        br#"{"code":"invalid_argument","message":"Request is invalid.","retry":"never"}"#
-            .to_vec(),
+        br#"{"code":"invalid_argument","message":"Request is invalid.","retry":"never"}"#.to_vec(),
     )
 }
 

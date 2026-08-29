@@ -120,16 +120,12 @@ impl ServerConfig {
             "TRNM_SERVER_SCHEMA_SOURCE_COMMIT",
             "schema_source_commit_missing",
         )?;
-        if schema_source_commit.len() != 40
-            || !schema_source_commit.bytes().all(is_lower_hex)
-        {
+        if schema_source_commit.len() != 40 || !schema_source_commit.bytes().all(is_lower_hex) {
             return Err(ServerError::Configuration("schema_source_commit_invalid"));
         }
 
         let admin_token = required(&lookup, "TRNM_SERVER_ADMIN_TOKEN", "admin_token_missing")?;
-        if !(32..=512).contains(&admin_token.len())
-            || !admin_token.bytes().all(is_token_byte)
-        {
+        if !(32..=512).contains(&admin_token.len()) || !admin_token.bytes().all(is_token_byte) {
             return Err(ServerError::Configuration("admin_token_invalid"));
         }
 
@@ -324,9 +320,7 @@ mod tests {
         );
         assert!(matches!(
             load(&values),
-            Err(ServerError::Configuration(
-                "schema_source_commit_invalid"
-            ))
+            Err(ServerError::Configuration("schema_source_commit_invalid"))
         ));
     }
 }

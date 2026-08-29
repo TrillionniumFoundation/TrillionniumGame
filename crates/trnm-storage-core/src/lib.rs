@@ -15,9 +15,9 @@ const HEX: &[u8; 16] = b"0123456789abcdef";
 // reproduce the pinned Nakama public storage-version contract. It is not used
 // as an authentication, signature, password or internal integrity primitive.
 const MD5_SHIFTS: [u32; 64] = [
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20,
-    5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9,
+    14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15,
+    21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
 ];
 const MD5_CONSTANTS: [u32; 64] = [
     0xd76a_a478,
@@ -523,10 +523,7 @@ fn md5_digest(input: &[u8]) -> [u8; 16] {
         }
 
         let [mut a, mut b, mut c, mut d] = state;
-        for (index, (&shift, &constant)) in MD5_SHIFTS
-            .iter()
-            .zip(MD5_CONSTANTS.iter())
-            .enumerate()
+        for (index, (&shift, &constant)) in MD5_SHIFTS.iter().zip(MD5_CONSTANTS.iter()).enumerate()
         {
             let (function, word_index) = match index {
                 0..=15 => ((b & c) | ((!b) & d), index),

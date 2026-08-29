@@ -89,7 +89,10 @@ pub fn execute<T>(
         match operation() {
             Ok(value) => return Ok(value),
             Err(error) => {
-                if !matches!(error.retry(), RetryClass::SafeImmediate | RetryClass::SafeBackoff) {
+                if !matches!(
+                    error.retry(),
+                    RetryClass::SafeImmediate | RetryClass::SafeBackoff
+                ) {
                     return Err(error);
                 }
                 if attempt >= policy.max_attempts || started.elapsed() >= policy.total_budget {

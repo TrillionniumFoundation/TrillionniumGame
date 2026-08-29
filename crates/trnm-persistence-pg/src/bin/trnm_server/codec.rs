@@ -2,8 +2,15 @@ use super::error::InputError;
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
-pub fn decode_hex<const N: usize>(value: &str, reason: &'static str) -> Result<[u8; N], InputError> {
-    if value.len() != N * 2 || !value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
+pub fn decode_hex<const N: usize>(
+    value: &str,
+    reason: &'static str,
+) -> Result<[u8; N], InputError> {
+    if value.len() != N * 2
+        || !value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
         return Err(InputError::new(reason));
     }
     let mut output = [0_u8; N];
@@ -45,7 +52,10 @@ mod tests {
     #[test]
     fn noncanonical_or_wrong_width_hex_is_rejected() {
         for value in ["", "0001ABFF", "0001abf", "0001abfg"] {
-            assert_eq!(decode_hex::<4>(value, "invalid_hex").unwrap_err().reason(), "invalid_hex");
+            assert_eq!(
+                decode_hex::<4>(value, "invalid_hex").unwrap_err().reason(),
+                "invalid_hex"
+            );
         }
     }
 }

@@ -123,8 +123,8 @@ pub fn parse_request_bytes(input: &[u8], maximum: usize) -> Result<Request, Inpu
     if input.len() > maximum {
         return Err(InputError::new("http_request_too_large"));
     }
-    let header_end = find_header_end(input)
-        .ok_or_else(|| InputError::new("http_request_incomplete"))?;
+    let header_end =
+        find_header_end(input).ok_or_else(|| InputError::new("http_request_incomplete"))?;
     if header_end + HEADER_TERMINATOR.len() > MAX_HEADER_BYTES {
         return Err(InputError::new("http_headers_too_large"));
     }
@@ -171,11 +171,7 @@ fn parse_head(
     let version = parts
         .next()
         .ok_or_else(|| InputError::new("http_request_line_invalid"))?;
-    if parts.next().is_some()
-        || method.is_empty()
-        || target.is_empty()
-        || version != "HTTP/1.1"
-    {
+    if parts.next().is_some() || method.is_empty() || target.is_empty() || version != "HTTP/1.1" {
         return Err(InputError::new("http_request_line_invalid"));
     }
     if !method.bytes().all(|byte| byte.is_ascii_uppercase())
@@ -292,7 +288,8 @@ mod tests {
     fn duplicate_chunked_pipelined_and_noncanonical_lengths_fail_closed() {
         let cases = [
             b"POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nx".as_slice(),
-            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n".as_slice(),
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n"
+                .as_slice(),
             b"POST / HTTP/1.1\r\nContent-Length: 01\r\n\r\nx".as_slice(),
             b"GET / HTTP/1.1\r\n\r\nGET /two HTTP/1.1\r\n\r\n".as_slice(),
         ];

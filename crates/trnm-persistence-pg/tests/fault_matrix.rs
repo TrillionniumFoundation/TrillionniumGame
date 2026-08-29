@@ -25,7 +25,9 @@ fn live_database_environment(label: &str) -> Option<(String, DatabaseProfile)> {
         Err(error) => panic!("cannot read TRNM_REQUIRE_LIVE_DATABASE: {error}"),
         Ok(value) if matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES") => true,
         Ok(value) if matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "NO") => false,
-        Ok(value) => panic!("invalid TRNM_REQUIRE_LIVE_DATABASE={value:?}; expected 0/1 or false/true"),
+        Ok(value) => {
+            panic!("invalid TRNM_REQUIRE_LIVE_DATABASE={value:?}; expected 0/1 or false/true")
+        }
     };
 
     let database_url = match env::var("TRNM_DATABASE_URL") {
@@ -45,8 +47,9 @@ fn live_database_environment(label: &str) -> Option<(String, DatabaseProfile)> {
         Err(error) => panic!("{label}: cannot read TRNM_DATABASE_URL: {error}"),
     };
 
-    let profile_value = env::var("TRNM_DATABASE_PROFILE")
-        .unwrap_or_else(|_| panic!("{label}: TRNM_DATABASE_PROFILE is required with TRNM_DATABASE_URL"));
+    let profile_value = env::var("TRNM_DATABASE_PROFILE").unwrap_or_else(|_| {
+        panic!("{label}: TRNM_DATABASE_PROFILE is required with TRNM_DATABASE_URL")
+    });
     Some((database_url, profile(&profile_value)))
 }
 
@@ -112,7 +115,8 @@ fn bootstrap(repository: &mut PgRepository, request: &CommitRequest, state_seed:
 
 #[test]
 fn constraint_failures_roll_back_every_prior_write() {
-    let Some((database_url, profile)) = live_database_environment("transaction fault matrix") else {
+    let Some((database_url, profile)) = live_database_environment("transaction fault matrix")
+    else {
         return;
     };
 

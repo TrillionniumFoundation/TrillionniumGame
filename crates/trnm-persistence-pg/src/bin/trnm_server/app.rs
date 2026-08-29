@@ -91,7 +91,12 @@ impl<R: Repository> App<R> {
             (_, path) if known_path(path) => {
                 error_response(405, "unimplemented", "Method is not allowed.", "never")
             }
-            _ => error_response(404, "not_found", "Requested resource was not found.", "never"),
+            _ => error_response(
+                404,
+                "not_found",
+                "Requested resource was not found.",
+                "never",
+            ),
         };
         if response.status < 400 {
             Metrics::increment(&mut self.metrics.successes);
@@ -276,7 +281,10 @@ fn parse_bootstrap(input: &[u8]) -> Result<(EntityId, u64, Digest32, u64), Input
         "updated_at_ms",
     ])?;
     Ok((
-        EntityId::new(decode_hex::<16>(object.string("entity_id")?, "entity_id_invalid")?),
+        EntityId::new(decode_hex::<16>(
+            object.string("entity_id")?,
+            "entity_id_invalid",
+        )?),
         object.unsigned("authority_generation")?,
         Digest32::new(decode_hex::<32>(
             object.string("state_digest")?,
@@ -312,7 +320,10 @@ fn parse_commit(input: &[u8]) -> Result<CommitRequest, InputError> {
         _ => return Err(InputError::new("intent_kind_invalid")),
     };
     Ok(CommitRequest {
-        entity: EntityId::new(decode_hex::<16>(object.string("entity_id")?, "entity_id_invalid")?),
+        entity: EntityId::new(decode_hex::<16>(
+            object.string("entity_id")?,
+            "entity_id_invalid",
+        )?),
         command: CommandId::new(decode_hex::<16>(
             object.string("command_id")?,
             "command_id_invalid",
@@ -502,7 +513,10 @@ mod tests {
             })
         }
 
-        fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError> {
+        fn commit_command(
+            &mut self,
+            request: &CommitRequest,
+        ) -> Result<CommitOutcome, DomainError> {
             if let Some(error) = self.failure {
                 return Err(error);
             }
@@ -558,8 +572,13 @@ mod tests {
         let token = token();
         let mut app = App::new(FakeRepository::default(), token.clone());
         assert_eq!(
-            app.handle(&Request::new("GET", "/healthz", BTreeMap::new(), Vec::new()))
-                .status,
+            app.handle(&Request::new(
+                "GET",
+                "/healthz",
+                BTreeMap::new(),
+                Vec::new()
+            ))
+            .status,
             200
         );
         assert_eq!(
@@ -621,16 +640,9 @@ mod tests {
         ));
         assert_eq!(unauthorized.status, 401);
 
-        let drain_headers = BTreeMap::from([(
-            "authorization".to_owned(),
-            format!("Bearer {token}"),
-        )]);
-        let response = app.handle(&Request::new(
-            "POST",
-            "/-/drain",
-            drain_headers,
-            Vec::new(),
-        ));
+        let drain_headers =
+            BTreeMap::from([("authorization".to_owned(), format!("Bearer {token}"))]);
+        let response = app.handle(&Request::new("POST", "/-/drain", drain_headers, Vec::new()));
         assert_eq!(response.status, 200);
         assert!(app.should_stop());
         assert_eq!(
@@ -652,10 +664,7 @@ mod tests {
         let wrong_media = app.handle(&Request::new(
             "POST",
             "/v1/authority/commit",
-            BTreeMap::from([(
-                "authorization".to_owned(),
-                format!("Bearer {token}"),
-            )]),
+            BTreeMap::from([("authorization".to_owned(), format!("Bearer {token}"))]),
             commit_body(),
         ));
         assert_eq!(wrong_media.status, 415);

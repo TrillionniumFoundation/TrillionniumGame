@@ -45,10 +45,7 @@ pub fn serve_once<R: Repository>(
             return Ok(());
         }
     };
-    let mut headers = BTreeMap::from([(
-        "content-type".to_owned(),
-        "application/json".to_owned(),
-    )]);
+    let mut headers = BTreeMap::from([("content-type".to_owned(), "application/json".to_owned())]);
     if let Some(authorization) = handshake.authorization {
         headers.insert("authorization".to_owned(), authorization);
     }
@@ -160,8 +157,8 @@ fn read_client_text_frame(
         }
         _ => unreachable!("seven-bit marker is exhausted"),
     };
-    let length = usize::try_from(length)
-        .map_err(|_| InputError::new("websocket_payload_too_large"))?;
+    let length =
+        usize::try_from(length).map_err(|_| InputError::new("websocket_payload_too_large"))?;
     if length == 0 || length > maximum_payload {
         return Err(InputError::new("websocket_payload_too_large"));
     }
@@ -246,11 +243,9 @@ fn sha1(input: &[u8]) -> [u8; 20] {
             );
         }
         for index in 16..80 {
-            words[index] = (words[index - 3]
-                ^ words[index - 8]
-                ^ words[index - 14]
-                ^ words[index - 16])
-                .rotate_left(1);
+            words[index] =
+                (words[index - 3] ^ words[index - 8] ^ words[index - 14] ^ words[index - 16])
+                    .rotate_left(1);
         }
 
         let [mut a, mut b, mut c, mut d, mut e] = state;
@@ -288,8 +283,7 @@ fn sha1(input: &[u8]) -> [u8; 20] {
 }
 
 fn encode_base64(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let first = chunk[0];
@@ -421,11 +415,7 @@ mod tests {
         for candidate in [
             request("invalid", JSON_SUBPROTOCOL, "13"),
             request("dGhlIHNhbXBsZSBub25jZQ==", "other", "13"),
-            request(
-                "dGhlIHNhbXBsZSBub25jZQ==",
-                JSON_SUBPROTOCOL,
-                "12",
-            ),
+            request("dGhlIHNhbXBsZSBub25jZQ==", JSON_SUBPROTOCOL, "12"),
         ] {
             assert!(validate_handshake(&candidate).is_err());
         }
@@ -460,10 +450,7 @@ mod tests {
 
     #[test]
     fn sha1_and_base64_helpers_match_known_vectors() {
-        assert_eq!(
-            encode_base64(&sha1(b"abc")),
-            "qZk+NkcGgWq6PiVxeFDCbJzQ2J0="
-        );
+        assert_eq!(encode_base64(&sha1(b"abc")), "qZk+NkcGgWq6PiVxeFDCbJzQ2J0=");
         assert_eq!(
             decode_base64("dGhlIHNhbXBsZSBub25jZQ==").unwrap(),
             b"the sample nonce"

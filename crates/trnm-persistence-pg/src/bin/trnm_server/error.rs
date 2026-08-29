@@ -43,7 +43,11 @@ impl fmt::Display for ServerError {
             Self::Input(error) => write!(formatter, "invalid input: {error}"),
             Self::Domain(error) => write!(formatter, "domain failure: {}", error.code().as_str()),
             Self::Database(error) => match error.code() {
-                Some(code) => write!(formatter, "database operation failed (SQLSTATE {})", code.code()),
+                Some(code) => write!(
+                    formatter,
+                    "database operation failed (SQLSTATE {})",
+                    code.code()
+                ),
                 None => formatter.write_str("database transport operation failed"),
             },
             Self::Io(error) => write!(formatter, "I/O failure: {error}"),
