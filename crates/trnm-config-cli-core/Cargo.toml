@@ -1,0 +1,22 @@
+[package]
+name = "trnm-config-cli-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.1"
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+wildcard_imports = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[workspace]
