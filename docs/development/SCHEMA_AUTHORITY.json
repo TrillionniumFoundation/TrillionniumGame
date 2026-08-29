@@ -1,0 +1,96 @@
+{
+  "schema": "trillionnium.schema-authority.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "effective_date": "2026-08-29",
+  "authority": {
+    "migration_root": "migrations",
+    "profiles": [
+      {
+        "id": "postgresql",
+        "path": "migrations/postgresql",
+        "runtime_adapter": "crates/trnm-persistence-pg",
+        "status": "production-authority-candidate",
+        "evidence_required": ["fresh-apply", "catalog-introspection", "negative-constraints", "transaction-faults", "backup-restore", "pitr"]
+      },
+      {
+        "id": "cockroachdb",
+        "path": "migrations/cockroachdb",
+        "runtime_adapter": "crates/trnm-persistence-pg",
+        "status": "production-authority-candidate",
+        "evidence_required": ["fresh-apply", "catalog-introspection", "negative-constraints", "transaction-restarts", "leaseholder-failover", "backup-restore"]
+      }
+    ],
+    "metadata_table": "trnm_schema_metadata",
+    "schema_version": 1,
+    "identity_rule": "Every build, migration, adapter test, backup and restore artifact must record the complete ordered migration-chain SHA-256 and candidate commit/tree."
+  },
+  "non_authoritative": [
+    {
+      "path": "database/schema/v2",
+      "classification": "design-history",
+      "reason": "This family uses incompatible tenant, identifier, timestamp and table/column semantics and has not been adopted through an ADR and data migration.",
+      "allowed_consumers": ["human-design-review", "historical-differential-analysis"],
+      "forbidden_consumers": ["runtime", "migration-runner", "ci-live-database", "backup", "restore", "release", "production-deployment"],
+      "compatibility_credit": false
+    }
+  ],
+  "adapter_abi": {
+    "crate": "crates/trnm-persistence-pg",
+    "required_tables": [
+      "trnm_schema_metadata",
+      "trnm_entity_heads",
+      "trnm_command_receipts",
+      "trnm_events",
+      "trnm_outbox",
+      "trnm_command_outbox",
+      "trnm_authority_leases",
+      "trnm_session_families",
+      "trnm_refresh_tokens",
+      "trnm_storage_objects"
+    ],
+    "required_semantics": [
+      "entity revision compare-and-swap",
+      "authority generation fencing",
+      "command fingerprint idempotency",
+      "contiguous event sequence",
+      "command/event/outbox atomicity",
+      "outbox position ordering",
+      "lease-generation fencing",
+      "exact duplicate receipt replay",
+      "changed receipt digest is data loss"
+    ],
+    "forbidden_implicit_behavior": [
+      "database generated random identifiers",
+      "database clock as public contract time",
+      "cascade delete of durable business history",
+      "shared conclusion for PostgreSQL and CockroachDB"
+    ]
+  },
+  "change_control": {
+    "required_for_semantic_change": [
+      "ADR",
+      "expand-contract plan",
+      "forward-fix and rollback barrier",
+      "both profile DDL and adapter update",
+      "catalog and data-semantic differential",
+      "backup/restore impact",
+      "evidence and status update",
+      "independent database review"
+    ],
+    "drop_based_production_rollback_allowed": false,
+    "down_migration_required_only_when_truly_reversible": true,
+    "schema_design_may_supersede_authority_without_adr": false
+  },
+  "gap": "GAP-P0-DATA-001",
+  "claim_boundary": {
+    "single_node_foundation_evidence_exists": true,
+    "database_durable": false,
+    "migration_compatible": false,
+    "rollback_proven": false,
+    "pitr_proven": false,
+    "ha_proven": false,
+    "sg4_complete": false,
+    "production_ready": false
+  }
+}
