@@ -1,7 +1,10 @@
 services:
   tls-init:
     build:
-      context: ../../runtime
+      # Compose resolves relative paths against the first -f file. The base
+      # compose file is repository-root/compose.yaml, so this must be rooted
+      # at that directory rather than at this overlay's directory.
+      context: ./runtime
       dockerfile: Dockerfile.faultlab
       args:
         TRNM_FAULTLAB_BINARY: trnm-tls-fixture
@@ -23,7 +26,7 @@ services:
   world-fixture:
     image: ${TRNM_WORLD_FIXTURE_IMAGE:-trnm-world-transition-fixture:local}
     build:
-      context: ../../runtime
+      context: ./runtime
       dockerfile: Dockerfile.faultlab
       args:
         TRNM_FAULTLAB_BINARY: trnm-world-transition-fixture
@@ -54,7 +57,7 @@ services:
 
   response-drop-proxy:
     build:
-      context: ../../runtime
+      context: ./runtime
       dockerfile: Dockerfile.faultlab
       args:
         TRNM_FAULTLAB_BINARY: trnm-response-drop-proxy
