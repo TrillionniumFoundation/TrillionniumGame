@@ -77,3 +77,22 @@ impl From<io::Error> for ServerError {
         Self::Io(value)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use trnm_contracts::{RetryClass, StableCode};
+
+    use super::*;
+
+    #[test]
+    fn process_error_display_redacts_private_domain_reason() {
+        let error = ServerError::Domain(DomainError::new(
+            StableCode::Internal,
+            "private_database_detail",
+            RetryClass::Never,
+        ));
+        let display = error.to_string();
+        assert_eq!(display, "domain failure: internal");
+        assert!(!display.contains("private_database_detail"));
+    }
+}
