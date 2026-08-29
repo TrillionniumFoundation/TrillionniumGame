@@ -1,0 +1,45 @@
+name: pull-request-contract
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review, converted_to_draft]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pull-request-contract-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  exact-pr-body:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact PR candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Materialize untrusted PR body as data
+        run: |
+          set -euo pipefail
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > pull-request-body.md
+          jq -r '.pull_request.draft' "$GITHUB_EVENT_PATH" > pull-request-draft.txt
+      - name: Validate exact identity and claim boundary
+        run: |
+          set -euo pipefail
+          tree=$(git show -s --format=%T "$GITHUB_SHA")
+          python3 scripts/check-pull-request-contract.py \
+            --body-file pull-request-body.md \
+            --head "$GITHUB_SHA" \
+            --tree "$tree" \
+            --draft "$(cat pull-request-draft.txt)" \
+            | tee pull-request-contract.json
+          jq -e '
+            .claims.compatibility_credit == false and
+            .claims.production_ready == false and
+            (
+              (.draft == true and .claims.merge_ready == false) or
+              (.draft == false and .claims.merge_ready == true)
+            )
+          ' pull-request-contract.json >/dev/null
