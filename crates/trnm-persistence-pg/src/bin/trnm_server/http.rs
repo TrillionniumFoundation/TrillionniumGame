@@ -19,6 +19,24 @@ pub struct Request {
 
 impl Request {
     #[must_use]
+    pub fn new(
+        method: impl Into<String>,
+        target: impl Into<String>,
+        headers: BTreeMap<String, String>,
+        body: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            method: method.into(),
+            target: target.into(),
+            headers: headers
+                .into_iter()
+                .map(|(name, value)| (name.to_ascii_lowercase(), value))
+                .collect(),
+            body: body.into(),
+        }
+    }
+
+    #[must_use]
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(name).map(String::as_str)
     }
@@ -122,12 +140,12 @@ pub fn parse_request_bytes(input: &[u8], maximum: usize) -> Result<Request, Inpu
             "http_pipelining_not_supported"
         }));
     }
-    Ok(Request {
+    Ok(Request::new(
         method,
         target,
         headers,
-        body: input[body_start..].to_vec(),
-    })
+        input[body_start..].to_vec(),
+    ))
 }
 
 fn content_length_from_head(input: &[u8]) -> Result<usize, InputError> {
@@ -232,6 +250,7 @@ const fn reason_phrase(status: u16) -> &'static str {
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
+        405 => "Method Not Allowed",
         409 => "Conflict",
         412 => "Precondition Failed",
         413 => "Content Too Large",
