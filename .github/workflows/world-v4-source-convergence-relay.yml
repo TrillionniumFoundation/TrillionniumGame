@@ -11,9 +11,39 @@ permissions:
   contents: read
 
 jobs:
-  startup-smoke:
+  exact-world-checkout:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Confirm trusted base workflow starts
-        run: echo world-v4-relay-started
+      - name: Require cross-repository write credential
+        env:
+          WORLD_TOKEN: ${{ secrets.WORLD_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$WORLD_TOKEN" || {
+            echo 'WORLD_REPO_TOKEN is unavailable to this isolated relay' >&2
+            exit 1
+          }
+
+      - name: Checkout exact World package branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: TrillionniumFoundation/Trillionnium-World
+          ref: fix/world-plan-v4-convergence-2026-08-30
+          path: world
+          fetch-depth: 0
+          token: ${{ secrets.WORLD_REPO_TOKEN }}
+          persist-credentials: true
+
+      - name: Revalidate immutable World identity and source inputs
+        working-directory: world
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '2e6858d4556b2eee628bb7270337f66fc9529dd8'
+          test "$(git rev-parse 'HEAD^{tree}')" = '3040d7c35fda6e325d91085d46248b01e85e8138'
+          test -z "$(git status --porcelain)"
+          bash scripts/project-preflight.sh --audit
+          crate='trillionnium/crates/trnm-game-server'
+          test "$(git hash-object "$crate/src/lib.rs.in")" = '8882f47db55ca5993329594901c828c6faf325a8'
+          test "$(git hash-object "$crate/build.rs")" = 'abc8d4228123e13a3dc5e3e154467a7d2b67e2ee'
+          test "$(git hash-object "$crate/Cargo.toml")" = 'd27f7eb6a06bc3b8ceb13e31edacc72d3f58262f'
