@@ -395,7 +395,7 @@ mod tests {
     fn server_frames_are_unmasked_and_minimally_encoded() {
         let encoded = encode_server_frame(Opcode::Text, b"ok").unwrap();
         assert_eq!(encoded, [0x81, 0x02, b'o', b'k']);
-        let encoded = encode_server_frame(Opcode::Binary, &vec![7; 126]).unwrap();
+        let encoded = encode_server_frame(Opcode::Binary, &[7; 126]).unwrap();
         assert_eq!(&encoded[..4], &[0x82, 126, 0, 126]);
         assert_eq!(encoded.len(), 130);
     }
