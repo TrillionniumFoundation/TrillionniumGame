@@ -47,6 +47,8 @@ jobs:
         run: python3 scripts/check-plan.py
       - name: Validate repository-native workflow action policy
         run: python3 scripts/check-workflow-action-policy.py
+      - name: Reject tracked build, runtime and secret-like outputs
+        run: python3 scripts/check-repository-hygiene.py
       - name: Validate complete Rust package and target inventory
         run: python3 scripts/check-rust-package-inventory.py
       - name: Validate Rust server source contract
@@ -59,6 +61,7 @@ jobs:
             scripts/derive-gates.py \
             scripts/check-schema-authority.py \
             scripts/check-workflow-action-policy.py \
+            scripts/check-repository-hygiene.py \
             scripts/check-rust-package-inventory.py \
             scripts/check-trnm-server.py
 
