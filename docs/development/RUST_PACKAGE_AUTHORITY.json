@@ -44,6 +44,11 @@
       "manifest": "crates/trnm-presence-router-v2/Cargo.toml",
       "classification": "realtime-integration-candidate",
       "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-server/Cargo.toml",
+      "classification": "server-foundation-prototype",
+      "aggregate_gate_required": true
     }
   ],
   "allowed_duplicate_package_names": {
@@ -57,7 +62,7 @@
     "manifest": "crates/trnm-persistence-pg/Cargo.toml",
     "source": "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
     "status": "temporary-composition-authority-source-candidate",
-    "reason": "The current vertical slice shares the exact persistence adapter and authoritative migration ABI. A later package extraction must be atomic and independently reviewed.",
+    "reason": "The current database-backed vertical slice shares the exact persistence adapter and authoritative migration ABI. A later package extraction must be atomic and independently reviewed.",
     "replacement_contract": [
       "one change introduces the replacement package and moves all source/tests/status references",
       "the old binary target is removed in the same accepted change",
@@ -65,6 +70,15 @@
       "workspace, lockfile, merge gate and evidence identity are updated together",
       "exact-head build/test/Clippy and database evidence pass before the new target becomes authority"
     ]
+  },
+  "foundation_prototype": {
+    "name": "trnm-server-foundation",
+    "manifest": "crates/trnm-server/Cargo.toml",
+    "source": "crates/trnm-server/src/main.rs",
+    "status": "standalone-source-candidate",
+    "relationship": "This prototype exercises process/config/transport boundaries but is not the canonical trnm-server binary while the temporary database-backed composition authority exists.",
+    "compatibility_credit": false,
+    "production_credit": false
   },
   "policy": {
     "all_first_party_rust_packages_live_under_crates": true,
