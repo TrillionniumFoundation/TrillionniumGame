@@ -340,7 +340,7 @@ mod tests {
             (
                 vec![0xaa; 20],
                 vec![0xdd; 50],
-                "773ea91e36800e46854db8ebd09181a729590c27cd230e3fe725bfcae9c493e",
+                "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe",
             ),
         ];
         for (key, message, expected) in vectors {
