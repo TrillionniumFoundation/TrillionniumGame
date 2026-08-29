@@ -18,14 +18,26 @@ source_tree=$(git rev-parse HEAD^{tree})
 rm -rf "$run_root"
 mkdir -p "$run_root"
 
+capture_postgres_diagnostics() {
+  docker inspect "$container" >"$run_root/container-inspect.json" 2>&1 || true
+  docker logs "$container" >"$run_root/postgres.log" 2>&1 || true
+}
+
 cleanup() {
+  status=$?
+  if [[ $status -ne 0 ]]; then
+    capture_postgres_diagnostics
+    [[ -f "$run_root/migration.log" ]] && cat "$run_root/migration.log" >&2 || true
+    [[ -f "$run_root/postgres.log" ]] && tail -n 200 "$run_root/postgres.log" >&2 || true
+  fi
   if [[ -n "${server_pid:-}" ]] && kill -0 "$server_pid" 2>/dev/null; then
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
   fi
   docker rm -f "$container" >/dev/null 2>&1 || true
+  exit "$status"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 docker run --rm -d \
   --name "$container" \
@@ -43,14 +55,43 @@ docker run --rm -d \
   "$image" >"$run_root/container-id.txt"
 
 docker image inspect "$image" >"$run_root/image-inspect.json"
-for _ in $(seq 1 120); do
-  docker exec "$container" pg_isready -U postgres -d "$database" >/dev/null 2>&1 && break
+
+# The Docker image exposes a temporary postmaster during initialization.
+# Require the final PID-1 postgres process and two consecutive SQL probes so a
+# successful readiness probe cannot be followed by the init-time shutdown.
+stable_probes=0
+: >"$run_root/pg-probe.log"
+for _ in $(seq 1 200); do
+  if docker exec "$container" sh -ec 'test "$(cat /proc/1/comm)" = postgres' \
+      >/dev/null 2>&1 \
+    && docker exec "$container" psql -X -U postgres -d "$database" -Atqc 'SELECT 1' \
+      >"$run_root/pg-probe.txt" 2>>"$run_root/pg-probe.log" \
+    && grep -qx '1' "$run_root/pg-probe.txt"; then
+    stable_probes=$((stable_probes + 1))
+    if [[ $stable_probes -ge 2 ]]; then
+      break
+    fi
+  else
+    stable_probes=0
+  fi
   sleep 0.25
 done
-docker exec "$container" pg_isready -U postgres -d "$database" >"$run_root/pg-isready.txt"
-docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d "$database" \
+if [[ $stable_probes -lt 2 ]]; then
+  echo 'final PostgreSQL postmaster did not become stably queryable' >&2
+  exit 1
+fi
+docker exec "$container" pg_isready -U postgres -d "$database" \
+  >"$run_root/pg-isready.txt"
+if ! docker exec -i "$container" psql \
+  -X \
+  -v ON_ERROR_STOP=1 \
+  -U postgres \
+  -d "$database" \
   < migrations/postgresql/0001_foundation_up.sql \
-  >"$run_root/migration.log" 2>&1
+  >"$run_root/migration.log" 2>&1; then
+  echo 'authoritative PostgreSQL migration failed' >&2
+  exit 1
+fi
 
 cargo build --workspace --all-targets --locked >"$run_root/build.log" 2>&1
 binary=target/debug/examples/trnm_server_pg_slice
@@ -71,9 +112,14 @@ start_server() {
   server_pid=$!
   for _ in $(seq 1 100); do
     grep -q 'listening=' "$run_root/${label}.stdout" && return 0
-    kill -0 "$server_pid" 2>/dev/null || return 1
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+      cat "$run_root/${label}.stdout" >&2 || true
+      cat "$run_root/${label}.stderr" >&2 || true
+      return 1
+    fi
     sleep 0.05
   done
+  echo "server did not become ready" >&2
   return 1
 }
 
@@ -108,7 +154,7 @@ unset server_pid
 printf '%s\n' "$lost_process_rc" >"$run_root/lost-process-rc.txt"
 
 query() {
-  docker exec "$container" psql -At -U postgres -d "$database" -c "$1"
+  docker exec "$container" psql -X -At -U postgres -d "$database" -c "$1"
 }
 for _ in $(seq 1 100); do
   [[ $(query 'SELECT count(*) FROM trnm_command_receipts;') == 1 ]] && break
@@ -188,8 +234,9 @@ cat >"$run_root/result.json" <<JSON
 }
 JSON
 
+capture_postgres_diagnostics
 find "$run_root" -type f ! -name SHA256SUMS -print0 \
   | sort -z | xargs -0 sha256sum >"$run_root/SHA256SUMS"
 
-trap - EXIT
+trap - EXIT INT TERM
 cleanup
