@@ -17,17 +17,30 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
 
+env:
+  CANDIDATE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   structured-control:
     name: structured-control
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Checkout exact candidate
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          fetch-depth: 0
-          persist-credentials: false
+      - name: Fetch exact candidate without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CANDIDATE_REPOSITORY"
+          test -n "$CANDIDATE_SHA"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
+            "${CANDIDATE_SHA}"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
       - name: Validate current control plane
         run: |
           set -euo pipefail
@@ -57,9 +70,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
+      - name: Fetch exact candidate without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CANDIDATE_REPOSITORY"
+          test -n "$CANDIDATE_SHA"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
+            "${CANDIDATE_SHA}"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
       - name: Install exact Rust
         run: |
           rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
@@ -75,9 +99,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
+      - name: Fetch exact candidate without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CANDIDATE_REPOSITORY"
+          test -n "$CANDIDATE_SHA"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
+            "${CANDIDATE_SHA}"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
       - name: Install exact Rust
         run: |
           rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
@@ -91,9 +126,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
+      - name: Fetch exact candidate without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CANDIDATE_REPOSITORY"
+          test -n "$CANDIDATE_SHA"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
+            "${CANDIDATE_SHA}"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
       - name: Install exact Rust
         run: |
           rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
