@@ -19,6 +19,19 @@ The matching protocol/runtime definition baseline is:
   commit: 449b77ecc8789aa466c36b67f6e498033dfcd9c5
   tree: c6a7b9796b9c2a6b5118c74e5f213963a5001f14
 
+The query grammar compatibility work studies the Apache-2.0-licensed
+blugelabs/query_string project. The pinned grammar source identity is:
+
+  repository: https://github.com/blugelabs/query_string
+  tag: v0.3.0
+  commit: e2a05d85a1f2d8e34ce9b9863ce1f867c7d00288
+  tree: 2de5178bf27b6418eafd15cac74c910868f14b34
+
+TrillionniumGame's Rust parser is an independent implementation. Any copied or
+modified source from blugelabs/query_string must retain applicable copyright
+and Apache License, Version 2.0 notices and carry a prominent modification
+notice.
+
 Any future copied or modified upstream source or protocol file must retain its
 applicable copyright and license header, carry a prominent modification notice,
 and be registered in the repository's machine-readable source manifest.
@@ -26,4 +39,4 @@ and be registered in the repository's machine-readable source manifest.
 "Nakama", "Heroic Labs", and related names and marks are the property of their
 respective owners. The Apache License does not grant trademark rights. This
 project is not represented as endorsed by, sponsored by, or affiliated with
-Heroic Labs.
+Heroic Labs or BluGe Labs.
