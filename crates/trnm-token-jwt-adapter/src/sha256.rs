@@ -264,13 +264,15 @@ pub fn hmac_sha256(key: &[u8], message_parts: &[&[u8]]) -> [u8; 32] {
 }
 
 pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let length_difference = left.len() ^ right.len();
     let maximum = left.len().max(right.len());
-    let mut difference = length_difference as u8;
+    // Keep the complete length difference in usize. Truncating it to u8 would
+    // incorrectly erase differences that are multiples of 256 when all
+    // compared bytes are otherwise zero/equal.
+    let mut difference = left.len() ^ right.len();
     for index in 0..maximum {
         let left_byte = left.get(index).copied().unwrap_or(0);
         let right_byte = right.get(index).copied().unwrap_or(0);
-        difference |= left_byte ^ right_byte;
+        difference |= usize::from(left_byte ^ right_byte);
     }
     difference == 0
 }
@@ -364,5 +366,13 @@ mod tests {
         assert!(!constant_time_eq(b"same", b"samf"));
         assert!(!constant_time_eq(b"same", b"same-longer"));
         assert!(!constant_time_eq(b"", b"x"));
+
+        // Regression: the old implementation narrowed the XOR of the lengths
+        // to u8, so a 256-byte length delta with otherwise equal/zero bytes
+        // could compare as equal.
+        let short = vec![0u8; 32];
+        let long = vec![0u8; 288];
+        assert!(!constant_time_eq(&short, &long));
+        assert!(!constant_time_eq(&long, &short));
     }
 }
