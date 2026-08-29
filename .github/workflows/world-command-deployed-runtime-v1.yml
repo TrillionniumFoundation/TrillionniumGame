@@ -89,6 +89,7 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+          cd "$GITHUB_WORKSPACE"
           go version
           node --version
           docker version
@@ -164,6 +165,7 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+          cd "$GITHUB_WORKSPACE"
           go version
           docker version
       - name: Execute isolated PostgreSQL, Game and World HTTPS fault lab
