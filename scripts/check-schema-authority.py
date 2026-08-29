@@ -12,10 +12,15 @@ ROOT = Path(__file__).resolve().parents[1]
 AUTHORITY_PATH = ROOT / "docs/development/SCHEMA_AUTHORITY.json"
 QUARANTINE_STATUS_PATH = ROOT / "database/schema/v2/STATUS.json"
 FORBIDDEN_LITERAL = "database/schema/v2"
+HISTORICAL_DESIGN_TOOLS = {
+    Path("scripts/check-database-v2.py"),
+    Path("scripts/verify-database-profile-v2.py"),
+    Path("scripts/verify-command-transaction-v2.py"),
+}
 ALLOWED_CONTROL_REFERENCES = {
     Path("scripts/check-plan.py"),
     Path("scripts/check-schema-authority.py"),
-}
+} | HISTORICAL_DESIGN_TOOLS
 TEXT_SUFFIXES = {
     ".py",
     ".sh",
@@ -151,25 +156,32 @@ def validate_quarantine() -> None:
 
 
 def scan_forbidden_consumers() -> None:
-    violations: list[str] = []
+    literal_violations: list[str] = []
+    historical_tool_callers: list[str] = []
+    historical_names = {path.name for path in HISTORICAL_DESIGN_TOOLS}
     for consumer_root in CONSUMER_ROOTS:
         absolute = ROOT / consumer_root
         for path in files_under(absolute):
             relative = path.relative_to(ROOT)
-            if relative in ALLOWED_CONTROL_REFERENCES:
-                continue
             if path.suffix and path.suffix not in TEXT_SUFFIXES:
                 continue
             try:
                 text = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 continue
-            if FORBIDDEN_LITERAL in text:
-                violations.append(relative.as_posix())
+            if relative not in ALLOWED_CONTROL_REFERENCES and FORBIDDEN_LITERAL in text:
+                literal_violations.append(relative.as_posix())
+            if relative not in ALLOWED_CONTROL_REFERENCES and any(name in text for name in historical_names):
+                historical_tool_callers.append(relative.as_posix())
     require(
-        not violations,
+        not literal_violations,
         "non-authoritative schema referenced by production/CI consumers: "
-        + ", ".join(sorted(violations)),
+        + ", ".join(sorted(literal_violations)),
+    )
+    require(
+        not historical_tool_callers,
+        "historical alternate-schema verifier invoked by production/CI consumers: "
+        + ", ".join(sorted(historical_tool_callers)),
     )
 
 
