@@ -58,7 +58,7 @@ jobs:
           git -C "$GITHUB_WORKSPACE" remote add origin \
             "https://github.com/${CANDIDATE_REPOSITORY}.git"
           git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
-            "refs/heads/${CANDIDATE_REF}"
+            "${CANDIDATE_SHA}"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
