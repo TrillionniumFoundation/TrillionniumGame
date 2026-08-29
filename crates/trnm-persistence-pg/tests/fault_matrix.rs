@@ -53,12 +53,12 @@ fn assert_pristine(repository: &mut PgRepository, client: &mut Client, request: 
     let head = repository.load_head(request.entity).unwrap().unwrap();
     assert_eq!(head.revision, 0);
     assert_eq!(head.last_event_sequence, 0);
-    for table in [
-        "trnm_events",
-        "trnm_outbox",
-        "trnm_command_outbox",
-    ] {
-        assert_eq!(count_for_entity(client, table, request.entity), 0, "{table}");
+    for table in ["trnm_events", "trnm_outbox", "trnm_command_outbox"] {
+        assert_eq!(
+            count_for_entity(client, table, request.entity),
+            0,
+            "{table}"
+        );
     }
     let receipt_count: i64 = client
         .query_one(
@@ -194,8 +194,20 @@ fn committed_response_loss_replays_exact_receipt_after_reconnect() {
     assert_eq!(replayed, applied);
 
     let mut client = Client::connect(&database_url, NoTls).unwrap();
-    assert_eq!(count_for_entity(&mut client, "trnm_command_receipts", request.entity), 1);
-    assert_eq!(count_for_entity(&mut client, "trnm_events", request.entity), 1);
-    assert_eq!(count_for_entity(&mut client, "trnm_outbox", request.entity), 1);
-    assert_eq!(count_for_entity(&mut client, "trnm_command_outbox", request.entity), 1);
+    assert_eq!(
+        count_for_entity(&mut client, "trnm_command_receipts", request.entity),
+        1
+    );
+    assert_eq!(
+        count_for_entity(&mut client, "trnm_events", request.entity),
+        1
+    );
+    assert_eq!(
+        count_for_entity(&mut client, "trnm_outbox", request.entity),
+        1
+    );
+    assert_eq!(
+        count_for_entity(&mut client, "trnm_command_outbox", request.entity),
+        1
+    );
 }
