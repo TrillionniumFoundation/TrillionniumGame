@@ -470,12 +470,18 @@ fn read_request(
     let mut lines = header[..header.len() - 4].split("\r\n");
     let request_line = lines.next().ok_or(ProtocolError::InvalidHeader)?;
     let mut request_parts = request_line.split_ascii_whitespace();
-    let method = request_parts.next().ok_or(ProtocolError::InvalidHeader)?;
-    let path = request_parts.next().ok_or(ProtocolError::InvalidHeader)?;
+    let method = request_parts
+        .next()
+        .ok_or(ProtocolError::InvalidHeader)?
+        .to_owned();
+    let path = request_parts
+        .next()
+        .ok_or(ProtocolError::InvalidHeader)?
+        .to_owned();
     let version = request_parts.next().ok_or(ProtocolError::InvalidHeader)?;
     if request_parts.next().is_some()
         || !matches!(version, "HTTP/1.0" | "HTTP/1.1")
-        || !matches!(method, "GET" | "POST")
+        || !matches!(method.as_str(), "GET" | "POST")
         || !path.starts_with('/')
     {
         return Err(ProtocolError::InvalidHeader);
