@@ -1,0 +1,49 @@
+name: storage-version-source-candidate
+
+on:
+  pull_request:
+    paths:
+      - 'crates/trnm-storage-nakama-version/**'
+      - 'contracts/storage/nakama-public-version-v1.json'
+      - 'docs/development/STORAGE_PUBLIC_VERSION_COMPATIBILITY_V1.md'
+      - 'scripts/check-storage-version-compat.py'
+      - '.github/workflows/storage-version-source-candidate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/trnm-storage-nakama-version/**'
+      - 'contracts/storage/nakama-public-version-v1.json'
+      - 'docs/development/STORAGE_PUBLIC_VERSION_COMPATIBILITY_V1.md'
+      - 'scripts/check-storage-version-compat.py'
+      - '.github/workflows/storage-version-source-candidate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: storage-version-source-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  storage-version-source-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify source contract
+        run: python3 scripts/check-storage-version-compat.py
+      - name: Install exact Rust
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+      - name: Format
+        run: cargo fmt --manifest-path crates/trnm-storage-nakama-version/Cargo.toml -- --check
+      - name: Test
+        run: cargo test --manifest-path crates/trnm-storage-nakama-version/Cargo.toml --all-targets --locked
+      - name: Strict lint
+        run: cargo clippy --manifest-path crates/trnm-storage-nakama-version/Cargo.toml --all-targets --locked -- -D warnings
