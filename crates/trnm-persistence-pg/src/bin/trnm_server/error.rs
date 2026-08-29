@@ -13,6 +13,12 @@ impl InputError {
     pub const fn new(reason: &'static str) -> Self {
         Self { reason }
     }
+
+    #[cfg(test)]
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        self.reason
+    }
 }
 
 impl fmt::Display for InputError {
