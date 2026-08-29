@@ -325,30 +325,29 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, InputError> {
         let last = index + 1 == bytes.len() / 4;
         let first = decode_base64_byte(chunk[0])?;
         let second = decode_base64_byte(chunk[1])?;
-        let third_padding = chunk[2] == b'=';
-        let fourth_padding = chunk[3] == b'=';
-        if third_padding && (!last || !fourth_padding || second & 0x0f != 0) {
-            return Err(InputError::new("websocket_key_invalid"));
-        }
-        let third = if third_padding {
-            0
-        } else {
-            decode_base64_byte(chunk[2])?
-        };
-        if fourth_padding && (!last || third_padding || third & 0x03 != 0) {
-            return Err(InputError::new("websocket_key_invalid"));
-        }
-        let fourth = if fourth_padding {
-            0
-        } else {
-            decode_base64_byte(chunk[3])?
-        };
-        output.push((first << 2) | (second >> 4));
-        if !third_padding {
-            output.push((second << 4) | (third >> 2));
-        }
-        if !fourth_padding {
-            output.push((third << 6) | fourth);
+        match (chunk[2] == b'=', chunk[3] == b'=') {
+            (true, true) => {
+                if !last || second & 0x0f != 0 {
+                    return Err(InputError::new("websocket_key_invalid"));
+                }
+                output.push((first << 2) | (second >> 4));
+            }
+            (false, true) => {
+                let third = decode_base64_byte(chunk[2])?;
+                if !last || third & 0x03 != 0 {
+                    return Err(InputError::new("websocket_key_invalid"));
+                }
+                output.push((first << 2) | (second >> 4));
+                output.push((second << 4) | (third >> 2));
+            }
+            (false, false) => {
+                let third = decode_base64_byte(chunk[2])?;
+                let fourth = decode_base64_byte(chunk[3])?;
+                output.push((first << 2) | (second >> 4));
+                output.push((second << 4) | (third >> 2));
+                output.push((third << 6) | fourth);
+            }
+            (true, false) => return Err(InputError::new("websocket_key_invalid")),
         }
     }
     Ok(output)
@@ -371,14 +370,14 @@ mod tests {
 
     use super::*;
 
-    fn request(key: &str, protocol: &str) -> Request {
+    fn request(key: &str, protocol: &str, version: &str) -> Request {
         Request::new(
             "GET",
             "/v1/realtime",
             BTreeMap::from([
                 ("connection".to_owned(), "keep-alive, Upgrade".to_owned()),
                 ("upgrade".to_owned(), "websocket".to_owned()),
-                ("sec-websocket-version".to_owned(), "13".to_owned()),
+                ("sec-websocket-version".to_owned(), version.to_owned()),
                 ("sec-websocket-key".to_owned(), key.to_owned()),
                 ("sec-websocket-protocol".to_owned(), protocol.to_owned()),
                 ("authorization".to_owned(), "Bearer candidate".to_owned()),
@@ -405,6 +404,7 @@ mod tests {
         let handshake = validate_handshake(&request(
             "dGhlIHNhbXBsZSBub25jZQ==",
             "other, trnm.json.v1",
+            "13",
         ))
         .unwrap();
         assert!(handshake
@@ -419,31 +419,16 @@ mod tests {
     #[test]
     fn malformed_key_version_and_subprotocol_fail_closed() {
         for candidate in [
-            request("invalid", JSON_SUBPROTOCOL),
-            request("dGhlIHNhbXBsZSBub25jZQ==", "other"),
+            request("invalid", JSON_SUBPROTOCOL, "13"),
+            request("dGhlIHNhbXBsZSBub25jZQ==", "other", "13"),
+            request(
+                "dGhlIHNhbXBsZSBub25jZQ==",
+                JSON_SUBPROTOCOL,
+                "12",
+            ),
         ] {
             assert!(validate_handshake(&candidate).is_err());
         }
-        let mut wrong_version = request("dGhlIHNhbXBsZSBub25jZQ==", JSON_SUBPROTOCOL);
-        wrong_version = Request::new(
-            wrong_version.method,
-            wrong_version.target,
-            BTreeMap::from([
-                ("connection".to_owned(), "Upgrade".to_owned()),
-                ("upgrade".to_owned(), "websocket".to_owned()),
-                ("sec-websocket-version".to_owned(), "12".to_owned()),
-                (
-                    "sec-websocket-key".to_owned(),
-                    "dGhlIHNhbXBsZSBub25jZQ==".to_owned(),
-                ),
-                (
-                    "sec-websocket-protocol".to_owned(),
-                    JSON_SUBPROTOCOL.to_owned(),
-                ),
-            ]),
-            Vec::new(),
-        );
-        assert!(validate_handshake(&wrong_version).is_err());
     }
 
     #[test]
