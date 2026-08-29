@@ -145,7 +145,7 @@ trnm_server_ready {}\n",
             return self.input_failure(InputError::new("drain_body_must_be_empty"));
         }
         if !self.authorized(request) {
-            return error_response(401, "unauthenticated", "Authentication required.", "never");
+            return unauthenticated();
         }
         self.draining = true;
         Metrics::increment(&mut self.metrics.drain_requests);
@@ -155,6 +155,9 @@ trnm_server_ready {}\n",
     fn bootstrap(&mut self, request: &Request) -> Response {
         if self.draining {
             return error_response(503, "unavailable", "Service is draining.", "backoff");
+        }
+        if !self.authorized(request) {
+            return unauthenticated();
         }
         if !is_json(request) {
             return unsupported_json_media_type();
@@ -188,6 +191,9 @@ trnm_server_ready {}\n",
     fn commit(&mut self, request: &Request) -> Response {
         if self.draining {
             return error_response(503, "unavailable", "Service is draining.", "backoff");
+        }
+        if !self.authorized(request) {
+            return unauthenticated();
         }
         if !is_json(request) {
             return unsupported_json_media_type();
@@ -246,6 +252,10 @@ fn known_path(path: &str) -> bool {
             | "/v1/authority/bootstrap"
             | "/v1/authority/commit"
     )
+}
+
+fn unauthenticated() -> Response {
+    error_response(401, "unauthenticated", "Authentication required.", "never")
 }
 
 fn unsupported_json_media_type() -> Response {
@@ -510,8 +520,15 @@ mod tests {
         }
     }
 
-    fn headers() -> BTreeMap<String, String> {
-        BTreeMap::from([("content-type".to_owned(), "application/json".to_owned())])
+    fn token() -> String {
+        "a".repeat(32)
+    }
+
+    fn headers(token: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("content-type".to_owned(), "application/json".to_owned()),
+            ("authorization".to_owned(), format!("Bearer {token}")),
+        ])
     }
 
     fn bootstrap_body() -> String {
@@ -538,7 +555,8 @@ mod tests {
 
     #[test]
     fn health_ready_bootstrap_and_commit_form_one_in_process_vertical_slice() {
-        let mut app = App::new(FakeRepository::default(), "a".repeat(32));
+        let token = token();
+        let mut app = App::new(FakeRepository::default(), token.clone());
         assert_eq!(
             app.handle(&Request::new("GET", "/healthz", BTreeMap::new(), Vec::new()))
                 .status,
@@ -552,14 +570,14 @@ mod tests {
         let bootstrap = app.handle(&Request::new(
             "POST",
             "/v1/authority/bootstrap",
-            headers(),
+            headers(&token),
             bootstrap_body(),
         ));
         assert_eq!(bootstrap.status, 201);
         let commit = app.handle(&Request::new(
             "POST",
             "/v1/authority/commit",
-            headers(),
+            headers(&token),
             commit_body(),
         ));
         assert_eq!(commit.status, 201);
@@ -570,6 +588,7 @@ mod tests {
 
     #[test]
     fn internal_domain_reason_is_never_exposed() {
+        let token = token();
         let repository = FakeRepository {
             failure: Some(DomainError::new(
                 StableCode::Internal,
@@ -577,11 +596,11 @@ mod tests {
                 RetryClass::Never,
             )),
         };
-        let mut app = App::new(repository, "a".repeat(32));
+        let mut app = App::new(repository, token.clone());
         let response = app.handle(&Request::new(
             "POST",
             "/v1/authority/commit",
-            headers(),
+            headers(&token),
             commit_body(),
         ));
         assert_eq!(response.status, 500);
@@ -592,7 +611,7 @@ mod tests {
 
     #[test]
     fn authenticated_drain_stops_new_mutations() {
-        let token = "a".repeat(32);
+        let token = token();
         let mut app = App::new(FakeRepository::default(), token.clone());
         let unauthorized = app.handle(&Request::new(
             "POST",
@@ -602,14 +621,14 @@ mod tests {
         ));
         assert_eq!(unauthorized.status, 401);
 
-        let authorized_headers = BTreeMap::from([(
+        let drain_headers = BTreeMap::from([(
             "authorization".to_owned(),
             format!("Bearer {token}"),
         )]);
         let response = app.handle(&Request::new(
             "POST",
             "/-/drain",
-            authorized_headers,
+            drain_headers,
             Vec::new(),
         ));
         assert_eq!(response.status, 200);
@@ -618,7 +637,7 @@ mod tests {
             app.handle(&Request::new(
                 "POST",
                 "/v1/authority/commit",
-                headers(),
+                headers(&token),
                 commit_body(),
             ))
             .status,
@@ -628,21 +647,37 @@ mod tests {
 
     #[test]
     fn malformed_fields_and_media_type_fail_before_repository_mutation() {
-        let mut app = App::new(FakeRepository::default(), "a".repeat(32));
+        let token = token();
+        let mut app = App::new(FakeRepository::default(), token.clone());
         let wrong_media = app.handle(&Request::new(
             "POST",
             "/v1/authority/commit",
-            BTreeMap::new(),
+            BTreeMap::from([(
+                "authorization".to_owned(),
+                format!("Bearer {token}"),
+            )]),
             commit_body(),
         ));
         assert_eq!(wrong_media.status, 415);
         let unknown_field = app.handle(&Request::new(
             "POST",
             "/v1/authority/bootstrap",
-            headers(),
+            headers(&token),
             br#"{"extra":1}"#.to_vec(),
         ));
         assert_eq!(unknown_field.status, 400);
+    }
+
+    #[test]
+    fn unauthenticated_mutations_fail_closed() {
+        let mut app = App::new(FakeRepository::default(), token());
+        for (path, body) in [
+            ("/v1/authority/bootstrap", bootstrap_body()),
+            ("/v1/authority/commit", commit_body()),
+        ] {
+            let response = app.handle(&Request::new("POST", path, BTreeMap::new(), body));
+            assert_eq!(response.status, 401);
+        }
     }
 
     #[test]
