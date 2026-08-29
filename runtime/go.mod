@@ -1,4 +1,4 @@
-module github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime
+module github.com/TrillionniumFoundation/TrillionniumGame/runtime
 
 go 1.26.5
 
