@@ -98,7 +98,7 @@ jobs:
       - name: Strict lint all libraries, binaries and integration targets
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-  security-critical-rust:
+  isolated-rust:
     name: isolated-rust (${{ matrix.component }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -116,6 +116,16 @@ jobs:
             manifest: crates/trnm-presence-router-v2/Cargo.toml
           - component: trnm-server-foundation
             manifest: crates/trnm-server/Cargo.toml
+          - component: persistence-runtime-policy
+            manifest: crates/trnm-persistence-runtime-policy/Cargo.toml
+          - component: realtime-wire
+            manifest: crates/trnm-realtime-wire/Cargo.toml
+          - component: storage-nakama-version
+            manifest: crates/trnm-storage-nakama-version/Cargo.toml
+          - component: token-crypto-provider
+            manifest: crates/trnm-token-crypto-provider/Cargo.toml
+          - component: token-jwt-provider-adapter
+            manifest: crates/trnm-token-jwt-provider-adapter/Cargo.toml
     steps:
       - name: Fetch exact candidate without external actions
         shell: bash
@@ -205,7 +215,7 @@ jobs:
     needs:
       - control-plane
       - rust-workspace
-      - security-critical-rust
+      - isolated-rust
       - python-contracts
       - legacy-go-migration-input
     runs-on: ubuntu-24.04
@@ -215,14 +225,14 @@ jobs:
         env:
           CONTROL_PLANE: ${{ needs.control-plane.result }}
           RUST_WORKSPACE: ${{ needs.rust-workspace.result }}
-          SECURITY_CRITICAL_RUST: ${{ needs.security-critical-rust.result }}
+          ISOLATED_RUST: ${{ needs.isolated-rust.result }}
           PYTHON_CONTRACTS: ${{ needs.python-contracts.result }}
           LEGACY_GO: ${{ needs.legacy-go-migration-input.result }}
         run: |
           set -euo pipefail
           test "$CONTROL_PLANE" = success
           test "$RUST_WORKSPACE" = success
-          test "$SECURITY_CRITICAL_RUST" = success
+          test "$ISOLATED_RUST" = success
           test "$PYTHON_CONTRACTS" = success
           test "$LEGACY_GO" = success
           printf 'repository=%s\nhead_sha=%s\nrun_id=%s\n' \
