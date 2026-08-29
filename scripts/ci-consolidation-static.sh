@@ -85,12 +85,15 @@ done
 python3 -m compileall -q scripts tests tools
 checks=(
   scripts/check-plan.py
+  scripts/check-status-transitions.py
+  scripts/derive-gates.py
+  scripts/check-schema-authority.py
   scripts/check-rust-foundation.py
   scripts/check-storage-core.py
   scripts/check-persistence-core.py
   scripts/check-foundation-schema.py
-  scripts/check-database-v2.py
   scripts/check-pgwire-persistence-adapter.py
+  scripts/check-pgwire-backup-restore.py
   scripts/test-canonical-framing.py
   scripts/check-transport-core.py
   scripts/check-token-core.py
