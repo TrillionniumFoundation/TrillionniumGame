@@ -6,9 +6,12 @@ on:
     paths:
       - 'config/sdk-source-snapshots.json'
       - 'tools/sdk/**'
+      - 'tools/upstream/pinned_archive.py'
+      - 'scripts/fetch-pinned-upstream.py'
       - 'scripts/generate-sdk-denominator.py'
       - 'scripts/check-sdk-denominator.sh'
       - 'tests/sdk/**'
+      - 'tests/upstream/**'
       - 'docs/development/SDK_DENOMINATOR_CANDIDATE.md'
       - '.github/workflows/sg1-sdk-denominator.yml'
 
@@ -42,8 +45,11 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
-      - name: Validate SDK registry and negative fixtures
-        run: bash scripts/check-sdk-denominator.sh
+      - name: Validate SDK registry, archive verifier and negative fixtures
+        run: |
+          set -euo pipefail
+          bash scripts/check-sdk-denominator.sh
+          python3 -m unittest discover -s tests/upstream -p 'test_*.py' -v
       - name: Fetch exact server contracts
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -57,9 +63,24 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, subprocess
+          import json
+          import subprocess
+
           for profile in json.load(open('config/sdk-source-snapshots.json'))['profiles']:
-              subprocess.run(['python3','scripts/fetch-pinned-upstream.py','--repository',profile['repository'],'--revision',profile['commit'],'--tree',profile['tree'],'--output',f"run/sdks/{profile['id']}"], check=True)
+              command = [
+                  'python3',
+                  'scripts/fetch-pinned-upstream.py',
+                  '--repository', profile['repository'],
+                  '--revision', profile['commit'],
+                  '--tree', profile['tree'],
+                  '--output', f"run/sdks/{profile['id']}",
+              ]
+              for gitlink in profile.get('gitlinks', []):
+                  command.extend([
+                      '--gitlink',
+                      f"{gitlink['path']}={gitlink['commit']}",
+                  ])
+              subprocess.run(command, check=True)
           PY
       - name: Generate twice and compare
         run: |
