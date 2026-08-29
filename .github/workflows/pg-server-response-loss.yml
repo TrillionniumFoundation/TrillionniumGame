@@ -1,0 +1,79 @@
+name: pg-server-response-loss
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/trnm-contracts/**'
+      - 'crates/trnm-persistence-core/**'
+      - 'crates/trnm-persistence-pg/**'
+      - 'migrations/postgresql/**'
+      - 'scripts/check-pg-server-response-loss.sh'
+      - '.github/workflows/pg-server-response-loss.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/trnm-contracts/**'
+      - 'crates/trnm-persistence-core/**'
+      - 'crates/trnm-persistence-pg/**'
+      - 'migrations/postgresql/**'
+      - 'scripts/check-pg-server-response-loss.sh'
+      - '.github/workflows/pg-server-response-loss.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pg-server-response-loss-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  post-commit-response-loss:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install exact Rust
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+      - name: Inject client reset and recover by exact receipt
+        env:
+          TRNM_PG_RESPONSE_LOSS_ROOT: run/pg-server-response-loss
+        run: bash scripts/check-pg-server-response-loss.sh
+      - name: Validate exact-head fault result
+        run: |
+          set -euo pipefail
+          jq -e \
+            --arg sha "$GITHUB_SHA" \
+            '.repository == "TrillionniumFoundation/TrillionniumGame" and
+             .commit == $sha and
+             .profile == "postgresql" and
+             .assertions.durable_receipt_after_response_loss == true and
+             .assertions.durable_event_after_response_loss == true and
+             .assertions.durable_outbox_after_response_loss == true and
+             .assertions.restart_replayed_exact_duplicate == true and
+             .assertions.duplicate_visible_effects == 0 and
+             .assertions.acknowledged_or_committed_command_loss == 0 and
+             .claims.postgresql_ambiguous_response_slice_passed == true and
+             .claims.socket_protocol_compatible == false and
+             .claims.cockroachdb_passed == false and
+             .claims.sg4_complete == false and
+             .claims.production_ready == false' \
+            run/pg-server-response-loss/result.json >/dev/null
+      - name: Upload exact-head fault evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pg-server-response-loss-${{ github.sha }}
+          path: run/pg-server-response-loss
+          if-no-files-found: error
+          retention-days: 30
