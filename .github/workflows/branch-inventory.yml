@@ -1,0 +1,55 @@
+name: branch-inventory
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/generate-branch-inventory.py'
+      - 'docs/governance/BRANCH_DISPOSITION_CONTRACT.md'
+      - '.github/workflows/branch-inventory.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: branch-inventory-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-ref-inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate and full history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch all branch heads without mutation
+        run: |
+          set -euo pipefail
+          git fetch --force origin '+refs/heads/*:refs/remotes/origin/*'
+      - name: Generate non-destructive inventory
+        run: |
+          set -euo pipefail
+          python3 scripts/generate-branch-inventory.py \
+            --output run/governance/branch-inventory.json
+          jq -e '
+            .policy.deletion_executed == false and
+            .policy.history_rewritten == false and
+            .policy.independent_review_required == true and
+            .claims.inventory_generated == true and
+            .claims.disposition_reviewed == false and
+            .claims.cleanup_complete == false
+          ' run/governance/branch-inventory.json >/dev/null
+          sha256sum run/governance/branch-inventory.json \
+            > run/governance/SHA256SUMS
+      - name: Upload exact ref inventory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: branch-inventory-${{ github.sha }}
+          path: run/governance
+          if-no-files-found: error
+          retention-days: 30
