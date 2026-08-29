@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed when repository workflows depend on blocked external actions."""
+"""Enforce repository-native, immutable-head workflow execution."""
 from __future__ import annotations
 
 import re
@@ -10,11 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_ROOT = ROOT / ".github/workflows"
 USES = re.compile(r"^\s*-?\s*uses\s*:\s*(?P<value>\S.*)$")
 WRITE_PERMISSION = re.compile(r"^\s*(?P<scope>[a-zA-Z0-9_-]+)\s*:\s*write\s*(?:#.*)?$")
+MOVABLE_CANDIDATE_FETCH = 'refs/heads/${CANDIDATE_REF}'
+IMMUTABLE_CANDIDATE_FETCH = '"${CANDIDATE_SHA}"'
 
-# This repository currently runs under an organization policy that has rejected
-# otherwise immutable external actions before any job was created. Until that
-# administrator policy is changed and independently evidenced, every required
-# workflow must execute from repository source and runner-provided tools.
+# The organization policy has rejected immutable external actions before any
+# job was created. Until that administrator state changes and is independently
+# evidenced, required workflows execute from repository source and
+# runner-provided tools only.
 ALLOWED_USES_PREFIXES = ("./",)
 ALLOWED_WRITE_WORKFLOWS: set[str] = set()
 
@@ -26,6 +28,7 @@ def main() -> int:
         print("workflow action policy failed: no workflow files", file=sys.stderr)
         return 1
 
+    immutable_fetch_workflows = 0
     for path in files:
         relative = path.relative_to(ROOT).as_posix()
         text = path.read_text(encoding="utf-8")
@@ -48,6 +51,23 @@ def main() -> int:
             failures.append(f"{relative}: pull_request_target is forbidden")
         if "persist-credentials: true" in text:
             failures.append(f"{relative}: persistent checkout credentials are forbidden")
+        if MOVABLE_CANDIDATE_FETCH in text:
+            failures.append(
+                f"{relative}: movable branch fetch is forbidden; fetch CANDIDATE_SHA directly"
+            )
+
+        has_candidate_fetch = (
+            "CANDIDATE_SHA:" in text
+            and "git -C \"$GITHUB_WORKSPACE\" fetch" in text
+        )
+        if has_candidate_fetch:
+            immutable_fetch_workflows += 1
+            if IMMUTABLE_CANDIDATE_FETCH not in text:
+                failures.append(
+                    f"{relative}: exact candidate fetch does not contain {IMMUTABLE_CANDIDATE_FETCH}"
+                )
+            if 'rev-parse HEAD)\" = \"$CANDIDATE_SHA\"' not in text:
+                failures.append(f"{relative}: checked-out SHA is not asserted")
 
     if failures:
         print("workflow action policy failed:", file=sys.stderr)
@@ -55,7 +75,11 @@ def main() -> int:
             print(f"- {failure}", file=sys.stderr)
         return 1
 
-    print(f"workflow action policy: OK ({len(files)} workflows, no external actions or write permissions)")
+    print(
+        "workflow action policy: OK "
+        f"({len(files)} workflows; {immutable_fetch_workflows} immutable candidate fetchers; "
+        "no external actions, movable candidate fetches or write permissions)"
+    )
     return 0
 
 
