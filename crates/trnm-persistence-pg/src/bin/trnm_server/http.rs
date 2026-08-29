@@ -69,12 +69,11 @@ impl Response {
     }
 
     pub fn write_to(&self, output: &mut impl Write) -> Result<(), ServerError> {
-        let reason = reason_phrase(self.status);
         write!(
             output,
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",
             self.status,
-            reason,
+            reason_phrase(self.status),
             self.content_type,
             self.body.len()
         )?;
@@ -124,7 +123,8 @@ pub fn parse_request_bytes(input: &[u8], maximum: usize) -> Result<Request, Inpu
     if input.len() > maximum {
         return Err(InputError::new("http_request_too_large"));
     }
-    let header_end = find_header_end(input).ok_or_else(|| InputError::new("http_request_incomplete"))?;
+    let header_end = find_header_end(input)
+        .ok_or_else(|| InputError::new("http_request_incomplete"))?;
     if header_end + HEADER_TERMINATOR.len() > MAX_HEADER_BYTES {
         return Err(InputError::new("http_headers_too_large"));
     }
@@ -161,19 +161,28 @@ fn parse_head(
     let request_line = lines
         .next()
         .ok_or_else(|| InputError::new("http_request_line_missing"))?;
-    let parts = request_line.split(' ').collect::<Vec<_>>();
-    if parts.len() != 3
-        || parts[0].is_empty()
-        || parts[1].is_empty()
-        || parts[2] != "HTTP/1.1"
+    let mut parts = request_line.split(' ');
+    let method = parts
+        .next()
+        .ok_or_else(|| InputError::new("http_request_line_invalid"))?;
+    let target = parts
+        .next()
+        .ok_or_else(|| InputError::new("http_request_line_invalid"))?;
+    let version = parts
+        .next()
+        .ok_or_else(|| InputError::new("http_request_line_invalid"))?;
+    if parts.next().is_some()
+        || method.is_empty()
+        || target.is_empty()
+        || version != "HTTP/1.1"
     {
         return Err(InputError::new("http_request_line_invalid"));
     }
-    if !parts[0]
-        .bytes()
-        .all(|byte| matches!(byte, b'A'..=b'Z'))
-        || !parts[1].starts_with('/')
-        || parts[1].bytes().any(|byte| byte.is_ascii_control() || byte == b' ')
+    if !method.bytes().all(|byte| byte.is_ascii_uppercase())
+        || !target.starts_with('/')
+        || target
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b' ')
     {
         return Err(InputError::new("http_method_or_target_invalid"));
     }
@@ -187,9 +196,9 @@ fn parse_head(
             .split_once(':')
             .ok_or_else(|| InputError::new("http_header_invalid"))?;
         if name.is_empty()
-            || !name.bytes().all(|byte| {
-                matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-')
-            })
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         {
             return Err(InputError::new("http_header_name_invalid"));
         }
@@ -200,8 +209,10 @@ fn parse_head(
         {
             return Err(InputError::new("http_header_value_invalid"));
         }
-        let name = name.to_ascii_lowercase();
-        if headers.insert(name, value.to_owned()).is_some() {
+        if headers
+            .insert(name.to_ascii_lowercase(), value.to_owned())
+            .is_some()
+        {
             return Err(InputError::new("http_duplicate_header"));
         }
     }
@@ -211,14 +222,14 @@ fn parse_head(
     }
     let content_length = match headers.get("content-length") {
         Some(value) => parse_content_length(value)?,
-        None if parts[0] == "POST" => {
+        None if method == "POST" => {
             return Err(InputError::new("http_content_length_required"));
         }
         None => 0,
     };
     Ok((
-        parts[0].to_owned(),
-        parts[1].to_owned(),
+        method.to_owned(),
+        target.to_owned(),
         headers,
         content_length,
     ))
