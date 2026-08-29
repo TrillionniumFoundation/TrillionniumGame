@@ -1,0 +1,77 @@
+name: native-go-import-repair
+
+on:
+  push:
+    branches:
+      - feat/plan-v3-gap-closure-2026-08-29
+    paths:
+      - '.github/workflows/native-go-import-repair.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: native-go-import-repair-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: auto
+
+jobs:
+  repair-current-feature-branch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Fetch exact branch without external actions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = 'feat/plan-v3-gap-closure-2026-08-29'
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
+            "refs/heads/${GITHUB_REF_NAME}"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$GITHUB_REF_NAME" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Canonicalize all first-party Go import paths
+        run: |
+          set -euo pipefail
+          old='github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime'
+          new='github.com/TrillionniumFoundation/TrillionniumGame/runtime'
+          mapfile -t files < <(grep -rlF "$old" runtime --include='*.go' | sort)
+          test "${#files[@]}" -gt 0
+          printf 'rewriting %s Go files\n' "${#files[@]}"
+          printf '%s\n' "${files[@]}"
+          for file in "${files[@]}"; do
+            sed -i "s#${old}#${new}#g" "$file"
+          done
+          if grep -rF "$old" runtime --include='*.go'; then
+            echo 'old Go module import remains' >&2
+            exit 1
+          fi
+          gofmt -w "${files[@]}"
+          git diff --check
+      - name: Verify canonical module
+        working-directory: runtime
+        run: |
+          set -euo pipefail
+          go version
+          go list ./...
+          go test ./... -count=1
+          go test -race ./... -count=1
+          go vet ./...
+      - name: Commit and push verified import repair
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add runtime
+          git diff --cached --check
+          git commit -m 'fix(runtime): canonicalize TrillionniumGame Go imports'
+          git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
