@@ -88,10 +88,17 @@ jobs:
           }
           (cd runtime && go test ./internal/worldtransition -count=1)
           (cd runtime && go vet ./internal/worldtransition)
-      - name: Reject forbidden Go capabilities
+      - name: Reject forbidden Go production capabilities
         run: |
           set -euo pipefail
-          if grep -R -nE '"(net|net/http|database/sql|crypto/ed25519|os/exec|time|math/rand)"' runtime/internal/worldtransition --include='*.go'; then
+          # Test sources contain the denylist itself and are independently
+          # validated by the AST-based Go test above. The textual scan applies
+          # only to production files so the policy cannot match its own fixture.
+          if grep -R -nE \
+            '"(net|net/http|database/sql|crypto/ed25519|os/exec|time|math/rand)"' \
+            runtime/internal/worldtransition \
+            --include='*.go' \
+            --exclude='*_test.go'; then
             echo 'Go transition verifier acquired a forbidden capability' >&2
             exit 1
           fi
