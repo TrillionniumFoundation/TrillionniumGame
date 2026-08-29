@@ -1,0 +1,72 @@
+name: database-backup-restore
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/trnm-persistence-pg/**'
+      - 'migrations/**'
+      - 'scripts/ci-pgwire-backup-restore.sh'
+      - 'scripts/check-pgwire-backup-restore.py'
+      - '.github/workflows/database-backup-restore.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/trnm-persistence-pg/**'
+      - 'migrations/**'
+      - 'scripts/ci-pgwire-backup-restore.sh'
+      - 'scripts/check-pgwire-backup-restore.py'
+      - '.github/workflows/database-backup-restore.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-backup-restore-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Validate fail-closed source contract
+        run: |
+          set -euo pipefail
+          python3 scripts/check-pgwire-backup-restore.py
+          bash -n scripts/ci-pgwire-backup-restore.sh
+
+  restore:
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [postgresql, cockroachdb]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install exact Rust
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup default 1.85.1
+      - name: Execute empty restore and semantic comparison
+        env:
+          TRNM_EVIDENCE_ROOT: run/backup-restore
+          TRNM_RUN_ID: ${{ github.run_id }}-${{ matrix.profile }}
+        run: bash scripts/ci-pgwire-backup-restore.sh '${{ matrix.profile }}'
+      - name: Upload exact-head evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: backup-restore-${{ matrix.profile }}-${{ github.sha }}
+          path: run/backup-restore/${{ matrix.profile }}
+          if-no-files-found: error
+          retention-days: 30
