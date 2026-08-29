@@ -1,0 +1,48 @@
+{
+  "schema": "trillionnium.jwt-crypto-provider.v1",
+  "project_id": "trillionnium-game",
+  "status": "interface-source-candidate",
+  "adr": "docs/adr/ADR-0002-JWT-CRYPTO-PROVIDER.md",
+  "crate": "crates/trnm-token-crypto-provider",
+  "key_domains": [
+    "access-token",
+    "refresh-token",
+    "console",
+    "runtime-http",
+    "socket",
+    "authority"
+  ],
+  "provider_operations": ["sign-hs256", "verify-hs256"],
+  "invariants": [
+    "the exact encoded header.payload bytes are passed to the provider",
+    "signature input is bounded",
+    "signature length is checked before provider verification",
+    "key handles are opaque and never key bytes",
+    "access and refresh domains are distinct",
+    "unknown epoch fallback is forbidden",
+    "provider I/O is outside mutable database transactions"
+  ],
+  "production_implementation_required": [
+    "reviewed Rust software provider or approved KMS/HSM adapter",
+    "dependency and license lock",
+    "cross-provider exact vectors",
+    "malformed and fuzz corpus",
+    "rotation, revoke, refresh replay and socket disconnect",
+    "independent security review"
+  ],
+  "not_implemented": [
+    "reviewed RustCrypto provider",
+    "remote KMS/HSM provider",
+    "integration into the JWT compatibility adapter",
+    "stable provider error mapping",
+    "provider deadline and cancellation implementation"
+  ],
+  "gap_ids": ["GAP-P0-CRYPTO-001"],
+  "claims": {
+    "provider_interface_exists": true,
+    "production_provider_exists": false,
+    "jwt_adapter_integrated": false,
+    "security_review_accepted": false,
+    "production_ready": false
+  }
+}
