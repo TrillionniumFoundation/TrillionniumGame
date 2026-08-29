@@ -119,6 +119,9 @@ impl Sha256 {
                 self.buffer.fill(0);
                 self.buffer_len = 0;
             }
+            if input.is_empty() {
+                return;
+            }
         }
 
         let mut chunks = input.chunks_exact(64);
