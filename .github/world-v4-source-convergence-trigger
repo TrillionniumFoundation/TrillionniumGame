@@ -1,0 +1,4 @@
+world_repository=TrillionniumFoundation/Trillionnium-World
+world_branch=fix/world-plan-v4-convergence-2026-08-30
+world_head=2e6858d4556b2eee628bb7270337f66fc9529dd8
+purpose=one-shot exact-tree direct-source conversion and validation
