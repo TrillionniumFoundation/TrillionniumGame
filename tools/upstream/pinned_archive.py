@@ -78,12 +78,13 @@ def git_blob_sha1_bytes(payload: bytes) -> str:
 
 
 def _tree_sort_key(path: Path) -> bytes:
-    suffix = b"/" if path.is_dir() else b""
+    metadata = path.lstat()
+    suffix = b"/" if stat.S_ISDIR(metadata.st_mode) else b""
     return os.fsencode(path.name) + suffix
 
 
 def git_tree_sha1(root: Path, *, ignored_names: Iterable[str] = (LOCK_FILE, ".git")) -> str:
-    """Recompute Git's root tree object SHA-1 from a regular filesystem tree."""
+    """Recompute Git's root tree object SHA-1 from a regular tree and safe symlinks."""
     root = root.resolve(strict=True)
     ignored = set(ignored_names)
 
@@ -97,8 +98,9 @@ def git_tree_sha1(root: Path, *, ignored_names: Iterable[str] = (LOCK_FILE, ".gi
             if b"\x00" in name or b"/" in name:
                 raise SourceArchiveError(f"unsafe filesystem name while hashing tree: {child}")
             if stat.S_ISLNK(metadata.st_mode):
-                raise SourceArchiveError(f"source symlinks are not accepted: {child}")
-            if stat.S_ISDIR(metadata.st_mode):
+                mode = b"120000"
+                digest = _git_object_sha1("blob", os.fsencode(os.readlink(child)))
+            elif stat.S_ISDIR(metadata.st_mode):
                 mode = b"40000"
                 digest = build(child)
             elif stat.S_ISREG(metadata.st_mode):
@@ -141,6 +143,20 @@ def _safe_member_parts(name: str) -> tuple[str, ...]:
     return path.parts
 
 
+def _safe_symlink_target(destination: Path, target: Path, linkname: str) -> str:
+    if "\\" in linkname or "\x00" in linkname:
+        raise SourceArchiveError(f"unsafe archive symlink target: {linkname!r}")
+    link = PurePosixPath(linkname)
+    if link.is_absolute() or not link.parts or any(part in {"", "."} for part in link.parts):
+        raise SourceArchiveError(f"unsafe archive symlink target: {linkname!r}")
+    resolved = target.parent.joinpath(*link.parts).resolve(strict=False)
+    try:
+        resolved.relative_to(destination)
+    except ValueError as exc:
+        raise SourceArchiveError(f"archive symlink escapes destination: {linkname!r}") from exc
+    return linkname
+
+
 def extract_github_tarball(
     archive_path: Path,
     destination: Path,
@@ -177,13 +193,25 @@ def extract_github_tarball(
             if target in seen_outputs:
                 raise SourceArchiveError(f"duplicate archive output path: {member.name}")
             seen_outputs.add(target)
-            if member.issym() or member.islnk():
-                raise SourceArchiveError(f"archive links are not accepted: {member.name}")
+            if member.islnk():
+                raise SourceArchiveError(f"archive hard links are not accepted: {member.name}")
             if member.ischr() or member.isblk() or member.isfifo() or member.isdev():
                 raise SourceArchiveError(f"archive special files are not accepted: {member.name}")
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
                 target.chmod(0o755)
+                continue
+            if member.issym():
+                linkname = _safe_symlink_target(destination, target, member.linkname)
+                link_bytes = os.fsencode(linkname)
+                file_count += 1
+                extracted_bytes += len(link_bytes)
+                if file_count > max_files:
+                    raise SourceArchiveError(f"archive exceeds file-count limit {max_files}")
+                if extracted_bytes > max_extracted_bytes:
+                    raise SourceArchiveError(f"archive exceeds extracted-byte limit {max_extracted_bytes}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.symlink(linkname, target)
                 continue
             if not member.isfile():
                 raise SourceArchiveError(f"unsupported archive member type: {member.name}")
