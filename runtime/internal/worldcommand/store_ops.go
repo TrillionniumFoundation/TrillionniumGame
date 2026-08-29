@@ -23,7 +23,7 @@ func (s *Store) Takeover(ctx context.Context, clientCommandID string, generation
 	retired := cloneReservation(current)
 	finishOpenAttempts(&retired, FailureSuperseded, false, "superseded by reservation generation takeover", now)
 	retired.Status = ReservationRetired
-	retired.RetiredReason = boundedDetail(reason)
+	retired.RetiredReason = boundedDetail("generation takeover: " + reason)
 	retired.UpdatedAtUnix = now.Unix()
 
 	next := cloneReservation(current)
@@ -75,7 +75,7 @@ func (s *Store) Status(now time.Time) StatusReport {
 	}
 	oldest := int64(0)
 	for _, reservation := range s.reservations {
-		report.TotalAttempts += uint64(len(reservation.Attempts))
+		accumulateAttemptMetrics(&report, reservation.Attempts)
 		age := now.Unix() - reservation.CreatedAtUnix
 		if age > oldest {
 			oldest = age
@@ -84,16 +84,59 @@ func (s *Store) Status(now time.Time) StatusReport {
 	for _, values := range s.retired {
 		report.RetiredReservations += len(values)
 		for _, reservation := range values {
-			report.TotalAttempts += uint64(len(reservation.Attempts))
+			accumulateAttemptMetrics(&report, reservation.Attempts)
+			if len(reservation.Attempts) == 0 {
+				accumulateRetirementMetric(&report, reservation)
+			}
 		}
 	}
 	for _, receipt := range s.receipts {
-		report.TotalAttempts += uint64(len(receipt.Attempts))
+		accumulateAttemptMetrics(&report, receipt.Attempts)
 	}
 	if oldest > 0 {
 		report.OldestPendingAgeSeconds = oldest
 	}
 	return report
+}
+
+func accumulateAttemptMetrics(report *StatusReport, attempts []Attempt) {
+	for _, attempt := range attempts {
+		report.TotalAttempts++
+		if attempt.Retryable {
+			report.RetryableAttempts++
+		}
+		switch attempt.FailureKind {
+		case FailureCancelled:
+			report.CancelledAttempts++
+		case FailureTransport:
+			report.TransportFailures++
+		case FailureAmbiguousCommit:
+			report.AmbiguousCommitFailures++
+		case FailureInvalidResult:
+			report.InvalidResultFailures++
+		case FailureRemoteRetryable:
+			report.RemoteRetryableRejections++
+		case FailurePersistence:
+			report.PersistenceFailures++
+		case FailureStale:
+			report.StaleRejects++
+		case FailureOperatorAbort:
+			report.OperatorAborts++
+		case FailureSuperseded:
+			report.SupersededGenerations++
+		}
+	}
+}
+
+func accumulateRetirementMetric(report *StatusReport, reservation Reservation) {
+	switch {
+	case strings.HasPrefix(reservation.RetiredReason, "operator abort:"):
+		report.OperatorAborts++
+	case reservation.Generation > 0 && strings.Contains(reservation.RetiredReason, "takeover"):
+		report.SupersededGenerations++
+	case strings.Contains(reservation.RetiredReason, "stale"):
+		report.StaleRejects++
+	}
 }
 
 func (s *Store) State() MatchState {
