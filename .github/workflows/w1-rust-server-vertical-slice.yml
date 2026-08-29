@@ -1,0 +1,101 @@
+name: trillionnium-game-rust-server-vertical-slice
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'crates/trnm-server/**'
+      - 'contracts/server/**'
+      - 'docs/development/RUST_SERVER_VERTICAL_SLICE.md'
+      - 'docs/status/RUST_SERVER_VERTICAL_SLICE_STATUS.json'
+      - 'scripts/check-rust-server-vertical-slice.py'
+      - 'tests/server/**'
+      - '.github/workflows/w1-rust-server-vertical-slice.yml'
+      - '.github/workflows/trillionnium-game-merge-gate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/trnm-server/**'
+      - 'contracts/server/**'
+      - 'docs/development/RUST_SERVER_VERTICAL_SLICE.md'
+      - 'docs/status/RUST_SERVER_VERTICAL_SLICE_STATUS.json'
+      - 'scripts/check-rust-server-vertical-slice.py'
+      - 'tests/server/**'
+      - '.github/workflows/w1-rust-server-vertical-slice.yml'
+      - '.github/workflows/trillionnium-game-merge-gate.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-server-vertical-slice-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify exact source identity
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git show -s --format='commit=%H%ntree=%T' "$GITHUB_SHA"
+      - name: Validate fail-closed source contract
+        run: python3 scripts/check-rust-server-vertical-slice.py
+      - name: Execute independent Python wrapper
+        run: python3 -m unittest tests.server.test_rust_server_vertical_slice -v
+
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install exact Rust
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+      - name: Format
+        run: cargo fmt --manifest-path crates/trnm-server/Cargo.toml -- --check
+      - name: Test all targets
+        run: cargo test --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked
+      - name: Strict lint
+        run: cargo clippy --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Typed configuration smoke
+        run: cargo run --quiet --manifest-path crates/trnm-server/Cargo.toml --locked -- check-config
+
+  no-credit-boundary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Reject premature claims
+        run: |
+          set -euo pipefail
+          jq -e '
+            .claims.nakama_wire_compatible == false and
+            .claims.database_durable == false and
+            .claims.sg4_complete == false and
+            .claims.compatibility_credit == false and
+            .claims.production_ready == false and
+            .claims.public_online == false and
+            .claims.nakama_replaced == false
+          ' contracts/server/rust-server-vertical-slice.v1.json >/dev/null
+          jq -e '
+            .claims.nakama_wire_compatible == false and
+            .claims.database_durable == false and
+            .claims.sg4_complete == false and
+            .claims.compatibility_credit == false and
+            .claims.production_ready == false and
+            .claims.public_online == false and
+            .claims.nakama_replaced == false
+          ' docs/status/RUST_SERVER_VERTICAL_SLICE_STATUS.json >/dev/null
