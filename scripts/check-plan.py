@@ -59,7 +59,7 @@ def validate_boundary() -> None:
     boundary = load_json("PROJECT_BOUNDARY.json")
     require(boundary.get("schema"), "trillionnium.project-boundary.v2", "boundary schema")
     require(boundary.get("project_id"), "trillionnium-game", "boundary project_id")
-    require(boundary.get("current_repository"), "TrillionniumFoundation/Trillionnium-Nakama", "current repository")
+    require(boundary.get("current_repository"), "TrillionniumFoundation/TrillionniumGame", "current repository")
     require(boundary.get("target_repository"), "TrillionniumFoundation/TrillionniumGame", "target repository")
     require(boundary.get("repository_id"), 1323087470, "repository ID")
     require(boundary.get("scope", {}).get("nakama_oss_full_reimplementation"), True, "full scope")
