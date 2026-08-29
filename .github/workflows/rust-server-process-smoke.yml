@@ -1,0 +1,53 @@
+name: rust-server-process-smoke
+
+on:
+  pull_request:
+    paths:
+      - 'crates/trnm-server/**'
+      - 'scripts/check-rust-server-process.sh'
+      - 'contracts/server/vertical-slice-v1.json'
+      - 'docs/development/RUST_SERVER_VERTICAL_SLICE_V1.md'
+      - '.github/workflows/rust-server-process-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/trnm-server/**'
+      - 'scripts/check-rust-server-process.sh'
+      - 'contracts/server/vertical-slice-v1.json'
+      - 'docs/development/RUST_SERVER_VERTICAL_SLICE_V1.md'
+      - '.github/workflows/rust-server-process-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-server-process-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bounded-process-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install exact Rust
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+      - name: Execute bounded process ingress and drain
+        env:
+          TRNM_SERVER_SMOKE_ROOT: run/server-process-smoke
+        run: bash scripts/check-rust-server-process.sh
+      - name: Upload source-candidate process evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rust-server-process-smoke-${{ github.sha }}
+          path: run/server-process-smoke
+          if-no-files-found: error
+          retention-days: 30
