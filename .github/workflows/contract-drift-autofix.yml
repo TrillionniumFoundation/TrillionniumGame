@@ -1,5 +1,6 @@
 name: contract-drift-autofix
 
+# One-shot registered workflow. Delete after the migration commit lands.
 on:
   push:
     branches:
