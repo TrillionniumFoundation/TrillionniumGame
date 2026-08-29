@@ -18,6 +18,37 @@ fn profile(value: &str) -> DatabaseProfile {
     }
 }
 
+fn live_database_environment(label: &str) -> Option<(String, DatabaseProfile)> {
+    let required = match env::var("TRNM_REQUIRE_LIVE_DATABASE") {
+        Err(env::VarError::NotPresent) => false,
+        Err(error) => panic!("cannot read TRNM_REQUIRE_LIVE_DATABASE: {error}"),
+        Ok(value) if matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES") => true,
+        Ok(value) if matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "NO") => false,
+        Ok(value) => panic!("invalid TRNM_REQUIRE_LIVE_DATABASE={value:?}; expected 0/1 or false/true"),
+    };
+
+    let database_url = match env::var("TRNM_DATABASE_URL") {
+        Ok(value) if !value.is_empty() => value,
+        Ok(_) if required => panic!("{label}: TRNM_DATABASE_URL is required and must not be empty"),
+        Ok(_) => {
+            eprintln!("{label}: empty TRNM_DATABASE_URL; developer-only live test skip (no evidence credit)");
+            return None;
+        }
+        Err(env::VarError::NotPresent) if required => {
+            panic!("{label}: TRNM_REQUIRE_LIVE_DATABASE=1 but TRNM_DATABASE_URL is absent")
+        }
+        Err(env::VarError::NotPresent) => {
+            eprintln!("{label}: TRNM_DATABASE_URL absent; developer-only live test skip (no evidence credit)");
+            return None;
+        }
+        Err(error) => panic!("{label}: cannot read TRNM_DATABASE_URL: {error}"),
+    };
+
+    let profile_value = env::var("TRNM_DATABASE_PROFILE")
+        .unwrap_or_else(|_| panic!("{label}: TRNM_DATABASE_PROFILE is required with TRNM_DATABASE_URL"));
+    Some((database_url, profile(&profile_value)))
+}
+
 fn request() -> CommitRequest {
     CommitRequest {
         entity: EntityId::new([0x31; 16]),
@@ -42,14 +73,9 @@ fn request() -> CommitRequest {
 
 #[test]
 fn pgwire_commit_duplicate_conflict_and_fence_contract() {
-    let Ok(database_url) = env::var("TRNM_DATABASE_URL") else {
-        eprintln!("TRNM_DATABASE_URL absent; live PG-wire contract skipped");
+    let Some((database_url, profile)) = live_database_environment("PG-wire runtime contract") else {
         return;
     };
-    let profile = profile(
-        &env::var("TRNM_DATABASE_PROFILE")
-            .expect("TRNM_DATABASE_PROFILE is required with TRNM_DATABASE_URL"),
-    );
     let source_commit = env::var("TRNM_SCHEMA_SOURCE_COMMIT")
         .unwrap_or_else(|_| "e9b63462fa91383b06706894afed31b378f6b48c".to_owned());
 
