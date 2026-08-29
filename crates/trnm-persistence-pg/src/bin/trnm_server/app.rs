@@ -88,7 +88,7 @@ impl<R: Repository> App<R> {
             ("POST", "/-/drain") => self.drain(request),
             ("POST", "/v1/authority/bootstrap") => self.bootstrap(request),
             ("POST", "/v1/authority/commit") => self.commit(request),
-            (_, "/healthz" | "/readyz" | "/metrics" | "/-/drain" | "/v1/authority/bootstrap" | "/v1/authority/commit") => {
+            (_, path) if known_path(path) => {
                 error_response(405, "unimplemented", "Method is not allowed.", "never")
             }
             _ => error_response(404, "not_found", "Requested resource was not found.", "never"),
@@ -113,21 +113,21 @@ impl<R: Repository> App<R> {
             200,
             format!(
                 "# TYPE trnm_server_requests_total counter\n\
-                 trnm_server_requests_total {}\n\
-                 # TYPE trnm_server_successes_total counter\n\
-                 trnm_server_successes_total {}\n\
-                 # TYPE trnm_server_input_failures_total counter\n\
-                 trnm_server_input_failures_total {}\n\
-                 # TYPE trnm_server_domain_failures_total counter\n\
-                 trnm_server_domain_failures_total {}\n\
-                 # TYPE trnm_server_bootstraps_total counter\n\
-                 trnm_server_bootstraps_total {}\n\
-                 # TYPE trnm_server_commands_applied_total counter\n\
-                 trnm_server_commands_applied_total {}\n\
-                 # TYPE trnm_server_command_replays_total counter\n\
-                 trnm_server_command_replays_total {}\n\
-                 # TYPE trnm_server_ready gauge\n\
-                 trnm_server_ready {}\n",
+trnm_server_requests_total {}\n\
+# TYPE trnm_server_successes_total counter\n\
+trnm_server_successes_total {}\n\
+# TYPE trnm_server_input_failures_total counter\n\
+trnm_server_input_failures_total {}\n\
+# TYPE trnm_server_domain_failures_total counter\n\
+trnm_server_domain_failures_total {}\n\
+# TYPE trnm_server_bootstraps_total counter\n\
+trnm_server_bootstraps_total {}\n\
+# TYPE trnm_server_commands_applied_total counter\n\
+trnm_server_commands_applied_total {}\n\
+# TYPE trnm_server_command_replays_total counter\n\
+trnm_server_command_replays_total {}\n\
+# TYPE trnm_server_ready gauge\n\
+trnm_server_ready {}\n",
                 self.metrics.requests,
                 self.metrics.successes,
                 self.metrics.input_failures,
@@ -157,24 +157,16 @@ impl<R: Repository> App<R> {
             return error_response(503, "unavailable", "Service is draining.", "backoff");
         }
         if !is_json(request) {
-            return error_response(
-                415,
-                "invalid_argument",
-                "Content-Type must be application/json.",
-                "never",
-            );
+            return unsupported_json_media_type();
         }
-        let parsed = parse_bootstrap(&request.body);
-        let (entity, authority_generation, state, updated_at_ms) = match parsed {
+        let (entity, generation, state, updated_at_ms) = match parse_bootstrap(&request.body) {
             Ok(value) => value,
             Err(error) => return self.input_failure(error),
         };
-        match self.repository.bootstrap_entity(
-            entity,
-            authority_generation,
-            state,
-            updated_at_ms,
-        ) {
+        match self
+            .repository
+            .bootstrap_entity(entity, generation, state, updated_at_ms)
+        {
             Ok(head) => {
                 Metrics::increment(&mut self.metrics.bootstraps);
                 Response::json(
@@ -198,12 +190,7 @@ impl<R: Repository> App<R> {
             return error_response(503, "unavailable", "Service is draining.", "backoff");
         }
         if !is_json(request) {
-            return error_response(
-                415,
-                "invalid_argument",
-                "Content-Type must be application/json.",
-                "never",
-            );
+            return unsupported_json_media_type();
         }
         let commit = match parse_commit(&request.body) {
             Ok(value) => value,
@@ -240,14 +227,34 @@ impl<R: Repository> App<R> {
 
     fn domain_failure(&mut self, error: DomainError) -> Response {
         Metrics::increment(&mut self.metrics.domain_failures);
-        let status = http_status(error.code());
         error_response(
-            status,
+            http_status(error.code()),
             error.code().as_str(),
             public_message(error.code()),
             retry_name(error.retry()),
         )
     }
+}
+
+fn known_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/healthz"
+            | "/readyz"
+            | "/metrics"
+            | "/-/drain"
+            | "/v1/authority/bootstrap"
+            | "/v1/authority/commit"
+    )
+}
+
+fn unsupported_json_media_type() -> Response {
+    error_response(
+        415,
+        "invalid_argument",
+        "Content-Type must be application/json.",
+        "never",
+    )
 }
 
 fn parse_bootstrap(input: &[u8]) -> Result<(EntityId, u64, Digest32, u64), InputError> {
@@ -337,7 +344,7 @@ fn parse_commit(input: &[u8]) -> Result<CommitRequest, InputError> {
 }
 
 fn receipt_response(status: u16, outcome: &str, receipt: &CommitReceipt) -> Response {
-    let first_event_sequence = receipt
+    let first_sequence = receipt
         .first_event_sequence
         .map_or_else(|| "null".to_owned(), |value| value.to_string());
     let outbox = receipt
@@ -355,7 +362,7 @@ fn receipt_response(status: u16, outcome: &str, receipt: &CommitReceipt) -> Resp
             encode_hex(receipt.fingerprint.as_bytes()),
             receipt.revision,
             encode_hex(receipt.state.as_bytes()),
-            first_event_sequence,
+            first_sequence,
             receipt.last_event_sequence,
             receipt.event_count,
             outbox,
@@ -393,7 +400,7 @@ fn escape_json(value: &str) -> String {
             '\n' => output.push_str("\\n"),
             '\r' => output.push_str("\\r"),
             '\t' => output.push_str("\\t"),
-            value if value.is_control() => output.push_str("?"),
+            value if value.is_control() => output.push('?'),
             value => output.push(value),
         }
     }
@@ -461,8 +468,6 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct FakeRepository {
-        bootstrapped: bool,
-        commits: usize,
         failure: Option<DomainError>,
     }
 
@@ -477,7 +482,6 @@ mod tests {
             if let Some(error) = self.failure {
                 return Err(error);
             }
-            self.bootstrapped = true;
             Ok(EntityHead {
                 entity,
                 revision: 0,
@@ -492,7 +496,6 @@ mod tests {
             if let Some(error) = self.failure {
                 return Err(error);
             }
-            self.commits += 1;
             Ok(CommitOutcome::Applied(CommitReceipt {
                 entity: request.entity,
                 command: request.command,
@@ -573,7 +576,6 @@ mod tests {
                 "private_database_reason",
                 RetryClass::Never,
             )),
-            ..FakeRepository::default()
         };
         let mut app = App::new(repository, "a".repeat(32));
         let response = app.handle(&Request::new(
@@ -645,6 +647,8 @@ mod tests {
 
     #[test]
     fn admin_token_comparison_rejects_a_256_byte_length_delta() {
-        assert!(!constant_time_eq(&vec![0_u8; 32], &vec![0_u8; 288]));
+        let short = [0_u8; 32];
+        let long = [0_u8; 288];
+        assert!(!constant_time_eq(&short, &long));
     }
 }
