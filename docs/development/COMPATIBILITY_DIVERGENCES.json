@@ -58,29 +58,31 @@
       "id": "DIV-JWT-LENGTH-001",
       "severity": "P1",
       "category": "security",
-      "status": "open",
+      "status": "fixed-source",
       "expected": "Constant-time equality rejects all differing lengths without integer truncation.",
-      "observed": "The length XOR is converted to u8, losing differences that are multiples of 256.",
+      "observed": "The previous implementation converted the length XOR to u8. Candidate commit c609a0ecc82aaf0dfa95bf7c0640b161a2939920 retains the complete usize difference and adds 32-vs-288-byte regression vectors.",
       "owner_role": "security",
       "gap_id": "GAP-P1-CRYPTO-002",
       "parity_ids": ["TG-PAR-017"],
       "normalization_rule": null,
       "blocking_claims": ["C2", "C4", "C5"],
-      "evidence_ids": []
+      "evidence_ids": [],
+      "verification_required": ["exact-head adapter test", "strict Clippy", "independent security review"]
     },
     {
       "id": "DIV-OUTBOX-ATTEMPT-001",
       "severity": "P1",
       "category": "durability",
-      "status": "open",
+      "status": "fixed-source",
       "expected": "Retry at the maximum attempt performs one atomic, defined terminal transition without stranding a lease.",
-      "observed": "The in-memory core increments attempt and then returns ResourceExhausted while retaining a leased state.",
+      "observed": "The previous implementation incremented attempt and returned an error while retaining the lease. Candidate commit 0bee53f88df0f9ed92b5c0477d5e5db36c36e71c atomically transitions an exhausted leased record to dead-letter with a stable reason digest and adds a limit regression test.",
       "owner_role": "database-migration",
       "gap_id": "GAP-P1-OUTBOX-001",
       "parity_ids": [],
       "normalization_rule": null,
       "blocking_claims": ["C2", "C4", "C5"],
-      "evidence_ids": []
+      "evidence_ids": [],
+      "verification_required": ["exact-head Rust test", "strict Clippy", "property/model sequence test", "independent data-integrity review"]
     },
     {
       "id": "DIV-RUNTIME-TOPOLOGY-001",
@@ -154,7 +156,7 @@
       "evidence_ids": ["TG-EV-RELAY-FOUNDATION-DATABASE-20260828"]
     }
   ],
-  "open_p0_count": 3,
-  "open_p1_count": 6,
-  "claim_boundary": "No divergence entry grants compatibility credit. Counts must be recomputed by validation when statuses change."
+  "open_p0_count": 1,
+  "open_p1_count": 4,
+  "claim_boundary": "A fixed-source divergence still blocks claims until exact-head tests and required independent review promote it to verified-fixed."
 }
