@@ -7,7 +7,7 @@ on:
       - 'tools/denominator/**'
       - 'scripts/generate-runtime-denominator.py'
       - 'scripts/check-runtime-denominator.sh'
-      - 'tests/denominator/test_runtime_denominator.py'
+      - 'tests/denominator/test_runtime*.py'
       - 'docs/development/RUNTIME_DENOMINATOR_IMPLEMENTATION.md'
       - '.github/workflows/sg1-runtime-denominator.yml'
   push:
@@ -16,7 +16,7 @@ on:
       - 'tools/denominator/**'
       - 'scripts/generate-runtime-denominator.py'
       - 'scripts/check-runtime-denominator.sh'
-      - 'tests/denominator/test_runtime_denominator.py'
+      - 'tests/denominator/test_runtime*.py'
       - 'docs/development/RUNTIME_DENOMINATOR_IMPLEMENTATION.md'
       - '.github/workflows/sg1-runtime-denominator.yml'
 
@@ -74,8 +74,14 @@ jobs:
             --nakama-dir run/upstream/nakama \
             --common-dir run/upstream/nakama-common \
             --output-dir run/candidate-a
+          python3 tools/denominator/typescript_runtime_surface.py \
+            --common-dir run/upstream/nakama-common \
+            --output-dir run/candidate-a
           python3 scripts/generate-runtime-denominator.py \
             --nakama-dir run/upstream/nakama \
+            --common-dir run/upstream/nakama-common \
+            --output-dir run/candidate-b
+          python3 tools/denominator/typescript_runtime_surface.py \
             --common-dir run/upstream/nakama-common \
             --output-dir run/candidate-b
           diff -ru run/candidate-a run/candidate-b
@@ -92,6 +98,7 @@ jobs:
           assert counts.get('go_interface_method', 0) >= 40, counts
           assert counts.get('typescript_interface_member', 0) >= 40, counts
           assert counts.get('runtime_adapter_file', 0) >= 10, counts
+          assert manifest['typescript_interface_pass']['member_count'] == counts['typescript_interface_member']
           assert manifest['unclassified_count'] == manifest['leaf_count']
           assert manifest['unreviewed_count'] == manifest['leaf_count']
           assert not any(manifest['claims'].values())
