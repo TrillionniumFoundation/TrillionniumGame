@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85.1"
 license = "Apache-2.0"
-description = "Fail-closed TrillionniumGame Rust server vertical slice"
+description = "Fail-closed TrillionniumGame Rust server foundation prototype"
 publish = false
 
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
-name = "trnm-server"
+name = "trnm-server-foundation"
 path = "src/main.rs"
 
 [dependencies]
