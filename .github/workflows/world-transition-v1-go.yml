@@ -1,0 +1,64 @@
+name: world-transition-v1-go
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'runtime/internal/worldtransition/**'
+      - 'contracts/world-transition-v1-go-adapter-status.json'
+      - 'docs/WORLD_TRANSITION_V1_GO_ADAPTER.md'
+      - 'scripts/check-world-transition-v1-go.sh'
+      - 'scripts/test-world-transition-v1-go-negative.sh'
+      - '.github/workflows/world-transition-v1-go.yml'
+  push:
+    branches:
+      - feature/nakama-authority-world-transition-v1
+      - main
+    paths:
+      - 'runtime/internal/worldtransition/**'
+      - 'contracts/world-transition-v1-go-adapter-status.json'
+      - 'docs/WORLD_TRANSITION_V1_GO_ADAPTER.md'
+      - 'scripts/check-world-transition-v1-go.sh'
+      - 'scripts/test-world-transition-v1-go-negative.sh'
+      - '.github/workflows/world-transition-v1-go.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-transition-v1-go-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pure-go-consumer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Set up exact Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: runtime/go.mod
+          cache: false
+      - name: Run focused Go transition gate
+        run: bash scripts/check-world-transition-v1-go.sh
+      - name: Prove forbidden capabilities and overclaims fail closed
+        run: bash scripts/test-world-transition-v1-go-negative.sh
+      - name: Run race detector
+        working-directory: runtime
+        run: go test -race ./internal/worldtransition -count=1
+      - name: Record exact source digests
+        run: |
+          mkdir -p run/world-transition-v1-go
+          sha256sum \
+            contracts/world-transition-v1-go-adapter-status.json \
+            docs/WORLD_TRANSITION_V1_GO_ADAPTER.md \
+            runtime/internal/worldtransition/*.go \
+            > run/world-transition-v1-go/SHA256SUMS
+      - name: Upload exact Go consumer evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nakama-world-transition-v1-go-${{ github.sha }}
+          path: run/world-transition-v1-go
+          if-no-files-found: error

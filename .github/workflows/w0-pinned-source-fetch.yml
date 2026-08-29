@@ -1,0 +1,83 @@
+name: trillionnium-game-pinned-upstream-source
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tools/upstream/**'
+      - 'scripts/fetch-pinned-upstream.py'
+      - 'scripts/check-pinned-upstream-fetch.sh'
+      - 'tests/upstream/**'
+      - 'docs/development/PINNED_UPSTREAM_SOURCE_FETCH.md'
+      - '.github/workflows/w0-pinned-source-fetch.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/upstream/**'
+      - 'scripts/fetch-pinned-upstream.py'
+      - 'scripts/check-pinned-upstream-fetch.sh'
+      - 'tests/upstream/**'
+      - 'docs/development/PINNED_UPSTREAM_SOURCE_FETCH.md'
+      - '.github/workflows/w0-pinned-source-fetch.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trillionnium-game-source-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Run archive security and tree identity tests
+        run: bash scripts/check-pinned-upstream-fetch.sh
+
+  exact-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Fetch and verify exact Nakama trees
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p run/evidence
+          python3 scripts/fetch-pinned-upstream.py \
+            --repository heroiclabs/nakama \
+            --revision d4d92f93f78bbbe62c7fc50a3f85c772ec121a09 \
+            --tree f3c9cfc2726d5543da1564629170f35b98e3797d \
+            --output run/nakama > run/evidence/nakama.json
+          python3 scripts/fetch-pinned-upstream.py \
+            --repository heroiclabs/nakama-common \
+            --revision 449b77ecc8789aa466c36b67f6e498033dfcd9c5 \
+            --tree c6a7b9796b9c2a6b5118c74e5f213963a5001f14 \
+            --output run/nakama-common > run/evidence/nakama-common.json
+      - name: Re-verify published source locks
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from tools.upstream.pinned_archive import verify_source_lock
+          verify_source_lock(Path('run/nakama'), repository='heroiclabs/nakama', revision='d4d92f93f78bbbe62c7fc50a3f85c772ec121a09', tree='f3c9cfc2726d5543da1564629170f35b98e3797d')
+          verify_source_lock(Path('run/nakama-common'), repository='heroiclabs/nakama-common', revision='449b77ecc8789aa466c36b67f6e498033dfcd9c5', tree='c6a7b9796b9c2a6b5118c74e5f213963a5001f14')
+          PY
+      - name: Package evidence manifests only
+        run: |
+          sha256sum run/evidence/*.json > run/evidence/SHA256SUMS
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -C run -cf - evidence | gzip -n > run/pinned-source-evidence.tar.gz
+          sha256sum run/pinned-source-evidence.tar.gz > run/pinned-source-evidence.tar.gz.sha256
+      - name: Upload exact-head source evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pinned-source-${{ github.sha }}
+          path: |
+            run/pinned-source-evidence.tar.gz
+            run/pinned-source-evidence.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30

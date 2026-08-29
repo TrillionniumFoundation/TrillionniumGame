@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TrillionniumFoundation/Trillionnium-Nakama/contracts/v1/create-match-request.schema.json",
+  "title": "CreateMatchRequestV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "operator_token", "authorizations"],
+  "properties": {
+    "schema": {"const": "trnm.nakama.create-match.v1"},
+    "operator_token": {"$ref": "#/$defs/operatorToken"},
+    "authorizations": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {"$ref": "#/$defs/signedAuthorization"}
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "logicalMatchId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "operatorToken": {"type": "string", "minLength": 32, "maxLength": 4096},
+    "signedAuthorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim", "issuer_key_id", "signature"],
+      "properties": {
+        "claim": {"$ref": "#/$defs/authorizationClaim"},
+        "issuer_key_id": {"$ref": "#/$defs/id"},
+        "signature": {"type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$"}
+      }
+    },
+    "authorizationClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "authorization_id", "match_id", "challenge_id", "agent_id",
+        "agent_did", "agent_key_id", "agent_public_key", "subject_user_id",
+        "participant_slot", "role", "ruleset_hash", "dataset_hash",
+        "challenge_snapshot_hash", "issued_at_unix", "expires_at_unix"
+      ],
+      "properties": {
+        "schema": {"const": "trnm.match.authorization.v1"},
+        "authorization_id": {"$ref": "#/$defs/id"},
+        "match_id": {"$ref": "#/$defs/logicalMatchId"},
+        "challenge_id": {"$ref": "#/$defs/id"},
+        "agent_id": {"$ref": "#/$defs/id"},
+        "agent_did": {"$ref": "#/$defs/id"},
+        "agent_key_id": {"$ref": "#/$defs/id"},
+        "agent_public_key": {"type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$"},
+        "subject_user_id": {"$ref": "#/$defs/id"},
+        "participant_slot": {"enum": [1, 2]},
+        "role": {"$ref": "#/$defs/id"},
+        "ruleset_hash": {"$ref": "#/$defs/digest"},
+        "dataset_hash": {"$ref": "#/$defs/digest"},
+        "challenge_snapshot_hash": {"$ref": "#/$defs/digest"},
+        "issued_at_unix": {"type": "integer", "minimum": 0},
+        "expires_at_unix": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TrillionniumFoundation/Trillionnium-Nakama/contracts/v1/command-rejected.schema.json",
+  "title": "CommandRejectedV1",
+  "description": "Ephemeral sender-only rejection. It is not an authoritative event and is never included in evidence roots.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "reason"],
+  "properties": {
+    "schema": {"const": "trnm.match.command-rejected.v1"},
+    "command_id": {"$ref": "#/$defs/id"},
+    "reason": {"$ref": "#/$defs/reason"}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\\u0000]+$"}
+  }
+}

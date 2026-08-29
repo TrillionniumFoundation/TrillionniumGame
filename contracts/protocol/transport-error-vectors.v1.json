@@ -1,0 +1,35 @@
+{
+  "schema": "trillionnium.transport-error-vectors.v1",
+  "project_id": "trillionnium-game",
+  "status": "candidate-unverified",
+  "stable": [
+    {"code":"invalid_argument","grpc":3,"http":400,"rt":3},
+    {"code":"not_found","grpc":5,"http":404,"rt":3},
+    {"code":"already_exists","grpc":6,"http":409,"rt":3},
+    {"code":"permission_denied","grpc":7,"http":403,"rt":3},
+    {"code":"resource_exhausted","grpc":8,"http":429,"rt":3},
+    {"code":"failed_precondition","grpc":9,"http":412,"rt":3},
+    {"code":"aborted","grpc":10,"http":409,"rt":3},
+    {"code":"out_of_range","grpc":11,"http":400,"rt":3},
+    {"code":"unimplemented","grpc":12,"http":501,"rt":3},
+    {"code":"internal","grpc":13,"http":500,"rt":0},
+    {"code":"unavailable","grpc":14,"http":503,"rt":0},
+    {"code":"data_loss","grpc":15,"http":500,"rt":0},
+    {"code":"unauthenticated","grpc":16,"http":401,"rt":3}
+  ],
+  "contexts": [
+    {"context":"unrecognized_payload","stable":"invalid_argument","rt":1,"established_close":1002},
+    {"context":"missing_payload","stable":"invalid_argument","rt":2,"established_close":1002},
+    {"context":"match_not_found","stable":"not_found","rt":4,"established_close":null},
+    {"context":"match_join_rejected","stable":"permission_denied","rt":5,"established_close":1008},
+    {"context":"runtime_function_not_found","stable":"not_found","rt":6,"established_close":null},
+    {"context":"runtime_function_exception","stable":"internal","rt":7,"established_close":1011}
+  ],
+  "claims": {
+    "http_compatible": false,
+    "grpc_compatible": false,
+    "realtime_compatible": false,
+    "disconnect_compatible": false,
+    "production_ready": false
+  }
+}

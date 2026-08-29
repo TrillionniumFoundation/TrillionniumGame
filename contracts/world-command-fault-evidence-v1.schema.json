@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.invalid/contracts/world-command-fault-evidence-v1.schema.json",
+  "title": "TrillionniumGame World command source fault evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "repository",
+    "source_commit",
+    "source_tree",
+    "evidence_kind",
+    "status",
+    "input_sha256",
+    "required_scenario_count",
+    "passed_scenario_count",
+    "scenarios",
+    "failures",
+    "authority",
+    "limitations"
+  ],
+  "properties": {
+    "contract_version": {"const": "trnm_game_world_command_fault_evidence_v1"},
+    "repository": {"const": "TrillionniumFoundation/TrillionniumGame"},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "source_tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "evidence_kind": {"const": "source_level_deterministic_fault_matrix"},
+    "status": {"enum": ["passed", "failed"]},
+    "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "required_scenario_count": {"type": "integer", "minimum": 15},
+    "passed_scenario_count": {"type": "integer", "minimum": 0},
+    "scenarios": {
+      "type": "object",
+      "minProperties": 15,
+      "additionalProperties": {"enum": ["passed", "failed", "skipped", "missing"]}
+    },
+    "failures": {"type": "array", "items": {"type": "string"}},
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cutover_authorized",
+        "closed_online_promotion",
+        "public_online_enabled",
+        "public_player_market_enabled"
+      ],
+      "properties": {
+        "cutover_authorized": {"const": false},
+        "closed_online_promotion": {"const": false},
+        "public_online_enabled": {"const": false},
+        "public_player_market_enabled": {"const": false}
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 3,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

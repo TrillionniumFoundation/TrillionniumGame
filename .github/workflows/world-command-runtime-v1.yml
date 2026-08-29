@@ -1,0 +1,103 @@
+name: world-command-runtime-v1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'runtime/internal/worldcommand/**'
+      - 'contracts/world-command-runtime-v1-status.json'
+      - 'contracts/world-command-fault-evidence-v1.schema.json'
+      - 'docs/WORLD_COMMAND_RUNTIME_V1.md'
+      - 'scripts/check-world-command-runtime-v1.sh'
+      - 'scripts/test-world-command-runtime-v1-negative.sh'
+      - 'tools/summarize_world_command_faults.py'
+      - '.github/workflows/world-command-runtime-v1.yml'
+  push:
+    branches:
+      - main
+      - feature/game-world-command-runtime-v1
+    paths:
+      - 'runtime/internal/worldcommand/**'
+      - 'contracts/world-command-runtime-v1-status.json'
+      - 'contracts/world-command-fault-evidence-v1.schema.json'
+      - 'docs/WORLD_COMMAND_RUNTIME_V1.md'
+      - 'scripts/check-world-command-runtime-v1.sh'
+      - 'scripts/test-world-command-runtime-v1-negative.sh'
+      - 'tools/summarize_world_command_faults.py'
+      - '.github/workflows/world-command-runtime-v1.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-command-runtime-v1-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: bash scripts/check-world-command-runtime-v1.sh
+      - run: bash scripts/test-world-command-runtime-v1-negative.sh
+
+  go-fault-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: runtime/go.mod
+          cache: false
+      - name: Verify formatting
+        run: |
+          unformatted=$(gofmt -l runtime/internal/worldcommand)
+          test -z "$unformatted" || { printf '%s\n' "$unformatted" >&2; exit 1; }
+      - name: Run deterministic fault matrix
+        working-directory: runtime
+        run: |
+          mkdir -p ../run/world-command-runtime-v1
+          go test -json ./internal/worldcommand -count=1 \
+            | tee ../run/world-command-runtime-v1/go-test.jsonl
+          go test -race ./internal/worldcommand -count=1 \
+            | tee ../run/world-command-runtime-v1/go-race.txt
+          go vet ./internal/worldcommand
+      - name: Build exact source fault evidence summary
+        run: |
+          tree_sha=$(git show -s --format=%T "$GITHUB_SHA")
+          python3 tools/summarize_world_command_faults.py \
+            --input run/world-command-runtime-v1/go-test.jsonl \
+            --output run/world-command-runtime-v1/fault-summary.json \
+            --repository TrillionniumFoundation/TrillionniumGame \
+            --commit "$GITHUB_SHA" \
+            --tree "$tree_sha"
+          jq -e '
+            .contract_version == "trnm_game_world_command_fault_evidence_v1" and
+            .repository == "TrillionniumFoundation/TrillionniumGame" and
+            .source_commit == env.GITHUB_SHA and
+            .status == "passed" and
+            .required_scenario_count == .passed_scenario_count and
+            .authority.cutover_authorized == false and
+            .authority.closed_online_promotion == false and
+            .authority.public_online_enabled == false and
+            .authority.public_player_market_enabled == false and
+            (.limitations | length >= 3)
+          ' run/world-command-runtime-v1/fault-summary.json >/dev/null
+      - name: Record exact evidence digests
+        run: |
+          sha256sum \
+            contracts/world-command-runtime-v1-status.json \
+            contracts/world-command-fault-evidence-v1.schema.json \
+            docs/WORLD_COMMAND_RUNTIME_V1.md \
+            tools/summarize_world_command_faults.py \
+            runtime/internal/worldcommand/*.go \
+            run/world-command-runtime-v1/go-test.jsonl \
+            run/world-command-runtime-v1/go-race.txt \
+            > run/world-command-runtime-v1/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-command-runtime-v1-${{ github.sha }}
+          path: run/world-command-runtime-v1
+          if-no-files-found: error

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/contracts/runtime/engine-observation.v1.schema.json",
+  "title": "Trillionnium runtime engine observation v1",
+  "type": "object",
+  "required": [
+    "schema", "engine", "lane", "case_id", "category", "attempt",
+    "input_sha256", "return_value", "error", "stdout", "host_calls",
+    "resources"
+  ],
+  "properties": {
+    "schema": {"const": "trillionnium.runtime-engine-observation.v1"},
+    "engine": {"enum": ["javascript", "lua"]},
+    "lane": {"enum": ["nakama-oracle", "rust-candidate"]},
+    "attempt": {"type": "integer", "minimum": 1, "maximum": 10},
+    "host_calls": {"type": "array"},
+    "resources": {"type": "object"}
+  }
+}

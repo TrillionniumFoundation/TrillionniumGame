@@ -1,0 +1,72 @@
+{
+  "schema": "trillionnium.foundation-database-runtime-evidence.v2",
+  "recorded_at": "2026-08-28",
+  "target_repository": "TrillionniumFoundation/TrillionniumGame",
+  "target_commit": "e9b63462fa91383b06706894afed31b378f6b48c",
+  "relay_repository": "TrillionniumFoundation/trillionnium-os",
+  "relay_commit": "c7659627ec44e9c0f699e9682f7d9d1ade733a18",
+  "workflow": ".github/workflows/trillionniumgame-database-profiles-v2.yml",
+  "run_id": 33167200252,
+  "profiles": {
+    "postgresql": {
+      "ddl_blob": "07f5f4923d884cc63bf53074096b8d1e04215096",
+      "image": "postgres:16.4-bookworm",
+      "runtime_version": "PostgreSQL 16.4",
+      "job_id": 98835331955,
+      "artifact_id": 9684061687,
+      "artifact_digest": "sha256:1107dc166a15b1806a60e3ba7dd50701207c8e10c56e18d909ddec9d18063b71",
+      "statuses": {
+        "image_pull": 0,
+        "container_start": 0,
+        "database_ready": 0,
+        "migration_apply": 0,
+        "runtime_smoke": 0,
+        "introspection": 0,
+        "negative_constraint": 0,
+        "failed_transaction_rollback": 0
+      },
+      "table_count": 10,
+      "failed_transaction_visible_rows": 0
+    },
+    "cockroachdb": {
+      "ddl_blob": "b836b8a2f025ef22525e9e5f089db01ab5f06fe6",
+      "image": "cockroachdb/cockroach:v24.1.2",
+      "runtime_version": "CockroachDB v24.1.2",
+      "job_id": 98835331779,
+      "artifact_id": 9684061933,
+      "artifact_digest": "sha256:437b231e06ed8d5ab8309a433a202c6dbde2031c2c2d8ad2876e016329b308b3",
+      "statuses": {
+        "image_pull": 0,
+        "container_start": 0,
+        "database_ready": 0,
+        "migration_apply": 0,
+        "runtime_smoke": 0,
+        "introspection": 0,
+        "negative_constraint": 0,
+        "failed_transaction_rollback": 0
+      },
+      "table_count": 10,
+      "failed_transaction_visible_rows": 0
+    }
+  },
+  "verified": [
+    "fresh single-node DDL apply",
+    "ten expected logical tables",
+    "cross-domain transaction commit",
+    "invalid identity length constraint",
+    "failed transaction zero partial entity visibility"
+  ],
+  "claims": {
+    "single_node_runtime_execution_verified": true,
+    "failed_transaction_atomicity_verified": true,
+    "adapter_retry_correctness_verified": false,
+    "acknowledged_command_durability_verified": false,
+    "ha_verified": false,
+    "backup_restore_verified": false,
+    "migration_compatible": false,
+    "rollback_proven": false,
+    "sg4_complete": false,
+    "production_ready": false,
+    "public_online": false
+  }
+}

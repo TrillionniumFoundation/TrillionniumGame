@@ -1,0 +1,44 @@
+name: trillionnium-game-canonical-framing-core
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/trnm-canonical-core/**'
+      - 'contracts/canonical/**'
+      - 'scripts/test-canonical-framing.py'
+      - 'docs/development/CANONICAL_FRAMING_CORE.md'
+      - '.github/workflows/w2-canonical-framing-core.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/trnm-canonical-core/**'
+      - 'contracts/canonical/**'
+      - 'scripts/test-canonical-framing.py'
+      - 'docs/development/CANONICAL_FRAMING_CORE.md'
+      - '.github/workflows/w2-canonical-framing-core.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  strict-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install Rust 1.85.1
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup default 1.85.1
+      - name: Run canonical contract and strict Rust gates
+        run: |
+          set -euo pipefail
+          python3 scripts/test-canonical-framing.py
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings

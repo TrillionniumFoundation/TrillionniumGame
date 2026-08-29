@@ -1,0 +1,42 @@
+name: trillionnium-game-sg3-runtime-engine-conformance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'config/runtime-engine-conformance-policy.json'
+      - 'contracts/runtime/**'
+      - 'corpus/runtime/runtime-engine-corpus.v1.json'
+      - 'tools/runtime/conformance.py'
+      - 'scripts/runtime/**'
+      - 'tests/runtime/test_conformance.py'
+      - 'docs/development/RUNTIME_ENGINE_CONFORMANCE_GATE.md'
+      - '.github/workflows/sg3-runtime-engine-conformance.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tg-sg3-runtime-conformance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conformance-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Execute comparison and malicious-evidence tests
+        run: bash scripts/runtime/check-conformance.sh
+      - name: Prove no engine or Runtime gate is selected
+        run: |
+          python3 - <<'PY'
+          import json
+          policy=json.load(open('config/runtime-engine-conformance-policy.json'))
+          corpus=json.load(open('corpus/runtime/runtime-engine-corpus.v1.json'))
+          assert not any(policy['claims'].values())
+          assert not any(corpus['claims'].values())
+          assert policy['self_approval_allowed'] is False
+          assert policy['attempts_per_lane'] == 10
+          PY

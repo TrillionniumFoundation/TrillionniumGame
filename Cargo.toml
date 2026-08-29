@@ -1,0 +1,39 @@
+[workspace]
+members = [
+  "crates/trnm-contracts",
+  "crates/trnm-authority-core",
+  "crates/trnm-session-core",
+  "crates/trnm-storage-core",
+  "crates/trnm-persistence-core",
+  "crates/trnm-persistence-pg",
+  "crates/trnm-canonical-core",
+  "crates/trnm-transport-core",
+  "crates/trnm-token-core",
+  "crates/trnm-presence-core",
+  "crates/trnm-query-core",
+]
+exclude = [
+  "crates/trnm-token-jwt-adapter",
+  "crates/trnm-token-jwt-adapter-gate",
+  "crates/trnm-token-jwt-adapter-gate-v2",
+  "crates/trnm-presence-router-v2",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.1"
+license = "Apache-2.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+wildcard_imports = "deny"

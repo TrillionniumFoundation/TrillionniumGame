@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TrillionniumFoundation/Trillionnium-Nakama/contracts/v1/agent-command.schema.json",
+  "title": "CommandEnvelopeV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "command_id", "authorization_id", "match_id", "challenge_id",
+    "agent_id", "participant_slot", "participant_sequence", "expected_match_version",
+    "issued_at_unix", "payload_type", "payload", "payload_hash", "agent_key_id", "signature"
+  ],
+  "properties": {
+    "schema": {"const": "trnm.match.command.v1"},
+    "command_id": {"$ref": "#/$defs/id"},
+    "authorization_id": {"$ref": "#/$defs/id"},
+    "match_id": {"$ref": "#/$defs/logicalMatchId"},
+    "challenge_id": {"$ref": "#/$defs/id"},
+    "agent_id": {"$ref": "#/$defs/id"},
+    "participant_slot": {"enum": [1, 2]},
+    "participant_sequence": {"type": "integer", "minimum": 1},
+    "expected_match_version": {"type": "integer", "minimum": 0},
+    "issued_at_unix": {"type": "integer", "minimum": 0},
+    "payload_type": {"$ref": "#/$defs/id"},
+    "payload": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 87384,
+      "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+      "contentEncoding": "base64",
+      "description": "Standard padded base64. The runtime additionally enforces a decoded size of 1 through 65,536 bytes."
+    },
+    "payload_hash": {"$ref": "#/$defs/digest"},
+    "agent_key_id": {"$ref": "#/$defs/id"},
+    "signature": {"type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$"}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "logicalMatchId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

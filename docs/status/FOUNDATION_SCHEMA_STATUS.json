@@ -1,0 +1,62 @@
+{
+  "schema": "trillionnium.foundation-schema-status.v2",
+  "project_id": "trillionnium-game",
+  "status": "single-node-runtime-verified",
+  "tested_commit": "e9b63462fa91383b06706894afed31b378f6b48c",
+  "profiles": [
+    {
+      "name": "postgresql",
+      "ddl_blob": "07f5f4923d884cc63bf53074096b8d1e04215096",
+      "image": "postgres:16.4-bookworm",
+      "runtime_version": "PostgreSQL 16.4",
+      "verified": true,
+      "run_id": 33167200252,
+      "job_id": 98835331955,
+      "artifact_id": 9684061687,
+      "artifact_digest": "sha256:1107dc166a15b1806a60e3ba7dd50701207c8e10c56e18d909ddec9d18063b71"
+    },
+    {
+      "name": "cockroachdb",
+      "ddl_blob": "b836b8a2f025ef22525e9e5f089db01ab5f06fe6",
+      "image": "cockroachdb/cockroach:v24.1.2",
+      "runtime_version": "CockroachDB v24.1.2",
+      "verified": true,
+      "run_id": 33167200252,
+      "job_id": 98835331779,
+      "artifact_id": 9684061933,
+      "artifact_digest": "sha256:437b231e06ed8d5ab8309a433a202c6dbde2031c2c2d8ad2876e016329b308b3"
+    }
+  ],
+  "logical_table_count": 10,
+  "implemented": [
+    "entity heads",
+    "command receipts",
+    "events",
+    "transactional outbox",
+    "command-to-outbox ordering",
+    "authority leases",
+    "session families",
+    "refresh token digests",
+    "storage objects"
+  ],
+  "verified_invariants": [
+    "fresh single-node migration apply",
+    "exact 10-table introspection",
+    "command, event, outbox, authority, session, token and storage transaction commit",
+    "invalid binary identity length rejected by database constraint",
+    "failed multi-statement transaction leaves zero visible entity rows"
+  ],
+  "claims": {
+    "postgresql_single_node_runtime_verified": true,
+    "cockroachdb_single_node_runtime_verified": true,
+    "failed_transaction_atomicity_verified": true,
+    "schema_equivalent": false,
+    "database_durable": false,
+    "migration_compatible": false,
+    "rollback_proven": false,
+    "ha_verified": false,
+    "sg4_complete": false,
+    "production_ready": false,
+    "public_online": false
+  }
+}

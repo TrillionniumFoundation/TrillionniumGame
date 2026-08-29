@@ -1,0 +1,128 @@
+{
+  "schema": "trillionnium.game.command-transaction.v2",
+  "version": 2,
+  "isolation": "serializable",
+  "identity": {
+    "scope": ["tenant_id", "entity_id", "command_id"],
+    "fingerprint_bytes": 32,
+    "retry_reuses": [
+      "tenant_id",
+      "entity_id",
+      "command_id",
+      "fingerprint",
+      "event_ids",
+      "outbox_intent_ids",
+      "canonical_payload_bytes"
+    ]
+  },
+  "ordered_phases": [
+    {
+      "phase": "canonicalize",
+      "inside_transaction": false,
+      "requirements": [
+        "validate_typed_command",
+        "materialize_canonical_receipt_events_and_outbox",
+        "reject_fanout_above_contract_bounds"
+      ]
+    },
+    {
+      "phase": "begin",
+      "inside_transaction": true,
+      "requirements": ["begin_serializable_transaction"]
+    },
+    {
+      "phase": "idempotency_lookup",
+      "inside_transaction": true,
+      "requirements": [
+        "lookup_receipt_by_scoped_command_id",
+        "matching_fingerprint_replays_exact_receipt",
+        "mismatched_fingerprint_returns_idempotency_conflict"
+      ]
+    },
+    {
+      "phase": "authority_fence",
+      "inside_transaction": true,
+      "requirements": [
+        "compare_expected_revision",
+        "compare_authority_generation",
+        "reject_stale_writer_without_side_effects"
+      ]
+    },
+    {
+      "phase": "persist_graph",
+      "inside_transaction": true,
+      "requirements": [
+        "advance_entity_head_once",
+        "insert_command_receipt",
+        "insert_contiguous_events",
+        "insert_outbox_intents",
+        "all_rows_share_canonical_command_identity"
+      ]
+    },
+    {
+      "phase": "commit",
+      "inside_transaction": true,
+      "requirements": [
+        "commit_once",
+        "rollback_every_row_on_any_error"
+      ]
+    },
+    {
+      "phase": "acknowledge",
+      "inside_transaction": false,
+      "requirements": [
+        "ack_only_after_observed_commit_success",
+        "unknown_commit_result_retries_as_exact_duplicate",
+        "exact_duplicate_returns_stored_receipt_bytes"
+      ]
+    }
+  ],
+  "retry_policy": {
+    "scope": "entire_transaction",
+    "same_canonical_inputs": true,
+    "postgresql": {
+      "retry_sqlstates": ["40001", "40P01"],
+      "classification_required": ["23505", "08006", "08007"]
+    },
+    "cockroachdb": {
+      "retry_sqlstates": ["40001"],
+      "classification_required": ["23505", "08006", "08007"]
+    },
+    "never_blind_retry": [
+      "idempotency_fingerprint_conflict",
+      "authority_generation_conflict",
+      "revision_conflict",
+      "constraint_violation",
+      "canonicalization_failure"
+    ]
+  },
+  "outbox_completion": {
+    "compare_and_swap": [
+      "tenant_id",
+      "intent_id",
+      "state_leased",
+      "lease_owner",
+      "lease_generation"
+    ],
+    "duplicate_same_receipt": "replay_applied_receipt_digest",
+    "duplicate_different_receipt": "outbox_receipt_conflict",
+    "stale_worker": "reject_without_state_change"
+  },
+  "forbidden": [
+    "ack_before_commit",
+    "best_effort_dual_write",
+    "database_trigger_external_effect",
+    "new_command_id_on_retry",
+    "new_event_id_on_retry",
+    "new_intent_id_on_retry",
+    "partial_event_or_outbox_commit",
+    "database_clock_as_authority_fence"
+  ],
+  "maturity": {
+    "static_contract": true,
+    "single_node_smoke": false,
+    "concurrent_conflict_matrix": false,
+    "failover_matrix": false,
+    "production_ready": false
+  }
+}

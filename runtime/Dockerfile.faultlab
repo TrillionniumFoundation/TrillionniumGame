@@ -1,0 +1,20 @@
+FROM heroiclabs/nakama-pluginbuilder:3.40.0@sha256:0455a119585914341672fc17f3c4195a7a21714ecb85cdf7dacbdc47769aed4c AS build
+
+ARG TRNM_FAULTLAB_BINARY
+WORKDIR /backend
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN case "${TRNM_FAULTLAB_BINARY}" in \
+      trnm-world-transition-fixture|trnm-response-drop-proxy|trnm-tls-fixture) ;; \
+      *) echo "unsupported fault-lab binary: ${TRNM_FAULTLAB_BINARY}" >&2; exit 1 ;; \
+    esac && \
+    CGO_ENABLED=0 go build \
+      -trimpath \
+      -ldflags='-s -w -buildid=' \
+      -o /out/app \
+      "./cmd/${TRNM_FAULTLAB_BINARY}"
+
+FROM scratch
+COPY --from=build /out/app /app
+ENTRYPOINT ["/app"]

@@ -1,0 +1,140 @@
+name: world-transition-v1-adapter
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'contracts/world-transition-v1*'
+      - 'docs/WORLD_TRANSITION_V1_**'
+      - 'runtime/world_transition_v1/**'
+      - 'runtime/internal/worldtransition/**'
+      - 'scripts/check-world-transition-v1-boundary.sh'
+      - 'scripts/test-world-transition-v1-boundary-negative.sh'
+      - 'testdata/world-transition-v1/**'
+      - 'tests/test_world_transition_v1.py'
+      - 'tools/emit_world_transition_v1_shadow_fixture.py'
+      - '.github/workflows/world-transition-v1-adapter.yml'
+  push:
+    branches:
+      - main
+      - feature/nakama-world-transition-v1-adapter
+      - feature/nakama-authority-world-transition-v1
+    paths:
+      - 'contracts/world-transition-v1*'
+      - 'docs/WORLD_TRANSITION_V1_**'
+      - 'runtime/world_transition_v1/**'
+      - 'runtime/internal/worldtransition/**'
+      - 'scripts/check-world-transition-v1-boundary.sh'
+      - 'scripts/test-world-transition-v1-boundary-negative.sh'
+      - 'testdata/world-transition-v1/**'
+      - 'tests/test_world_transition_v1.py'
+      - 'tools/emit_world_transition_v1_shadow_fixture.py'
+      - '.github/workflows/world-transition-v1-adapter.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-transition-v1-adapter-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  adapter-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Set up exact Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: runtime/go.mod
+          cache: false
+      - name: Compile standard-library Python adapter
+        run: >-
+          python3 -S -m compileall -q
+          runtime/world_transition_v1
+          tools/emit_world_transition_v1_shadow_fixture.py
+          tests/test_world_transition_v1.py
+      - name: Verify exact World lock and authority boundary
+        run: bash scripts/check-world-transition-v1-boundary.sh
+      - name: Prove forbidden capabilities and divergence fail closed
+        run: bash scripts/test-world-transition-v1-boundary-negative.sh
+      - name: Run Python adapter and shadow unit tests
+        run: >-
+          PYTHONPATH=. python3 -S -m unittest
+          discover -s tests -p 'test_world_transition_v1.py' -v
+      - name: Verify Go transition package formatting
+        run: |
+          unformatted=$(gofmt -l runtime/internal/worldtransition)
+          test -z "$unformatted" || {
+            printf 'unformatted Go files:\n%s\n' "$unformatted" >&2
+            exit 1
+          }
+      - name: Run independent Go transition tests and vet
+        working-directory: runtime
+        run: |
+          go test ./internal/worldtransition -count=1
+          go vet ./internal/worldtransition
+      - name: Reject forbidden Go capabilities
+        run: |
+          if grep -R -nE '"(net|net/http|database/sql|crypto/ed25519|os/exec|time|math/rand)"' runtime/internal/worldtransition --include='*.go'; then
+            echo 'Go transition verifier acquired a forbidden capability' >&2
+            exit 1
+          fi
+      - name: Emit exact-head accepted and rejected fixtures
+        run: |
+          mkdir -p run/world-transition-v1
+          PYTHONPATH=. python3 -S tools/emit_world_transition_v1_shadow_fixture.py \
+            --nakama-revision "${GITHUB_SHA}" \
+            --output-dir run/world-transition-v1 \
+            | tee run/world-transition-v1/emitter-stdout.json
+      - name: Recompare through the public CLI
+        run: |
+          PYTHONPATH=. python3 -S -m runtime.world_transition_v1 compare-shadow \
+            --world run/world-transition-v1/world-observations.jsonl \
+            --candidate run/world-transition-v1/nakama-observations.jsonl \
+            --summary run/world-transition-v1/cli-shadow-summary.json
+      - name: Validate honest evidence posture
+        run: |
+          jq -e '
+            .contract_version == "trnm_nakama_world_transition_fixture_report_v1" and
+            .fixture_kind == "synthetic_contract_fixture" and
+            .nakama_revision == env.GITHUB_SHA and
+            .shadow_status == "matched" and
+            .authority.completion_signing_performed == false and
+            .authority.canonical_archive_root_produced == false and
+            .authority.global_ordering_owned_by_world == false and
+            .authority.public_online_enabled == false and
+            (.limitations | length >= 3)
+          ' run/world-transition-v1/fixture-report.json >/dev/null
+          jq -e '
+            .contract_version == "trnm_nakama_world_transition_shadow_summary_v1" and
+            .status == "matched" and
+            .divergence_count == 0 and
+            .fixture_count == 2 and
+            .matched_count == 2 and
+            .promotion_eligible_for_integration_review == true and
+            .cutover_authorized == false and
+            .canonical_completion_signing_performed == false and
+            .public_online_enabled == false
+          ' run/world-transition-v1/shadow-summary.json >/dev/null
+          jq -e '
+            .status == "implemented_python_and_go_pending_exact_head_ci" and
+            .authority.cutover_authorized == false and
+            .authority.public_online_enabled == false and
+            .authority.public_player_market_enabled == false and
+            (.not_implemented | index("production_world_command_store_adapter")) != null
+          ' contracts/world-transition-v1-adapter-status.json >/dev/null
+      - name: Record exact artifact digests
+        run: |
+          find run/world-transition-v1 -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > run/world-transition-v1/SHA256SUMS
+      - name: Upload exact adapter evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nakama-world-transition-v1-${{ github.sha }}
+          path: run/world-transition-v1
+          if-no-files-found: error

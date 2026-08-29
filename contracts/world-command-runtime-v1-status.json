@@ -1,0 +1,100 @@
+{
+  "contract_version": "trnm_game_world_command_runtime_delivery_v1",
+  "owner": "TrillionniumFoundation/TrillionniumGame",
+  "legacy_module_path": "github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime",
+  "backlog_id": "WORLD-P0-004",
+  "status": "implemented_local_fault_harness_pending_exact_head_ci",
+  "activation": "shadow_only",
+  "implemented": [
+    "durable_reservation_before_external_execution",
+    "retry_stable_canonical_world_request",
+    "ambiguous_remote_commit_preservation",
+    "exact_match_sequence_state_and_participant_fencing",
+    "stale_generation_retirement",
+    "idempotent_committed_receipt_replay",
+    "generation_bound_takeover_and_abort",
+    "retryable_and_invalid_result_isolation",
+    "cas_snapshot_restart_recovery",
+    "deterministic_fault_matrix_unit_tests",
+    "race_detector_workflow",
+    "committed_attempt_audit_retention",
+    "immutable_intent_duplicate_replay_after_cursor_advance",
+    "exact_commit_tree_bound_fault_summary"
+  ],
+  "not_implemented": [
+    "live_nakama_match_callback_routing",
+    "production_nakama_storage_backend",
+    "production_world_https_executor",
+    "process_kill_fault_injection",
+    "real_response_loss_proxy",
+    "postgresql_or_nakama_storage_atomicity_evidence",
+    "representative_live_shadow_load_corpus",
+    "multi_host_fencing",
+    "compatibility_match_drain",
+    "cutover_and_rollback_rehearsal"
+  ],
+  "authority": {
+    "world_can_set_global_sequence": false,
+    "world_can_set_match_version": false,
+    "world_can_set_participant_sequence": false,
+    "world_can_set_idempotency": false,
+    "world_can_sign_completion": false,
+    "world_can_claim_chain_finality": false,
+    "world_can_settle_value": false,
+    "cutover_authorized": false,
+    "closed_online_promotion": false,
+    "public_online_enabled": false,
+    "public_player_market_enabled": false
+  },
+  "acceptance": [
+    {
+      "id": "WORLD-P0-004-A1",
+      "claim": "Reservation is durably persisted before Executor.Execute",
+      "evidence_kind": "source_and_unit",
+      "state": "implemented_pending_exact_head_ci"
+    },
+    {
+      "id": "WORLD-P0-004-A2",
+      "claim": "Ambiguous retry and restart reuse byte-identical World request identity",
+      "evidence_kind": "unit_and_fault_harness",
+      "state": "implemented_pending_exact_head_ci"
+    },
+    {
+      "id": "WORLD-P0-004-A3",
+      "claim": "Stale version, sequence, state, tick or participant cursor produces zero canonical mutation",
+      "evidence_kind": "unit_and_fault_harness",
+      "state": "implemented_pending_exact_head_ci"
+    },
+    {
+      "id": "WORLD-P0-004-A4",
+      "claim": "Generation takeover rejects the prior generation and preserves audit evidence",
+      "evidence_kind": "unit_and_fault_harness",
+      "state": "implemented_pending_exact_head_ci"
+    },
+    {
+      "id": "WORLD-P0-004-A5",
+      "claim": "Persistence failure leaves state/reservation unchanged and source fault evidence is bound to exact commit/tree",
+      "evidence_kind": "unit_fault_harness_and_machine_summary",
+      "state": "implemented_pending_exact_head_ci"
+    },
+    {
+      "id": "WORLD-P0-004-A6",
+      "claim": "Production Nakama match callback and storage backend route the target profile through this coordinator",
+      "evidence_kind": "runtime_integration",
+      "state": "pending"
+    },
+    {
+      "id": "WORLD-P0-004-A7",
+      "claim": "Isolated deployed kill, response-loss, restart, concurrency and backlog matrix passes",
+      "evidence_kind": "deployment_fault_injection",
+      "state": "pending"
+    },
+    {
+      "id": "WORLD-P0-004-A8",
+      "claim": "Integration binds exact World/Game heads and zero unexplained representative divergence",
+      "evidence_kind": "cross_repository_integration",
+      "state": "pending"
+    }
+  ],
+  "next_dependency": "production Nakama storage/callback adapter and isolated deployed fault harness"
+}

@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TrillionniumFoundation/Trillionnium-Nakama/contracts/v1/archive-response.schema.json",
+  "title": "ArchiveResponseV1",
+  "description": "One immutable page of durable match events plus the roster and current participant cursors needed for catch-up and root reproduction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "logical_match_id", "runtime_generation", "status",
+    "match_version", "event_count", "after_sequence", "next_after_sequence",
+    "has_more", "events", "roster", "participants"
+  ],
+  "properties": {
+    "schema": {"const": "trnm.nakama.archive.v1"},
+    "logical_match_id": {"$ref": "#/$defs/logicalMatchId"},
+    "external_match_id": {"$ref": "#/$defs/id"},
+    "runtime_generation": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["created", "waiting", "ready", "active", "completed"]},
+    "match_version": {"type": "integer", "minimum": 1},
+    "event_count": {"type": "integer", "minimum": 0},
+    "after_sequence": {"type": "integer", "minimum": 0},
+    "next_after_sequence": {"type": "integer", "minimum": 0},
+    "has_more": {"type": "boolean"},
+    "events": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {"$ref": "#/$defs/matchEvent"}
+    },
+    "roster": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {"$ref": "#/$defs/rosterEntry"}
+    },
+    "participants": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {"$ref": "#/$defs/participant"}
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000]+$"},
+    "logicalMatchId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "matchEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "event_id", "event_type", "match_id", "challenge_id", "sequence",
+        "causation_id", "occurred_at_unix", "participant_slot", "match_version",
+        "payload_type", "payload", "payload_hash", "event_hash"
+      ],
+      "properties": {
+        "schema": {"const": "trnm.match.event.v1"},
+        "event_id": {"$ref": "#/$defs/id"},
+        "event_type": {"$ref": "#/$defs/id"},
+        "match_id": {"$ref": "#/$defs/logicalMatchId"},
+        "challenge_id": {"$ref": "#/$defs/id"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "causation_id": {"$ref": "#/$defs/id"},
+        "occurred_at_unix": {"type": "integer", "minimum": 0},
+        "participant_slot": {"enum": [0, 1, 2]},
+        "match_version": {"type": "integer", "minimum": 1},
+        "payload_type": {"$ref": "#/$defs/id"},
+        "payload": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 87384,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+          "contentEncoding": "base64"
+        },
+        "payload_hash": {"$ref": "#/$defs/digest"},
+        "event_hash": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "rosterEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "participant_slot", "subject_user_id", "agent_id", "agent_did",
+        "agent_key_id", "agent_key_hash", "role"
+      ],
+      "properties": {
+        "participant_slot": {"enum": [1, 2]},
+        "subject_user_id": {"$ref": "#/$defs/id"},
+        "agent_id": {"$ref": "#/$defs/id"},
+        "agent_did": {"$ref": "#/$defs/id"},
+        "agent_key_id": {"$ref": "#/$defs/id"},
+        "agent_key_hash": {"$ref": "#/$defs/digest"},
+        "role": {"$ref": "#/$defs/id"}
+      }
+    },
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "participant_slot", "authorization_id", "subject_user_id", "agent_id",
+        "joined", "last_command_sequence"
+      ],
+      "properties": {
+        "participant_slot": {"enum": [1, 2]},
+        "authorization_id": {"$ref": "#/$defs/id"},
+        "subject_user_id": {"$ref": "#/$defs/id"},
+        "agent_id": {"$ref": "#/$defs/id"},
+        "joined": {"type": "boolean"},
+        "last_command_sequence": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

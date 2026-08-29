@@ -1,0 +1,100 @@
+name: trillionnium-game-runtime-denominator
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tools/denominator/**'
+      - 'scripts/generate-runtime-denominator.py'
+      - 'scripts/check-runtime-denominator.sh'
+      - 'tests/denominator/test_runtime_denominator.py'
+      - 'docs/development/RUNTIME_DENOMINATOR_IMPLEMENTATION.md'
+      - '.github/workflows/sg1-runtime-denominator.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/denominator/**'
+      - 'scripts/generate-runtime-denominator.py'
+      - 'scripts/check-runtime-denominator.sh'
+      - 'tests/denominator/test_runtime_denominator.py'
+      - 'docs/development/RUNTIME_DENOMINATOR_IMPLEMENTATION.md'
+      - '.github/workflows/sg1-runtime-denominator.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trillionnium-game-runtime-denominator-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-runtime-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Validate extractors and negative fixtures
+        run: bash scripts/check-runtime-denominator.sh
+      - name: Fetch and verify exact Nakama source tree
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/fetch-pinned-upstream.py \
+            --repository heroiclabs/nakama \
+            --revision d4d92f93f78bbbe62c7fc50a3f85c772ec121a09 \
+            --tree f3c9cfc2726d5543da1564629170f35b98e3797d \
+            --output run/upstream/nakama
+      - name: Fetch and verify exact nakama-common source tree
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/fetch-pinned-upstream.py \
+            --repository heroiclabs/nakama-common \
+            --revision 449b77ecc8789aa466c36b67f6e498033dfcd9c5 \
+            --tree c6a7b9796b9c2a6b5118c74e5f213963a5001f14 \
+            --output run/upstream/nakama-common
+      - name: Generate exact Runtime candidate twice
+        run: |
+          python3 scripts/generate-runtime-denominator.py \
+            --nakama-dir run/upstream/nakama \
+            --common-dir run/upstream/nakama-common \
+            --output-dir run/candidate-a
+          python3 scripts/generate-runtime-denominator.py \
+            --nakama-dir run/upstream/nakama \
+            --common-dir run/upstream/nakama-common \
+            --output-dir run/candidate-b
+          diff -ru run/candidate-a run/candidate-b
+      - name: Validate nonempty fail-closed surface
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('run/candidate-a/runtime-denominator.candidate.json').read_text())
+          assert manifest['leaf_count'] >= 250, manifest['leaf_count']
+          assert manifest['adapter_file_count'] >= 10, manifest['adapter_file_count']
+          counts = manifest['counts_by_class']
+          assert counts.get('go_interface_method', 0) >= 40, counts
+          assert counts.get('typescript_interface_member', 0) >= 40, counts
+          assert counts.get('runtime_adapter_file', 0) >= 10, counts
+          assert manifest['unclassified_count'] == manifest['leaf_count']
+          assert manifest['unreviewed_count'] == manifest['leaf_count']
+          assert not any(manifest['claims'].values())
+          PY
+      - name: Prove candidate cannot close SG1
+        run: |
+          if python3 scripts/generate-runtime-denominator.py \
+              --nakama-dir run/upstream/nakama \
+              --common-dir run/upstream/nakama-common \
+              --output-dir run/sg1-negative \
+              --require-sg1; then
+            echo 'Runtime candidate incorrectly received SG1 credit' >&2
+            exit 1
+          fi
+      - name: Upload exact-head candidate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: runtime-denominator-${{ github.sha }}
+          path: run/candidate-a
+          if-no-files-found: error
+          retention-days: 30

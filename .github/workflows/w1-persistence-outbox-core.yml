@@ -1,0 +1,42 @@
+name: trillionnium-game-persistence-outbox-core
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/trnm-persistence-core/**'
+      - 'contracts/persistence/**'
+      - 'scripts/check-persistence-core.py'
+      - 'tests/persistence/**'
+      - 'docs/development/PERSISTENCE_OUTBOX_CORE.md'
+      - 'docs/status/PERSISTENCE_FOUNDATION_STATUS.json'
+      - '.github/workflows/w1-persistence-outbox-core.yml'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  contract-and-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: python3 scripts/check-persistence-core.py
+      - run: python3 -m unittest discover -s tests/persistence -p 'test_*.py' -v
+      - run: python3 -m compileall -q scripts tests/persistence
+
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@1.85.1
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo test --workspace --all-targets --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings

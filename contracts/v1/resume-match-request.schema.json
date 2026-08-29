@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TrillionniumFoundation/Trillionnium-Nakama/contracts/v1/resume-match-request.schema.json",
+  "title": "ResumeMatchRequestV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "operator_token", "logical_match_id"],
+  "properties": {
+    "schema": {"const": "trnm.nakama.resume-match.v1"},
+    "operator_token": {"$ref": "#/$defs/operatorToken"},
+    "logical_match_id": {"$ref": "#/$defs/logicalMatchId"}
+  },
+  "$defs": {
+    "logicalMatchId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "operatorToken": {"type": "string", "minLength": 32, "maxLength": 4096}
+  }
+}

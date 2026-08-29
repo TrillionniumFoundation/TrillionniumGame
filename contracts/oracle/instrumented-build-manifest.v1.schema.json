@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/schemas/instrumented-build-manifest.v1.json",
+  "title": "TrillionniumGame instrumented Nakama build manifest v1",
+  "type": "object",
+  "required": ["schema", "project_id", "status", "upstream", "patch", "toolchain", "build", "image", "review", "claims"],
+  "properties": {
+    "schema": {"const": "trillionnium.instrumented-oracle-build.v1"},
+    "project_id": {"const": "trillionnium-game"},
+    "status": {"enum": ["candidate-unreviewed", "reviewed-approved"]},
+    "upstream": {"type": "object"},
+    "patch": {"type": "object"},
+    "toolchain": {"type": "object"},
+    "build": {"type": "object"},
+    "image": {"type": "object"},
+    "review": {"type": "object"},
+    "claims": {"type": "object"}
+  },
+  "additionalProperties": false
+}

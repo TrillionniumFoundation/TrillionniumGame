@@ -1,0 +1,13 @@
+[package]
+name = "trnm-token-jwt-adapter"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Strict dependency-free HS256 legacy and key-epoch JWT adapter"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]

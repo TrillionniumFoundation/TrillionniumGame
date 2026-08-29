@@ -1,0 +1,10 @@
+{
+  "schema": "trillionnium.storage-core-vectors.v1",
+  "cases": [
+    {"id":"owner-create","operations":[{"op":"write","actor":"user:01","key":"profile/main/01","value":"v1","version":"01","expected":"missing","read":1,"write":1}],"expect":{"objects":{"profile/main/01":{"value":"v1","version":"01"}}}},
+    {"id":"stale-batch-rollback","seed":[{"key":"profile/main/01","value":"v1","version":"01","read":1,"write":1}],"operations":[{"op":"write","actor":"user:01","key":"profile/new/01","value":"new","version":"02","expected":"missing","read":1,"write":1},{"op":"write","actor":"user:01","key":"profile/main/01","value":"bad","version":"03","expected":"09","read":1,"write":1}],"expect_error":"storage_version_mismatch","expect":{"objects":{"profile/main/01":{"value":"v1","version":"01"}}}},
+    {"id":"delete-exact","seed":[{"key":"profile/main/01","value":"v1","version":"01","read":1,"write":1}],"operations":[{"op":"delete","actor":"user:01","key":"profile/main/01","expected":"01"}],"expect":{"objects":{}}},
+    {"id":"server-owned-denied","seed":[{"key":"system/config/00","value":"v1","version":"01","read":2,"write":0}],"operations":[{"op":"write","actor":"user:01","key":"system/config/00","value":"v2","version":"02","expected":"01","read":2,"write":0}],"expect_error":"storage_write_permission_denied","expect":{"objects":{"system/config/00":{"value":"v1","version":"01"}}}}
+  ],
+  "claims": {"storage_behavior_compatible":false,"database_durable":false,"production_ready":false}
+}
