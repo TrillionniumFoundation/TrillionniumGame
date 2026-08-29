@@ -12,7 +12,7 @@ services:
     networks: [backend]
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: [CMD-SHELL, pg_isready -U postgres -d nakama]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nakama"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -54,7 +54,7 @@ services:
     networks: [backend, edge]
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: [/nakama/nakama, healthcheck]
+      test: ["CMD", "/nakama/nakama", "healthcheck"]
       interval: 2s
       timeout: 3s
       retries: 30
