@@ -7,6 +7,8 @@ Machine claim boundary:
 ```text
 canonical_server_binary=false
 compatibility_credit=false
+database_durability_credit=false
+sg4_credit=false
 production_ready=false
 ```
 
