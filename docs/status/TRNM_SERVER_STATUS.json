@@ -1,0 +1,57 @@
+{
+  "schema": "trillionnium.trnm-server-status.v1",
+  "project_id": "trillionnium-game",
+  "stage": "http-database-vertical-source-candidate",
+  "binary_target": "trnm-server",
+  "temporary_package": "crates/trnm-persistence-pg",
+  "source_paths": [
+    "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
+    "crates/trnm-persistence-pg/src/bin/trnm_server"
+  ],
+  "implemented_source": [
+    "explicit check-config, migrate and serve commands",
+    "loopback default bind and explicit public-bind opt-in",
+    "explicit plaintext-database candidate opt-in for the current NoTls adapter",
+    "redacted configuration and process error display",
+    "PostgreSQL and CockroachDB authoritative migration embedding",
+    "ten-table inventory and schema metadata verification",
+    "bounded HTTP/1.1 content-length framing with connection close",
+    "strict flat JSON and fixed-width lowercase hex decoding",
+    "health, readiness, metrics and authenticated drain endpoints",
+    "one authority bootstrap endpoint",
+    "one command, event and outbox commit endpoint",
+    "HTTP acknowledgement constructed only after durable commit or exact receipt replay",
+    "public error redaction and typed retry guidance",
+    "in-process fake-repository vertical tests"
+  ],
+  "not_implemented_or_verified": [
+    "exact-head Rust formatting, compile, tests and strict Clippy",
+    "live PostgreSQL execution on this candidate",
+    "live CockroachDB execution on this candidate",
+    "connection pool, TLS/mTLS, cancellation propagation and bounded transaction retry",
+    "concurrent bounded connection supervision",
+    "gRPC server and grpc-gateway behavior",
+    "WebSocket JSON/protobuf handshake, framing and lifecycle",
+    "session JWT verification and refresh-family socket revocation",
+    "distributed route registry, presence and cross-node fanout",
+    "outbox worker lease, dispatch, reconciliation and restart",
+    "immutable Nakama wire/database differential",
+    "official SDK black-box tests",
+    "load, failover, endurance, security and independent review"
+  ],
+  "gap_ids": ["GAP-P0-SERVER-001", "GAP-P1-PG-001"],
+  "claims": {
+    "source_candidate": true,
+    "remote_verified": false,
+    "live_database_verified": false,
+    "http_wire_compatible": false,
+    "grpc_implemented": false,
+    "websocket_implemented": false,
+    "session_integrated": false,
+    "outbox_delivery_verified": false,
+    "sg4_complete": false,
+    "production_ready": false,
+    "public_online": false,
+    "nakama_replaced": false
+  }
+}
