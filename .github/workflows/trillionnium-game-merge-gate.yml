@@ -93,7 +93,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   security-critical-rust:
-    name: security-critical-rust (${{ matrix.component }})
+    name: isolated-rust (${{ matrix.component }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -108,6 +108,8 @@ jobs:
             manifest: crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml
           - component: presence-router-v2
             manifest: crates/trnm-presence-router-v2/Cargo.toml
+          - component: trnm-server-foundation
+            manifest: crates/trnm-server/Cargo.toml
     steps:
       - name: Fetch exact candidate without external actions
         shell: bash
