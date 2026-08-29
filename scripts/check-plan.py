@@ -108,6 +108,8 @@ def validate_files() -> None:
         "docs/development/TECHNICAL_SPIKES.md",
         "docs/development/EVIDENCE_MODEL.md",
         "docs/development/SCHEMA_AUTHORITY.json",
+        "docs/development/RUST_PACKAGE_AUTHORITY.json",
+        "docs/development/RUST_PACKAGE_AUTHORITY.md",
         "docs/development/EXECUTION_BACKLOG.json",
         "docs/development/backlog/EXECUTION_BACKLOG.v2.json.gz",
         "docs/development/backlog/README.md",
@@ -133,6 +135,7 @@ def validate_files() -> None:
         "scripts/check-status-transitions.py",
         "scripts/derive-gates.py",
         "scripts/check-schema-authority.py",
+        "scripts/check-rust-package-inventory.py",
         "scripts/read-backlog.py",
     ]
     missing = [path for path in required if not (ROOT / path).is_file()]
@@ -378,6 +381,7 @@ def main() -> int:
         run_child("scripts/check-status-transitions.py")
         run_child("scripts/derive-gates.py")
         run_child("scripts/check-schema-authority.py")
+        run_child("scripts/check-rust-package-inventory.py")
     except ValidationError as exc:
         print(f"plan validation failed: {exc}", file=sys.stderr)
         return 1
