@@ -89,7 +89,14 @@ func (c Coordinator) Execute(ctx context.Context, request PrepareRequest) (Recei
 		c.Persister,
 	)
 	if commitErr != nil {
-		return Receipt{}, commitErr
+		if errors.Is(commitErr, ErrStaleReservation) {
+			return Receipt{}, commitErr
+		}
+		failure := &ExecutionError{Kind: FailurePersistence, Retryable: true, Err: commitErr}
+		if recordErr := c.Store.RecordFailure(context.WithoutCancel(ctx), reservation, failure, c.now()); recordErr != nil {
+			return Receipt{}, errors.Join(failure, recordErr)
+		}
+		return Receipt{}, failure
 	}
 	return receipt, nil
 }
