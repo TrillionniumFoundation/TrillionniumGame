@@ -9,8 +9,8 @@ The repository now has a first-party Rust binary path connecting one bounded req
 ```text
 config -> explicit migrate or schema verification -> HTTP request
        -> strict decode -> entity bootstrap or command commit
-       -> receipt + event + outbox transaction -> response after commit
-       -> authenticated drain
+       -> bounded retry -> receipt + event + outbox transaction
+       -> response after commit -> authenticated drain
 ```
 
 The target is temporarily located under `crates/trnm-persistence-pg/src/bin/` to avoid changing the reviewed dependency and lock boundary. A later reviewed change may extract a dedicated composition-root crate.
@@ -62,7 +62,18 @@ The drain endpoint requires the configured independent credential, accepts an em
 
 The bootstrap operation receives an entity ID, authority generation, state digest, and update time. The commit operation receives one command identity and fingerprint, expected revision and generation, next state, one event, and one outbox intent. Intent kinds are `broadcast`, `search_index`, `notification`, `external_effect`, and `completion`.
 
-## Acknowledgement fence
+## Retry and acknowledgement fences
+
+The server wraps the PG repository in a bounded source-candidate retry policy:
+
+- maximum three attempts;
+- maximum two seconds total wall-clock budget;
+- `SafeImmediate` retries without delay;
+- `SafeBackoff` uses bounded 5–100 ms exponential delay;
+- `Never` and `ResyncRequired` return immediately;
+- exhaustion maps to stable `Unavailable/database_retry_budget_exhausted`.
+
+This source policy is not yet configurable, cancellation-aware, jittered, or proven against live PostgreSQL/CockroachDB failure modes.
 
 The application constructs the commit response only after `PgRepository::commit_command` has either:
 
@@ -77,7 +88,7 @@ Public responses expose only a stable code, generic message, and retry class. SQ
 
 ## Required source and execution tests
 
-The candidate contains tests for canonical hex, strict JSON, bounded configuration, HTTP framing rejection, both authoritative schema profiles, in-process health/readiness/bootstrap/commit, error redaction, authenticated drain, and length-difference-safe credential comparison.
+The candidate contains tests for canonical hex, strict JSON, bounded configuration, HTTP framing rejection, both authoritative schema profiles, in-process health/readiness/bootstrap/commit, error redaction, authenticated drain, length-difference-safe credential comparison, retry classification, attempt exhaustion, and invalid retry policy.
 
 The aggregate gate must run:
 
@@ -94,7 +105,8 @@ A workflow definition or local source inspection is not remote evidence. Credit 
 
 This slice does not implement or prove:
 
-- pool, TLS/mTLS, cancellation, or bounded total-deadline retry;
+- connection pool, acquire timeout, TLS/mTLS, certificate rotation, or cancellation;
+- configurable total deadline, jitter, statement timeout, or live failover retry evidence;
 - concurrent supervised connections;
 - session JWT and refresh/socket revocation;
 - gRPC, grpc-gateway, or WebSocket JSON/protobuf;
