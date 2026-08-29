@@ -7,9 +7,11 @@ use super::app::App;
 use super::config::ServerConfig;
 use super::error::ServerError;
 use super::http::{read_request, Response};
+use super::retry::{RetryPolicy, RetryingRepository};
 
 pub fn serve(config: &ServerConfig, repository: PgRepository) -> Result<(), ServerError> {
     let listener = TcpListener::bind(config.bind)?;
+    let repository = RetryingRepository::new(repository, RetryPolicy::candidate_default())?;
     let mut app = App::new(repository, config.admin_token.clone());
     eprintln!(
         "trnm-server source candidate listening on {} profile={}",
