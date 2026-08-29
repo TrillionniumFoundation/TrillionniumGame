@@ -50,8 +50,8 @@
   ],
   "summary": {
     "total": 34,
-    "triggered": 13,
-    "open_or_mitigating": 21,
+    "triggered": 12,
+    "open_or_mitigating": 22,
     "retired": 0,
     "rule": "Summary is validated and must be regenerated when risk statuses change."
   }
