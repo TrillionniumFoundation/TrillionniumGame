@@ -1,7 +1,7 @@
 {
   "schema": "trillionnium.trnm-server-status.v1",
   "project_id": "trillionnium-game",
-  "stage": "http-database-vertical-source-candidate",
+  "stage": "http-websocket-database-vertical-source-candidate",
   "binary_target": "trnm-server",
   "temporary_package": "crates/trnm-persistence-pg",
   "source_paths": [
@@ -18,13 +18,17 @@
     "bounded HTTP/1.1 content-length framing with connection close",
     "strict flat JSON and fixed-width lowercase hex decoding",
     "health, readiness, metrics and authenticated drain endpoints",
+    "candidate credential required before bootstrap, HTTP commit and WebSocket commit",
     "one authority bootstrap endpoint",
-    "one command, event and outbox commit endpoint",
+    "one command, event and outbox HTTP commit endpoint",
+    "one RFC 6455 WebSocket JSON subprotocol and single masked commit frame",
+    "RFC handshake accept, canonical base64, SHA-1 handshake helper and canonical frame lengths",
     "HTTP acknowledgement constructed only after durable commit or exact receipt replay",
+    "WebSocket result frame constructed from the same post-commit application response",
     "bounded three-attempt/two-second retry supervisor for SafeImmediate and SafeBackoff errors",
     "Never and ResyncRequired errors are not retried",
     "public error redaction and typed retry guidance",
-    "in-process fake-repository and retry-policy tests"
+    "in-process application, framing, handshake and retry-policy tests"
   ],
   "not_implemented_or_verified": [
     "exact-head Rust formatting, compile, tests and strict Clippy",
@@ -34,7 +38,7 @@
     "configurable retry policy and database-failover evidence",
     "concurrent bounded connection supervision",
     "gRPC server and grpc-gateway behavior",
-    "WebSocket JSON/protobuf handshake, framing and lifecycle",
+    "WebSocket protobuf subprotocol, heartbeat, continuation, reconnect and persistent lifecycle",
     "session JWT verification and refresh-family socket revocation",
     "distributed route registry, presence and cross-node fanout",
     "outbox worker lease, dispatch, reconciliation and restart",
@@ -46,11 +50,13 @@
   "claims": {
     "source_candidate": true,
     "bounded_retry_source_candidate": true,
+    "websocket_json_source_candidate": true,
     "remote_verified": false,
     "live_database_verified": false,
     "http_wire_compatible": false,
+    "websocket_wire_compatible": false,
     "grpc_implemented": false,
-    "websocket_implemented": false,
+    "websocket_protobuf_implemented": false,
     "session_integrated": false,
     "outbox_delivery_verified": false,
     "sg4_complete": false,
