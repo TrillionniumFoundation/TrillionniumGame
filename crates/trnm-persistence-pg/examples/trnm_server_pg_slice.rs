@@ -87,15 +87,14 @@ fn load_config() -> Result<Config, Box<dyn Error>> {
         value => return Err(format!("unsupported database profile {value:?}").into()),
     };
     let source_commit = env::var("TRNM_SCHEMA_SOURCE_COMMIT")?;
-    if source_commit.len() != 40
-        || !source_commit
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit())
-    {
+    if source_commit.len() != 40 || !source_commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("TRNM_SCHEMA_SOURCE_COMMIT must be a 40-character hexadecimal commit".into());
     }
     let token = env::var("TRNM_SERVER_DEV_TOKEN")?;
-    if token.len() < 32 || token.len() > 4096 || !token.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+    if token.len() < 32
+        || token.len() > 4096
+        || !token.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    {
         return Err("TRNM_SERVER_DEV_TOKEN must contain 32..=4096 visible ASCII bytes".into());
     }
     let max_requests = env::var("TRNM_SERVER_MAX_REQUESTS")?.parse::<usize>()?;

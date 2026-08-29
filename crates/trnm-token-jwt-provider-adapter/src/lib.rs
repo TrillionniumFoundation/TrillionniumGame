@@ -121,13 +121,18 @@ impl fmt::Display for AuthenticationError {
             Self::AlgorithmMissing => formatter.write_str("JWT alg header is missing"),
             Self::UnsupportedAlgorithm => formatter.write_str("JWT algorithm is not HS256"),
             Self::InvalidType => formatter.write_str("JWT typ header is invalid"),
-            Self::UnknownHeaderField => formatter.write_str("JWT header contains an unrecognized field"),
+            Self::UnknownHeaderField => {
+                formatter.write_str("JWT header contains an unrecognized field")
+            }
             Self::LegacyRouteForbidden => formatter.write_str("legacy JWT route is disabled"),
             Self::InvalidKeyId => formatter.write_str("JWT kid header is invalid"),
             Self::UnknownKey => formatter.write_str("JWT key route is unavailable"),
             Self::SignatureDecode => formatter.write_str("JWT signature base64url decode failed"),
             Self::SignatureLength { actual } => {
-                write!(formatter, "JWT signature is {actual} bytes; expected {SIGNATURE_BYTES}")
+                write!(
+                    formatter,
+                    "JWT signature is {actual} bytes; expected {SIGNATURE_BYTES}"
+                )
             }
             Self::Provider(error) => write!(formatter, "cryptographic provider failed: {error}"),
             Self::SignatureRejected => formatter.write_str("JWT signature was rejected"),
@@ -348,7 +353,9 @@ mod tests {
         .unwrap();
         assert_eq!(authenticated.route, TokenRoute::Legacy);
         assert_eq!(
-            authenticated.parse_claims(JsonLimits::default()).unwrap()
+            authenticated
+                .parse_claims(JsonLimits::default())
+                .unwrap()
                 .as_object()
                 .unwrap()
                 .get("sub")

@@ -61,9 +61,9 @@ impl TlsMode {
                 }
                 if server_name.is_empty()
                     || server_name.len() > 253
-                    || !server_name.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-')
-                    })
+                    || !server_name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
                 {
                     return Err(PolicyError::InvalidServerName);
                 }
@@ -77,8 +77,7 @@ fn validate_handle(value: &str) -> Result<(), PolicyError> {
     if value.is_empty()
         || value.len() > 512
         || !value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(byte, b'.' | b'_' | b':' | b'-' | b'/' | b'@')
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-' | b'/' | b'@')
         })
     {
         return Err(PolicyError::InvalidSecretHandle);
@@ -227,13 +226,8 @@ pub enum RetryStopReason {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetryDecision {
-    Retry {
-        next_attempt: u8,
-        delay_ms: u64,
-    },
-    Stop {
-        reason: RetryStopReason,
-    },
+    Retry { next_attempt: u8, delay_ms: u64 },
+    Stop { reason: RetryStopReason },
 }
 
 pub fn decide_retry(
@@ -306,10 +300,16 @@ impl fmt::Display for PolicyError {
             Self::InvalidServerName => "TLS server name is invalid",
             Self::InvalidPoolSize => "database pool size policy is invalid",
             Self::InvalidPoolTimeout => "database pool timeout policy is invalid",
-            Self::InvalidStatementTimeout => "database statement/lock/transaction timeout policy is invalid",
+            Self::InvalidStatementTimeout => {
+                "database statement/lock/transaction timeout policy is invalid"
+            }
             Self::InvalidRetryBudget => "database retry budget is invalid",
-            Self::RetryDeadlineExceedsTransactionTimeout => "retry deadline exceeds transaction timeout",
-            Self::InvalidCompletedAttempts => "retry context must include the failed initial attempt",
+            Self::RetryDeadlineExceedsTransactionTimeout => {
+                "retry deadline exceeds transaction timeout"
+            }
+            Self::InvalidCompletedAttempts => {
+                "retry context must include the failed initial attempt"
+            }
         })
     }
 }
@@ -319,7 +319,7 @@ impl std::error::Error for PolicyError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trnm_contracts::{StableCode};
+    use trnm_contracts::StableCode;
 
     fn error(retry: RetryClass) -> DomainError {
         DomainError::new(StableCode::Aborted, "test", retry)

@@ -88,8 +88,8 @@ impl ClientFrame {
         if !valid_close_code(code) {
             return Err(FrameError::InvalidCloseCode(code));
         }
-        let reason = std::str::from_utf8(&self.payload[2..])
-            .map_err(|_| FrameError::InvalidCloseReason)?;
+        let reason =
+            std::str::from_utf8(&self.payload[2..]).map_err(|_| FrameError::InvalidCloseReason)?;
         Ok(Some(CloseFrame {
             code: Some(code),
             reason,
@@ -125,17 +125,37 @@ impl fmt::Display for FrameError {
         match self {
             Self::Incomplete => formatter.write_str("WebSocket frame is incomplete"),
             Self::ReservedBitsSet => formatter.write_str("WebSocket RSV bits are not negotiated"),
-            Self::FragmentationUnsupported => formatter.write_str("fragmented WebSocket frames are not accepted by this profile"),
-            Self::UnsupportedOpcode(value) => write!(formatter, "unsupported WebSocket opcode {value:#x}"),
-            Self::ClientFrameNotMasked => formatter.write_str("client WebSocket frame must be masked"),
-            Self::PayloadLengthNonCanonical => formatter.write_str("WebSocket payload length uses a non-canonical encoding"),
-            Self::PayloadTooLarge { actual } => write!(formatter, "WebSocket payload {actual} exceeds {MAX_PAYLOAD_BYTES} bytes"),
-            Self::ControlPayloadTooLarge => formatter.write_str("WebSocket control payload exceeds 125 bytes"),
-            Self::InvalidTextUtf8 => formatter.write_str("WebSocket text payload is not valid UTF-8"),
+            Self::FragmentationUnsupported => {
+                formatter.write_str("fragmented WebSocket frames are not accepted by this profile")
+            }
+            Self::UnsupportedOpcode(value) => {
+                write!(formatter, "unsupported WebSocket opcode {value:#x}")
+            }
+            Self::ClientFrameNotMasked => {
+                formatter.write_str("client WebSocket frame must be masked")
+            }
+            Self::PayloadLengthNonCanonical => {
+                formatter.write_str("WebSocket payload length uses a non-canonical encoding")
+            }
+            Self::PayloadTooLarge { actual } => write!(
+                formatter,
+                "WebSocket payload {actual} exceeds {MAX_PAYLOAD_BYTES} bytes"
+            ),
+            Self::ControlPayloadTooLarge => {
+                formatter.write_str("WebSocket control payload exceeds 125 bytes")
+            }
+            Self::InvalidTextUtf8 => {
+                formatter.write_str("WebSocket text payload is not valid UTF-8")
+            }
             Self::InvalidClosePayload => formatter.write_str("WebSocket close payload is invalid"),
-            Self::InvalidCloseCode(code) => write!(formatter, "WebSocket close code {code} is invalid"),
-            Self::InvalidCloseReason => formatter.write_str("WebSocket close reason is not valid UTF-8"),
-            Self::EncodingOpcodeMismatch => formatter.write_str("WebSocket opcode does not match negotiated JSON/protobuf encoding"),
+            Self::InvalidCloseCode(code) => {
+                write!(formatter, "WebSocket close code {code} is invalid")
+            }
+            Self::InvalidCloseReason => {
+                formatter.write_str("WebSocket close reason is not valid UTF-8")
+            }
+            Self::EncodingOpcodeMismatch => formatter
+                .write_str("WebSocket opcode does not match negotiated JSON/protobuf encoding"),
         }
     }
 }
@@ -330,22 +350,7 @@ mod tests {
             decode_client_frame(&noncanonical).unwrap_err(),
             FrameError::PayloadLengthNonCanonical
         );
-        let too_large = [
-            0x82,
-            0x80 | 127,
-            0,
-            0,
-            0,
-            0,
-            0,
-            3,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ];
+        let too_large = [0x82, 0x80 | 127, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0];
         assert!(matches!(
             decode_client_frame(&too_large).unwrap_err(),
             FrameError::PayloadTooLarge { .. }

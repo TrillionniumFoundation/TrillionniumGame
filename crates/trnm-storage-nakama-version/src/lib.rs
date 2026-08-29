@@ -12,9 +12,9 @@
 use core::fmt;
 
 const ROTATIONS: [u32; 64] = [
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9,
-    14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-    4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9,
+    14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15,
+    21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
 ];
 
 const ROUND_CONSTANTS: [u32; 64] = [
@@ -95,7 +95,9 @@ impl PublicStorageVersion {
 
     pub fn parse_hex(value: &str) -> Result<Self, VersionError> {
         if value.len() != 32 {
-            return Err(VersionError::InvalidLength { actual: value.len() });
+            return Err(VersionError::InvalidLength {
+                actual: value.len(),
+            });
         }
         let bytes = value.as_bytes();
         let mut output = [0u8; 16];

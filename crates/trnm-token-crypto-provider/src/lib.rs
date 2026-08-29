@@ -124,9 +124,13 @@ impl fmt::Display for ProviderError {
                 "JWT signing input {actual} bytes exceeds {MAX_SIGNING_INPUT_BYTES}"
             ),
             Self::KeyUnavailable => formatter.write_str("cryptographic key is unavailable"),
-            Self::PermissionDenied => formatter.write_str("cryptographic operation is not permitted"),
+            Self::PermissionDenied => {
+                formatter.write_str("cryptographic operation is not permitted")
+            }
             Self::RateLimited => formatter.write_str("cryptographic provider is rate limited"),
-            Self::DeadlineExceeded => formatter.write_str("cryptographic provider deadline exceeded"),
+            Self::DeadlineExceeded => {
+                formatter.write_str("cryptographic provider deadline exceeded")
+            }
             Self::Cancelled => formatter.write_str("cryptographic provider operation cancelled"),
             Self::Internal => formatter.write_str("cryptographic provider internal failure"),
         }
@@ -178,9 +182,8 @@ pub fn verify_exact(
     signature: &[u8],
 ) -> Result<VerificationDecision, ProviderError> {
     validate_signing_input(exact_signing_input)?;
-    let signature: [u8; SIGNATURE_BYTES] = signature
-        .try_into()
-        .map_err(|_| ProviderError::Internal)?;
+    let signature: [u8; SIGNATURE_BYTES] =
+        signature.try_into().map_err(|_| ProviderError::Internal)?;
     provider.verify(key, exact_signing_input, &Signature32::new(signature))
 }
 
@@ -228,7 +231,12 @@ mod tests {
     }
 
     fn key(domain: KeyDomain) -> KeyReference {
-        KeyReference::new(domain, KeyHandle::new("kms://token/key-1").unwrap(), Some(7)).unwrap()
+        KeyReference::new(
+            domain,
+            KeyHandle::new("kms://token/key-1").unwrap(),
+            Some(7),
+        )
+        .unwrap()
     }
 
     #[test]
