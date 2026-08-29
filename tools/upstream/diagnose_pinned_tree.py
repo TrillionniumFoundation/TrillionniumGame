@@ -17,7 +17,7 @@ import stat
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
 from tools.upstream.pinned_archive import (  # noqa: E402
     SourceArchiveError,
     extract_github_tarball,
-    git_blob_sha1,
+    git_blob_sha1_bytes,
     http_bytes,
     normalize_gitlink_map,
 )
@@ -162,7 +162,7 @@ def local_inventory(
                     )
                 )
             elif stat.S_ISLNK(mode):
-                object_sha = git_blob_sha1(os.fsencode(os.readlink(child)))
+                object_sha = git_blob_sha1_bytes(os.fsencode(os.readlink(child)))
                 inventory[relative_text] = {
                     "mode": "120000",
                     "type": "blob",
@@ -176,7 +176,7 @@ def local_inventory(
                     )
                 )
             elif stat.S_ISREG(mode):
-                object_sha = git_blob_sha1(child.read_bytes())
+                object_sha = git_blob_sha1_bytes(child.read_bytes())
                 object_mode = "100755" if mode & 0o111 else "100644"
                 inventory[relative_text] = {
                     "mode": object_mode,
