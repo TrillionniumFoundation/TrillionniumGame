@@ -165,12 +165,12 @@ type VerifiedTransition struct {
 }
 
 type Receipt struct {
-	Schema                 string       `json:"schema"`
+	Schema                string      `json:"schema"`
 	ClientCommandID       string      `json:"client_command_id"`
 	IntentFingerprint     string      `json:"intent_fingerprint"`
 	ReservationID         string      `json:"reservation_id"`
 	Generation            uint64      `json:"generation"`
-	Disposition            Disposition `json:"disposition"`
+	Disposition           Disposition `json:"disposition"`
 	EventSequence         *uint64     `json:"event_sequence,omitempty"`
 	MatchVersion          uint64      `json:"match_version"`
 	StateRevision         uint64      `json:"state_revision"`
@@ -194,17 +194,27 @@ type PrepareResult struct {
 }
 
 type StatusReport struct {
-	Schema                  string `json:"schema"`
-	PendingReservations     int    `json:"pending_reservations"`
-	RetiredReservations     int    `json:"retired_reservations"`
-	Receipts                int    `json:"receipts"`
-	TotalAttempts           uint64 `json:"total_attempts"`
-	OldestPendingAgeSeconds int64  `json:"oldest_pending_age_seconds"`
-	StateRevision           uint64 `json:"state_revision"`
-	StateHash               string `json:"state_hash"`
-	Tick                    int64  `json:"tick"`
-	MatchVersion            uint64 `json:"match_version"`
-	NextGlobalEventSequence uint64 `json:"next_global_event_sequence"`
+	Schema                    string `json:"schema"`
+	PendingReservations       int    `json:"pending_reservations"`
+	RetiredReservations       int    `json:"retired_reservations"`
+	Receipts                  int    `json:"receipts"`
+	TotalAttempts             uint64 `json:"total_attempts"`
+	RetryableAttempts         uint64 `json:"retryable_attempts"`
+	CancelledAttempts         uint64 `json:"cancelled_attempts"`
+	TransportFailures         uint64 `json:"transport_failures"`
+	AmbiguousCommitFailures   uint64 `json:"ambiguous_commit_failures"`
+	InvalidResultFailures     uint64 `json:"invalid_result_failures"`
+	RemoteRetryableRejections uint64 `json:"remote_retryable_rejections"`
+	PersistenceFailures       uint64 `json:"persistence_failures"`
+	StaleRejects              uint64 `json:"stale_rejects"`
+	OperatorAborts            uint64 `json:"operator_aborts"`
+	SupersededGenerations     uint64 `json:"superseded_generations"`
+	OldestPendingAgeSeconds   int64  `json:"oldest_pending_age_seconds"`
+	StateRevision             uint64 `json:"state_revision"`
+	StateHash                 string `json:"state_hash"`
+	Tick                      int64  `json:"tick"`
+	MatchVersion              uint64 `json:"match_version"`
+	NextGlobalEventSequence   uint64 `json:"next_global_event_sequence"`
 }
 
 type Codec interface {
