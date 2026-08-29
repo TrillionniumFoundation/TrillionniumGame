@@ -44,7 +44,7 @@ services:
         database="postgres:$${TRNM_ORACLE_DB_PASSWORD}@postgres:5432/nakama"
         /nakama/nakama migrate up --database.address "$$database"
         exec /nakama/nakama \
-          --name trnm-immutable-oracle \
+          --name trnm-oracle \
           --database.address "$$database" \
           --logger.level INFO \
           --session.encryption_key "$${TRNM_ORACLE_SESSION_KEY}" \
