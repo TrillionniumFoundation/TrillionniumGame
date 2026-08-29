@@ -1,0 +1,50 @@
+name: repository-governance-contract
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/apply-repository-governance.sh'
+      - 'docs/governance/REPOSITORY_GOVERNANCE_APPLY.md'
+      - '.github/CODEOWNERS'
+      - '.github/workflows/trillionnium-game-merge-gate.yml'
+      - '.github/workflows/repository-governance-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/apply-repository-governance.sh'
+      - 'docs/governance/REPOSITORY_GOVERNANCE_APPLY.md'
+      - '.github/CODEOWNERS'
+      - '.github/workflows/trillionnium-game-merge-gate.yml'
+      - '.github/workflows/repository-governance-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fail-closed-source-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate shell syntax and immutable identifiers
+        run: |
+          set -euo pipefail
+          bash -n scripts/apply-repository-governance.sh
+          grep -q 'TrillionniumFoundation/TrillionniumGame' scripts/apply-repository-governance.sh
+          grep -q 'repository_id=1323087470' scripts/apply-repository-governance.sh
+          grep -q 'required_context=trillionnium-game-merge-gate' scripts/apply-repository-governance.sh
+          grep -q 'TRNM_EXPECTED_MAIN' scripts/apply-repository-governance.sh
+          grep -q 'completed.*successful' docs/governance/REPOSITORY_GOVERNANCE_APPLY.md
+      - name: Prove mutation cannot run without confirmation
+        run: |
+          set -euo pipefail
+          if env -u TRNM_GOVERNANCE_CONFIRM \
+            TRNM_EXPECTED_MAIN=0000000000000000000000000000000000000000 \
+            bash scripts/apply-repository-governance.sh run/governance/negative; then
+            echo 'governance mutation ran without explicit confirmation' >&2
+            exit 1
+          fi
