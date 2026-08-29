@@ -3,6 +3,12 @@
   "project_id": "trillionnium-game",
   "plan_version": 3,
   "effective_date": "2026-08-29",
+  "migration_lock": {
+    "path": "migrations/MIGRATION_CHAIN.lock.json",
+    "validator": "python3 scripts/check-migration-lock.py",
+    "identity": "ordered path plus Git blob SHA-1 per profile; exact chain SHA-256 emitted by validation",
+    "runtime_execution_credit": false
+  },
   "authority": {
     "migration_root": "migrations",
     "profiles": [
@@ -73,6 +79,7 @@
       "expand-contract plan",
       "forward-fix and rollback barrier",
       "both profile DDL and adapter update",
+      "migration lock update",
       "catalog and data-semantic differential",
       "backup/restore impact",
       "evidence and status update",
@@ -84,6 +91,7 @@
   },
   "gap": "GAP-P0-DATA-001",
   "claim_boundary": {
+    "migration_source_identity_locked": true,
     "single_node_foundation_evidence_exists": true,
     "database_durable": false,
     "migration_compatible": false,
