@@ -1,34 +1,103 @@
 name: trillionnium-game-actions-unblock-smoke
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches:
+      - feat/plan-v3-gap-closure-2026-08-29
     paths:
       - '.github/workflows/actions-unblock-smoke.yml'
-  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: actions-unblock-smoke-${{ github.ref }}
-  cancel-in-progress: false
+  group: actions-unblock-smoke-migration-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  repository-native-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+  migrate-native-workflows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      BRANCH: feat/plan-v3-gap-closure-2026-08-29
+      EXPECTED_SHA: ${{ github.sha }}
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
-      - name: Record exact execution identity without checkout or external actions
+      - name: Fetch exact feature head
         shell: bash
         run: |
           set -euo pipefail
-          printf 'repository=%s\n' "$GITHUB_REPOSITORY"
-          printf 'sha=%s\n' "$GITHUB_SHA"
-          printf 'ref=%s\n' "$GITHUB_REF"
-          printf 'event=%s\n' "$GITHUB_EVENT_NAME"
-          printf 'run_id=%s\n' "$GITHUB_RUN_ID"
-          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
-          test -n "$GITHUB_SHA"
-          test -n "$GITHUB_RUN_ID"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$EXPECTED_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$BRANCH" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Convert bounded workflow set
+        run: python3 scripts/migrate-new-workflows-native.py
+      - name: Restore permanent read-only smoke and remove one-shot machinery
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > .github/workflows/actions-unblock-smoke.yml <<'YAML'
+          name: trillionnium-game-actions-unblock-smoke
+
+          on:
+            pull_request:
+            push:
+              branches: [main]
+              paths:
+                - '.github/workflows/actions-unblock-smoke.yml'
+            workflow_dispatch:
+
+          permissions:
+            contents: read
+
+          concurrency:
+            group: actions-unblock-smoke-${{ github.ref }}
+            cancel-in-progress: false
+
+          jobs:
+            repository-native-smoke:
+              runs-on: ubuntu-latest
+              timeout-minutes: 5
+              steps:
+                - name: Record exact execution identity without checkout or external actions
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+                    printf 'sha=%s\n' "$GITHUB_SHA"
+                    printf 'ref=%s\n' "$GITHUB_REF"
+                    printf 'event=%s\n' "$GITHUB_EVENT_NAME"
+                    printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+                    test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
+                    test -n "$GITHUB_SHA"
+                    test -n "$GITHUB_RUN_ID"
+          YAML
+          rm -f \
+            .github/workflows/native-workflow-migration-autofix.yml \
+            .github/workflows/contract-drift-autofix.yml \
+            scripts/migrate-new-workflows-native.py
+      - name: Validate final workflow policy and source hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
+          git diff --check
+      - name: Commit final native definitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --short
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A -- .github/workflows scripts/migrate-new-workflows-native.py
+          git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
+          git commit -m 'fix(ci): migrate new workflows to native exact-head execution'
+          git remote set-url origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${BRANCH}"
