@@ -37,12 +37,42 @@ TRNM_ORACLE_CONSOLE_PASSWORD=$(secret console-password)
 EOF
 chmod 600 "$env_file"
 
+redact_compose_log() {
+  local raw=$1
+  local target=$2
+  python3 - "$env_file" "$raw" "$target" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+env_path, raw_path, target_path = map(Path, sys.argv[1:])
+text = raw_path.read_text(encoding="utf-8", errors="replace")
+values = []
+for line in env_path.read_text(encoding="utf-8").splitlines():
+    if not line or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    if key.endswith(("PASSWORD", "KEY")) and value:
+        values.append(value.strip("'\""))
+for value in sorted(set(values), key=len, reverse=True):
+    text = text.replace(value, "<redacted>")
+target_path.write_text(text, encoding="utf-8")
+PY
+}
+
 cleanup() {
   status=$?
   if [[ $status -ne 0 ]]; then
-    docker compose --env-file "$env_file" -f "$compose" ps -a       >"$output/compose-ps.txt" 2>&1 || true
-    docker compose --env-file "$env_file" -f "$compose" logs --no-color       >"$output/compose-logs.txt" 2>&1 || true
-    printf 'immutable oracle failed; diagnostics: %s and %s\n'       "$output/compose-ps.txt" "$output/compose-logs.txt" >&2
+    docker compose --env-file "$env_file" -f "$compose" ps -a \
+      >"$output/compose-ps.txt" 2>&1 || true
+    docker compose --env-file "$env_file" -f "$compose" logs --no-color \
+      >"$output/compose-logs.raw.txt" 2>&1 || true
+    redact_compose_log "$output/compose-logs.raw.txt" "$output/compose-logs.txt" || true
+    rm -f "$output/compose-logs.raw.txt"
+    printf 'immutable oracle failed; redacted diagnostics follow\n' >&2
+    cat "$output/compose-ps.txt" >&2 || true
+    tail -n 240 "$output/compose-logs.txt" >&2 || true
   fi
   if [[ ${TRNM_KEEP_ORACLE:-0} != 1 ]]; then
     docker compose --env-file "$env_file" -f "$compose" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -71,7 +101,7 @@ postgres_container=$(docker compose --env-file "$env_file" -f "$compose" ps -q p
 nakama_image_id=$(docker inspect --format '{{.Image}}' "$nakama_container")
 postgres_image_id=$(docker inspect --format '{{.Image}}' "$postgres_container")
 table_count=$(docker compose --env-file "$env_file" -f "$compose" exec -T postgres \
-  psql -U postgres -d nakama -Atc "select count(*) from information_schema.tables where table_schema='public';")
+  psql -X -U postgres -d nakama -Atc "select count(*) from information_schema.tables where table_schema='public';")
 [[ $table_count =~ ^[0-9]+$ ]] || { echo "invalid public table count: $table_count" >&2; exit 1; }
 completed=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
