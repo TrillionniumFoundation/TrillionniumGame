@@ -57,18 +57,18 @@ EXPECTED_DEPENDENCIES: dict[str, dict[str, Any]] = {
         "trnm-contracts": {"path": "../trnm-contracts"},
     },
 }
-FORBIDDEN_PURE_CORE = (
-    "unsafe {",
-    "std::net",
-    "std::time",
-    "SystemTime",
-    "tokio",
-    "reqwest",
-    "sqlx",
-    "postgres",
-    "rand::",
-    "ring::",
-    "ed25519",
+FORBIDDEN_PURE_CORE_PATTERNS = (
+    r"\bunsafe\s*\{",
+    r"\bstd::net\b",
+    r"\bstd::time\b",
+    r"\bSystemTime\b",
+    r"\btokio(?:::|\b)",
+    r"\breqwest(?:::|\b)",
+    r"\bsqlx(?:::|\b)",
+    r"\bpostgres(?:::|\b)",
+    r"\brand::",
+    r"\bring::",
+    r"\bed25519\b",
 )
 REQUIRED_TESTS = {
     "first_command_commits_and_advances_global_and_participant_sequences",
@@ -167,9 +167,9 @@ def main() -> int:
         for member in sorted(PURE_CORE_MEMBERS)
         for path in sorted((ROOT / member / "src").rglob("*.rs"))
     )
-    for marker in FORBIDDEN_PURE_CORE:
-        if marker in pure_core:
-            fail(f"forbidden pure-core dependency/capability: {marker}")
+    for pattern in FORBIDDEN_PURE_CORE_PATTERNS:
+        if re.search(pattern, pure_core):
+            fail(f"forbidden pure-core dependency/capability pattern: {pattern}")
 
     combined = "\n".join(
         path.read_text(encoding="utf-8") for path in [*all_sources, *all_tests]
