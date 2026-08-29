@@ -71,10 +71,8 @@ fn apply_overrides(
                     .map_err(|_| ConfigError::InvalidValue("--bind"))?;
             }
             "--workers" => {
-                config.worker_count = parse_usize(
-                    &next_value(&mut arguments, "--workers")?,
-                    "--workers",
-                )?;
+                config.worker_count =
+                    parse_usize(&next_value(&mut arguments, "--workers")?, "--workers")?;
             }
             "--queue-capacity" => {
                 config.queue_capacity = parse_usize(
@@ -99,9 +97,7 @@ fn next_value(
     arguments: &mut impl Iterator<Item = String>,
     option: &'static str,
 ) -> Result<String, ConfigError> {
-    arguments
-        .next()
-        .ok_or(ConfigError::InvalidValue(option))
+    arguments.next().ok_or(ConfigError::InvalidValue(option))
 }
 
 fn parse_usize(value: &str, name: &'static str) -> Result<usize, ConfigError> {

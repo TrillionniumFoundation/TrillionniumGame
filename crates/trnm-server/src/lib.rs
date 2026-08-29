@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use trnm_contracts::{CommandId, Digest32, DomainError, StableCode};
 use trnm_persistence_core::{
-    CommandIntent, DurableState, EntityId, EventId, EventInput, IntentId, IntentKind,
-    OutboxInput, PrepareOutcome, Receipt,
+    CommandIntent, DurableState, EntityId, EventId, EventInput, IntentId, IntentKind, OutboxInput,
+    PrepareOutcome, Receipt,
 };
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -93,7 +93,9 @@ impl fmt::Display for ConfigError {
         match self {
             Self::NonUnicode(name) => write!(formatter, "environment variable {name} is not UTF-8"),
             Self::InvalidValue(name) => write!(formatter, "configuration value {name} is invalid"),
-            Self::OutOfRange(name) => write!(formatter, "configuration value {name} is out of range"),
+            Self::OutOfRange(name) => {
+                write!(formatter, "configuration value {name} is out of range")
+            }
         }
     }
 }
@@ -192,8 +194,7 @@ impl Application {
 
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.shared.ready.load(Ordering::Acquire)
-            && !self.shared.draining.load(Ordering::Acquire)
+        self.shared.ready.load(Ordering::Acquire) && !self.shared.draining.load(Ordering::Acquire)
     }
 
     pub fn handle(&self, request: &HttpRequest) -> HttpResponse {
@@ -202,9 +203,7 @@ impl Application {
             ("GET", "/readyz") if self.is_ready() => {
                 HttpResponse::json(200, "{\"status\":\"ready\"}".to_owned())
             }
-            ("GET", "/readyz") => {
-                HttpResponse::json(503, "{\"status\":\"not_ready\"}".to_owned())
-            }
+            ("GET", "/readyz") => HttpResponse::json(503, "{\"status\":\"not_ready\"}".to_owned()),
             ("POST", "/v1/bootstrap") => self.handle_bootstrap(request.body()),
             ("POST", "/v1/command") => self.handle_command(request.body()),
             ("GET", _) | ("POST", _) => HttpResponse::json(
@@ -213,8 +212,7 @@ impl Application {
             ),
             _ => HttpResponse::json(
                 405,
-                "{\"code\":\"invalid_argument\",\"reason\":\"method_not_allowed\"}"
-                    .to_owned(),
+                "{\"code\":\"invalid_argument\",\"reason\":\"method_not_allowed\"}".to_owned(),
             ),
         }
     }
@@ -307,11 +305,20 @@ impl Server {
             )?);
         }
 
-        self.application.shared.draining.store(false, Ordering::Release);
+        self.application
+            .shared
+            .draining
+            .store(false, Ordering::Release);
         self.application.shared.ready.store(true, Ordering::Release);
         let accept_result = self.accept_loop(&listener, &sender, &shutdown);
-        self.application.shared.ready.store(false, Ordering::Release);
-        self.application.shared.draining.store(true, Ordering::Release);
+        self.application
+            .shared
+            .ready
+            .store(false, Ordering::Release);
+        self.application
+            .shared
+            .draining
+            .store(true, Ordering::Release);
         drop(sender);
         for worker in workers {
             worker.join().map_err(|_| ServerError::WorkerPanicked)?;
@@ -436,7 +443,10 @@ fn spawn_worker(
         .map_err(ServerError::WorkerSpawn)
 }
 
-fn read_request(stream: &mut TcpStream, max_request_bytes: usize) -> Result<HttpRequest, ProtocolError> {
+fn read_request(
+    stream: &mut TcpStream,
+    max_request_bytes: usize,
+) -> Result<HttpRequest, ProtocolError> {
     let mut buffer = Vec::with_capacity(1024);
     let header_end = loop {
         if let Some(index) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
@@ -548,8 +558,7 @@ fn protocol_error_response(error: &ProtocolError) -> HttpResponse {
     match error {
         ProtocolError::RequestTooLarge | ProtocolError::HeaderTooLarge => HttpResponse::json(
             413,
-            "{\"code\":\"resource_exhausted\",\"reason\":\"request_too_large\"}"
-                .to_owned(),
+            "{\"code\":\"resource_exhausted\",\"reason\":\"request_too_large\"}".to_owned(),
         ),
         ProtocolError::Io(source) if source.kind() == ErrorKind::TimedOut => HttpResponse::json(
             400,
@@ -561,8 +570,7 @@ fn protocol_error_response(error: &ProtocolError) -> HttpResponse {
         | ProtocolError::UnsupportedTransferEncoding
         | ProtocolError::UnexpectedEnd => HttpResponse::json(
             400,
-            "{\"code\":\"invalid_argument\",\"reason\":\"malformed_http_request\"}"
-                .to_owned(),
+            "{\"code\":\"invalid_argument\",\"reason\":\"malformed_http_request\"}".to_owned(),
         ),
     }
 }
@@ -691,21 +699,22 @@ mod tests {
     #[test]
     fn command_is_atomic_idempotent_and_revision_fenced() {
         let application = Application::new();
-        let bootstrap = application.handle(&HttpRequest::new(
-            "POST",
-            "/v1/bootstrap",
-            bootstrap_body(),
-        ));
+        let bootstrap =
+            application.handle(&HttpRequest::new("POST", "/v1/bootstrap", bootstrap_body()));
         assert_eq!(bootstrap.status(), 201);
 
         let body = command_body(10, 0);
         let applied = application.handle(&HttpRequest::new("POST", "/v1/command", body.clone()));
         assert_eq!(applied.status(), 200);
-        assert!(str::from_utf8(applied.body()).unwrap().contains("\"outcome\":\"applied\""));
+        assert!(str::from_utf8(applied.body())
+            .unwrap()
+            .contains("\"outcome\":\"applied\""));
 
         let duplicate = application.handle(&HttpRequest::new("POST", "/v1/command", body));
         assert_eq!(duplicate.status(), 200);
-        assert!(str::from_utf8(duplicate.body()).unwrap().contains("\"outcome\":\"duplicate\""));
+        assert!(str::from_utf8(duplicate.body())
+            .unwrap()
+            .contains("\"outcome\":\"duplicate\""));
 
         let stale = application.handle(&HttpRequest::new(
             "POST",
@@ -713,7 +722,9 @@ mod tests {
             command_body(20, 0),
         ));
         assert_eq!(stale.status(), 409);
-        assert!(str::from_utf8(stale.body()).unwrap().contains("entity_revision_mismatch"));
+        assert!(str::from_utf8(stale.body())
+            .unwrap()
+            .contains("entity_revision_mismatch"));
     }
 
     #[test]
@@ -781,6 +792,8 @@ mod tests {
             vec![0; COMMAND_BODY_BYTES - 1],
         ));
         assert_eq!(response.status(), 400);
-        assert!(str::from_utf8(response.body()).unwrap().contains("invalid_body_length"));
+        assert!(str::from_utf8(response.body())
+            .unwrap()
+            .contains("invalid_body_length"));
     }
 }
