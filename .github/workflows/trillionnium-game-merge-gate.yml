@@ -35,13 +35,16 @@ jobs:
           git show -s --format='commit=%H%ntree=%T' "$GITHUB_SHA"
       - name: Validate plan, status, gates and schema authority
         run: python3 scripts/check-plan.py
+      - name: Validate Rust server source contract
+        run: python3 scripts/check-trnm-server.py
       - name: Compile control scripts
         run: |
           python3 -m py_compile \
             scripts/check-plan.py \
             scripts/check-status-transitions.py \
             scripts/derive-gates.py \
-            scripts/check-schema-authority.py
+            scripts/check-schema-authority.py \
+            scripts/check-trnm-server.py
 
   rust-workspace:
     name: rust-workspace
@@ -58,9 +61,9 @@ jobs:
           rustup override set 1.85.1
       - name: Format
         run: cargo fmt --all -- --check
-      - name: Test
+      - name: Test all libraries, binaries and integration targets
         run: cargo test --workspace --all-targets --locked
-      - name: Strict lint
+      - name: Strict lint all libraries, binaries and integration targets
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   security-critical-rust:
