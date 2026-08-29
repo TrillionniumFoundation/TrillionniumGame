@@ -1,0 +1,58 @@
+{
+  "schema": "trillionnium.rust-server-vertical-slice-status.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "status": "source-candidate",
+  "implementation": "crates/trnm-server",
+  "contract": "contracts/server/rust-server-vertical-slice.v1.json",
+  "gap_id": "GAP-P0-SERVER-001",
+  "implemented": [
+    "typed bounded config and CLI",
+    "Rust process composition root",
+    "fixed worker pool",
+    "bounded accepted-connection queue",
+    "read/write timeouts",
+    "health and readiness",
+    "library drain signal",
+    "fixed-width internal bootstrap command",
+    "fixed-width internal authority command",
+    "in-memory revision and generation fencing",
+    "in-memory exact duplicate receipt replay",
+    "in-memory atomic event and outbox intent creation"
+  ],
+  "not_implemented": [
+    "OS signal handling and supervised async task tree",
+    "PostgreSQL repository binding",
+    "CockroachDB repository binding",
+    "database pool TLS timeout and retry policy",
+    "acknowledgement after durable commit",
+    "durable outbox worker and recovery",
+    "Nakama HTTP JSON v2 compatibility",
+    "gRPC and grpc-gateway",
+    "WebSocket JSON and protobuf",
+    "session JWT and refresh revocation",
+    "metrics traces logs and release packaging",
+    "immutable oracle differential",
+    "live fault and restart evidence",
+    "independent database protocol security and SRE review"
+  ],
+  "verification": {
+    "source_present": true,
+    "exact_head_local_commands_recorded": false,
+    "target_native_actions_run": false,
+    "independent_review": false,
+    "evidence_ids": []
+  },
+  "claims": {
+    "source_vertical_slice_exists": true,
+    "locally_verified": false,
+    "remote_verified": false,
+    "nakama_wire_compatible": false,
+    "database_durable": false,
+    "sg4_complete": false,
+    "compatibility_credit": false,
+    "production_ready": false,
+    "public_online": false,
+    "nakama_replaced": false
+  }
+}
