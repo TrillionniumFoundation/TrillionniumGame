@@ -1,8 +1,18 @@
-# `trnm-server` source vertical slice
+# `trnm-server-foundation` source vertical slice
 
 Status: **source candidate; no compatibility, durability, SG4 or production credit**.
 
-This standalone Rust binary establishes the first bounded process composition root for the plan-v3 vertical-slice program. It currently provides:
+Machine claim boundary:
+
+```text
+canonical_server_binary=false
+compatibility_credit=false
+production_ready=false
+```
+
+This standalone Rust foundation-prototype binary establishes a bounded process composition root for the plan-v3 vertical-slice program. The temporary canonical `trnm-server` binary remains the database-backed target in `crates/trnm-persistence-pg`; this crate cannot receive canonical server, compatibility or production credit while both lines are being consolidated.
+
+It currently provides:
 
 - typed environment/CLI configuration with explicit bounds;
 - fixed-size worker pool and bounded accepted-connection queue;
@@ -19,8 +29,10 @@ This standalone Rust binary establishes the first bounded process composition ro
 ## Run
 
 ```bash
-cargo run --manifest-path crates/trnm-server/Cargo.toml --locked -- check-config
-cargo run --manifest-path crates/trnm-server/Cargo.toml --locked -- serve \
+cargo run --manifest-path crates/trnm-server/Cargo.toml --locked \
+  --bin trnm-server-foundation -- check-config
+cargo run --manifest-path crates/trnm-server/Cargo.toml --locked \
+  --bin trnm-server-foundation -- serve \
   --bind 127.0.0.1:7350 \
   --workers 4 \
   --queue-capacity 128
@@ -47,6 +59,7 @@ Responses are bounded JSON with stable source-slice fields. `GET /healthz` is li
 
 The following are blockers, not implied capabilities:
 
+- canonical server package extraction and removal of the temporary dual implementation line;
 - PostgreSQL/CockroachDB repository wiring and acknowledgement-after-durable-commit;
 - database retry, pool, TLS, migration and outbox worker execution;
 - HTTP/JSON v2, gRPC, grpc-gateway and official SDK compatibility;
