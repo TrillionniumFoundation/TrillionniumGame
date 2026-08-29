@@ -51,6 +51,7 @@ if status.get("backlog_id") != "WORLD-P0-003":
     raise SystemExit("adapter backlog binding drift")
 if status.get("status") not in {
     "implemented_pending_exact_head_ci",
+    "implemented_python_and_go_pending_exact_head_ci",
     "verified_remote",
 }:
     raise SystemExit("adapter delivery status is invalid")
