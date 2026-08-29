@@ -1,0 +1,13 @@
+[package]
+name = "trnm-realtime-wire"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Bounded RFC6455 frame boundary for TrillionniumGame realtime ingress"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
