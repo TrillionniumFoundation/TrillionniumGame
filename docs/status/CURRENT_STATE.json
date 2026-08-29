@@ -23,16 +23,23 @@
     "blocking_gaps": ["GAP-P0-CI-001", "GAP-P0-GOV-001"]
   },
   "runtime_topology": {
-    "current_runnable_path": "official Nakama v3.40.0 plus first-party Go plugin under runtime/",
+    "current_proven_runnable_path": "official Nakama v3.40.0 plus first-party Go plugin under runtime/",
     "target_runnable_path": "first-party Rust trnm-server without Go server, Go sidecar or compiled Go plugin loader",
-    "rust_server_binary_present": false,
+    "rust_server_binary_present": true,
+    "rust_server_stage": "http-database-vertical-source-candidate",
+    "rust_server_remote_verified": false,
     "go_plugin_is_target_evidence": false,
-    "status": "migration-source-and-oracle-only"
+    "status": "Rust binary source exists; proven runtime remains migration source and oracle only"
   },
   "implementation": {
     "rust_foundation_crates_present": true,
     "postgresql_single_node_schema_evidence_present": true,
     "cockroachdb_single_node_schema_evidence_present": true,
+    "authoritative_migration_chain_selected": true,
+    "alternate_schema_quarantined_at_source": true,
+    "storage_public_version_source_candidate": true,
+    "outbox_retry_terminal_source_fix": true,
+    "jwt_length_comparison_source_fix": true,
     "database_durability_claim": false,
     "multi_node_claim": false,
     "complete_protocol_server": false,
@@ -67,10 +74,11 @@
   },
   "active_priority": [
     "restore exact-head native CI and repository governance",
-    "make plan, status, gaps and gates machine-consistent",
-    "establish one production-authoritative migration chain",
-    "fix confirmed crypto comparison and outbox terminal-transition defects",
-    "deliver the first end-to-end Rust server vertical slice"
+    "compile and strictly lint the new Rust binary on the exact head",
+    "execute the HTTP/database vertical slice on both authoritative database profiles",
+    "add bounded retry, pool and TLS transport boundaries",
+    "integrate session verification, gRPC and WebSocket",
+    "classify and lock all D0-D8 denominator leaves"
   ],
   "fail_closed": true
 }
