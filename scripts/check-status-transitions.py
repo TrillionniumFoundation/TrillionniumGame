@@ -182,7 +182,10 @@ def validate_execution(gaps: dict[str, dict[str, Any]]) -> None:
     seen_tasks: set[str] = set()
     for row in state.get("task_overrides", []):
         task_id = row.get("id")
-        require(isinstance(task_id, str) and re.fullmatch(r"TG-W\d+-\d{3}", task_id), "task override ID")
+        require(
+            isinstance(task_id, str) and re.fullmatch(r"TG-W\d+-\d{3}", task_id),
+            "task override ID",
+        )
         require(task_id not in seen_tasks, f"duplicate task override {task_id}")
         seen_tasks.add(task_id)
         require(row.get("status") in TASK_STATES, f"{task_id}: invalid status")
@@ -199,6 +202,9 @@ def validate_roadmap(gaps: dict[str, dict[str, Any]]) -> None:
         require(re.fullmatch(r"TG-V3-\d{3}", item_id) is not None, f"{item_id}: invalid ID")
         require(row.get("status") in TASK_STATES, f"{item_id}: invalid status")
         require(row.get("priority") in {"P0", "P1", "P2"}, f"{item_id}: invalid priority")
+        require(bool(row.get("deliverables")), f"{item_id}: deliverables")
+        require(bool(row.get("acceptance")), f"{item_id}: acceptance")
+        require(bool(row.get("required_evidence")), f"{item_id}: required evidence")
         unknown_gaps = set(row.get("gap_ids", [])) - set(gaps)
         require(not unknown_gaps, f"{item_id}: unknown gaps {sorted(unknown_gaps)}")
         graph[item_id] = row.get("depends_on", [])
@@ -278,6 +284,87 @@ def validate_divergences(gaps: dict[str, dict[str, Any]]) -> None:
     require(document.get("open_p1_count") == open_p1, "open P1 divergence count")
 
 
+def validate_inventory(
+    gaps: dict[str, dict[str, Any]], evidence: dict[str, dict[str, Any]], accepted: set[str]
+) -> None:
+    document = load_json("docs/status/IMPLEMENTATION_INVENTORY.json")
+    require(document.get("schema") == "trillionnium.implementation-inventory.v2", "inventory schema")
+    components = unique_rows(document.get("components", []), "id", "components")
+    required_components = {
+        "COMP-CONTRACTS",
+        "COMP-STORAGE",
+        "COMP-PERSISTENCE-CORE",
+        "COMP-PERSISTENCE-PG",
+        "COMP-TRNM-SERVER",
+        "COMP-TOKEN-JWT",
+        "COMP-MIGRATIONS",
+        "COMP-SCHEMA-DESIGN-V2",
+        "COMP-CI-CONTROL",
+    }
+    require(required_components <= set(components), "implementation inventory missing required components")
+    for component_id, row in components.items():
+        require(bool(row.get("path")), f"{component_id}: path")
+        require(bool(row.get("kind")), f"{component_id}: kind")
+        require(bool(row.get("status")), f"{component_id}: status")
+        require(isinstance(row.get("implemented"), list), f"{component_id}: implemented")
+        require(isinstance(row.get("missing"), list), f"{component_id}: missing")
+        unknown_gaps = set(row.get("blocking_gaps", [])) - set(gaps)
+        require(not unknown_gaps, f"{component_id}: unknown gaps {sorted(unknown_gaps)}")
+        evidence_ids = set(row.get("evidence_ids", []))
+        unknown_evidence = evidence_ids - set(evidence)
+        require(not unknown_evidence, f"{component_id}: unknown evidence {sorted(unknown_evidence)}")
+        if row.get("claim_credit") is True:
+            require(bool(evidence_ids), f"{component_id}: claim credit requires evidence")
+            require(evidence_ids <= accepted, f"{component_id}: claim credit evidence not accepted")
+    server = components["COMP-TRNM-SERVER"]
+    require(server.get("status") == "source-candidate", "server inventory stage")
+    require(server.get("claim_credit") is False, "server inventory must not claim credit")
+    require(
+        (ROOT / "crates/trnm-persistence-pg/src/bin/trnm-server.rs").is_file(),
+        "server inventory source missing",
+    )
+    design = components["COMP-SCHEMA-DESIGN-V2"]
+    require(design.get("status") == "must-not-be-consumed", "alternate schema inventory status")
+    require(design.get("claim_credit") is False, "alternate schema cannot receive credit")
+
+
+def validate_server_status(gaps: dict[str, dict[str, Any]]) -> None:
+    document = load_json("docs/status/TRNM_SERVER_STATUS.json")
+    require(document.get("schema") == "trillionnium.trnm-server-status.v1", "server status schema")
+    require(
+        document.get("stage") == "http-database-vertical-source-candidate",
+        "server status stage",
+    )
+    for path in document.get("source_paths", []):
+        require((ROOT / path).exists(), f"server status missing source path {path}")
+    unknown_gaps = set(document.get("gap_ids", [])) - set(gaps)
+    require(not unknown_gaps, f"server status unknown gaps {sorted(unknown_gaps)}")
+    claims = document.get("claims", {})
+    require(claims.get("source_candidate") is True, "server source candidate claim")
+    require(
+        claims.get("bounded_retry_source_candidate") is True,
+        "server bounded retry source claim",
+    )
+    forbidden_positive = {
+        "remote_verified",
+        "live_database_verified",
+        "http_wire_compatible",
+        "grpc_implemented",
+        "websocket_implemented",
+        "session_integrated",
+        "outbox_delivery_verified",
+        "sg4_complete",
+        "production_ready",
+        "public_online",
+        "nakama_replaced",
+    }
+    require(
+        not any(claims.get(field) for field in forbidden_positive),
+        "server status overclaims execution or compatibility",
+    )
+    require(bool(document.get("not_implemented_or_verified")), "server residual gaps missing")
+
+
 def validate_current_state(gaps: dict[str, dict[str, Any]]) -> None:
     state = load_json("docs/status/CURRENT_STATE.json")
     require(state.get("schema") == "trillionnium.current-state.v1", "current state schema")
@@ -298,6 +385,9 @@ def validate_current_state(gaps: dict[str, dict[str, Any]]) -> None:
     governance = state.get("repository_governance", {})
     unknown = set(governance.get("blocking_gaps", [])) - known_gap_ids
     require(not unknown, f"current state unknown governance gaps {sorted(unknown)}")
+    runtime = state.get("runtime_topology", {})
+    require(runtime.get("rust_server_binary_present") is True, "current state server source presence")
+    require(runtime.get("rust_server_remote_verified") is False, "current state server remote claim")
 
 
 def main() -> int:
@@ -309,6 +399,8 @@ def main() -> int:
         validate_gates(gaps)
         validate_risks(gaps)
         validate_divergences(gaps)
+        validate_inventory(gaps, evidence, accepted)
+        validate_server_status(gaps)
         validate_current_state(gaps)
     except ValidationError as exc:
         print(f"status validation failed: {exc}", file=sys.stderr)
