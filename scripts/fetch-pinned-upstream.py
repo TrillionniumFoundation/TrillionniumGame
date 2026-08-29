@@ -13,11 +13,32 @@ sys.path.insert(0, str(ROOT))
 from tools.upstream.pinned_archive import SourceArchiveError, fetch_pinned_github_source
 
 
+def parse_gitlinks(values: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for value in values:
+        path, separator, commit = value.partition("=")
+        if not separator or not path or not commit:
+            raise SourceArchiveError(
+                f"invalid --gitlink {value!r}; expected canonical/path=<40-character-commit>"
+            )
+        if path in result:
+            raise SourceArchiveError(f"duplicate --gitlink path: {path}")
+        result[path] = commit
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fetch a GitHub archive and verify its exact Git tree SHA")
     parser.add_argument("--repository", required=True, help="owner/name")
     parser.add_argument("--revision", required=True, help="exact non-zero 40-character commit SHA")
     parser.add_argument("--tree", required=True, help="exact non-zero 40-character root tree SHA")
+    parser.add_argument(
+        "--gitlink",
+        action="append",
+        default=[],
+        metavar="PATH=COMMIT",
+        help="exact mode-160000 path/commit entry from the pinned root tree; repeatable",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=int, default=120)
     parser.add_argument("--max-archive-bytes", type=int, default=512 * 1024 * 1024)
@@ -28,6 +49,7 @@ def main() -> int:
             repository=args.repository,
             revision=args.revision,
             tree=args.tree,
+            gitlinks=parse_gitlinks(args.gitlink),
             output_dir=args.output,
             token=os.environ.get(args.token_env),
             timeout_seconds=args.timeout_seconds,
