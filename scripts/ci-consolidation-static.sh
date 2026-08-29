@@ -45,6 +45,7 @@ sha256sum "$backlog" | tee "$evidence/backlog-sha256.txt"
 grep -q '^6a3b94c1c76a44b31966e2d5919aa3c5ebc87822fc6169377b174a4a3a50c114 ' \
   "$evidence/backlog-sha256.txt"
 python3 scripts/read-backlog.py --summary | tee "$evidence/backlog-summary.json"
+python3 scripts/check-rust-package-inventory.py | tee "$evidence/rust-package-inventory.json"
 
 cargo generate-lockfile > "$evidence/cargo-generate-lockfile.log" 2>&1
 cargo fmt --all > "$evidence/root-fmt-apply.log" 2>&1
@@ -88,6 +89,7 @@ checks=(
   scripts/check-status-transitions.py
   scripts/derive-gates.py
   scripts/check-schema-authority.py
+  scripts/check-rust-package-inventory.py
   scripts/check-trnm-server.py
   scripts/check-rust-foundation.py
   scripts/check-storage-core.py
