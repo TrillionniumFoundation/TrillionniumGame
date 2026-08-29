@@ -8,6 +8,7 @@ use super::config::ServerConfig;
 use super::error::ServerError;
 use super::http::{read_request, Response};
 use super::retry::{RetryPolicy, RetryingRepository};
+use super::websocket;
 
 pub fn serve(config: &ServerConfig, repository: PgRepository) -> Result<(), ServerError> {
     let listener = TcpListener::bind(config.bind)?;
@@ -22,24 +23,33 @@ pub fn serve(config: &ServerConfig, repository: PgRepository) -> Result<(), Serv
     for connection in listener.incoming() {
         let mut stream = connection?;
         configure_connection(&stream, config)?;
-        let response = match read_request(&mut stream, config.max_request_bytes) {
-            Ok(request) => app.handle(&request),
-            Err(ServerError::Input(_)) => bad_request(),
+        match read_request(&mut stream, config.max_request_bytes) {
+            Ok(request) if websocket::is_route(&request) => {
+                if let Err(error) = websocket::serve_once(
+                    &mut stream,
+                    &request,
+                    &mut app,
+                    config.max_request_bytes,
+                ) {
+                    // WebSocket delivery can fail after the shared application
+                    // path has durably committed. The stable command receipt is
+                    // the retry fence; never repeat an external effect here.
+                    eprintln!("trnm-server WebSocket delivery failed: {error}");
+                }
+            }
+            Ok(request) => {
+                let response = app.handle(&request);
+                write_response(&mut stream, &response);
+            }
+            Err(ServerError::Input(_)) => write_response(&mut stream, &bad_request()),
             Err(ServerError::Io(error))
                 if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
             {
-                bad_request()
+                write_response(&mut stream, &bad_request());
             }
             Err(error) => return Err(error),
-        };
-
-        if let Err(error) = response.write_to(&mut stream) {
-            // A peer disappearing after the durable transaction has committed
-            // is an ambiguous-response case. The command ID/fingerprint receipt
-            // is the retry contract; a broken response must not roll back or
-            // replay an external effect here.
-            eprintln!("trnm-server response delivery failed: {error}");
         }
+
         let _ = stream.shutdown(Shutdown::Both);
         if app.should_stop() {
             break;
@@ -47,6 +57,16 @@ pub fn serve(config: &ServerConfig, repository: PgRepository) -> Result<(), Serv
     }
     eprintln!("trnm-server source candidate drained");
     Ok(())
+}
+
+fn write_response(stream: &mut TcpStream, response: &Response) {
+    if let Err(error) = response.write_to(stream) {
+        // A peer disappearing after the durable transaction has committed is
+        // an ambiguous-response case. The command ID/fingerprint receipt is
+        // the retry contract; a broken response must not roll back or replay an
+        // external effect here.
+        eprintln!("trnm-server response delivery failed: {error}");
+    }
 }
 
 fn configure_connection(stream: &TcpStream, config: &ServerConfig) -> Result<(), ServerError> {
