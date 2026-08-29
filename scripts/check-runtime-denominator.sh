@@ -3,8 +3,11 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 export PYTHONDONTWRITEBYTECODE=1
-python3 -m unittest discover -s tests/denominator -p 'test_runtime_denominator.py' -v
-python3 -m compileall -q scripts/generate-runtime-denominator.py tests/denominator tools/denominator
+python3 -m unittest discover -s tests/denominator -p 'test_runtime*.py' -v
+python3 -m compileall -q \
+  scripts/generate-runtime-denominator.py \
+  tests/denominator \
+  tools/denominator
 if [[ -n $(gofmt -l tools/denominator/go_runtime_surface.go) ]]; then
   echo 'Go Runtime AST extractor is not gofmt-clean' >&2
   exit 1
