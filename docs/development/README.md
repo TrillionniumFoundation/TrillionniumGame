@@ -11,6 +11,13 @@ Status: plan-v3 navigation. Historical tranche documents remain useful evidence,
 - [`../roadmap/NEXT_MILESTONE.json`](../roadmap/NEXT_MILESTONE.json) — current blocker-first milestone.
 - [`EXECUTION_BACKLOG.json`](EXECUTION_BACKLOG.json) — immutable long-range backlog index.
 
+## First Rust process vertical slice
+
+- [`TRNM_SERVER_VERTICAL_SLICE.md`](TRNM_SERVER_VERTICAL_SLICE.md) — current config/migrate/HTTP/database/acknowledgement source contract.
+- [`../status/TRNM_SERVER_STATUS.json`](../status/TRNM_SERVER_STATUS.json) — machine-readable source/verification boundary.
+- [`../architecture/RUST_SERVER_REFERENCE_ARCHITECTURE.md`](../architecture/RUST_SERVER_REFERENCE_ARCHITECTURE.md) — target process architecture beyond the narrow slice.
+- [`../../scripts/check-trnm-server.py`](../../scripts/check-trnm-server.py) — fail-closed source checker.
+
 ## Compatibility scope and oracle
 
 - [`UPSTREAM_BASELINE.json`](UPSTREAM_BASELINE.json)
@@ -45,7 +52,6 @@ Status: plan-v3 navigation. Historical tranche documents remain useful evidence,
 ## Cross-cutting current contracts
 
 - [`../architecture/CURRENT_AND_TARGET_RUNTIME.md`](../architecture/CURRENT_AND_TARGET_RUNTIME.md)
-- [`../architecture/RUST_SERVER_REFERENCE_ARCHITECTURE.md`](../architecture/RUST_SERVER_REFERENCE_ARCHITECTURE.md)
 - [`../testing/TEST_POLICY.md`](../testing/TEST_POLICY.md)
 - [`../security/CRYPTOGRAPHY_AND_KEYS.md`](../security/CRYPTOGRAPHY_AND_KEYS.md)
 - [`../governance/BRANCH_AND_MERGE_POLICY.md`](../governance/BRANCH_AND_MERGE_POLICY.md)
