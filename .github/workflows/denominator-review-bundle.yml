@@ -1,0 +1,58 @@
+name: denominator-review-bundle
+
+on:
+  pull_request:
+    paths:
+      - 'docs/development/PARITY_DENOMINATORS.json'
+      - 'docs/development/DENOMINATOR_REVIEW_AND_LOCK.md'
+      - 'docs/evidence/schemas/denominator-review-bundle-v1.schema.json'
+      - 'manifests/upstream/**'
+      - 'scripts/check-denominator-review-bundle.py'
+      - '.github/workflows/denominator-review-bundle.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'docs/development/PARITY_DENOMINATORS.json'
+      - 'docs/development/DENOMINATOR_REVIEW_AND_LOCK.md'
+      - 'docs/evidence/schemas/denominator-review-bundle-v1.schema.json'
+      - 'manifests/upstream/**'
+      - 'scripts/check-denominator-review-bundle.py'
+      - '.github/workflows/denominator-review-bundle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: denominator-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-current-state:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate registry and optional review bundle
+        run: |
+          set -euo pipefail
+          python3 scripts/check-denominator-review-bundle.py \
+            | tee denominator-review-result.json
+          jq -e '
+            .claims.compatibility_credit == false and
+            .claims.production_ready == false
+          ' denominator-review-result.json >/dev/null
+      - name: Require the strict SG1 path to fail while incomplete
+        run: |
+          set -euo pipefail
+          if jq -e '.claims.sg1_eligible == true' denominator-review-result.json >/dev/null; then
+            python3 scripts/check-denominator-review-bundle.py --require-sg1
+          else
+            if python3 scripts/check-denominator-review-bundle.py --require-sg1; then
+              echo 'incomplete denominator bundle incorrectly received SG1 eligibility' >&2
+              exit 1
+            fi
+          fi
