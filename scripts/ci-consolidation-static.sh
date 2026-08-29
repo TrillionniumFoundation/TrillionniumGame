@@ -88,6 +88,7 @@ checks=(
   scripts/check-status-transitions.py
   scripts/derive-gates.py
   scripts/check-schema-authority.py
+  scripts/check-trnm-server.py
   scripts/check-rust-foundation.py
   scripts/check-storage-core.py
   scripts/check-persistence-core.py
