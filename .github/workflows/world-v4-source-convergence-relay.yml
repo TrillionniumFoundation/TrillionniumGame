@@ -1,11 +1,11 @@
 name: World V4 direct-source convergence relay
 
 on:
-  push:
+  pull_request:
     branches:
       - ci/world-v4-source-convergence-relay-20260830
     paths:
-      - '.github/workflows/world-v4-source-convergence-relay.yml'
+      - '.github/world-v4-source-convergence-trigger'
   workflow_dispatch:
 
 permissions:
