@@ -21,14 +21,17 @@
     "one authority bootstrap endpoint",
     "one command, event and outbox commit endpoint",
     "HTTP acknowledgement constructed only after durable commit or exact receipt replay",
+    "bounded three-attempt/two-second retry supervisor for SafeImmediate and SafeBackoff errors",
+    "Never and ResyncRequired errors are not retried",
     "public error redaction and typed retry guidance",
-    "in-process fake-repository vertical tests"
+    "in-process fake-repository and retry-policy tests"
   ],
   "not_implemented_or_verified": [
     "exact-head Rust formatting, compile, tests and strict Clippy",
     "live PostgreSQL execution on this candidate",
     "live CockroachDB execution on this candidate",
-    "connection pool, TLS/mTLS, cancellation propagation and bounded transaction retry",
+    "connection pool, TLS/mTLS and cancellation propagation",
+    "configurable retry policy and database-failover evidence",
     "concurrent bounded connection supervision",
     "gRPC server and grpc-gateway behavior",
     "WebSocket JSON/protobuf handshake, framing and lifecycle",
@@ -42,6 +45,7 @@
   "gap_ids": ["GAP-P0-SERVER-001", "GAP-P1-PG-001"],
   "claims": {
     "source_candidate": true,
+    "bounded_retry_source_candidate": true,
     "remote_verified": false,
     "live_database_verified": false,
     "http_wire_compatible": false,
