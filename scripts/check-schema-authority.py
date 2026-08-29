@@ -19,6 +19,7 @@ HISTORICAL_DESIGN_TOOLS = {
 }
 ALLOWED_CONTROL_REFERENCES = {
     Path("scripts/check-plan.py"),
+    Path("scripts/check-plan-v3-extension.py"),
     Path("scripts/check-schema-authority.py"),
     Path("scripts/check-trnm-server.py"),
 } | HISTORICAL_DESIGN_TOOLS
