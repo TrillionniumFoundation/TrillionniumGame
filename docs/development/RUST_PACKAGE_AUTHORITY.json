@@ -3,6 +3,7 @@
   "project_id": "trillionnium-game",
   "plan_version": 3,
   "effective_date": "2026-08-29",
+  "last_reviewed_at": "2026-08-30",
   "workspace": {
     "root_manifest": "Cargo.toml",
     "members": [
@@ -49,6 +50,31 @@
       "manifest": "crates/trnm-server/Cargo.toml",
       "classification": "server-foundation-prototype",
       "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-persistence-runtime-policy/Cargo.toml",
+      "classification": "database-runtime-policy-candidate",
+      "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-realtime-wire/Cargo.toml",
+      "classification": "realtime-wire-compatibility-candidate",
+      "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-storage-nakama-version/Cargo.toml",
+      "classification": "storage-version-compatibility-adapter",
+      "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-token-crypto-provider/Cargo.toml",
+      "classification": "security-critical-crypto-provider",
+      "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-token-jwt-provider-adapter/Cargo.toml",
+      "classification": "security-critical-jwt-provider-adapter",
+      "aggregate_gate_required": true
     }
   ],
   "allowed_duplicate_package_names": {
@@ -86,12 +112,19 @@
     "every_explicit_target_path_must_exist": true,
     "packages_without_any_discoverable_target_are_forbidden": true,
     "isolated_workspace_must_have_aggregate_gate_lane": true,
+    "isolated_workspace_must_have_lockfile": true,
     "duplicate_server_binary_names_are_forbidden": true,
     "untracked_nested_workspaces_are_forbidden": true,
     "source_presence_grants_claim_credit": false
   },
   "checker": "scripts/check-rust-package-inventory.py",
-  "gap_links": ["GAP-P0-SERVER-001", "GAP-P0-CI-001", "GAP-P0-CRYPTO-001"],
+  "gap_links": [
+    "GAP-P0-SERVER-001",
+    "GAP-P0-CI-001",
+    "GAP-P0-CRYPTO-001",
+    "GAP-P1-STORAGE-001",
+    "GAP-P1-PG-001"
+  ],
   "claim_boundary": {
     "package_inventory_source_checked": false,
     "exact_head_compiled": false,
