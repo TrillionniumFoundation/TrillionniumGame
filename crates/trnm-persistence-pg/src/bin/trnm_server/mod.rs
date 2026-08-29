@@ -7,3 +7,4 @@ pub(crate) mod json;
 pub(crate) mod retry;
 pub(crate) mod schema;
 pub(crate) mod server;
+pub(crate) mod websocket;
