@@ -19,6 +19,37 @@ fn profile(value: &str) -> DatabaseProfile {
     }
 }
 
+fn live_database_environment(label: &str) -> Option<(String, DatabaseProfile)> {
+    let required = match env::var("TRNM_REQUIRE_LIVE_DATABASE") {
+        Err(env::VarError::NotPresent) => false,
+        Err(error) => panic!("cannot read TRNM_REQUIRE_LIVE_DATABASE: {error}"),
+        Ok(value) if matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES") => true,
+        Ok(value) if matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "NO") => false,
+        Ok(value) => panic!("invalid TRNM_REQUIRE_LIVE_DATABASE={value:?}; expected 0/1 or false/true"),
+    };
+
+    let database_url = match env::var("TRNM_DATABASE_URL") {
+        Ok(value) if !value.is_empty() => value,
+        Ok(_) if required => panic!("{label}: TRNM_DATABASE_URL is required and must not be empty"),
+        Ok(_) => {
+            eprintln!("{label}: empty TRNM_DATABASE_URL; developer-only live test skip (no evidence credit)");
+            return None;
+        }
+        Err(env::VarError::NotPresent) if required => {
+            panic!("{label}: TRNM_REQUIRE_LIVE_DATABASE=1 but TRNM_DATABASE_URL is absent")
+        }
+        Err(env::VarError::NotPresent) => {
+            eprintln!("{label}: TRNM_DATABASE_URL absent; developer-only live test skip (no evidence credit)");
+            return None;
+        }
+        Err(error) => panic!("{label}: cannot read TRNM_DATABASE_URL: {error}"),
+    };
+
+    let profile_value = env::var("TRNM_DATABASE_PROFILE")
+        .unwrap_or_else(|_| panic!("{label}: TRNM_DATABASE_PROFILE is required with TRNM_DATABASE_URL"));
+    Some((database_url, profile(&profile_value)))
+}
+
 fn request(seed: u8) -> CommitRequest {
     CommitRequest {
         entity: EntityId::new([seed; 16]),
@@ -81,14 +112,9 @@ fn bootstrap(repository: &mut PgRepository, request: &CommitRequest, state_seed:
 
 #[test]
 fn constraint_failures_roll_back_every_prior_write() {
-    let Ok(database_url) = env::var("TRNM_DATABASE_URL") else {
-        eprintln!("TRNM_DATABASE_URL absent; live fault matrix skipped");
+    let Some((database_url, profile)) = live_database_environment("transaction fault matrix") else {
         return;
     };
-    let profile = profile(
-        &env::var("TRNM_DATABASE_PROFILE")
-            .expect("TRNM_DATABASE_PROFILE is required with TRNM_DATABASE_URL"),
-    );
 
     // Failure at receipt insertion after the entity CAS: reserve revision 1 with
     // a different command. The attempted command must leave no partial state.
@@ -168,14 +194,9 @@ fn constraint_failures_roll_back_every_prior_write() {
 
 #[test]
 fn committed_response_loss_replays_exact_receipt_after_reconnect() {
-    let Ok(database_url) = env::var("TRNM_DATABASE_URL") else {
-        eprintln!("TRNM_DATABASE_URL absent; response-loss contract skipped");
+    let Some((database_url, profile)) = live_database_environment("response-loss contract") else {
         return;
     };
-    let profile = profile(
-        &env::var("TRNM_DATABASE_PROFILE")
-            .expect("TRNM_DATABASE_PROFILE is required with TRNM_DATABASE_URL"),
-    );
     let request = request(0xb0);
     let mut repository = PgRepository::connect(&database_url, profile).unwrap();
     bootstrap(&mut repository, &request, 0xaf);
