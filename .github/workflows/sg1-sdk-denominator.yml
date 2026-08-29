@@ -6,7 +6,7 @@ on:
     paths:
       - 'config/sdk-source-snapshots.json'
       - 'tools/sdk/**'
-      - 'tools/upstream/pinned_archive.py'
+      - 'tools/upstream/**'
       - 'scripts/fetch-pinned-upstream.py'
       - 'scripts/generate-sdk-denominator.py'
       - 'scripts/check-sdk-denominator.sh'
@@ -57,6 +57,18 @@ jobs:
           set -euo pipefail
           python3 scripts/fetch-pinned-upstream.py --repository heroiclabs/nakama --revision d4d92f93f78bbbe62c7fc50a3f85c772ec121a09 --tree f3c9cfc2726d5543da1564629170f35b98e3797d --output run/nakama
           python3 scripts/fetch-pinned-upstream.py --repository heroiclabs/nakama-common --revision 449b77ecc8789aa466c36b67f6e498033dfcd9c5 --tree c6a7b9796b9c2a6b5118c74e5f213963a5001f14 --output run/common
+      - name: Diagnose cpp archive tree before strict fetch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Diagnostic output never grants credit or relaxes the pinned root.
+          # It exposes exact path/mode/object differences before the strict
+          # fetch below rejects any mismatch.
+          python3 tools/upstream/diagnose_pinned_tree.py \
+            --registry config/sdk-source-snapshots.json \
+            --profile cpp \
+            --limit 200
       - name: Fetch exact SDK snapshots
         env:
           GITHUB_TOKEN: ${{ github.token }}
