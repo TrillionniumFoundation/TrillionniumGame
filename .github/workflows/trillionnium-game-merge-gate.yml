@@ -35,6 +35,8 @@ jobs:
           git show -s --format='commit=%H%ntree=%T' "$GITHUB_SHA"
       - name: Validate plan, status, gates and schema authority
         run: python3 scripts/check-plan.py
+      - name: Validate complete Rust package and target inventory
+        run: python3 scripts/check-rust-package-inventory.py
       - name: Validate Rust server source contract
         run: python3 scripts/check-trnm-server.py
       - name: Compile control scripts
@@ -44,6 +46,7 @@ jobs:
             scripts/check-status-transitions.py \
             scripts/derive-gates.py \
             scripts/check-schema-authority.py \
+            scripts/check-rust-package-inventory.py \
             scripts/check-trnm-server.py
 
   rust-workspace:
@@ -59,6 +62,8 @@ jobs:
           set -euo pipefail
           rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
           rustup override set 1.85.1
+      - name: Recheck package coverage before Cargo execution
+        run: python3 scripts/check-rust-package-inventory.py
       - name: Format
         run: cargo fmt --all -- --check
       - name: Test all libraries, binaries and integration targets
