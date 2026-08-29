@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io;
 
-use trnm_contracts::{DomainError, RetryClass, StableCode};
+use trnm_contracts::DomainError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InputError {
@@ -17,11 +17,6 @@ impl InputError {
     #[must_use]
     pub const fn reason(self) -> &'static str {
         self.reason
-    }
-
-    #[must_use]
-    pub const fn domain(self) -> DomainError {
-        DomainError::new(StableCode::InvalidArgument, self.reason, RetryClass::Never)
     }
 }
 
@@ -46,8 +41,11 @@ impl fmt::Display for ServerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Input(error) => write!(formatter, "invalid input: {error}"),
-            Self::Domain(error) => write!(formatter, "domain failure: {error}"),
-            Self::Database(_) => formatter.write_str("database operation failed"),
+            Self::Domain(error) => write!(formatter, "domain failure: {}", error.code().as_str()),
+            Self::Database(error) => match error.code() {
+                Some(code) => write!(formatter, "database operation failed (SQLSTATE {})", code.code()),
+                None => formatter.write_str("database transport operation failed"),
+            },
             Self::Io(error) => write!(formatter, "I/O failure: {error}"),
             Self::Configuration(reason) => write!(formatter, "configuration failure: {reason}"),
         }
