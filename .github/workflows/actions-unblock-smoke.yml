@@ -1,26 +1,26 @@
 name: trillionnium-game-actions-unblock-smoke
 
 on:
-  push:
-    branches:
-      - feat/plan-v3-gap-closure-2026-08-29
-    paths:
-      - '.github/workflows/actions-unblock-smoke.yml'
+  pull_request:
+    types: [synchronize]
 
 permissions:
   contents: write
 
 concurrency:
-  group: actions-unblock-smoke-migration-${{ github.ref }}
+  group: actions-unblock-smoke-migration-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   migrate-native-workflows:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'feat/plan-v3-gap-closure-2026-08-29'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       BRANCH: feat/plan-v3-gap-closure-2026-08-29
-      EXPECTED_SHA: ${{ github.sha }}
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
       GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Fetch exact feature head
