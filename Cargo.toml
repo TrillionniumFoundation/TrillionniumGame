@@ -17,6 +17,7 @@ exclude = [
   "crates/trnm-token-jwt-adapter-gate",
   "crates/trnm-token-jwt-adapter-gate-v2",
   "crates/trnm-presence-router-v2",
+  "crates/trnm-server",
 ]
 resolver = "2"
 
