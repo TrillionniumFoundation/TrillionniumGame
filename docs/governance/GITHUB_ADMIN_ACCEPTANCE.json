@@ -1,0 +1,64 @@
+{
+  "schema": "trillionnium.github-admin-acceptance.v1",
+  "project_id": "trillionnium-game",
+  "repository": {
+    "id": 1323087470,
+    "full_name": "TrillionniumFoundation/TrillionniumGame",
+    "default_branch": "main"
+  },
+  "actions": {
+    "enabled": true,
+    "required_workflow_path": ".github/workflows/trillionnium-game-merge-gate.yml",
+    "required_workflow_name": "trillionnium-game-merge-gate",
+    "required_aggregate_check": "trillionnium-game-merge-gate",
+    "empty_run_collection_is_success": false,
+    "skipped_cancelled_or_older_head_is_success": false,
+    "allowed_action_pins": [
+      "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+      "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
+    ]
+  },
+  "main_rules": {
+    "direct_push_allowed": false,
+    "force_push_allowed": false,
+    "deletion_allowed": false,
+    "required_linear_history": true,
+    "required_conversation_resolution": true,
+    "required_latest_head": true,
+    "required_status_checks": ["trillionnium-game-merge-gate"],
+    "required_approving_reviews": 1,
+    "dismiss_stale_approvals": true,
+    "require_code_owner_review": true,
+    "require_last_push_approval": true,
+    "bypass_roles": []
+  },
+  "independent_review": {
+    "implementer_may_self_approve": false,
+    "required_domains": ["database", "security", "protocol", "realtime"],
+    "named_user_or_team_required": true,
+    "placeholder_or_single-maintainer-fallback_closes_gap": false
+  },
+  "live_observation_required": {
+    "repository_identity": true,
+    "actions_permissions": true,
+    "branch_protection_or_ruleset": true,
+    "exact_head_workflow_run": true,
+    "exact_head_check_run": true,
+    "reviewer_assignment": true,
+    "recorded_at": true,
+    "observer_identity": true,
+    "response_digests": true
+  },
+  "current_observation": {
+    "recorded_at": "2026-08-29T10:59:00Z",
+    "candidate_at_observation": "a4c3ed14605ac1136262ab10b2b56faad44761c3",
+    "workflow_run_count": 0,
+    "check_run_count": 0,
+    "main_protected": false,
+    "ruleset_verified": false,
+    "independent_reviewers_verified": false,
+    "status": "blocked-external-admin"
+  },
+  "gap_ids": ["GAP-P0-CI-001", "GAP-P0-GOV-001", "GAP-P1-REVIEW-001"],
+  "claim_boundary": "This desired-state contract does not mutate GitHub settings and cannot close an external-admin gap without a live read-back manifest."
+}
