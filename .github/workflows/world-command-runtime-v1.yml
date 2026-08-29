@@ -30,53 +30,85 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-command-runtime-v1-${{ github.workflow }}-${{ github.ref }}
+  group: world-command-runtime-v1-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  GOTOOLCHAIN: auto
+  CANDIDATE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+  CANDIDATE_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   source-contract:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - run: bash scripts/check-world-command-runtime-v1.sh
-      - run: bash scripts/test-world-command-runtime-v1-negative.sh
+      - name: Fetch exact candidate without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
+            "refs/heads/${CANDIDATE_REF}"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+      - name: Validate source and negative contracts
+        run: |
+          set -euo pipefail
+          bash scripts/check-world-command-runtime-v1.sh
+          bash scripts/test-world-command-runtime-v1-negative.sh
 
   go-fault-matrix:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version-file: runtime/go.mod
-          cache: false
+      - name: Fetch exact candidate without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
+            "refs/heads/${CANDIDATE_REF}"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+          go version
       - name: Verify formatting
         run: |
+          set -euo pipefail
           unformatted=$(gofmt -l runtime/internal/worldcommand)
           test -z "$unformatted" || { printf '%s\n' "$unformatted" >&2; exit 1; }
       - name: Run deterministic fault matrix
         working-directory: runtime
         run: |
+          set -euo pipefail
           mkdir -p ../run/world-command-runtime-v1
           go test -json ./internal/worldcommand -count=1 \
             | tee ../run/world-command-runtime-v1/go-test.jsonl
           go test -race ./internal/worldcommand -count=1 \
             | tee ../run/world-command-runtime-v1/go-race.txt
           go vet ./internal/worldcommand
-      - name: Build exact source fault evidence summary
+      - name: Build and validate exact-source evidence
         run: |
-          tree_sha=$(git show -s --format=%T "$GITHUB_SHA")
+          set -euo pipefail
+          tree_sha=$(git show -s --format=%T "$CANDIDATE_SHA")
           python3 tools/summarize_world_command_faults.py \
             --input run/world-command-runtime-v1/go-test.jsonl \
             --output run/world-command-runtime-v1/fault-summary.json \
             --repository TrillionniumFoundation/TrillionniumGame \
-            --commit "$GITHUB_SHA" \
+            --commit "$CANDIDATE_SHA" \
             --tree "$tree_sha"
-          jq -e '
+          EXPECTED_COMMIT="$CANDIDATE_SHA" jq -e '
             .contract_version == "trnm_game_world_command_fault_evidence_v1" and
             .repository == "TrillionniumFoundation/TrillionniumGame" and
-            .source_commit == env.GITHUB_SHA and
+            .source_commit == env.EXPECTED_COMMIT and
             .status == "passed" and
             .required_scenario_count == .passed_scenario_count and
             .authority.cutover_authorized == false and
@@ -85,8 +117,6 @@ jobs:
             .authority.public_player_market_enabled == false and
             (.limitations | length >= 3)
           ' run/world-command-runtime-v1/fault-summary.json >/dev/null
-      - name: Record exact evidence digests
-        run: |
           sha256sum \
             contracts/world-command-runtime-v1-status.json \
             contracts/world-command-fault-evidence-v1.schema.json \
@@ -95,9 +125,17 @@ jobs:
             runtime/internal/worldcommand/*.go \
             run/world-command-runtime-v1/go-test.jsonl \
             run/world-command-runtime-v1/go-race.txt \
+            run/world-command-runtime-v1/fault-summary.json \
             > run/world-command-runtime-v1/SHA256SUMS
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: world-command-runtime-v1-${{ github.sha }}
-          path: run/world-command-runtime-v1
-          if-no-files-found: error
+      - name: Seal evidence in immutable job log
+        run: |
+          set -euo pipefail
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf run/world-command-runtime-v1-${CANDIDATE_SHA}.tar.gz \
+            -C run/world-command-runtime-v1 .
+          printf 'repository=%s\nhead_sha=%s\nrun_id=%s\n' \
+            "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" "$GITHUB_RUN_ID"
+          sha256sum run/world-command-runtime-v1-${CANDIDATE_SHA}.tar.gz
+          cat run/world-command-runtime-v1/fault-summary.json
+          cat run/world-command-runtime-v1/SHA256SUMS
