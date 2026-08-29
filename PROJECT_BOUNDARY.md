@@ -1,11 +1,11 @@
 # TrillionniumGame Project Boundary
 
 - Project ID: `trillionnium-game`
-- Current GitHub repository: `TrillionniumFoundation/Trillionnium-Nakama`
-- Target GitHub repository name: `TrillionniumFoundation/TrillionniumGame`
-- Repository ID to preserve: `1323087470`
+- Current GitHub repository: `TrillionniumFoundation/TrillionniumGame`
+- Previous GitHub repository name: `TrillionniumFoundation/Trillionnium-Nakama`
+- Repository ID preserved across rename: `1323087470`
 - Lane: `game-backend-platform`
-- Lifecycle: `planning-audited-v2`
+- Lifecycle: `planning-audited-v2-renamed`
 - First-party production service language: Rust
 - Initial compatibility baseline: Nakama OSS `v3.40.0`
 
@@ -35,4 +35,4 @@
 - No dual authority for one session, party, ticket, match, scheduler job, purchase or durable command.
 - No external network work while a mutable database transaction is held.
 - No silent scope reduction from generated D0–D8 leaf denominators.
-- Repository rename must preserve repository ID, history, refs, issues and pull requests; delete/recreate is forbidden.
+- The completed repository rename must continue to preserve repository ID, history, refs, issues and pull requests; delete/recreate remains forbidden.
