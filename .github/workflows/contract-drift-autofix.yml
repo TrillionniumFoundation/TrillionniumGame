@@ -6,7 +6,6 @@ on:
       - feat/plan-v3-gap-closure-2026-08-29
     paths:
       - '.github/workflows/contract-drift-autofix.yml'
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,10 +15,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  patch-verify-and-commit:
+  format-verify-and-commit:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     env:
       BRANCH: feat/plan-v3-gap-closure-2026-08-29
       EXPECTED_SHA: ${{ github.sha }}
@@ -36,49 +35,70 @@ jobs:
           git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$EXPECTED_SHA"
           git -C "$GITHUB_WORKSPACE" checkout -B "$BRANCH" FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXPECTED_SHA"
-          cd "$GITHUB_WORKSPACE"
-      - name: Accept the current precise fail-closed adapter state
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('scripts/check-world-transition-v1-boundary.sh')
-          text = path.read_text(encoding='utf-8')
-          old = '''if status.get("status") not in {
-              "implemented_pending_exact_head_ci",
-              "verified_remote",
-          }:
-          '''.replace('          ', '    ')
-          new = '''if status.get("status") not in {
-              "implemented_pending_exact_head_ci",
-              "implemented_python_and_go_pending_exact_head_ci",
-              "verified_remote",
-          }:
-          '''.replace('          ', '    ')
-          if old not in text:
-              raise SystemExit('expected adapter status enum block not found')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
-          PY
-      - name: Verify all four repaired contract groups
+      - name: Install exact Rust formatter
         shell: bash
         run: |
           set -euo pipefail
-          bash scripts/oracle/check-hook-inventory.sh
-          bash scripts/check-remaining-denominators.sh
-          bash scripts/check-sdk-denominator.sh
-          bash scripts/check-world-transition-v1-boundary.sh
-          bash scripts/test-world-transition-v1-boundary-negative.sh
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt
+          rustup override set 1.85.1
+          rustfmt --version
+      - name: Format every authoritative Rust workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          isolated=(
+            crates/trnm-token-jwt-adapter/Cargo.toml
+            crates/trnm-token-jwt-adapter-gate/Cargo.toml
+            crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml
+            crates/trnm-presence-router-v2/Cargo.toml
+            crates/trnm-server/Cargo.toml
+            crates/trnm-persistence-runtime-policy/Cargo.toml
+            crates/trnm-realtime-wire/Cargo.toml
+            crates/trnm-storage-nakama-version/Cargo.toml
+            crates/trnm-token-crypto-provider/Cargo.toml
+            crates/trnm-token-jwt-provider-adapter/Cargo.toml
+          )
+          for manifest in "${isolated[@]}"; do
+            cargo fmt --manifest-path "$manifest"
+          done
           git diff --check
-      - name: Commit verified contract correction
+      - name: Recheck formatting and package coverage
         shell: bash
         run: |
           set -euo pipefail
-          git diff --stat -- scripts/check-world-transition-v1-boundary.sh
+          python3 scripts/check-rust-package-inventory.py
+          cargo fmt --all -- --check
+          isolated=(
+            crates/trnm-token-jwt-adapter/Cargo.toml
+            crates/trnm-token-jwt-adapter-gate/Cargo.toml
+            crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml
+            crates/trnm-presence-router-v2/Cargo.toml
+            crates/trnm-server/Cargo.toml
+            crates/trnm-persistence-runtime-policy/Cargo.toml
+            crates/trnm-realtime-wire/Cargo.toml
+            crates/trnm-storage-nakama-version/Cargo.toml
+            crates/trnm-token-crypto-provider/Cargo.toml
+            crates/trnm-token-jwt-provider-adapter/Cargo.toml
+          )
+          for manifest in "${isolated[@]}"; do
+            cargo fmt --manifest-path "$manifest" -- --check
+          done
+      - name: Commit exact formatter output
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'No formatter drift remains.'
+            exit 0
+          fi
+          git diff --stat
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add scripts/check-world-transition-v1-boundary.sh
-          git commit -m 'fix(worldtransition): accept precise pending-CI status'
+          git add -- '*.rs'
+          git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
+          git commit -m 'style(rust): apply Rust 1.85.1 formatting'
           git remote set-url origin \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin "HEAD:refs/heads/${BRANCH}"
