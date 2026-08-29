@@ -430,9 +430,7 @@ impl Parser<'_> {
                 if !(0xdc00..=0xdfff).contains(&second) {
                     return Err(self.error(JsonErrorKind::LoneSurrogate));
                 }
-                0x1_0000
-                    + ((u32::from(first) - 0xd800) << 10)
-                    + (u32::from(second) - 0xdc00)
+                0x1_0000 + ((u32::from(first) - 0xd800) << 10) + (u32::from(second) - 0xdc00)
             }
             0xdc00..=0xdfff => return Err(self.error(JsonErrorKind::LoneSurrogate)),
             _ => u32::from(first),
@@ -481,7 +479,10 @@ impl Parser<'_> {
     }
 
     fn skip_whitespace(&mut self) {
-        while matches!(self.input.get(self.offset), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+        while matches!(
+            self.input.get(self.offset),
+            Some(b' ' | b'\n' | b'\r' | b'\t')
+        ) {
             self.offset += 1;
         }
     }
@@ -525,11 +526,7 @@ fn encode_value(
     Ok(())
 }
 
-fn encode_string(
-    value: &str,
-    output: &mut Vec<u8>,
-    limit: usize,
-) -> Result<(), JsonEncodeError> {
+fn encode_string(value: &str, output: &mut Vec<u8>, limit: usize) -> Result<(), JsonEncodeError> {
     push_byte(output, b'"', limit)?;
     for character in value.chars() {
         match character {
@@ -554,7 +551,11 @@ fn encode_string(
             }
             _ => {
                 let mut encoded = [0u8; 4];
-                push_bytes(output, character.encode_utf8(&mut encoded).as_bytes(), limit)?;
+                push_bytes(
+                    output,
+                    character.encode_utf8(&mut encoded).as_bytes(),
+                    limit,
+                )?;
             }
         }
     }
@@ -577,11 +578,7 @@ fn push_byte(output: &mut Vec<u8>, byte: u8, limit: usize) -> Result<(), JsonEnc
     Ok(())
 }
 
-fn push_bytes(
-    output: &mut Vec<u8>,
-    bytes: &[u8],
-    limit: usize,
-) -> Result<(), JsonEncodeError> {
+fn push_bytes(output: &mut Vec<u8>, bytes: &[u8], limit: usize) -> Result<(), JsonEncodeError> {
     if output.len().saturating_add(bytes.len()) > limit {
         return Err(JsonEncodeError::OutputLengthExceeded { limit });
     }
@@ -646,8 +643,17 @@ mod tests {
 
     #[test]
     fn rejects_floats_exponents_leading_zero_and_overflow() {
-        for value in ["1.0", "1e3", "01", "18446744073709551616", "-9223372036854775809"] {
-            assert!(parse(value.as_bytes(), JsonLimits::default()).is_err(), "{value}");
+        for value in [
+            "1.0",
+            "1e3",
+            "01",
+            "18446744073709551616",
+            "-9223372036854775809",
+        ] {
+            assert!(
+                parse(value.as_bytes(), JsonLimits::default()).is_err(),
+                "{value}"
+            );
         }
     }
 

@@ -158,7 +158,8 @@ impl PgRepository {
         source_commit: &str,
         applied_at_ms: u64,
     ) -> Result<(), DomainError> {
-        if source_commit.len() != 40 || !source_commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        if source_commit.len() != 40 || !source_commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
             return Err(invalid("invalid_schema_source_commit"));
         }
         let applied_at_ms = to_i64(applied_at_ms)?;
@@ -167,7 +168,11 @@ impl PgRepository {
                 "INSERT INTO trnm_schema_metadata \
                  (singleton, schema_version, profile, source_commit, applied_at_ms) \
                  VALUES (1, 1, $1, $2, $3) ON CONFLICT (singleton) DO NOTHING",
-                &[&self.profile.metadata_value(), &source_commit, &applied_at_ms],
+                &[
+                    &self.profile.metadata_value(),
+                    &source_commit,
+                    &applied_at_ms,
+                ],
             )
             .map_err(map_postgres_error)?;
         let row = self
@@ -225,8 +230,13 @@ impl PgRepository {
                 RetryClass::Never,
             ));
         }
-        self.load_head(entity)?
-            .ok_or_else(|| error(StableCode::DataLoss, "entity_bootstrap_lost", RetryClass::Never))
+        self.load_head(entity)?.ok_or_else(|| {
+            error(
+                StableCode::DataLoss,
+                "entity_bootstrap_lost",
+                RetryClass::Never,
+            )
+        })
     }
 
     pub fn load_head(&mut self, entity: EntityId) -> Result<Option<EntityHead>, DomainError> {
@@ -299,7 +309,11 @@ impl PgRepository {
         let first_event_sequence = if event_count == 0 {
             None
         } else {
-            Some(last_event_sequence.checked_add(1).ok_or_else(counter_overflow)?)
+            Some(
+                last_event_sequence
+                    .checked_add(1)
+                    .ok_or_else(counter_overflow)?,
+            )
         };
         let next_last_event_sequence = last_event_sequence
             .checked_add(event_count)
@@ -335,7 +349,8 @@ impl PgRepository {
         }
 
         let first_event_sequence_i64 = first_event_sequence.map(to_i64).transpose()?;
-        let event_count_i32 = i32::try_from(request.events.len()).map_err(|_| counter_overflow())?;
+        let event_count_i32 =
+            i32::try_from(request.events.len()).map_err(|_| counter_overflow())?;
         transaction
             .execute(
                 "INSERT INTO trnm_command_receipts \
@@ -461,8 +476,8 @@ fn load_receipt(
         .map(|row| decode_id16::<IntentId>(row.get(0), IntentId::new, "invalid_intent_id_bytes"))
         .collect::<Result<Vec<_>, _>>()?;
     let event_count_i32: i32 = row.get(5);
-    let event_count = usize::try_from(event_count_i32)
-        .map_err(|_| data_loss("invalid_receipt_event_count"))?;
+    let event_count =
+        usize::try_from(event_count_i32).map_err(|_| data_loss("invalid_receipt_event_count"))?;
     Ok(Some(CommitReceipt {
         entity,
         command,
@@ -610,11 +625,7 @@ const fn invalid(reason: &'static str) -> DomainError {
 }
 
 const fn failed_precondition(reason: &'static str) -> DomainError {
-    error(
-        StableCode::FailedPrecondition,
-        reason,
-        RetryClass::Never,
-    )
+    error(StableCode::FailedPrecondition, reason, RetryClass::Never)
 }
 
 const fn data_loss(reason: &'static str) -> DomainError {
@@ -686,14 +697,8 @@ mod tests {
             classify_sqlstate("40001").retry(),
             RetryClass::SafeImmediate
         );
-        assert_eq!(
-            classify_sqlstate("23505").code(),
-            StableCode::AlreadyExists
-        );
-        assert_eq!(
-            classify_sqlstate("08006").code(),
-            StableCode::Unavailable
-        );
+        assert_eq!(classify_sqlstate("23505").code(), StableCode::AlreadyExists);
+        assert_eq!(classify_sqlstate("08006").code(), StableCode::Unavailable);
         assert_eq!(
             classify_sqlstate("XX000").reason(),
             "database_internal_error"
@@ -703,9 +708,6 @@ mod tests {
     #[test]
     fn profiles_have_distinct_schema_metadata_values() {
         assert_eq!(DatabaseProfile::PostgreSql.metadata_value(), "postgresql");
-        assert_eq!(
-            DatabaseProfile::CockroachDb.metadata_value(),
-            "cockroachdb"
-        );
+        assert_eq!(DatabaseProfile::CockroachDb.metadata_value(), "cockroachdb");
     }
 }

@@ -64,9 +64,9 @@ var forbiddenAuthorityKeys = map[string]struct{}{
 }
 
 var (
-	requestFields = fieldSet("command", "content_revision", "contract_version", "expected_tick", "previous_state", "ruleset_revision", "transition_id")
-	commandFields = fieldSet("command_id", "payload")
-	payloadFields = fieldSet("canonical_json", "schema_id", "sha256")
+	requestFields  = fieldSet("command", "content_revision", "contract_version", "expected_tick", "previous_state", "ruleset_revision", "transition_id")
+	commandFields  = fieldSet("command_id", "payload")
+	payloadFields  = fieldSet("canonical_json", "schema_id", "sha256")
 	acceptedFields = fieldSet(
 		"content_revision", "contract_version", "next_state", "next_tick",
 		"outcome_material", "previous_state_hash", "replay_material",
@@ -145,12 +145,12 @@ type AuthorityContext struct {
 	MatchID               string
 	AuthorizationID       string
 	ParticipantRosterHash string
-	MatchVersion           int64
-	GlobalEventSequence    int64
-	CommandIdempotencyKey  string
-	RulesetRevision        string
-	ContentRevision        string
-	ExpectedTick           int64
+	MatchVersion          int64
+	GlobalEventSequence   int64
+	CommandIdempotencyKey string
+	RulesetRevision       string
+	ContentRevision       string
+	ExpectedTick          int64
 }
 
 func (c AuthorityContext) Validate() error {

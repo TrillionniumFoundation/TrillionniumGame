@@ -1,12 +1,10 @@
 use std::collections::BTreeMap;
 
 use trnm_token_jwt_adapter_gate::base64url;
-use trnm_token_jwt_adapter_gate::json::{
-    self, JsonErrorKind, JsonLimits, JsonValue,
-};
+use trnm_token_jwt_adapter_gate::json::{self, JsonErrorKind, JsonLimits, JsonValue};
 use trnm_token_jwt_adapter_gate::{
-    issue_epoch, issue_legacy, ClaimMapping, JwtError, KeyRing, SecretKey,
-    TokenRoute, VerificationProfile,
+    issue_epoch, issue_legacy, ClaimMapping, JwtError, KeyRing, SecretKey, TokenRoute,
+    VerificationProfile,
 };
 
 fn key(byte: u8) -> SecretKey {
@@ -156,7 +154,11 @@ fn tamper_wrong_key_and_noncanonical_signature_are_rejected() {
 
     let mut bytes = token.clone().into_bytes();
     let payload_start = bytes.iter().position(|byte| *byte == b'.').unwrap() + 1;
-    bytes[payload_start] = if bytes[payload_start] == b'A' { b'B' } else { b'A' };
+    bytes[payload_start] = if bytes[payload_start] == b'A' {
+        b'B'
+    } else {
+        b'A'
+    };
     let tampered = String::from_utf8(bytes).unwrap();
     let mut correct = KeyRing::new();
     correct.set_legacy_key(key(0x44));
@@ -181,9 +183,8 @@ fn algorithm_confusion_unknown_header_and_detached_payload_are_rejected_before_u
     ring.set_legacy_key(key(0x55));
 
     for algorithm in ["none", "HS384", "RS256"] {
-        let header = base64url::encode(
-            format!(r#"{{"alg":"{algorithm}","typ":"JWT"}}"#).as_bytes(),
-        );
+        let header =
+            base64url::encode(format!(r#"{{"alg":"{algorithm}","typ":"JWT"}}"#).as_bytes());
         let crafted = format!("{header}.{payload}.{signature}");
         assert_eq!(
             ring.verify(&crafted, &profile, 1_500),
@@ -198,9 +199,7 @@ fn algorithm_confusion_unknown_header_and_detached_payload_are_rejected_before_u
         Err(JwtError::UnknownHeaderField("x".into()))
     );
 
-    let detached = base64url::encode(
-        br#"{"alg":"HS256","b64":false,"crit":["b64"],"typ":"JWT"}"#,
-    );
+    let detached = base64url::encode(br#"{"alg":"HS256","b64":false,"crit":["b64"],"typ":"JWT"}"#);
     let crafted = format!("{detached}.{payload}.{signature}");
     assert_eq!(
         ring.verify(&crafted, &profile, 1_500),
@@ -233,9 +232,7 @@ fn exact_expiration_not_before_issued_at_and_lifetime_boundaries_are_enforced() 
     ));
     assert!(ring.verify(&token, &profile, 1_590).is_ok());
 
-    let future = ring
-        .issue_legacy(&claims(1_600, 2_000), &profile)
-        .unwrap();
+    let future = ring.issue_legacy(&claims(1_600, 2_000), &profile).unwrap();
     assert!(matches!(
         ring.verify(&future, &profile, 1_589),
         Err(JwtError::IssuedInFuture { .. })
@@ -388,7 +385,10 @@ fn token_shape_and_size_are_bounded_before_signature_work() {
     let mut ring = KeyRing::new();
     ring.set_legacy_key(key(0xa1));
     for malformed in ["", "a", "a.b", "a.b.c.d", ".b.c", "a..c", "a.b."] {
-        assert!(ring.verify(malformed, &profile, 1_500).is_err(), "{malformed}");
+        assert!(
+            ring.verify(malformed, &profile, 1_500).is_err(),
+            "{malformed}"
+        );
     }
     let mut small = profile;
     small.max_token_bytes = 8;

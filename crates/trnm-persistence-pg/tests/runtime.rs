@@ -54,9 +54,7 @@ fn pgwire_commit_duplicate_conflict_and_fence_contract() {
         .unwrap_or_else(|_| "e9b63462fa91383b06706894afed31b378f6b48c".to_owned());
 
     let mut repository = PgRepository::connect(&database_url, profile).unwrap();
-    repository
-        .bind_schema_metadata(&source_commit, 1)
-        .unwrap();
+    repository.bind_schema_metadata(&source_commit, 1).unwrap();
     let initial = repository
         .bootstrap_entity(EntityId::new([0x31; 16]), 1, digest(0x30), 1)
         .unwrap();

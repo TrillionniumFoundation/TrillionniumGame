@@ -1,7 +1,6 @@
 use core::fmt;
 
-const ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Base64UrlError {
@@ -15,7 +14,10 @@ impl fmt::Display for Base64UrlError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidCharacter { index, byte } => {
-                write!(formatter, "invalid base64url byte 0x{byte:02x} at index {index}")
+                write!(
+                    formatter,
+                    "invalid base64url byte 0x{byte:02x} at index {index}"
+                )
             }
             Self::InvalidLength => formatter.write_str("invalid unpadded base64url length"),
             Self::NonCanonicalTrailingBits => {
@@ -35,19 +37,19 @@ pub fn encode(input: &[u8]) -> String {
     let remainder = input.len() % 3;
     let encoded_len = full_groups
         .checked_mul(4)
-        .and_then(|value| value.checked_add(match remainder {
-            0 => 0,
-            1 => 2,
-            2 => 3,
-            _ => unreachable!(),
-        }))
+        .and_then(|value| {
+            value.checked_add(match remainder {
+                0 => 0,
+                1 => 2,
+                2 => 3,
+                _ => unreachable!(),
+            })
+        })
         .expect("base64url output length overflow");
     let mut output = String::with_capacity(encoded_len);
 
     for chunk in input.chunks_exact(3) {
-        let value = (u32::from(chunk[0]) << 16)
-            | (u32::from(chunk[1]) << 8)
-            | u32::from(chunk[2]);
+        let value = (u32::from(chunk[0]) << 16) | (u32::from(chunk[1]) << 8) | u32::from(chunk[2]);
         output.push(char::from(ALPHABET[((value >> 18) & 0x3f) as usize]));
         output.push(char::from(ALPHABET[((value >> 12) & 0x3f) as usize]));
         output.push(char::from(ALPHABET[((value >> 6) & 0x3f) as usize]));

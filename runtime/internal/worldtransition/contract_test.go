@@ -11,12 +11,12 @@ func fixtureContext(sequence int64) AuthorityContext {
 		MatchID:               "match-accepted",
 		AuthorizationID:       "authorization-accepted",
 		ParticipantRosterHash: strings.Repeat("3", 64),
-		MatchVersion:           1,
-		GlobalEventSequence:    sequence,
-		CommandIdempotencyKey:  "idempotency-accepted",
-		RulesetRevision:        "trnm-rts-rules-v1",
-		ContentRevision:        "first-contact-content-v1",
-		ExpectedTick:           120,
+		MatchVersion:          1,
+		GlobalEventSequence:   sequence,
+		CommandIdempotencyKey: "idempotency-accepted",
+		RulesetRevision:       "trnm-rts-rules-v1",
+		ContentRevision:       "first-contact-content-v1",
+		ExpectedTick:          120,
 	}
 }
 
