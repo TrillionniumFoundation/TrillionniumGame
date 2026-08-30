@@ -89,6 +89,7 @@ impl PgPoolConfig {
             || self.statement_timeout.is_zero()
             || self.lock_timeout.is_zero()
             || self.idle_transaction_timeout.is_zero()
+            || self.lock_timeout > self.statement_timeout
             || self.idle_timeout > self.max_lifetime
         {
             return Err(configuration_error("database_pool_policy_invalid"));
@@ -393,6 +394,7 @@ mod tests {
         assert_eq!(policy.max_size, 8);
         assert_eq!(policy.min_idle, 1);
         assert!(policy.acquire_timeout < policy.statement_timeout);
+        assert!(policy.lock_timeout <= policy.statement_timeout);
         assert!(policy.idle_timeout < policy.max_lifetime);
     }
 
@@ -411,6 +413,16 @@ mod tests {
         let policy = PgPoolConfig {
             min_idle: default.max_size + 1,
             ..default
+        };
+        assert_eq!(
+            policy.validate().unwrap_err().reason(),
+            "database_pool_policy_invalid"
+        );
+
+        let policy = PgPoolConfig {
+            lock_timeout: Duration::from_secs(6),
+            statement_timeout: Duration::from_secs(5),
+            ..PgPoolConfig::default()
         };
         assert_eq!(
             policy.validate().unwrap_err().reason(),
