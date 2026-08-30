@@ -1,0 +1,912 @@
+name: temporary-websocket-lifecycle-closure
+
+on:
+  push:
+    branches:
+      - feat/plan-v3-gap-closure-2026-08-29
+
+permissions:
+  contents: write
+
+concurrency:
+  group: trillionnium-plan-v3-single-writer
+  cancel-in-progress: false
+
+jobs:
+  implement-prove-and-push:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - name: Fetch quiet exact triggering head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$GITHUB_REF_NAME" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          sleep 90
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags origin "$GITHUB_REF_NAME"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+
+      - name: Add pinned wire dependencies and persistent lifecycle source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import re
+          from pathlib import Path
+
+          root = Path('.')
+          manifest = root / 'crates/trnm-persistence-pg/Cargo.toml'
+          text = manifest.read_text(encoding='utf-8')
+          dependencies = {
+              'base64': '=0.22.1',
+              'sha1': '=0.10.6',
+          }
+          marker = '[dependencies]\n'
+          if marker not in text:
+              raise SystemExit(f'{manifest}: dependencies section missing')
+          for name, version in dependencies.items():
+              if not re.search(rf'^{re.escape(name)}\s*=', text, re.MULTILINE):
+                  text = text.replace(marker, marker + f'{name} = "{version}"\n', 1)
+          manifest.write_text(text, encoding='utf-8')
+
+          websocket = root / 'crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs'
+          prior = websocket.read_text(encoding='utf-8')
+          routes = re.findall(r'"(/[^"\n]*socket[^"\n]*)"', prior)
+          if not routes:
+              raise SystemExit(f'{websocket}: existing socket route could not be recovered')
+          route = routes[0]
+          template = r'''use std::collections::BTreeMap;
+          use std::io::{ErrorKind, Read, Write};
+          use std::net::TcpStream;
+
+          use base64::engine::general_purpose::STANDARD;
+          use base64::Engine as _;
+          use sha1::{Digest as _, Sha1};
+
+          use super::app::{App, Repository};
+          use super::error::{InputError, ServerError};
+          use super::http::Request;
+
+          const ROUTE: &str = "__ROUTE__";
+          const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+          const SUBPROTOCOL: &str = "trnm-json-v1";
+          const OPCODE_TEXT: u8 = 0x1;
+          const OPCODE_CLOSE: u8 = 0x8;
+          const OPCODE_PING: u8 = 0x9;
+          const OPCODE_PONG: u8 = 0xa;
+
+          #[derive(Debug)]
+          struct Frame {
+              opcode: u8,
+              payload: Vec<u8>,
+          }
+
+          pub fn is_route(request: &Request) -> bool {
+              request.method == "GET" && request.target == ROUTE
+          }
+
+          pub fn serve_once<R: Repository>(
+              stream: &mut TcpStream,
+              request: &Request,
+              app: &mut App<R>,
+              maximum_payload: usize,
+          ) -> Result<(), ServerError> {
+              serve_with_limit(stream, request, app, maximum_payload, 1)
+          }
+
+          pub fn serve_persistent<R: Repository>(
+              stream: &mut TcpStream,
+              request: &Request,
+              app: &mut App<R>,
+              maximum_payload: usize,
+              maximum_messages: usize,
+          ) -> Result<(), ServerError> {
+              if maximum_messages == 0 {
+                  return Err(InputError::new("websocket_message_limit_invalid").into());
+              }
+              serve_with_limit(
+                  stream,
+                  request,
+                  app,
+                  maximum_payload,
+                  maximum_messages,
+              )
+          }
+
+          fn serve_with_limit<R: Repository>(
+              stream: &mut TcpStream,
+              request: &Request,
+              app: &mut App<R>,
+              maximum_payload: usize,
+              maximum_messages: usize,
+          ) -> Result<(), ServerError> {
+              let selected_protocol = validate_handshake(request)?;
+              write_handshake(stream, request, selected_protocol)?;
+              let authorization = request.header("authorization").map(str::to_owned);
+              let mut messages = 0_usize;
+              loop {
+                  let frame = match read_frame(stream, maximum_payload) {
+                      Ok(frame) => frame,
+                      Err(ServerError::Io(error))
+                          if matches!(
+                              error.kind(),
+                              ErrorKind::TimedOut
+                                  | ErrorKind::WouldBlock
+                                  | ErrorKind::UnexpectedEof
+                          ) =>
+                      {
+                          let _ = write_close(stream, 1001, "idle_or_peer_closed");
+                          return Ok(());
+                      }
+                      Err(error) => {
+                          let _ = write_close(stream, 1002, "protocol_error");
+                          return Err(error);
+                      }
+                  };
+                  match frame.opcode {
+                      OPCODE_TEXT => {
+                          messages = messages.saturating_add(1);
+                          if messages > maximum_messages {
+                              write_close(stream, 1008, "message_limit")?;
+                              return Ok(());
+                          }
+                          if std::str::from_utf8(&frame.payload).is_err() {
+                              write_close(stream, 1007, "invalid_utf8")?;
+                              return Ok(());
+                          }
+                          let mut headers = BTreeMap::from([
+                              ("content-type".to_owned(), "application/json".to_owned()),
+                          ]);
+                          if let Some(authorization) = &authorization {
+                              headers.insert(
+                                  "authorization".to_owned(),
+                                  authorization.clone(),
+                              );
+                          }
+                          let response = app.handle(&Request::new(
+                              "POST",
+                              "/v1/authority/commit",
+                              headers,
+                              frame.payload,
+                          ));
+                          write_frame(stream, OPCODE_TEXT, &response.body)?;
+                      }
+                      OPCODE_PING => write_frame(stream, OPCODE_PONG, &frame.payload)?,
+                      OPCODE_PONG => {}
+                      OPCODE_CLOSE => {
+                          write_frame(stream, OPCODE_CLOSE, &frame.payload)?;
+                          return Ok(());
+                      }
+                      _ => {
+                          write_close(stream, 1002, "unsupported_opcode")?;
+                          return Ok(());
+                      }
+                  }
+              }
+          }
+
+          fn validate_handshake(request: &Request) -> Result<Option<&'static str>, ServerError> {
+              if !is_route(request) {
+                  return Err(InputError::new("websocket_route_invalid").into());
+              }
+              if !request
+                  .header("upgrade")
+                  .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+              {
+                  return Err(InputError::new("websocket_upgrade_invalid").into());
+              }
+              if !request.header("connection").is_some_and(|value| {
+                  value
+                      .split(',')
+                      .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+              }) {
+                  return Err(InputError::new("websocket_connection_invalid").into());
+              }
+              if request.header("sec-websocket-version") != Some("13") {
+                  return Err(InputError::new("websocket_version_invalid").into());
+              }
+              let key = request
+                  .header("sec-websocket-key")
+                  .ok_or_else(|| InputError::new("websocket_key_missing"))?;
+              let decoded = STANDARD
+                  .decode(key)
+                  .map_err(|_| InputError::new("websocket_key_invalid"))?;
+              if decoded.len() != 16 {
+                  return Err(InputError::new("websocket_key_invalid").into());
+              }
+              let selected = match request.header("sec-websocket-protocol") {
+                  None => None,
+                  Some(value)
+                      if value
+                          .split(',')
+                          .any(|protocol| protocol.trim() == SUBPROTOCOL) =>
+                  {
+                      Some(SUBPROTOCOL)
+                  }
+                  Some(_) => {
+                      return Err(InputError::new("websocket_subprotocol_invalid").into());
+                  }
+              };
+              Ok(selected)
+          }
+
+          fn write_handshake(
+              stream: &mut TcpStream,
+              request: &Request,
+              protocol: Option<&str>,
+          ) -> Result<(), ServerError> {
+              let key = request
+                  .header("sec-websocket-key")
+                  .ok_or_else(|| InputError::new("websocket_key_missing"))?;
+              let accept = handshake_accept(key);
+              write!(
+                  stream,
+                  "HTTP/1.1 101 Switching Protocols\r\n\
+                   Upgrade: websocket\r\n\
+                   Connection: Upgrade\r\n\
+                   Sec-WebSocket-Accept: {accept}\r\n"
+              )?;
+              if let Some(protocol) = protocol {
+                  write!(stream, "Sec-WebSocket-Protocol: {protocol}\r\n")?;
+              }
+              write!(stream, "\r\n")?;
+              stream.flush()?;
+              Ok(())
+          }
+
+          fn handshake_accept(key: &str) -> String {
+              let mut digest = Sha1::new();
+              digest.update(key.as_bytes());
+              digest.update(WEBSOCKET_GUID.as_bytes());
+              STANDARD.encode(digest.finalize())
+          }
+
+          fn read_frame<R: Read>(
+              reader: &mut R,
+              maximum_payload: usize,
+          ) -> Result<Frame, ServerError> {
+              let mut header = [0_u8; 2];
+              reader.read_exact(&mut header)?;
+              let finished = header[0] & 0x80 != 0;
+              let reserved = header[0] & 0x70;
+              let opcode = header[0] & 0x0f;
+              let masked = header[1] & 0x80 != 0;
+              if !finished || reserved != 0 || !masked {
+                  return Err(InputError::new("websocket_frame_flags_invalid").into());
+              }
+              let control = opcode & 0x08 != 0;
+              let length_code = header[1] & 0x7f;
+              let length = match length_code {
+                  value @ 0..=125 => u64::from(value),
+                  126 => {
+                      let mut extended = [0_u8; 2];
+                      reader.read_exact(&mut extended)?;
+                      let length = u64::from(u16::from_be_bytes(extended));
+                      if length < 126 {
+                          return Err(InputError::new(
+                              "websocket_frame_length_noncanonical",
+                          )
+                          .into());
+                      }
+                      length
+                  }
+                  127 => {
+                      let mut extended = [0_u8; 8];
+                      reader.read_exact(&mut extended)?;
+                      if extended[0] & 0x80 != 0 {
+                          return Err(InputError::new("websocket_frame_length_invalid").into());
+                      }
+                      let length = u64::from_be_bytes(extended);
+                      if length <= u64::from(u16::MAX) {
+                          return Err(InputError::new(
+                              "websocket_frame_length_noncanonical",
+                          )
+                          .into());
+                      }
+                      length
+                  }
+                  _ => unreachable!(),
+              };
+              if control && length > 125 {
+                  return Err(InputError::new("websocket_control_frame_oversized").into());
+              }
+              let length = usize::try_from(length)
+                  .map_err(|_| InputError::new("websocket_frame_length_overflow"))?;
+              if length > maximum_payload {
+                  return Err(InputError::new("websocket_frame_oversized").into());
+              }
+              let mut mask = [0_u8; 4];
+              reader.read_exact(&mut mask)?;
+              let mut payload = vec![0_u8; length];
+              reader.read_exact(&mut payload)?;
+              for (index, byte) in payload.iter_mut().enumerate() {
+                  *byte ^= mask[index % mask.len()];
+              }
+              Ok(Frame { opcode, payload })
+          }
+
+          fn write_frame<W: Write>(
+              writer: &mut W,
+              opcode: u8,
+              payload: &[u8],
+          ) -> Result<(), ServerError> {
+              writer.write_all(&[0x80 | opcode])?;
+              match payload.len() {
+                  length @ 0..=125 => writer.write_all(&[
+                      u8::try_from(length)
+                          .map_err(|_| InputError::new("websocket_frame_length_overflow"))?,
+                  ])?,
+                  length @ 126..=65535 => {
+                      writer.write_all(&[126])?;
+                      writer.write_all(
+                          &u16::try_from(length)
+                              .map_err(|_| InputError::new(
+                                  "websocket_frame_length_overflow",
+                              ))?
+                              .to_be_bytes(),
+                      )?;
+                  }
+                  length => {
+                      writer.write_all(&[127])?;
+                      writer.write_all(
+                          &u64::try_from(length)
+                              .map_err(|_| InputError::new(
+                                  "websocket_frame_length_overflow",
+                              ))?
+                              .to_be_bytes(),
+                      )?;
+                  }
+              }
+              writer.write_all(payload)?;
+              writer.flush()?;
+              Ok(())
+          }
+
+          fn write_close(
+              stream: &mut TcpStream,
+              code: u16,
+              reason: &str,
+          ) -> Result<(), ServerError> {
+              let mut payload = code.to_be_bytes().to_vec();
+              payload.extend_from_slice(reason.as_bytes());
+              if payload.len() > 125 {
+                  payload.truncate(125);
+              }
+              write_frame(stream, OPCODE_CLOSE, &payload)
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use std::io::Cursor;
+
+              use super::*;
+
+              fn masked(opcode: u8, payload: &[u8]) -> Vec<u8> {
+                  let mask = [1_u8, 2, 3, 4];
+                  let mut frame = vec![0x80 | opcode];
+                  assert!(payload.len() <= 125);
+                  frame.push(0x80 | u8::try_from(payload.len()).unwrap());
+                  frame.extend_from_slice(&mask);
+                  frame.extend(
+                      payload
+                          .iter()
+                          .enumerate()
+                          .map(|(index, byte)| byte ^ mask[index % 4]),
+                  );
+                  frame
+              }
+
+              #[test]
+              fn published_handshake_vector_is_exact() {
+                  assert_eq!(
+                      handshake_accept("dGhlIHNhbXBsZSBub25jZQ=="),
+                      "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+                  );
+              }
+
+              #[test]
+              fn masked_text_ping_and_close_frames_decode_exactly() {
+                  for (opcode, payload) in [
+                      (OPCODE_TEXT, b"hello".as_slice()),
+                      (OPCODE_PING, b"ping".as_slice()),
+                      (OPCODE_CLOSE, &[0x03, 0xe8][..]),
+                  ] {
+                      let frame = read_frame(
+                          &mut Cursor::new(masked(opcode, payload)),
+                          1024,
+                      )
+                      .unwrap();
+                      assert_eq!(frame.opcode, opcode);
+                      assert_eq!(frame.payload, payload);
+                  }
+              }
+
+              #[test]
+              fn unmasked_fragmented_and_noncanonical_frames_fail_closed() {
+                  for input in [
+                      vec![0x81, 0x00],
+                      vec![0x01, 0x80, 1, 2, 3, 4],
+                      vec![0x81, 0xfe, 0, 1, 1, 2, 3, 4, 0],
+                  ] {
+                      assert!(read_frame(&mut Cursor::new(input), 1024).is_err());
+                  }
+              }
+
+              #[test]
+              fn server_frames_are_unmasked_and_canonical() {
+                  let mut output = Vec::new();
+                  write_frame(&mut output, OPCODE_TEXT, b"hello").unwrap();
+                  assert_eq!(output, b"\x81\x05hello");
+              }
+          }
+          '''
+          websocket.write_text(
+              template.replace('__ROUTE__', route).replace('          ', ''),
+              encoding='utf-8',
+          )
+          PY
+          git diff --check
+
+      - name: Bind lifecycle limit into typed server config and routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          config = Path('crates/trnm-persistence-pg/src/bin/trnm_server/config.rs')
+          source = config.read_text(encoding='utf-8')
+          if 'DEFAULT_WEBSOCKET_MAX_MESSAGES' not in source:
+              anchor = 'const DEFAULT_CONNECTION_QUEUE_CAPACITY: usize = 128;\n'
+              if anchor not in source:
+                  raise SystemExit(f'{config}: connection queue constant anchor missing')
+              source = source.replace(
+                  anchor,
+                  anchor + 'const DEFAULT_WEBSOCKET_MAX_MESSAGES: usize = 1024;\n',
+                  1,
+              )
+          if 'pub websocket_max_messages: usize' not in source:
+              anchor = '    pub connection_queue_capacity: usize,\n'
+              if anchor not in source:
+                  raise SystemExit(f'{config}: queue field anchor missing')
+              source = source.replace(
+                  anchor,
+                  anchor + '    pub websocket_max_messages: usize,\n',
+                  1,
+              )
+          if '.field("websocket_max_messages"' not in source:
+              anchor = '''            .field(
+                "connection_queue_capacity",
+                &self.connection_queue_capacity,
+            )
+'''
+              if anchor not in source:
+                  raise SystemExit(f'{config}: queue debug anchor missing')
+              source = source.replace(
+                  anchor,
+                  anchor
+                  + '            .field("websocket_max_messages", &self.websocket_max_messages)\n',
+                  1,
+              )
+          if 'TRNM_SERVER_WEBSOCKET_MAX_MESSAGES' not in source:
+              anchor = '''        let connection_queue_capacity = parse_usize(
+            lookup("TRNM_SERVER_CONNECTION_QUEUE_CAPACITY").as_deref(),
+            DEFAULT_CONNECTION_QUEUE_CAPACITY,
+            1,
+            4096,
+            "connection_queue_capacity_invalid",
+        )?;
+'''
+              if anchor not in source:
+                  raise SystemExit(f'{config}: queue parser anchor missing')
+              source = source.replace(
+                  anchor,
+                  anchor
+                  + '''        let websocket_max_messages = parse_usize(
+            lookup("TRNM_SERVER_WEBSOCKET_MAX_MESSAGES").as_deref(),
+            DEFAULT_WEBSOCKET_MAX_MESSAGES,
+            1,
+            1_000_000,
+            "websocket_max_messages_invalid",
+        )?;
+''',
+                  1,
+              )
+          if '                websocket_max_messages,' not in source:
+              anchor = '                connection_queue_capacity,\n'
+              if anchor not in source:
+                  raise SystemExit(f'{config}: queue constructor anchor missing')
+              source = source.replace(
+                  anchor,
+                  anchor + '                websocket_max_messages,\n',
+                  1,
+              )
+          if 'config.websocket_max_messages, 1024' not in source:
+              anchor = '        assert_eq!(config.connection_queue_capacity, 128);\n'
+              if anchor not in source:
+                  raise SystemExit(f'{config}: queue default test anchor missing')
+              source = source.replace(
+                  anchor,
+                  anchor + '        assert_eq!(config.websocket_max_messages, 1024);\n',
+                  1,
+              )
+          config.write_text(source, encoding='utf-8')
+
+          server = Path('crates/trnm-persistence-pg/src/bin/trnm_server/server.rs')
+          source = server.read_text(encoding='utf-8')
+          source = source.replace(
+              'websocket::serve_once(\n                          stream,\n                          &request,\n                          &mut app,\n                          config.max_request_bytes,\n                      )',
+              'websocket::serve_persistent(\n                          stream,\n                          &request,\n                          &mut app,\n                          config.max_request_bytes,\n                          config.websocket_max_messages,\n                      )',
+              1,
+          )
+          if 'websocket::serve_persistent(' not in source:
+              raise SystemExit(f'{server}: WebSocket routing anchor missing')
+          server.write_text(source, encoding='utf-8')
+
+          inventory_path = Path('docs/status/IMPLEMENTATION_INVENTORY.json')
+          inventory = json.loads(inventory_path.read_text(encoding='utf-8'))
+          for component in inventory.get('components', []):
+              if component.get('id') in {'COMP-PERSISTENCE-PG', 'COMP-TRNM-SERVER'}:
+                  fact = 'persistent bounded RFC 6455 JSON lifecycle with multi-message, ping/pong and canonical close'
+                  implemented = component.setdefault('implemented', [])
+                  if fact not in implemented:
+                      implemented.append(fact)
+                  missing = component.setdefault('missing', [])
+                  for stale in (
+                      'persistent socket heartbeat, reconnect and multi-message lifecycle',
+                      'WebSocket protobuf and persistent lifecycle',
+                  ):
+                      if stale in missing:
+                          missing.remove(stale)
+                  remaining = 'Nakama RTAPI protobuf, reconnect cursor, distributed presence and oracle/load acceptance'
+                  if remaining not in missing:
+                      missing.append(remaining)
+          inventory_path.write_text(
+              json.dumps(inventory, indent=2, ensure_ascii=False) + '\n',
+              encoding='utf-8',
+          )
+          PY
+          git diff --check
+
+      - name: Generate persistent lifecycle process workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import re
+          from pathlib import Path
+
+          root = Path('.')
+          text = '\n'.join(
+              path.read_text(encoding='utf-8')
+              for path in sorted((root / '.github/workflows').glob('*.yml'))
+              if path.name != 'temporary-websocket-lifecycle-closure.yml'
+          )
+          images = sorted(set(re.findall(
+              r'(?:docker\.io/library/)?postgres(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}',
+              text,
+          )))
+          if not images:
+              raise SystemExit('immutable PostgreSQL image missing')
+          websocket_source = (
+              root / 'crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs'
+          ).read_text(encoding='utf-8')
+          route_match = re.search(r'const ROUTE: &str = "([^"]+)";', websocket_source)
+          if not route_match:
+              raise SystemExit('persistent WebSocket route missing')
+          route = route_match.group(1)
+          workflow = f'''name: websocket-persistent-lifecycle
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - feat/plan-v3-gap-closure-2026-08-29
+
+permissions:
+  contents: read
+
+jobs:
+  persistent-json-lifecycle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Fetch exact head without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${{GITHUB_REPOSITORY}}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Prove two-message, heartbeat and close lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          docker run -d --name trnm-websocket-db -e POSTGRES_HOST_AUTH_METHOD=trust \
+            -p 127.0.0.1:55438:5432 {images[0]}
+          for attempt in $(seq 1 90); do
+            if docker exec trnm-websocket-db pg_isready -U postgres -d postgres >/dev/null 2>&1; then break; fi
+            test "$attempt" -lt 90; sleep 1
+          done
+          export TRNM_SERVER_DATABASE_URL=postgresql://postgres@127.0.0.1:55438/postgres
+          export TRNM_SERVER_DATABASE_PROFILE=postgresql
+          export TRNM_SERVER_SCHEMA_SOURCE_COMMIT="$GITHUB_SHA"
+          export TRNM_SERVER_ADMIN_TOKEN=0123456789abcdefghijklmnopqrstuvwxyzABCDE
+          export TRNM_SERVER_ALLOW_PLAINTEXT_DATABASE=1
+          export TRNM_SERVER_BIND=127.0.0.1:57351
+          export TRNM_SERVER_WORKER_COUNT=2
+          export TRNM_SERVER_CONNECTION_QUEUE_CAPACITY=16
+          export TRNM_SERVER_WEBSOCKET_MAX_MESSAGES=8
+          cargo run --quiet --package trnm-persistence-pg --bin trnm-server -- migrate
+          cargo run --quiet --package trnm-persistence-pg --bin trnm-server -- serve \
+            > /tmp/trnm-websocket.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; docker rm -f trnm-websocket-db >/dev/null 2>&1 || true' EXIT
+          python3 - <<'PY2'
+          import json
+          import socket
+          import struct
+          import time
+
+          address = ('127.0.0.1', 57351)
+          token = '0123456789abcdefghijklmnopqrstuvwxyzABCDE'
+          for _ in range(200):
+              try:
+                  with socket.create_connection(address, timeout=0.2): break
+              except OSError: time.sleep(0.05)
+          else: raise SystemExit('server did not become reachable')
+
+          def http(method, path, body=b'', extra=()):
+              with socket.create_connection(address, timeout=3) as sock:
+                  headers = [
+                      f'{{method}} {{path}} HTTP/1.1',
+                      'Host: localhost',
+                      f'Authorization: Bearer {{token}}',
+                      f'Content-Length: {{len(body)}}',
+                      'Connection: close',
+                  ]
+                  if body:
+                      headers.append('Content-Type: application/json')
+                  headers.extend(extra)
+                  sock.sendall(('\r\n'.join(headers) + '\r\n\r\n').encode() + body)
+                  response=b''
+                  while True:
+                      chunk=sock.recv(4096)
+                      if not chunk: break
+                      response+=chunk
+              return response
+
+          bootstrap = json.dumps({{
+              'entity_id': '01' * 16,
+              'authority_generation': 1,
+              'state_digest': '02' * 32,
+              'updated_at_ms': 10,
+          }}, separators=(',', ':')).encode()
+          assert http('POST', '/v1/authority/bootstrap', bootstrap).startswith(b'HTTP/1.1 201')
+
+          def send_client_frame(sock, opcode, payload):
+              mask=b'\x11\x22\x33\x44'
+              head=bytes([0x80|opcode])
+              length=len(payload)
+              if length <= 125:
+                  head += bytes([0x80|length])
+              elif length <= 65535:
+                  head += bytes([0x80|126]) + struct.pack('!H', length)
+              else:
+                  head += bytes([0x80|127]) + struct.pack('!Q', length)
+              masked=bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+              sock.sendall(head + mask + masked)
+
+          def receive_server_frame(sock):
+              first=sock.recv(2)
+              if len(first) != 2: raise SystemExit('short WebSocket frame')
+              opcode=first[0]&0x0f
+              masked=first[1]&0x80
+              if masked: raise SystemExit('server frame was masked')
+              length=first[1]&0x7f
+              if length == 126: length=struct.unpack('!H', sock.recv(2))[0]
+              elif length == 127: length=struct.unpack('!Q', sock.recv(8))[0]
+              payload=b''
+              while len(payload)<length:
+                  payload+=sock.recv(length-len(payload))
+              return opcode,payload
+
+          with socket.create_connection(address, timeout=4) as sock:
+              request=(
+                  'GET {route} HTTP/1.1\r\n'
+                  'Host: localhost\r\n'
+                  'Upgrade: websocket\r\n'
+                  'Connection: keep-alive, Upgrade\r\n'
+                  'Sec-WebSocket-Version: 13\r\n'
+                  'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
+                  'Sec-WebSocket-Protocol: trnm-json-v1\r\n'
+                  f'Authorization: Bearer {{token}}\r\n\r\n'
+              ).encode()
+              sock.sendall(request)
+              handshake=b''
+              while b'\r\n\r\n' not in handshake:
+                  handshake+=sock.recv(4096)
+              assert handshake.startswith(b'HTTP/1.1 101'), handshake[:160]
+              assert b'Sec-WebSocket-Protocol: trnm-json-v1' in handshake
+              send_client_frame(sock, 0x9, b'heartbeat')
+              assert receive_server_frame(sock) == (0xA, b'heartbeat')
+              commit=json.dumps({{
+                  'entity_id': '01' * 16,
+                  'command_id': '03' * 16,
+                  'fingerprint': '04' * 32,
+                  'expected_revision': 0,
+                  'authority_generation': 1,
+                  'next_state_digest': '05' * 32,
+                  'committed_at_ms': 11,
+                  'event_id': '06' * 16,
+                  'event_payload_digest': '07' * 32,
+                  'intent_id': '08' * 16,
+                  'intent_kind': 'broadcast',
+                  'intent_payload_digest': '09' * 32,
+                  'available_at_ms': 11,
+              }}, separators=(',', ':')).encode()
+              send_client_frame(sock, 0x1, commit)
+              opcode, first=receive_server_frame(sock)
+              assert opcode==0x1 and b'"outcome":"applied"' in first, first
+              send_client_frame(sock, 0x1, commit)
+              opcode, second=receive_server_frame(sock)
+              assert opcode==0x1 and b'"outcome":"duplicate"' in second, second
+              send_client_frame(sock, 0x8, struct.pack('!H',1000))
+              opcode, close=receive_server_frame(sock)
+              assert opcode==0x8 and close[:2]==struct.pack('!H',1000), close
+          assert http('POST','/-/drain').startswith(b'HTTP/1.1 200')
+          PY2
+          for attempt in $(seq 1 100); do
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then wait "$SERVER_PID"; exit 0; fi
+            sleep 0.1
+          done
+          cat /tmp/trnm-websocket.log >&2
+          exit 1
+'''
+          (root / '.github/workflows/websocket-persistent-lifecycle.yml').write_text(
+              workflow,
+              encoding='utf-8',
+          )
+          PY
+          git diff --check
+
+      - name: Resolve lock, format, test and strictly lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.85.1
+          cargo check --package trnm-persistence-pg --all-targets
+          cargo fmt --all
+          cargo test --package trnm-persistence-pg --all-targets --locked
+          cargo clippy --fix --allow-dirty --allow-staged \
+            --package trnm-persistence-pg --all-targets --locked -- -D warnings
+          cargo fmt --all
+          git diff --check
+          cargo fmt --all -- --check
+          cargo test --package trnm-persistence-pg --all-targets --locked
+          cargo clippy --package trnm-persistence-pg --all-targets --locked -- -D warnings
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          python3 scripts/check-plan.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Run the persistent lifecycle process proof before commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          POSTGRES_IMAGE="$(grep -Eo '(docker.io/library/)?postgres(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}' .github/workflows/websocket-persistent-lifecycle.yml | head -1)"
+          docker run -d --name trnm-websocket-db -e POSTGRES_HOST_AUTH_METHOD=trust \
+            -p 127.0.0.1:55438:5432 "$POSTGRES_IMAGE"
+          for attempt in $(seq 1 90); do
+            if docker exec trnm-websocket-db pg_isready -U postgres -d postgres >/dev/null 2>&1; then break; fi
+            test "$attempt" -lt 90; sleep 1
+          done
+          export TRNM_SERVER_DATABASE_URL=postgresql://postgres@127.0.0.1:55438/postgres
+          export TRNM_SERVER_DATABASE_PROFILE=postgresql
+          export TRNM_SERVER_SCHEMA_SOURCE_COMMIT="$GITHUB_SHA"
+          export TRNM_SERVER_ADMIN_TOKEN=0123456789abcdefghijklmnopqrstuvwxyzABCDE
+          export TRNM_SERVER_ALLOW_PLAINTEXT_DATABASE=1
+          export TRNM_SERVER_BIND=127.0.0.1:57351
+          export TRNM_SERVER_WORKER_COUNT=2
+          export TRNM_SERVER_CONNECTION_QUEUE_CAPACITY=16
+          export TRNM_SERVER_WEBSOCKET_MAX_MESSAGES=8
+          cargo run --quiet --package trnm-persistence-pg --bin trnm-server -- migrate
+          cargo run --quiet --package trnm-persistence-pg --bin trnm-server -- serve \
+            > /tmp/trnm-websocket.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; docker rm -f trnm-websocket-db >/dev/null 2>&1 || true' EXIT
+          python3 - <<'PY'
+          import json, re, socket, struct, time
+          source=open('crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs').read()
+          route=re.search(r'const ROUTE: &str = "([^"]+)";',source).group(1)
+          address=('127.0.0.1',57351); token='0123456789abcdefghijklmnopqrstuvwxyzABCDE'
+          for _ in range(200):
+              try:
+                  with socket.create_connection(address,timeout=.2): break
+              except OSError: time.sleep(.05)
+          else: raise SystemExit('server did not become reachable')
+          def http(method,path,body=b''):
+              with socket.create_connection(address,timeout=3) as sock:
+                  h=[f'{method} {path} HTTP/1.1','Host: localhost',f'Authorization: Bearer {token}',f'Content-Length: {len(body)}','Connection: close']
+                  if body:h.append('Content-Type: application/json')
+                  sock.sendall(('\r\n'.join(h)+'\r\n\r\n').encode()+body);data=b''
+                  while True:
+                      c=sock.recv(4096)
+                      if not c:break
+                      data+=c
+              return data
+          bootstrap=json.dumps({'entity_id':'01'*16,'authority_generation':1,'state_digest':'02'*32,'updated_at_ms':10},separators=(',',':')).encode()
+          assert http('POST','/v1/authority/bootstrap',bootstrap).startswith(b'HTTP/1.1 201')
+          def send(sock,opcode,payload):
+              mask=b'\x11\x22\x33\x44';n=len(payload);head=bytes([0x80|opcode])
+              if n<=125:head+=bytes([0x80|n])
+              elif n<=65535:head+=bytes([0x80|126])+struct.pack('!H',n)
+              else:head+=bytes([0x80|127])+struct.pack('!Q',n)
+              sock.sendall(head+mask+bytes(x^mask[i%4] for i,x in enumerate(payload)))
+          def recv(sock):
+              h=sock.recv(2);assert len(h)==2 and not h[1]&0x80;n=h[1]&0x7f
+              if n==126:n=struct.unpack('!H',sock.recv(2))[0]
+              elif n==127:n=struct.unpack('!Q',sock.recv(8))[0]
+              p=b''
+              while len(p)<n:p+=sock.recv(n-len(p))
+              return h[0]&0xf,p
+          with socket.create_connection(address,timeout=4) as sock:
+              sock.sendall((f'GET {route} HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: trnm-json-v1\r\nAuthorization: Bearer {token}\r\n\r\n').encode())
+              hs=b''
+              while b'\r\n\r\n' not in hs:hs+=sock.recv(4096)
+              assert hs.startswith(b'HTTP/1.1 101') and b'trnm-json-v1' in hs
+              send(sock,9,b'heartbeat');assert recv(sock)==(10,b'heartbeat')
+              commit=json.dumps({'entity_id':'01'*16,'command_id':'03'*16,'fingerprint':'04'*32,'expected_revision':0,'authority_generation':1,'next_state_digest':'05'*32,'committed_at_ms':11,'event_id':'06'*16,'event_payload_digest':'07'*32,'intent_id':'08'*16,'intent_kind':'broadcast','intent_payload_digest':'09'*32,'available_at_ms':11},separators=(',',':')).encode()
+              send(sock,1,commit);o,p=recv(sock);assert o==1 and b'"outcome":"applied"' in p,p
+              send(sock,1,commit);o,p=recv(sock);assert o==1 and b'"outcome":"duplicate"' in p,p
+              send(sock,8,struct.pack('!H',1000));o,p=recv(sock);assert o==8 and p[:2]==struct.pack('!H',1000)
+          assert http('POST','/-/drain').startswith(b'HTTP/1.1 200')
+          PY
+          for attempt in $(seq 1 100); do
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then wait "$SERVER_PID"; exit 0; fi
+            sleep 0.1
+          done
+          cat /tmp/trnm-websocket.log >&2
+          exit 1
+
+      - name: Delete every temporary writer and push unchanged-tip result
+        shell: bash
+        run: |
+          set -euo pipefail
+          find .github/workflows -maxdepth 1 -type f \
+            \( -name 'temporary-*.yml' -o -name 'temporary-*.yaml' \) \
+            -print -delete
+          git fetch --no-tags origin "$GITHUB_REF_NAME"
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          test -z "$(find .github/workflows -maxdepth 1 -type f \
+            \( -name 'temporary-*.yml' -o -name 'temporary-*.yaml' \) -print -quit)"
+          git diff --check
+          git config user.name "trillionnium-gap-closure-bot"
+          git config user.email "gap-closure-bot@users.noreply.github.com"
+          git add -A
+          test -n "$(git diff --cached --name-only)"
+          git commit -m "feat(realtime): add persistent WebSocket JSON lifecycle"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
