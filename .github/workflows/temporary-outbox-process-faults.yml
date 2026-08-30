@@ -1,0 +1,384 @@
+name: temporary-outbox-process-faults
+
+on:
+  push:
+    branches:
+      - codex/outbox-process-faults-2026-08-31
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-outbox-process-faults
+  cancel-in-progress: false
+
+jobs:
+  implement-verify-and-push:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - name: Fetch exact branch without external actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$GITHUB_REF_NAME" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+
+      - name: Add explicit post-spool process failpoint and stronger live matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: Path, old: str, new: str, expected: int = 1) -> None:
+              source = path.read_text(encoding='utf-8')
+              count = source.count(old)
+              if count != expected:
+                  raise SystemExit(
+                      f'{path}: expected {expected} anchors, found {count} for {old!r}'
+                  )
+              path.write_text(source.replace(old, new, expected), encoding='utf-8')
+
+          worker = Path('crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs')
+          replace_exact(
+              worker,
+              'use std::process::ExitCode;\n',
+              'use std::process::{self, ExitCode};\n',
+          )
+          replace_exact(
+              worker,
+              'const MAX_CONSECUTIVE_DATABASE_FAILURES: u32 = 20;\n',
+              'const MAX_CONSECUTIVE_DATABASE_FAILURES: u32 = 20;\n'
+              'const TEST_FAIL_AFTER_DELIVERY_EXIT_CODE: i32 = 70;\n',
+          )
+          replace_exact(
+              worker,
+              '    max_backoff_ms: u64,\n}\n',
+              '    max_backoff_ms: u64,\n'
+              '    test_fail_after_delivery: bool,\n'
+              '}\n',
+          )
+          replace_exact(
+              worker,
+              '            .field("max_backoff_ms", &self.max_backoff_ms)\n'
+              '            .finish()\n',
+              '            .field("max_backoff_ms", &self.max_backoff_ms)\n'
+              '            .field(\n'
+              '                "test_fail_after_delivery",\n'
+              '                &self.test_fail_after_delivery,\n'
+              '            )\n'
+              '            .finish()\n',
+          )
+          replace_exact(
+              worker,
+              '        let stop_file = optional_path(lookup("TRNM_OUTBOX_STOP_FILE"))?;\n\n'
+              '        let batch_size = usize::try_from(parse_u64(\n',
+              '        let stop_file = optional_path(lookup("TRNM_OUTBOX_STOP_FILE"))?;\n'
+              '        let enable_test_failpoints = parse_bool(\n'
+              '            lookup("TRNM_OUTBOX_ENABLE_TEST_FAILPOINTS").as_deref(),\n'
+              '            false,\n'
+              '            "enable_test_failpoints_invalid",\n'
+              '        )?;\n'
+              '        let test_fail_after_delivery = parse_bool(\n'
+              '            lookup("TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY").as_deref(),\n'
+              '            false,\n'
+              '            "test_fail_after_delivery_invalid",\n'
+              '        )?;\n'
+              '        if test_fail_after_delivery && !enable_test_failpoints {\n'
+              '            return Err(WorkerError::Configuration(\n'
+              '                "test_failpoint_requires_explicit_opt_in",\n'
+              '            ));\n'
+              '        }\n'
+              '        if test_fail_after_delivery && command != Command::RunOnce {\n'
+              '            return Err(WorkerError::Configuration(\n'
+              '                "test_failpoint_requires_run_once",\n'
+              '            ));\n'
+              '        }\n\n'
+              '        let batch_size = usize::try_from(parse_u64(\n',
+          )
+          replace_exact(
+              worker,
+              '                max_backoff_ms,\n'
+              '            },\n',
+              '                max_backoff_ms,\n'
+              '                test_fail_after_delivery,\n'
+              '            },\n',
+          )
+          replace_exact(
+              worker,
+              '            Ok(receipt) => {\n'
+              '                repository.complete_outbox(&lease, receipt, now_millis()?)?;\n',
+              '            Ok(receipt) => {\n'
+              '                if config.test_fail_after_delivery {\n'
+              '                    eprintln!(\n'
+              '                        "trnm-outbox-worker test failpoint: exiting after durable spool and before database acknowledgement"\n'
+              '                    );\n'
+              '                    process::exit(TEST_FAIL_AFTER_DELIVERY_EXIT_CODE);\n'
+              '                }\n'
+              '                repository.complete_outbox(&lease, receipt, now_millis()?)?;\n',
+          )
+          test_anchor = '''    #[test]
+              fn tls_identity_requires_a_pair_and_debug_redacts_url() {
+          '''
+          test_block = '''    #[test]
+              fn post_delivery_failpoint_requires_two_explicit_guards() {
+                  let directory = temporary_directory("failpoint");
+                  let mut values = base_config(&directory);
+                  values.insert(
+                      "TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY".to_owned(),
+                      "1".to_owned(),
+                  );
+                  assert!(matches!(
+                      load(&values),
+                      Err(WorkerError::Configuration(
+                          "test_failpoint_requires_explicit_opt_in"
+                      ))
+                  ));
+
+                  values.insert(
+                      "TRNM_OUTBOX_ENABLE_TEST_FAILPOINTS".to_owned(),
+                      "1".to_owned(),
+                  );
+                  let (_, config) = load(&values).unwrap();
+                  assert!(config.test_fail_after_delivery);
+
+                  let result = WorkerConfig::from_lookup(
+                      &["trnm-outbox-worker".to_owned(), "serve".to_owned()],
+                      |name| values.get(name).cloned(),
+                  );
+                  assert!(matches!(
+                      result,
+                      Err(WorkerError::Configuration(
+                          "test_failpoint_requires_run_once"
+                      ))
+                  ));
+              }
+
+          '''
+          replace_exact(worker, test_anchor, test_block + test_anchor)
+
+          script = Path('scripts/ci-outbox-spool-worker.sh')
+          source = script.read_text(encoding='utf-8')
+          scenario2_start = source.index(
+              '# Scenario 2: durable write succeeds, acknowledgement is lost, then a new lease'
+          )
+          scenario3_start = source.index(
+              '# Scenario 3: a conflicting durable receipt cannot be overwritten',
+              scenario2_start,
+          )
+          scenario2 = r'''# Scenario 2: the real worker process exits after its durable write and before
+          # database acknowledgement. A distinct node waits for expiry, reclaims the lease,
+          # validates the same stable bytes, and completes the intent.
+          "$command_bin" bootstrap \
+            --entity-byte 48 --authority-generation 1 --state-byte 49 --updated-at-ms 30 \
+            >"$evidence/bootstrap-reclaim.json"
+          "$command_bin" apply \
+            --entity-byte 48 --command-byte 64 --fingerprint-byte 65 \
+            --expected-revision 0 --authority-generation 1 --state-byte 66 --committed-at-ms 40 \
+            >"$evidence/apply-reclaim.json"
+          export TRNM_OUTBOX_NODE_ID_HEX=$(printf 'aa%.0s' {1..16})
+          export TRNM_OUTBOX_ENABLE_TEST_FAILPOINTS=1
+          export TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY=1
+          set +e
+          "$worker_bin" run-once \
+            >"$evidence/worker-crash.stdout" \
+            2>"$evidence/worker-crash.stderr"
+          crash_status=$?
+          set -e
+          test "$crash_status" -eq 70
+          grep -q 'exiting after durable spool and before database acknowledgement' \
+            "$evidence/worker-crash.stderr"
+          unset TRNM_OUTBOX_ENABLE_TEST_FAILPOINTS
+          unset TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY
+
+          reclaim_path="$spool/$(printf '42%.0s' {1..16}).json"
+          test -f "$reclaim_path"
+          sha256sum "$reclaim_path" >"$evidence/reclaim-before.sha256"
+          test "$(sql_exec "SELECT count(*) FROM trnm_outbox WHERE state=1 AND attempt=1 AND lease_generation=1 AND owner_node IS NOT NULL" | tr -d '[:space:]')" = 1
+          sleep 2
+
+          export TRNM_OUTBOX_NODE_ID_HEX=$(printf 'bb%.0s' {1..16})
+          "$worker_bin" run-once | tee "$evidence/worker-reclaim.txt"
+          grep -q 'claimed=1 completed=1 retried=0 dead_lettered=0' \
+            "$evidence/worker-reclaim.txt"
+          sha256sum "$reclaim_path" >"$evidence/reclaim-after.sha256"
+          test "$(cut -d' ' -f1 "$evidence/reclaim-before.sha256")" = \
+            "$(cut -d' ' -f1 "$evidence/reclaim-after.sha256")"
+          test "$(sql_exec "SELECT count(*) FROM trnm_outbox WHERE state=2" | tr -d '[:space:]')" = 2
+          test "$(sql_exec "SELECT count(*) FROM trnm_outbox WHERE state=2 AND attempt=2 AND lease_generation=2 AND owner_node IS NULL" | tr -d '[:space:]')" = 1
+
+          '''
+          source = source[:scenario2_start] + scenario2 + source[scenario3_start:]
+
+          counts_anchor = '''test "$(sql_exec 'SELECT count(*) FROM trnm_outbox' | tr -d '[:space:]')" = 3
+          test "$(sql_exec 'SELECT count(*) FROM trnm_outbox WHERE state=2' | tr -d '[:space:]')" = 2
+          test "$(sql_exec 'SELECT count(*) FROM trnm_outbox WHERE state=3' | tr -d '[:space:]')" = 1
+          '''
+          scenario4 = r'''# Scenario 4: two distinct worker processes race for one pending intent. Exactly
+          # one process claims and publishes; the other observes no eligible row. The final
+          # database state and spool namespace contain one visible effect.
+          "$command_bin" bootstrap \
+            --entity-byte 112 --authority-generation 1 --state-byte 113 --updated-at-ms 70 \
+            >"$evidence/bootstrap-concurrent.json"
+          "$command_bin" apply \
+            --entity-byte 112 --command-byte 128 --fingerprint-byte 129 \
+            --expected-revision 0 --authority-generation 1 --state-byte 130 --committed-at-ms 80 \
+            >"$evidence/apply-concurrent.json"
+          export TRNM_OUTBOX_MAX_ATTEMPTS=8
+          TRNM_OUTBOX_NODE_ID_HEX=$(printf 'dd%.0s' {1..16}) \
+            "$worker_bin" run-once >"$evidence/worker-concurrent-a.txt" 2>&1 &
+          worker_a=$!
+          TRNM_OUTBOX_NODE_ID_HEX=$(printf 'ee%.0s' {1..16}) \
+            "$worker_bin" run-once >"$evidence/worker-concurrent-b.txt" 2>&1 &
+          worker_b=$!
+          wait "$worker_a"
+          wait "$worker_b"
+          cat "$evidence/worker-concurrent-a.txt" "$evidence/worker-concurrent-b.txt" \
+            >"$evidence/worker-concurrent-combined.txt"
+          test "$(grep -c 'claimed=1 completed=1 retried=0 dead_lettered=0' "$evidence/worker-concurrent-combined.txt")" = 1
+          test "$(grep -c 'claimed=0 completed=0 retried=0 dead_lettered=0' "$evidence/worker-concurrent-combined.txt")" = 1
+          concurrent_path="$spool/$(printf '82%.0s' {1..16}).json"
+          test -f "$concurrent_path"
+          test "$(find "$spool" -maxdepth 1 -type f -name "$(printf '82%.0s' {1..16}).json" | wc -l | tr -d '[:space:]')" = 1
+          test "$(sql_exec "SELECT count(*) FROM trnm_outbox WHERE state=2 AND intent_id IS NOT NULL" | tr -d '[:space:]')" = 3
+
+          test "$(sql_exec 'SELECT count(*) FROM trnm_outbox' | tr -d '[:space:]')" = 4
+          test "$(sql_exec 'SELECT count(*) FROM trnm_outbox WHERE state=2' | tr -d '[:space:]')" = 3
+          test "$(sql_exec 'SELECT count(*) FROM trnm_outbox WHERE state=3' | tr -d '[:space:]')" = 1
+          '''
+          if source.count(counts_anchor) != 1:
+              raise SystemExit(
+                  f'{script}: expected one count anchor, found {source.count(counts_anchor)}'
+              )
+          source = source.replace(counts_anchor, scenario4, 1)
+          source = source.replace(
+              '        "post_write_pre_ack_reclaim_completed": True,\n',
+              '        "real_process_exit_after_spool_observed": True,\n'
+              '        "post_write_pre_ack_reclaim_completed": True,\n'
+              '        "distinct_node_identity_reclaimed_expired_lease": True,\n',
+              1,
+          )
+          source = source.replace(
+              '        "attempt_exhaustion_dead_lettered": True,\n'
+              '        "completed_count": 2,\n',
+              '        "attempt_exhaustion_dead_lettered": True,\n'
+              '        "two_worker_claim_exclusion_passed": True,\n'
+              '        "duplicate_visible_effect_count": 0,\n'
+              '        "completed_count": 3,\n',
+              1,
+          )
+          source = source.replace(
+              '        "multi_node_failover_proven": False,\n',
+              '        "single_host_multi_process_reclaim_proven": True,\n'
+              '        "multi_node_failover_proven": False,\n',
+              1,
+          )
+          source = source.replace(
+              '        "The run is single-node and does not prove cross-host filesystem semantics.",\n',
+              '        "The run uses distinct process and node identities on one host; it does not prove cross-host filesystem semantics or multi-node HA.",\n',
+              1,
+          )
+          script.write_text(source, encoding='utf-8')
+
+          docs = Path('docs/development/OUTBOX_SPOOL_WORKER.md')
+          text = docs.read_text(encoding='utf-8')
+          anchor = '''The full aggregate merge gate remains mandatory because the worker changes the shared
+          persistence package and its target inventory. The dedicated dual-profile workflow
+          also executes normal delivery, post-write/pre-ack reclaim, and conflicting-receipt
+          dead-letter scenarios against immutable PostgreSQL and CockroachDB images. A repair
+          runner passing those scenarios before writing a commit is not a substitute for the
+          final exact-head workflow collection.
+          '''
+          replacement = '''The full aggregate merge gate remains mandatory because the worker changes the shared
+          persistence package and its target inventory. The dedicated dual-profile workflow
+          executes normal delivery, a real process exit after durable spool and before database
+          acknowledgement, expired-lease reclaim by a distinct node identity, conflicting-receipt
+          dead-letter, and two-process claim exclusion against immutable PostgreSQL and
+          CockroachDB images. This remains single-host process-fault evidence, not multi-node HA.
+          A repair runner passing those scenarios before writing a commit is not a substitute for
+          the final exact-head workflow collection.
+          '''
+          if text.count(anchor) != 1:
+              raise SystemExit(
+                  f'{docs}: expected one evidence paragraph, found {text.count(anchor)}'
+              )
+          docs.write_text(text.replace(anchor, replacement, 1), encoding='utf-8')
+
+          temporary = Path('.github/workflows/temporary-outbox-process-faults.yml')
+          if not temporary.is_file():
+              raise SystemExit(f'missing temporary workflow: {temporary}')
+          temporary.unlink()
+          PY
+          git diff --check
+          bash -n scripts/ci-outbox-spool-worker.sh
+
+      - name: Validate complete source corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.85.1
+          cargo fmt --all
+          git diff --check
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          python3 scripts/check-plan.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Execute PostgreSQL process-fault matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          TRNM_POSTGRES_IMAGE=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('config/database-test-images.json').read_text())
+          print(value['profiles']['postgresql']['image'])
+          PY
+          )
+          export TRNM_POSTGRES_IMAGE
+          export TRNM_EVIDENCE_ROOT=/tmp/outbox-process-evidence
+          export TRNM_RUN_ID="process-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-postgresql"
+          bash scripts/ci-outbox-spool-worker.sh postgresql
+
+      - name: Execute CockroachDB process-fault matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          TRNM_COCKROACH_IMAGE=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('config/database-test-images.json').read_text())
+          print(value['profiles']['cockroachdb']['image'])
+          PY
+          )
+          export TRNM_COCKROACH_IMAGE
+          export TRNM_EVIDENCE_ROOT=/tmp/outbox-process-evidence
+          export TRNM_RUN_ID="process-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-cockroachdb"
+          bash scripts/ci-outbox-spool-worker.sh cockroachdb
+
+      - name: Commit only fully verified process-fault implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e .github/workflows/temporary-outbox-process-faults.yml
+          test -z "$(find .github/workflows -maxdepth 1 -name 'temporary-*outbox*' -print -quit)"
+          git diff --check
+          git config user.name "trillionnium-gap-closure-bot"
+          git config user.email "gap-closure-bot@users.noreply.github.com"
+          git add -A
+          test -n "$(git diff --cached --name-only)"
+          git commit -m "test(outbox): prove process exit reclaim and claim exclusion"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
