@@ -40,6 +40,9 @@ revalidates the same bytes and can safely complete the original intent.
 - Verify-full TLS supports custom roots and a paired certificate/PKCS#8 client identity.
 - Claim batch size, lease duration, attempt count, polling interval, pool size, acquire
   timeout, statement timeout, and maximum backoff are bounded.
+- The database `attempt` column is `BIGINT`; every query parameter, row decode and
+  update now uses Rust `i64`, while the public worker limit remains `u32` and is capped
+  at the schema's maximum of 32 attempts.
 - Retry delay is deterministic per intent/owner/generation and lies between half and
   all of the capped exponential backoff.
 - Stale owner/generation completion remains fenced by the repository transaction.
@@ -87,12 +90,17 @@ cargo clippy --package trnm-persistence-pg --all-targets --locked -- -D warnings
 ```
 
 The full aggregate merge gate remains mandatory because the worker changes the shared
-persistence package and its target inventory.
+persistence package and its target inventory. The dedicated dual-profile workflow
+also executes normal delivery, post-write/pre-ack reclaim, and conflicting-receipt
+dead-letter scenarios against immutable PostgreSQL and CockroachDB images. A repair
+runner passing those scenarios before writing a commit is not a substitute for the
+final exact-head workflow collection.
 
 ## Remaining gap boundary
 
 This source candidate does not yet close `GAP-P1-OUTBOX-001` or `GAP-P1-PG-001`.
-Closure still requires exact-head live database and fault evidence, process/node loss
-reclaim, pool saturation, TLS expiry/rotation, long-running endurance, independent
-data-integrity/security review, and real Rust handlers that consume the spool records
-for broadcast, search, notification, completion, and external provider effects.
+Closure still requires accepted exact-head live database and fault evidence,
+process/node loss reclaim, pool saturation, TLS expiry/rotation, long-running
+endurance, independent data-integrity/security review, and real Rust handlers that
+consume the spool records for broadcast, search, notification, completion, and
+external provider effects.
