@@ -125,9 +125,7 @@ impl PgTlsConfig {
         identity_certificate_chain_pem: Option<Vec<u8>>,
         identity_private_key_pkcs8_pem: Option<Vec<u8>>,
     ) -> Result<Self, DomainError> {
-        if identity_certificate_chain_pem.is_some()
-            != identity_private_key_pkcs8_pem.is_some()
-        {
+        if identity_certificate_chain_pem.is_some() != identity_private_key_pkcs8_pem.is_some() {
             return Err(configuration_error(
                 "database_tls_identity_cert_key_pair_required",
             ));
@@ -261,7 +259,9 @@ impl PgPool {
     }
 
     pub fn acquire(&self) -> Result<PgRepository, DomainError> {
-        self.metrics.acquire_attempts.fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .acquire_attempts
+            .fetch_add(1, Ordering::Relaxed);
         let handle = match &self.inner {
             PoolInner::Plain(pool) => pool
                 .get_timeout(self.policy.acquire_timeout)
@@ -281,8 +281,7 @@ impl PgPool {
             profile: self.profile,
             client: handle,
         };
-        if let Err(error) = configure_session(&mut repository.client, self.profile, self.policy)
-        {
+        if let Err(error) = configure_session(&mut repository.client, self.profile, self.policy) {
             self.metrics
                 .session_policy_failures
                 .fetch_add(1, Ordering::Relaxed);
@@ -303,10 +302,7 @@ impl PgPool {
             idle_connections: state.idle_connections,
             acquire_attempts: self.metrics.acquire_attempts.load(Ordering::Relaxed),
             acquire_failures: self.metrics.acquire_failures.load(Ordering::Relaxed),
-            session_policy_failures: self
-                .metrics
-                .session_policy_failures
-                .load(Ordering::Relaxed),
+            session_policy_failures: self.metrics.session_policy_failures.load(Ordering::Relaxed),
         }
     }
 
@@ -384,11 +380,7 @@ fn configuration_error(reason: &'static str) -> DomainError {
 }
 
 fn operational_error(reason: &'static str) -> DomainError {
-    DomainError::new(
-        StableCode::Unavailable,
-        reason,
-        RetryClass::SafeBackoff,
-    )
+    DomainError::new(StableCode::Unavailable, reason, RetryClass::SafeBackoff)
 }
 
 #[cfg(test)]
@@ -406,15 +398,20 @@ mod tests {
 
     #[test]
     fn invalid_pool_policy_fails_closed() {
-        let mut policy = PgPoolConfig::default();
-        policy.max_size = 0;
+        let policy = PgPoolConfig {
+            max_size: 0,
+            ..PgPoolConfig::default()
+        };
         assert_eq!(
             policy.validate().unwrap_err().reason(),
             "database_pool_policy_invalid"
         );
 
-        let mut policy = PgPoolConfig::default();
-        policy.min_idle = policy.max_size + 1;
+        let default = PgPoolConfig::default();
+        let policy = PgPoolConfig {
+            min_idle: default.max_size + 1,
+            ..default
+        };
         assert_eq!(
             policy.validate().unwrap_err().reason(),
             "database_pool_policy_invalid"

@@ -1,16 +1,14 @@
 use std::io::ErrorKind;
 use std::net::{Shutdown, TcpListener, TcpStream};
 
-use trnm_persistence_pg::PgRepository;
-
-use super::app::App;
+use super::app::{App, Repository};
 use super::config::ServerConfig;
 use super::error::ServerError;
 use super::http::{read_request, Response};
 use super::retry::{RetryPolicy, RetryingRepository};
 use super::websocket;
 
-pub fn serve(config: &ServerConfig, repository: PgRepository) -> Result<(), ServerError> {
+pub fn serve<R: Repository>(config: &ServerConfig, repository: R) -> Result<(), ServerError> {
     let listener = TcpListener::bind(config.bind)?;
     let repository = RetryingRepository::new(repository, RetryPolicy::candidate_default())?;
     let mut app = App::new(repository, config.admin_token.clone());

@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
 
+mod pool;
+
+pub use pool::{PgPool, PgPoolConfig, PgPoolSnapshot, PgTlsConfig};
+
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -127,7 +131,7 @@ pub enum CommitOutcome {
 
 pub struct PgRepository {
     profile: DatabaseProfile,
-    client: Client,
+    client: pool::ClientHandle,
 }
 
 impl fmt::Debug for PgRepository {
@@ -145,12 +149,39 @@ impl PgRepository {
             return Err(invalid("database_url_empty"));
         }
         let client = Client::connect(database_url, NoTls).map_err(map_postgres_error)?;
-        Ok(Self { profile, client })
+        Ok(Self {
+            profile,
+            client: pool::ClientHandle::direct(client),
+        })
     }
 
     #[must_use]
     pub const fn profile(&self) -> DatabaseProfile {
         self.profile
+    }
+
+    pub fn table_exists(&mut self, table: &str) -> Result<bool, DomainError> {
+        if table.is_empty() || table.len() > 63 {
+            return Err(invalid("invalid_table_name"));
+        }
+        let row = self
+            .client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
+                 WHERE table_schema = 'public' AND table_name = $1)",
+                &[&table],
+            )
+            .map_err(map_postgres_error)?;
+        Ok(row.get(0))
+    }
+
+    pub fn execute_migration_batch(&mut self, migration: &str) -> Result<(), DomainError> {
+        if migration.trim().is_empty() {
+            return Err(invalid("migration_batch_empty"));
+        }
+        self.client
+            .batch_execute(migration)
+            .map_err(map_postgres_error)
     }
 
     pub fn bind_schema_metadata(

@@ -102,6 +102,7 @@ impl<R: Repository> Repository for RetryingRepository<R> {
     }
 }
 
+#[cfg(test)]
 pub fn execute<T>(
     policy: RetryPolicy,
     operation: impl FnMut() -> Result<T, DomainError>,

@@ -495,9 +495,7 @@ mod tests {
         );
         assert!(matches!(
             load(&values),
-            Err(ServerError::Configuration(
-                "database_pool_max_size_invalid"
-            ))
+            Err(ServerError::Configuration("database_pool_max_size_invalid"))
         ));
 
         let mut values = base();

@@ -9,6 +9,20 @@ use super::error::InputError;
 use super::http::{Request, Response};
 use super::json::Object;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RepositoryOperationalMetrics {
+    pub pool_max_size: u64,
+    pub pool_connections: u64,
+    pub pool_idle_connections: u64,
+    pub pool_acquire_attempts: u64,
+    pub pool_acquire_failures: u64,
+    pub pool_session_policy_failures: u64,
+    pub retry_attempts: u64,
+    pub retries: u64,
+    pub retry_exhausted: u64,
+    pub retry_sleep_milliseconds: u64,
+}
+
 pub trait Repository: std::fmt::Debug {
     fn bootstrap_entity(
         &mut self,
@@ -19,6 +33,10 @@ pub trait Repository: std::fmt::Debug {
     ) -> Result<EntityHead, DomainError>;
 
     fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError>;
+
+    fn operational_metrics(&self) -> RepositoryOperationalMetrics {
+        RepositoryOperationalMetrics::default()
+    }
 }
 
 impl Repository for PgRepository {
@@ -114,10 +132,9 @@ impl<R: Repository> App<R> {
 
     fn metrics_response(&self) -> Response {
         let ready = u8::from(!self.draining);
-        Response::text(
-            200,
-            format!(
-                "# TYPE trnm_server_requests_total counter\n\
+        let repository = self.repository.operational_metrics();
+        let mut body = format!(
+            "# TYPE trnm_server_requests_total counter\n\
 trnm_server_requests_total {}\n\
 # TYPE trnm_server_successes_total counter\n\
 trnm_server_successes_total {}\n\
@@ -131,18 +148,53 @@ trnm_server_bootstraps_total {}\n\
 trnm_server_commands_applied_total {}\n\
 # TYPE trnm_server_command_replays_total counter\n\
 trnm_server_command_replays_total {}\n\
+# TYPE trnm_server_drain_requests_total counter\n\
+trnm_server_drain_requests_total {}\n\
 # TYPE trnm_server_ready gauge\n\
 trnm_server_ready {}\n",
-                self.metrics.requests,
-                self.metrics.successes,
-                self.metrics.input_failures,
-                self.metrics.domain_failures,
-                self.metrics.bootstraps,
-                self.metrics.commands_applied,
-                self.metrics.command_replays,
-                ready,
-            ),
-        )
+            self.metrics.requests,
+            self.metrics.successes,
+            self.metrics.input_failures,
+            self.metrics.domain_failures,
+            self.metrics.bootstraps,
+            self.metrics.commands_applied,
+            self.metrics.command_replays,
+            self.metrics.drain_requests,
+            ready,
+        );
+        body.push_str(&format!(
+            "# TYPE trnm_server_database_pool_max_size gauge\n\
+trnm_server_database_pool_max_size {}\n\
+# TYPE trnm_server_database_pool_connections gauge\n\
+trnm_server_database_pool_connections {}\n\
+# TYPE trnm_server_database_pool_idle_connections gauge\n\
+trnm_server_database_pool_idle_connections {}\n\
+# TYPE trnm_server_database_pool_acquire_attempts_total counter\n\
+trnm_server_database_pool_acquire_attempts_total {}\n\
+# TYPE trnm_server_database_pool_acquire_failures_total counter\n\
+trnm_server_database_pool_acquire_failures_total {}\n\
+# TYPE trnm_server_database_session_policy_failures_total counter\n\
+trnm_server_database_session_policy_failures_total {}\n\
+# TYPE trnm_server_database_retry_attempts_total counter\n\
+trnm_server_database_retry_attempts_total {}\n\
+# TYPE trnm_server_database_retries_total counter\n\
+trnm_server_database_retries_total {}\n\
+# TYPE trnm_server_database_retry_exhausted_total counter\n\
+trnm_server_database_retry_exhausted_total {}\n\
+# TYPE trnm_server_database_retry_sleep_milliseconds_total counter\n\
+trnm_server_database_retry_sleep_milliseconds_total {}\n",
+            repository.pool_max_size,
+            repository.pool_connections,
+            repository.pool_idle_connections,
+            repository.pool_acquire_attempts,
+            repository.pool_acquire_failures,
+            repository.pool_session_policy_failures,
+            repository.retry_attempts,
+            repository.retries,
+            repository.retry_exhausted,
+            repository.retry_sleep_milliseconds,
+        ));
+        Response::text(200, body)
     }
 
     fn drain(&mut self, request: &Request) -> Response {
