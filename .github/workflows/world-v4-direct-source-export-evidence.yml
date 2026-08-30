@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: world-v4-direct-source-export-${{ github.ref }}
@@ -87,26 +87,36 @@ jobs:
             --repo "$RUNNER_TEMP/trillionnium-world" \
             --output "$RUNNER_TEMP/world-v4-direct-source-export"
 
-      - name: Upload immutable evidence with SHA-pinned uploader source
+      - name: Persist non-authoritative hash-bound evidence
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          UPLOADER="$RUNNER_TEMP/upload-artifact"
-          rm -rf "$UPLOADER"
-          git init "$UPLOADER"
-          git -C "$UPLOADER" remote add origin \
-            https://github.com/actions/upload-artifact.git
-          git -C "$UPLOADER" fetch --no-tags --depth=1 origin \
-            ea165f8d65b6e75b540449e92b4886f43607fa02
-          git -C "$UPLOADER" checkout --detach FETCH_HEAD
-          test "$(git -C "$UPLOADER" rev-parse HEAD)" = \
-            ea165f8d65b6e75b540449e92b4886f43607fa02
-          env \
-            INPUT_NAME=world-v4-direct-source-cb662abf \
-            INPUT_PATH="$RUNNER_TEMP/world-v4-direct-source-export/" \
-            'INPUT_IF-NO-FILES-FOUND=error' \
-            'INPUT_RETENTION-DAYS=7' \
-            'INPUT_COMPRESSION-LEVEL=0' \
-            'INPUT_OVERWRITE=false' \
-            'INPUT_INCLUDE-HIDDEN-FILES=false' \
-            node "$UPLOADER/dist/upload/index.js"
+          DEST="$GITHUB_WORKSPACE/evidence/world-v4-direct-source-cb662abf"
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp -a "$RUNNER_TEMP/world-v4-direct-source-export/." "$DEST/"
+          cat > "$DEST/NON_AUTHORITATIVE_EVIDENCE.md" <<'EOF'
+          # Non-authoritative World direct-source evidence
+
+          This directory is a deterministic export from the exact immutable World
+          commit and tree recorded in `identity.txt`. It is transport evidence only.
+          It does not transfer World gameplay ownership to TrillionniumGame, does
+          not grant source verification or release credit, and must not be executed
+          as a canonical World source tree. The authoritative candidate remains the
+          World pull request and must receive independent exact-head validation.
+          EOF
+          (
+            cd "$DEST"
+            sha256sum NON_AUTHORITATIVE_EVIDENCE.md >> SHA256SUMS
+          )
+          git -C "$GITHUB_WORKSPACE" config user.name github-actions[bot]
+          git -C "$GITHUB_WORKSPACE" config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git -C "$GITHUB_WORKSPACE" add "evidence/world-v4-direct-source-cb662abf"
+          git -C "$GITHUB_WORKSPACE" commit -m \
+            'evidence(nakama): persist immutable World direct-source export'
+          git -C "$GITHUB_WORKSPACE" remote set-url origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" push origin \
+            HEAD:refs/heads/evidence/world-v4-direct-source-export-20260830
