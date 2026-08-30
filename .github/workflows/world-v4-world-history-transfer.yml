@@ -77,21 +77,14 @@ jobs:
             --repo "$RUNNER_TEMP/trillionnium-world" \
             --output "$RUNNER_TEMP/world-v4-direct-source-export"
 
-      - name: Apply only the bounded six-path conversion
+      - name: Verify only the bounded six-path conversion
         shell: bash
         run: |
           set -euo pipefail
           WORLD="$RUNNER_TEMP/trillionnium-world"
-          EXPORT="$RUNNER_TEMP/world-v4-direct-source-export"
           CRATE="$WORLD/trillionnium/crates/trnm-game-server"
-          cp "$EXPORT/Cargo.toml" "$CRATE/Cargo.toml"
-          cp "$EXPORT/lib.rs" "$CRATE/src/lib.rs"
-          cp "$EXPORT/settlement_game_server_boundary.rs" \
-            "$CRATE/tests/settlement_game_server_boundary.rs"
-          cp "$EXPORT/settlement_worker_contract.rs" \
-            "$CRATE/tests/settlement_worker_contract.rs"
-          rm "$CRATE/build.rs" "$CRATE/src/lib.rs.in"
-
+          test ! -e "$CRATE/build.rs"
+          test ! -e "$CRATE/src/lib.rs.in"
           test "$(git -C "$WORLD" hash-object trillionnium/crates/trnm-game-server/Cargo.toml)" = \
             24612a61fbe07f965c979c661e26d831297b8466
           test "$(git -C "$WORLD" hash-object trillionnium/crates/trnm-game-server/src/lib.rs)" = \
