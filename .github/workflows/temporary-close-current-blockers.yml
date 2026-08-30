@@ -1,4 +1,4 @@
-name: temporary-close-current-blockers
+name: temporary-close-current-blockers-v2
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-close-current-blockers
+  group: temporary-close-current-blockers-v2
   cancel-in-progress: false
 
 jobs:
@@ -39,97 +39,137 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          def replace_exact(path_text: str, old: str, new: str, expected: int = 1) -> None:
+          def replace_lines(
+              path_text: str,
+              old_lines: list[str],
+              new_lines: list[str],
+              *,
+              expected: int = 1,
+          ) -> None:
               path = Path(path_text)
-              source = path.read_text(encoding="utf-8")
-              actual = source.count(old)
-              if actual != expected:
+              lines = path.read_text(encoding="utf-8").splitlines()
+              width = len(old_lines)
+              matches = [
+                  index
+                  for index in range(len(lines) - width + 1)
+                  if lines[index : index + width] == old_lines
+              ]
+              if len(matches) != expected:
                   raise SystemExit(
-                      f"{path_text}: expected {expected} replacement anchors, found {actual}: {old!r}"
+                      f"{path_text}: expected {expected} replacement anchors, "
+                      f"found {len(matches)} for {old_lines!r}"
                   )
-              path.write_text(source.replace(old, new, expected), encoding="utf-8")
+              offset = 0
+              for index in matches:
+                  adjusted = index + offset
+                  lines[adjusted : adjusted + width] = new_lines
+                  offset += len(new_lines) - width
+              path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-          replace_exact(
+          replace_lines(
               ".github/workflows/pgwire-vertical-slice.yml",
-              'git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$CANDIDATE_SHA"',
-              'git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "${CANDIDATE_SHA}"',
-              2,
+              [
+                  '          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$CANDIDATE_SHA"'
+              ],
+              [
+                  '          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "${CANDIDATE_SHA}"'
+              ],
+              expected=2,
           )
 
-          replace_exact(
+          slash = "\\"
+          replace_lines(
               "scripts/ci-pgwire-vertical-slice.sh",
-              '    -p 127.0.0.1::26257 \\\n',
-              '    --network host \\\n',
+              ["    -p 127.0.0.1::26257 " + slash],
+              ["    --network host " + slash],
           )
-          replace_exact(
+          replace_lines(
               "scripts/ci-pgwire-vertical-slice.sh",
-              "      --listen-addr=0.0.0.0:26257 \\\n",
-              "      --listen-addr=127.0.0.1:26257 \\\n",
+              ["      --listen-addr=0.0.0.0:26257 " + slash],
+              ["      --listen-addr=127.0.0.1:26257 " + slash],
           )
-          replace_exact(
+          replace_lines(
               "scripts/ci-pgwire-vertical-slice.sh",
-              "      --http-addr=0.0.0.0:8080 \\\n",
-              "      --http-addr=127.0.0.1:8080 \\\n",
+              ["      --http-addr=0.0.0.0:8080 " + slash],
+              ["      --http-addr=127.0.0.1:8080 " + slash],
           )
-          replace_exact(
+          replace_lines(
               "scripts/ci-pgwire-vertical-slice.sh",
-              '''  port=$(docker port "$container" 26257/tcp | awk -F: 'NR==1 {print $NF}')
-  [[ "$port" =~ ^[0-9]+$ ]]
-  database_url="postgresql://root@127.0.0.1:${port}/trnm?sslmode=disable"
-''',
-              '''  port=26257
-  database_url="postgresql://root@127.0.0.1:${port}/trnm?sslmode=disable"
-''',
+              [
+                  '  port=$(docker port "$container" 26257/tcp | awk -F: \'NR==1 {print $NF}\')',
+                  '  [[ "$port" =~ ^[0-9]+$ ]]',
+                  '  database_url="postgresql://root@127.0.0.1:${port}/trnm?sslmode=disable"',
+              ],
+              [
+                  "  port=26257",
+                  '  database_url="postgresql://root@127.0.0.1:${port}/trnm?sslmode=disable"',
+              ],
           )
 
-          replace_exact(
+          replace_lines(
               "scripts/audit-workflow-pins.py",
-              'USES = re.compile(r"^\\s*uses:\\s*([^#\\s]+)", re.MULTILINE)',
-              'USES = re.compile(r"^\\s*-?\\s*uses:\\s*([^#\\s]+)", re.MULTILINE)',
+              [
+                  'USES = re.compile(r"^\\s*uses:\\s*([^#\\s]+)", re.MULTILINE)'
+              ],
+              [
+                  'USES = re.compile(r"^\\s*-?\\s*uses:\\s*([^#\\s]+)", re.MULTILINE)'
+              ],
           )
-          replace_exact(
+          replace_lines(
               "scripts/audit-workflow-pins.py",
-              '''    references: list[dict[str, str]] = []
-    for path in sorted(WORKFLOWS.glob("*.y*ml")):
-''',
-              '''    references: list[dict[str, str]] = []
-    workflow_paths = sorted(WORKFLOWS.glob("*.y*ml"))
-    for path in workflow_paths:
-''',
+              [
+                  '    references: list[dict[str, str]] = []',
+                  '    for path in sorted(WORKFLOWS.glob("*.y*ml")):',
+              ],
+              [
+                  '    references: list[dict[str, str]] = []',
+                  '    workflow_paths = sorted(WORKFLOWS.glob("*.y*ml"))',
+                  '    for path in workflow_paths:',
+              ],
           )
-          replace_exact(
+          replace_lines(
               "scripts/audit-workflow-pins.py",
-              '''        "project_id": "trillionnium-game",
-        "reference_count": len(references),
-''',
-              '''        "project_id": "trillionnium-game",
-        "workflow_count": len(workflow_paths),
-        "reference_count": len(references),
-''',
+              [
+                  '        "project_id": "trillionnium-game",',
+                  '        "reference_count": len(references),',
+              ],
+              [
+                  '        "project_id": "trillionnium-game",',
+                  '        "workflow_count": len(workflow_paths),',
+                  '        "reference_count": len(references),',
+              ],
           )
-          replace_exact(
+          replace_lines(
               "scripts/audit-workflow-pins.py",
-              '            "source_inventory_complete": True,',
-              '            "source_inventory_complete": bool(workflow_paths),',
+              ['            "source_inventory_complete": True,'],
+              ['            "source_inventory_complete": bool(workflow_paths),'],
           )
-          replace_exact(
+          replace_lines(
               "tests/control_plane/test_workflow_pin_audit.py",
-              '        self.assertGreater(result["reference_count"], 0)\n',
-              '        self.assertGreater(result["workflow_count"], 0)\n'
-              '        self.assertGreaterEqual(result["reference_count"], 0)\n',
+              ['        self.assertGreater(result["reference_count"], 0)'],
+              [
+                  '        self.assertGreater(result["workflow_count"], 0)',
+                  '        self.assertGreaterEqual(result["reference_count"], 0)',
+              ],
           )
 
-          replace_exact(
+          replace_lines(
               "crates/trnm-token-jwt-adapter/tests/crypto_regression.rs",
-              "635361c48bb9eab14198e76ea8ab7f1a41685d6a1f395399f0c7a1c58b097ec4",
-              "635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f17eb0ae0",
+              [
+                  '            "635361c48bb9eab14198e76ea8ab7f1a41685d6a1f395399f0c7a1c58b097ec4",'
+              ],
+              [
+                  '            "635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f17eb0ae0",'
+              ],
           )
 
           Path(".github/workflows/temporary-close-current-blockers.yml").unlink()
           PY
           git diff --check
           bash -n scripts/ci-pgwire-vertical-slice.sh
-          python3 -m py_compile scripts/audit-workflow-pins.py scripts/check-workflow-action-policy.py
+          python3 -m py_compile \
+            scripts/audit-workflow-pins.py \
+            scripts/check-workflow-action-policy.py
 
       - name: Validate Python and workflow policy corpus
         shell: bash
@@ -156,8 +196,11 @@ jobs:
           TRNM_COCKROACH_IMAGE=$(python3 - <<'PY'
           import json
           from pathlib import Path
-          value = json.loads(Path('config/database-test-images.json').read_text(encoding='utf-8'))
-          print(value['profiles']['cockroachdb']['image'])
+
+          value = json.loads(
+              Path("config/database-test-images.json").read_text(encoding="utf-8")
+          )
+          print(value["profiles"]["cockroachdb"]["image"])
           PY
           )
           export TRNM_COCKROACH_IMAGE
