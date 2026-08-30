@@ -335,7 +335,11 @@ def validate_server_status(gaps: dict[str, dict[str, Any]]) -> None:
     document = load_json("docs/status/TRNM_SERVER_STATUS.json")
     require(document.get("schema") == "trillionnium.trnm-server-status.v1", "server status schema")
     require(
-        document.get("stage") == "http-websocket-database-vertical-source-candidate",
+        document.get("stage")
+        in {
+            "http-websocket-database-vertical-source-candidate",
+            "http-websocket-session-database-vertical-source-candidate",
+        },
         "server status stage",
     )
     for path in document.get("source_paths", []):
