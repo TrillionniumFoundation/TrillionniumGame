@@ -20,10 +20,11 @@ The worker supports:
 
 For each lease, the worker writes a temporary record, calls `sync_all`, creates the
 final path with an atomic same-filesystem hard link, removes the temporary path, and
-syncs the directory on Unix. The final filename is the lowercase intent ID and the receipt digest is SHA-256 over
-the exact final bytes. Final bytes contain only stable intent identity and payload
-fields; attempt, lease generation, owner and expiry are deliberately excluded so a
-post-write/pre-ack crash can be reclaimed without creating a false conflict.
+syncs the directory on Unix. The final filename is the lowercase intent ID and the
+receipt digest is SHA-256 over the exact final bytes. Final bytes contain only stable
+intent identity and payload fields; attempt, lease generation, owner and expiry are
+deliberately excluded so a post-write/pre-ack crash can be reclaimed without creating
+a false conflict.
 
 A repeated delivery of the same intent is successful only when the existing bytes
 match exactly. A conflicting regular file, symlink, directory, or different payload
@@ -73,6 +74,20 @@ Operational bounds may be changed through the `TRNM_OUTBOX_BATCH_SIZE`,
 `TRNM_OUTBOX_POLL_INTERVAL_MS`, `TRNM_OUTBOX_MAX_BACKOFF_MS`, and
 `TRNM_OUTBOX_DATABASE_*TIMEOUT*` variables. `TRNM_OUTBOX_STOP_FILE` enables a
 portable cooperative stop request.
+
+## Source validation
+
+The root workspace must auto-discover the binary and run its unit tests under the
+same exact Rust toolchain as the canonical server:
+
+```bash
+cargo fmt --all -- --check
+cargo test --package trnm-persistence-pg --all-targets --locked
+cargo clippy --package trnm-persistence-pg --all-targets --locked -- -D warnings
+```
+
+The full aggregate merge gate remains mandatory because the worker changes the shared
+persistence package and its target inventory.
 
 ## Remaining gap boundary
 
