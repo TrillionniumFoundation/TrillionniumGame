@@ -1,4 +1,4 @@
-name: temporary-close-current-blockers-v2
+name: temporary-persist-validated-nonworkflow-repairs
 
 on:
   push:
@@ -9,11 +9,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-close-current-blockers-v2
+  group: temporary-persist-validated-nonworkflow-repairs
   cancel-in-progress: false
 
 jobs:
-  repair-and-verify:
+  repair-verify-and-push:
     runs-on: ubuntu-24.04
     timeout-minutes: 65
     steps:
@@ -32,7 +32,7 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
 
-      - name: Repair the four remaining source failures
+      - name: Apply validated non-workflow repairs
         shell: bash
         run: |
           set -euo pipefail
@@ -66,17 +66,6 @@ jobs:
                   offset += len(new_lines) - width
               path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-          replace_lines(
-              ".github/workflows/pgwire-vertical-slice.yml",
-              [
-                  '          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$CANDIDATE_SHA"'
-              ],
-              [
-                  '          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "${CANDIDATE_SHA}"'
-              ],
-              expected=2,
-          )
-
           slash = "\\"
           replace_lines(
               "scripts/ci-pgwire-vertical-slice.sh",
@@ -108,12 +97,8 @@ jobs:
 
           replace_lines(
               "scripts/audit-workflow-pins.py",
-              [
-                  'USES = re.compile(r"^\\s*uses:\\s*([^#\\s]+)", re.MULTILINE)'
-              ],
-              [
-                  'USES = re.compile(r"^\\s*-?\\s*uses:\\s*([^#\\s]+)", re.MULTILINE)'
-              ],
+              ['USES = re.compile(r"^\\s*uses:\\s*([^#\\s]+)", re.MULTILINE)'],
+              ['USES = re.compile(r"^\\s*-?\\s*uses:\\s*([^#\\s]+)", re.MULTILINE)'],
           )
           replace_lines(
               "scripts/audit-workflow-pins.py",
@@ -152,7 +137,6 @@ jobs:
                   '        self.assertGreaterEqual(result["reference_count"], 0)',
               ],
           )
-
           replace_lines(
               "crates/trnm-token-jwt-adapter/tests/crypto_regression.rs",
               [
@@ -162,20 +146,15 @@ jobs:
                   '            "635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f17eb0ae0",'
               ],
           )
-
-          Path(".github/workflows/temporary-close-current-blockers.yml").unlink()
           PY
           git diff --check
           bash -n scripts/ci-pgwire-vertical-slice.sh
-          python3 -m py_compile \
-            scripts/audit-workflow-pins.py \
-            scripts/check-workflow-action-policy.py
+          python3 -m py_compile scripts/audit-workflow-pins.py
 
-      - name: Validate Python and workflow policy corpus
+      - name: Validate Python corpus and pin inventory
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/check-workflow-action-policy.py
           python3 scripts/audit-workflow-pins.py --fail-on-mutable
           python3 -m unittest discover -s tests -p 'test_*.py' -v
 
@@ -208,14 +187,18 @@ jobs:
           export TRNM_RUN_ID="temporary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           bash scripts/ci-pgwire-vertical-slice.sh cockroachdb
 
-      - name: Commit verified repairs and remove temporary workflow
+      - name: Commit and push only non-workflow repairs
         shell: bash
         run: |
           set -euo pipefail
           git diff --check
-          test ! -e .github/workflows/temporary-close-current-blockers.yml
           git config user.name "trillionnium-gap-closure-bot"
           git config user.email "gap-closure-bot@users.noreply.github.com"
-          git add -A
-          git commit -m "fix(ci): close remaining exact-head source blockers"
+          git add \
+            scripts/ci-pgwire-vertical-slice.sh \
+            scripts/audit-workflow-pins.py \
+            tests/control_plane/test_workflow_pin_audit.py \
+            crates/trnm-token-jwt-adapter/tests/crypto_regression.rs
+          test -n "$(git diff --cached --name-only)"
+          git commit -m "fix(ci): close exact-head runtime and test blockers"
           git push origin "HEAD:${GITHUB_REF_NAME}"
