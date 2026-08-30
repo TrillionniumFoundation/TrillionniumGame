@@ -1,4 +1,4 @@
-name: temporary-extend-denominator-remote-evidence-v2
+name: temporary-extend-denominator-remote-evidence-v3
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-extend-denominator-remote-evidence-v2
+  group: temporary-extend-denominator-remote-evidence-v3
   cancel-in-progress: false
 
 jobs:
@@ -35,6 +35,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/temporary_apply_remote_evidence_patch.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('docs/development/DENOMINATOR_REVIEW_AND_LOCK.md')
+          path.write_text(path.read_text(encoding='utf-8').rstrip() + '\n', encoding='utf-8')
+          PY
           python3 -m py_compile tools/denominator/review_lock.py
           python3 -m json.tool config/denominator-review-policy.json >/dev/null
           python3 -m json.tool contracts/denominator/review-bundle.v1.schema.json >/dev/null
