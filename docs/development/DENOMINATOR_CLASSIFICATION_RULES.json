@@ -1,0 +1,185 @@
+{
+  "schema": "trillionnium.denominator-classification-rules.v1",
+  "project_id": "trillionnium-game",
+  "baseline": {
+    "nakama": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "nakama_common": "449b77ecc8789aa466c36b67f6e498033dfcd9c5"
+  },
+  "policy": {
+    "exactly_one_rule_per_leaf": true,
+    "default_catch_all_allowed": false,
+    "manual_override_requires_review": true,
+    "classification_grants_compatibility_credit": false,
+    "unclassified_allowed_in_lock": false,
+    "ambiguous_allowed_in_lock": false,
+    "rule_change_invalidates_lock": true
+  },
+  "rules": [
+    {
+      "id": "CLASS-SOURCE",
+      "denominator_ids": ["DEN-SOURCE"],
+      "match": {"any": true},
+      "owner_role": "compatibility-architecture",
+      "task_id": "TG-W0-002",
+      "test_id": "TEST-DEN-SOURCE-IDENTITY",
+      "compatibility_profile": "CP-BASELINE",
+      "parity_ids": [],
+      "required_evidence_types": ["manifest"]
+    },
+    {
+      "id": "CLASS-API",
+      "denominator_ids": ["DEN-API"],
+      "match": {"any": true},
+      "owner_role": "protocol",
+      "task_id": "TG-W2-001",
+      "test_id": "TEST-DEN-API-WIRE",
+      "compatibility_profile": "CP-API-WIRE",
+      "parity_ids": ["TG-PAR-004", "TG-PAR-005"],
+      "required_evidence_types": ["manifest", "wire-differential", "sdk-blackbox"]
+    },
+    {
+      "id": "CLASS-RTAPI",
+      "denominator_ids": ["DEN-RTAPI"],
+      "match": {"any": true},
+      "owner_role": "protocol-realtime",
+      "task_id": "TG-W2-004",
+      "test_id": "TEST-DEN-RTAPI-WIRE",
+      "compatibility_profile": "CP-REALTIME-WIRE",
+      "parity_ids": ["TG-PAR-006", "TG-PAR-007"],
+      "required_evidence_types": ["manifest", "wire-differential", "sdk-blackbox"]
+    },
+    {
+      "id": "CLASS-CONSOLE",
+      "denominator_ids": ["DEN-CONSOLE"],
+      "match": {"any": true},
+      "owner_role": "console-admin",
+      "task_id": "TG-W13-001",
+      "test_id": "TEST-DEN-CONSOLE-WORKFLOW",
+      "compatibility_profile": "CP-API-WIRE",
+      "parity_ids": ["TG-PAR-060", "TG-PAR-061", "TG-PAR-062"],
+      "required_evidence_types": ["manifest", "wire-differential", "security-review"]
+    },
+    {
+      "id": "CLASS-RUNTIME",
+      "denominator_ids": ["DEN-RUNTIME"],
+      "match": {"any": true},
+      "owner_role": "runtime-vm",
+      "task_id": "TG-W11-001",
+      "test_id": "TEST-DEN-RUNTIME-CORPUS",
+      "compatibility_profile": "CP-RUNTIME-SOURCE",
+      "parity_ids": ["TG-PAR-049", "TG-PAR-051", "TG-PAR-052", "TG-PAR-053", "TG-PAR-054", "TG-PAR-055"],
+      "required_evidence_types": ["manifest", "runtime-differential", "fuzz"]
+    },
+    {
+      "id": "CLASS-CONFIG",
+      "denominator_ids": ["DEN-CONFIG"],
+      "match": {"any": true},
+      "owner_role": "foundation-config",
+      "task_id": "TG-W1-002",
+      "test_id": "TEST-DEN-CONFIG-DIFFERENTIAL",
+      "compatibility_profile": "CP-CONFIG-CLI",
+      "parity_ids": ["TG-PAR-001", "TG-PAR-003"],
+      "required_evidence_types": ["manifest", "wire-differential"]
+    },
+    {
+      "id": "CLASS-CLI",
+      "denominator_ids": ["DEN-CLI"],
+      "match": {"any": true},
+      "owner_role": "foundation-cli",
+      "task_id": "TG-W1-003",
+      "test_id": "TEST-DEN-CLI-DIFFERENTIAL",
+      "compatibility_profile": "CP-CONFIG-CLI",
+      "parity_ids": ["TG-PAR-001", "TG-PAR-002", "TG-PAR-003"],
+      "required_evidence_types": ["manifest", "wire-differential"]
+    },
+    {
+      "id": "CLASS-DB",
+      "denominator_ids": ["DEN-DB"],
+      "match": {"any": true},
+      "owner_role": "database-migration",
+      "task_id": "TG-W1-004",
+      "test_id": "TEST-DEN-DB-CATALOG",
+      "compatibility_profile": "CP-DATA-READ",
+      "parity_ids": ["TG-PAR-002", "TG-PAR-063"],
+      "required_evidence_types": ["manifest", "database-differential", "migration-rehearsal"]
+    },
+    {
+      "id": "CLASS-DATA",
+      "denominator_ids": ["DEN-DATA"],
+      "match": {"any": true},
+      "owner_role": "database-migration",
+      "task_id": "TG-W14-001",
+      "test_id": "TEST-DEN-DATA-SEMANTICS",
+      "compatibility_profile": "CP-DATA-MIGRATION",
+      "parity_ids": ["TG-PAR-063", "TG-PAR-064", "TG-PAR-065"],
+      "required_evidence_types": ["manifest", "database-differential", "migration-rehearsal"]
+    },
+    {
+      "id": "CLASS-METRICS",
+      "denominator_ids": ["DEN-METRICS"],
+      "match": {"any": true},
+      "owner_role": "observability",
+      "task_id": "TG-W15-001",
+      "test_id": "TEST-DEN-METRICS-CONTRACT",
+      "compatibility_profile": "CP-OPERATIONS",
+      "parity_ids": ["TG-PAR-066", "TG-PAR-067"],
+      "required_evidence_types": ["manifest", "wire-differential"]
+    },
+    {
+      "id": "CLASS-OPS",
+      "denominator_ids": ["DEN-OPS"],
+      "match": {"any": true},
+      "owner_role": "sre",
+      "task_id": "TG-W15-006",
+      "test_id": "TEST-DEN-OPS-WORKFLOW",
+      "compatibility_profile": "CP-OPERATIONS",
+      "parity_ids": ["TG-PAR-003", "TG-PAR-068", "TG-PAR-069", "TG-PAR-071"],
+      "required_evidence_types": ["manifest", "backup-restore", "fault-injection"]
+    },
+    {
+      "id": "CLASS-PROVIDERS",
+      "denominator_ids": ["DEN-PROVIDERS"],
+      "match": {"any": true},
+      "owner_role": "identity",
+      "task_id": "TG-W3-002",
+      "test_id": "TEST-DEN-PROVIDERS",
+      "compatibility_profile": "CP-API-WIRE",
+      "parity_ids": ["TG-PAR-011", "TG-PAR-012", "TG-PAR-013", "TG-PAR-014", "TG-PAR-015", "TG-PAR-016", "TG-PAR-019"],
+      "required_evidence_types": ["manifest", "wire-differential", "security-review"]
+    },
+    {
+      "id": "CLASS-IAP",
+      "denominator_ids": ["DEN-IAP"],
+      "match": {"any": true},
+      "owner_role": "payments",
+      "task_id": "TG-W12-001",
+      "test_id": "TEST-DEN-IAP-VALUE",
+      "compatibility_profile": "CP-API-WIRE",
+      "parity_ids": ["TG-PAR-056", "TG-PAR-057", "TG-PAR-058", "TG-PAR-059"],
+      "required_evidence_types": ["manifest", "wire-differential", "database-differential", "security-review"]
+    },
+    {
+      "id": "CLASS-SDK",
+      "denominator_ids": ["DEN-SDK"],
+      "match": {"any": true},
+      "owner_role": "compatibility-qa",
+      "task_id": "TG-W2-007",
+      "test_id": "TEST-DEN-SDK-MATRIX",
+      "compatibility_profile": "CP-OFFICIAL-SDK",
+      "parity_ids": ["TG-PAR-072"],
+      "required_evidence_types": ["manifest", "sdk-blackbox"]
+    }
+  ],
+  "review": {
+    "decision": "pending",
+    "required_roles": ["compatibility-architecture", "protocol", "database-migration", "runtime-vm", "security"],
+    "reviewers": []
+  },
+  "claim_boundary": {
+    "rules_complete_for_known_denominators": true,
+    "actual_leaf_classification_executed": false,
+    "reviewed_lock_exists": false,
+    "sg1_complete": false,
+    "compatibility_credit": false
+  }
+}
