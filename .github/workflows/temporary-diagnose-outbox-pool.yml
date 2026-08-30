@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: temporary-diagnose-outbox-pool
+  group: temporary-diagnose-outbox-pool-v2
   cancel-in-progress: true
 
 jobs:
@@ -28,15 +28,15 @@ jobs:
           git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
-      - name: Expose only stable domain reason in diagnostic build
+      - name: Give each pool boundary a stable diagnostic reason
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs')
-          source = path.read_text(encoding='utf-8')
+          worker = Path('crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs')
+          source = worker.read_text(encoding='utf-8')
           old = '''                "domain_failure(code={},retry={:?})",
                           error.code().as_str(),
                           error.retry(),
@@ -47,8 +47,46 @@ jobs:
                           error.retry(),
           '''
           if source.count(old) != 1:
-              raise SystemExit(f'expected one diagnostic anchor, found {source.count(old)}')
-          path.write_text(source.replace(old, new, 1), encoding='utf-8')
+              raise SystemExit(f'expected one worker diagnostic anchor, found {source.count(old)}')
+          worker.write_text(source.replace(old, new, 1), encoding='utf-8')
+
+          pool = Path('crates/trnm-persistence-pg/src/pool.rs')
+          source = pool.read_text(encoding='utf-8')
+          parse_old = '''        let mut database =
+                      Config::from_str(database_url).map_err(super::map_postgres_error)?;
+          '''
+          parse_new = '''        let mut database = Config::from_str(database_url)
+                      .map_err(|_| operational_error("diagnostic_database_url_parse_failed"))?;
+          '''
+          if source.count(parse_old) != 2:
+              raise SystemExit(f'expected two URL parse anchors, found {source.count(parse_old)}')
+          source = source.replace(parse_old, parse_new, 2)
+
+          base_old = '''        .map_err(super::map_postgres_error)?;
+              if profile == DatabaseProfile::PostgreSql {
+          '''
+          base_new = '''        .map_err(|_| operational_error("diagnostic_database_base_session_failed"))?;
+              if profile == DatabaseProfile::PostgreSql {
+          '''
+          if source.count(base_old) != 1:
+              raise SystemExit(f'expected one base session anchor, found {source.count(base_old)}')
+          source = source.replace(base_old, base_new, 1)
+
+          postgresql_old = '''            .map_err(super::map_postgres_error)?;
+              }
+              Ok(())
+          }
+          '''
+          postgresql_new = '''            .map_err(|_| operational_error("diagnostic_database_postgresql_session_failed"))?;
+              }
+              Ok(())
+          }
+          '''
+          if source.count(postgresql_old) != 1:
+              raise SystemExit(
+                  f'expected one PostgreSQL session anchor, found {source.count(postgresql_old)}'
+              )
+          pool.write_text(source.replace(postgresql_old, postgresql_new, 1), encoding='utf-8')
           PY
           rustup toolchain install 1.85.1 --profile minimal
           rustup override set 1.85.1
@@ -64,7 +102,7 @@ jobs:
           PY
           )
           echo "TRNM_POSTGRES_IMAGE=$TRNM_POSTGRES_IMAGE" >>"$GITHUB_ENV"
-      - name: Reproduce exact pool failure with stable reason
+      - name: Reproduce exact pool failure with stage reason
         env:
           TRNM_EVIDENCE_ROOT: run/outbox-pool-diagnostic
           TRNM_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
