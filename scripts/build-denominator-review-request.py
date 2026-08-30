@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from tools.denominator.review_request import build_review_package
 
@@ -13,8 +17,16 @@ def main() -> int:
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--remote-index", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--policy", type=Path, default=Path("config/denominator-review-policy.json"))
-    parser.add_argument("--routing", type=Path, default=Path("config/denominator-review-routing.json"))
+    parser.add_argument(
+        "--policy",
+        type=Path,
+        default=ROOT / "config/denominator-review-policy.json",
+    )
+    parser.add_argument(
+        "--routing",
+        type=Path,
+        default=ROOT / "config/denominator-review-routing.json",
+    )
     args = parser.parse_args()
     worklist = build_review_package(
         candidate_paths=args.candidate,
