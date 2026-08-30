@@ -1,0 +1,551 @@
+name: temporary-outbox-worker-closure
+
+on:
+  push:
+    branches:
+      - feat/plan-v3-gap-closure-2026-08-29
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-outbox-dispatch-closure
+  cancel-in-progress: false
+
+jobs:
+  implement-test-and-push:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - name: Fetch exact triggering head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$GITHUB_REF_NAME" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Materialize receipt-fenced worker core
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f crates/trnm-persistence-pg/src/outbox_dispatch.rs
+          cat > crates/trnm-persistence-pg/src/outbox_worker.rs <<'RUST'
+          use std::time::Duration;
+
+          use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode};
+
+          use super::{
+              LeasedOutboxIntent, NodeId, OutboxFailureOutcome, OutboxLeaseBatch,
+              OutboxLeasePolicy, PgRepository,
+          };
+
+          pub trait OutboxRepository: std::fmt::Debug {
+              fn lease_batch(
+                  &mut self,
+                  owner: NodeId,
+                  now_ms: u64,
+                  policy: OutboxLeasePolicy,
+              ) -> Result<OutboxLeaseBatch, DomainError>;
+
+              fn complete(
+                  &mut self,
+                  lease: &LeasedOutboxIntent,
+                  receipt: Digest32,
+                  completed_at_ms: u64,
+              ) -> Result<(), DomainError>;
+
+              fn fail(
+                  &mut self,
+                  lease: &LeasedOutboxIntent,
+                  reason: Digest32,
+                  now_ms: u64,
+                  retry_at_ms: u64,
+                  max_attempts: u32,
+              ) -> Result<OutboxFailureOutcome, DomainError>;
+          }
+
+          impl OutboxRepository for PgRepository {
+              fn lease_batch(
+                  &mut self,
+                  owner: NodeId,
+                  now_ms: u64,
+                  policy: OutboxLeasePolicy,
+              ) -> Result<OutboxLeaseBatch, DomainError> {
+                  self.lease_outbox(owner, now_ms, policy)
+              }
+
+              fn complete(
+                  &mut self,
+                  lease: &LeasedOutboxIntent,
+                  receipt: Digest32,
+                  completed_at_ms: u64,
+              ) -> Result<(), DomainError> {
+                  self.complete_outbox(lease, receipt, completed_at_ms)
+              }
+
+              fn fail(
+                  &mut self,
+                  lease: &LeasedOutboxIntent,
+                  reason: Digest32,
+                  now_ms: u64,
+                  retry_at_ms: u64,
+                  max_attempts: u32,
+              ) -> Result<OutboxFailureOutcome, DomainError> {
+                  self.fail_outbox(lease, reason, now_ms, retry_at_ms, max_attempts)
+              }
+          }
+
+          pub trait OutboxDeliveryHandler: std::fmt::Debug {
+              fn deliver(
+                  &mut self,
+                  intent: &LeasedOutboxIntent,
+              ) -> Result<Digest32, OutboxDeliveryFailure>;
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct OutboxDeliveryFailure {
+              pub reason: Digest32,
+              pub retry_after: Duration,
+          }
+
+          impl OutboxDeliveryFailure {
+              pub fn new(reason: Digest32, retry_after: Duration) -> Result<Self, DomainError> {
+                  if reason.is_zero() || retry_after > Duration::from_secs(24 * 60 * 60) {
+                      return Err(invalid("outbox_delivery_failure_invalid"));
+                  }
+                  Ok(Self {
+                      reason,
+                      retry_after,
+                  })
+              }
+
+              fn retry_at(self, now_ms: u64) -> Result<u64, DomainError> {
+                  let delay = u64::try_from(self.retry_after.as_millis())
+                      .map_err(|_| invalid("outbox_retry_delay_overflow"))?;
+                  now_ms
+                      .checked_add(delay)
+                      .ok_or_else(|| invalid("outbox_retry_time_overflow"))
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+          pub struct OutboxRunReport {
+              pub leased: u64,
+              pub delivered: u64,
+              pub retried: u64,
+              pub dead_lettered: u64,
+          }
+
+          pub fn run_outbox_batch<R, H>(
+              repository: &mut R,
+              handler: &mut H,
+              owner: NodeId,
+              now_ms: u64,
+              policy: OutboxLeasePolicy,
+          ) -> Result<OutboxRunReport, DomainError>
+          where
+              R: OutboxRepository,
+              H: OutboxDeliveryHandler,
+          {
+              let batch = repository.lease_batch(owner, now_ms, policy)?;
+              let mut report = OutboxRunReport {
+                  leased: u64::try_from(batch.leased.len())
+                      .map_err(|_| data_loss("outbox_batch_count_overflow"))?,
+                  dead_lettered: u64::try_from(batch.dead_lettered.len())
+                      .map_err(|_| data_loss("outbox_dead_count_overflow"))?,
+                  ..OutboxRunReport::default()
+              };
+
+              for lease in batch.leased {
+                  match handler.deliver(&lease) {
+                      Ok(receipt) => {
+                          if receipt.is_zero() {
+                              return Err(data_loss("outbox_handler_returned_zero_receipt"));
+                          }
+                          // Delivery happens before the durable completion write. A failed
+                          // completion is therefore ambiguous and must stop the batch; the
+                          // lease-generation fence and downstream receipt reconciliation own
+                          // recovery. Never blindly invoke the effect again in this call.
+                          repository.complete(&lease, receipt, now_ms)?;
+                          report.delivered = report.delivered.saturating_add(1);
+                      }
+                      Err(failure) => {
+                          let retry_at_ms = failure.retry_at(now_ms)?;
+                          match repository.fail(
+                              &lease,
+                              failure.reason,
+                              now_ms,
+                              retry_at_ms,
+                              policy.max_attempts(),
+                          )? {
+                              OutboxFailureOutcome::Retried { .. } => {
+                                  report.retried = report.retried.saturating_add(1);
+                              }
+                              OutboxFailureOutcome::DeadLettered => {
+                                  report.dead_lettered =
+                                      report.dead_lettered.saturating_add(1);
+                              }
+                          }
+                      }
+                  }
+              }
+              Ok(report)
+          }
+
+          fn invalid(reason: &'static str) -> DomainError {
+              DomainError::new(StableCode::InvalidArgument, reason, RetryClass::Never)
+          }
+
+          fn data_loss(reason: &'static str) -> DomainError {
+              DomainError::new(StableCode::DataLoss, reason, RetryClass::Never)
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use std::collections::VecDeque;
+
+              use trnm_contracts::CommandId;
+
+              use super::*;
+              use crate::{EntityId, IntentId, IntentKind};
+
+              #[derive(Debug, Default)]
+              struct FakeRepository {
+                  batch: Option<OutboxLeaseBatch>,
+                  completed: Vec<(IntentId, Digest32)>,
+                  failed: Vec<(IntentId, Digest32)>,
+                  fail_complete: bool,
+              }
+
+              impl OutboxRepository for FakeRepository {
+                  fn lease_batch(
+                      &mut self,
+                      _owner: NodeId,
+                      _now_ms: u64,
+                      _policy: OutboxLeasePolicy,
+                  ) -> Result<OutboxLeaseBatch, DomainError> {
+                      Ok(self.batch.take().unwrap_or_default())
+                  }
+
+                  fn complete(
+                      &mut self,
+                      lease: &LeasedOutboxIntent,
+                      receipt: Digest32,
+                      _completed_at_ms: u64,
+                  ) -> Result<(), DomainError> {
+                      if self.fail_complete {
+                          return Err(DomainError::new(
+                              StableCode::Unavailable,
+                              "synthetic_completion_loss",
+                              RetryClass::SafeBackoff,
+                          ));
+                      }
+                      self.completed.push((lease.id, receipt));
+                      Ok(())
+                  }
+
+                  fn fail(
+                      &mut self,
+                      lease: &LeasedOutboxIntent,
+                      reason: Digest32,
+                      _now_ms: u64,
+                      retry_at_ms: u64,
+                      max_attempts: u32,
+                  ) -> Result<OutboxFailureOutcome, DomainError> {
+                      self.failed.push((lease.id, reason));
+                      if lease.attempt >= max_attempts {
+                          Ok(OutboxFailureOutcome::DeadLettered)
+                      } else {
+                          Ok(OutboxFailureOutcome::Retried {
+                              available_at_ms: retry_at_ms,
+                          })
+                      }
+                  }
+              }
+
+              #[derive(Debug, Default)]
+              struct FakeHandler {
+                  outcomes: VecDeque<Result<Digest32, OutboxDeliveryFailure>>,
+                  calls: Vec<IntentId>,
+              }
+
+              impl OutboxDeliveryHandler for FakeHandler {
+                  fn deliver(
+                      &mut self,
+                      intent: &LeasedOutboxIntent,
+                  ) -> Result<Digest32, OutboxDeliveryFailure> {
+                      self.calls.push(intent.id);
+                      self.outcomes
+                          .pop_front()
+                          .unwrap_or_else(|| Ok(digest(9)))
+                  }
+              }
+
+              fn digest(value: u8) -> Digest32 {
+                  Digest32::new([value; 32])
+              }
+
+              fn id(value: u8) -> [u8; 16] {
+                  [value; 16]
+              }
+
+              fn lease(value: u8, attempt: u32) -> LeasedOutboxIntent {
+                  LeasedOutboxIntent {
+                      id: IntentId::new(id(value)),
+                      entity: EntityId::new(id(value.saturating_add(1))),
+                      command: CommandId::new(id(value.saturating_add(2))),
+                      kind: IntentKind::ExternalEffect,
+                      payload: digest(value.saturating_add(3)),
+                      attempt,
+                      lease_generation: 1,
+                      lease_expires_at_ms: 20_000,
+                      owner: NodeId::new(id(99)),
+                  }
+              }
+
+              fn policy() -> OutboxLeasePolicy {
+                  OutboxLeasePolicy::new(
+                      16,
+                      3,
+                      Duration::from_secs(30),
+                      digest(7),
+                  )
+                  .unwrap()
+              }
+
+              #[test]
+              fn successful_effect_is_completed_only_after_receipt_exists() {
+                  let item = lease(1, 1);
+                  let mut repository = FakeRepository {
+                      batch: Some(OutboxLeaseBatch {
+                          leased: vec![item.clone()],
+                          dead_lettered: Vec::new(),
+                      }),
+                      ..FakeRepository::default()
+                  };
+                  let mut handler = FakeHandler {
+                      outcomes: VecDeque::from([Ok(digest(8))]),
+                      ..FakeHandler::default()
+                  };
+                  let report = run_outbox_batch(
+                      &mut repository,
+                      &mut handler,
+                      NodeId::new(id(99)),
+                      1_000,
+                      policy(),
+                  )
+                  .unwrap();
+                  assert_eq!(report.delivered, 1);
+                  assert_eq!(repository.completed, vec![(item.id, digest(8))]);
+                  assert!(repository.failed.is_empty());
+              }
+
+              #[test]
+              fn effect_failure_enters_retry_or_dead_letter_without_completion() {
+                  for attempt in [1, 3] {
+                      let item = lease(u8::try_from(attempt).unwrap(), attempt);
+                      let mut repository = FakeRepository {
+                          batch: Some(OutboxLeaseBatch {
+                              leased: vec![item.clone()],
+                              dead_lettered: Vec::new(),
+                          }),
+                          ..FakeRepository::default()
+                      };
+                      let failure =
+                          OutboxDeliveryFailure::new(digest(4), Duration::from_millis(25))
+                              .unwrap();
+                      let mut handler = FakeHandler {
+                          outcomes: VecDeque::from([Err(failure)]),
+                          ..FakeHandler::default()
+                      };
+                      let report = run_outbox_batch(
+                          &mut repository,
+                          &mut handler,
+                          NodeId::new(id(99)),
+                          1_000,
+                          policy(),
+                      )
+                      .unwrap();
+                      assert!(repository.completed.is_empty());
+                      assert_eq!(repository.failed, vec![(item.id, digest(4))]);
+                      if attempt == 3 {
+                          assert_eq!(report.dead_lettered, 1);
+                      } else {
+                          assert_eq!(report.retried, 1);
+                      }
+                  }
+              }
+
+              #[test]
+              fn ambiguous_completion_stops_without_second_effect_call() {
+                  let first = lease(1, 1);
+                  let second = lease(10, 1);
+                  let mut repository = FakeRepository {
+                      batch: Some(OutboxLeaseBatch {
+                          leased: vec![first.clone(), second],
+                          dead_lettered: Vec::new(),
+                      }),
+                      fail_complete: true,
+                      ..FakeRepository::default()
+                  };
+                  let mut handler = FakeHandler::default();
+                  let error = run_outbox_batch(
+                      &mut repository,
+                      &mut handler,
+                      NodeId::new(id(99)),
+                      1_000,
+                      policy(),
+                  )
+                  .unwrap_err();
+                  assert_eq!(error.reason(), "synthetic_completion_loss");
+                  assert_eq!(handler.calls, vec![first.id]);
+              }
+
+              #[test]
+              fn zero_receipt_and_invalid_failure_contract_fail_closed() {
+                  let item = lease(1, 1);
+                  let mut repository = FakeRepository {
+                      batch: Some(OutboxLeaseBatch {
+                          leased: vec![item],
+                          dead_lettered: Vec::new(),
+                      }),
+                      ..FakeRepository::default()
+                  };
+                  let mut handler = FakeHandler {
+                      outcomes: VecDeque::from([Ok(Digest32::new([0; 32]))]),
+                      ..FakeHandler::default()
+                  };
+                  assert_eq!(
+                      run_outbox_batch(
+                          &mut repository,
+                          &mut handler,
+                          NodeId::new(id(99)),
+                          1_000,
+                          policy(),
+                      )
+                      .unwrap_err()
+                      .reason(),
+                      "outbox_handler_returned_zero_receipt"
+                  );
+                  assert_eq!(
+                      OutboxDeliveryFailure::new(
+                          Digest32::new([0; 32]),
+                          Duration::from_secs(1),
+                      )
+                      .unwrap_err()
+                      .reason(),
+                      "outbox_delivery_failure_invalid"
+                  );
+              }
+          }
+          RUST
+
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          root = Path('.')
+          lib = root / 'crates/trnm-persistence-pg/src/lib.rs'
+          text = lib.read_text(encoding='utf-8')
+          if 'mod outbox_worker;' not in text:
+              anchor = 'mod outbox_dispatch;\n'
+              if text.count(anchor) != 1:
+                  raise SystemExit(f'{lib}: outbox dispatch module anchor missing or ambiguous')
+              text = text.replace(anchor, anchor + 'mod outbox_worker;\n', 1)
+          export = (
+              'pub use outbox_worker::{\n'
+              '    run_outbox_batch, OutboxDeliveryFailure, OutboxDeliveryHandler,\n'
+              '    OutboxRepository, OutboxRunReport,\n'
+              '};\n\n'
+          )
+          if 'pub use outbox_worker::' not in text:
+              anchor = 'pub use outbox_dispatch::{'
+              index = text.find(anchor)
+              if index < 0:
+                  raise SystemExit(f'{lib}: outbox dispatch export missing')
+              end = text.find('};\n\n', index)
+              if end < 0:
+                  raise SystemExit(f'{lib}: outbox dispatch export terminator missing')
+              end += len('};\n\n')
+              text = text[:end] + export + text[end:]
+          lib.write_text(text, encoding='utf-8')
+
+          doc = root / 'docs/development/PG_OUTBOX_DISPATCH_SOURCE_CANDIDATE.md'
+          text = doc.read_text(encoding='utf-8')
+          addition = (
+              '\n## Worker execution core\n\n'
+              'A generic receipt-fenced worker now leases a bounded batch, invokes an explicit '
+              'effect handler, completes only after a nonzero receipt exists, and routes declared '
+              'failures to retry or dead letter. A completion-write failure is treated as ambiguous '
+              'and stops the batch without a second effect call. No no-op production handler is '
+              'provided.\n'
+          )
+          if '## Worker execution core' not in text:
+              doc.write_text(text.rstrip() + addition, encoding='utf-8')
+
+          inventory_path = root / 'docs/status/IMPLEMENTATION_INVENTORY.json'
+          inventory = json.loads(inventory_path.read_text(encoding='utf-8'))
+          for component in inventory.get('components', []):
+              if component.get('id') == 'COMP-PERSISTENCE-PG':
+                  fact = 'receipt-fenced generic outbox worker with retry/dead-letter routing and ambiguous-completion stop'
+                  implemented = component.setdefault('implemented', [])
+                  if fact not in implemented:
+                      implemented.append(fact)
+          inventory_path.write_text(
+              json.dumps(inventory, indent=2, ensure_ascii=False) + '\n',
+              encoding='utf-8',
+          )
+
+          workflow = root / '.github/workflows/temporary-outbox-worker-closure.yml'
+          if not workflow.is_file():
+              raise SystemExit('temporary worker workflow missing before self-removal')
+          workflow.unlink()
+          PY
+          test ! -e .github/workflows/temporary-outbox-worker-closure.yml
+          git diff --check
+
+      - name: Validate worker and repository corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo check --package trnm-persistence-pg --all-targets --locked
+          cargo test --package trnm-persistence-pg --all-targets --locked
+          cargo clippy --fix --allow-dirty --allow-staged \
+            --package trnm-persistence-pg --all-targets --locked -- -D warnings
+          cargo fmt --all
+          git diff --check
+          cargo fmt --all -- --check
+          cargo test --package trnm-persistence-pg --all-targets --locked
+          cargo clippy --package trnm-persistence-pg --all-targets --locked -- -D warnings
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          python3 scripts/check-plan.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Push only from unchanged trigger head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_REF_NAME"
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          test ! -e .github/workflows/temporary-outbox-worker-closure.yml
+          git diff --check
+          git config user.name "trillionnium-gap-closure-bot"
+          git config user.email "gap-closure-bot@users.noreply.github.com"
+          git add -A
+          test -n "$(git diff --cached --name-only)"
+          git commit -m "feat(outbox): add receipt-fenced worker execution core"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
