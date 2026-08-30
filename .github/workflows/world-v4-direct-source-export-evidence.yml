@@ -12,45 +12,76 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: world-v4-direct-source-export-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   export:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Checkout evidence definition
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-
-      - name: Revalidate Nakama project boundary
+      - name: Fetch exact evidence definition without external actions
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          cd "$GITHUB_WORKSPACE"
           bash scripts/project-preflight.sh
           test -z "$(git status --porcelain)"
 
-      - name: Checkout exact World candidate
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: TrillionniumFoundation/Trillionnium-World
-          ref: cb662abffce882aaeed8ec30402e889ba235d786
-          path: trillionnium-world
-          fetch-depth: 1
-          persist-credentials: false
+      - name: Fetch exact World candidate without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORLD="$RUNNER_TEMP/trillionnium-world"
+          rm -rf "$WORLD"
+          git init "$WORLD"
+          git -C "$WORLD" remote add origin \
+            https://github.com/TrillionniumFoundation/Trillionnium-World.git
+          git -C "$WORLD" fetch --no-tags --depth=1 origin \
+            cb662abffce882aaeed8ec30402e889ba235d786
+          git -C "$WORLD" checkout --detach FETCH_HEAD
+          test "$(git -C "$WORLD" rev-parse HEAD)" = \
+            cb662abffce882aaeed8ec30402e889ba235d786
+          test "$(git -C "$WORLD" rev-parse 'HEAD^{tree}')" = \
+            7a9be1f6859f5f57e4262b047e7b0243d384b9c2
+          test -z "$(git -C "$WORLD" status --porcelain)"
 
       - name: Export deterministic direct-source patch
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/world_v4_direct_source_export.py \
-            --repo trillionnium-world \
-            --output world-v4-direct-source-export
+          python3 "$GITHUB_WORKSPACE/scripts/world_v4_direct_source_export.py" \
+            --repo "$RUNNER_TEMP/trillionnium-world" \
+            --output "$RUNNER_TEMP/world-v4-direct-source-export"
 
-      - name: Upload immutable direct-source evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: world-v4-direct-source-cb662abf
-          path: world-v4-direct-source-export/
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
+      - name: Upload immutable evidence with SHA-pinned uploader source
+        shell: bash
+        run: |
+          set -euo pipefail
+          UPLOADER="$RUNNER_TEMP/upload-artifact"
+          rm -rf "$UPLOADER"
+          git init "$UPLOADER"
+          git -C "$UPLOADER" remote add origin \
+            https://github.com/actions/upload-artifact.git
+          git -C "$UPLOADER" fetch --no-tags --depth=1 origin \
+            ea165f8d65b6e75b540449e92b4886f43607fa02
+          git -C "$UPLOADER" checkout --detach FETCH_HEAD
+          test "$(git -C "$UPLOADER" rev-parse HEAD)" = \
+            ea165f8d65b6e75b540449e92b4886f43607fa02
+          env \
+            INPUT_NAME=world-v4-direct-source-cb662abf \
+            INPUT_PATH="$RUNNER_TEMP/world-v4-direct-source-export/" \
+            'INPUT_IF-NO-FILES-FOUND=error' \
+            'INPUT_RETENTION-DAYS=7' \
+            'INPUT_COMPRESSION-LEVEL=0' \
+            'INPUT_OVERWRITE=false' \
+            'INPUT_INCLUDE-HIDDEN-FILES=false' \
+            node "$UPLOADER/dist/index.js"
