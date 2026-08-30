@@ -1,0 +1,152 @@
+name: temporary-finalize-plan-v3-reconcile
+
+on:
+  push:
+    branches:
+      - codex/plan-v3-post-merge-reconcile-2026-08-31
+    paths:
+      - .github/workflows/temporary-finalize-plan-v3-reconcile.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: temporary-finalize-plan-v3-reconcile-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-freeze-and-open:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Fetch exact branch without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B codex/plan-v3-post-merge-reconcile-2026-08-31 FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Reject an unfinished first-stage tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e scripts/temporary-plan-v3-reconcile.py
+          test ! -e .github/workflows/temporary-plan-v3-reconcile.yml
+          test "$(git log -2 --format=%s | tail -n 1)" = \
+            'fix(plan): reconcile accepted controls and final-attempt outbox recovery'
+          python3 scripts/check-plan.py
+          python3 scripts/check-gap-register.py
+          python3 scripts/check-evidence-index.py
+          python3 scripts/check-status-transitions.py
+
+      - name: Remove finalizer and freeze product commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/temporary-finalize-plan-v3-reconcile.yml
+          test -z "$(find .github/workflows scripts -type f -name 'temporary-*' -print -quit)"
+          git diff --check
+          git config user.name 'trillionnium-plan-finalizer'
+          git config user.email 'plan-finalizer@users.noreply.github.com'
+          git add -A
+          git commit -m 'chore(plan): freeze post-merge reconciliation candidate'
+          git push origin HEAD:codex/plan-v3-post-merge-reconcile-2026-08-31
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Open exact draft pull request and bind head tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(git rev-parse HEAD)
+          tree=$(git rev-parse HEAD^{tree})
+          body=$(cat <<EOF
+          ## Repository and plan linkage
+
+          Repository: \`TrillionniumFoundation/TrillionniumGame\`
+
+          Plan version: **v3**. This is the single post-merge reconciliation line after protected merge of PR #42. It records only exact evidence already independently accepted and adds a new source/fault candidate for exhausted outbox lease recovery.
+
+          ## Exact candidate
+
+          - base branch: \`main\`
+          - head commit: \`${head}\`
+          - head tree: \`${tree}\`
+          - branch: \`codex/plan-v3-post-merge-reconcile-2026-08-31\`
+          - temporary workflows remaining: \`0\`
+
+          Any source push invalidates this identity, workflow collection, candidate manifest and approval.
+
+          ## Scope
+
+          - Fix \`scripts/check-gap-register.py\` so every validator consumes the authoritative evidence-index \`entries\` key.
+          - Validate accepted evidence rows and their manifest target identity rather than treating repository-control evidence as compatibility credit.
+          - Index the independently accepted exact-head PR #42 workflow/review record and the independently read-back protected-main record.
+          - Close only \`GAP-P0-CI-001\`, \`GAP-P0-GOV-001\`, \`GAP-P0-PR-001\`, \`GAP-P0-PLAN-001\`, \`GAP-P1-IDENTITY-001\`, \`GAP-P1-TEST-001\`, and \`GAP-P1-DOCS-001\`; all remaining compatibility, security, denominator, migration and production gaps stay open.
+          - Make an expired leased outbox row reclaimable at or above its configured attempt ceiling without incrementing the attempt, while advancing the fencing generation.
+          - Prove that final-attempt durable-write/pre-ack process exit recovers on PostgreSQL and CockroachDB.
+          - Reject \`lock_timeout > statement_timeout\`.
+
+          ## Candidate manifest and exact-head execution
+
+          A candidate manifest must bind this repository, exact commit/tree, run/job IDs, immutable database images, migration digest, artifacts, limitations and reviewer identity. The first-stage construction workflow is not merge evidence. This frozen head must obtain its own non-empty terminal successful aggregate and dedicated fault workflows.
+
+          An empty, skipped, cancelled, absent, neutral, action-required, failed, timed-out, or older-head result receives no credit.
+
+          ## Independent review
+
+          Independent review of this exact head is mandatory. Review must verify the evidence-index key repair, evidence/manifest identity binding, legitimacy of the seven closed control gaps, exhausted-attempt lease reclaim, generation fencing, PostgreSQL/CockroachDB live scenario, timeout ordering and unchanged claim ceiling.
+
+          Self-merge is prohibited. The author, automation identity, previous #42 approval or generated manifest cannot substitute for a new exact-head approval of these changes.
+
+          ## Remaining authoritative boundary
+
+          \`GAP-P0-EVIDENCE-001\`, \`GAP-P0-DATA-001\`, \`GAP-P0-SERVER-001\`, \`GAP-P0-CRYPTO-001\`, \`GAP-P0-SCOPE-001\`, \`GAP-P1-CRYPTO-002\`, \`GAP-P1-OUTBOX-001\`, \`GAP-P1-STORAGE-001\`, \`GAP-P1-PG-001\`, \`GAP-P1-BRANCH-001\`, \`GAP-P1-REVIEW-001\` and every downstream parity/operational gap remain evidence-bound.
+
+          ## Claim boundary
+
+          - production-ready = false
+          - public-online = false
+          - drop-in replacement = false
+          - nakama retired = false
+
+          No SG1-SG9, C1-C5, complete Nakama compatibility, production, public-online, cutover, supported replacement or retirement credit is claimed.
+          EOF
+          )
+          payload=$(jq -n \
+            --arg title 'fix(plan): reconcile accepted controls and exhausted outbox recovery' \
+            --arg head 'codex/plan-v3-post-merge-reconcile-2026-08-31' \
+            --arg base 'main' \
+            --arg body "$body" \
+            '{title:$title,head:$head,base:$base,body:$body,draft:true}')
+          response=$(curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls" \
+            -d "$payload")
+          number=$(jq -r '.number' <<<"$response")
+          test "$number" != null
+          printf 'pull_request=%s\nhead=%s\ntree=%s\n' "$number" "$head" "$tree"
+          jq -n \
+            --argjson reviewers '["ProfHepta"]' \
+            '{reviewers:$reviewers}' \
+            | curl --fail-with-body --silent --show-error \
+                -X POST \
+                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'X-GitHub-Api-Version: 2022-11-28' \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${number}/requested_reviewers" \
+                -d @- >/dev/null
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
