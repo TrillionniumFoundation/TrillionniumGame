@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-session-foundation-v2
+  group: temporary-session-foundation-v3
   cancel-in-progress: false
 
 jobs:
@@ -85,6 +85,72 @@ jobs:
           PY
           python3 -m py_compile .github/tmp/apply-session-foundation.py
           python3 .github/tmp/apply-session-foundation.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          session = Path('crates/trnm-persistence-pg/src/session.rs')
+          source = session.read_text(encoding='utf-8')
+          old_import = '''use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode, UserId};
+          use trnm_session_core::{RefreshTokenId, RevocationReason, SessionFamilyId};
+          '''
+          new_import = '''use trnm_contracts::{
+              Digest32, DomainError, RefreshTokenId, RetryClass, SessionFamilyId, StableCode, UserId,
+          };
+          use trnm_session_core::RevocationReason;
+          '''
+          if source.count(old_import) != 1:
+              raise SystemExit('session source import anchor mismatch')
+          source = source.replace(old_import, new_import, 1)
+          replacements = {
+              'RevocationReason::Compromised': 'RevocationReason::CredentialReset',
+              'RevocationReason::ReplayDetected': 'RevocationReason::RefreshReplay',
+              'RevocationReason::Administrative': 'RevocationReason::Administrator',
+          }
+          for old, new in replacements.items():
+              source = source.replace(old, new)
+          expired_arm = '''        RevocationReason::Expired => Err(invalid("expired_revocation_reason_not_persisted")),
+          '''
+          if source.count(expired_arm) != 1:
+              raise SystemExit('expired revocation arm anchor mismatch')
+          source = source.replace(expired_arm, '', 1)
+          expired_test = '''        assert_eq!(
+              revocation_reason_code(RevocationReason::Expired)
+                  .unwrap_err()
+                  .reason(),
+              "expired_revocation_reason_not_persisted"
+          );
+          '''
+          if source.count(expired_test) != 1:
+              raise SystemExit('expired revocation test anchor mismatch')
+          session.write_text(source.replace(expired_test, '', 1), encoding='utf-8')
+
+          auth = Path('crates/trnm-persistence-pg/src/bin/trnm_server/auth.rs')
+          source = auth.read_text(encoding='utf-8')
+          old_import = '''use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode, UserId};
+          use trnm_session_core::{RefreshTokenId, SessionFamilyId};
+          '''
+          new_import = '''use trnm_contracts::{
+              Digest32, DomainError, RefreshTokenId, RetryClass, SessionFamilyId, StableCode, UserId,
+          };
+          '''
+          if source.count(old_import) != 1:
+              raise SystemExit('auth source import anchor mismatch')
+          auth.write_text(source.replace(old_import, new_import, 1), encoding='utf-8')
+
+          checker = Path('scripts/check-trnm-server.py')
+          source = checker.read_text(encoding='utf-8')
+          if source.count('RevocationReason::ReplayDetected') != 1:
+              raise SystemExit('server checker replay marker mismatch')
+          checker.write_text(
+              source.replace(
+                  'RevocationReason::ReplayDetected',
+                  'RevocationReason::RefreshReplay',
+                  1,
+              ),
+              encoding='utf-8',
+          )
+          PY
           rm .github/tmp/apply-session-foundation.py
           test ! -e .github/workflows/temporary-session-foundation.yml
           git diff --check
