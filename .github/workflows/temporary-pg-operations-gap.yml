@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-pg-operations-gap-v5
+  group: temporary-pg-operations-gap-v6
   cancel-in-progress: false
 
 jobs:
@@ -43,13 +43,57 @@ jobs:
           python3 /tmp/patch-pg-operations.py
           python3 - <<'PY'
           from pathlib import Path
-          path = Path('crates/trnm-persistence-pg/src/bin/trnm_server/retry.rs')
-          source = path.read_text(encoding='utf-8')
+
+          retry = Path('crates/trnm-persistence-pg/src/bin/trnm_server/retry.rs')
+          source = retry.read_text(encoding='utf-8')
           old = 'pub fn execute<T>(\n'
           new = '#[cfg(test)]\npub fn execute<T>(\n'
           if source.count(old) != 1:
-              raise SystemExit(f'{path}: expected one execute helper, found {source.count(old)}')
-          path.write_text(source.replace(old, new, 1), encoding='utf-8')
+              raise SystemExit(
+                  f'{retry}: expected one execute helper, found {source.count(old)}'
+              )
+          retry.write_text(source.replace(old, new, 1), encoding='utf-8')
+
+          pool = Path('crates/trnm-persistence-pg/src/pool.rs')
+          source = pool.read_text(encoding='utf-8')
+          old = '''        let mut policy = PgPoolConfig::default();
+                  policy.max_size = 0;
+                  assert_eq!(
+                      policy.validate().unwrap_err().reason(),
+                      "database_pool_policy_invalid"
+                  );
+
+                  let mut policy = PgPoolConfig::default();
+                  policy.min_idle = policy.max_size + 1;
+                  assert_eq!(
+                      policy.validate().unwrap_err().reason(),
+                      "database_pool_policy_invalid"
+                  );
+          '''
+          new = '''        let policy = PgPoolConfig {
+                      max_size: 0,
+                      ..PgPoolConfig::default()
+                  };
+                  assert_eq!(
+                      policy.validate().unwrap_err().reason(),
+                      "database_pool_policy_invalid"
+                  );
+
+                  let default = PgPoolConfig::default();
+                  let policy = PgPoolConfig {
+                      min_idle: default.max_size + 1,
+                      ..default
+                  };
+                  assert_eq!(
+                      policy.validate().unwrap_err().reason(),
+                      "database_pool_policy_invalid"
+                  );
+          '''
+          if source.count(old) != 1:
+              raise SystemExit(
+                  f'{pool}: expected one pool-policy test anchor, found {source.count(old)}'
+              )
+          pool.write_text(source.replace(old, new, 1), encoding='utf-8')
           PY
           rm -f .github/tmp/pg-operations-patch.*.b64
           test ! -e .github/workflows/temporary-pg-operations-gap.yml
