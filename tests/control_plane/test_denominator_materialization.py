@@ -24,7 +24,11 @@ class DenominatorMaterializationTests(unittest.TestCase):
             root = Path(directory)
             with mock.patch.object(self.module, "ROOT", root), mock.patch.object(
                 self.module, "STATUS", root / "status.json"
-            ), mock.patch.object(self.module, "DRAFT", root / "draft.json"):
+            ), mock.patch.object(
+                self.module, "DRAFT", root / "draft.json"
+            ), mock.patch.object(
+                self.module, "WORKLIST", root / "worklist.json"
+            ):
                 result = self.module.validate()
         self.assertFalse(result["present"])
         self.assertFalse(result["review_ready"])
