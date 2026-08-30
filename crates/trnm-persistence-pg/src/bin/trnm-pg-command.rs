@@ -58,7 +58,10 @@ fn run(
     let mut repository = PgRepository::connect(database_url, profile)
         .map_err(|error| format!("database connect failed: {error}"))?;
     repository
-        .bind_schema_metadata(source_commit, environment_u64(environment, "TRNM_SCHEMA_APPLIED_AT_MS")?)
+        .bind_schema_metadata(
+            source_commit,
+            environment_u64(environment, "TRNM_SCHEMA_APPLIED_AT_MS")?,
+        )
         .map_err(|error| format!("schema metadata check failed: {error}"))?;
 
     match command {
@@ -176,7 +179,9 @@ fn parse_command(mut arguments: impl Iterator<Item = String>) -> Result<Command,
     }
 }
 
-fn parse_options(arguments: impl Iterator<Item = String>) -> Result<BTreeMap<String, String>, String> {
+fn parse_options(
+    arguments: impl Iterator<Item = String>,
+) -> Result<BTreeMap<String, String>, String> {
     let mut arguments = arguments.peekable();
     let mut result = BTreeMap::new();
     while let Some(argument) = arguments.next() {
@@ -239,7 +244,9 @@ fn parse_profile(value: &str) -> Result<DatabaseProfile, String> {
 
 fn validate_source_commit(value: &str) -> Result<(), String> {
     if value.len() != 40 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("TRNM_SCHEMA_SOURCE_COMMIT must be exactly 40 hexadecimal characters".to_owned());
+        return Err(
+            "TRNM_SCHEMA_SOURCE_COMMIT must be exactly 40 hexadecimal characters".to_owned(),
+        );
     }
     Ok(())
 }
@@ -351,7 +358,12 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(parsed, Command::Apply { command: 2, .. }));
-        assert!(parse_command(["apply", "--entity-byte", "1"].map(str::to_owned).into_iter()).is_err());
+        assert!(parse_command(
+            ["apply", "--entity-byte", "1"]
+                .map(str::to_owned)
+                .into_iter()
+        )
+        .is_err());
     }
 
     #[test]
@@ -366,15 +378,30 @@ mod tests {
     #[test]
     fn environment_validation_is_fail_closed() {
         let empty = BTreeMap::new();
-        assert!(run(["head", "--entity-byte", "1"].map(str::to_owned).into_iter(), &empty).is_err());
+        assert!(run(
+            ["head", "--entity-byte", "1"]
+                .map(str::to_owned)
+                .into_iter(),
+            &empty
+        )
+        .is_err());
 
         let environment = BTreeMap::from([
-            ("TRNM_DATABASE_URL".to_owned(), "postgresql://example.invalid/db".to_owned()),
+            (
+                "TRNM_DATABASE_URL".to_owned(),
+                "postgresql://example.invalid/db".to_owned(),
+            ),
             ("TRNM_DATABASE_PROFILE".to_owned(), "sqlite".to_owned()),
             ("TRNM_SCHEMA_SOURCE_COMMIT".to_owned(), "x".repeat(40)),
             ("TRNM_SCHEMA_APPLIED_AT_MS".to_owned(), "1".to_owned()),
         ]);
-        assert!(run(["head", "--entity-byte", "1"].map(str::to_owned).into_iter(), &environment).is_err());
+        assert!(run(
+            ["head", "--entity-byte", "1"]
+                .map(str::to_owned)
+                .into_iter(),
+            &environment
+        )
+        .is_err());
     }
 
     #[test]

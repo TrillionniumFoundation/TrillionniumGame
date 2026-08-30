@@ -81,10 +81,7 @@ fn unknown_or_malformed_epoch_never_falls_back_to_legacy_key() {
 #[test]
 fn duplicate_or_critical_header_fields_fail_closed() {
     let (token, ring, profile) = legacy_fixture();
-    let duplicate = replace_header(
-        &token,
-        br#"{"alg":"HS256","alg":"HS256","typ":"JWT"}"#,
-    );
+    let duplicate = replace_header(&token, br#"{"alg":"HS256","alg":"HS256","typ":"JWT"}"#);
     assert!(verify(&duplicate, &ring, &profile, 1_100).is_err());
 
     for header in [
@@ -159,12 +156,7 @@ fn legacy_and_epoch_claim_routes_cannot_be_mixed() {
     let mut wrong_epoch = claims().as_object().unwrap().clone();
     wrong_epoch.insert("trnm_kep".to_owned(), JsonValue::Unsigned(2));
     assert!(matches!(
-        issue_epoch(
-            &JsonValue::Object(wrong_epoch),
-            1,
-            &signing_key,
-            &profile
-        ),
+        issue_epoch(&JsonValue::Object(wrong_epoch), 1, &signing_key, &profile),
         Err(JwtError::EpochClaimMismatch {
             header: 1,
             payload: 2

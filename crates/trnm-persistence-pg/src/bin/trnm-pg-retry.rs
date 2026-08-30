@@ -179,7 +179,9 @@ fn policy_from_environment(environment: &BTreeMap<String, String>) -> Result<Ret
     })
 }
 
-fn parse_apply_arguments(arguments: impl Iterator<Item = String>) -> Result<ApplyArguments, String> {
+fn parse_apply_arguments(
+    arguments: impl Iterator<Item = String>,
+) -> Result<ApplyArguments, String> {
     let mut arguments = arguments.peekable();
     let command = arguments.next().ok_or_else(|| {
         "expected apply command and typed options; use --help in trnm-pg-command for the field contract"
@@ -200,7 +202,9 @@ fn parse_apply_arguments(arguments: impl Iterator<Item = String>) -> Result<Appl
     })
 }
 
-fn parse_options(arguments: impl Iterator<Item = String>) -> Result<BTreeMap<String, String>, String> {
+fn parse_options(
+    arguments: impl Iterator<Item = String>,
+) -> Result<BTreeMap<String, String>, String> {
     let mut arguments = arguments.peekable();
     let mut result = BTreeMap::new();
     while let Some(argument) = arguments.next() {
@@ -253,11 +257,11 @@ fn optional_u64(
     name: &str,
     default: u64,
 ) -> Result<u64, String> {
-    environment
-        .get(name)
-        .map_or(Ok(default), |value| {
-            value.parse().map_err(|error| format!("invalid {name}: {error}"))
-        })
+    environment.get(name).map_or(Ok(default), |value| {
+        value
+            .parse()
+            .map_err(|error| format!("invalid {name}: {error}"))
+    })
 }
 
 fn optional_u32(
@@ -265,11 +269,11 @@ fn optional_u32(
     name: &str,
     default: u32,
 ) -> Result<u32, String> {
-    environment
-        .get(name)
-        .map_or(Ok(default), |value| {
-            value.parse().map_err(|error| format!("invalid {name}: {error}"))
-        })
+    environment.get(name).map_or(Ok(default), |value| {
+        value
+            .parse()
+            .map_err(|error| format!("invalid {name}: {error}"))
+    })
 }
 
 fn parse_profile(value: &str) -> Result<DatabaseProfile, String> {
@@ -284,7 +288,9 @@ fn parse_profile(value: &str) -> Result<DatabaseProfile, String> {
 
 fn validate_source_commit(value: &str) -> Result<(), String> {
     if value.len() != 40 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("TRNM_SCHEMA_SOURCE_COMMIT must be exactly 40 hexadecimal characters".to_owned());
+        return Err(
+            "TRNM_SCHEMA_SOURCE_COMMIT must be exactly 40 hexadecimal characters".to_owned(),
+        );
     }
     Ok(())
 }
@@ -335,7 +341,7 @@ fn build_request(arguments: ApplyArguments) -> Result<CommitRequest, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trnm_contracts::{StableCode, RetryClass};
+    use trnm_contracts::{RetryClass, StableCode};
 
     fn error(retry: RetryClass) -> DomainError {
         DomainError::new(StableCode::Aborted, "test", retry)
@@ -352,7 +358,12 @@ mod tests {
     #[test]
     fn only_explicitly_safe_classes_retry() {
         assert_eq!(
-            retry_decision(policy(), 1, Duration::ZERO, error(RetryClass::SafeImmediate)),
+            retry_decision(
+                policy(),
+                1,
+                Duration::ZERO,
+                error(RetryClass::SafeImmediate)
+            ),
             RetryDecision::RetryAfter(Duration::ZERO)
         );
         assert_eq!(
@@ -364,7 +375,12 @@ mod tests {
             RetryDecision::Stop
         );
         assert_eq!(
-            retry_decision(policy(), 1, Duration::ZERO, error(RetryClass::ResyncRequired)),
+            retry_decision(
+                policy(),
+                1,
+                Duration::ZERO,
+                error(RetryClass::ResyncRequired)
+            ),
             RetryDecision::Stop
         );
     }
@@ -372,7 +388,12 @@ mod tests {
     #[test]
     fn attempt_and_total_deadline_are_hard_bounds() {
         assert_eq!(
-            retry_decision(policy(), 5, Duration::ZERO, error(RetryClass::SafeImmediate)),
+            retry_decision(
+                policy(),
+                5,
+                Duration::ZERO,
+                error(RetryClass::SafeImmediate)
+            ),
             RetryDecision::Stop
         );
         assert_eq!(
@@ -392,7 +413,10 @@ mod tests {
             .map(|attempt| exponential_backoff(Duration::from_millis(10), attempt))
             .collect();
         assert!(values.windows(2).all(|pair| pair[0] <= pair[1]));
-        assert_eq!(values.last().copied(), Some(Duration::from_millis(MAX_BACKOFF_MS)));
+        assert_eq!(
+            values.last().copied(),
+            Some(Duration::from_millis(MAX_BACKOFF_MS))
+        );
     }
 
     #[test]
@@ -402,10 +426,8 @@ mod tests {
             (MAX_MAX_ATTEMPTS + 1).to_string(),
         )]);
         assert!(policy_from_environment(&too_many).is_err());
-        let zero_deadline = BTreeMap::from([(
-            "TRNM_DATABASE_TOTAL_DEADLINE_MS".to_owned(),
-            "0".to_owned(),
-        )]);
+        let zero_deadline =
+            BTreeMap::from([("TRNM_DATABASE_TOTAL_DEADLINE_MS".to_owned(), "0".to_owned())]);
         assert!(policy_from_environment(&zero_deadline).is_err());
     }
 
@@ -420,6 +442,9 @@ mod tests {
             state: 4,
             committed_at_ms: 5,
         };
-        assert_eq!(build_request(arguments).unwrap(), build_request(arguments).unwrap());
+        assert_eq!(
+            build_request(arguments).unwrap(),
+            build_request(arguments).unwrap()
+        );
     }
 }

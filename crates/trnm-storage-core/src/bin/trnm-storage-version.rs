@@ -5,9 +5,9 @@ use std::io::{self, Read};
 
 const MAX_VALUE_BYTES: usize = 1_048_576;
 const SHIFT: [u32; 64] = [
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9,
-    14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4,
-    11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9,
+    14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15,
+    21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
 ];
 const TABLE: [u32; 64] = [
     0xd76a_a478,
@@ -119,7 +119,10 @@ fn run(mut arguments: impl Iterator<Item = String>) -> Result<(), String> {
                     "value exceeds {MAX_VALUE_BYTES} byte source-candidate limit"
                 ));
             }
-            println!("{}", PublicContentVersion::from_value(&value).lowercase_hex());
+            println!(
+                "{}",
+                PublicContentVersion::from_value(&value).lowercase_hex()
+            );
             Ok(())
         }
         "help" | "--help" | "-h" => {

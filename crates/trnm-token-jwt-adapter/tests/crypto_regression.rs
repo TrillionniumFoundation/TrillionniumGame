@@ -47,11 +47,26 @@ fn rfc_4231_long_key_cases() {
 #[test]
 fn sha256_padding_boundaries_match_known_python_hashlib_values() {
     let cases = [
-        (55_usize, "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"),
-        (56_usize, "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"),
-        (63_usize, "7d3e74a05d7db15bce4ad9ec0658ea98e3f06eeecf16b4c6fff2da457ddc2f34"),
-        (64_usize, "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"),
-        (65_usize, "635361c48bb9eab14198e76ea8ab7f1a41685d6a1f395399f0c7a1c58b097ec4"),
+        (
+            55_usize,
+            "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318",
+        ),
+        (
+            56_usize,
+            "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a",
+        ),
+        (
+            63_usize,
+            "7d3e74a05d7db15bce4ad9ec0658ea98e3f06eeecf16b4c6fff2da457ddc2f34",
+        ),
+        (
+            64_usize,
+            "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb",
+        ),
+        (
+            65_usize,
+            "635361c48bb9eab14198e76ea8ab7f1a41685d6a1f395399f0c7a1c58b097ec4",
+        ),
     ];
     for (length, expected) in cases {
         assert_eq!(
