@@ -1,0 +1,238 @@
+name: temporary-pg-query-deadline-finalizer
+
+on:
+  push:
+    branches:
+      - feat/plan-v3-gap-closure-2026-08-29
+
+permissions:
+  contents: write
+
+concurrency:
+  group: trillionnium-plan-v3-single-writer
+  cancel-in-progress: false
+
+jobs:
+  recover-verify-and-freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    steps:
+      - name: Fetch exact triggering head and require quiet tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$GITHUB_REF_NAME" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          sleep 75
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags origin "$GITHUB_REF_NAME"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+
+      - name: Recover the implementation payload when the first writer did not commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import subprocess
+          from pathlib import Path
+
+          root = Path('.')
+          required = [
+              root / 'crates/trnm-persistence-pg/src/deadline.rs',
+              root / 'crates/trnm-persistence-pg/tests/query_deadline.rs',
+              root / '.github/workflows/pg-query-deadline.yml',
+          ]
+          if all(path.is_file() for path in required):
+              raise SystemExit(0)
+
+          primary = root / '.github/workflows/temporary-pg-query-deadline-closure.yml'
+          if not primary.is_file():
+              missing = [str(path) for path in required if not path.is_file()]
+              raise SystemExit(f'cancellation frontier missing and recovery workflow absent: {missing}')
+          lines = primary.read_text(encoding='utf-8').splitlines()
+
+          def run_block(step_name: str) -> None:
+              marker = f'      - name: {step_name}'
+              try:
+                  start = lines.index(marker)
+              except ValueError as error:
+                  raise SystemExit(f'missing recovery step {step_name!r}') from error
+              run_index = None
+              for index in range(start + 1, len(lines)):
+                  if lines[index].startswith('      - name: '):
+                      break
+                  if lines[index] == '        run: |':
+                      run_index = index + 1
+                      break
+              if run_index is None:
+                  raise SystemExit(f'missing run block for {step_name!r}')
+              block = []
+              for index in range(run_index, len(lines)):
+                  line = lines[index]
+                  if line.startswith('      - name: '):
+                      break
+                  if line and not line.startswith('          '):
+                      raise SystemExit(f'noncanonical recovery indentation: {line!r}')
+                  block.append(line[10:] if line else '')
+              script = root / '.git' / ('recover-' + step_name.lower().replace(' ', '-') + '.sh')
+              script.write_text('\n'.join(block) + '\n', encoding='utf-8')
+              subprocess.run(['bash', str(script)], check=True)
+
+          run_block('Add transport-aware cancellation and deadline supervisor')
+          run_block('Add live cancellation test and permanent exact-head matrix')
+          PY
+          test -f crates/trnm-persistence-pg/src/deadline.rs
+          test -f crates/trnm-persistence-pg/tests/query_deadline.rs
+          test -f .github/workflows/pg-query-deadline.yml
+          git diff --check
+
+      - name: Make the live cancellation probe portable without accepting a skip
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/trnm-persistence-pg/tests/query_deadline.rs')
+          source = path.read_text(encoding='utf-8')
+          start = source.find('              let long_query = match profile {')
+          end_marker = '              repository\n                  .execute_with_deadline('
+          end = source.find(end_marker, start)
+          if start >= 0 and end >= 0:
+              old = source[start:end]
+              new = '''              let candidates = match profile {
+                  DatabaseProfile::PostgreSql => [
+                      "SELECT pg_sleep(10)",
+                      "SELECT count(*) FROM generate_series(1, 1000000000)",
+                      "SELECT count(*) FROM generate_series(1, 100000) a, generate_series(1, 100000) b",
+                  ],
+                  DatabaseProfile::CockroachDb => [
+                      "SELECT pg_sleep(10)",
+                      "SELECT count(*) FROM generate_series(1, 1000000000)",
+                      "SELECT count(*) FROM generate_series(1, 100000) a, generate_series(1, 100000) b",
+                  ],
+              };
+              let mut cancelled = false;
+              for long_query in candidates {
+                  let started = Instant::now();
+                  match repository.execute_with_deadline(policy, |client| {
+                      client.simple_query(long_query)
+                  }) {
+                      Err(error)
+                          if error.reason() == "database_query_deadline_exceeded" =>
+                      {
+                          let elapsed = started.elapsed();
+                          assert!(elapsed >= Duration::from_millis(150));
+                          assert!(elapsed < Duration::from_secs(8), "elapsed={elapsed:?}");
+                          cancelled = true;
+                          break;
+                      }
+                      Err(error) if started.elapsed() < Duration::from_millis(150) => {
+                          eprintln!("long-query candidate rejected early: {}", error.reason());
+                      }
+                      Err(error) => panic!(
+                          "long query failed without deadline classification: {}",
+                          error.reason()
+                      ),
+                      Ok(_) if started.elapsed() < Duration::from_millis(150) => {
+                          eprintln!("long-query candidate completed too quickly");
+                      }
+                      Ok(_) => panic!("long query completed without cancellation"),
+                  }
+              }
+              assert!(cancelled, "no portable long-query candidate exercised cancellation");
+'''
+              source = source[:start] + new + source[end:]
+              path.write_text(source, encoding='utf-8')
+          elif 'let candidates = match profile' not in source:
+              raise SystemExit(f'{path}: live query probe anchor missing')
+          PY
+          git diff --check
+
+      - name: Compile, test and strictly lint source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo check --package trnm-persistence-pg --all-targets --locked
+          cargo test --package trnm-persistence-pg --all-targets --locked
+          cargo clippy --fix --allow-dirty --allow-staged \
+            --package trnm-persistence-pg --all-targets --locked -- -D warnings
+          cargo fmt --all
+          git diff --check
+          cargo fmt --all -- --check
+          cargo test --package trnm-persistence-pg --all-targets --locked
+          cargo clippy --package trnm-persistence-pg --all-targets --locked -- -D warnings
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          python3 scripts/check-plan.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Prove cancellation against both authoritative PG-wire profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          POSTGRES_IMAGE="$(grep -Eo '(docker.io/library/)?postgres(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}' .github/workflows/pg-query-deadline.yml | head -1)"
+          COCKROACH_IMAGE="$(grep -Eo '(docker.io/)?cockroachdb/cockroach(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}' .github/workflows/pg-query-deadline.yml | head -1)"
+          test -n "$POSTGRES_IMAGE"
+          test -n "$COCKROACH_IMAGE"
+          docker run -d --name trnm-deadline-postgres \
+            -e POSTGRES_HOST_AUTH_METHOD=trust \
+            -p 127.0.0.1:55433:5432 \
+            "$POSTGRES_IMAGE"
+          for attempt in $(seq 1 90); do
+            if docker exec trnm-deadline-postgres pg_isready -U postgres -d postgres >/dev/null 2>&1; then break; fi
+            test "$attempt" -lt 90
+            sleep 1
+          done
+          TRNM_QUERY_DEADLINE_TEST_REQUIRED=1 \
+          TRNM_QUERY_DEADLINE_TEST_PROFILE=postgresql \
+          TRNM_QUERY_DEADLINE_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55433/postgres \
+            cargo test --package trnm-persistence-pg --test query_deadline --locked -- --nocapture
+          docker rm -f trnm-deadline-postgres
+          docker run -d --name trnm-deadline-cockroach \
+            -p 127.0.0.1:56258:26257 \
+            "$COCKROACH_IMAGE" \
+            start-single-node --insecure --listen-addr=0.0.0.0:26257 --http-addr=0.0.0.0:8080
+          for attempt in $(seq 1 120); do
+            if docker exec trnm-deadline-cockroach cockroach sql \
+              --insecure --host=127.0.0.1:26257 --database=defaultdb \
+              --execute='SELECT 1' >/dev/null 2>&1; then break; fi
+            test "$attempt" -lt 120
+            sleep 1
+          done
+          TRNM_QUERY_DEADLINE_TEST_REQUIRED=1 \
+          TRNM_QUERY_DEADLINE_TEST_PROFILE=cockroachdb \
+          TRNM_QUERY_DEADLINE_TEST_DATABASE_URL='postgresql://root@127.0.0.1:56258/defaultdb?sslmode=disable' \
+            cargo test --package trnm-persistence-pg --test query_deadline --locked -- --nocapture
+          docker rm -f trnm-deadline-cockroach
+
+      - name: Delete every temporary writer and push only from unchanged tip
+        shell: bash
+        run: |
+          set -euo pipefail
+          find .github/workflows -maxdepth 1 -type f \
+            \( -name 'temporary-*.yml' -o -name 'temporary-*.yaml' \) \
+            -print -delete
+          git fetch --no-tags origin "$GITHUB_REF_NAME"
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          test -z "$(find .github/workflows -maxdepth 1 -type f \
+            \( -name 'temporary-*.yml' -o -name 'temporary-*.yaml' \) -print -quit)"
+          git diff --check
+          git config user.name "trillionnium-gap-closure-bot"
+          git config user.email "gap-closure-bot@users.noreply.github.com"
+          git add -A
+          test -n "$(git diff --cached --name-only)"
+          git commit -m "feat(pg): add transport-aware in-flight query cancellation"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
