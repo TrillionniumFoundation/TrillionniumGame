@@ -4,21 +4,158 @@
   "title": "Trillionnium denominator review bundle v1",
   "type": "object",
   "required": [
-    "schema", "denominator", "candidate_sha256", "candidate_head",
-    "author_identity", "self_approval", "reviewers", "leaf_decisions",
+    "schema",
+    "denominator",
+    "candidate_sha256",
+    "candidate_head",
+    "author_identity",
+    "self_approval",
+    "reviewers",
+    "leaf_decisions",
     "manual_contracts"
   ],
   "properties": {
-    "schema": {"const": "trillionnium.denominator-review.v1"},
-    "denominator": {"type": "string", "pattern": "^DEN-[A-Z0-9-]+$"},
-    "candidate_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-    "candidate_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-    "author_identity": {"type": "string", "minLength": 1},
-    "self_approval": {"const": false},
-    "reviewers": {"type": "array", "minItems": 2},
-    "leaf_decisions": {"type": "array", "minItems": 1},
-    "manual_contracts": {"type": "array"},
-    "remote_evidence": {"type": ["object", "null"]}
+    "schema": {
+      "const": "trillionnium.denominator-review.v1"
+    },
+    "denominator": {
+      "type": "string",
+      "pattern": "^DEN-[A-Z0-9-]+$"
+    },
+    "candidate_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "candidate_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "author_identity": {
+      "type": "string",
+      "minLength": 1
+    },
+    "self_approval": {
+      "const": false
+    },
+    "reviewers": {
+      "type": "array",
+      "minItems": 2
+    },
+    "leaf_decisions": {
+      "type": "array",
+      "minItems": 1
+    },
+    "manual_contracts": {
+      "type": "array"
+    },
+    "remote_evidence": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "evidence_kind",
+            "head_sha",
+            "pull_request",
+            "workflow_run_id",
+            "assertion_count",
+            "conclusion",
+            "artifact_id",
+            "artifact_sha256"
+          ],
+          "properties": {
+            "evidence_kind": {
+              "const": "artifact"
+            },
+            "head_sha": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "pull_request": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "workflow_run_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "assertion_count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "conclusion": {
+              "const": "success"
+            },
+            "artifact_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "artifact_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "evidence_kind",
+            "head_sha",
+            "pull_request",
+            "workflow_run_id",
+            "assertion_count",
+            "conclusion",
+            "job_id",
+            "job_name",
+            "archive_sha256",
+            "log_sealed"
+          ],
+          "properties": {
+            "evidence_kind": {
+              "const": "immutable-job-log"
+            },
+            "head_sha": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "pull_request": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "workflow_run_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "assertion_count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "conclusion": {
+              "const": "success"
+            },
+            "job_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "job_name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "archive_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "log_sealed": {
+              "const": true
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    }
   },
   "additionalProperties": true
 }

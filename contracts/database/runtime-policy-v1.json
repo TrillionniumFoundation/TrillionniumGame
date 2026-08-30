@@ -1,0 +1,41 @@
+{
+  "schema": "trillionnium.database-runtime-policy.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-candidate",
+  "crate": "crates/trnm-persistence-runtime-policy",
+  "profiles": ["postgresql", "cockroachdb"],
+  "deployment_classes": ["developer", "compatibility", "production"],
+  "invariants": [
+    "TLS verify-full is required outside developer mode",
+    "key/certificate inputs are opaque handles rather than inline secrets",
+    "pool minimum does not exceed maximum",
+    "acquire timeout is bounded by idle timeout and maximum lifetime",
+    "lock timeout is bounded by statement timeout and transaction timeout",
+    "retry deadline is bounded by transaction timeout",
+    "automatic retry is limited to read-only, idempotent command and receipt-apply operations",
+    "resync-required and never-retry errors stop immediately",
+    "cancellation stops before another attempt",
+    "attempt and total deadline budgets are finite",
+    "non-idempotent external effects never auto-retry"
+  ],
+  "not_implemented": [
+    "connection-pool adapter",
+    "TLS connector and certificate reload",
+    "statement/lock timeout application",
+    "sleep/timer and cancellation integration",
+    "PostgreSQL transaction retry wrapper",
+    "CockroachDB transaction restart protocol",
+    "metrics and tracing",
+    "load/failover evidence"
+  ],
+  "gap_ids": ["GAP-P1-PG-001"],
+  "claims": {
+    "source_candidate": true,
+    "runtime_policy_defined": true,
+    "pool_implemented": false,
+    "tls_implemented": false,
+    "automatic_retry_implemented": false,
+    "database_durable": false,
+    "production_ready": false
+  }
+}

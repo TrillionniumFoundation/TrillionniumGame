@@ -51,14 +51,19 @@ if status.get("backlog_id") != "WORLD-P0-003":
     raise SystemExit("adapter backlog binding drift")
 if status.get("status") not in {
     "implemented_pending_exact_head_ci",
+    "implemented_python_and_go_pending_exact_head_ci",
     "verified_remote",
 }:
     raise SystemExit("adapter delivery status is invalid")
 if status.get("authority", {}).get("public_online_enabled") is not False:
     raise SystemExit("adapter delivery cannot enable public online")
+# A7 is a first-party Go package already present in this repository and may be
+# represented as implemented_pending_ci. A8 and A9 still require production
+# store/callback integration and cross-repository evidence, so they must remain
+# pending or blocked here.
 external_rows = {
-    "WORLD-P0-003-A7",
     "WORLD-P0-003-A8",
+    "WORLD-P0-003-A9",
 }
 for row in status.get("acceptance", []):
     if row.get("id") in external_rows and row.get("state") not in {"pending", "blocked"}:
@@ -103,9 +108,11 @@ for key in (
     if authority.get(key) is not True:
         raise SystemExit(f"authority control must remain true: {key}")
 
+
 def git_blob_sha(payload: bytes) -> str:
     header = f"blob {len(payload)}\0".encode("ascii")
     return hashlib.sha1(header + payload).hexdigest()
+
 
 for label, local_path in (
     ("schema", schema_path),

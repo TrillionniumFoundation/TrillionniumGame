@@ -17,7 +17,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/contract"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/contract"
 )
 
 const defaultPrivateKeyEnv = "TRNM_FIXTURE_PRIVATE_KEY"

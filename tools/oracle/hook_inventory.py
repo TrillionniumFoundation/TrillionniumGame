@@ -8,6 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
+from tools.upstream.pinned_archive import (
+    LOCK_FILE,
+    SourceArchiveError,
+    verify_source_lock,
+)
+
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 IMPORT_RE = re.compile(r'^\s*(?:(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s+)?"(?P<path>[^"]+)"\s*$')
 CALL_RE = re.compile(r"(?P<call>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)")
@@ -58,6 +64,28 @@ def verify_upstream(root: Path, policy: Mapping[str, Any]) -> dict[str, str]:
         raise InventoryError("policy upstream repository/commit is invalid")
     if not isinstance(expected_tree, str) or not SHA_RE.fullmatch(expected_tree):
         raise InventoryError("policy upstream tree is invalid")
+
+    # CI uses the verified GitHub source archive fetcher. That checkout is a
+    # byte-exact tree plus a signed-by-content source-lock marker, not a nested
+    # Git repository. Prefer that identity and recompute its tree. Developer
+    # fixtures and instrumented checkouts may still be actual Git repositories.
+    marker = root / LOCK_FILE
+    if marker.is_file():
+        try:
+            verify_source_lock(
+                root,
+                repository=expected_repository,
+                revision=expected_commit,
+                tree=expected_tree,
+            )
+        except SourceArchiveError as exc:
+            raise InventoryError(f"upstream source-lock rejected: {exc}") from exc
+        return {
+            "repository": expected_repository,
+            "commit": expected_commit,
+            "tree": expected_tree,
+        }
+
     actual_commit = _run(root, "rev-parse", "HEAD")
     actual_tree = _run(root, "rev-parse", "HEAD^{tree}")
     if actual_commit != expected_commit or actual_tree != expected_tree:
@@ -149,8 +177,17 @@ def _capability(call: str, line: str, policy: Mapping[str, Any]) -> str | None:
         for marker in markers:
             if not isinstance(marker, str):
                 raise InventoryError(f"capability {capability} marker must be a string")
-            if marker.startswith(".") and call.endswith(marker):
-                return capability
+            # Dotted markers describe one concrete call. Match them only against
+            # the current CALL_RE token; using the whole source line causes the
+            # first call on a multi-call line to misclassify every later call.
+            if "." in marker:
+                if marker.startswith(".") and call.endswith(marker):
+                    return capability
+                if call == marker or call.endswith("." + marker) or marker in call:
+                    return capability
+                continue
+            # Non-call markers such as TraceID may intentionally be discovered
+            # from their surrounding source line.
             if marker in call or marker in line:
                 return capability
     return None
@@ -164,6 +201,19 @@ def _listed_go_files(root: Path, include_roots: Iterable[str]) -> list[str]:
     return sorted(paths)
 
 
+def _archived_go_files(root: Path, include_roots: Iterable[str]) -> list[str]:
+    paths: set[str] = set()
+    for include_root in include_roots:
+        candidate = root / include_root
+        if not candidate.is_dir():
+            continue
+        for path in candidate.rglob("*.go"):
+            if path.name.endswith("_test.go") or path.is_symlink():
+                continue
+            paths.add(path.relative_to(root).as_posix())
+    return sorted(paths)
+
+
 def generate_inventory(root: Path, policy: Mapping[str, Any]) -> dict[str, Any]:
     upstream = verify_upstream(root, policy)
     include_roots = policy.get("include_roots")
@@ -173,7 +223,12 @@ def generate_inventory(root: Path, policy: Mapping[str, Any]) -> dict[str, Any]:
     sites: list[dict[str, Any]] = []
     manual: list[dict[str, Any]] = []
 
-    for relative in _listed_go_files(root, include_roots):
+    if (root / LOCK_FILE).is_file():
+        listed_files = _archived_go_files(root, include_roots)
+    else:
+        listed_files = _listed_go_files(root, include_roots)
+
+    for relative in listed_files:
         path = PurePosixPath(relative)
         if path.is_absolute() or ".." in path.parts:
             raise InventoryError(f"unsafe source path: {relative}")

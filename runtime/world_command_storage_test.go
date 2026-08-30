@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/worldcommand"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/worldcommand"
 	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
 	"google.golang.org/protobuf/proto"

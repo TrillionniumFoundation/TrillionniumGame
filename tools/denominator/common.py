@@ -13,7 +13,7 @@ from tools.upstream.pinned_archive import git_blob_sha1_bytes, verify_source_loc
 REPOSITORY = "heroiclabs/nakama"
 REVISION = "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09"
 TREE = "f3c9cfc2726d5543da1564629170f35b98e3797d"
-GENERATOR_VERSION = "0.1.0"
+GENERATOR_VERSION = "0.2.0"
 
 
 class DenominatorError(RuntimeError):
@@ -70,13 +70,41 @@ def source_ref(root: Path, relative: str, start: int | None = None, end: int | N
     return SourceRef(REPOSITORY, REVISION, relative, git_blob_sha1_bytes(data), sha256(data), start, end)
 
 
-def stable_id(layer: str, item_class: str, symbol: str, signature: Any) -> str:
-    seed = canonical_bytes({"layer": layer, "class": item_class, "symbol": symbol, "signature": signature})
+def stable_id(
+    layer: str,
+    item_class: str,
+    symbol: str,
+    signature: Any,
+    source: SourceRef | None = None,
+) -> str:
+    source_identity = None
+    if source is not None:
+        source_identity = {
+            "repository": source.repository,
+            "commit": source.commit,
+            "path": source.path,
+            "blob": source.blob,
+            "start_line": source.start_line,
+            "end_line": source.end_line,
+        }
+    seed = canonical_bytes(
+        {
+            "layer": layer,
+            "class": item_class,
+            "symbol": symbol,
+            "signature": signature,
+            "source": source_identity,
+        }
+    )
     return f"TG-{layer}-{hashlib.sha256(seed).hexdigest()[:18].upper()}"
 
 
 def leaf(layer: str, item_class: str, symbol: str, source: SourceRef, contract: dict[str, Any], *, owner: str, workstream: str, task: str) -> dict[str, Any]:
-    identifier = stable_id(layer, item_class, symbol, contract)
+    # Symbol names are not globally unique in protobuf, TypeScript or nested
+    # configuration declarations. Bind the candidate leaf ID to the immutable
+    # upstream source location as well as its normalized contract so duplicate
+    # short names cannot collapse into one denominator identity.
+    identifier = stable_id(layer, item_class, symbol, contract, source)
     return {
         "id": identifier,
         "layer": layer,

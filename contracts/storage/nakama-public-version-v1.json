@@ -1,0 +1,46 @@
+{
+  "schema": "trillionnium.storage-nakama-public-version.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-candidate",
+  "baseline": "heroiclabs/nakama@v3.40.0",
+  "crate": "crates/trnm-storage-nakama-version",
+  "public_version": {
+    "algorithm": "MD5",
+    "input": "exact stored value bytes",
+    "wire_encoding": "32-character lowercase hexadecimal",
+    "security_use": false
+  },
+  "write_conditions": {
+    "empty": "blind write without a version precondition",
+    "star": "create only when no current object exists",
+    "exact_lowercase_hex": "write only when the current public version is byte-identical"
+  },
+  "type_separation": [
+    "PublicStorageVersion is 16 bytes / 32 lowercase hex characters",
+    "ContentIntegrityDigest is a separate 32-byte internal type",
+    "the public compatibility version is never used as an authentication or security digest"
+  ],
+  "required_vectors": [
+    "RFC 1321 MD5",
+    "blind/create-only/exact OCC",
+    "missing object",
+    "mismatched object",
+    "malformed and uppercase public versions"
+  ],
+  "not_implemented": [
+    "integration into trnm-storage-core write operations",
+    "exact Nakama JSON/value validation differential",
+    "database storage row adapter",
+    "batch atomicity and error-text differential",
+    "cursor and search behavior"
+  ],
+  "gap_ids": ["GAP-P1-STORAGE-001"],
+  "claims": {
+    "source_candidate": true,
+    "public_version_vectors_present": true,
+    "storage_core_integrated": false,
+    "storage_behavior_compatible": false,
+    "database_durable": false,
+    "production_ready": false
+  }
+}

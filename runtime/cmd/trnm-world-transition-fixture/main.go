@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/worldtransition"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/worldtransition"
 )
 
 const maximumRequestBytes = worldtransition.MaxStateBytes + worldtransition.MaxCommandBytes + 64*1024

@@ -1,0 +1,435 @@
+#!/usr/bin/env python3
+"""Diagnose exact Git tree mismatches for GitHub archive snapshots.
+
+The production archive verifier remains fail closed. This helper downloads the
+same pinned archive, reconstructs every Git object (including virtual gitlinks),
+fetches the expected recursive tree from the GitHub Git database API and emits
+path-level mode/type/SHA differences. It never substitutes an observed archive
+hash for the pinned repository tree.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import stat
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.upstream.pinned_archive import (  # noqa: E402
+    SourceArchiveError,
+    extract_github_tarball,
+    git_blob_sha1_bytes,
+)
+
+
+class DiagnosticError(RuntimeError):
+    """Raised when the mismatch itself cannot be diagnosed safely."""
+
+
+def http_bytes(
+    url: str,
+    *,
+    token: str | None,
+    timeout_seconds: int = 120,
+    max_bytes: int = 512 * 1024 * 1024,
+) -> bytes:
+    """Fetch bounded HTTPS diagnostic input without relaxing tree verification."""
+    require(url.startswith("https://"), f"non-HTTPS diagnostic URL: {url}")
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "TrillionniumGame-pinned-tree-diagnostic/1",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        response = urllib.request.urlopen(request, timeout=timeout_seconds)
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise DiagnosticError(f"diagnostic download failed: {error}") from error
+    chunks: list[bytes] = []
+    size = 0
+    with response:
+        resolved_url = response.geturl()
+        require(
+            resolved_url.startswith("https://"),
+            f"diagnostic redirect resolved to non-HTTPS URL: {resolved_url}",
+        )
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            require(size <= max_bytes, f"diagnostic response exceeds {max_bytes} bytes")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def normalize_gitlink_map(value: dict[str, str]) -> dict[PurePosixPath, bytes]:
+    """Convert a profile gitlink map into validated local tree-hash material."""
+    require(isinstance(value, dict), "gitlink map must be an object")
+    result: dict[PurePosixPath, bytes] = {}
+    for path_text, commit in value.items():
+        require(isinstance(path_text, str) and path_text, "gitlink path is invalid")
+        require(
+            isinstance(commit, str)
+            and len(commit) == 40
+            and commit != "0" * 40
+            and all(character in "0123456789abcdef" for character in commit),
+            f"gitlink commit is invalid: {path_text}",
+        )
+        path = PurePosixPath(path_text)
+        require(
+            not path.is_absolute()
+            and path.parts
+            and all(part not in {"", ".", ".."} for part in path.parts)
+            and path.as_posix() == path_text,
+            f"gitlink path is not canonical: {path_text!r}",
+        )
+        require(path not in result, f"duplicate gitlink path: {path_text}")
+        result[path] = bytes.fromhex(commit)
+    return result
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise DiagnosticError(message)
+
+
+def git_object(kind: str, payload: bytes) -> str:
+    header = f"{kind} {len(payload)}\0".encode("ascii")
+    return hashlib.sha1(header + payload).hexdigest()  # noqa: S324 - Git object ID
+
+
+def tree_sort_key(name: bytes, is_tree: bool) -> bytes:
+    return name + (b"/" if is_tree else b"")
+
+
+def immediate_virtual_names(
+    prefix: PurePosixPath,
+    links: dict[PurePosixPath, bytes],
+) -> set[str]:
+    names: set[str] = set()
+    prefix_parts = prefix.parts
+    for path in links:
+        parts = path.parts
+        if len(parts) <= len(prefix_parts) or parts[: len(prefix_parts)] != prefix_parts:
+            continue
+        names.add(parts[len(prefix_parts)])
+    return names
+
+
+def has_descendant_link(
+    path: PurePosixPath,
+    links: dict[PurePosixPath, bytes],
+) -> bool:
+    prefix = path.parts
+    return any(
+        len(candidate.parts) > len(prefix)
+        and candidate.parts[: len(prefix)] == prefix
+        for candidate in links
+    )
+
+
+def local_inventory(
+    root: Path,
+    virtual_gitlinks: dict[str, str] | None,
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    links = normalize_gitlink_map(virtual_gitlinks)
+    inventory: dict[str, dict[str, Any]] = {}
+
+    def walk(directory: Path | None, prefix: PurePosixPath) -> str:
+        physical: dict[str, Path] = {}
+        if directory is not None and directory.exists():
+            require(directory.is_dir(), f"expected directory while hashing: {directory}")
+            physical = {child.name: child for child in directory.iterdir()}
+        names = set(physical) | immediate_virtual_names(prefix, links)
+        encoded_entries: list[tuple[bytes, bool, bytes]] = []
+
+        for name in names:
+            child = physical.get(name)
+            relative = prefix / name if prefix.parts else PurePosixPath(name)
+            relative_text = relative.as_posix()
+            link_sha = links.get(relative)
+
+            if link_sha is not None:
+                if child is not None and child.exists():
+                    if child.is_dir() and not child.is_symlink():
+                        require(
+                            not any(child.iterdir()),
+                            f"virtual gitlink path is not empty: {relative_text}",
+                        )
+                    else:
+                        raise DiagnosticError(
+                            f"virtual gitlink collides with archive file: {relative_text}"
+                        )
+                inventory[relative_text] = {
+                    "mode": "160000",
+                    "type": "commit",
+                    "sha": link_sha.hex(),
+                }
+                encoded_entries.append(
+                    (
+                        os.fsencode(name),
+                        False,
+                        b"160000 " + os.fsencode(name) + b"\0" + link_sha,
+                    )
+                )
+                continue
+
+            if child is None:
+                require(
+                    has_descendant_link(relative, links),
+                    f"synthetic tree has no gitlink descendants: {relative_text}",
+                )
+                object_sha = walk(None, relative)
+                inventory[relative_text] = {
+                    "mode": "040000",
+                    "type": "tree",
+                    "sha": object_sha,
+                }
+                encoded_entries.append(
+                    (
+                        os.fsencode(name),
+                        True,
+                        b"40000 "
+                        + os.fsencode(name)
+                        + b"\0"
+                        + bytes.fromhex(object_sha),
+                    )
+                )
+                continue
+
+            mode = child.lstat().st_mode
+            name_bytes = os.fsencode(name)
+            if stat.S_ISDIR(mode):
+                object_sha = walk(child, relative)
+                inventory[relative_text] = {
+                    "mode": "040000",
+                    "type": "tree",
+                    "sha": object_sha,
+                }
+                encoded_entries.append(
+                    (
+                        name_bytes,
+                        True,
+                        b"40000 " + name_bytes + b"\0" + bytes.fromhex(object_sha),
+                    )
+                )
+            elif stat.S_ISLNK(mode):
+                object_sha = git_blob_sha1_bytes(os.fsencode(os.readlink(child)))
+                inventory[relative_text] = {
+                    "mode": "120000",
+                    "type": "blob",
+                    "sha": object_sha,
+                }
+                encoded_entries.append(
+                    (
+                        name_bytes,
+                        False,
+                        b"120000 " + name_bytes + b"\0" + bytes.fromhex(object_sha),
+                    )
+                )
+            elif stat.S_ISREG(mode):
+                object_sha = git_blob_sha1_bytes(child.read_bytes())
+                object_mode = "100755" if mode & 0o111 else "100644"
+                inventory[relative_text] = {
+                    "mode": object_mode,
+                    "type": "blob",
+                    "sha": object_sha,
+                }
+                encoded_entries.append(
+                    (
+                        name_bytes,
+                        False,
+                        object_mode.encode("ascii")
+                        + b" "
+                        + name_bytes
+                        + b"\0"
+                        + bytes.fromhex(object_sha),
+                    )
+                )
+            else:
+                raise DiagnosticError(
+                    f"unsupported filesystem object while hashing: {relative_text}"
+                )
+
+        encoded_entries.sort(key=lambda row: tree_sort_key(row[0], row[1]))
+        return git_object("tree", b"".join(row[2] for row in encoded_entries))
+
+    return walk(root, PurePosixPath()), inventory
+
+
+def expected_inventory(
+    repository: str,
+    tree_sha: str,
+    *,
+    token: str | None,
+) -> dict[str, dict[str, Any]]:
+    url = f"https://api.github.com/repos/{repository}/git/trees/{tree_sha}?recursive=1"
+    payload = json.loads(http_bytes(url, token=token).decode("utf-8"))
+    require(isinstance(payload, dict), "GitHub tree response must be an object")
+    require(payload.get("sha") == tree_sha, "GitHub tree response SHA mismatch")
+    require(payload.get("truncated") is False, "GitHub recursive tree response is truncated")
+    rows = payload.get("tree")
+    require(isinstance(rows, list), "GitHub tree response has no tree array")
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        require(isinstance(row, dict), "GitHub tree entry must be an object")
+        path = row.get("path")
+        mode = row.get("mode")
+        kind = row.get("type")
+        sha = row.get("sha")
+        require(
+            all(isinstance(value, str) and value for value in (path, mode, kind, sha)),
+            f"invalid GitHub tree entry: {row!r}",
+        )
+        result[path] = {"mode": mode, "type": kind, "sha": sha}
+    return result
+
+
+def compare(
+    expected: dict[str, dict[str, Any]],
+    observed: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    differences: list[dict[str, Any]] = []
+    for path in sorted(set(expected) | set(observed)):
+        left = expected.get(path)
+        right = observed.get(path)
+        if left == right:
+            continue
+        if left is None:
+            classification = "extra"
+        elif right is None:
+            classification = "missing"
+        else:
+            changed = [
+                field
+                for field in ("mode", "type", "sha")
+                if left[field] != right[field]
+            ]
+            classification = "+".join(changed)
+        differences.append(
+            {
+                "path": path,
+                "classification": classification,
+                "expected": left,
+                "observed": right,
+            }
+        )
+    return differences
+
+
+def load_profile(registry: Path, profile_id: str) -> dict[str, Any]:
+    value = json.loads(registry.read_text(encoding="utf-8"))
+    profiles = value.get("profiles") if isinstance(value, dict) else None
+    require(isinstance(profiles, list), "SDK registry profiles must be an array")
+    matching = [
+        row
+        for row in profiles
+        if isinstance(row, dict) and row.get("id") == profile_id
+    ]
+    require(len(matching) == 1, f"expected exactly one SDK profile {profile_id!r}")
+    return matching[0]
+
+
+def gitlinks_from_profile(profile: dict[str, Any]) -> dict[str, str]:
+    rows = profile.get("gitlinks", [])
+    require(isinstance(rows, list), "profile gitlinks must be an array")
+    result: dict[str, str] = {}
+    for row in rows:
+        require(isinstance(row, dict), "gitlink row must be an object")
+        path = row.get("path")
+        commit = row.get("commit")
+        require(isinstance(path, str) and path, "gitlink path is invalid")
+        require(isinstance(commit, str) and len(commit) == 40, "gitlink commit is invalid")
+        require(path not in result, f"duplicate gitlink path: {path}")
+        result[path] = commit
+    return result
+
+
+def diagnostic(registry: Path, profile_id: str, limit: int) -> dict[str, Any]:
+    profile = load_profile(registry, profile_id)
+    repository = profile.get("repository")
+    revision = profile.get("commit")
+    expected_tree = profile.get("tree")
+    require(isinstance(repository, str) and "/" in repository, "invalid repository")
+    require(isinstance(revision, str) and len(revision) == 40, "invalid revision")
+    require(isinstance(expected_tree, str) and len(expected_tree) == 40, "invalid tree")
+    token = os.environ.get("GITHUB_TOKEN") or None
+    archive_url = f"https://api.github.com/repos/{repository}/tarball/{revision}"
+    archive = http_bytes(archive_url, token=token)
+    archive_sha256 = hashlib.sha256(archive).hexdigest()
+    links = gitlinks_from_profile(profile)
+
+    with tempfile.TemporaryDirectory(prefix="trnm-tree-diagnostic-") as temporary:
+        temporary_root = Path(temporary)
+        archive_path = temporary_root / "source.tar.gz"
+        archive_path.write_bytes(archive)
+        destination = temporary_root / "source"
+        extract_github_tarball(archive_path, destination)
+        observed_tree, observed = local_inventory(destination, links)
+        expected = expected_inventory(repository, expected_tree, token=token)
+        differences = compare(expected, observed)
+
+    summary = {
+        "schema": "trillionnium.pinned-tree-diagnostic.v1",
+        "profile": profile_id,
+        "repository": repository,
+        "revision": revision,
+        "expected_tree": expected_tree,
+        "observed_tree": observed_tree,
+        "archive_sha256": archive_sha256,
+        "expected_entry_count": len(expected),
+        "observed_entry_count": len(observed),
+        "difference_count": len(differences),
+        "differences": differences[:limit],
+        "difference_output_truncated": len(differences) > limit,
+        "tree_matches": observed_tree == expected_tree and not differences,
+        "claim_boundary": {
+            "diagnostic_only": True,
+            "pinned_tree_relaxed": False,
+            "compatibility_credit": False,
+        },
+    }
+    return summary
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--registry", type=Path, required=True)
+    parser.add_argument("--profile", required=True)
+    parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--require-match", action="store_true")
+    args = parser.parse_args()
+    try:
+        require(1 <= args.limit <= 1000, "--limit must be in 1..=1000")
+        result = diagnostic(args.registry.resolve(), args.profile, args.limit)
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        SourceArchiveError,
+        DiagnosticError,
+        ValueError,
+    ) as error:
+        print(f"pinned tree diagnostic failed: {error}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, indent=2, sort_keys=True))
+    if args.require_match and not result["tree_matches"]:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

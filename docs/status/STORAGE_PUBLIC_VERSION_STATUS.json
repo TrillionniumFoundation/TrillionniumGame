@@ -1,0 +1,39 @@
+{
+  "schema": "trillionnium.storage-public-version-status.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-candidate",
+  "source": "crates/trnm-storage-core/src/bin/trnm-storage-version.rs",
+  "implemented": [
+    "exact raw-value byte input",
+    "bounded one-MiB source-candidate input",
+    "MD5 public version generation",
+    "32-character lowercase hexadecimal encoding",
+    "RFC 1321 known-answer vectors",
+    "boundary-length and byte-sensitivity tests"
+  ],
+  "not_implemented": [
+    "integration into storage writes",
+    "server-side version derivation enforcement",
+    "empty star and exact OCC state machine",
+    "public version persistence separate from internal digest",
+    "batch write and delete atomicity differential",
+    "cursor and permission differential",
+    "existing-row migration",
+    "immutable Nakama oracle evidence",
+    "independent storage and migration review"
+  ],
+  "divergence_ids": ["DIV-STORAGE-VERSION-001"],
+  "parity_ids": ["TG-PAR-021", "TG-PAR-023"],
+  "claims": {
+    "exact_head_compiled": false,
+    "remote_verified": false,
+    "independently_reviewed": false,
+    "storage_version_compatible": false,
+    "storage_behavior_compatible": false,
+    "migration_compatible": false,
+    "c2_earned": false,
+    "c3_earned": false,
+    "production_ready": false,
+    "public_online": false
+  }
+}

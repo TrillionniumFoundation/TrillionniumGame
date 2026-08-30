@@ -258,7 +258,28 @@ class TypeScriptParser:
         return None
 
     def parse(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        self.parse_scope("")
+        try:
+            self.parse_scope("")
+        except DenominatorError as exc:
+            # The pinned declaration file contains constructs outside this
+            # deliberately small parser. Preserve all successfully extracted
+            # leaves and convert the unresolved suffix into an explicit manual
+            # contract instead of dropping it or aborting the whole D4 lane.
+            start = min(self.index, max(0, len(self.tokens) - 1))
+            residual = self.tokens[start:]
+            self.manual.append(
+                {
+                    "class": "typescript_parser_residual_manual_contract",
+                    "symbol": "<parser-residual>",
+                    "path": self.path,
+                    "start_line": residual[0].line if residual else None,
+                    "end_line": residual[-1].line if residual else None,
+                    "signature": normalize_tokens(residual),
+                    "reason": str(exc),
+                    "token_count": len(residual),
+                }
+            )
+            self.index = len(self.tokens)
         return self.items, self.manual
 
     def parse_scope(self, prefix: str, closing: str | None = None) -> None:

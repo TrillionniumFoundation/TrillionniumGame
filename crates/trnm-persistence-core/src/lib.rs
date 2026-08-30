@@ -7,6 +7,13 @@ use trnm_contracts::{CommandId, Digest32, DomainError, RetryClass, StableCode};
 const MAX_EVENTS: usize = 64;
 const MAX_INTENTS: usize = 64;
 const MAX_ATTEMPTS: u64 = 32;
+// SHA-256("outbox_attempt_limit_exceeded"). The digest is stable evidence for
+// the automatic terminal transition and is not accepted from an external
+// caller.
+const OUTBOX_ATTEMPT_LIMIT_REASON: Digest32 = Digest32::new([
+    0x88, 0x5b, 0xa9, 0x48, 0x7a, 0xba, 0xaa, 0x8d, 0x5d, 0xc1, 0xe5, 0x49, 0xbe, 0xae, 0x45, 0x8a,
+    0xbd, 0x43, 0xbb, 0x3b, 0xb6, 0x64, 0xc8, 0x63, 0x7a, 0x40, 0x4f, 0x7c, 0xb3, 0x83, 0xfe, 0xdb,
+]);
 
 macro_rules! id16 {
     ($name:ident) => {
@@ -402,14 +409,13 @@ impl DurableState {
     ) -> Result<OutboxRecord, DomainError> {
         let record = self.outbox.get_mut(&id).ok_or_else(outbox_not_found)?;
         lease_fence(record, owner, generation)?;
-        record.attempt = record.attempt.checked_add(1).ok_or_else(overflow)?;
-        if record.attempt > MAX_ATTEMPTS {
-            return Err(error(
-                StableCode::ResourceExhausted,
-                "outbox_attempt_limit_exceeded",
-                RetryClass::Never,
-            ));
+        if record.attempt >= MAX_ATTEMPTS {
+            record.state = OutboxState::DeadLetter {
+                reason: OUTBOX_ATTEMPT_LIMIT_REASON,
+            };
+            return Ok(*record);
         }
+        record.attempt = record.attempt.checked_add(1).ok_or_else(overflow)?;
         record.state = OutboxState::Pending;
         Ok(*record)
     }
@@ -712,6 +718,43 @@ mod tests {
                 .unwrap_err()
                 .reason(),
             "outbox_receipt_mismatch"
+        );
+    }
+
+    #[test]
+    fn retry_limit_transitions_atomically_to_dead_letter() {
+        let mut state = state();
+        state.commit(prepared(&state, intent(1, 0, 1))).unwrap();
+        let intent_id = IntentId::new(id(1));
+        let owner = NodeId::new(id(1));
+
+        for expected_attempt in 1..=MAX_ATTEMPTS {
+            let lease = state.lease(intent_id, owner).unwrap();
+            let retried = state
+                .retry(intent_id, owner, lease.lease_generation)
+                .unwrap();
+            assert_eq!(retried.attempt, expected_attempt);
+            assert_eq!(retried.state, OutboxState::Pending);
+        }
+
+        let final_lease = state.lease(intent_id, owner).unwrap();
+        let terminal = state
+            .retry(intent_id, owner, final_lease.lease_generation)
+            .unwrap();
+        assert_eq!(terminal.attempt, MAX_ATTEMPTS);
+        assert_eq!(
+            terminal.state,
+            OutboxState::DeadLetter {
+                reason: OUTBOX_ATTEMPT_LIMIT_REASON
+            }
+        );
+        assert_eq!(state.outbox(intent_id), Some(terminal));
+        assert_eq!(
+            state
+                .lease(intent_id, NodeId::new(id(2)))
+                .unwrap_err()
+                .reason(),
+            "outbox_not_pending"
         );
     }
 

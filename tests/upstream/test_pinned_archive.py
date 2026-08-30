@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import tarfile
 import tempfile
@@ -65,6 +66,22 @@ class GitTreeTests(unittest.TestCase):
                 self.skipTest("git is unavailable")
             self.assertEqual(actual, expected)
 
+    def test_git_tree_hash_matches_git_for_relative_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_fixture(root)
+            os.symlink("../README.md", root / "dir" / "README-link.md")
+            expected = git_tree_sha1(root)
+            try:
+                subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+                subprocess.run(["git", "-C", str(root), "add", "README.md", "dir"], check=True, capture_output=True)
+                actual = subprocess.run(
+                    ["git", "-C", str(root), "write-tree"], check=True, text=True, capture_output=True
+                ).stdout.strip()
+            except FileNotFoundError:
+                self.skipTest("git is unavailable")
+            self.assertEqual(actual, expected)
+
     def test_lock_file_is_excluded_but_post_fetch_tamper_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -100,7 +117,26 @@ class ArchiveExtractionTests(unittest.TestCase):
             self.assertGreater(size, 0)
             self.assertEqual(git_tree_sha1(destination), tree)
 
-    def test_path_traversal_symlink_and_nonempty_destination_are_rejected(self) -> None:
+    def test_safe_relative_symlink_preserves_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            write_fixture(source)
+            os.symlink("../README.md", source / "dir" / "README-link.md")
+            tree = git_tree_sha1(source)
+            archive = base / "source.tar.gz"
+            make_tar(source, archive)
+            destination = base / "destination"
+            count, size = extract_github_tarball(archive, destination)
+            self.assertEqual(count, 4)
+            self.assertGreater(size, 0)
+            link = destination / "dir" / "README-link.md"
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(os.readlink(link), "../README.md")
+            self.assertEqual(git_tree_sha1(destination), tree)
+
+    def test_path_traversal_escaping_links_and_nonempty_destination_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             traversal = base / "traversal.tar.gz"
@@ -112,8 +148,8 @@ class ArchiveExtractionTests(unittest.TestCase):
             with self.assertRaises(SourceArchiveError):
                 extract_github_tarball(traversal, base / "out1")
 
-            symlink = base / "symlink.tar.gz"
-            with tarfile.open(symlink, "w:gz") as archive:
+            absolute_symlink = base / "absolute-symlink.tar.gz"
+            with tarfile.open(absolute_symlink, "w:gz") as archive:
                 root = tarfile.TarInfo("root")
                 root.type = tarfile.DIRTYPE
                 archive.addfile(root)
@@ -122,14 +158,45 @@ class ArchiveExtractionTests(unittest.TestCase):
                 link.linkname = "/etc/passwd"
                 archive.addfile(link)
             with self.assertRaises(SourceArchiveError):
-                extract_github_tarball(symlink, base / "out2")
+                extract_github_tarball(absolute_symlink, base / "out2")
+
+            escaping_symlink = base / "escaping-symlink.tar.gz"
+            with tarfile.open(escaping_symlink, "w:gz") as archive:
+                root = tarfile.TarInfo("root")
+                root.type = tarfile.DIRTYPE
+                archive.addfile(root)
+                nested = tarfile.TarInfo("root/dir")
+                nested.type = tarfile.DIRTYPE
+                archive.addfile(nested)
+                link = tarfile.TarInfo("root/dir/link")
+                link.type = tarfile.SYMTYPE
+                link.linkname = "../../../outside"
+                archive.addfile(link)
+            with self.assertRaises(SourceArchiveError):
+                extract_github_tarball(escaping_symlink, base / "out3")
+
+            hard_link = base / "hard-link.tar.gz"
+            with tarfile.open(hard_link, "w:gz") as archive:
+                root = tarfile.TarInfo("root")
+                root.type = tarfile.DIRTYPE
+                archive.addfile(root)
+                original = tarfile.TarInfo("root/original")
+                payload = b"ok"
+                original.size = len(payload)
+                archive.addfile(original, io.BytesIO(payload))
+                link = tarfile.TarInfo("root/link")
+                link.type = tarfile.LNKTYPE
+                link.linkname = "root/original"
+                archive.addfile(link)
+            with self.assertRaises(SourceArchiveError):
+                extract_github_tarball(hard_link, base / "out4")
 
             source = base / "source"
             source.mkdir()
             write_fixture(source)
             valid = base / "valid.tar.gz"
             make_tar(source, valid)
-            nonempty = base / "out3"
+            nonempty = base / "out5"
             nonempty.mkdir()
             (nonempty / "stale").write_text("stale", encoding="utf-8")
             with self.assertRaises(SourceArchiveError):

@@ -1,6 +1,7 @@
 name: trillionnium-game-actions-unblock-smoke
 
 on:
+  pull_request:
   push:
     branches: [main]
     paths:
@@ -19,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Record exact execution identity
+      - name: Record exact execution identity without checkout or external actions
         shell: bash
         run: |
           set -euo pipefail
@@ -27,5 +28,7 @@ jobs:
           printf 'sha=%s\n' "$GITHUB_SHA"
           printf 'ref=%s\n' "$GITHUB_REF"
           printf 'event=%s\n' "$GITHUB_EVENT_NAME"
+          printf 'run_id=%s\n' "$GITHUB_RUN_ID"
           test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
           test -n "$GITHUB_SHA"
+          test -n "$GITHUB_RUN_ID"

@@ -1,5 +1,20 @@
 #![forbid(unsafe_code)]
 
+mod auth;
+mod outbox;
+mod pool;
+mod session;
+
+pub use auth::{
+    parse_refresh_credential, AccessTokenVerifier, ParsedRefreshCredential, SessionPrincipal,
+};
+pub use outbox::{OutboxLease, OutboxRetryOutcome};
+pub use pool::{PgPool, PgPoolConfig, PgPoolSnapshot, PgTlsConfig};
+pub use session::{
+    CreateSessionFamily, RefreshRotationOutcome, RefreshTokenCredential, RotateRefreshToken,
+    SessionFamilyRecord,
+};
+
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -67,6 +82,17 @@ impl IntentKind {
     const fn database_value(self) -> i16 {
         self as i16
     }
+
+    const fn from_database_value(value: i16) -> Option<Self> {
+        match value {
+            0 => Some(Self::Broadcast),
+            1 => Some(Self::SearchIndex),
+            2 => Some(Self::Notification),
+            3 => Some(Self::ExternalEffect),
+            4 => Some(Self::Completion),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,7 +153,7 @@ pub enum CommitOutcome {
 
 pub struct PgRepository {
     profile: DatabaseProfile,
-    client: Client,
+    client: pool::ClientHandle,
 }
 
 impl fmt::Debug for PgRepository {
@@ -145,12 +171,39 @@ impl PgRepository {
             return Err(invalid("database_url_empty"));
         }
         let client = Client::connect(database_url, NoTls).map_err(map_postgres_error)?;
-        Ok(Self { profile, client })
+        Ok(Self {
+            profile,
+            client: pool::ClientHandle::direct(client),
+        })
     }
 
     #[must_use]
     pub const fn profile(&self) -> DatabaseProfile {
         self.profile
+    }
+
+    pub fn table_exists(&mut self, table: &str) -> Result<bool, DomainError> {
+        if table.is_empty() || table.len() > 63 {
+            return Err(invalid("invalid_table_name"));
+        }
+        let row = self
+            .client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
+                 WHERE table_schema = 'public' AND table_name = $1)",
+                &[&table],
+            )
+            .map_err(map_postgres_error)?;
+        Ok(row.get(0))
+    }
+
+    pub fn execute_migration_batch(&mut self, migration: &str) -> Result<(), DomainError> {
+        if migration.trim().is_empty() {
+            return Err(invalid("migration_batch_empty"));
+        }
+        self.client
+            .batch_execute(migration)
+            .map_err(map_postgres_error)
     }
 
     pub fn bind_schema_metadata(

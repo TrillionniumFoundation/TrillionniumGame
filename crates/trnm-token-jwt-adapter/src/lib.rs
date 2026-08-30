@@ -19,3 +19,8 @@ pub use jwt::{
     issue_epoch, issue_legacy, verify, ClaimMapping, JwtError, KeyRing, SecretKey, TokenRoute,
     VerificationProfile, VerifiedPrincipal, VerifiedToken, EPOCH_KEY_ID_PREFIX,
 };
+
+#[must_use]
+pub fn sha256_digest(input: &[u8]) -> [u8; 32] {
+    sha256::digest(input)
+}

@@ -1,0 +1,67 @@
+{
+  "schema": "trillionnium.execution-status.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "generated_at": "2026-08-29",
+  "base_backlog": {
+    "index": "docs/development/EXECUTION_BACKLOG.json",
+    "artifact": "docs/development/backlog/EXECUTION_BACKLOG.v2.json.gz",
+    "artifact_sha256": "6a3b94c1c76a44b31966e2d5919aa3c5ebc87822fc6169377b174a4a3a50c114",
+    "task_count": 120,
+    "mutation_policy": "The backlog defines scope. Daily status is recorded here or in evidence; scope is regenerated only for an approved plan change."
+  },
+  "allowed_task_states": [
+    "planned",
+    "ready",
+    "in-progress",
+    "source-candidate",
+    "locally-verified",
+    "remote-verified",
+    "independently-reviewed",
+    "accepted",
+    "blocked",
+    "rejected",
+    "superseded"
+  ],
+  "default_task_state": "planned",
+  "task_overrides": [],
+  "workstreams": [
+    {"id":"W0","status":"in-progress","blocking_gaps":["GAP-P0-CI-001","GAP-P0-GOV-001","GAP-P0-PLAN-001","GAP-P0-EVIDENCE-001","GAP-P0-SCOPE-001"]},
+    {"id":"W1","status":"in-progress","blocking_gaps":["GAP-P0-DATA-001","GAP-P1-PG-001"]},
+    {"id":"W2","status":"source-candidate","blocking_gaps":["GAP-P0-CI-001","GAP-P0-SCOPE-001","GAP-P0-SERVER-001"]},
+    {"id":"W3","status":"source-candidate","blocking_gaps":["GAP-P0-CRYPTO-001","GAP-P1-CRYPTO-002","GAP-P0-SERVER-001"]},
+    {"id":"W4","status":"source-candidate","blocking_gaps":["GAP-P1-STORAGE-001","GAP-P0-DATA-001","GAP-P0-SERVER-001"]},
+    {"id":"W5","status":"planned","blocking_gaps":["GAP-P0-SCOPE-001"]},
+    {"id":"W6","status":"source-candidate","blocking_gaps":["GAP-P0-SERVER-001","GAP-P0-SCOPE-001"]},
+    {"id":"W7","status":"planned","blocking_gaps":["GAP-P0-SCOPE-001"]},
+    {"id":"W8","status":"planned","blocking_gaps":["GAP-P0-SCOPE-001"]},
+    {"id":"W9","status":"planned","blocking_gaps":["GAP-P0-SERVER-001"]},
+    {"id":"W10","status":"planned","blocking_gaps":["GAP-P0-SERVER-001"]},
+    {"id":"W11","status":"planned","blocking_gaps":["GAP-P0-CRYPTO-001","GAP-P0-SERVER-001","GAP-P0-SCOPE-001"]},
+    {"id":"W12","status":"planned","blocking_gaps":["GAP-P0-DATA-001","GAP-P0-SERVER-001"]},
+    {"id":"W13","status":"planned","blocking_gaps":["GAP-P0-SERVER-001"]},
+    {"id":"W14","status":"in-progress","blocking_gaps":["GAP-P0-DATA-001","GAP-P1-PG-001"]},
+    {"id":"W15","status":"in-progress","blocking_gaps":["GAP-P0-CI-001","GAP-P0-GOV-001","GAP-P0-CRYPTO-001","GAP-P1-REVIEW-001"]},
+    {"id":"W16","status":"planned","blocking_gaps":["GAP-P0-SERVER-001","GAP-P1-PG-001"]}
+  ],
+  "stage_gates": [
+    {"id":"SG0","status":"blocked","blocking_gaps":["GAP-P0-CI-001","GAP-P0-GOV-001","GAP-P0-PR-001","GAP-P1-IDENTITY-001","GAP-P1-BRANCH-001"]},
+    {"id":"SG1","status":"blocked","blocking_gaps":["GAP-P0-CI-001","GAP-P0-PLAN-001","GAP-P0-EVIDENCE-001","GAP-P0-SCOPE-001"]},
+    {"id":"SG2","status":"blocked","blocking_gaps":["GAP-P0-CI-001","GAP-P0-EVIDENCE-001","GAP-P0-SCOPE-001"]},
+    {"id":"SG3","status":"blocked","blocking_gaps":["GAP-P0-CI-001","GAP-P0-SCOPE-001","GAP-P0-CRYPTO-001"]},
+    {"id":"SG4","status":"blocked","blocking_gaps":["GAP-P0-SERVER-001","GAP-P0-DATA-001","GAP-P1-OUTBOX-001","GAP-P1-PG-001"]},
+    {"id":"SG5","status":"blocked","blocking_gaps":["GAP-P0-SERVER-001","GAP-P1-STORAGE-001","GAP-P0-CRYPTO-001"]},
+    {"id":"SG6","status":"blocked","blocking_gaps":["GAP-P0-SERVER-001","GAP-P0-SCOPE-001"]},
+    {"id":"SG7","status":"blocked","blocking_gaps":["GAP-P0-SERVER-001","GAP-P0-SCOPE-001"]},
+    {"id":"SG8","status":"blocked","blocking_gaps":["GAP-P0-DATA-001","GAP-P1-PG-001","GAP-P1-REVIEW-001"]},
+    {"id":"SG9","status":"blocked","blocking_gaps":["GAP-P0-CI-001","GAP-P0-GOV-001","GAP-P0-SERVER-001","GAP-P1-REVIEW-001"]}
+  ],
+  "coverage": {
+    "specified_leaf_count": null,
+    "implemented_leaf_count": null,
+    "verified_leaf_count": null,
+    "production_leaf_count": null,
+    "rule": "Remain null until all final denominator manifests are locked; do not invent percentage progress."
+  },
+  "fail_closed": true
+}

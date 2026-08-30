@@ -1,0 +1,135 @@
+{
+  "schema": "trillionnium.rust-package-authority.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "effective_date": "2026-08-29",
+  "last_reviewed_at": "2026-08-30",
+  "workspace": {
+    "root_manifest": "Cargo.toml",
+    "members": [
+      "crates/trnm-contracts",
+      "crates/trnm-authority-core",
+      "crates/trnm-session-core",
+      "crates/trnm-storage-core",
+      "crates/trnm-persistence-core",
+      "crates/trnm-persistence-pg",
+      "crates/trnm-canonical-core",
+      "crates/trnm-transport-core",
+      "crates/trnm-token-core",
+      "crates/trnm-presence-core",
+      "crates/trnm-query-core"
+    ],
+    "required_commands": [
+      "cargo fmt --all -- --check",
+      "cargo test --workspace --all-targets --locked",
+      "cargo clippy --workspace --all-targets --locked -- -D warnings"
+    ]
+  },
+  "isolated_workspaces": [
+    {
+      "manifest": "crates/trnm-token-jwt-adapter/Cargo.toml",
+      "classification": "security-critical-compatibility-adapter",
+      "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-token-jwt-adapter-gate/Cargo.toml",
+      "classification": "security-critical-source-gate",
+      "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml",
+      "classification": "security-critical-source-gate-v2",
+      "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-presence-router-v2/Cargo.toml",
+      "classification": "realtime-integration-candidate",
+      "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-server/Cargo.toml",
+      "classification": "server-foundation-prototype",
+      "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-persistence-runtime-policy/Cargo.toml",
+      "classification": "database-runtime-policy-candidate",
+      "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-realtime-wire/Cargo.toml",
+      "classification": "realtime-wire-compatibility-candidate",
+      "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-storage-nakama-version/Cargo.toml",
+      "classification": "storage-version-compatibility-adapter",
+      "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-token-crypto-provider/Cargo.toml",
+      "classification": "security-critical-crypto-provider",
+      "aggregate_gate_required": true
+    },
+    {
+      "manifest": "crates/trnm-token-jwt-provider-adapter/Cargo.toml",
+      "classification": "security-critical-jwt-provider-adapter",
+      "aggregate_gate_required": true
+    }
+  ],
+  "allowed_duplicate_package_names": {
+    "trnm-token-jwt-adapter-gate": [
+      "crates/trnm-token-jwt-adapter-gate/Cargo.toml",
+      "crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml"
+    ]
+  },
+  "server_binary_authority": {
+    "name": "trnm-server",
+    "manifest": "crates/trnm-persistence-pg/Cargo.toml",
+    "source": "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
+    "status": "temporary-composition-authority-source-candidate",
+    "reason": "The current database-backed vertical slice shares the exact persistence adapter and authoritative migration ABI. A later package extraction must be atomic and independently reviewed.",
+    "replacement_contract": [
+      "one change introduces the replacement package and moves all source/tests/status references",
+      "the old binary target is removed in the same accepted change",
+      "no two first-party targets named trnm-server coexist",
+      "workspace, lockfile, merge gate and evidence identity are updated together",
+      "exact-head build/test/Clippy and database evidence pass before the new target becomes authority"
+    ]
+  },
+  "foundation_prototype": {
+    "name": "trnm-server-foundation",
+    "manifest": "crates/trnm-server/Cargo.toml",
+    "source": "crates/trnm-server/src/main.rs",
+    "status": "standalone-source-candidate",
+    "relationship": "This prototype exercises process/config/transport boundaries but is not the canonical trnm-server binary while the temporary database-backed composition authority exists.",
+    "compatibility_credit": false,
+    "production_credit": false
+  },
+  "policy": {
+    "all_first_party_rust_packages_live_under_crates": true,
+    "every_crate_manifest_is_workspace_member_or_listed_isolated_workspace": true,
+    "every_explicit_target_path_must_exist": true,
+    "packages_without_any_discoverable_target_are_forbidden": true,
+    "isolated_workspace_must_have_aggregate_gate_lane": true,
+    "isolated_workspace_must_have_lockfile": true,
+    "duplicate_server_binary_names_are_forbidden": true,
+    "untracked_nested_workspaces_are_forbidden": true,
+    "source_presence_grants_claim_credit": false
+  },
+  "checker": "scripts/check-rust-package-inventory.py",
+  "gap_links": [
+    "GAP-P0-SERVER-001",
+    "GAP-P0-CI-001",
+    "GAP-P0-CRYPTO-001",
+    "GAP-P1-STORAGE-001",
+    "GAP-P1-PG-001"
+  ],
+  "claim_boundary": {
+    "package_inventory_source_checked": false,
+    "exact_head_compiled": false,
+    "server_runtime_verified": false,
+    "compatibility_credit": false,
+    "production_ready": false
+  }
+}

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/contract"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/contract"
 )
 
 // WorldBinding exposes only immutable hashes and already-authoritative cursors

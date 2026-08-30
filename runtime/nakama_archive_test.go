@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	matchcore "github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/core"
+	matchcore "github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/core"
 	"github.com/heroiclabs/nakama-common/runtime"
 )
 

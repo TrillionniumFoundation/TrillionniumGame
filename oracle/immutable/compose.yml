@@ -12,7 +12,14 @@ services:
     networks: [backend]
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: [CMD-SHELL, pg_isready -U postgres -d nakama]
+      # pg_isready can succeed against the temporary postmaster used by the
+      # official image during initialization. Require PID 1 to be the final
+      # postgres process and execute a real SQL probe before releasing Nakama.
+      test:
+        - CMD-SHELL
+        - >-
+          test "$$(cat /proc/1/comm)" = postgres &&
+          test "$$(psql -X -U postgres -d nakama -Atqc 'SELECT 1')" = 1
       interval: 2s
       timeout: 3s
       retries: 30
@@ -37,7 +44,7 @@ services:
         database="postgres:$${TRNM_ORACLE_DB_PASSWORD}@postgres:5432/nakama"
         /nakama/nakama migrate up --database.address "$$database"
         exec /nakama/nakama \
-          --name trnm-immutable-oracle \
+          --name trnm-oracle \
           --database.address "$$database" \
           --logger.level INFO \
           --session.encryption_key "$${TRNM_ORACLE_SESSION_KEY}" \
@@ -54,7 +61,7 @@ services:
     networks: [backend, edge]
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: [/nakama/nakama, healthcheck]
+      test: ["CMD", "/nakama/nakama", "healthcheck"]
       interval: 2s
       timeout: 3s
       retries: 30

@@ -1,0 +1,49 @@
+{
+  "schema": "trillionnium.pg-server-vertical-slice.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-candidate",
+  "entrypoint": "crates/trnm-persistence-pg/examples/trnm_server_pg_slice.rs",
+  "workflow": ".github/workflows/pg-server-vertical-slice.yml",
+  "authoritative_migration": "migrations/postgresql/0001_foundation_up.sql",
+  "database_profile": "postgresql",
+  "required_scenarios": [
+    "fresh migration apply",
+    "entity bootstrap",
+    "first command commit",
+    "one receipt, event, outbox and command-outbox link",
+    "process exit and restart",
+    "exact duplicate receipt replay after restart",
+    "stale expected revision rejection",
+    "no duplicate durable rows"
+  ],
+  "required_identity": [
+    "repository",
+    "candidate commit",
+    "candidate tree",
+    "pinned OCI image",
+    "migration-chain digest",
+    "Rust toolchain",
+    "artifact digest"
+  ],
+  "not_implemented": [
+    "CockroachDB process slice",
+    "TLS database connection",
+    "connection pool",
+    "bounded serializable retry driver",
+    "production session verification",
+    "gRPC and WebSocket adapters",
+    "outbox delivery worker",
+    "immutable Nakama differential",
+    "independent database/protocol/security review"
+  ],
+  "gap_ids": ["GAP-P0-SERVER-001", "GAP-P1-PG-001"],
+  "claims": {
+    "source_candidate": true,
+    "live_postgresql_executed": false,
+    "restart_duplicate_replay_verified": false,
+    "cockroachdb_executed": false,
+    "nakama_wire_compatible": false,
+    "sg4_complete": false,
+    "production_ready": false
+  }
+}

@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trillionnium.org/schemas/denominator-review-bundle-v1.schema.json",
+  "title": "TrillionniumGame denominator review bundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "bundle_id",
+    "project_id",
+    "baseline",
+    "candidate",
+    "denominators",
+    "aggregate",
+    "review",
+    "claims"
+  ],
+  "properties": {
+    "schema": {"const": "trillionnium.denominator-review-bundle.v1"},
+    "bundle_id": {"type": "string", "pattern": "^TG-DEN-REVIEW-[A-Z0-9._-]{6,128}$"},
+    "project_id": {"const": "trillionnium-game"},
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nakama_commit", "nakama_tree", "nakama_common_commit", "nakama_common_tree"],
+      "properties": {
+        "nakama_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "nakama_tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "nakama_common_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "nakama_common_tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "tree", "candidate_manifest_sha256"],
+      "properties": {
+        "repository": {"const": "TrillionniumFoundation/TrillionniumGame"},
+        "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "candidate_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "denominators": {
+      "type": "array",
+      "minItems": 14,
+      "maxItems": 14,
+      "items": {"$ref": "#/$defs/denominator"}
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "denominator_count",
+        "leaf_count_total",
+        "classified_count",
+        "unclassified_count",
+        "owner_bound_count",
+        "task_bound_count",
+        "test_bound_count",
+        "manifest_sha256"
+      ],
+      "properties": {
+        "denominator_count": {"const": 14},
+        "leaf_count_total": {"type": "integer", "minimum": 1},
+        "classified_count": {"type": "integer", "minimum": 0},
+        "unclassified_count": {"type": "integer", "minimum": 0},
+        "owner_bound_count": {"type": "integer", "minimum": 0},
+        "task_bound_count": {"type": "integer", "minimum": 0},
+        "test_bound_count": {"type": "integer", "minimum": 0},
+        "manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "reviewer_identity", "reviewer_role", "independent", "reviewed_at", "notes"],
+      "properties": {
+        "decision": {"enum": ["accepted", "rejected", "needs-work"]},
+        "reviewer_identity": {"type": "string", "minLength": 1},
+        "reviewer_role": {"const": "compatibility-architecture"},
+        "independent": {"const": true},
+        "reviewed_at": {"type": "string", "format": "date-time"},
+        "notes": {"type": "string"}
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sg1_eligible", "compatibility_credit", "production_ready"],
+      "properties": {
+        "sg1_eligible": {"type": "boolean"},
+        "compatibility_credit": {"const": false},
+        "production_ready": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size_bytes"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "denominator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "layer",
+        "manifest",
+        "leaf_count",
+        "classified_count",
+        "unclassified_count",
+        "owner_bound_count",
+        "task_bound_count",
+        "test_bound_count",
+        "review_status"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "DEN-SOURCE",
+            "DEN-API",
+            "DEN-RTAPI",
+            "DEN-CONSOLE",
+            "DEN-RUNTIME",
+            "DEN-CONFIG",
+            "DEN-CLI",
+            "DEN-DB",
+            "DEN-DATA",
+            "DEN-METRICS",
+            "DEN-OPS",
+            "DEN-PROVIDERS",
+            "DEN-IAP",
+            "DEN-SDK"
+          ]
+        },
+        "layer": {"type": "string", "pattern": "^D[0-8](?:/D[0-8])?$"},
+        "manifest": {"$ref": "#/$defs/artifact"},
+        "leaf_count": {"type": "integer", "minimum": 1},
+        "classified_count": {"type": "integer", "minimum": 0},
+        "unclassified_count": {"type": "integer", "minimum": 0},
+        "owner_bound_count": {"type": "integer", "minimum": 0},
+        "task_bound_count": {"type": "integer", "minimum": 0},
+        "test_bound_count": {"type": "integer", "minimum": 0},
+        "review_status": {"enum": ["candidate", "classified", "needs-work", "accepted", "rejected"]}
+      }
+    }
+  }
+}

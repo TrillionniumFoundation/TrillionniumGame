@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TrillionniumFoundation/Trillionnium-Nakama/runtime/internal/worldcommand"
+	"github.com/TrillionniumFoundation/TrillionniumGame/runtime/internal/worldcommand"
 )
 
 type worldHTTPSExecutor struct {

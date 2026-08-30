@@ -1,0 +1,67 @@
+{
+  "schema": "trillionnium.rust-server-status.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "status": "source-candidate-unverified",
+  "component": "crates/trnm-server",
+  "workspace_mode": "standalone-mandatory-merge-gate",
+  "binary_target": "trnm-server-foundation",
+  "authority_role": "foundation-prototype-not-canonical-server-binary",
+  "canonical_server_binary": {
+    "target": "trnm-server",
+    "manifest": "crates/trnm-persistence-pg/Cargo.toml",
+    "source": "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
+    "status": "temporary-composition-authority-source-candidate"
+  },
+  "implemented": [
+    "typed CLI configuration",
+    "fail-fast configuration validation",
+    "first-party Rust foundation prototype binary",
+    "bounded HTTP request-head reads",
+    "per-connection read and write deadlines",
+    "health endpoint",
+    "readiness endpoint",
+    "loopback-only drain request",
+    "stable fail-closed command and realtime adapter boundaries"
+  ],
+  "not_implemented": [
+    "canonical trnm-server package authority",
+    "authoritative migration runner",
+    "database pool and TLS provider",
+    "session verification adapter",
+    "HTTP JSON Nakama leaf",
+    "gRPC Nakama leaf",
+    "WebSocket JSON and protobuf leaf",
+    "authority command composition",
+    "transactional database receipt event and outbox commit",
+    "outbox worker",
+    "response-loss replay through the server",
+    "restart recovery",
+    "immutable Nakama differential",
+    "production signal and orchestrator integration",
+    "authenticated operator drain API"
+  ],
+  "required_exact_head_commands": [
+    "cargo fmt --manifest-path crates/trnm-server/Cargo.toml -- --check",
+    "cargo test --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked",
+    "cargo clippy --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked -- -D warnings"
+  ],
+  "evidence_ids": [],
+  "gap_ids": ["GAP-P0-SERVER-001"],
+  "claims": {
+    "source_exists": true,
+    "canonical_binary_authority": false,
+    "exact_head_compiled": false,
+    "remote_verified": false,
+    "http_compatible": false,
+    "grpc_compatible": false,
+    "realtime_compatible": false,
+    "database_durable": false,
+    "sg4_complete": false,
+    "c1_earned": false,
+    "c2_earned": false,
+    "production_ready": false,
+    "public_online": false,
+    "nakama_replaced": false
+  }
+}

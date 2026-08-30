@@ -1,17 +1,35 @@
 {
-  "schema": "trillionnium.storage-core-status.v1",
+  "schema": "trillionnium.storage-core-status.v2",
   "project_id": "trillionnium-game",
-  "stage": "storage-core-candidate",
-  "invariants": [
-    "atomic_batch",
-    "optimistic_concurrency_control",
-    "owner_public_private_read_acl",
-    "owner_server_write_acl",
-    "server_owned_object",
-    "exact_delete_version",
-    "version_value_identity"
+  "stage": "storage-public-version-source-candidate",
+  "baseline": {
+    "repository": "heroiclabs/nakama",
+    "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "source_path": "server/core_storage.go"
+  },
+  "implemented": [
+    "atomic batch staging",
+    "owner/public/private read ACL",
+    "owner/server write ACL",
+    "server-owned objects",
+    "empty/star/exact OCC state model",
+    "public ContentVersion derived as lowercase hexadecimal MD5 of exact value bytes",
+    "separate internal IntegrityDigest type",
+    "conditional delete by exact ContentVersion",
+    "public-version collision or integrity mismatch fails as data loss"
   ],
+  "not_verified": [
+    "exact API validation that value is a JSON object",
+    "database adapter persistence of ContentVersion and IntegrityDigest",
+    "Nakama wire/error differential",
+    "database effect differential",
+    "cursor and search compatibility",
+    "exact-head Rust format/test/strict Clippy",
+    "independent storage compatibility review"
+  ],
+  "gap_ids": ["GAP-P1-STORAGE-001"],
   "claims": {
+    "public_version_source_candidate": true,
     "sg4_complete": false,
     "storage_behavior_compatible": false,
     "database_durable": false,
