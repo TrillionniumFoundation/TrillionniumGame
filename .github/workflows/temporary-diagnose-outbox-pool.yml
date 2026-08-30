@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-repair-outbox-bigint
+  group: temporary-repair-outbox-bigint-v2
   cancel-in-progress: false
 
 jobs:
@@ -38,6 +38,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           def replace_exact(path: Path, old: str, new: str, expected: int = 1) -> None:
               source = path.read_text(encoding='utf-8')
@@ -48,55 +49,93 @@ jobs:
                   )
               path.write_text(source.replace(old, new, expected), encoding='utf-8')
 
+          def replace_regex(
+              path: Path,
+              pattern: str,
+              replacement: str,
+              expected: int = 1,
+          ) -> None:
+              source = path.read_text(encoding='utf-8')
+              updated, count = re.subn(pattern, replacement, source, count=expected)
+              if count != expected:
+                  raise SystemExit(
+                      f'{path}: expected {expected} regex matches, found {count} for {pattern!r}'
+                  )
+              path.write_text(updated, encoding='utf-8')
+
           outbox = Path('crates/trnm-persistence-pg/src/outbox.rs')
           replace_exact(
               outbox,
               'const MAX_CLAIM_BATCH: usize = 64;\n',
               'const MAX_CLAIM_BATCH: usize = 64;\nconst MAX_OUTBOX_ATTEMPTS: u32 = 32;\n',
           )
-          replace_exact(
+          replace_regex(
               outbox,
-              '        let max_attempts_i32 =\n            i32::try_from(max_attempts).map_err(|_| counter_overflow())?;\n',
-              '        let max_attempts_i64 = i64::from(max_attempts);\n',
+              r'let max_attempts_i32\s*=\s*i32::try_from\(max_attempts\)'
+              r'\.map_err\(\|_\| counter_overflow\(\)\)\?;',
+              'let max_attempts_i64 = i64::from(max_attempts);',
               expected=2,
           )
-          replace_exact(outbox, '&[&now_ms_i64, &max_attempts_i32],', '&[&now_ms_i64, &max_attempts_i64],')
           replace_exact(
               outbox,
-              '            let prior_attempt_i32: i32 = row.get(5);\n            let prior_attempt = u32::try_from(prior_attempt_i32)\n',
-              '            let prior_attempt_i64: i64 = row.get(5);\n            let prior_attempt = u32::try_from(prior_attempt_i64)\n',
+              '&[&now_ms_i64, &max_attempts_i32],',
+              '&[&now_ms_i64, &max_attempts_i64],',
+          )
+          replace_regex(
+              outbox,
+              r'let prior_attempt_i32: i32 = row\.get\(5\);\s*'
+              r'let prior_attempt = u32::try_from\(prior_attempt_i32\)',
+              'let prior_attempt_i64: i64 = row.get(5);\n'
+              '            let prior_attempt = u32::try_from(prior_attempt_i64)',
+          )
+          replace_regex(
+              outbox,
+              r'let attempt_i32\s*=\s*i32::try_from\(attempt\)'
+              r'\.map_err\(\|_\| counter_overflow\(\)\)\?;',
+              'let attempt_i64 = i64::from(attempt);',
+          )
+          replace_exact(outbox, '&attempt_i32,', '&attempt_i64,')
+          replace_exact(
+              outbox,
+              'let outcome = if attempt >= max_attempts_i32 {',
+              'let outcome = if attempt >= max_attempts_i64 {',
+          )
+          replace_regex(
+              outbox,
+              r'(fn load_fenced_attempt\([\s\S]*?\)) -> Result<i32, DomainError> \{',
+              r'\1 -> Result<i64, DomainError> {',
           )
           replace_exact(
               outbox,
-              '            let attempt_i32 =\n                i32::try_from(attempt).map_err(|_| counter_overflow())?;\n',
-              '            let attempt_i64 = i64::from(attempt);\n',
+              '    let attempt: i32 = row.get(0);\n',
+              '    let attempt: i64 = row.get(0);\n',
           )
-          replace_exact(outbox, '                        &attempt_i32,\n', '                        &attempt_i64,\n')
-          replace_exact(outbox, '        let outcome = if attempt >= max_attempts_i32 {\n', '        let outcome = if attempt >= max_attempts_i64 {\n')
-          replace_exact(
-              outbox,
-              ") -> Result<i32, DomainError> {\n",
-              ") -> Result<i64, DomainError> {\n",
-          )
-          replace_exact(outbox, '    let attempt: i32 = row.get(0);\n', '    let attempt: i64 = row.get(0);\n')
           replace_exact(
               outbox,
               '        || max_attempts == 0\n        || limit == 0\n',
-              '        || max_attempts == 0\n        || max_attempts > MAX_OUTBOX_ATTEMPTS\n        || limit == 0\n',
+              '        || max_attempts == 0\n'
+              '        || max_attempts > MAX_OUTBOX_ATTEMPTS\n'
+              '        || limit == 0\n',
           )
           replace_exact(
               outbox,
               '        if max_attempts == 0\n            || lease.attempt == 0\n',
-              '        if max_attempts == 0\n            || max_attempts > MAX_OUTBOX_ATTEMPTS\n            || lease.attempt == 0\n',
+              '        if max_attempts == 0\n'
+              '            || max_attempts > MAX_OUTBOX_ATTEMPTS\n'
+              '            || lease.attempt == 0\n',
           )
-          test_anchor = '''        assert_eq!(
+          claim_test = '''        assert_eq!(
                       validate_claim(NodeId::new([1; 16]), 1, 1, MAX_CLAIM_BATCH + 1)
                           .unwrap_err()
                           .reason(),
                       "invalid_outbox_claim"
                   );
           '''
-          test_replacement = test_anchor + '''        assert_eq!(
+          replace_exact(
+              outbox,
+              claim_test,
+              claim_test
+              + '''        assert_eq!(
                       validate_claim(
                           NodeId::new([1; 16]),
                           1,
@@ -107,8 +146,8 @@ jobs:
                       .reason(),
                       "invalid_outbox_claim"
                   );
-          '''
-          replace_exact(outbox, test_anchor, test_replacement)
+          ''',
+          )
 
           worker = Path('crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs')
           replace_exact(
@@ -116,29 +155,31 @@ jobs:
               '            1,\n            100,\n            "max_attempts_invalid",\n',
               '            1,\n            32,\n            "max_attempts_invalid",\n',
           )
-          config_anchor = '''        let mut values = base_config(&directory);
+          config_test = '''        let mut values = base_config(&directory);
                   values.insert("TRNM_OUTBOX_NODE_ID_HEX".to_owned(), "00".repeat(16));
                   assert!(matches!(
                       load(&values),
                       Err(WorkerError::Configuration("node_id_invalid"))
                   ));
           '''
-          config_replacement = config_anchor + '''
+          replace_exact(
+              worker,
+              config_test,
+              config_test
+              + '''
                   let mut values = base_config(&directory);
                   values.insert("TRNM_OUTBOX_MAX_ATTEMPTS".to_owned(), "33".to_owned());
                   assert!(matches!(
                       load(&values),
                       Err(WorkerError::Configuration("max_attempts_invalid"))
                   ));
-          '''
-          replace_exact(worker, config_anchor, config_replacement)
+          ''',
+          )
 
-          for path in (
-              Path('.github/workflows/temporary-diagnose-outbox-pool.yml'),
-          ):
-              if not path.is_file():
-                  raise SystemExit(f'missing temporary workflow: {path}')
-              path.unlink()
+          temporary = Path('.github/workflows/temporary-diagnose-outbox-pool.yml')
+          if not temporary.is_file():
+              raise SystemExit(f'missing temporary workflow: {temporary}')
+          temporary.unlink()
           PY
           git diff --check
 
