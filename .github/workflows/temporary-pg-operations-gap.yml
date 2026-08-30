@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-pg-operations-gap-v4
+  group: temporary-pg-operations-gap-v5
   cancel-in-progress: false
 
 jobs:
@@ -41,6 +41,16 @@ jobs:
             | base64 -d > /tmp/patch-pg-operations.py
           python3 -m py_compile /tmp/patch-pg-operations.py
           python3 /tmp/patch-pg-operations.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crates/trnm-persistence-pg/src/bin/trnm_server/retry.rs')
+          source = path.read_text(encoding='utf-8')
+          old = 'pub fn execute<T>(\n'
+          new = '#[cfg(test)]\npub fn execute<T>(\n'
+          if source.count(old) != 1:
+              raise SystemExit(f'{path}: expected one execute helper, found {source.count(old)}')
+          path.write_text(source.replace(old, new, 1), encoding='utf-8')
+          PY
           rm -f .github/tmp/pg-operations-patch.*.b64
           test ! -e .github/workflows/temporary-pg-operations-gap.yml
           git diff --check
