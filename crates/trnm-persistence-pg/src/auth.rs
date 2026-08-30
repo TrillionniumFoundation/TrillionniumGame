@@ -1,12 +1,11 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode, UserId};
-use trnm_session_core::{RefreshTokenId, SessionFamilyId};
-use trnm_token_jwt_adapter::json::JsonValue;
-use trnm_token_jwt_adapter::{
-    sha256_digest, KeyRing, SecretKey, TokenRoute, VerificationProfile,
+use trnm_contracts::{
+    Digest32, DomainError, RefreshTokenId, RetryClass, SessionFamilyId, StableCode, UserId,
 };
+use trnm_token_jwt_adapter::json::JsonValue;
+use trnm_token_jwt_adapter::{sha256_digest, KeyRing, SecretKey, TokenRoute, VerificationProfile};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SessionPrincipal {
@@ -160,10 +159,7 @@ fn claim_string<'a>(
     }
 }
 
-fn claim_unsigned(
-    claims: &BTreeMap<String, JsonValue>,
-    name: &str,
-) -> Result<u64, DomainError> {
+fn claim_unsigned(claims: &BTreeMap<String, JsonValue>, name: &str) -> Result<u64, DomainError> {
     claims
         .get(name)
         .and_then(JsonValue::as_u64)
@@ -226,10 +222,7 @@ mod tests {
             ("jti".to_owned(), JsonValue::String("22".repeat(16))),
             ("sid".to_owned(), JsonValue::String("33".repeat(16))),
             ("sgn".to_owned(), JsonValue::Unsigned(4)),
-            (
-                "trnm_kep".to_owned(),
-                JsonValue::Unsigned(u64::from(EPOCH)),
-            ),
+            ("trnm_kep".to_owned(), JsonValue::Unsigned(u64::from(EPOCH))),
             ("iat".to_owned(), JsonValue::Integer(1_000)),
             ("exp".to_owned(), JsonValue::Integer(1_600)),
         ]))
@@ -280,8 +273,7 @@ mod tests {
             KEY.to_vec(),
         )
         .unwrap();
-        for authorization in [None, Some("bearer token"), Some("Bearer malformed")]
-        {
+        for authorization in [None, Some("bearer token"), Some("Bearer malformed")] {
             assert_eq!(
                 verifier
                     .verify_bearer(authorization, 1_100)
@@ -310,7 +302,10 @@ mod tests {
         let value = format!("{}.{}", "44".repeat(16), "s".repeat(48));
         let parsed = parse_refresh_credential(&value).unwrap();
         assert_eq!(parsed.id, RefreshTokenId::new([0x44; 16]));
-        assert_eq!(parsed.digest, Digest32::new(sha256_digest(value.as_bytes())));
+        assert_eq!(
+            parsed.digest,
+            Digest32::new(sha256_digest(value.as_bytes()))
+        );
 
         for invalid in [
             "",

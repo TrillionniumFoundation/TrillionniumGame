@@ -26,10 +26,23 @@
       "status": "source-candidate",
       "owner_role": "program-governance",
       "depends_on": [],
-      "gap_ids": ["GAP-P0-PLAN-001", "GAP-P1-DOCS-001"],
-      "deliverables": ["CURRENT_PLAN.md", "docs/status/CURRENT_STATE.json", "docs/status/EXECUTION_STATUS.json"],
-      "acceptance": ["scope remains full Nakama OSS parity", "planning scope and mutable status are separate", "claim boundary remains fail closed"],
-      "required_evidence": ["unit"]
+      "gap_ids": [
+        "GAP-P0-PLAN-001",
+        "GAP-P1-DOCS-001"
+      ],
+      "deliverables": [
+        "CURRENT_PLAN.md",
+        "docs/status/CURRENT_STATE.json",
+        "docs/status/EXECUTION_STATUS.json"
+      ],
+      "acceptance": [
+        "scope remains full Nakama OSS parity",
+        "planning scope and mutable status are separate",
+        "claim boundary remains fail closed"
+      ],
+      "required_evidence": [
+        "unit"
+      ]
     },
     {
       "id": "TG-V3-002",
@@ -37,11 +50,24 @@
       "title": "Create auditable gap and implementation inventories",
       "status": "source-candidate",
       "owner_role": "program-governance",
-      "depends_on": ["TG-V3-001"],
-      "gap_ids": ["GAP-P0-PLAN-001"],
-      "deliverables": ["docs/status/GAP_REGISTER.json", "docs/status/IMPLEMENTATION_INVENTORY.json", "docs/development/COMPATIBILITY_DIVERGENCES.json"],
-      "acceptance": ["every known P0/P1 gap has owner and close criteria", "component source presence is not converted to claim credit"],
-      "required_evidence": ["unit"]
+      "depends_on": [
+        "TG-V3-001"
+      ],
+      "gap_ids": [
+        "GAP-P0-PLAN-001"
+      ],
+      "deliverables": [
+        "docs/status/GAP_REGISTER.json",
+        "docs/status/IMPLEMENTATION_INVENTORY.json",
+        "docs/development/COMPATIBILITY_DIVERGENCES.json"
+      ],
+      "acceptance": [
+        "every known P0/P1 gap has owner and close criteria",
+        "component source presence is not converted to claim credit"
+      ],
+      "required_evidence": [
+        "unit"
+      ]
     },
     {
       "id": "TG-V3-003",
@@ -49,11 +75,24 @@
       "title": "Index and validate all evidence",
       "status": "source-candidate",
       "owner_role": "compatibility-qa",
-      "depends_on": ["TG-V3-001"],
-      "gap_ids": ["GAP-P0-EVIDENCE-001"],
-      "deliverables": ["docs/evidence/index.json", "scripts/derive-gates.py"],
-      "acceptance": ["legacy relay evidence has zero automatic claim credit", "accepted evidence requires exact target identity and independent review"],
-      "required_evidence": ["unit", "manifest"]
+      "depends_on": [
+        "TG-V3-001"
+      ],
+      "gap_ids": [
+        "GAP-P0-EVIDENCE-001"
+      ],
+      "deliverables": [
+        "docs/evidence/index.json",
+        "scripts/derive-gates.py"
+      ],
+      "acceptance": [
+        "legacy relay evidence has zero automatic claim credit",
+        "accepted evidence requires exact target identity and independent review"
+      ],
+      "required_evidence": [
+        "unit",
+        "manifest"
+      ]
     },
     {
       "id": "TG-V3-004",
@@ -61,11 +100,26 @@
       "title": "Replace frozen-state plan validation with state-transition validation",
       "status": "source-candidate",
       "owner_role": "program-governance",
-      "depends_on": ["TG-V3-001", "TG-V3-002", "TG-V3-003"],
-      "gap_ids": ["GAP-P0-PLAN-001"],
-      "deliverables": ["scripts/check-plan.py", "scripts/check-status-transitions.py"],
-      "acceptance": ["legal progress states pass", "illegal promotion without evidence fails", "backlog dependency graph remains valid"],
-      "required_evidence": ["unit"]
+      "depends_on": [
+        "TG-V3-001",
+        "TG-V3-002",
+        "TG-V3-003"
+      ],
+      "gap_ids": [
+        "GAP-P0-PLAN-001"
+      ],
+      "deliverables": [
+        "scripts/check-plan.py",
+        "scripts/check-status-transitions.py"
+      ],
+      "acceptance": [
+        "legal progress states pass",
+        "illegal promotion without evidence fails",
+        "backlog dependency graph remains valid"
+      ],
+      "required_evidence": [
+        "unit"
+      ]
     },
     {
       "id": "TG-V3-005",
@@ -73,11 +127,24 @@
       "title": "Add one aggregate merge gate",
       "status": "source-candidate",
       "owner_role": "program-governance",
-      "depends_on": ["TG-V3-004"],
-      "gap_ids": ["GAP-P0-CI-001"],
-      "deliverables": [".github/workflows/trillionnium-game-merge-gate.yml"],
-      "acceptance": ["runs for every PR", "root Rust, first Rust binary, security adapter, Python, Go and schema lanes are non-empty", "aggregate job rejects missing dependencies"],
-      "required_evidence": ["unit", "manifest"]
+      "depends_on": [
+        "TG-V3-004"
+      ],
+      "gap_ids": [
+        "GAP-P0-CI-001"
+      ],
+      "deliverables": [
+        ".github/workflows/trillionnium-game-merge-gate.yml"
+      ],
+      "acceptance": [
+        "runs for every PR",
+        "root Rust, first Rust binary, security adapter, Python, Go and schema lanes are non-empty",
+        "aggregate job rejects missing dependencies"
+      ],
+      "required_evidence": [
+        "unit",
+        "manifest"
+      ]
     },
     {
       "id": "TG-V3-006",
@@ -85,11 +152,23 @@
       "title": "Enable target repository Actions",
       "status": "blocked",
       "owner_role": "github-organization-admin",
-      "depends_on": ["TG-V3-005"],
-      "gap_ids": ["GAP-P0-CI-001"],
-      "deliverables": ["repository Actions settings", "exact-head run and artifact"],
-      "acceptance": ["current candidate has a non-empty successful native run", "run/job/artifact IDs are indexed"],
-      "required_evidence": ["manifest"]
+      "depends_on": [
+        "TG-V3-005"
+      ],
+      "gap_ids": [
+        "GAP-P0-CI-001"
+      ],
+      "deliverables": [
+        "repository Actions settings",
+        "exact-head run and artifact"
+      ],
+      "acceptance": [
+        "current candidate has a non-empty successful native run",
+        "run/job/artifact IDs are indexed"
+      ],
+      "required_evidence": [
+        "manifest"
+      ]
     },
     {
       "id": "TG-V3-007",
@@ -97,11 +176,27 @@
       "title": "Activate main ruleset and independent review",
       "status": "blocked",
       "owner_role": "github-organization-admin",
-      "depends_on": ["TG-V3-005", "TG-V3-006"],
-      "gap_ids": ["GAP-P0-GOV-001", "GAP-P1-REVIEW-001"],
-      "deliverables": [".github/CODEOWNERS", "docs/governance/BRANCH_AND_MERGE_POLICY.md", "active GitHub ruleset"],
-      "acceptance": ["direct push blocked", "aggregate check and review required", "API read-back confirms settings"],
-      "required_evidence": ["manifest"]
+      "depends_on": [
+        "TG-V3-005",
+        "TG-V3-006"
+      ],
+      "gap_ids": [
+        "GAP-P0-GOV-001",
+        "GAP-P1-REVIEW-001"
+      ],
+      "deliverables": [
+        ".github/CODEOWNERS",
+        "docs/governance/BRANCH_AND_MERGE_POLICY.md",
+        "active GitHub ruleset"
+      ],
+      "acceptance": [
+        "direct push blocked",
+        "aggregate check and review required",
+        "API read-back confirms settings"
+      ],
+      "required_evidence": [
+        "manifest"
+      ]
     },
     {
       "id": "TG-V3-008",
@@ -109,11 +204,24 @@
       "title": "Resolve stale integration PR identity",
       "status": "source-candidate",
       "owner_role": "program-governance",
-      "depends_on": ["TG-V3-001"],
-      "gap_ids": ["GAP-P0-PR-001"],
-      "deliverables": ["closed superseded PR #41", "single active integration PR #42"],
-      "acceptance": ["PR #41 is closed without deleting history", "PR #42 body head/tree is refreshed after its final source push", "exact-head evidence remains required"],
-      "required_evidence": ["manifest"]
+      "depends_on": [
+        "TG-V3-001"
+      ],
+      "gap_ids": [
+        "GAP-P0-PR-001"
+      ],
+      "deliverables": [
+        "closed superseded PR #41",
+        "single active integration PR #42"
+      ],
+      "acceptance": [
+        "PR #41 is closed without deleting history",
+        "PR #42 body head/tree is refreshed after its final source push",
+        "exact-head evidence remains required"
+      ],
+      "required_evidence": [
+        "manifest"
+      ]
     },
     {
       "id": "TG-V3-009",
@@ -121,11 +229,26 @@
       "title": "Enforce one production schema authority",
       "status": "source-candidate",
       "owner_role": "database-migration",
-      "depends_on": ["TG-V3-002"],
-      "gap_ids": ["GAP-P0-DATA-001"],
-      "deliverables": ["docs/development/SCHEMA_AUTHORITY.json", "database/schema/v2/STATUS.json", "scripts/check-schema-authority.py"],
-      "acceptance": ["migrations/ is canonical", "alternate schema consumers fail validation", "adapter ABI and evidence contract are documented"],
-      "required_evidence": ["unit", "manifest"]
+      "depends_on": [
+        "TG-V3-002"
+      ],
+      "gap_ids": [
+        "GAP-P0-DATA-001"
+      ],
+      "deliverables": [
+        "docs/development/SCHEMA_AUTHORITY.json",
+        "database/schema/v2/STATUS.json",
+        "scripts/check-schema-authority.py"
+      ],
+      "acceptance": [
+        "migrations/ is canonical",
+        "alternate schema consumers fail validation",
+        "adapter ABI and evidence contract are documented"
+      ],
+      "required_evidence": [
+        "unit",
+        "manifest"
+      ]
     },
     {
       "id": "TG-V3-010",
@@ -134,10 +257,22 @@
       "status": "source-candidate",
       "owner_role": "security",
       "depends_on": [],
-      "gap_ids": ["GAP-P1-CRYPTO-002"],
-      "deliverables": ["crates/trnm-token-jwt-adapter/src/sha256.rs"],
-      "acceptance": ["all unequal lengths reject", "256-byte delta regression exists", "existing RFC vectors remain mandatory", "exact-head tests and security review remain open"],
-      "required_evidence": ["unit", "security-review"]
+      "gap_ids": [
+        "GAP-P1-CRYPTO-002"
+      ],
+      "deliverables": [
+        "crates/trnm-token-jwt-adapter/src/sha256.rs"
+      ],
+      "acceptance": [
+        "all unequal lengths reject",
+        "256-byte delta regression exists",
+        "existing RFC vectors remain mandatory",
+        "exact-head tests and security review remain open"
+      ],
+      "required_evidence": [
+        "unit",
+        "security-review"
+      ]
     },
     {
       "id": "TG-V3-011",
@@ -146,10 +281,22 @@
       "status": "source-candidate",
       "owner_role": "database-migration",
       "depends_on": [],
-      "gap_ids": ["GAP-P1-OUTBOX-001"],
-      "deliverables": ["crates/trnm-persistence-core/src/lib.rs"],
-      "acceptance": ["no stranded lease", "attempt limit produces stable dead-letter state", "stale owner remains fenced", "property and independent review remain open"],
-      "required_evidence": ["unit", "property"]
+      "gap_ids": [
+        "GAP-P1-OUTBOX-001"
+      ],
+      "deliverables": [
+        "crates/trnm-persistence-core/src/lib.rs"
+      ],
+      "acceptance": [
+        "no stranded lease",
+        "attempt limit produces stable dead-letter state",
+        "stale owner remains fenced",
+        "property and independent review remain open"
+      ],
+      "required_evidence": [
+        "unit",
+        "property"
+      ]
     },
     {
       "id": "TG-V3-012",
@@ -157,11 +304,28 @@
       "title": "Place the security-critical adapter under the aggregate gate",
       "status": "source-candidate",
       "owner_role": "security",
-      "depends_on": ["TG-V3-005", "TG-V3-010"],
-      "gap_ids": ["GAP-P0-CRYPTO-001"],
-      "deliverables": ["security-critical-rust CI lane", "docs/security/CRYPTOGRAPHY_AND_KEYS.md", "SECURITY.md"],
-      "acceptance": ["adapter format/test/clippy cannot be omitted", "malformed-token vectors execute when Actions are enabled", "independent security review remains required"],
-      "required_evidence": ["unit", "fuzz", "security-review"]
+      "depends_on": [
+        "TG-V3-005",
+        "TG-V3-010"
+      ],
+      "gap_ids": [
+        "GAP-P0-CRYPTO-001"
+      ],
+      "deliverables": [
+        "security-critical-rust CI lane",
+        "docs/security/CRYPTOGRAPHY_AND_KEYS.md",
+        "SECURITY.md"
+      ],
+      "acceptance": [
+        "adapter format/test/clippy cannot be omitted",
+        "malformed-token vectors execute when Actions are enabled",
+        "independent security review remains required"
+      ],
+      "required_evidence": [
+        "unit",
+        "fuzz",
+        "security-review"
+      ]
     },
     {
       "id": "TG-V3-013",
@@ -170,10 +334,22 @@
       "status": "source-candidate",
       "owner_role": "runtime-migration",
       "depends_on": [],
-      "gap_ids": ["GAP-P1-IDENTITY-001"],
-      "deliverables": ["runtime/go.mod", "README.md", "CURRENT_PLAN.md"],
-      "acceptance": ["active identity is TrillionniumGame", "old name appears only in labelled migration history", "Go tests remain required"],
-      "required_evidence": ["unit"]
+      "gap_ids": [
+        "GAP-P1-IDENTITY-001"
+      ],
+      "deliverables": [
+        "runtime/go.mod",
+        "README.md",
+        "CURRENT_PLAN.md"
+      ],
+      "acceptance": [
+        "active identity is TrillionniumGame",
+        "old name appears only in labelled migration history",
+        "Go tests remain required"
+      ],
+      "required_evidence": [
+        "unit"
+      ]
     },
     {
       "id": "TG-V3-014",
@@ -181,11 +357,25 @@
       "title": "Fail required live database lanes on missing environment",
       "status": "source-candidate",
       "owner_role": "compatibility-qa",
-      "depends_on": ["TG-V3-005"],
-      "gap_ids": ["GAP-P1-TEST-001"],
-      "deliverables": ["persistence PG test prerequisite helper", "live workflow required flag"],
-      "acceptance": ["required lane cannot silently skip", "developer skip remains explicit and no-credit", "both profile runs remain required"],
-      "required_evidence": ["unit", "database-differential"]
+      "depends_on": [
+        "TG-V3-005"
+      ],
+      "gap_ids": [
+        "GAP-P1-TEST-001"
+      ],
+      "deliverables": [
+        "persistence PG test prerequisite helper",
+        "live workflow required flag"
+      ],
+      "acceptance": [
+        "required lane cannot silently skip",
+        "developer skip remains explicit and no-credit",
+        "both profile runs remain required"
+      ],
+      "required_evidence": [
+        "unit",
+        "database-differential"
+      ]
     },
     {
       "id": "TG-V3-015",
@@ -193,11 +383,27 @@
       "title": "Approve Rust server vertical-slice interfaces and test plan",
       "status": "source-candidate",
       "owner_role": "foundation-runtime",
-      "depends_on": ["TG-V3-009", "TG-V3-012"],
-      "gap_ids": ["GAP-P0-SERVER-001"],
-      "deliverables": ["docs/architecture/CURRENT_AND_TARGET_RUNTIME.md", "docs/architecture/RUST_SERVER_REFERENCE_ARCHITECTURE.md", "docs/testing/TEST_POLICY.md", "docs/development/TRNM_SERVER_VERTICAL_SLICE.md"],
-      "acceptance": ["one request flow, DB transaction, outbox, retry, restart and evidence contract are explicit", "no Go target-runtime dependency"],
-      "required_evidence": ["security-review", "manifest"]
+      "depends_on": [
+        "TG-V3-009",
+        "TG-V3-012"
+      ],
+      "gap_ids": [
+        "GAP-P0-SERVER-001"
+      ],
+      "deliverables": [
+        "docs/architecture/CURRENT_AND_TARGET_RUNTIME.md",
+        "docs/architecture/RUST_SERVER_REFERENCE_ARCHITECTURE.md",
+        "docs/testing/TEST_POLICY.md",
+        "docs/development/TRNM_SERVER_VERTICAL_SLICE.md"
+      ],
+      "acceptance": [
+        "one request flow, DB transaction, outbox, retry, restart and evidence contract are explicit",
+        "no Go target-runtime dependency"
+      ],
+      "required_evidence": [
+        "security-review",
+        "manifest"
+      ]
     },
     {
       "id": "TG-V3-016",
@@ -205,11 +411,32 @@
       "title": "Implement the first HTTP/database trnm-server source slice",
       "status": "source-candidate",
       "owner_role": "foundation-runtime",
-      "depends_on": ["TG-V3-009", "TG-V3-015"],
-      "gap_ids": ["GAP-P0-SERVER-001", "GAP-P1-PG-001"],
-      "deliverables": ["trnm-server binary target", "typed config and authoritative migrate/open", "bounded HTTP and strict JSON/hex", "bootstrap/commit/outbox path", "bounded retry and drain", "source checker/status"],
-      "acceptance": ["binary source is present without new dependency or alternate schema authority", "response is constructed after commit or exact receipt replay", "all missing protocol/runtime/evidence work remains explicit"],
-      "required_evidence": ["unit", "database-differential", "fault-injection"]
+      "depends_on": [
+        "TG-V3-009",
+        "TG-V3-015"
+      ],
+      "gap_ids": [
+        "GAP-P0-SERVER-001",
+        "GAP-P1-PG-001"
+      ],
+      "deliverables": [
+        "trnm-server binary target",
+        "typed config and authoritative migrate/open",
+        "bounded HTTP and strict JSON/hex",
+        "bootstrap/commit/outbox path",
+        "bounded retry and drain",
+        "source checker/status"
+      ],
+      "acceptance": [
+        "binary source is present without new dependency or alternate schema authority",
+        "response is constructed after commit or exact receipt replay",
+        "all missing protocol/runtime/evidence work remains explicit"
+      ],
+      "required_evidence": [
+        "unit",
+        "database-differential",
+        "fault-injection"
+      ]
     },
     {
       "id": "TG-V3-017",
@@ -217,11 +444,25 @@
       "title": "Classify and lock D0-D8 leaves",
       "status": "blocked",
       "owner_role": "compatibility-architecture",
-      "depends_on": ["TG-V3-006", "TG-V3-003"],
-      "gap_ids": ["GAP-P0-SCOPE-001"],
-      "deliverables": ["manifests/upstream/*.lock.json", "reviewed leaf mappings"],
-      "acceptance": ["zero unclassified", "all leaves have owner/task/test/profile", "digests reproducible"],
-      "required_evidence": ["manifest"]
+      "depends_on": [
+        "TG-V3-006",
+        "TG-V3-003"
+      ],
+      "gap_ids": [
+        "GAP-P0-SCOPE-001"
+      ],
+      "deliverables": [
+        "manifests/upstream/*.lock.json",
+        "reviewed leaf mappings"
+      ],
+      "acceptance": [
+        "zero unclassified",
+        "all leaves have owner/task/test/profile",
+        "digests reproducible"
+      ],
+      "required_evidence": [
+        "manifest"
+      ]
     },
     {
       "id": "TG-V3-018",
@@ -229,11 +470,29 @@
       "title": "Replace stale documentation indexes",
       "status": "source-candidate",
       "owner_role": "program-governance",
-      "depends_on": ["TG-V3-001", "TG-V3-002", "TG-V3-015"],
-      "gap_ids": ["GAP-P1-DOCS-001"],
-      "deliverables": ["README.md", "docs/development/README.md", "docs/architecture/README.md", "docs/audit/README.md", "docs/status/README.md"],
-      "acceptance": ["current authority documents are first", "historical tranche docs remain labelled", "Rust server status is indexed"],
-      "required_evidence": ["unit"]
+      "depends_on": [
+        "TG-V3-001",
+        "TG-V3-002",
+        "TG-V3-015"
+      ],
+      "gap_ids": [
+        "GAP-P1-DOCS-001"
+      ],
+      "deliverables": [
+        "README.md",
+        "docs/development/README.md",
+        "docs/architecture/README.md",
+        "docs/audit/README.md",
+        "docs/status/README.md"
+      ],
+      "acceptance": [
+        "current authority documents are first",
+        "historical tranche docs remain labelled",
+        "Rust server status is indexed"
+      ],
+      "required_evidence": [
+        "unit"
+      ]
     },
     {
       "id": "TG-V3-019",
@@ -241,11 +500,28 @@
       "title": "Compile, test and strictly lint the Rust server on the exact head",
       "status": "blocked",
       "owner_role": "foundation-runtime",
-      "depends_on": ["TG-V3-006", "TG-V3-016"],
-      "gap_ids": ["GAP-P0-CI-001", "GAP-P0-SERVER-001"],
-      "deliverables": ["non-empty rust-workspace run", "source checker log", "exact commit/tree and artifact manifest"],
-      "acceptance": ["fmt/test/clippy succeed for all targets", "server source tests execute", "result targets the current PR head"],
-      "required_evidence": ["unit", "manifest"]
+      "depends_on": [
+        "TG-V3-006",
+        "TG-V3-016"
+      ],
+      "gap_ids": [
+        "GAP-P0-CI-001",
+        "GAP-P0-SERVER-001"
+      ],
+      "deliverables": [
+        "non-empty rust-workspace run",
+        "source checker log",
+        "exact commit/tree and artifact manifest"
+      ],
+      "acceptance": [
+        "fmt/test/clippy succeed for all targets",
+        "server source tests execute",
+        "result targets the current PR head"
+      ],
+      "required_evidence": [
+        "unit",
+        "manifest"
+      ]
     },
     {
       "id": "TG-V3-020",
@@ -253,35 +529,94 @@
       "title": "Execute the vertical slice on both authoritative database profiles",
       "status": "blocked",
       "owner_role": "database-migration",
-      "depends_on": ["TG-V3-019"],
-      "gap_ids": ["GAP-P0-DATA-001", "GAP-P1-PG-001", "GAP-P1-TEST-001"],
-      "deliverables": ["PostgreSQL process/HTTP/DB artifact", "CockroachDB process/HTTP/DB artifact", "catalog and semantic receipt comparison"],
-      "acceptance": ["bootstrap and commit execute", "exact duplicate replay returns the same receipt", "stale revision/generation fail", "missing prerequisites fail the lane"],
-      "required_evidence": ["database-differential", "fault-injection"]
+      "depends_on": [
+        "TG-V3-019"
+      ],
+      "gap_ids": [
+        "GAP-P0-DATA-001",
+        "GAP-P1-PG-001",
+        "GAP-P1-TEST-001"
+      ],
+      "deliverables": [
+        "PostgreSQL process/HTTP/DB artifact",
+        "CockroachDB process/HTTP/DB artifact",
+        "catalog and semantic receipt comparison"
+      ],
+      "acceptance": [
+        "bootstrap and commit execute",
+        "exact duplicate replay returns the same receipt",
+        "stale revision/generation fail",
+        "missing prerequisites fail the lane"
+      ],
+      "required_evidence": [
+        "database-differential",
+        "fault-injection"
+      ]
     },
     {
       "id": "TG-V3-021",
       "priority": "P0",
       "title": "Add pool, TLS, cancellation and operational retry controls",
-      "status": "blocked",
+      "status": "source-candidate",
       "owner_role": "database-migration",
-      "depends_on": ["TG-V3-019", "TG-V3-020"],
-      "gap_ids": ["GAP-P1-PG-001"],
-      "deliverables": ["bounded pool", "TLS/mTLS profile", "request cancellation", "statement/lock timeouts", "configurable retry with jitter and metrics"],
-      "acceptance": ["no unbounded acquire or retry", "certificate rotation is rehearsed", "PostgreSQL and Cockroach restart behavior is separate"],
-      "required_evidence": ["database-differential", "fault-injection", "security-review", "performance"]
+      "depends_on": [
+        "TG-V3-019",
+        "TG-V3-020"
+      ],
+      "gap_ids": [
+        "GAP-P1-PG-001"
+      ],
+      "deliverables": [
+        "bounded pool",
+        "TLS/mTLS profile",
+        "request cancellation",
+        "statement/lock timeouts",
+        "configurable retry with jitter and metrics"
+      ],
+      "acceptance": [
+        "no unbounded acquire or retry",
+        "certificate rotation is rehearsed",
+        "PostgreSQL and Cockroach restart behavior is separate"
+      ],
+      "required_evidence": [
+        "database-differential",
+        "fault-injection",
+        "security-review",
+        "performance"
+      ]
     },
     {
       "id": "TG-V3-022",
       "priority": "P0",
       "title": "Integrate session verification and revocation into the server",
-      "status": "blocked",
+      "status": "source-candidate",
       "owner_role": "identity",
-      "depends_on": ["TG-V3-012", "TG-V3-019", "TG-V3-020"],
-      "gap_ids": ["GAP-P0-CRYPTO-001", "GAP-P0-SERVER-001"],
-      "deliverables": ["verified access-token middleware", "refresh-family repository", "logout/replay revoke", "connection revocation hook"],
-      "acceptance": ["unknown epoch never falls back", "access/refresh key domains are separate", "replay revokes the family and connected sessions"],
-      "required_evidence": ["unit", "database-differential", "security-review", "wire-differential"]
+      "depends_on": [
+        "TG-V3-012",
+        "TG-V3-019",
+        "TG-V3-020"
+      ],
+      "gap_ids": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P0-SERVER-001"
+      ],
+      "deliverables": [
+        "verified access-token middleware",
+        "refresh-family repository",
+        "logout/replay revoke",
+        "connection revocation hook"
+      ],
+      "acceptance": [
+        "unknown epoch never falls back",
+        "access/refresh key domains are separate",
+        "replay revokes the family and connected sessions"
+      ],
+      "required_evidence": [
+        "unit",
+        "database-differential",
+        "security-review",
+        "wire-differential"
+      ]
     },
     {
       "id": "TG-V3-023",
@@ -289,11 +624,31 @@
       "title": "Add one generated gRPC path and one WebSocket JSON/protobuf path",
       "status": "blocked",
       "owner_role": "protocol",
-      "depends_on": ["TG-V3-017", "TG-V3-019", "TG-V3-022"],
-      "gap_ids": ["GAP-P0-SERVER-001", "GAP-P0-SCOPE-001"],
-      "deliverables": ["generated protobuf bindings", "gRPC/grpc-gateway adapter", "WebSocket handshake/framing/lifecycle adapter", "official SDK fixtures"],
-      "acceptance": ["the same authority transition is reachable", "JSON/protobuf, status, headers and close behavior match the pinned oracle", "bounded connection ownership is enforced"],
-      "required_evidence": ["wire-differential", "sdk-blackbox", "fuzz"]
+      "depends_on": [
+        "TG-V3-017",
+        "TG-V3-019",
+        "TG-V3-022"
+      ],
+      "gap_ids": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-SCOPE-001"
+      ],
+      "deliverables": [
+        "generated protobuf bindings",
+        "gRPC/grpc-gateway adapter",
+        "WebSocket handshake/framing/lifecycle adapter",
+        "official SDK fixtures"
+      ],
+      "acceptance": [
+        "the same authority transition is reachable",
+        "JSON/protobuf, status, headers and close behavior match the pinned oracle",
+        "bounded connection ownership is enforced"
+      ],
+      "required_evidence": [
+        "wire-differential",
+        "sdk-blackbox",
+        "fuzz"
+      ]
     },
     {
       "id": "TG-V3-024",
@@ -301,11 +656,32 @@
       "title": "Implement and fault-test outbox delivery and reconciliation",
       "status": "blocked",
       "owner_role": "database-migration",
-      "depends_on": ["TG-V3-020", "TG-V3-021"],
-      "gap_ids": ["GAP-P1-OUTBOX-001", "GAP-P1-PG-001"],
-      "deliverables": ["lease/reclaim worker", "bounded dispatcher", "receipt reconciliation", "dead-letter and restart evidence"],
-      "acceptance": ["stale generation cannot apply", "acknowledged effect loss is zero", "duplicate visible effect is zero", "process/node failure reclaims work"],
-      "required_evidence": ["property", "database-differential", "fault-injection", "endurance"]
+      "depends_on": [
+        "TG-V3-020",
+        "TG-V3-021"
+      ],
+      "gap_ids": [
+        "GAP-P1-OUTBOX-001",
+        "GAP-P1-PG-001"
+      ],
+      "deliverables": [
+        "lease/reclaim worker",
+        "bounded dispatcher",
+        "receipt reconciliation",
+        "dead-letter and restart evidence"
+      ],
+      "acceptance": [
+        "stale generation cannot apply",
+        "acknowledged effect loss is zero",
+        "duplicate visible effect is zero",
+        "process/node failure reclaims work"
+      ],
+      "required_evidence": [
+        "property",
+        "database-differential",
+        "fault-injection",
+        "endurance"
+      ]
     },
     {
       "id": "TG-V3-025",
@@ -313,11 +689,33 @@
       "title": "Run immutable Nakama vertical-slice differential",
       "status": "blocked",
       "owner_role": "compatibility-qa",
-      "depends_on": ["TG-V3-017", "TG-V3-020", "TG-V3-023", "TG-V3-024"],
-      "gap_ids": ["GAP-P0-SCOPE-001", "GAP-P0-SERVER-001", "GAP-P0-EVIDENCE-001"],
-      "deliverables": ["immutable oracle fixture", "candidate fixture", "wire/database/effect comparison", "divergence report and reviewed normalizers"],
-      "acceptance": ["exact source and candidate identities", "zero unexplained P0/P1 divergence for the declared subset", "artifact and review are indexed"],
-      "required_evidence": ["wire-differential", "database-differential", "manifest"]
+      "depends_on": [
+        "TG-V3-017",
+        "TG-V3-020",
+        "TG-V3-023",
+        "TG-V3-024"
+      ],
+      "gap_ids": [
+        "GAP-P0-SCOPE-001",
+        "GAP-P0-SERVER-001",
+        "GAP-P0-EVIDENCE-001"
+      ],
+      "deliverables": [
+        "immutable oracle fixture",
+        "candidate fixture",
+        "wire/database/effect comparison",
+        "divergence report and reviewed normalizers"
+      ],
+      "acceptance": [
+        "exact source and candidate identities",
+        "zero unexplained P0/P1 divergence for the declared subset",
+        "artifact and review are indexed"
+      ],
+      "required_evidence": [
+        "wire-differential",
+        "database-differential",
+        "manifest"
+      ]
     }
   ],
   "next_item_rule": "Repository-internal source work may proceed without external admin state only when it remains fail closed. Remote verification, final denominator lock, product-gate promotion and merge may not bypass TG-V3-006 or TG-V3-007.",

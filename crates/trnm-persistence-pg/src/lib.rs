@@ -1,8 +1,17 @@
 #![forbid(unsafe_code)]
 
+mod auth;
 mod pool;
+mod session;
 
+pub use auth::{
+    parse_refresh_credential, AccessTokenVerifier, ParsedRefreshCredential, SessionPrincipal,
+};
 pub use pool::{PgPool, PgPoolConfig, PgPoolSnapshot, PgTlsConfig};
+pub use session::{
+    CreateSessionFamily, RefreshRotationOutcome, RefreshTokenCredential, RotateRefreshToken,
+    SessionFamilyRecord,
+};
 
 use std::collections::BTreeSet;
 use std::fmt;

@@ -7,7 +7,9 @@
   "source_paths": [
     "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
     "crates/trnm-persistence-pg/src/bin/trnm_server",
-    "crates/trnm-persistence-pg/src/pool.rs"
+    "crates/trnm-persistence-pg/src/pool.rs",
+    "crates/trnm-persistence-pg/src/session.rs",
+    "crates/trnm-persistence-pg/src/auth.rs"
   ],
   "implemented_source": [
     "explicit check-config, migrate and serve commands",
@@ -34,7 +36,11 @@
     "SafeBackoff retries use bounded half-to-full jitter and exponential cap",
     "Never and ResyncRequired errors are not retried",
     "public error redaction and typed retry guidance",
-    "in-process application, framing, handshake, pool, TLS and retry-policy tests"
+    "in-process application, framing, handshake, pool, TLS and retry-policy tests",
+    "strict epoch-routed access-token verifier with issuer, audience, lifetime, subject, token-id, family and generation checks",
+    "opaque ID-prefixed refresh credentials hashed before persistence",
+    "serializable refresh-family creation, rotation, replay revocation and logout repository operations",
+    "generic unauthenticated identity-state failures that do not disclose family, token or user existence"
   ],
   "not_implemented_or_verified": [
     "final exact-head Rust formatting, compile, tests and strict Clippy after this status/checker synchronization",
@@ -46,14 +52,17 @@
     "concurrent bounded connection supervision beyond the current one-request-per-connection server loop",
     "gRPC server and grpc-gateway behavior",
     "WebSocket protobuf subprotocol, heartbeat, continuation, reconnect and persistent lifecycle",
-    "session JWT verification and refresh-family socket revocation",
+    "HTTP middleware/endpoints and persistent socket revocation integration for the new session verifier and refresh-family repository",
     "distributed route registry, presence and cross-node fanout",
     "outbox worker lease, dispatch, reconciliation and restart",
     "immutable Nakama wire/database differential",
     "official SDK black-box tests",
     "load, failover, endurance, security and independent review"
   ],
-  "gap_ids": ["GAP-P0-SERVER-001", "GAP-P1-PG-001"],
+  "gap_ids": [
+    "GAP-P0-SERVER-001",
+    "GAP-P1-PG-001"
+  ],
   "claims": {
     "source_candidate": true,
     "bounded_retry_source_candidate": true,
@@ -75,6 +84,8 @@
     "sg4_complete": false,
     "production_ready": false,
     "public_online": false,
-    "nakama_replaced": false
+    "nakama_replaced": false,
+    "access_token_verifier_source_candidate": true,
+    "refresh_family_repository_source_candidate": true
   }
 }

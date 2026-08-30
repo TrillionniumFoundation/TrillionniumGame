@@ -1,10 +1,10 @@
 use postgres::{IsolationLevel, Row, Transaction};
-use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode, UserId};
-use trnm_session_core::{RefreshTokenId, RevocationReason, SessionFamilyId};
-
-use super::{
-    data_loss, error, from_i64, invalid, map_postgres_error, to_i64, PgRepository,
+use trnm_contracts::{
+    Digest32, DomainError, RefreshTokenId, RetryClass, SessionFamilyId, StableCode, UserId,
 };
+use trnm_session_core::RevocationReason;
+
+use super::{data_loss, error, from_i64, invalid, map_postgres_error, to_i64, PgRepository};
 
 const TOKEN_STATE_ACTIVE: i16 = 0;
 const TOKEN_STATE_CONSUMED: i16 = 1;
@@ -207,10 +207,13 @@ impl PgRepository {
             return Err(data_loss("invalid_refresh_token_state"));
         }
 
-        let next_generation = record
-            .generation
-            .checked_add(1)
-            .ok_or_else(|| error(StableCode::OutOfRange, "counter_overflow", RetryClass::Never))?;
+        let next_generation = record.generation.checked_add(1).ok_or_else(|| {
+            error(
+                StableCode::OutOfRange,
+                "counter_overflow",
+                RetryClass::Never,
+            )
+        })?;
         let next_generation_i64 = to_i64(next_generation)?;
         let consumed = transaction
             .execute(
@@ -331,11 +334,7 @@ impl PgRepository {
             .execute(
                 "UPDATE trnm_session_families SET active_token_id = NULL, \
                  revoked_reason = $2, updated_at_ms = $3 WHERE family_id = $1",
-                &[
-                    &family.as_bytes().as_slice(),
-                    &reason_code,
-                    &revoked_at_i64,
-                ],
+                &[&family.as_bytes().as_slice(), &reason_code, &revoked_at_i64],
             )
             .map_err(map_postgres_error)?;
         transaction.commit().map_err(map_postgres_error)?;
@@ -377,7 +376,7 @@ fn revoke_for_replay(
         .map_err(map_postgres_error)?;
     Ok(SessionFamilyRecord {
         active_token: None,
-        revoked_reason: Some(RevocationReason::ReplayDetected),
+        revoked_reason: Some(RevocationReason::RefreshReplay),
         updated_at_ms: revoked_at_ms,
         ..record
     })
@@ -409,10 +408,7 @@ fn validate_rotation(request: &RotateRefreshToken) -> Result<(), DomainError> {
     Ok(())
 }
 
-fn decode_family(
-    family: SessionFamilyId,
-    row: &Row,
-) -> Result<SessionFamilyRecord, DomainError> {
+fn decode_family(family: SessionFamilyId, row: &Row) -> Result<SessionFamilyRecord, DomainError> {
     let user = decode_user_id(row.get(0))?;
     let generation = from_i64(row.get(1), "negative_session_generation")?;
     let active_token = row
@@ -458,19 +454,18 @@ fn decode_user_id(bytes: Vec<u8>) -> Result<UserId, DomainError> {
 fn revocation_reason_code(reason: RevocationReason) -> Result<i16, DomainError> {
     match reason {
         RevocationReason::Logout => Ok(0),
-        RevocationReason::Compromised => Ok(1),
-        RevocationReason::ReplayDetected => Ok(2),
-        RevocationReason::Administrative => Ok(3),
-        RevocationReason::Expired => Err(invalid("expired_revocation_reason_not_persisted")),
+        RevocationReason::CredentialReset => Ok(1),
+        RevocationReason::RefreshReplay => Ok(2),
+        RevocationReason::Administrator => Ok(3),
     }
 }
 
 fn decode_revocation_reason(value: i16) -> Result<RevocationReason, DomainError> {
     match value {
         0 => Ok(RevocationReason::Logout),
-        1 => Ok(RevocationReason::Compromised),
-        2 => Ok(RevocationReason::ReplayDetected),
-        3 => Ok(RevocationReason::Administrative),
+        1 => Ok(RevocationReason::CredentialReset),
+        2 => Ok(RevocationReason::RefreshReplay),
+        3 => Ok(RevocationReason::Administrator),
         _ => Err(data_loss("invalid_session_revocation_reason")),
     }
 }
@@ -532,20 +527,14 @@ mod tests {
     fn persisted_revocation_reason_mapping_is_exact() {
         let cases = [
             (RevocationReason::Logout, 0),
-            (RevocationReason::Compromised, 1),
-            (RevocationReason::ReplayDetected, 2),
-            (RevocationReason::Administrative, 3),
+            (RevocationReason::CredentialReset, 1),
+            (RevocationReason::RefreshReplay, 2),
+            (RevocationReason::Administrator, 3),
         ];
         for (reason, code) in cases {
             assert_eq!(revocation_reason_code(reason).unwrap(), code);
             assert_eq!(decode_revocation_reason(code).unwrap(), reason);
         }
-        assert_eq!(
-            revocation_reason_code(RevocationReason::Expired)
-                .unwrap_err()
-                .reason(),
-            "expired_revocation_reason_not_persisted"
-        );
         assert_eq!(
             decode_revocation_reason(4).unwrap_err().code(),
             StableCode::DataLoss

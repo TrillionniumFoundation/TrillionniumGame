@@ -14,9 +14,11 @@ SERVER_ROOT = PERSISTENCE_ROOT / "bin"
 MODULE_ROOT = SERVER_ROOT / "trnm_server"
 REQUIRED_FILES = {
     PERSISTENCE_ROOT / "pool.rs",
+    PERSISTENCE_ROOT / "session.rs",
     SERVER_ROOT / "trnm-server.rs",
     MODULE_ROOT / "mod.rs",
     MODULE_ROOT / "app.rs",
+    PERSISTENCE_ROOT / "auth.rs",
     MODULE_ROOT / "codec.rs",
     MODULE_ROOT / "config.rs",
     MODULE_ROOT / "error.rs",
@@ -47,6 +49,13 @@ REQUIRED_TESTS = {
     "exhausted_retry_returns_stable_unavailable_error",
     "elapsed_budget_prevents_an_additional_attempt",
     "jitter_remains_inside_half_to_full_backoff",
+    "create_and_rotation_validation_fail_closed",
+    "persisted_revocation_reason_mapping_is_exact",
+    "generic_session_failure_does_not_disclose_identity_state",
+    "strict_epoch_access_token_yields_session_principal",
+    "malformed_tampered_and_incomplete_access_tokens_fail_closed",
+    "refresh_credential_is_bounded_id_prefixed_and_hashed",
+    "verifier_debug_redacts_key_material",
     "default_pool_policy_is_bounded_and_valid",
     "invalid_pool_policy_fails_closed",
     "tls_identity_requires_cert_and_key_pair",
@@ -86,6 +95,8 @@ def main() -> int:
         "r2d2": "=0.8.10",
         "r2d2_postgres": "=0.18.2",
         "trnm-contracts": {"path": "../trnm-contracts"},
+        "trnm-session-core": {"path": "../trnm-session-core"},
+        "trnm-token-jwt-adapter": {"path": "../trnm-token-jwt-adapter"},
     }
     if manifest.get("dependencies") != expected_dependencies:
         fail("server candidate changed the reviewed persistence dependency boundary")
@@ -116,13 +127,32 @@ def main() -> int:
             "SET lock_timeout",
             '"<redacted>"',
         ],
+        "crates/trnm-persistence-pg/src/session.rs": [
+            "pub struct CreateSessionFamily",
+            "pub enum RefreshRotationOutcome",
+            "IsolationLevel::Serializable",
+            "FOR UPDATE",
+            "refresh_compare_and_swap_failed",
+            "revoked_reason = 2",
+            "RevocationReason::RefreshReplay",
+        ],
         "crates/trnm-persistence-pg/src/bin/trnm-server.rs": [
             "Command::CheckConfig",
             "Command::Migrate",
             "Command::Serve",
             "open_verified_repository",
         ],
+        "crates/trnm-persistence-pg/src/auth.rs": [
+            "pub struct AccessTokenVerifier",
+            "allow_legacy_without_key_id: false",
+            "max_lifetime_seconds: Some(15 * 60)",
+            "claim_string(claims, \"sid\")",
+            "claim_unsigned(claims, \"sgn\")",
+            "sha256_digest(value.as_bytes())",
+            "\"session_authentication_failed\"",
+        ],
         "crates/trnm-persistence-pg/src/bin/trnm_server/mod.rs": [
+            "pub(crate) mod auth;",
             "pub(crate) mod pool;",
             "pub(crate) mod websocket;",
         ],
@@ -207,8 +237,8 @@ def main() -> int:
     if missing_tests:
         fail(f"missing tests: {missing_tests}")
     test_count = combined.count("#[test]")
-    if test_count < 39:
-        fail(f"expected at least 39 server/pool source tests, got {test_count}")
+    if test_count < 46:
+        fail(f"expected at least 46 server/session/pool source tests, got {test_count}")
 
     workflow = (
         ROOT / ".github/workflows/trillionnium-game-merge-gate.yml"
@@ -263,6 +293,8 @@ def main() -> int:
         "tls_verify_full_source_candidate",
         "statement_timeout_source_candidate",
         "retry_jitter_source_candidate",
+        "access_token_verifier_source_candidate",
+        "refresh_family_repository_source_candidate",
     ]
     if any(claims.get(field) is not True for field in required_source_claims):
         fail("server operational source-candidate claim missing")
@@ -280,6 +312,8 @@ def main() -> int:
                 "tls_verify_full_source_candidate": True,
                 "statement_timeout_source_candidate": True,
                 "retry_jitter_source_candidate": True,
+                "access_token_verifier_source_candidate": True,
+                "refresh_family_repository_source_candidate": True,
                 "cargo_executed_here": False,
                 "live_database_executed_here": False,
                 "compatibility_credit": False,
