@@ -174,11 +174,11 @@ fn handle_connection<R: Repository>(
         Err(error) => return Err(error),
     };
 
-    if draining.load(Ordering::Acquire) {
-        if is_readiness(&request) || request_rejected_while_draining(&request) {
-            write_response(stream, &draining_response());
-            return Ok(());
-        }
+    if draining.load(Ordering::Acquire)
+        && (is_readiness(&request) || request_rejected_while_draining(&request))
+    {
+        write_response(stream, &draining_response());
+        return Ok(());
     }
 
     if websocket::is_route(&request) {
@@ -191,9 +191,8 @@ fn handle_connection<R: Repository>(
         return Ok(());
     }
 
-    let starts_drain = is_drain_request(&request);
     let response = app.handle(&request);
-    if starts_drain && response.status < 400 {
+    if app.should_stop() {
         draining.store(true, Ordering::Release);
     }
     write_response(stream, &response);
@@ -206,10 +205,6 @@ fn request_rejected_while_draining(request: &Request) -> bool {
 
 fn is_readiness(request: &Request) -> bool {
     request.method == "GET" && request.target == "/readyz"
-}
-
-fn is_drain_request(request: &Request) -> bool {
-    request.method == "POST" && request.target == "/-/drain"
 }
 
 fn connection_policy(database_pool_max_size: u32) -> (usize, usize) {
