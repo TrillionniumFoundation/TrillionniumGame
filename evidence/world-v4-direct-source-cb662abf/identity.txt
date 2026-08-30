@@ -1,0 +1,5 @@
+repository=TrillionniumFoundation/Trillionnium-World
+commit=cb662abffce882aaeed8ec30402e889ba235d786
+tree=7a9be1f6859f5f57e4262b047e7b0243d384b9c2
+template_blob=8882f47db55ca5993329594901c828c6faf325a8
+direct_lib_blob=6e6c69147fdf78067d37a6022050bafab05eb4b2

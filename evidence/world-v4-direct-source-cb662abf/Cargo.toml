@@ -1,0 +1,32 @@
+[package]
+name = "trnm-game-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+axum = { version = "0.7", features = ["macros", "ws"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+ed25519-dalek = "2"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+sqlx = { package = "sqlx-core", version = "0.8", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-webpki", "uuid", "chrono", "json", "migrate"] }
+sqlx-postgres = { version = "0.8", default-features = false, features = ["uuid", "chrono", "json", "migrate"] }
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+trnm-campaign-core = { path = "../trnm-campaign-core" }
+trnm-economy-protocol = { path = "../trnm-economy-protocol" }
+trnm-online-protocol = { path = "../trnm-online-protocol" }
+trnm-rts-protocol = { path = "../trnm-rts-protocol" }
+trnm-rts-sim = { path = "../trnm-rts-sim" }
+tungstenite = { version = "=0.24.0", default-features = false, features = ["handshake"] }

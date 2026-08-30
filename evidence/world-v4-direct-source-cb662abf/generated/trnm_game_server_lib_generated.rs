@@ -1,0 +1,16849 @@
+use axum::extract::DefaultBodyLimit;
+use axum::{
+    body::Body,
+    extract::{Path, State},
+    http::{header, HeaderMap, HeaderValue, Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
+use cex::CexClient;
+use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
+use published_tick_journal::{
+    PublishedTickAbandonmentTombstone, PublishedTickAbandonmentTombstoneInput,
+    PublishedTickAckTombstone, PublishedTickAckTombstoneInput, PublishedTickColdWitness,
+    PublishedTickHighWater, PublishedTickJournal, PublishedTickRecordInput,
+};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use sqlx::{connection::Connection, executor::Executor, row::Row};
+use sqlx_postgres::{PgConnection, PgPool, PgPoolOptions, Postgres};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
+};
+use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex, RwLock};
+use tokio::time::{Instant, MissedTickBehavior};
+use trnm_campaign_core::{
+    BattleMapSeedV1, BattleOutcome, BattleResultV1, BattleSeedV1, CampaignMission, CampaignSaveV1,
+    UnitBattleReportV1, UnitBattleStatus,
+};
+use trnm_online_protocol::{
+    validate_client_contract, validate_product_contract, OnlineAuthorityError,
+    OnlineCampaignConnectRequest, OnlineCampaignView, OnlineCommandReceipt,
+    OnlineCommandSubmitRequest, OnlineInventoryStack, OnlineLobbyAccessRequest,
+    OnlineLobbyCreateRequest, OnlineLobbyInviteAcceptRequest, OnlineLobbyInviteReceipt,
+    OnlineLobbyInviteRequest, OnlineLobbyMemberView, OnlineLobbyQueueRequest,
+    OnlineLobbyReadyRequest, OnlineLobbyStatus, OnlineLobbyView, OnlineMatchAccessRequest,
+    OnlineMatchCreateRequest, OnlineMatchJoinRequest, OnlineMatchMemberView, OnlineMatchPhase,
+    OnlineMatchStartRequest, OnlineMatchView, OnlineMatchmakingReceipt, OnlineReconnectRequest,
+    OnlineReconnectResponse, OnlineSnapshotResponse, ONLINE_AUTHORITY_BUILD,
+    ONLINE_AUTHORITY_PROTOCOL, ONLINE_AUTHORITY_V2_PROTOCOL, ONLINE_PRODUCT_BUILD,
+    ONLINE_PRODUCT_PROTOCOL,
+};
+use trnm_rts_protocol::RtsOrderSource;
+use trnm_rts_sim::{MissionSimV1, TICKS_PER_SECOND};
+use uuid::Uuid;
+
+const PLAYER_SESSION_HEADER: &str = "x-trnm-player-session";
+const MIGRATION_V1: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0001_online_authority_v1.sql"));
+const MIGRATION_V2: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0002_online_authority_v2.sql"));
+const MIGRATION_V3: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0003_online_product_v1.sql"));
+const MIGRATION_V4: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0004_online_product_v2.sql"));
+const MIGRATION_V5: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0005_online_operations_v1.sql"));
+const MIGRATION_V6: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0006_online_operations_v2.sql"));
+const MIGRATION_V7: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0007_online_production_v1.sql"));
+const MIGRATION_V8: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0008_online_production_v2.sql"));
+const MIGRATION_V9: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0009_online_realtime_actor_v1.sql"));
+const MIGRATION_V10: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0010_online_realtime_input_v1.sql"));
+const MIGRATION_V11: &str =
+    include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0011_online_terminal_publication_ack_v1.sql"));
+const MIGRATION_V12: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0012_online_terminal_staging_v1.sql"));
+const MIGRATION_V13: &str =
+    include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0013_online_failed_closed_abandonment_v1.sql"));
+const MIGRATION_V14: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0014_online_command_commit_rpc_v1.sql"));
+const MIGRATION_V15: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0015_online_realtime_hot_path_v1.sql"));
+const MIGRATION_V16: &str = include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0016_online_settlement_outbox_v1.sql"));
+const MIGRATION_V17: &str =
+    include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0017_online_settlement_worker_runtime_v1.sql"));
+const MIGRATION_V18: &str =
+    include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0018_online_settlement_operator_controls_v1.sql"));
+const MIGRATION_V19: &str =
+    include_str!(concat!(::std::env!("CARGO_MANIFEST_DIR"), "/migrations/0019_online_settlement_quarantine_v1.sql"));
+const MIGRATION_ADVISORY_LOCK: i64 = 0x5452_4e4d_4f4e_4c49;
+const MIGRATION_LEDGER_DDL: &str =
+    "create table if not exists public.trnm_online_schema_migrations (
+    migration_version integer primary key check (migration_version > 0),
+    migration_name text not null unique check (btrim(migration_name) <> ''),
+    checksum_sha256 text not null check (checksum_sha256 ~ '^[0-9a-f]{64}$'),
+    applied_at timestamptz not null default now()
+)";
+const DATABASE_HOST_LEADER_LOCK_SALT: i64 = 0x5452_4e4d_4c45_4144;
+const DATABASE_HOST_BARRIER_LOCK_SALT: i64 = 0x5452_4e4d_4241_5252;
+
+#[derive(Clone)]
+pub struct AppState {
+    pool: PgPool,
+    readiness_pool: PgPool,
+    cex: CexClient,
+    asset_root: Arc<PathBuf>,
+    moderator_token: Arc<String>,
+    instance_id: Arc<String>,
+    region: Arc<String>,
+    public_endpoint: Arc<String>,
+    physical_host_id: Arc<String>,
+    capacity: i32,
+    instance_epoch: i64,
+    rate_limit_per_minute: u32,
+    request_body_limit_bytes: u32,
+    tick_interval: Duration,
+    accelerated_test_clock: bool,
+    authority_clock: Arc<AuthorityClockTelemetry>,
+    published_tick_journal: PublishedTickJournal,
+    terminal_acknowledged_high_waters: Arc<RwLock<BTreeSet<Uuid>>>,
+    failed_closed_high_waters: Arc<RwLock<BTreeSet<Uuid>>>,
+    match_actors: Arc<RwLock<MatchActorRegistry>>,
+    stream_connections: Arc<Mutex<StreamConnectionRegistry>>,
+    database_host_authority: Arc<DatabaseHostAuthorityFence>,
+    fatal_shutdown: watch::Sender<bool>,
+    draining: watch::Sender<bool>,
+    shutdown: watch::Sender<bool>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DatabaseHostAuthorityIdentity {
+    physical_host_id: String,
+    owner_nonce: Uuid,
+    application_name: String,
+    backend_pid: i32,
+    backend_started_at: DateTime<Utc>,
+    database_system_identifier: String,
+    database_timeline_id: i64,
+    database_postmaster_started_at: DateTime<Utc>,
+    leader_lock_key: i64,
+    barrier_lock_key: i64,
+}
+
+struct DatabaseHostAuthorityFence {
+    identity: DatabaseHostAuthorityIdentity,
+    connection: AsyncMutex<PgConnection>,
+    healthy: AtomicBool,
+    last_success: Mutex<Instant>,
+}
+
+impl DatabaseHostAuthorityFence {
+    fn is_healthy(&self) -> bool {
+        self.healthy.load(Ordering::Acquire)
+    }
+
+    fn record_success(&self, observed_at: Instant) {
+        let Ok(mut last_success) = self.last_success.lock() else {
+            self.healthy.store(false, Ordering::Release);
+            return;
+        };
+        *last_success = monotonic_database_host_authority_success(*last_success, observed_at);
+    }
+
+    fn last_success_age(&self, now: Instant) -> Option<Duration> {
+        self.last_success
+            .lock()
+            .ok()
+            .and_then(|last_success| now.checked_duration_since(*last_success))
+    }
+
+    fn is_fresh(&self, now: Instant) -> bool {
+        self.last_success.lock().is_ok_and(|last_success| {
+            database_host_authority_success_is_fresh(
+                self.is_healthy(),
+                *last_success,
+                now,
+                DATABASE_HOST_FENCE_FRESHNESS,
+            )
+        })
+    }
+}
+
+fn monotonic_database_host_authority_success(previous: Instant, candidate: Instant) -> Instant {
+    if candidate > previous {
+        candidate
+    } else {
+        previous
+    }
+}
+
+fn database_host_authority_success_is_fresh(
+    healthy: bool,
+    last_success: Instant,
+    now: Instant,
+    maximum_age: Duration,
+) -> bool {
+    healthy
+        && now
+            .checked_duration_since(last_success)
+            .is_some_and(|age| age <= maximum_age)
+}
+
+#[derive(Default)]
+struct MatchActorRegistry {
+    actors: BTreeMap<Uuid, MatchActorHandle>,
+    initializing: BTreeMap<Uuid, MatchActorInitialization>,
+}
+
+#[derive(Clone)]
+struct MatchActorInitialization {
+    token: Uuid,
+    ready: watch::Sender<bool>,
+    kind: MatchActorInitializationKind,
+    started_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MatchActorInitializationKind {
+    Actor,
+    TerminalRecovery,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MatchActorLifecycle {
+    Warming { started_at: Instant },
+    Running,
+    Terminalizing { started_at: Instant },
+}
+
+/// Releases a per-match initialization reservation if the request future is
+/// cancelled while it is outside the registry lock. Without this guard, a
+/// disconnected HTTP request could strand `initializing` forever and consume
+/// fleet capacity even though no actor can ever be installed.
+struct MatchActorInitializationReservation {
+    registry: Arc<RwLock<MatchActorRegistry>>,
+    match_id: Uuid,
+    token: Uuid,
+    ready: watch::Sender<bool>,
+    armed: bool,
+}
+
+impl MatchActorInitializationReservation {
+    fn new(
+        registry: Arc<RwLock<MatchActorRegistry>>,
+        match_id: Uuid,
+        initialization: &MatchActorInitialization,
+    ) -> Self {
+        Self {
+            registry,
+            match_id,
+            token: initialization.token,
+            ready: initialization.ready.clone(),
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for MatchActorInitializationReservation {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let registry = self.registry.clone();
+        let match_id = self.match_id;
+        let token = self.token;
+        let ready = self.ready.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(async move {
+                let mut registry = registry.write().await;
+                if registry
+                    .initializing
+                    .get(&match_id)
+                    .is_some_and(|current| current.token == token)
+                {
+                    registry.initializing.remove(&match_id);
+                }
+                ready.send_replace(true);
+            }));
+        }
+    }
+}
+
+struct InitializedMatchActor {
+    actor_id: Uuid,
+    handle: MatchActorHandle,
+    loaded: LoadedMatchActor,
+    commands: mpsc::Receiver<ActorCommandEnvelope>,
+    published: watch::Sender<PublishedMatchState>,
+    publication_acked: watch::Sender<ActorPublicationCursor>,
+    lifecycle: watch::Sender<MatchActorLifecycle>,
+}
+
+enum MatchActorEnsureDecision {
+    Existing(MatchActorHandle),
+    Wait(watch::Receiver<bool>),
+    Initialize(MatchActorInitialization),
+}
+
+#[derive(Default)]
+struct StreamConnectionRegistry {
+    total: usize,
+    by_member_match: BTreeMap<String, usize>,
+}
+
+#[derive(Default)]
+struct AuthorityClockTelemetry {
+    window: Mutex<AuthorityClockWindow>,
+}
+
+#[derive(Default)]
+struct AuthorityClockWindow {
+    started_at: Option<Instant>,
+    wake_count: u64,
+    samples: VecDeque<AuthorityClockWake>,
+}
+
+#[derive(Clone, Copy)]
+struct AuthorityClockWake {
+    observed_at: Instant,
+    lateness_ticks: f64,
+}
+
+struct AuthorityClockSnapshot {
+    elapsed_ms: f64,
+    wake_count: u64,
+    cumulative_drift_ticks: f64,
+    window_sample_count: usize,
+    window_drift_ticks: Option<f64>,
+    latest_lateness_ticks: Option<f64>,
+    max_recent_lateness_ticks: Option<f64>,
+    last_wake_age_ms: Option<f64>,
+}
+
+const MATCH_ACTOR_COMMAND_QUEUE: usize = 64;
+const MATCH_COMMAND_PERSISTENCE_QUEUE: usize = 1;
+const MATCH_ACTOR_PUBLICATION_COMPLETION_QUEUE: usize = 64;
+const MATCH_ACTOR_RECEIPT_CACHE: usize = 256;
+const MATCH_CHECKPOINT_QUEUE: usize = 2;
+const MATCH_CHECKPOINT_INTERVAL_TICKS: u64 = 100;
+const MATCH_ACTOR_FENCE_INTERVAL: Duration = Duration::from_secs(1);
+const MATCH_ACTOR_WORKER_OPERATION_TIMEOUT: Duration = Duration::from_secs(6);
+const MATCH_ACTOR_WORKER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+const MATCH_ACTOR_WORKER_ABORT_TIMEOUT: Duration = Duration::from_secs(1);
+const MATCH_ACTOR_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(10);
+const MATCH_ACTOR_TERMINAL_TRANSITION_TIMEOUT: Duration = Duration::from_secs(20);
+const MATCH_ACTOR_PUBLICATION_FRESHNESS: Duration = Duration::from_millis(750);
+const MATCH_ACTOR_CLOCK_WARMUP_EXTRA_TICKS: u32 = 2;
+const MATCH_ACTOR_CLOCK_FIRST_WAKE_GRACE_TICKS: u32 = 2;
+const INITIAL_AUTHORITY_RECOVERY_TIMEOUT: Duration = Duration::from_secs(30);
+const DATABASE_STATEMENT_TIMEOUT: Duration = Duration::from_secs(5);
+const DATABASE_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+const DATABASE_HOST_HANDOFF_TIMEOUT: Duration = Duration::from_secs(10);
+const DATABASE_HOST_HANDOFF_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const DATABASE_HOST_FENCE_MONITOR_INTERVAL: Duration = Duration::from_millis(250);
+const DATABASE_HOST_FENCE_MONITOR_TIMEOUT: Duration = Duration::from_secs(2);
+const DATABASE_HOST_FENCE_FRESHNESS: Duration = Duration::from_secs(1);
+const DATABASE_MIGRATION_STATEMENT_TIMEOUT: Duration = Duration::from_secs(60);
+const DATABASE_MIGRATION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_AUTHORITY_CLOCK_ABS_DRIFT_TICKS: f64 = 2.0;
+const AUTHORITY_CLOCK_WINDOW_TICKS: usize = 20;
+const AUTHORITY_CLOCK_MIN_SAMPLES: usize = 3;
+const GAME_SERVER_DATABASE_MIN_CONNECTIONS: u32 = 12;
+const GAME_SERVER_DATABASE_MAX_CONNECTIONS: u32 = 12;
+const READINESS_DATABASE_MIN_CONNECTIONS: u32 = 4;
+const READINESS_DATABASE_MAX_CONNECTIONS: u32 = 12;
+const TERMINAL_ORPHAN_RECONCILIATION_CONCURRENCY: usize = 4;
+const TERMINAL_ACK_GAP_SCAN_LIMIT: i64 = 256;
+const TERMINAL_ACK_STARTUP_PAGE_SIZE: i64 = 512;
+const ONLINE_COMMAND_COMMIT_V2_SQL: &str =
+    "select * from public.trnm_online_commit_actor_command_v2(
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+            $21, $22, $23, $24, $25, $26, $27
+         )";
+const ONLINE_HEARTBEAT_FLEET_V1_SQL: &str = "select public.trnm_online_heartbeat_fleet_v1(
+            $1, $2, $3, $4, $5, $6, $7, $8,
+            $9, $10, $11, $12, $13, $14, $15, $16
+         )";
+const ONLINE_CHECKPOINT_ACTOR_V1_SQL: &str = "select public.trnm_online_checkpoint_actor_v1(
+            $1, $2, $3, $4, $5, $6, $7, $8, $9,
+            $10, $11, $12, $13, $14, $15, $16, $17, $18
+         )";
+const MATCH_ACTOR_FENCE_OWNERSHIP_SQL: &str = "select exists(
+        select 1 from trnm_online_matches m
+        join trnm_online_fleet_instances f
+          on f.instance_id = m.assigned_instance_id
+         and f.instance_epoch = m.assigned_instance_epoch
+        where m.match_id = $1
+          and m.assigned_instance_id = $2
+          and m.assigned_instance_epoch = $3
+          and m.assigned_physical_host_id = $4
+          and f.physical_host_id = $4
+          and f.status in ('active', 'draining')
+          and f.lease_expires_at > now()
+    )";
+const DUPLICATE_COMMAND_RECEIPT_SQL: &str = "select
+        c.sequence, c.input_sequence, c.player_id, c.request_hash,
+        c.accepted_match_revision, c.accepted_snapshot_hash, c.target_tick,
+        c.client_observed_tick,
+        m.match_revision as current_match_revision,
+        m.next_sequence as current_next_sequence,
+        m.checkpoint_sequence, m.phase, m.assigned_physical_host_id,
+        exists(
+            select 1 from trnm_online_terminal_publication_acks a
+            where a.match_id = m.match_id
+              and m.phase = 'complete'
+              and m.terminal_publication_state = 'acknowledged'
+              and a.local_tombstone_state = 'sealed'
+              and m.assigned_physical_host_id = $3
+              and m.terminal_publication_actor_generation is not null
+              and a.actor_generation = m.terminal_publication_actor_generation
+              and a.instance_id = m.assigned_instance_id
+              and a.actor_epoch = m.assigned_instance_epoch
+              and a.physical_host_id = m.assigned_physical_host_id
+              and a.authoritative_tick = m.authoritative_tick
+              and a.next_sequence = m.next_sequence
+              and a.match_revision = m.match_revision
+              and a.snapshot_hash = m.snapshot_hash
+              and a.phase = 'complete'
+              and a.result_hash = m.result_hash
+              and a.published_settlement_state = m.settlement_state
+              and a.next_input_sequences = coalesce(
+                  (select jsonb_object_agg(
+                      mm.player_id,
+                      mm.next_input_sequence order by mm.player_id
+                   )
+                   from trnm_online_match_members mm
+                   where mm.match_id = m.match_id),
+                  '{}'::jsonb
+              )
+        ) as terminal_publication_acked,
+        (select mm.next_input_sequence from trnm_online_match_members mm
+         where mm.match_id = c.match_id and mm.player_id = c.player_id)
+           as current_member_input_sequence
+ from trnm_online_commands c
+ join trnm_online_matches m on m.match_id = c.match_id
+ where c.match_id = $1 and c.command_id = $2";
+const DATABASE_LINEAGE_SQL: &str = "select
+        system.system_identifier::text as system_identifier,
+        checkpoint.timeline_id::integer as timeline_id,
+        pg_current_wal_flush_lsn()::text as wal_flush_lsn
+      from pg_control_system() system
+      cross join pg_control_checkpoint() checkpoint";
+const LOCAL_TERMINAL_ACK_GAPS_SQL: &str = "select m.match_id
+       from trnm_online_matches m
+      where m.phase = 'complete'
+        and m.assigned_physical_host_id = $1
+        and m.terminal_publication_state <> 'legacy_quarantined'
+        and not exists (
+            select 1
+              from trnm_online_terminal_publication_acks a
+             where a.match_id = m.match_id
+               and m.checkpoint_sequence = m.next_sequence
+               and m.result_hash is not null
+               and m.settlement_state in ('pending', 'settled')
+               and m.terminal_publication_state = 'acknowledged'
+               and a.local_tombstone_state = 'sealed'
+               and m.terminal_publication_actor_generation is not null
+               and a.actor_generation = m.terminal_publication_actor_generation
+               and a.instance_id = m.assigned_instance_id
+               and a.actor_epoch = m.assigned_instance_epoch
+               and a.physical_host_id = m.assigned_physical_host_id
+               and a.authoritative_tick = m.authoritative_tick
+               and a.next_sequence = m.next_sequence
+               and a.match_revision = m.match_revision
+               and a.next_input_sequences = (
+                   select coalesce(
+                       jsonb_object_agg(
+                           mm.player_id,
+                           to_jsonb(mm.next_input_sequence)
+                           order by mm.player_id
+                       ),
+                       '{}'::jsonb
+                   )
+                     from trnm_online_match_members mm
+                    where mm.match_id = m.match_id
+               )
+               and a.snapshot_hash = m.snapshot_hash
+               and a.phase = 'complete'
+               and a.result_hash = m.result_hash
+               and a.published_settlement_state = m.settlement_state
+        )
+      order by m.match_id
+      limit $2";
+const EXACT_TERMINAL_PUBLICATION_MARKER_SQL: &str = "select exists(
+        select 1
+          from trnm_online_terminal_publication_acks a
+          join trnm_online_matches m on m.match_id = a.match_id
+         where a.match_id = $1
+           and m.phase = 'complete'
+           and m.checkpoint_sequence = m.next_sequence
+           and m.result_hash is not null
+           and m.settlement_state in ('pending', 'settled')
+           and m.terminal_publication_state = 'acknowledged'
+           and a.local_tombstone_state = 'sealed'
+           and m.terminal_publication_actor_generation is not null
+           and a.actor_generation = m.terminal_publication_actor_generation
+           and a.instance_id = m.assigned_instance_id
+           and a.actor_epoch = m.assigned_instance_epoch
+           and a.physical_host_id = m.assigned_physical_host_id
+           and a.authoritative_tick = m.authoritative_tick
+           and a.next_sequence = m.next_sequence
+           and a.match_revision = m.match_revision
+           and a.snapshot_hash = m.snapshot_hash
+           and a.phase = 'complete'
+           and a.result_hash = m.result_hash
+           and a.published_settlement_state = m.settlement_state
+           and a.next_input_sequences = coalesce(
+               (select jsonb_object_agg(
+                   mm.player_id,
+                   mm.next_input_sequence order by mm.player_id
+                )
+                  from trnm_online_match_members mm
+                 where mm.match_id = m.match_id),
+               '{}'::jsonb
+           )
+    )";
+const CAMPAIGN_HAS_UNACKNOWLEDGED_PROGRESSION_SQL: &str = "select exists(
+        select 1
+          from trnm_online_progression_events event
+         where event.campaign_id = $1
+           and not exists (
+               select 1
+                 from trnm_online_matches m
+                 join trnm_online_terminal_publication_acks a on a.match_id = m.match_id
+                where m.match_id = event.match_id
+                  and m.phase = 'complete'
+                  and m.checkpoint_sequence = m.next_sequence
+                  and m.result_hash = event.result_hash
+                  and m.settlement_state in ('pending', 'settled')
+                  and m.terminal_publication_state = 'acknowledged'
+                  and a.local_tombstone_state = 'sealed'
+                  and m.terminal_publication_actor_generation is not null
+                  and a.actor_generation = m.terminal_publication_actor_generation
+                  and a.instance_id = m.assigned_instance_id
+                  and a.actor_epoch = m.assigned_instance_epoch
+                  and a.physical_host_id = m.assigned_physical_host_id
+                  and a.authoritative_tick = m.authoritative_tick
+                  and a.next_sequence = m.next_sequence
+                  and a.match_revision = m.match_revision
+                  and a.next_input_sequences = coalesce(
+                      (select jsonb_object_agg(
+                          member.player_id,
+                          to_jsonb(member.next_input_sequence)
+                          order by member.player_id
+                       )
+                         from trnm_online_match_members member
+                        where member.match_id = m.match_id),
+                      '{}'::jsonb
+                  )
+                  and a.snapshot_hash = m.snapshot_hash
+                  and a.phase = 'complete'
+                  and a.result_hash = m.result_hash
+                  and a.published_settlement_state = m.settlement_state
+           )
+    )";
+const READINESS_DATABASE_SUMMARY_SQL: &str = "with terminal_ack_gaps as materialized (
+        select m.match_id
+          from trnm_online_matches m
+         where m.phase = 'complete'
+           and m.assigned_physical_host_id = $3
+           and m.terminal_publication_state <> 'legacy_quarantined'
+           and not exists (
+               select 1
+                 from trnm_online_terminal_publication_acks a
+                where a.match_id = m.match_id
+                  and m.checkpoint_sequence = m.next_sequence
+                  and m.result_hash is not null
+                  and m.settlement_state in ('pending', 'settled')
+                  and m.terminal_publication_state = 'acknowledged'
+                  and a.local_tombstone_state = 'sealed'
+                  and m.terminal_publication_actor_generation is not null
+                  and a.actor_generation = m.terminal_publication_actor_generation
+                  and a.instance_id = m.assigned_instance_id
+                  and a.actor_epoch = m.assigned_instance_epoch
+                  and a.physical_host_id = m.assigned_physical_host_id
+                  and a.authoritative_tick = m.authoritative_tick
+                  and a.next_sequence = m.next_sequence
+                  and a.match_revision = m.match_revision
+                  and a.next_input_sequences = (
+                      select coalesce(
+                          jsonb_object_agg(
+                              mm.player_id,
+                              to_jsonb(mm.next_input_sequence)
+                              order by mm.player_id
+                          ),
+                          '{}'::jsonb
+                      )
+                        from trnm_online_match_members mm
+                       where mm.match_id = m.match_id
+                  )
+                  and a.snapshot_hash = m.snapshot_hash
+                  and a.phase = 'complete'
+                  and a.result_hash = m.result_hash
+                  and a.published_settlement_state = m.settlement_state
+           )
+         order by m.match_id
+         limit $4
+    ), pending_terminal_seals as materialized (
+        select a.match_id
+          from trnm_online_terminal_publication_acks a
+         where a.physical_host_id = $3
+           and a.local_tombstone_state <> 'sealed'
+         order by a.match_id
+         limit $4
+    ), pending_abandonment_seals as materialized (
+        select marker.match_id
+          from trnm_online_failed_closed_abandonment_markers marker
+         where marker.physical_host_id = $3
+           and marker.local_tombstone_state <> 'sealed'
+         order by marker.match_id
+         limit $4
+    ), historical_projection as materialized (
+        select
+            (select count(*) from trnm_online_matches
+              where terminal_publication_state = 'legacy_quarantined')
+                as legacy_terminal_match_count,
+            exists(
+                select 1 from trnm_online_progression_events event
+                join trnm_online_matches m on m.match_id = event.match_id
+                where m.terminal_publication_state = 'legacy_quarantined'
+            ) as campaign_projection_polluted,
+            exists(
+                select 1 from trnm_online_rating_events event
+                join trnm_online_matches m on m.match_id = event.match_id
+                where m.terminal_publication_state = 'legacy_quarantined'
+            ) as rating_projection_polluted
+    )
+    select
+        true as postgres_healthy,
+        exists(
+            select 1 from trnm_online_fleet_instances
+             where instance_id = $1 and instance_epoch = $2
+               and physical_host_id = $3
+               and status in ('active', 'draining') and lease_expires_at > now()
+        ) as fleet_epoch_current,
+        (select count(*) from trnm_online_fleet_instances
+          where status = 'active' and lease_expires_at > now())
+            as healthy_fleet_instances,
+        (select count(*) from trnm_online_matches
+          where phase = 'running' and assigned_instance_id = $1
+            and assigned_instance_epoch = $2 and assigned_physical_host_id = $3)
+            as active_matches,
+        (select count(*) from terminal_ack_gaps) as terminal_ack_gap_count,
+        coalesce(
+            (select array_agg(match_id order by match_id) from terminal_ack_gaps),
+            array[]::uuid[]
+        ) as terminal_ack_gap_match_ids,
+        coalesce(
+            (select array_agg(match_id order by match_id) from pending_terminal_seals),
+            array[]::uuid[]
+        ) as pending_terminal_seal_match_ids,
+        coalesce(
+            (select array_agg(match_id order by match_id) from pending_abandonment_seals),
+            array[]::uuid[]
+        ) as pending_abandonment_seal_match_ids,
+        historical_projection.legacy_terminal_match_count,
+        historical_projection.campaign_projection_polluted,
+        historical_projection.rating_projection_polluted,
+        coalesce(cold.terminal_total_count, 0)::bigint as terminal_total_count,
+        coalesce(cold.terminal_sealed_count, 0)::bigint as terminal_sealed_count,
+        coalesce(cold.abandonment_total_count, 0)::bigint as abandonment_total_count,
+        coalesce(cold.abandonment_sealed_count, 0)::bigint as abandonment_sealed_count
+      from historical_projection
+      left join trnm_online_local_cold_witness_summaries cold
+        on cold.physical_host_id = $3";
+const LOCAL_TERMINAL_ACK_STARTUP_PAGE_SQL: &str = "select
+        a.match_id, a.actor_generation, a.instance_id, a.actor_epoch,
+        a.physical_host_id, a.authoritative_tick, a.next_sequence,
+        a.match_revision, a.next_input_sequences, a.snapshot_hash,
+        a.result_hash, a.published_settlement_state, a.local_tombstone_state,
+        floor(extract(epoch from a.acknowledged_at) * 1000)::bigint
+            as acknowledged_at_unix_ms,
+        coalesce(
+            m.phase = 'complete'
+            and m.checkpoint_sequence = m.next_sequence
+            and m.result_hash is not null
+            and m.settlement_state in ('pending', 'settled')
+            and m.terminal_publication_state = 'acknowledged'
+            and m.terminal_publication_actor_generation is not null
+            and a.actor_generation = m.terminal_publication_actor_generation
+            and a.instance_id = m.assigned_instance_id
+            and a.actor_epoch = m.assigned_instance_epoch
+            and a.physical_host_id = m.assigned_physical_host_id
+            and a.authoritative_tick = m.authoritative_tick
+            and a.next_sequence = m.next_sequence
+            and a.match_revision = m.match_revision
+            and a.next_input_sequences = coalesce(
+                (select jsonb_object_agg(
+                    member.player_id,
+                    to_jsonb(member.next_input_sequence)
+                    order by member.player_id
+                 )
+                   from trnm_online_match_members member
+                  where member.match_id = m.match_id),
+                '{}'::jsonb
+            )
+            and a.snapshot_hash = m.snapshot_hash
+            and a.phase = 'complete'
+            and a.result_hash = m.result_hash
+            and a.published_settlement_state = m.settlement_state,
+            false
+        ) as tuple_exact
+      from trnm_online_terminal_publication_acks a
+      left join trnm_online_matches m on m.match_id = a.match_id
+     where a.physical_host_id = $1
+       and a.local_tombstone_state in ('legacy_bootstrap_pending', 'hot_pending')
+       and ($2::uuid is null or a.match_id > $2)
+     order by a.match_id
+     limit $3";
+const TERMINAL_ACK_DATABASE_EVIDENCE_BY_MATCH_SQL: &str = "select
+        a.match_id, a.actor_generation, a.instance_id, a.actor_epoch,
+        a.physical_host_id, a.authoritative_tick, a.next_sequence,
+        a.match_revision, a.next_input_sequences, a.snapshot_hash,
+        a.result_hash, a.published_settlement_state, a.local_tombstone_state,
+        floor(extract(epoch from a.acknowledged_at) * 1000)::bigint
+            as acknowledged_at_unix_ms,
+        coalesce(
+            m.phase = 'complete'
+            and m.checkpoint_sequence = m.next_sequence
+            and m.result_hash is not null
+            and m.settlement_state in ('pending', 'settled')
+            and m.terminal_publication_state = 'acknowledged'
+            and m.terminal_publication_actor_generation is not null
+            and a.actor_generation = m.terminal_publication_actor_generation
+            and a.instance_id = m.assigned_instance_id
+            and a.actor_epoch = m.assigned_instance_epoch
+            and a.physical_host_id = m.assigned_physical_host_id
+            and a.authoritative_tick = m.authoritative_tick
+            and a.next_sequence = m.next_sequence
+            and a.match_revision = m.match_revision
+            and a.next_input_sequences = coalesce(
+                (select jsonb_object_agg(
+                    member.player_id,
+                    to_jsonb(member.next_input_sequence)
+                    order by member.player_id
+                 )
+                   from trnm_online_match_members member
+                  where member.match_id = m.match_id),
+                '{}'::jsonb
+            )
+            and a.snapshot_hash = m.snapshot_hash
+            and a.phase = 'complete'
+            and a.result_hash = m.result_hash
+            and a.published_settlement_state = m.settlement_state,
+            false
+        ) as tuple_exact
+      from trnm_online_terminal_publication_acks a
+      left join trnm_online_matches m on m.match_id = a.match_id
+     where a.match_id = $1";
+const LOCAL_ABANDONMENT_STARTUP_PAGE_SQL: &str = "select
+        a.match_id, a.journal_owner_id, a.actor_generation, a.instance_id,
+        a.actor_epoch, a.physical_host_id, a.authoritative_tick,
+        a.next_sequence, a.match_revision, a.next_input_sequences,
+        a.snapshot_hash, a.failure_reason, a.local_tombstone_state,
+        floor(extract(epoch from a.abandoned_at) * 1000)::bigint
+            as abandoned_at_unix_ms,
+        m.simulation_json,
+        coalesce(
+            m.phase = 'failed_closed'
+            and m.settlement_state = 'failed_closed'
+            and m.terminal_publication_state = 'pending'
+            and m.checkpoint_sequence = m.next_sequence
+            and m.terminal_stage_simulation_json is null
+            and m.terminal_stage_result_json is null
+            and m.terminal_stage_result_hash is null
+            and m.terminal_stage_snapshot_hash is null
+            and m.terminal_stage_authoritative_tick is null
+            and m.terminal_stage_next_sequence is null
+            and m.terminal_stage_match_revision is null
+            and m.terminal_staged_at is null
+            and m.result_json is null
+            and m.result_hash is null
+            and m.terminal_publication_actor_generation is null
+            and m.failure_reason = a.failure_reason
+            and a.instance_id = m.assigned_instance_id
+            and a.actor_epoch = m.assigned_instance_epoch
+            and a.physical_host_id = m.assigned_physical_host_id
+            and a.authoritative_tick = m.authoritative_tick
+            and a.next_sequence = m.next_sequence
+            and a.match_revision = m.match_revision
+            and a.next_input_sequences = coalesce(
+                (select jsonb_object_agg(
+                    member.player_id,
+                    to_jsonb(member.next_input_sequence)
+                    order by member.player_id
+                 )
+                   from trnm_online_match_members member
+                  where member.match_id = m.match_id),
+                '{}'::jsonb
+            )
+            and a.snapshot_hash = m.snapshot_hash
+            and not exists (
+                select 1 from trnm_online_terminal_publication_acks terminal
+                where terminal.match_id = m.match_id
+            ),
+            false
+        ) as tuple_exact
+      from trnm_online_failed_closed_abandonment_markers a
+      left join trnm_online_matches m on m.match_id = a.match_id
+     where a.physical_host_id = $1
+       and a.local_tombstone_state = 'hot_pending'
+       and ($2::uuid is null or a.match_id > $2)
+     order by a.match_id
+     limit $3";
+const ABANDONMENT_DATABASE_EVIDENCE_BY_MATCH_SQL: &str = "select
+        a.match_id, a.journal_owner_id, a.actor_generation, a.instance_id,
+        a.actor_epoch, a.physical_host_id, a.authoritative_tick,
+        a.next_sequence, a.match_revision, a.next_input_sequences,
+        a.snapshot_hash, a.failure_reason, a.local_tombstone_state,
+        floor(extract(epoch from a.abandoned_at) * 1000)::bigint
+            as abandoned_at_unix_ms,
+        m.simulation_json,
+        coalesce(
+            m.phase = 'failed_closed'
+            and m.settlement_state = 'failed_closed'
+            and m.terminal_publication_state = 'pending'
+            and m.checkpoint_sequence = m.next_sequence
+            and m.terminal_stage_simulation_json is null
+            and m.terminal_stage_result_json is null
+            and m.terminal_stage_result_hash is null
+            and m.terminal_stage_snapshot_hash is null
+            and m.terminal_stage_authoritative_tick is null
+            and m.terminal_stage_next_sequence is null
+            and m.terminal_stage_match_revision is null
+            and m.terminal_staged_at is null
+            and m.result_json is null
+            and m.result_hash is null
+            and m.terminal_publication_actor_generation is null
+            and m.failure_reason = a.failure_reason
+            and a.instance_id = m.assigned_instance_id
+            and a.actor_epoch = m.assigned_instance_epoch
+            and a.physical_host_id = m.assigned_physical_host_id
+            and a.authoritative_tick = m.authoritative_tick
+            and a.next_sequence = m.next_sequence
+            and a.match_revision = m.match_revision
+            and a.next_input_sequences = coalesce(
+                (select jsonb_object_agg(
+                    member.player_id,
+                    to_jsonb(member.next_input_sequence)
+                    order by member.player_id
+                 )
+                   from trnm_online_match_members member
+                  where member.match_id = m.match_id),
+                '{}'::jsonb
+            )
+            and a.snapshot_hash = m.snapshot_hash
+            and not exists (
+                select 1 from trnm_online_terminal_publication_acks terminal
+                where terminal.match_id = m.match_id
+            ),
+            false
+        ) as tuple_exact
+      from trnm_online_failed_closed_abandonment_markers a
+      left join trnm_online_matches m on m.match_id = a.match_id
+     where a.match_id = $1";
+
+#[derive(Clone, Copy)]
+enum ActorCheckpointBoundary {
+    Periodic,
+    Shutdown,
+    Terminal,
+    Fenced,
+    CheckpointFailure,
+}
+
+fn actor_checkpoint_allowed(boundary: ActorCheckpointBoundary, command_pending: bool) -> bool {
+    !command_pending
+        && !matches!(
+            boundary,
+            ActorCheckpointBoundary::Fenced | ActorCheckpointBoundary::CheckpointFailure
+        )
+}
+
+fn actor_command_lane_publish_allowed(
+    command_pending: bool,
+    durable_commit_confirmed: bool,
+) -> bool {
+    !command_pending || durable_commit_confirmed
+}
+
+fn committed_publication_tick_is_monotonic(
+    latest_visible_candidate_tick: u64,
+    committed_tick: u64,
+) -> bool {
+    committed_tick >= latest_visible_candidate_tick
+}
+
+impl AuthorityClockTelemetry {
+    fn reset(&self, started_at: Instant) {
+        let Ok(mut window) = self.window.lock() else {
+            return;
+        };
+        window.started_at = Some(started_at);
+        window.wake_count = 0;
+        window.samples.clear();
+    }
+
+    fn record_wake(&self, scheduled_at: Instant, observed_at: Instant, tick_interval: Duration) {
+        let Ok(mut window) = self.window.lock() else {
+            return;
+        };
+        let lateness_ticks = observed_at
+            .saturating_duration_since(scheduled_at)
+            .as_secs_f64()
+            / tick_interval.as_secs_f64();
+        window.wake_count = window.wake_count.saturating_add(1);
+        window.samples.push_back(AuthorityClockWake {
+            observed_at,
+            lateness_ticks,
+        });
+        while window.samples.len() > AUTHORITY_CLOCK_WINDOW_TICKS + 1 {
+            window.samples.pop_front();
+        }
+    }
+
+    fn snapshot(
+        &self,
+        observed_at: Instant,
+        tick_interval: Duration,
+    ) -> Option<AuthorityClockSnapshot> {
+        let window = self.window.lock().ok()?;
+        let started_at = window.started_at?;
+        let elapsed = observed_at.saturating_duration_since(started_at);
+        let tick_seconds = tick_interval.as_secs_f64();
+        let first_wake = window.samples.front();
+        let last_wake = window.samples.back();
+        let window_drift_ticks = first_wake.zip(last_wake).and_then(|(first, last)| {
+            (window.samples.len() >= 2).then(|| {
+                let expected_ticks = last
+                    .observed_at
+                    .saturating_duration_since(first.observed_at)
+                    .as_secs_f64()
+                    / tick_seconds;
+                (window.samples.len() - 1) as f64 - expected_ticks
+            })
+        });
+        let latest_lateness_ticks = last_wake.map(|sample| sample.lateness_ticks);
+        let max_recent_lateness_ticks = window
+            .samples
+            .iter()
+            .map(|sample| sample.lateness_ticks)
+            .reduce(f64::max);
+        let last_wake_age_ms = last_wake.map(|sample| {
+            observed_at
+                .saturating_duration_since(sample.observed_at)
+                .as_secs_f64()
+                * 1_000.0
+        });
+        Some(AuthorityClockSnapshot {
+            elapsed_ms: elapsed.as_secs_f64() * 1_000.0,
+            wake_count: window.wake_count,
+            cumulative_drift_ticks: window.wake_count as f64 - elapsed.as_secs_f64() / tick_seconds,
+            window_sample_count: window.samples.len(),
+            window_drift_ticks,
+            latest_lateness_ticks,
+            max_recent_lateness_ticks,
+            last_wake_age_ms,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct PublishedMatchState {
+    simulation: Arc<MissionSimV1>,
+    snapshot_hash: Arc<String>,
+    next_sequence: u64,
+    match_revision: u64,
+    next_input_sequences: Arc<BTreeMap<String, u64>>,
+    phase: OnlineMatchPhase,
+    result_hash: Option<String>,
+    settlement_state: String,
+    state_sequence: u64,
+    published_at: Instant,
+}
+
+#[derive(Clone)]
+struct MatchActorHandle {
+    actor_id: Uuid,
+    commands: mpsc::Sender<ActorCommandEnvelope>,
+    members: Arc<BTreeMap<String, ActorMemberAuthority>>,
+    published: watch::Receiver<PublishedMatchState>,
+    publication_acked: watch::Receiver<ActorPublicationCursor>,
+    clock: Arc<AuthorityClockTelemetry>,
+    lifecycle: watch::Receiver<MatchActorLifecycle>,
+}
+
+#[derive(Clone)]
+struct ActorMemberAuthority {
+    account_id: Uuid,
+    controlled_unit_ids: BTreeSet<String>,
+    member_role: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ActorPublicationCursor {
+    tick: u64,
+    next_sequence: u64,
+    match_revision: u64,
+    next_input_sequences: BTreeMap<String, u64>,
+    phase: OnlineMatchPhase,
+    receipts_replayable: bool,
+    snapshot_hash: String,
+}
+
+struct CommandReceiptPublicationBarrier<'a> {
+    sequence: u64,
+    accepted_revision: u64,
+    durable_next_sequence: u64,
+    checkpoint_sequence: u64,
+    player_id: &'a str,
+    input_sequence: u64,
+    durable_member_input_sequence: u64,
+    phase: &'a str,
+    terminal_publication_acked: bool,
+    actor_cursor: Option<&'a ActorPublicationCursor>,
+}
+
+struct ActorCommandEnvelope {
+    request: OnlineCommandSubmitRequest,
+    request_hash: String,
+    admission: ActorCommandAdmission,
+    controlled_unit_ids: BTreeSet<String>,
+    member_role: String,
+    response: oneshot::Sender<Result<OnlineCommandReceipt, ApiError>>,
+}
+
+struct ActorCommandAdmission {
+    bucket_key: String,
+    limit: i64,
+}
+
+#[derive(Clone)]
+struct LoadedMatchActor {
+    simulation: MissionSimV1,
+    match_mode: String,
+    members: Arc<BTreeMap<String, ActorMemberAuthority>>,
+    next_sequence: u64,
+    match_revision: u64,
+    next_input_sequences: BTreeMap<String, u64>,
+    durable_recovery_tick: u64,
+}
+
+struct PreparedActorCommand {
+    candidate_simulation: MissionSimV1,
+    persistence: ActorCommandPersistence,
+}
+
+struct ActorCommandPersistence {
+    request: OnlineCommandSubmitRequest,
+    request_hash: String,
+    admission: ActorCommandAdmission,
+    order: trnm_rts_protocol::RtsFrameOrder,
+    post_simulation: Value,
+    snapshot_hash: String,
+    input_sequence: u64,
+    client_observed_tick: Option<u64>,
+    effective_tick: u64,
+    base_next_sequence: u64,
+    base_match_revision: u64,
+    accepted_revision: u64,
+}
+
+struct ActorPersistenceCompletion {
+    command_id: String,
+    result: Result<OnlineCommandReceipt, ApiError>,
+}
+
+struct PendingActorCommand {
+    command_id: String,
+    player_id: String,
+    request_hash: String,
+    input_sequence: u64,
+    accepted_revision: u64,
+    sequence: u64,
+    accepted_snapshot_hash: String,
+    durable_simulation_tick: u64,
+    visible: LoadedMatchActor,
+    response: oneshot::Sender<Result<OnlineCommandReceipt, ApiError>>,
+}
+
+#[derive(Clone)]
+struct ActorReceiptCacheEntry {
+    player_id: String,
+    request_hash: String,
+    receipt: OnlineCommandReceipt,
+}
+
+struct MatchCheckpointJob {
+    simulation: MissionSimV1,
+    snapshot_hash: String,
+    next_sequence: u64,
+    match_revision: u64,
+    terminal: bool,
+    completion: Option<oneshot::Sender<Result<(), String>>>,
+}
+
+#[derive(Clone)]
+struct ActorPublicationCandidate {
+    state: PublishedMatchState,
+    durable_db_next_sequence: u64,
+    durable_db_match_revision: u64,
+    durable_db_next_input_sequences: BTreeMap<String, u64>,
+    receipts_replayable: bool,
+    publish_to_watch: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TerminalPublicationEvidence {
+    authoritative_tick: u64,
+    next_sequence: u64,
+    match_revision: u64,
+    next_input_sequences: BTreeMap<String, u64>,
+    snapshot_hash: String,
+    phase: OnlineMatchPhase,
+    result_hash: Option<String>,
+    settlement_state: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TerminalPublicationCommit {
+    result_hash: String,
+    settlement_state: String,
+    acknowledged_at_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DatabaseLineage {
+    system_identifier: String,
+    timeline_id: u32,
+    wal_flush_lsn: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ColdWitnessDatabaseSummary {
+    terminal_total_count: u64,
+    terminal_sealed_count: u64,
+    abandonment_total_count: u64,
+    abandonment_sealed_count: u64,
+}
+
+impl ColdWitnessDatabaseSummary {
+    fn all_sealed(self) -> bool {
+        self.terminal_total_count == self.terminal_sealed_count
+            && self.abandonment_total_count == self.abandonment_sealed_count
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReadinessDatabaseSummary {
+    postgres_healthy: bool,
+    fleet_epoch_current: bool,
+    healthy_fleet_instances: i64,
+    active_matches: i64,
+    terminal_ack_gap_count: usize,
+    terminal_ack_gap_match_ids: Vec<Uuid>,
+    pending_terminal_seal_match_ids: Vec<Uuid>,
+    pending_abandonment_seal_match_ids: Vec<Uuid>,
+    historical_projection: HistoricalTerminalProjectionQuarantine,
+    cold_witness: ColdWitnessDatabaseSummary,
+}
+
+impl ReadinessDatabaseSummary {
+    fn blocked() -> Self {
+        Self {
+            postgres_healthy: false,
+            fleet_epoch_current: false,
+            healthy_fleet_instances: 0,
+            active_matches: -1,
+            terminal_ack_gap_count: usize::MAX,
+            terminal_ack_gap_match_ids: Vec::new(),
+            pending_terminal_seal_match_ids: Vec::new(),
+            pending_abandonment_seal_match_ids: Vec::new(),
+            historical_projection: HistoricalTerminalProjectionQuarantine {
+                legacy_terminal_match_count: -1,
+                campaign_projection_polluted: true,
+                rating_projection_polluted: true,
+            },
+            cold_witness: ColdWitnessDatabaseSummary::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AbandonmentDatabaseEvidence {
+    match_id: Uuid,
+    journal_owner_id: Uuid,
+    actor_generation: Uuid,
+    instance_id: String,
+    actor_epoch: i64,
+    physical_host_id: String,
+    authoritative_tick: u64,
+    next_sequence: u64,
+    match_revision: u64,
+    next_input_sequences: BTreeMap<String, u64>,
+    snapshot_hash: String,
+    failure_reason: String,
+    local_tombstone_state: String,
+    abandoned_at_unix_ms: u64,
+}
+
+impl AbandonmentDatabaseEvidence {
+    fn matches_high_water(&self, high_water: &PublishedTickHighWater) -> bool {
+        self.match_id == high_water.match_id
+            && self.journal_owner_id == high_water.journal_owner_id
+            && self.actor_generation == high_water.actor_generation
+            && self.instance_id == high_water.instance_id
+            && self.actor_epoch == high_water.actor_epoch
+            && self.physical_host_id == high_water.physical_host_id
+            && self.authoritative_tick == high_water.tick
+            && self.next_sequence == high_water.next_sequence
+            && self.match_revision == high_water.match_revision
+            && self.next_input_sequences == high_water.next_input_sequences
+            && self.snapshot_hash == high_water.snapshot_hash
+            && high_water.phase == "running"
+            && high_water.receipts_replayable
+    }
+}
+
+fn valid_abandonment_failure_reason(value: &str) -> bool {
+    !value.trim().is_empty() && value.len() <= 1_024 && !value.chars().any(char::is_control)
+}
+
+fn legacy_abandonment_adoption_allowed(
+    requested: bool,
+    match_updated_at: DateTime<Utc>,
+    migration_applied_at: DateTime<Utc>,
+) -> bool {
+    requested && match_updated_at < migration_applied_at
+}
+
+fn parse_postgres_wal_lsn(value: &str) -> Option<u64> {
+    fn parse_canonical_hex_part(part: &str) -> Option<u32> {
+        if part.is_empty()
+            || part.len() > 8
+            || (part != "0" && part.starts_with('0'))
+            || !part
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'A'..=b'F'))
+        {
+            return None;
+        }
+        u32::from_str_radix(part, 16).ok()
+    }
+
+    let (high, low) = value.split_once('/')?;
+    if low.contains('/') {
+        return None;
+    }
+    let high = parse_canonical_hex_part(high)?;
+    let low = parse_canonical_hex_part(low)?;
+    Some((u64::from(high) << 32) | u64::from(low))
+}
+
+fn terminal_tombstone_settlement_matches(tombstone_state: &str, database_state: &str) -> bool {
+    tombstone_state == database_state
+        || (tombstone_state == "pending" && database_state == "settled")
+}
+
+fn database_lineage_covers_tombstone(
+    lineage: &DatabaseLineage,
+    tombstone: &PublishedTickAckTombstone,
+) -> bool {
+    lineage.system_identifier == tombstone.database_system_identifier
+        && lineage.timeline_id == tombstone.database_timeline_id
+        && parse_postgres_wal_lsn(&lineage.wal_flush_lsn)
+            .zip(parse_postgres_wal_lsn(&tombstone.database_wal_lsn))
+            .is_some_and(|(current, sealed)| current >= sealed)
+}
+
+fn database_lineage_covers_abandonment(
+    lineage: &DatabaseLineage,
+    tombstone: &PublishedTickAbandonmentTombstone,
+) -> bool {
+    lineage.system_identifier == tombstone.database_system_identifier
+        && lineage.timeline_id == tombstone.database_timeline_id
+        && parse_postgres_wal_lsn(&lineage.wal_flush_lsn)
+            .zip(parse_postgres_wal_lsn(&tombstone.database_wal_lsn))
+            .is_some_and(|(current, sealed)| current >= sealed)
+}
+
+fn database_lineage_covers_cold_witness(
+    lineage: &DatabaseLineage,
+    witness: &PublishedTickColdWitness,
+) -> bool {
+    match witness {
+        PublishedTickColdWitness::TerminalAck(tombstone) => {
+            database_lineage_covers_tombstone(lineage, tombstone)
+        }
+        PublishedTickColdWitness::FailedClosedAbandonment(tombstone) => {
+            database_lineage_covers_abandonment(lineage, tombstone)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartupTerminalAckSealSource {
+    Cold,
+    Hot,
+    LegacyDatabaseBootstrap,
+}
+
+fn startup_terminal_ack_seal_source(
+    local_tombstone_state: &str,
+    has_hot: bool,
+    has_cold: bool,
+) -> Option<StartupTerminalAckSealSource> {
+    if has_cold {
+        return Some(StartupTerminalAckSealSource::Cold);
+    }
+    match local_tombstone_state {
+        "legacy_bootstrap_pending" if has_hot => Some(StartupTerminalAckSealSource::Hot),
+        "legacy_bootstrap_pending" => Some(StartupTerminalAckSealSource::LegacyDatabaseBootstrap),
+        "hot_pending" if has_hot => Some(StartupTerminalAckSealSource::Hot),
+        "sealed" => None,
+        _ => None,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TerminalAckDatabaseEvidence {
+    match_id: Uuid,
+    actor_generation: Uuid,
+    instance_id: String,
+    actor_epoch: i64,
+    physical_host_id: String,
+    authoritative_tick: u64,
+    next_sequence: u64,
+    match_revision: u64,
+    next_input_sequences: BTreeMap<String, u64>,
+    snapshot_hash: String,
+    result_hash: String,
+    settlement_state: String,
+    local_tombstone_state: String,
+    acknowledged_at_unix_ms: u64,
+}
+
+impl TerminalAckDatabaseEvidence {
+    fn record_input(&self) -> PublishedTickRecordInput {
+        PublishedTickRecordInput {
+            instance_id: self.instance_id.clone(),
+            match_id: self.match_id,
+            actor_generation: self.actor_generation,
+            actor_epoch: self.actor_epoch,
+            tick: self.authoritative_tick,
+            next_sequence: self.next_sequence,
+            match_revision: self.match_revision,
+            next_input_sequences: self.next_input_sequences.clone(),
+            phase: "complete".to_string(),
+            receipts_replayable: true,
+            snapshot_hash: self.snapshot_hash.clone(),
+        }
+    }
+
+    fn matches_high_water(&self, high_water: &PublishedTickHighWater) -> bool {
+        high_water.instance_id == self.instance_id
+            && high_water.physical_host_id == self.physical_host_id
+            && high_water.match_id == self.match_id
+            && high_water.actor_generation == self.actor_generation
+            && high_water.actor_epoch == self.actor_epoch
+            && high_water.tick == self.authoritative_tick
+            && high_water.next_sequence == self.next_sequence
+            && high_water.match_revision == self.match_revision
+            && high_water.next_input_sequences == self.next_input_sequences
+            && high_water.phase == "complete"
+            && high_water.receipts_replayable
+            && high_water.snapshot_hash == self.snapshot_hash
+    }
+
+    fn matches_tombstone(
+        &self,
+        tombstone: &PublishedTickAckTombstone,
+        lineage: &DatabaseLineage,
+    ) -> bool {
+        self.matches_high_water(&tombstone.high_water)
+            && tombstone.result_hash == self.result_hash
+            && terminal_tombstone_settlement_matches(
+                &tombstone.settlement_state,
+                &self.settlement_state,
+            )
+            && tombstone.acknowledged_at_unix_ms == self.acknowledged_at_unix_ms
+            && database_lineage_covers_tombstone(lineage, tombstone)
+    }
+}
+
+#[derive(Clone)]
+struct StagedTerminalAuthority {
+    simulation: MissionSimV1,
+    result: BattleResultV1,
+    result_hash: String,
+    snapshot_hash: String,
+    authoritative_tick: u64,
+    next_sequence: u64,
+    match_revision: u64,
+}
+
+struct TerminalFinalizationExpectation<'a> {
+    match_id: Uuid,
+    actor_generation: Uuid,
+    actor_epoch: i64,
+    instance_id: &'a str,
+    physical_host_id: &'a str,
+    authoritative_tick: u64,
+    next_sequence: u64,
+    match_revision: u64,
+    next_input_sequences: &'a BTreeMap<String, u64>,
+    snapshot_hash: &'a str,
+    result_hash: Option<&'a str>,
+}
+
+impl TerminalPublicationEvidence {
+    fn from_state(state: &PublishedMatchState) -> Option<Self> {
+        (state.phase == OnlineMatchPhase::Complete).then(|| Self {
+            authoritative_tick: state.simulation.tick,
+            next_sequence: state.next_sequence,
+            match_revision: state.match_revision,
+            next_input_sequences: state.next_input_sequences.as_ref().clone(),
+            snapshot_hash: state.snapshot_hash.as_ref().clone(),
+            phase: state.phase,
+            result_hash: state.result_hash.clone(),
+            settlement_state: state.settlement_state.clone(),
+        })
+    }
+}
+
+struct ActorPublicationCompletion {
+    state_sequence: u64,
+    deferred_terminal: Option<DeferredTerminalPublication>,
+    result: Result<(), String>,
+}
+
+struct TerminalCheckpointCompletion {
+    snapshot_hash: String,
+    result: Result<(), String>,
+}
+
+struct TerminalAckCompletion {
+    deferred_terminal: DeferredTerminalPublication,
+    result: Result<TerminalPublicationCommit, String>,
+}
+
+struct DeferredTerminalPublication {
+    state: PublishedMatchState,
+    cursor: ActorPublicationCursor,
+    evidence: TerminalPublicationEvidence,
+    publish_to_watch: bool,
+}
+
+struct ActorPublicationWorker {
+    journal: PublishedTickJournal,
+    instance_id: Arc<String>,
+    match_id: Uuid,
+    actor_id: Uuid,
+    actor_epoch: i64,
+    candidates: watch::Receiver<Option<ActorPublicationCandidate>>,
+    permit: watch::Receiver<bool>,
+    durable_recovery_tick: watch::Receiver<u64>,
+    published: watch::Sender<PublishedMatchState>,
+    publication_acked: watch::Sender<ActorPublicationCursor>,
+    completions: mpsc::Sender<ActorPublicationCompletion>,
+}
+
+struct PendingPublishedCommandReceipt {
+    state_sequence: u64,
+    request_hash: String,
+    receipt: OnlineCommandReceipt,
+    response: oneshot::Sender<Result<OnlineCommandReceipt, ApiError>>,
+}
+
+pub struct AppStateConfig {
+    pub database_url: String,
+    pub cex_base_url: String,
+    pub game_authority_token: String,
+    pub entitlement_signer_url: String,
+    pub entitlement_signer_token: String,
+    pub asset_root: PathBuf,
+    pub published_tick_journal_dir: PathBuf,
+    pub moderator_token: String,
+    pub instance_id: String,
+    pub region: String,
+    pub public_endpoint: String,
+    pub physical_host_id: String,
+    pub capacity: i32,
+    pub rate_limit_per_minute: u32,
+    pub request_body_limit_bytes: u32,
+    pub tick_interval: Duration,
+    pub accelerated_test_clock: bool,
+}
+
+pub struct FailCloseMaintenanceConfig {
+    pub database_url: String,
+    pub published_tick_journal_dir: PathBuf,
+    pub instance_id: String,
+    pub physical_host_id: String,
+    pub match_id: Uuid,
+    pub failure_reason: String,
+    pub adopt_legacy_pre_v13: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct FailCloseMaintenanceReport {
+    pub contract_version: &'static str,
+    pub status: &'static str,
+    pub match_id: Uuid,
+    pub selector: &'static str,
+    pub transition_atomic: bool,
+    pub previous_phase: String,
+    pub final_phase: &'static str,
+    pub waiting_db_only: bool,
+    pub hot_witness_present_before: bool,
+    pub cold_witness_sealed: bool,
+    pub local_marker_state: Option<String>,
+    pub legacy_adoption: bool,
+    pub adoption_contract: Option<&'static str>,
+}
+
+async fn configure_database_connection(connection: &mut PgConnection) -> Result<(), sqlx::Error> {
+    sqlx::query::query("select set_config('statement_timeout', $1, false)")
+        .bind(format!("{}ms", DATABASE_STATEMENT_TIMEOUT.as_millis()))
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query::query("select set_config('lock_timeout', $1, false)")
+        .bind(format!("{}ms", DATABASE_LOCK_TIMEOUT.as_millis()))
+        .execute(&mut *connection)
+        .await?;
+    Ok(())
+}
+
+fn canonical_database_system_identifier(value: &str) -> bool {
+    !value.is_empty() && !value.starts_with('0') && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn migration_checksum_sha256(sql: &str) -> String {
+    format!("{:x}", Sha256::digest(sql.as_bytes()))
+}
+
+fn migration_ledger_entry_is_applied(
+    version: i32,
+    expected_name: &str,
+    expected_checksum: &str,
+    recorded: Option<(&str, &str)>,
+) -> Result<bool, String> {
+    let Some((recorded_name, recorded_checksum)) = recorded else {
+        return Ok(false);
+    };
+    if recorded_name != expected_name || recorded_checksum != expected_checksum {
+        return Err(format!(
+            "Online Production migration V{version} ledger drift: expected {expected_name} {expected_checksum}, recorded {recorded_name} {recorded_checksum}"
+        ));
+    }
+    Ok(true)
+}
+
+async fn read_database_host_authority_identity(
+    connection: &mut PgConnection,
+    physical_host_id: &str,
+    owner_nonce: Uuid,
+    application_name: String,
+) -> Result<DatabaseHostAuthorityIdentity, String> {
+    let row = sqlx::query::query(
+        "select hashtextextended($1, $2) as leader_lock_key,
+                hashtextextended($1, $3) as barrier_lock_key,
+                pg_backend_pid() as backend_pid,
+                activity.backend_start as backend_started_at,
+                system.system_identifier::text as database_system_identifier,
+                checkpoint.timeline_id::bigint as database_timeline_id,
+                pg_postmaster_start_time() as database_postmaster_started_at,
+                pg_is_in_recovery() as in_recovery
+           from pg_stat_activity activity
+           cross join pg_control_system() system
+           cross join pg_control_checkpoint() checkpoint
+          where activity.pid = pg_backend_pid()",
+    )
+    .bind(physical_host_id)
+    .bind(DATABASE_HOST_LEADER_LOCK_SALT)
+    .bind(DATABASE_HOST_BARRIER_LOCK_SALT)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(|error| format!("read PostgreSQL host-authority identity: {error}"))?;
+    if row
+        .try_get::<bool, _>("in_recovery")
+        .map_err(|error| error.to_string())?
+    {
+        return Err("PostgreSQL host authority requires a writable primary".to_string());
+    }
+    let database_system_identifier = row
+        .try_get::<String, _>("database_system_identifier")
+        .map_err(|error| error.to_string())?;
+    if !canonical_database_system_identifier(&database_system_identifier) {
+        return Err("PostgreSQL system identifier is not canonical".to_string());
+    }
+    let database_timeline_id = row
+        .try_get::<i64, _>("database_timeline_id")
+        .map_err(|error| error.to_string())?;
+    if database_timeline_id <= 0 {
+        return Err("PostgreSQL timeline identifier is not positive".to_string());
+    }
+    let leader_lock_key = row
+        .try_get::<i64, _>("leader_lock_key")
+        .map_err(|error| error.to_string())?;
+    let barrier_lock_key = row
+        .try_get::<i64, _>("barrier_lock_key")
+        .map_err(|error| error.to_string())?;
+    if leader_lock_key == barrier_lock_key {
+        return Err("PostgreSQL host authority lock domains collided".to_string());
+    }
+    Ok(DatabaseHostAuthorityIdentity {
+        physical_host_id: physical_host_id.to_string(),
+        owner_nonce,
+        application_name,
+        backend_pid: row
+            .try_get("backend_pid")
+            .map_err(|error| error.to_string())?,
+        backend_started_at: row
+            .try_get("backend_started_at")
+            .map_err(|error| error.to_string())?,
+        database_system_identifier,
+        database_timeline_id,
+        database_postmaster_started_at: row
+            .try_get("database_postmaster_started_at")
+            .map_err(|error| error.to_string())?,
+        leader_lock_key,
+        barrier_lock_key,
+    })
+}
+
+async fn run_database_migrations(connection: &mut PgConnection) -> Result<(), String> {
+    let mut migrations = Connection::begin(connection)
+        .await
+        .map_err(|error| format!("begin Online Production migrations: {error}"))?;
+    sqlx::query::query(
+        "select set_config('statement_timeout', $1, true),
+                set_config('lock_timeout', $2, true)",
+    )
+    .bind(format!(
+        "{}ms",
+        DATABASE_MIGRATION_STATEMENT_TIMEOUT.as_millis()
+    ))
+    .bind(format!("{}ms", DATABASE_MIGRATION_LOCK_TIMEOUT.as_millis()))
+    .execute(&mut *migrations)
+    .await
+    .map_err(|error| format!("configure Online Production migration transaction: {error}"))?;
+    sqlx::query::query("select pg_advisory_xact_lock($1)")
+        .bind(MIGRATION_ADVISORY_LOCK)
+        .execute(&mut *migrations)
+        .await
+        .map_err(|error| format!("lock Online Production migrations: {error}"))?;
+    let migration_ledger_exists =
+        sqlx::query_scalar::query_scalar::<_, bool>("select to_regclass($1) is not null")
+            .bind("public.trnm_online_schema_migrations")
+            .fetch_one(&mut *migrations)
+            .await
+            .map_err(|error| format!("inspect Online Production migration ledger: {error}"))?;
+    if !migration_ledger_exists {
+        sqlx::raw_sql::raw_sql(MIGRATION_LEDGER_DDL)
+            .execute(&mut *migrations)
+            .await
+            .map_err(|error| format!("create Online Production migration ledger: {error}"))?;
+    }
+    for (version, label, sql) in [
+        (1_i32, "0001_online_authority_v1", MIGRATION_V1),
+        (2, "0002_online_authority_v2", MIGRATION_V2),
+        (3, "0003_online_product_v1", MIGRATION_V3),
+        (4, "0004_online_product_v2", MIGRATION_V4),
+        (5, "0005_online_operations_v1", MIGRATION_V5),
+        (6, "0006_online_operations_v2", MIGRATION_V6),
+        (7, "0007_online_production_v1", MIGRATION_V7),
+        (8, "0008_online_production_v2", MIGRATION_V8),
+        (9, "0009_online_realtime_actor_v1", MIGRATION_V9),
+        (10, "0010_online_realtime_input_v1", MIGRATION_V10),
+        (11, "0011_online_terminal_publication_ack_v1", MIGRATION_V11),
+        (12, "0012_online_terminal_staging_v1", MIGRATION_V12),
+        (
+            13,
+            "0013_online_failed_closed_abandonment_v1",
+            MIGRATION_V13,
+        ),
+        (14, "0014_online_command_commit_rpc_v1", MIGRATION_V14),
+        (15, "0015_online_realtime_hot_path_v1", MIGRATION_V15),
+        (16, "0016_online_settlement_outbox_v1", MIGRATION_V16),
+        (
+            17,
+            "0017_online_settlement_worker_runtime_v1",
+            MIGRATION_V17,
+        ),
+        (
+            18,
+            "0018_online_settlement_operator_controls_v1",
+            MIGRATION_V18,
+        ),
+        (
+            19,
+            "0019_online_settlement_quarantine_v1",
+            MIGRATION_V19,
+        ),
+    ] {
+        let checksum = migration_checksum_sha256(sql);
+        let recorded = sqlx::query::query(
+            "select migration_name, checksum_sha256
+               from public.trnm_online_schema_migrations
+              where migration_version = $1",
+        )
+        .bind(version)
+        .fetch_optional(&mut *migrations)
+        .await
+        .map_err(|error| format!("read migration V{version} ledger entry: {error}"))?;
+        if let Some(recorded) = recorded {
+            let recorded_name = recorded
+                .try_get::<String, _>("migration_name")
+                .map_err(|error| error.to_string())?;
+            let recorded_checksum = recorded
+                .try_get::<String, _>("checksum_sha256")
+                .map_err(|error| error.to_string())?;
+            migration_ledger_entry_is_applied(
+                version,
+                label,
+                &checksum,
+                Some((&recorded_name, &recorded_checksum)),
+            )?;
+            continue;
+        }
+        sqlx::raw_sql::raw_sql(sql)
+            .execute(&mut *migrations)
+            .await
+            .map_err(|error| format!("migrate V{version} {label} PostgreSQL: {error}"))?;
+        sqlx::query::query(
+            "insert into public.trnm_online_schema_migrations (
+                migration_version, migration_name, checksum_sha256
+             ) values ($1, $2, $3)",
+        )
+        .bind(version)
+        .bind(label)
+        .bind(&checksum)
+        .execute(&mut *migrations)
+        .await
+        .map_err(|error| format!("record migration V{version} {label}: {error}"))?;
+    }
+    migrations
+        .commit()
+        .await
+        .map_err(|error| format!("commit Online Production migrations: {error}"))
+}
+
+async fn publish_database_host_authority_identity(
+    connection: &mut PgConnection,
+    identity: &DatabaseHostAuthorityIdentity,
+) -> Result<(), String> {
+    sqlx::query::query(
+        "insert into trnm_online_physical_host_authorities (
+            physical_host_id, owner_nonce, application_name, backend_pid,
+            backend_started_at, database_system_identifier, database_timeline_id,
+            database_postmaster_started_at, leader_lock_key, barrier_lock_key, claimed_at
+         ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+         on conflict (physical_host_id) do update set
+            owner_nonce = excluded.owner_nonce,
+            application_name = excluded.application_name,
+            backend_pid = excluded.backend_pid,
+            backend_started_at = excluded.backend_started_at,
+            database_system_identifier = excluded.database_system_identifier,
+            database_timeline_id = excluded.database_timeline_id,
+            database_postmaster_started_at = excluded.database_postmaster_started_at,
+            leader_lock_key = excluded.leader_lock_key,
+            barrier_lock_key = excluded.barrier_lock_key,
+            claimed_at = now()",
+    )
+    .bind(&identity.physical_host_id)
+    .bind(identity.owner_nonce)
+    .bind(&identity.application_name)
+    .bind(identity.backend_pid)
+    .bind(identity.backend_started_at)
+    .bind(&identity.database_system_identifier)
+    .bind(identity.database_timeline_id)
+    .bind(identity.database_postmaster_started_at)
+    .bind(identity.leader_lock_key)
+    .bind(identity.barrier_lock_key)
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| format!("publish PostgreSQL host-authority identity: {error}"))?;
+    Ok(())
+}
+
+async fn bootstrap_database_host_authority(
+    database_url: &str,
+    physical_host_id: &str,
+) -> Result<Arc<DatabaseHostAuthorityFence>, String> {
+    let mut connection = PgConnection::connect(database_url)
+        .await
+        .map_err(|error| format!("connect PostgreSQL host-authority session: {error}"))?;
+    configure_database_connection(&mut connection)
+        .await
+        .map_err(|error| format!("configure PostgreSQL host-authority session: {error}"))?;
+    let owner_nonce = Uuid::new_v4();
+    let application_name = format!("trnm-host-fence:{owner_nonce}");
+    sqlx::query::query("select set_config('application_name', $1, false)")
+        .bind(&application_name)
+        .execute(&mut connection)
+        .await
+        .map_err(|error| format!("name PostgreSQL host-authority session: {error}"))?;
+    let identity = read_database_host_authority_identity(
+        &mut connection,
+        physical_host_id,
+        owner_nonce,
+        application_name,
+    )
+    .await?;
+    let acquired_leader =
+        sqlx::query_scalar::query_scalar::<_, bool>("select pg_try_advisory_lock($1)")
+            .bind(identity.leader_lock_key)
+            .fetch_one(&mut connection)
+            .await
+            .map_err(|error| format!("acquire PostgreSQL host leader lock: {error}"))?;
+    if !acquired_leader {
+        return Err(format!(
+            "physical host {} already has a PostgreSQL authority leader",
+            identity.physical_host_id
+        ));
+    }
+    tokio::time::timeout(DATABASE_HOST_HANDOFF_TIMEOUT, async {
+        loop {
+            let acquired =
+                sqlx::query_scalar::query_scalar::<_, bool>("select pg_try_advisory_lock($1)")
+                    .bind(identity.barrier_lock_key)
+                    .fetch_one(&mut connection)
+                    .await
+                    .map_err(|error| format!("acquire PostgreSQL host handoff barrier: {error}"))?;
+            if acquired {
+                return Ok::<(), String>(());
+            }
+            tokio::time::sleep(DATABASE_HOST_HANDOFF_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "PostgreSQL host handoff for {} exceeded {} seconds",
+            identity.physical_host_id,
+            DATABASE_HOST_HANDOFF_TIMEOUT.as_secs()
+        )
+    })??;
+    run_database_migrations(&mut connection).await?;
+    publish_database_host_authority_identity(&mut connection, &identity).await?;
+    let released_barrier =
+        sqlx::query_scalar::query_scalar::<_, bool>("select pg_advisory_unlock($1)")
+            .bind(identity.barrier_lock_key)
+            .fetch_one(&mut connection)
+            .await
+            .map_err(|error| format!("release PostgreSQL host handoff barrier: {error}"))?;
+    if !released_barrier {
+        return Err(
+            "PostgreSQL host handoff barrier was not owned by bootstrap session".to_string(),
+        );
+    }
+    Ok(Arc::new(DatabaseHostAuthorityFence {
+        identity,
+        connection: AsyncMutex::new(connection),
+        healthy: AtomicBool::new(true),
+        last_success: Mutex::new(Instant::now()),
+    }))
+}
+
+async fn database_host_authority_is_exact(
+    connection: &mut PgConnection,
+    identity: &DatabaseHostAuthorityIdentity,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar::query_scalar(
+        "select exists (
+            select 1
+              from trnm_online_physical_host_authorities authority
+              join pg_stat_activity activity on activity.pid = authority.backend_pid
+              join pg_locks authority_lock on authority_lock.pid = authority.backend_pid
+             where authority.physical_host_id = $1
+               and authority.owner_nonce = $2
+               and authority.application_name = $3
+               and authority.backend_pid = $4
+               and authority.backend_started_at = $5
+               and authority.database_system_identifier = $6
+               and authority.database_timeline_id = $7
+               and authority.database_postmaster_started_at = $8
+               and authority.leader_lock_key = $9
+               and authority.barrier_lock_key = $10
+               and activity.datname = current_database()
+               and activity.backend_start = $5
+               and activity.application_name = $3
+               and authority_lock.locktype = 'advisory'
+               and authority_lock.database = (
+                   select oid from pg_database where datname = current_database()
+               )
+               and authority_lock.classid::bigint = (
+                   ($9::bigint >> 32) & 4294967295::bigint
+               )
+               and authority_lock.objid::bigint = (
+                   $9::bigint & 4294967295::bigint
+               )
+               and authority_lock.objsubid = 1
+               and authority_lock.mode = 'ExclusiveLock'
+               and authority_lock.granted
+               and not pg_is_in_recovery()
+               and (select system_identifier::text from pg_control_system()) = $6
+               and (select timeline_id::bigint from pg_control_checkpoint()) = $7
+               and pg_postmaster_start_time() = $8
+        )",
+    )
+    .bind(&identity.physical_host_id)
+    .bind(identity.owner_nonce)
+    .bind(&identity.application_name)
+    .bind(identity.backend_pid)
+    .bind(identity.backend_started_at)
+    .bind(&identity.database_system_identifier)
+    .bind(identity.database_timeline_id)
+    .bind(identity.database_postmaster_started_at)
+    .bind(identity.leader_lock_key)
+    .bind(identity.barrier_lock_key)
+    .fetch_one(&mut *connection)
+    .await
+}
+
+async fn admit_database_pool_connection(
+    connection: &mut PgConnection,
+    fence: &DatabaseHostAuthorityFence,
+) -> Result<(), sqlx::Error> {
+    configure_database_connection(connection).await?;
+    if !fence.is_healthy() || !database_host_authority_is_exact(connection, &fence.identity).await?
+    {
+        return Err(sqlx::Error::Protocol(
+            "PostgreSQL host authority is not exact before pool admission".to_string(),
+        ));
+    }
+    sqlx::query::query("select pg_advisory_lock_shared($1)")
+        .bind(fence.identity.barrier_lock_key)
+        .execute(&mut *connection)
+        .await?;
+    if !fence.is_healthy() || !database_host_authority_is_exact(connection, &fence.identity).await?
+    {
+        return Err(sqlx::Error::Protocol(
+            "PostgreSQL host authority changed across pool barrier admission".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+async fn configure_database_pool_connection(
+    connection: &mut PgConnection,
+    fence: &DatabaseHostAuthorityFence,
+) -> Result<(), sqlx::Error> {
+    admit_database_pool_connection(connection, fence).await?;
+    // SQLx prepares dynamic PostgreSQL queries on first use per physical
+    // connection. Under WAN-like RTT that cache miss adds a full Parse/Describe
+    // round trip to an otherwise one-round-trip command. Prepare every
+    // real-time statement only after this connection owns the lifetime K2
+    // barrier, so no admitted command, heartbeat, checkpoint, or actor-fence
+    // query can pay that cold-start tax.
+    for statement in [
+        ONLINE_COMMAND_COMMIT_V2_SQL,
+        ONLINE_HEARTBEAT_FLEET_V1_SQL,
+        ONLINE_CHECKPOINT_ACTOR_V1_SQL,
+        MATCH_ACTOR_FENCE_OWNERSHIP_SQL,
+        DUPLICATE_COMMAND_RECEIPT_SQL,
+    ] {
+        let _ = connection.prepare(statement).await?;
+    }
+    Ok(())
+}
+
+async fn configure_readiness_database_pool_connection(
+    connection: &mut PgConnection,
+    fence: &DatabaseHostAuthorityFence,
+) -> Result<(), sqlx::Error> {
+    admit_database_pool_connection(connection, fence).await?;
+    // The control-plane pool is deliberately independent of player traffic.
+    // Prepare every query used by the two concurrent readiness branches before
+    // the listener becomes available so WAN RTT cannot create a first-sample
+    // Parse/Describe spike on either reserved connection.
+    for statement in [
+        READINESS_DATABASE_SUMMARY_SQL,
+        DATABASE_LINEAGE_SQL,
+        TERMINAL_ACK_DATABASE_EVIDENCE_BY_MATCH_SQL,
+        EXACT_TERMINAL_PUBLICATION_MARKER_SQL,
+        ABANDONMENT_DATABASE_EVIDENCE_BY_MATCH_SQL,
+    ] {
+        let _ = connection.prepare(statement).await?;
+    }
+    Ok(())
+}
+
+async fn require_database_host_authority(
+    transaction: &mut sqlx::transaction::Transaction<'_, Postgres>,
+    fence: &DatabaseHostAuthorityFence,
+) -> Result<(), String> {
+    if !fence.is_healthy() {
+        return Err("PostgreSQL host authority is fail-closed".to_string());
+    }
+    let exact = database_host_authority_is_exact(transaction, &fence.identity)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !exact {
+        return Err("PostgreSQL host authority leader or incarnation changed".to_string());
+    }
+    Ok(())
+}
+
+impl AppState {
+    pub async fn connect(config: AppStateConfig) -> Result<Self, String> {
+        if config.instance_id.trim().is_empty()
+            || config.region.trim().is_empty()
+            || config.public_endpoint.trim().is_empty()
+            || config.physical_host_id.trim().is_empty()
+            || !(1..=10_000).contains(&config.capacity)
+            || !(30..=100_000).contains(&config.rate_limit_per_minute)
+            || !(16_384..=1_048_576).contains(&config.request_body_limit_bytes)
+        {
+            return Err(
+                "fleet identity, capacity and production ingress limits must be valid".to_string(),
+            );
+        }
+
+        // Acquire and validate the host-local publication journal before any
+        // database fencing mutation. A second process on the same physical
+        // host must fail without incrementing the healthy process epoch.
+        let published_tick_journal = PublishedTickJournal::open(
+            config.published_tick_journal_dir.clone(),
+            config.physical_host_id.clone(),
+        )?;
+        let database_host_authority =
+            bootstrap_database_host_authority(&config.database_url, config.physical_host_id.trim())
+                .await?;
+        let after_connect_authority = database_host_authority.clone();
+        let before_acquire_authority = database_host_authority.clone();
+        let pool = PgPoolOptions::new()
+            .max_connections(GAME_SERVER_DATABASE_MAX_CONNECTIONS)
+            .min_connections(GAME_SERVER_DATABASE_MIN_CONNECTIONS)
+            .acquire_timeout(Duration::from_secs(5))
+            .after_connect(move |connection, _metadata| {
+                let authority = after_connect_authority.clone();
+                Box::pin(
+                    async move { configure_database_pool_connection(connection, &authority).await },
+                )
+            })
+            .before_acquire(move |_connection, _metadata| {
+                let authority = before_acquire_authority.clone();
+                Box::pin(async move {
+                    if authority.is_healthy() {
+                        Ok(true)
+                    } else {
+                        Err(sqlx::Error::Protocol(
+                            "PostgreSQL host authority is fail-closed".to_string(),
+                        ))
+                    }
+                })
+            })
+            .connect(&config.database_url)
+            .await
+            .map_err(|error| format!("connect Online Authority PostgreSQL: {error}"))?;
+
+        // Reserve a small control-plane pool for the two concurrent database
+        // branches in each readiness request. Four warm connections cover the
+        // steady probe; elastic headroom covers the operations monitor plus
+        // four workers performing their startup probe together. Player
+        // admission, snapshots, checkpoints and command commits may fully
+        // occupy the data-plane pool under RTT or a burst, but they must not
+        // make the local orchestrator blind and turn transient probe overlap
+        // into restart feedback.
+        let readiness_after_connect_authority = database_host_authority.clone();
+        let readiness_before_acquire_authority = database_host_authority.clone();
+        let readiness_pool = PgPoolOptions::new()
+            .min_connections(READINESS_DATABASE_MIN_CONNECTIONS)
+            .max_connections(READINESS_DATABASE_MAX_CONNECTIONS)
+            .acquire_timeout(Duration::from_secs(5))
+            .after_connect(move |connection, _metadata| {
+                let authority = readiness_after_connect_authority.clone();
+                Box::pin(async move {
+                    configure_readiness_database_pool_connection(connection, &authority).await
+                })
+            })
+            .before_acquire(move |_connection, _metadata| {
+                let authority = readiness_before_acquire_authority.clone();
+                Box::pin(async move {
+                    if authority.is_healthy() {
+                        Ok(true)
+                    } else {
+                        Err(sqlx::Error::Protocol(
+                            "PostgreSQL host authority is fail-closed".to_string(),
+                        ))
+                    }
+                })
+            })
+            .connect(&config.database_url)
+            .await
+            .map_err(|error| format!("connect Online Authority readiness PostgreSQL: {error}"))?;
+
+        let cex = CexClient::new(
+            config.cex_base_url,
+            config.game_authority_token,
+            config.entitlement_signer_url,
+            config.entitlement_signer_token,
+        )?;
+        cex.readiness().await?;
+
+        // Validate the manifest's O(1) rollback sentinel before claiming a
+        // new fleet epoch, then close only the explicitly pending DB seal
+        // states. A non-legacy ACK may never be reconstructed from DB alone.
+        let mut startup_cold_witnesses = reconcile_startup_cold_witnesses(
+            &pool,
+            &published_tick_journal,
+            config.physical_host_id.trim(),
+            &database_host_authority,
+        )
+        .await
+        .map_err(|error| format!("reconcile pre-claim terminal ACK tombstones: {error}"))?;
+
+        // Compaction is scoped to records that actually exist on this host;
+        // the size of the global running fleet must not exhaust a local
+        // 10,000-record recovery bound. Waiting/absent rows are retained so a
+        // PITR rollback cannot erase the only evidence of a published tick.
+        let recorded_match_ids = published_tick_journal.recorded_match_ids()?;
+        let retained_matches = recorded_match_ids.iter().copied().collect::<BTreeSet<_>>();
+        let terminal_authority = PostgresTerminalOrphanAuthority {
+            pool: &pool,
+            journal: &published_tick_journal,
+            runtime_state: None,
+            database_host_authority: &database_host_authority,
+        };
+        let mut terminal_acknowledged_high_waters =
+            std::mem::take(&mut startup_cold_witnesses.terminal_acknowledged);
+        let mut failed_closed_high_waters =
+            std::mem::take(&mut startup_cold_witnesses.failed_closed);
+        for match_id in recorded_match_ids {
+            let Some(high_water) = published_tick_journal.high_water(match_id)? else {
+                continue;
+            };
+            match reconcile_terminal_journal_record(
+                &terminal_authority,
+                &published_tick_journal,
+                &high_water,
+            )
+            .await?
+            {
+                TerminalJournalReconciliationOutcome::Recovered => {
+                    terminal_acknowledged_high_waters.insert(match_id);
+                }
+                TerminalJournalReconciliationOutcome::FailedClosed => {
+                    failed_closed_high_waters.insert(match_id);
+                }
+                TerminalJournalReconciliationOutcome::NotTerminal => {}
+            }
+        }
+        let post_recovery_cold_witnesses = reconcile_startup_cold_witnesses(
+            &pool,
+            &published_tick_journal,
+            config.physical_host_id.trim(),
+            &database_host_authority,
+        )
+        .await
+        .map_err(|error| format!("revalidate post-recovery cold witnesses: {error}"))?;
+        startup_cold_witnesses.extend(post_recovery_cold_witnesses);
+        terminal_acknowledged_high_waters.extend(std::mem::take(
+            &mut startup_cold_witnesses.terminal_acknowledged,
+        ));
+        failed_closed_high_waters.extend(std::mem::take(&mut startup_cold_witnesses.failed_closed));
+        compact_published_tick_journal_with_timeout(&published_tick_journal, retained_matches)
+            .await
+            .map_err(|error| format!("compact published-tick journal: {error}"))?;
+
+        // The startup journal pass can prove and repair A/B/C terminal crash
+        // windows. Scan every historical assignment on this physical host,
+        // independent of the current instance name, fleet row or epoch. Any
+        // remaining complete row without an exact marker is shape D and must
+        // be quarantined before a new epoch is claimed.
+        let terminal_ack_gaps =
+            local_terminal_publication_ack_gaps(&pool, config.physical_host_id.trim())
+                .await
+                .map_err(|error| format!("scan pre-claim terminal publication gaps: {error}"))?;
+        let recorded_match_ids = published_tick_journal
+            .recorded_match_ids()?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let unrecoverable =
+            terminal_ack_gaps_without_high_water(&terminal_ack_gaps, &recorded_match_ids);
+        if let Some(match_id) = unrecoverable.first() {
+            return Err(format!(
+                "terminal publication quarantine before epoch claim: match {match_id} on physical host {} lacks both an exact ACK marker and a recoverable host journal record",
+                config.physical_host_id.trim(),
+            ));
+        }
+        if let Some(match_id) = terminal_ack_gaps.first() {
+            return Err(format!(
+                "terminal publication quarantine before epoch claim: match {match_id} on physical host {} still lacks an exact ACK marker after host journal recovery",
+                config.physical_host_id.trim(),
+            ));
+        }
+
+        // Epoch registration is deliberately the final fallible startup
+        // operation. Once this fences an older instance, this process is
+        // already able to serve with a bound listener and valid dependencies.
+        let mut fleet_claim = pool
+            .begin()
+            .await
+            .map_err(|error| format!("begin Online Operations fleet claim: {error}"))?;
+        require_database_host_authority(&mut fleet_claim, &database_host_authority).await?;
+        let instance_epoch: i64 = sqlx::query_scalar::query_scalar(
+            "insert into trnm_online_fleet_instances (
+                instance_id, region, public_endpoint, build_id, capacity, status,
+                instance_epoch, lease_expires_at, physical_host_id
+             ) values ($1, $2, $3, $4, $5, 'active', 1, now() + interval '5 seconds', $6)
+             on conflict (instance_id) do update set region = excluded.region,
+                public_endpoint = excluded.public_endpoint, build_id = excluded.build_id,
+                capacity = excluded.capacity, status = 'active', heartbeat_at = now(),
+                lease_expires_at = now() + interval '5 seconds',
+                instance_epoch = trnm_online_fleet_instances.instance_epoch + 1,
+                physical_host_id = excluded.physical_host_id, drain_reason = null
+             returning instance_epoch",
+        )
+        .bind(config.instance_id.trim())
+        .bind(config.region.trim())
+        .bind(config.public_endpoint.trim())
+        .bind(trnm_online_protocol::ONLINE_OPERATIONS_BUILD)
+        .bind(config.capacity)
+        .bind(config.physical_host_id.trim())
+        .fetch_one(&mut *fleet_claim)
+        .await
+        .map_err(|error| format!("register Online Operations fleet instance: {error}"))?;
+        require_database_host_authority(&mut fleet_claim, &database_host_authority).await?;
+        fleet_claim
+            .commit()
+            .await
+            .map_err(|error| format!("commit Online Operations fleet claim: {error}"))?;
+        let (draining, _) = watch::channel(false);
+        let (shutdown, _) = watch::channel(false);
+        let (fatal_shutdown, _) = watch::channel(false);
+        let mut journal_fatal = published_tick_journal.fatal_shutdown();
+        let combined_fatal = fatal_shutdown.clone();
+        tokio::spawn(async move {
+            if !*journal_fatal.borrow() {
+                let _ = journal_fatal.changed().await;
+            }
+            combined_fatal.send_replace(true);
+        });
+        Ok(Self {
+            pool,
+            readiness_pool,
+            cex,
+            asset_root: Arc::new(config.asset_root),
+            moderator_token: Arc::new(config.moderator_token),
+            instance_id: Arc::new(config.instance_id),
+            region: Arc::new(config.region),
+            public_endpoint: Arc::new(config.public_endpoint),
+            physical_host_id: Arc::new(config.physical_host_id),
+            capacity: config.capacity,
+            instance_epoch,
+            rate_limit_per_minute: config.rate_limit_per_minute,
+            request_body_limit_bytes: config.request_body_limit_bytes,
+            tick_interval: config.tick_interval,
+            accelerated_test_clock: config.accelerated_test_clock,
+            authority_clock: Arc::new(AuthorityClockTelemetry::default()),
+            published_tick_journal,
+            terminal_acknowledged_high_waters: Arc::new(RwLock::new(
+                terminal_acknowledged_high_waters,
+            )),
+            failed_closed_high_waters: Arc::new(RwLock::new(failed_closed_high_waters)),
+            match_actors: Arc::new(RwLock::new(MatchActorRegistry::default())),
+            stream_connections: Arc::new(Mutex::new(StreamConnectionRegistry::default())),
+            database_host_authority,
+            fatal_shutdown,
+            draining,
+            shutdown,
+        })
+    }
+
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    pub fn journal_fatal_shutdown(&self) -> watch::Receiver<bool> {
+        self.fatal_shutdown.subscribe()
+    }
+
+    fn database_host_authority_is_healthy(&self) -> bool {
+        self.database_host_authority.is_healthy()
+    }
+
+    async fn verify_database_host_authority_session(&self) -> Result<(), String> {
+        if !self.database_host_authority.is_healthy() {
+            return Err("PostgreSQL host authority is fail-closed".to_string());
+        }
+        let mut connection = self.database_host_authority.connection.lock().await;
+        let exact = database_host_authority_is_exact(
+            &mut connection,
+            &self.database_host_authority.identity,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        if !exact {
+            return Err("PostgreSQL host authority session or incarnation changed".to_string());
+        }
+        self.database_host_authority.record_success(Instant::now());
+        Ok(())
+    }
+
+    fn fail_database_host_authority(&self) {
+        if self
+            .database_host_authority
+            .healthy
+            .swap(false, Ordering::AcqRel)
+        {
+            self.draining.send_replace(true);
+            self.shutdown.send_replace(true);
+            self.fatal_shutdown.send_replace(true);
+        }
+    }
+
+    pub async fn begin_draining(&self) {
+        // Synchronize the drain transition with the actor-install CAS. Once
+        // this returns, no initializer can pass its final check and install a
+        // new actor behind the shutdown boundary.
+        let _registry = self.match_actors.write().await;
+        self.draining.send_replace(true);
+    }
+
+    pub async fn graceful_shutdown(&self) -> Result<(), String> {
+        self.begin_draining().await;
+        self.shutdown.send_replace(true);
+        if !self.database_host_authority.is_healthy() {
+            return Err(
+                "PostgreSQL host authority was lost; database flush is blocked".to_string(),
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let registry = self.match_actors.read().await;
+                if registry.actors.is_empty() && registry.initializing.is_empty() {
+                    return;
+                }
+                drop(registry);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| "timed out flushing online match actors during shutdown".to_string())
+    }
+}
+
+#[derive(Debug)]
+struct ApiError {
+    status: StatusCode,
+    body: OnlineAuthorityError,
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let status = self.status;
+        let mut response = (status, Json(self.body)).into_response();
+        if matches!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE | StatusCode::TOO_MANY_REQUESTS
+        ) {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        }
+        response
+    }
+}
+
+struct DurableTerminalCompactionView {
+    phase: String,
+    simulation_tick: u64,
+    simulation_terminal: bool,
+    simulation_hash: String,
+    durable_snapshot_hash: String,
+    authoritative_tick: Option<u64>,
+    next_sequence: Option<u64>,
+    checkpoint_sequence: Option<u64>,
+    match_revision: Option<u64>,
+    result_valid: bool,
+    settlement_state: String,
+    next_input_sequences: BTreeMap<String, u64>,
+    assigned_instance_id: Option<String>,
+    assigned_instance_epoch: Option<i64>,
+    assigned_physical_host_id: Option<String>,
+}
+
+fn terminal_result_matches_simulation(
+    simulation: &MissionSimV1,
+    result_value: Option<Value>,
+    result_hash: Option<&str>,
+    match_mode: &str,
+) -> Result<bool, String> {
+    let Some(result_value) = result_value else {
+        return Ok(false);
+    };
+    let result = serde_json::from_value::<BattleResultV1>(result_value)
+        .map_err(|error| format!("decode terminal result: {error}"))?;
+    let (expected, expected_hash) = derive_terminal_result(simulation, match_mode)?;
+    Ok(result == expected && expected_hash == result_hash.unwrap_or_default())
+}
+
+fn derive_terminal_result(
+    simulation: &MissionSimV1,
+    match_mode: &str,
+) -> Result<(BattleResultV1, String), String> {
+    let mut result = simulation
+        .clone()
+        .into_result()
+        .map_err(|error| format!("derive terminal result: {error}"))?;
+    if result.outcome == BattleOutcome::Victory && match_mode != "ranked_pvp" {
+        result.resource_delta = result.resource_delta.max(25);
+    }
+    let result_hash = result
+        .computed_hash()
+        .map_err(|error| format!("hash terminal result: {error}"))?;
+    Ok((result, result_hash))
+}
+
+fn terminal_authority_matches_high_water(
+    view: &DurableTerminalCompactionView,
+    high_water: &PublishedTickHighWater,
+) -> bool {
+    high_water.phase == "complete"
+        && high_water.receipts_replayable
+        && view.phase == "complete"
+        && view.result_valid
+        && matches!(view.settlement_state.as_str(), "pending" | "settled")
+        && view.simulation_terminal
+        && view.simulation_tick == high_water.tick
+        && view.simulation_hash == high_water.snapshot_hash
+        && view.durable_snapshot_hash == high_water.snapshot_hash
+        && view.authoritative_tick == Some(high_water.tick)
+        && view.next_sequence == Some(high_water.next_sequence)
+        && view.checkpoint_sequence == Some(high_water.next_sequence)
+        && view.match_revision == Some(high_water.match_revision)
+        && view.next_input_sequences == high_water.next_input_sequences
+        && view.assigned_instance_id.as_deref() == Some(high_water.instance_id.as_str())
+        && view.assigned_instance_epoch == Some(high_water.actor_epoch)
+        && view.assigned_physical_host_id.as_deref() == Some(high_water.physical_host_id.as_str())
+}
+
+fn terminal_authority_succeeds_running_high_water(
+    view: &DurableTerminalCompactionView,
+    high_water: &PublishedTickHighWater,
+) -> bool {
+    if high_water.phase != "running"
+        || !high_water.receipts_replayable
+        || view.phase != "complete"
+        || !view.result_valid
+        || !matches!(
+            view.settlement_state.as_str(),
+            "staged" | "pending" | "settled"
+        )
+        || !view.simulation_terminal
+        || view.simulation_hash != view.durable_snapshot_hash
+        || view.authoritative_tick != Some(view.simulation_tick)
+        || view.simulation_tick < high_water.tick
+        || view.checkpoint_sequence != view.next_sequence
+        || view.assigned_instance_id.as_deref() != Some(high_water.instance_id.as_str())
+        || view.assigned_instance_epoch != Some(high_water.actor_epoch)
+        || view.assigned_physical_host_id.as_deref() != Some(high_water.physical_host_id.as_str())
+    {
+        return false;
+    }
+    let (Some(next_sequence), Some(match_revision)) = (view.next_sequence, view.match_revision)
+    else {
+        return false;
+    };
+    (next_sequence == high_water.next_sequence
+        && match_revision == high_water.match_revision
+        && view.next_input_sequences == high_water.next_input_sequences)
+        || is_single_command_cursor_successor(
+            high_water,
+            next_sequence,
+            match_revision,
+            &view.next_input_sequences,
+        )
+}
+
+fn terminal_marker_metadata_matches(
+    marker_phase: Option<&str>,
+    marker_result_hash: Option<&str>,
+    marker_settlement_state: Option<&str>,
+    durable_result_hash: Option<&str>,
+    durable_settlement_state: &str,
+) -> bool {
+    marker_phase == Some("complete")
+        && marker_result_hash.is_some()
+        && marker_result_hash == durable_result_hash
+        && matches!(durable_settlement_state, "pending" | "settled")
+        && marker_settlement_state.is_some_and(|published| {
+            matches!(published, "pending" | "settled") && published == durable_settlement_state
+        })
+}
+
+fn terminal_publication_metadata_matches_durable(
+    evidence: &TerminalPublicationEvidence,
+    durable_result_hash: Option<&str>,
+    durable_settlement_state: &str,
+) -> bool {
+    evidence.phase == OnlineMatchPhase::Complete
+        && terminal_marker_metadata_matches(
+            Some("complete"),
+            evidence.result_hash.as_deref(),
+            Some(&evidence.settlement_state),
+            durable_result_hash,
+            durable_settlement_state,
+        )
+}
+
+fn match_assignment_matches_local(
+    assigned_instance_id: Option<&str>,
+    assigned_instance_epoch: i64,
+    assigned_physical_host_id: Option<&str>,
+    local_instance_id: &str,
+    local_instance_epoch: i64,
+    local_physical_host_id: &str,
+) -> bool {
+    assigned_instance_id == Some(local_instance_id)
+        && assigned_instance_epoch == local_instance_epoch
+        && assigned_physical_host_id == Some(local_physical_host_id)
+}
+
+fn reconciliation_candidate_is_local(
+    assigned_instance_id: Option<&str>,
+    assigned_physical_host_id: Option<&str>,
+    local_physical_host_id: &str,
+) -> bool {
+    assigned_instance_id.is_none() || assigned_physical_host_id == Some(local_physical_host_id)
+}
+
+async fn local_terminal_publication_ack_gaps(
+    pool: &PgPool,
+    physical_host_id: &str,
+) -> Result<Vec<Uuid>, String> {
+    let gaps = sqlx::query_scalar::query_scalar(LOCAL_TERMINAL_ACK_GAPS_SQL)
+        .bind(physical_host_id)
+        .bind(TERMINAL_ACK_GAP_SCAN_LIMIT.saturating_add(1))
+        .fetch_all(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    if terminal_ack_gap_scan_is_saturated(gaps.len()) {
+        return Err(format!(
+            "terminal ACK gap scan saturated its bounded {TERMINAL_ACK_GAP_SCAN_LIMIT}-row quarantine window"
+        ));
+    }
+    Ok(gaps)
+}
+
+fn terminal_ack_gap_scan_is_saturated(row_count: usize) -> bool {
+    row_count > usize::try_from(TERMINAL_ACK_GAP_SCAN_LIMIT).unwrap_or(usize::MAX)
+}
+
+async fn exact_terminal_publication_marker_exists<'e, E>(
+    executor: E,
+    match_id: Uuid,
+) -> Result<bool, String>
+where
+    E: sqlx::executor::Executor<'e, Database = Postgres>,
+{
+    sqlx::query_scalar::query_scalar(EXACT_TERMINAL_PUBLICATION_MARKER_SQL)
+        .bind(match_id)
+        .fetch_one(executor)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn terminal_ack_database_evidence_from_row(
+    row: &sqlx_postgres::PgRow,
+) -> Result<TerminalAckDatabaseEvidence, String> {
+    let acknowledged_at_unix_ms = u64::try_from(
+        row.try_get::<i64, _>("acknowledged_at_unix_ms")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "terminal ACK acknowledgement timestamp is negative".to_string())?;
+    if acknowledged_at_unix_ms == 0 {
+        return Err("terminal ACK acknowledgement timestamp is not positive".to_string());
+    }
+    let authoritative_tick = u64::try_from(
+        row.try_get::<i64, _>("authoritative_tick")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "terminal ACK authoritative tick is negative".to_string())?;
+    let next_sequence = u64::try_from(
+        row.try_get::<i64, _>("next_sequence")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "terminal ACK sequence is negative".to_string())?;
+    let match_revision = u64::try_from(
+        row.try_get::<i64, _>("match_revision")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "terminal ACK revision is negative".to_string())?;
+    let next_input_sequences = serde_json::from_value::<BTreeMap<String, u64>>(
+        row.try_get::<Value, _>("next_input_sequences")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("decode terminal ACK input cursors: {error}"))?;
+    Ok(TerminalAckDatabaseEvidence {
+        match_id: row.try_get("match_id").map_err(|error| error.to_string())?,
+        actor_generation: row
+            .try_get("actor_generation")
+            .map_err(|error| error.to_string())?,
+        instance_id: row
+            .try_get("instance_id")
+            .map_err(|error| error.to_string())?,
+        actor_epoch: row
+            .try_get("actor_epoch")
+            .map_err(|error| error.to_string())?,
+        physical_host_id: row
+            .try_get("physical_host_id")
+            .map_err(|error| error.to_string())?,
+        authoritative_tick,
+        next_sequence,
+        match_revision,
+        next_input_sequences,
+        snapshot_hash: row
+            .try_get("snapshot_hash")
+            .map_err(|error| error.to_string())?,
+        result_hash: row
+            .try_get("result_hash")
+            .map_err(|error| error.to_string())?,
+        settlement_state: row
+            .try_get("published_settlement_state")
+            .map_err(|error| error.to_string())?,
+        local_tombstone_state: row
+            .try_get("local_tombstone_state")
+            .map_err(|error| error.to_string())?,
+        acknowledged_at_unix_ms,
+    })
+}
+
+async fn database_lineage<'e, E>(executor: E) -> Result<DatabaseLineage, String>
+where
+    E: sqlx::executor::Executor<'e, Database = Postgres>,
+{
+    let row = sqlx::query::query(DATABASE_LINEAGE_SQL)
+        .fetch_one(executor)
+        .await
+        .map_err(|error| format!("read PostgreSQL lineage after terminal ACK commit: {error}"))?;
+    let timeline_id = u32::try_from(
+        row.try_get::<i32, _>("timeline_id")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "PostgreSQL timeline identifier is not positive".to_string())?;
+    if timeline_id == 0 {
+        return Err("PostgreSQL timeline identifier is not positive".to_string());
+    }
+    let system_identifier: String = row
+        .try_get("system_identifier")
+        .map_err(|error| error.to_string())?;
+    if !canonical_database_system_identifier(&system_identifier) {
+        return Err("PostgreSQL system identifier is not canonical".to_string());
+    }
+    let wal_flush_lsn: String = row
+        .try_get("wal_flush_lsn")
+        .map_err(|error| error.to_string())?;
+    if parse_postgres_wal_lsn(&wal_flush_lsn).is_none_or(|lsn| lsn == 0) {
+        return Err("PostgreSQL WAL flush LSN is not canonical and positive".to_string());
+    }
+    Ok(DatabaseLineage {
+        system_identifier,
+        timeline_id,
+        wal_flush_lsn,
+    })
+}
+
+async fn load_cold_witness_database_summary<'e, E>(
+    executor: E,
+    physical_host_id: &str,
+) -> Result<ColdWitnessDatabaseSummary, String>
+where
+    E: sqlx::executor::Executor<'e, Database = Postgres>,
+{
+    let row = sqlx::query::query(
+        "select terminal_total_count, terminal_sealed_count,
+                abandonment_total_count, abandonment_sealed_count
+           from trnm_online_local_cold_witness_summaries
+          where physical_host_id = $1",
+    )
+    .bind(physical_host_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(|error| error.to_string())?;
+    let Some(row) = row else {
+        return Ok(ColdWitnessDatabaseSummary::default());
+    };
+    let read_count = |column| -> Result<u64, String> {
+        u64::try_from(
+            row.try_get::<i64, _>(column)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|_| format!("cold witness summary {column} is negative"))
+    };
+    let summary = ColdWitnessDatabaseSummary {
+        terminal_total_count: read_count("terminal_total_count")?,
+        terminal_sealed_count: read_count("terminal_sealed_count")?,
+        abandonment_total_count: read_count("abandonment_total_count")?,
+        abandonment_sealed_count: read_count("abandonment_sealed_count")?,
+    };
+    if summary.terminal_sealed_count > summary.terminal_total_count
+        || summary.abandonment_sealed_count > summary.abandonment_total_count
+    {
+        return Err("cold witness summary sealed count exceeds its total".to_string());
+    }
+    Ok(summary)
+}
+
+async fn load_readiness_database_summary(
+    pool: &PgPool,
+    instance_id: &str,
+    instance_epoch: i64,
+    physical_host_id: &str,
+) -> Result<ReadinessDatabaseSummary, String> {
+    let row = sqlx::query::query(READINESS_DATABASE_SUMMARY_SQL)
+        .bind(instance_id)
+        .bind(instance_epoch)
+        .bind(physical_host_id)
+        .bind(TERMINAL_ACK_GAP_SCAN_LIMIT.saturating_add(1))
+        .fetch_one(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    let read_nonnegative = |column| -> Result<u64, String> {
+        u64::try_from(
+            row.try_get::<i64, _>(column)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|_| format!("readiness database summary {column} is negative"))
+    };
+    let cold_witness = ColdWitnessDatabaseSummary {
+        terminal_total_count: read_nonnegative("terminal_total_count")?,
+        terminal_sealed_count: read_nonnegative("terminal_sealed_count")?,
+        abandonment_total_count: read_nonnegative("abandonment_total_count")?,
+        abandonment_sealed_count: read_nonnegative("abandonment_sealed_count")?,
+    };
+    if cold_witness.terminal_sealed_count > cold_witness.terminal_total_count
+        || cold_witness.abandonment_sealed_count > cold_witness.abandonment_total_count
+    {
+        return Err("readiness cold witness summary sealed count exceeds its total".to_string());
+    }
+    Ok(ReadinessDatabaseSummary {
+        postgres_healthy: row
+            .try_get("postgres_healthy")
+            .map_err(|error| error.to_string())?,
+        fleet_epoch_current: row
+            .try_get("fleet_epoch_current")
+            .map_err(|error| error.to_string())?,
+        healthy_fleet_instances: row
+            .try_get("healthy_fleet_instances")
+            .map_err(|error| error.to_string())?,
+        active_matches: row
+            .try_get("active_matches")
+            .map_err(|error| error.to_string())?,
+        terminal_ack_gap_count: usize::try_from(read_nonnegative("terminal_ack_gap_count")?)
+            .map_err(|_| "readiness terminal ACK gap count exceeds usize".to_string())?,
+        terminal_ack_gap_match_ids: row
+            .try_get("terminal_ack_gap_match_ids")
+            .map_err(|error| error.to_string())?,
+        pending_terminal_seal_match_ids: row
+            .try_get("pending_terminal_seal_match_ids")
+            .map_err(|error| error.to_string())?,
+        pending_abandonment_seal_match_ids: row
+            .try_get("pending_abandonment_seal_match_ids")
+            .map_err(|error| error.to_string())?,
+        historical_projection: HistoricalTerminalProjectionQuarantine {
+            legacy_terminal_match_count: row
+                .try_get("legacy_terminal_match_count")
+                .map_err(|error| error.to_string())?,
+            campaign_projection_polluted: row
+                .try_get("campaign_projection_polluted")
+                .map_err(|error| error.to_string())?,
+            rating_projection_polluted: row
+                .try_get("rating_projection_polluted")
+                .map_err(|error| error.to_string())?,
+        },
+        cold_witness,
+    })
+}
+
+fn abandonment_database_evidence_from_row(
+    row: &sqlx_postgres::PgRow,
+) -> Result<AbandonmentDatabaseEvidence, String> {
+    if !row
+        .try_get::<bool, _>("tuple_exact")
+        .map_err(|error| error.to_string())?
+    {
+        return Err(
+            "failed-closed abandonment marker does not match durable authority".to_string(),
+        );
+    }
+    let authoritative_tick = u64::try_from(
+        row.try_get::<i64, _>("authoritative_tick")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "abandonment authoritative tick is negative".to_string())?;
+    let next_sequence = u64::try_from(
+        row.try_get::<i64, _>("next_sequence")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "abandonment next sequence is negative".to_string())?;
+    let match_revision = u64::try_from(
+        row.try_get::<i64, _>("match_revision")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "abandonment match revision is negative".to_string())?;
+    let abandoned_at_unix_ms = u64::try_from(
+        row.try_get::<i64, _>("abandoned_at_unix_ms")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "abandonment timestamp is negative".to_string())?;
+    if abandoned_at_unix_ms == 0 {
+        return Err("abandonment timestamp is not positive".to_string());
+    }
+    let snapshot_hash: String = row
+        .try_get("snapshot_hash")
+        .map_err(|error| error.to_string())?;
+    let simulation_value = row
+        .try_get::<Option<Value>, _>("simulation_json")
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "failed-closed abandonment lost its simulation".to_string())?;
+    let simulation = serde_json::from_value::<MissionSimV1>(simulation_value)
+        .map_err(|error| format!("decode failed-closed abandonment simulation: {error}"))?;
+    if simulation.terminal()
+        || simulation.tick != authoritative_tick
+        || simulation
+            .snapshot_hash()
+            .map_err(|error| format!("hash failed-closed abandonment simulation: {error}"))?
+            != snapshot_hash
+    {
+        return Err(
+            "failed-closed abandonment requires an exact non-terminal simulation".to_string(),
+        );
+    }
+    let local_tombstone_state: String = row
+        .try_get("local_tombstone_state")
+        .map_err(|error| error.to_string())?;
+    if !matches!(local_tombstone_state.as_str(), "hot_pending" | "sealed") {
+        return Err("failed-closed abandonment marker has an unsupported seal state".to_string());
+    }
+    let failure_reason: String = row
+        .try_get("failure_reason")
+        .map_err(|error| error.to_string())?;
+    if !valid_abandonment_failure_reason(&failure_reason) {
+        return Err("failed-closed abandonment reason is invalid".to_string());
+    }
+    Ok(AbandonmentDatabaseEvidence {
+        match_id: row.try_get("match_id").map_err(|error| error.to_string())?,
+        journal_owner_id: row
+            .try_get("journal_owner_id")
+            .map_err(|error| error.to_string())?,
+        actor_generation: row
+            .try_get("actor_generation")
+            .map_err(|error| error.to_string())?,
+        instance_id: row
+            .try_get("instance_id")
+            .map_err(|error| error.to_string())?,
+        actor_epoch: row
+            .try_get("actor_epoch")
+            .map_err(|error| error.to_string())?,
+        physical_host_id: row
+            .try_get("physical_host_id")
+            .map_err(|error| error.to_string())?,
+        authoritative_tick,
+        next_sequence,
+        match_revision,
+        next_input_sequences: serde_json::from_value(
+            row.try_get::<Value, _>("next_input_sequences")
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("decode abandonment input cursors: {error}"))?,
+        snapshot_hash,
+        failure_reason,
+        local_tombstone_state,
+        abandoned_at_unix_ms,
+    })
+}
+
+async fn load_abandonment_database_evidence_by_match<'e, E>(
+    executor: E,
+    match_id: Uuid,
+) -> Result<Option<AbandonmentDatabaseEvidence>, String>
+where
+    E: sqlx::executor::Executor<'e, Database = Postgres>,
+{
+    sqlx::query::query(ABANDONMENT_DATABASE_EVIDENCE_BY_MATCH_SQL)
+        .bind(match_id)
+        .fetch_optional(executor)
+        .await
+        .map_err(|error| error.to_string())?
+        .as_ref()
+        .map(abandonment_database_evidence_from_row)
+        .transpose()
+}
+
+async fn load_local_abandonment_startup_page(
+    pool: &PgPool,
+    physical_host_id: &str,
+    after_match_id: Option<Uuid>,
+) -> Result<Vec<AbandonmentDatabaseEvidence>, String> {
+    sqlx::query::query(LOCAL_ABANDONMENT_STARTUP_PAGE_SQL)
+        .bind(physical_host_id)
+        .bind(after_match_id)
+        .bind(TERMINAL_ACK_STARTUP_PAGE_SIZE)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| error.to_string())?
+        .iter()
+        .map(abandonment_database_evidence_from_row)
+        .collect()
+}
+
+async fn load_terminal_ack_database_evidence_by_match<'e, E>(
+    executor: E,
+    match_id: Uuid,
+) -> Result<Option<TerminalAckDatabaseEvidence>, String>
+where
+    E: sqlx::executor::Executor<'e, Database = Postgres>,
+{
+    let Some(row) = sqlx::query::query(TERMINAL_ACK_DATABASE_EVIDENCE_BY_MATCH_SQL)
+        .bind(match_id)
+        .fetch_optional(executor)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let tuple_exact = row
+        .try_get::<bool, _>("tuple_exact")
+        .map_err(|error| error.to_string())?;
+    let evidence = terminal_ack_database_evidence_from_row(&row)?;
+    if !tuple_exact {
+        return Err(format!(
+            "terminal ACK {} does not exactly match its durable match authority",
+            evidence.match_id
+        ));
+    }
+    Ok(Some(evidence))
+}
+
+async fn load_local_terminal_ack_startup_page(
+    pool: &PgPool,
+    physical_host_id: &str,
+    after_match_id: Option<Uuid>,
+) -> Result<Vec<TerminalAckDatabaseEvidence>, String> {
+    let rows = sqlx::query::query(LOCAL_TERMINAL_ACK_STARTUP_PAGE_SQL)
+        .bind(physical_host_id)
+        .bind(after_match_id)
+        .bind(TERMINAL_ACK_STARTUP_PAGE_SIZE)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut evidence = Vec::with_capacity(rows.len());
+    for row in rows {
+        let tuple_exact = row
+            .try_get::<bool, _>("tuple_exact")
+            .map_err(|error| error.to_string())?;
+        let item = terminal_ack_database_evidence_from_row(&row)?;
+        if !tuple_exact {
+            return Err(format!(
+                "terminal ACK {} does not exactly match its durable match authority",
+                item.match_id
+            ));
+        }
+        evidence.push(item);
+    }
+    Ok(evidence)
+}
+
+async fn mark_terminal_ack_sealed<'e, E>(
+    executor: E,
+    tombstone: &PublishedTickAckTombstone,
+) -> Result<(), String>
+where
+    E: sqlx::executor::Executor<'e, Database = Postgres>,
+{
+    let high_water = &tombstone.high_water;
+    let tick = i64::try_from(high_water.tick)
+        .map_err(|_| "terminal tombstone tick exceeds PostgreSQL range".to_string())?;
+    let next_sequence = i64::try_from(high_water.next_sequence)
+        .map_err(|_| "terminal tombstone sequence exceeds PostgreSQL range".to_string())?;
+    let match_revision = i64::try_from(high_water.match_revision)
+        .map_err(|_| "terminal tombstone revision exceeds PostgreSQL range".to_string())?;
+    let acknowledged_at_unix_ms = i64::try_from(tombstone.acknowledged_at_unix_ms)
+        .map_err(|_| "terminal tombstone timestamp exceeds PostgreSQL range".to_string())?;
+    let sealed = sqlx::query::query(
+        "update trnm_online_terminal_publication_acks a
+            set local_tombstone_state = 'sealed'
+           from trnm_online_matches m
+          where a.match_id = $1 and m.match_id = a.match_id
+            and a.local_tombstone_state in (
+                'legacy_bootstrap_pending', 'hot_pending', 'sealed'
+            )
+            and a.actor_generation = $2
+            and a.instance_id = $3
+            and a.actor_epoch = $4
+            and a.physical_host_id = $5
+            and a.authoritative_tick = $6
+            and a.next_sequence = $7
+            and a.match_revision = $8
+            and a.next_input_sequences = $9
+            and a.snapshot_hash = $10
+            and a.phase = 'complete'
+            and a.result_hash = $11
+            and (
+                a.published_settlement_state = $12
+                or ($12 = 'pending' and a.published_settlement_state = 'settled')
+            )
+            and floor(extract(epoch from a.acknowledged_at) * 1000)::bigint = $13
+            and m.phase = 'complete'
+            and m.checkpoint_sequence = m.next_sequence
+            and m.result_hash is not null
+            and m.settlement_state in ('pending', 'settled')
+            and m.terminal_publication_state = 'acknowledged'
+            and m.terminal_publication_actor_generation = a.actor_generation
+            and m.assigned_instance_id = a.instance_id
+            and m.assigned_instance_epoch = a.actor_epoch
+            and m.assigned_physical_host_id = a.physical_host_id
+            and m.authoritative_tick = a.authoritative_tick
+            and m.next_sequence = a.next_sequence
+            and m.match_revision = a.match_revision
+            and a.next_input_sequences = coalesce(
+                (select jsonb_object_agg(
+                    member.player_id,
+                    to_jsonb(member.next_input_sequence)
+                    order by member.player_id
+                 )
+                   from trnm_online_match_members member
+                  where member.match_id = m.match_id),
+                '{}'::jsonb
+            )
+            and m.snapshot_hash = a.snapshot_hash
+            and m.result_hash = a.result_hash
+            and m.settlement_state = a.published_settlement_state
+        returning a.match_id",
+    )
+    .bind(high_water.match_id)
+    .bind(high_water.actor_generation)
+    .bind(&high_water.instance_id)
+    .bind(high_water.actor_epoch)
+    .bind(&high_water.physical_host_id)
+    .bind(tick)
+    .bind(next_sequence)
+    .bind(match_revision)
+    .bind(
+        serde_json::to_value(&high_water.next_input_sequences)
+            .map_err(|error| error.to_string())?,
+    )
+    .bind(&high_water.snapshot_hash)
+    .bind(&tombstone.result_hash)
+    .bind(&tombstone.settlement_state)
+    .bind(acknowledged_at_unix_ms)
+    .fetch_optional(executor)
+    .await
+    .map_err(|error| error.to_string())?;
+    if sealed.is_none() {
+        return Err(
+            "cold terminal tombstone could not seal its exact durable ACK authority".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn terminal_tombstone_matches_commit(
+    tombstone: &PublishedTickAckTombstone,
+    high_water: &PublishedTickHighWater,
+    commit: &TerminalPublicationCommit,
+    lineage: &DatabaseLineage,
+) -> bool {
+    tombstone.high_water == *high_water
+        && tombstone.result_hash == commit.result_hash
+        && terminal_tombstone_settlement_matches(
+            &tombstone.settlement_state,
+            &commit.settlement_state,
+        )
+        && tombstone.acknowledged_at_unix_ms == commit.acknowledged_at_unix_ms
+        && database_lineage_covers_tombstone(lineage, tombstone)
+}
+
+async fn ensure_cold_terminal_ack(
+    journal: &PublishedTickJournal,
+    high_water: &PublishedTickHighWater,
+    commit: &TerminalPublicationCommit,
+    lineage: &DatabaseLineage,
+) -> Result<PublishedTickAckTombstone, String> {
+    if high_water.phase != "complete" || !high_water.receipts_replayable {
+        return Err("cold terminal ACK requires a replayable terminal high-water".to_string());
+    }
+    if let Some(existing) = journal.ack_tombstone(high_water.match_id)? {
+        if !terminal_tombstone_matches_commit(&existing, high_water, commit, lineage) {
+            return Err(
+                "durable cold terminal ACK conflicts with PostgreSQL authority or lineage"
+                    .to_string(),
+            );
+        }
+        return Ok(existing);
+    }
+    let hot = journal
+        .high_water(high_water.match_id)?
+        .ok_or_else(|| "cold terminal ACK is missing its exact hot witness".to_string())?;
+    if hot != *high_water {
+        return Err("cold terminal ACK hot witness changed before sealing".to_string());
+    }
+    let tombstone = seal_terminal_ack_with_timeout(
+        journal,
+        PublishedTickAckTombstoneInput {
+            high_water: hot,
+            result_hash: commit.result_hash.clone(),
+            settlement_state: commit.settlement_state.clone(),
+            acknowledged_at_unix_ms: commit.acknowledged_at_unix_ms,
+            database_system_identifier: lineage.system_identifier.clone(),
+            database_timeline_id: lineage.timeline_id,
+            database_wal_lsn: lineage.wal_flush_lsn.clone(),
+        },
+    )
+    .await?;
+    if !terminal_tombstone_matches_commit(&tombstone, high_water, commit, lineage) {
+        return Err("sealed cold terminal ACK did not preserve exact authority".to_string());
+    }
+    Ok(tombstone)
+}
+
+async fn seal_terminal_ack_in_database(
+    connection: &mut PgConnection,
+    tombstone: &PublishedTickAckTombstone,
+    runtime_state: Option<&AppState>,
+    database_host_authority: &DatabaseHostAuthorityFence,
+) -> Result<(), String> {
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|error| error.to_string())?;
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    if let Some(state) = runtime_state {
+        lock_current_fleet_epoch(&mut transaction, state, true).await?;
+    }
+    mark_terminal_ack_sealed(&mut *transaction, tombstone).await?;
+    if let Some(state) = runtime_state {
+        lock_current_fleet_epoch_for_commit(&mut transaction, state, true).await?;
+    }
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !exact_terminal_publication_marker_exists(&mut *connection, tombstone.high_water.match_id)
+        .await?
+    {
+        return Err(
+            "cold terminal tombstone sealed state is not an exact public ACK marker".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn abandonment_tombstone_matches_evidence(
+    tombstone: &PublishedTickAbandonmentTombstone,
+    evidence: &AbandonmentDatabaseEvidence,
+    lineage: &DatabaseLineage,
+) -> bool {
+    evidence.matches_high_water(&tombstone.high_water)
+        && tombstone.failure_reason == evidence.failure_reason
+        && tombstone.abandoned_at_unix_ms == evidence.abandoned_at_unix_ms
+        && database_lineage_covers_abandonment(lineage, tombstone)
+}
+
+async fn ensure_cold_abandonment(
+    journal: &PublishedTickJournal,
+    high_water: &PublishedTickHighWater,
+    evidence: &AbandonmentDatabaseEvidence,
+    lineage: &DatabaseLineage,
+) -> Result<PublishedTickAbandonmentTombstone, String> {
+    if !evidence.matches_high_water(high_water) {
+        return Err(
+            "failed-closed abandonment evidence does not match its exact hot witness".to_string(),
+        );
+    }
+    if let Some(existing) = journal.abandonment_tombstone(high_water.match_id)? {
+        if !abandonment_tombstone_matches_evidence(&existing, evidence, lineage) {
+            return Err(
+                "durable cold abandonment conflicts with PostgreSQL authority or lineage"
+                    .to_string(),
+            );
+        }
+        return Ok(existing);
+    }
+    if evidence.local_tombstone_state == "sealed" {
+        return Err("sealed failed-closed abandonment lost its durable cold tombstone".to_string());
+    }
+    let hot = journal
+        .high_water(high_water.match_id)?
+        .ok_or_else(|| "cold abandonment is missing its exact hot witness".to_string())?;
+    if hot != *high_water {
+        return Err("cold abandonment hot witness changed before sealing".to_string());
+    }
+    let tombstone = seal_abandonment_with_timeout(
+        journal,
+        PublishedTickAbandonmentTombstoneInput {
+            high_water: hot,
+            failure_reason: evidence.failure_reason.clone(),
+            abandoned_at_unix_ms: evidence.abandoned_at_unix_ms,
+            database_system_identifier: lineage.system_identifier.clone(),
+            database_timeline_id: lineage.timeline_id,
+            database_wal_lsn: lineage.wal_flush_lsn.clone(),
+        },
+    )
+    .await?;
+    if !abandonment_tombstone_matches_evidence(&tombstone, evidence, lineage) {
+        return Err("sealed cold abandonment did not preserve exact authority".to_string());
+    }
+    Ok(tombstone)
+}
+
+async fn mark_abandonment_sealed<'e, E>(
+    executor: E,
+    tombstone: &PublishedTickAbandonmentTombstone,
+) -> Result<(), String>
+where
+    E: sqlx::executor::Executor<'e, Database = Postgres>,
+{
+    let high_water = &tombstone.high_water;
+    let tick = i64::try_from(high_water.tick)
+        .map_err(|_| "abandonment tombstone tick exceeds PostgreSQL range".to_string())?;
+    let next_sequence = i64::try_from(high_water.next_sequence)
+        .map_err(|_| "abandonment tombstone sequence exceeds PostgreSQL range".to_string())?;
+    let match_revision = i64::try_from(high_water.match_revision)
+        .map_err(|_| "abandonment tombstone revision exceeds PostgreSQL range".to_string())?;
+    let abandoned_at_unix_ms = i64::try_from(tombstone.abandoned_at_unix_ms)
+        .map_err(|_| "abandonment tombstone timestamp exceeds PostgreSQL range".to_string())?;
+    let sealed = sqlx::query::query(
+        "update trnm_online_failed_closed_abandonment_markers a
+            set local_tombstone_state = 'sealed'
+           from trnm_online_matches m
+          where a.match_id = $1 and m.match_id = a.match_id
+            and a.local_tombstone_state in ('hot_pending', 'sealed')
+            and a.journal_owner_id = $2
+            and a.actor_generation = $3
+            and a.instance_id = $4
+            and a.actor_epoch = $5
+            and a.physical_host_id = $6
+            and a.authoritative_tick = $7
+            and a.next_sequence = $8
+            and a.match_revision = $9
+            and a.next_input_sequences = $10
+            and a.snapshot_hash = $11
+            and a.failure_reason = $12
+            and floor(extract(epoch from a.abandoned_at) * 1000)::bigint = $13
+            and m.phase = 'failed_closed'
+            and m.settlement_state = 'failed_closed'
+            and m.terminal_publication_state = 'pending'
+            and m.checkpoint_sequence = m.next_sequence
+            and m.terminal_stage_simulation_json is null
+            and m.terminal_stage_result_json is null
+            and m.terminal_stage_result_hash is null
+            and m.terminal_stage_snapshot_hash is null
+            and m.terminal_stage_authoritative_tick is null
+            and m.terminal_stage_next_sequence is null
+            and m.terminal_stage_match_revision is null
+            and m.terminal_staged_at is null
+            and m.result_json is null
+            and m.result_hash is null
+            and m.terminal_publication_actor_generation is null
+            and m.failure_reason = a.failure_reason
+            and m.assigned_instance_id = a.instance_id
+            and m.assigned_instance_epoch = a.actor_epoch
+            and m.assigned_physical_host_id = a.physical_host_id
+            and m.authoritative_tick = a.authoritative_tick
+            and m.next_sequence = a.next_sequence
+            and m.match_revision = a.match_revision
+            and m.snapshot_hash = a.snapshot_hash
+            and a.next_input_sequences = coalesce(
+                (select jsonb_object_agg(
+                    member.player_id,
+                    to_jsonb(member.next_input_sequence)
+                    order by member.player_id
+                 )
+                   from trnm_online_match_members member
+                  where member.match_id = m.match_id),
+                '{}'::jsonb
+            )
+            and not exists (
+                select 1 from trnm_online_terminal_publication_acks terminal
+                 where terminal.match_id = m.match_id
+            )
+        returning a.match_id",
+    )
+    .bind(high_water.match_id)
+    .bind(high_water.journal_owner_id)
+    .bind(high_water.actor_generation)
+    .bind(&high_water.instance_id)
+    .bind(high_water.actor_epoch)
+    .bind(&high_water.physical_host_id)
+    .bind(tick)
+    .bind(next_sequence)
+    .bind(match_revision)
+    .bind(
+        serde_json::to_value(&high_water.next_input_sequences)
+            .map_err(|error| error.to_string())?,
+    )
+    .bind(&high_water.snapshot_hash)
+    .bind(&tombstone.failure_reason)
+    .bind(abandoned_at_unix_ms)
+    .fetch_optional(executor)
+    .await
+    .map_err(|error| error.to_string())?;
+    if sealed.is_none() {
+        return Err(
+            "cold abandonment could not seal its exact durable failed-closed authority".to_string(),
+        );
+    }
+    Ok(())
+}
+
+async fn seal_abandonment_in_database(
+    connection: &mut PgConnection,
+    tombstone: &PublishedTickAbandonmentTombstone,
+    runtime_state: Option<&AppState>,
+    database_host_authority: &DatabaseHostAuthorityFence,
+) -> Result<(), String> {
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|error| error.to_string())?;
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    if let Some(state) = runtime_state {
+        lock_current_fleet_epoch(&mut transaction, state, true).await?;
+    }
+    mark_abandonment_sealed(&mut *transaction, tombstone).await?;
+    if let Some(state) = runtime_state {
+        lock_current_fleet_epoch_for_commit(&mut transaction, state, true).await?;
+    }
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| error.to_string())?;
+    let evidence = load_abandonment_database_evidence_by_match(
+        &mut *connection,
+        tombstone.high_water.match_id,
+    )
+    .await?
+    .ok_or_else(|| "sealed abandonment marker disappeared from PostgreSQL".to_string())?;
+    let lineage = database_lineage(&mut *connection).await?;
+    if evidence.local_tombstone_state != "sealed"
+        || !abandonment_tombstone_matches_evidence(tombstone, &evidence, &lineage)
+    {
+        return Err("cold abandonment sealed state is not an exact durable marker".to_string());
+    }
+    Ok(())
+}
+
+async fn reconcile_failed_closed_high_water(
+    pool: &PgPool,
+    journal: &PublishedTickJournal,
+    high_water: &PublishedTickHighWater,
+    runtime_state: Option<&AppState>,
+    database_host_authority: &DatabaseHostAuthorityFence,
+) -> Result<bool, String> {
+    let mut connection = pool.acquire().await.map_err(|error| error.to_string())?;
+    let Some((evidence, lineage, _legacy_adopted)) = ensure_failed_closed_abandonment_marker(
+        &mut connection,
+        high_water,
+        database_host_authority,
+        false,
+        None,
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+    let tombstone = ensure_cold_abandonment(journal, high_water, &evidence, &lineage).await?;
+    seal_abandonment_in_database(
+        &mut connection,
+        &tombstone,
+        runtime_state,
+        database_host_authority,
+    )
+    .await?;
+    Ok(true)
+}
+
+#[derive(Default)]
+struct StartupColdWitnesses {
+    terminal_acknowledged: BTreeSet<Uuid>,
+    failed_closed: BTreeSet<Uuid>,
+}
+
+impl StartupColdWitnesses {
+    fn extend(&mut self, other: Self) {
+        self.terminal_acknowledged
+            .extend(other.terminal_acknowledged);
+        self.failed_closed.extend(other.failed_closed);
+    }
+}
+
+async fn reconcile_latest_cold_witness(
+    connection: &mut PgConnection,
+    journal: &PublishedTickJournal,
+    lineage: &DatabaseLineage,
+    physical_host_id: &str,
+    database_host_authority: &DatabaseHostAuthorityFence,
+    reconciled: &mut StartupColdWitnesses,
+) -> Result<(), String> {
+    let Some(witness) = journal.latest_cold_witness()? else {
+        return Ok(());
+    };
+    let high_water = match &witness {
+        PublishedTickColdWitness::TerminalAck(tombstone) => &tombstone.high_water,
+        PublishedTickColdWitness::FailedClosedAbandonment(tombstone) => &tombstone.high_water,
+    };
+    if high_water.physical_host_id != physical_host_id {
+        return Err("latest cold witness belongs to a different physical host".to_string());
+    }
+    if !database_lineage_covers_cold_witness(lineage, &witness) {
+        return Err(format!(
+            "latest cold witness {} is ahead of or belongs to a different PostgreSQL lineage",
+            high_water.match_id
+        ));
+    }
+
+    match witness {
+        PublishedTickColdWitness::TerminalAck(tombstone) => {
+            let evidence = load_terminal_ack_database_evidence_by_match(
+                &mut *connection,
+                tombstone.high_water.match_id,
+            )
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "latest cold terminal ACK {} is absent from PostgreSQL",
+                    tombstone.high_water.match_id
+                )
+            })?;
+            if !evidence.matches_tombstone(&tombstone, lineage) {
+                return Err(format!(
+                    "latest cold terminal ACK {} conflicts with PostgreSQL",
+                    tombstone.high_water.match_id
+                ));
+            }
+            match evidence.local_tombstone_state.as_str() {
+                "legacy_bootstrap_pending" | "hot_pending" => {
+                    seal_terminal_ack_in_database(
+                        connection,
+                        &tombstone,
+                        None,
+                        database_host_authority,
+                    )
+                    .await?;
+                }
+                "sealed" => {
+                    if !exact_terminal_publication_marker_exists(
+                        &mut *connection,
+                        tombstone.high_water.match_id,
+                    )
+                    .await?
+                    {
+                        return Err("latest cold terminal ACK is not publicly exact".to_string());
+                    }
+                }
+                _ => {
+                    return Err(
+                        "latest cold terminal ACK has an unsupported DB seal state".to_string()
+                    );
+                }
+            }
+            reconciled
+                .terminal_acknowledged
+                .insert(tombstone.high_water.match_id);
+        }
+        PublishedTickColdWitness::FailedClosedAbandonment(tombstone) => {
+            let evidence = load_abandonment_database_evidence_by_match(
+                &mut *connection,
+                tombstone.high_water.match_id,
+            )
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "latest cold abandonment {} is absent from PostgreSQL",
+                    tombstone.high_water.match_id
+                )
+            })?;
+            if !abandonment_tombstone_matches_evidence(&tombstone, &evidence, lineage) {
+                return Err(format!(
+                    "latest cold abandonment {} conflicts with PostgreSQL",
+                    tombstone.high_water.match_id
+                ));
+            }
+            match evidence.local_tombstone_state.as_str() {
+                "hot_pending" => {
+                    seal_abandonment_in_database(
+                        connection,
+                        &tombstone,
+                        None,
+                        database_host_authority,
+                    )
+                    .await?;
+                }
+                "sealed" => {}
+                _ => {
+                    return Err(
+                        "latest cold abandonment has an unsupported DB seal state".to_string()
+                    );
+                }
+            }
+            reconciled
+                .failed_closed
+                .insert(tombstone.high_water.match_id);
+        }
+    }
+    Ok(())
+}
+
+async fn reconcile_startup_cold_witnesses(
+    pool: &PgPool,
+    journal: &PublishedTickJournal,
+    physical_host_id: &str,
+    database_host_authority: &DatabaseHostAuthorityFence,
+) -> Result<StartupColdWitnesses, String> {
+    let mut connection = pool.acquire().await.map_err(|error| error.to_string())?;
+    let startup_lineage = database_lineage(&mut *connection).await?;
+    let mut reconciled = StartupColdWitnesses::default();
+    reconcile_latest_cold_witness(
+        &mut connection,
+        journal,
+        &startup_lineage,
+        physical_host_id,
+        database_host_authority,
+        &mut reconciled,
+    )
+    .await?;
+
+    let mut after_match_id = None;
+    loop {
+        let page =
+            load_local_terminal_ack_startup_page(pool, physical_host_id, after_match_id).await?;
+        if page.is_empty() {
+            break;
+        }
+        let page_len = page.len();
+        for evidence in page {
+            after_match_id = Some(evidence.match_id);
+            let cold = journal.ack_tombstone(evidence.match_id)?;
+            let hot = journal.high_water(evidence.match_id)?;
+            let source = startup_terminal_ack_seal_source(
+                &evidence.local_tombstone_state,
+                hot.is_some(),
+                cold.is_some(),
+            )
+            .ok_or_else(|| {
+                format!(
+                    "terminal ACK {} in {} has neither an allowed hot nor cold witness",
+                    evidence.match_id, evidence.local_tombstone_state
+                )
+            })?;
+            let tombstone = match source {
+                StartupTerminalAckSealSource::Cold => {
+                    let tombstone = cold.expect("cold source requires a checked tombstone");
+                    if !evidence.matches_tombstone(&tombstone, &startup_lineage) {
+                        return Err(format!(
+                            "cold terminal ACK {} conflicts with its exact PostgreSQL tuple",
+                            evidence.match_id
+                        ));
+                    }
+                    tombstone
+                }
+                StartupTerminalAckSealSource::Hot => {
+                    let high_water = hot.expect("hot source requires a checked high-water");
+                    if !evidence.matches_high_water(&high_water) {
+                        return Err(format!(
+                            "hot terminal ACK {} conflicts with its exact PostgreSQL tuple",
+                            evidence.match_id
+                        ));
+                    }
+                    ensure_cold_terminal_ack(
+                        journal,
+                        &high_water,
+                        &TerminalPublicationCommit {
+                            result_hash: evidence.result_hash.clone(),
+                            settlement_state: evidence.settlement_state.clone(),
+                            acknowledged_at_unix_ms: evidence.acknowledged_at_unix_ms,
+                        },
+                        &startup_lineage,
+                    )
+                    .await?
+                }
+                StartupTerminalAckSealSource::LegacyDatabaseBootstrap => {
+                    let high_water = journal.new_record(evidence.record_input())?;
+                    record_published_tick_with_timeout(
+                        journal,
+                        high_water.clone(),
+                        high_water.next_sequence,
+                        high_water.match_revision,
+                        high_water.next_input_sequences.clone(),
+                    )
+                    .await?;
+                    ensure_cold_terminal_ack(
+                        journal,
+                        &high_water,
+                        &TerminalPublicationCommit {
+                            result_hash: evidence.result_hash.clone(),
+                            settlement_state: evidence.settlement_state.clone(),
+                            acknowledged_at_unix_ms: evidence.acknowledged_at_unix_ms,
+                        },
+                        &startup_lineage,
+                    )
+                    .await?
+                }
+            };
+            seal_terminal_ack_in_database(
+                &mut connection,
+                &tombstone,
+                None,
+                database_host_authority,
+            )
+            .await?;
+            reconciled.terminal_acknowledged.insert(evidence.match_id);
+        }
+        if page_len < usize::try_from(TERMINAL_ACK_STARTUP_PAGE_SIZE).unwrap_or(usize::MAX) {
+            break;
+        }
+    }
+
+    let mut after_match_id = None;
+    loop {
+        let page =
+            load_local_abandonment_startup_page(pool, physical_host_id, after_match_id).await?;
+        if page.is_empty() {
+            break;
+        }
+        let page_len = page.len();
+        for evidence in page {
+            after_match_id = Some(evidence.match_id);
+            let cold = journal.abandonment_tombstone(evidence.match_id)?;
+            let hot = journal.high_water(evidence.match_id)?;
+            let tombstone = if let Some(tombstone) = cold {
+                if !abandonment_tombstone_matches_evidence(&tombstone, &evidence, &startup_lineage)
+                {
+                    return Err(format!(
+                        "cold abandonment {} conflicts with its exact PostgreSQL tuple",
+                        evidence.match_id
+                    ));
+                }
+                tombstone
+            } else if let Some(high_water) = hot {
+                if !evidence.matches_high_water(&high_water) {
+                    return Err(format!(
+                        "hot abandonment {} conflicts with its exact PostgreSQL tuple",
+                        evidence.match_id
+                    ));
+                }
+                ensure_cold_abandonment(journal, &high_water, &evidence, &startup_lineage).await?
+            } else {
+                return Err(format!(
+                    "failed-closed abandonment {} has neither its exact hot nor cold witness",
+                    evidence.match_id
+                ));
+            };
+            seal_abandonment_in_database(
+                &mut connection,
+                &tombstone,
+                None,
+                database_host_authority,
+            )
+            .await?;
+            reconciled.failed_closed.insert(evidence.match_id);
+        }
+        if page_len < usize::try_from(TERMINAL_ACK_STARTUP_PAGE_SIZE).unwrap_or(usize::MAX) {
+            break;
+        }
+    }
+
+    let current_lineage = database_lineage(&mut *connection).await?;
+    reconcile_latest_cold_witness(
+        &mut connection,
+        journal,
+        &current_lineage,
+        physical_host_id,
+        database_host_authority,
+        &mut reconciled,
+    )
+    .await?;
+    let database_summary =
+        load_cold_witness_database_summary(&mut *connection, physical_host_id).await?;
+    let terminal_count = u64::try_from(journal.ack_tombstone_count()?)
+        .map_err(|_| "terminal cold witness count exceeds u64".to_string())?;
+    let abandonment_count = u64::try_from(journal.abandonment_tombstone_count()?)
+        .map_err(|_| "abandonment cold witness count exceeds u64".to_string())?;
+    let cold_count = u64::try_from(journal.cold_witness_count()?)
+        .map_err(|_| "combined cold witness count exceeds u64".to_string())?;
+    if !database_summary.all_sealed()
+        || database_summary.terminal_total_count != terminal_count
+        || database_summary.abandonment_total_count != abandonment_count
+        || database_summary
+            .terminal_total_count
+            .checked_add(database_summary.abandonment_total_count)
+            != Some(cold_count)
+    {
+        return Err(format!(
+            "local cold witness seal mismatch: PostgreSQL terminal {}/{}, abandonment {}/{}, journal terminal {}, abandonment {}, combined {}",
+            database_summary.terminal_sealed_count,
+            database_summary.terminal_total_count,
+            database_summary.abandonment_sealed_count,
+            database_summary.abandonment_total_count,
+            terminal_count,
+            abandonment_count,
+            cold_count,
+        ));
+    }
+    Ok(reconciled)
+}
+
+async fn latest_cold_witness_sentinel_is_healthy(state: &AppState) -> Result<bool, String> {
+    let Some(witness) = state.published_tick_journal.latest_cold_witness()? else {
+        return Ok(true);
+    };
+    let mut connection = state
+        .readiness_pool
+        .acquire()
+        .await
+        .map_err(|error| error.to_string())?;
+    let lineage = database_lineage(&mut *connection).await?;
+    if !database_lineage_covers_cold_witness(&lineage, &witness) {
+        return Ok(false);
+    }
+    match witness {
+        PublishedTickColdWitness::TerminalAck(tombstone) => {
+            let Some(evidence) = load_terminal_ack_database_evidence_by_match(
+                &mut *connection,
+                tombstone.high_water.match_id,
+            )
+            .await?
+            else {
+                return Ok(false);
+            };
+            Ok(evidence.local_tombstone_state == "sealed"
+                && evidence.matches_tombstone(&tombstone, &lineage)
+                && exact_terminal_publication_marker_exists(
+                    &mut *connection,
+                    tombstone.high_water.match_id,
+                )
+                .await?)
+        }
+        PublishedTickColdWitness::FailedClosedAbandonment(tombstone) => {
+            let Some(evidence) = load_abandonment_database_evidence_by_match(
+                &mut *connection,
+                tombstone.high_water.match_id,
+            )
+            .await?
+            else {
+                return Ok(false);
+            };
+            Ok(evidence.local_tombstone_state == "sealed"
+                && abandonment_tombstone_matches_evidence(&tombstone, &evidence, &lineage))
+        }
+    }
+}
+
+async fn campaign_has_unacknowledged_progression<'e, E>(
+    executor: E,
+    campaign_id: &str,
+) -> Result<bool, String>
+where
+    E: sqlx::executor::Executor<'e, Database = Postgres>,
+{
+    sqlx::query_scalar::query_scalar(CAMPAIGN_HAS_UNACKNOWLEDGED_PROGRESSION_SQL)
+        .bind(campaign_id)
+        .fetch_one(executor)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct HistoricalTerminalProjectionQuarantine {
+    legacy_terminal_match_count: i64,
+    campaign_projection_polluted: bool,
+    rating_projection_polluted: bool,
+}
+
+impl HistoricalTerminalProjectionQuarantine {
+    fn public_credit_is_clean(self) -> bool {
+        self.legacy_terminal_match_count == 0
+            && !self.campaign_projection_polluted
+            && !self.rating_projection_polluted
+    }
+}
+
+async fn terminal_publication_marker_matches_high_water<'e, E>(
+    executor: E,
+    high_water: &PublishedTickHighWater,
+    durable_result_hash: &str,
+    durable_settlement_state: &str,
+) -> Result<bool, String>
+where
+    E: sqlx::executor::Executor<'e, Database = Postgres>,
+{
+    sqlx::query_scalar::query_scalar(
+        "select exists(
+            select 1
+              from trnm_online_terminal_publication_acks a
+             where a.match_id = $1
+               and a.actor_generation = $2
+               and a.actor_epoch = $3
+               and a.authoritative_tick = $4
+               and a.next_sequence = $5
+               and a.match_revision = $6
+               and a.next_input_sequences = $7
+               and a.snapshot_hash = $8
+               and a.phase = 'complete'
+               and a.result_hash = $9
+               and a.instance_id = $11
+               and a.physical_host_id = $12
+               and a.published_settlement_state = $10
+        )",
+    )
+    .bind(high_water.match_id)
+    .bind(high_water.actor_generation)
+    .bind(high_water.actor_epoch)
+    .bind(high_water.tick as i64)
+    .bind(high_water.next_sequence as i64)
+    .bind(high_water.match_revision as i64)
+    .bind(
+        serde_json::to_value(&high_water.next_input_sequences)
+            .map_err(|error| error.to_string())?,
+    )
+    .bind(&high_water.snapshot_hash)
+    .bind(durable_result_hash)
+    .bind(durable_settlement_state)
+    .bind(&high_water.instance_id)
+    .bind(&high_water.physical_host_id)
+    .fetch_one(executor)
+    .await
+    .map_err(|error| error.to_string())
+}
+
+fn terminal_read_surface_is_releasable(phase: OnlineMatchPhase, exact_marker_exists: bool) -> bool {
+    phase != OnlineMatchPhase::Complete || exact_marker_exists
+}
+
+fn terminal_ack_gap_recovery_is_operational(
+    query_healthy: bool,
+    gap_count: usize,
+    bounded_transition_owned: bool,
+) -> bool {
+    query_healthy && (gap_count == 0 || bounded_transition_owned)
+}
+
+fn terminal_runtime_revalidation_is_allowed(
+    high_water_instance_id: &str,
+    high_water_epoch: i64,
+    high_water_physical_host_id: &str,
+    runtime_instance_id: &str,
+    runtime_epoch: i64,
+    runtime_physical_host_id: &str,
+    requires_mutation: bool,
+) -> bool {
+    !requires_mutation
+        || (high_water_instance_id == runtime_instance_id
+            && high_water_epoch == runtime_epoch
+            && high_water_physical_host_id == runtime_physical_host_id)
+}
+
+fn terminal_ack_gaps_without_high_water(
+    terminal_ack_gaps: &[Uuid],
+    recorded_match_ids: &BTreeSet<Uuid>,
+) -> Vec<Uuid> {
+    terminal_ack_gaps
+        .iter()
+        .filter(|match_id| !recorded_match_ids.contains(match_id))
+        .copied()
+        .collect()
+}
+
+async fn terminal_high_water_is_durably_acknowledged(
+    pool: &PgPool,
+    journal: &PublishedTickJournal,
+    high_water: &PublishedTickHighWater,
+    runtime_state: Option<&AppState>,
+    database_host_authority: &DatabaseHostAuthorityFence,
+) -> Result<bool, String> {
+    if high_water.phase != "complete" || !high_water.receipts_replayable {
+        return Ok(false);
+    }
+    let mut connection = pool.acquire().await.map_err(|error| error.to_string())?;
+    let mut transaction = (*connection)
+        .begin()
+        .await
+        .map_err(|error| error.to_string())?;
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    let runtime_mutation_state = runtime_state.filter(|state| {
+        terminal_runtime_revalidation_is_allowed(
+            &high_water.instance_id,
+            high_water.actor_epoch,
+            &high_water.physical_host_id,
+            state.instance_id.as_str(),
+            state.instance_epoch,
+            state.physical_host_id.as_str(),
+            true,
+        )
+    });
+    let mutation_allowed = runtime_state.is_none() || runtime_mutation_state.is_some();
+    if let Some(state) = runtime_mutation_state {
+        lock_current_fleet_epoch(&mut transaction, state, true).await?;
+    }
+    let staged_commit = if mutation_allowed {
+        finalize_staged_terminal_authority(
+            &mut transaction,
+            TerminalFinalizationExpectation {
+                match_id: high_water.match_id,
+                actor_generation: high_water.actor_generation,
+                actor_epoch: high_water.actor_epoch,
+                instance_id: &high_water.instance_id,
+                physical_host_id: &high_water.physical_host_id,
+                authoritative_tick: high_water.tick,
+                next_sequence: high_water.next_sequence,
+                match_revision: high_water.match_revision,
+                next_input_sequences: &high_water.next_input_sequences,
+                snapshot_hash: &high_water.snapshot_hash,
+                result_hash: None,
+            },
+        )
+        .await?
+    } else {
+        None
+    };
+    if let Some(commit) = staged_commit {
+        if !matches!(commit.settlement_state.as_str(), "pending" | "settled") {
+            return Err("terminal recovery produced an invalid settlement state".to_string());
+        }
+        if let Some(state) = runtime_mutation_state {
+            lock_current_fleet_epoch_for_commit(&mut transaction, state, true).await?;
+        }
+        require_database_host_authority(&mut transaction, database_host_authority).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| error.to_string())?;
+        let lineage = database_lineage(&mut *connection).await?;
+        let tombstone = ensure_cold_terminal_ack(journal, high_water, &commit, &lineage).await?;
+        seal_terminal_ack_in_database(
+            &mut connection,
+            &tombstone,
+            runtime_mutation_state,
+            database_host_authority,
+        )
+        .await?;
+        if let Some(state) = runtime_state {
+            state
+                .terminal_acknowledged_high_waters
+                .write()
+                .await
+                .insert(high_water.match_id);
+        }
+        return Ok(true);
+    }
+    let Some(row) = sqlx::query::query(
+        "select m.phase, m.simulation_json, m.snapshot_hash, m.authoritative_tick,
+                m.next_sequence, m.match_revision, m.checkpoint_sequence,
+                m.result_json, m.result_hash, m.settlement_state, m.match_mode,
+                m.assigned_instance_id, m.assigned_instance_epoch,
+                m.assigned_physical_host_id, m.terminal_publication_actor_generation,
+                m.terminal_publication_state,
+                a.actor_generation, a.instance_id as ack_instance_id,
+                a.actor_epoch, a.physical_host_id as ack_physical_host_id,
+                a.authoritative_tick as ack_tick,
+                a.next_sequence as ack_next_sequence,
+                a.match_revision as ack_match_revision,
+                a.next_input_sequences as ack_next_input_sequences,
+                a.snapshot_hash as ack_snapshot_hash,
+                a.phase as ack_phase, a.result_hash as ack_result_hash,
+                a.published_settlement_state as ack_settlement_state,
+                floor(extract(epoch from a.acknowledged_at) * 1000)::bigint
+                    as ack_acknowledged_at_unix_ms
+         from trnm_online_matches m
+         left join trnm_online_terminal_publication_acks a on a.match_id = m.match_id
+         where m.match_id = $1 for share of m",
+    )
+    .bind(high_water.match_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?
+    else {
+        return Ok(false);
+    };
+    let member_rows = sqlx::query::query(
+        "select player_id, next_input_sequence from trnm_online_match_members
+         where match_id = $1 order by player_id",
+    )
+    .bind(high_water.match_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let mut member_cursors = BTreeMap::new();
+    for member in member_rows {
+        let cursor = member
+            .try_get::<i64, _>("next_input_sequence")
+            .map_err(|error| error.to_string())?;
+        member_cursors.insert(
+            member
+                .try_get::<String, _>("player_id")
+                .map_err(|error| error.to_string())?,
+            u64::try_from(cursor).map_err(|_| "terminal member cursor is negative".to_string())?,
+        );
+    }
+    let phase = row
+        .try_get::<String, _>("phase")
+        .map_err(|error| error.to_string())?;
+    let result_hash = row
+        .try_get::<Option<String>, _>("result_hash")
+        .map_err(|error| error.to_string())?;
+    let result_value = row
+        .try_get::<Option<Value>, _>("result_json")
+        .map_err(|error| error.to_string())?;
+    let settlement_state = row
+        .try_get::<String, _>("settlement_state")
+        .map_err(|error| error.to_string())?;
+    let match_mode = row
+        .try_get::<String, _>("match_mode")
+        .map_err(|error| error.to_string())?;
+    let simulation_value = row
+        .try_get::<Option<Value>, _>("simulation_json")
+        .map_err(|error| error.to_string())?;
+    let Some(simulation_value) = simulation_value else {
+        return Ok(false);
+    };
+    let simulation = serde_json::from_value::<MissionSimV1>(simulation_value)
+        .map_err(|error| format!("decode terminal compaction checkpoint: {error}"))?;
+    let simulation_hash = simulation
+        .snapshot_hash()
+        .map_err(|error| format!("hash terminal compaction checkpoint: {error}"))?;
+    let result_valid = terminal_result_matches_simulation(
+        &simulation,
+        result_value,
+        result_hash.as_deref(),
+        &match_mode,
+    )?;
+
+    let authoritative_tick = row
+        .try_get::<i64, _>("authoritative_tick")
+        .map_err(|error| error.to_string())?;
+    let next_sequence = row
+        .try_get::<i64, _>("next_sequence")
+        .map_err(|error| error.to_string())?;
+    let checkpoint_sequence = row
+        .try_get::<i64, _>("checkpoint_sequence")
+        .map_err(|error| error.to_string())?;
+    let match_revision = row
+        .try_get::<i64, _>("match_revision")
+        .map_err(|error| error.to_string())?;
+    let durable_snapshot_hash = row
+        .try_get::<String, _>("snapshot_hash")
+        .map_err(|error| error.to_string())?;
+    let durable_actor_generation = row
+        .try_get::<Option<Uuid>, _>("terminal_publication_actor_generation")
+        .map_err(|error| error.to_string())?;
+    let durable_publication_state = row
+        .try_get::<String, _>("terminal_publication_state")
+        .map_err(|error| error.to_string())?;
+    let marker_generation = row
+        .try_get::<Option<Uuid>, _>("actor_generation")
+        .map_err(|error| error.to_string())?;
+    let marker_instance_id = row
+        .try_get::<Option<String>, _>("ack_instance_id")
+        .map_err(|error| error.to_string())?;
+    let marker_epoch = row
+        .try_get::<Option<i64>, _>("actor_epoch")
+        .map_err(|error| error.to_string())?;
+    let marker_physical_host_id = row
+        .try_get::<Option<String>, _>("ack_physical_host_id")
+        .map_err(|error| error.to_string())?;
+    let marker_tick = row
+        .try_get::<Option<i64>, _>("ack_tick")
+        .map_err(|error| error.to_string())?;
+    let marker_next_sequence = row
+        .try_get::<Option<i64>, _>("ack_next_sequence")
+        .map_err(|error| error.to_string())?;
+    let marker_revision = row
+        .try_get::<Option<i64>, _>("ack_match_revision")
+        .map_err(|error| error.to_string())?;
+    let marker_snapshot_hash = row
+        .try_get::<Option<String>, _>("ack_snapshot_hash")
+        .map_err(|error| error.to_string())?;
+    let marker_phase = row
+        .try_get::<Option<String>, _>("ack_phase")
+        .map_err(|error| error.to_string())?;
+    let marker_result_hash = row
+        .try_get::<Option<String>, _>("ack_result_hash")
+        .map_err(|error| error.to_string())?;
+    let marker_settlement_state = row
+        .try_get::<Option<String>, _>("ack_settlement_state")
+        .map_err(|error| error.to_string())?;
+    let marker_acknowledged_at_unix_ms = row
+        .try_get::<Option<i64>, _>("ack_acknowledged_at_unix_ms")
+        .map_err(|error| error.to_string())?;
+    let marker_cursors = row
+        .try_get::<Option<Value>, _>("ack_next_input_sequences")
+        .map_err(|error| error.to_string())?
+        .map(serde_json::from_value::<BTreeMap<String, u64>>)
+        .transpose()
+        .map_err(|error| format!("decode terminal publication ACK cursors: {error}"))?;
+    let terminal_exact = terminal_authority_matches_high_water(
+        &DurableTerminalCompactionView {
+            phase,
+            simulation_tick: simulation.tick,
+            simulation_terminal: simulation.terminal(),
+            simulation_hash,
+            durable_snapshot_hash,
+            authoritative_tick: u64::try_from(authoritative_tick).ok(),
+            next_sequence: u64::try_from(next_sequence).ok(),
+            checkpoint_sequence: u64::try_from(checkpoint_sequence).ok(),
+            match_revision: u64::try_from(match_revision).ok(),
+            result_valid,
+            settlement_state: settlement_state.clone(),
+            next_input_sequences: member_cursors,
+            assigned_instance_id: row
+                .try_get("assigned_instance_id")
+                .map_err(|error| error.to_string())?,
+            assigned_instance_epoch: row
+                .try_get("assigned_instance_epoch")
+                .map_err(|error| error.to_string())?,
+            assigned_physical_host_id: row
+                .try_get("assigned_physical_host_id")
+                .map_err(|error| error.to_string())?,
+        },
+        high_water,
+    );
+    let marker_tuple_exact = marker_generation == Some(high_water.actor_generation)
+        && marker_instance_id.as_deref() == Some(high_water.instance_id.as_str())
+        && marker_epoch == Some(high_water.actor_epoch)
+        && marker_physical_host_id.as_deref() == Some(high_water.physical_host_id.as_str())
+        && marker_tick.and_then(|value| u64::try_from(value).ok()) == Some(high_water.tick)
+        && marker_next_sequence.and_then(|value| u64::try_from(value).ok())
+            == Some(high_water.next_sequence)
+        && marker_revision.and_then(|value| u64::try_from(value).ok())
+            == Some(high_water.match_revision)
+        && marker_cursors.as_ref() == Some(&high_water.next_input_sequences)
+        && marker_snapshot_hash.as_deref() == Some(high_water.snapshot_hash.as_str())
+        && marker_acknowledged_at_unix_ms.is_some_and(|value| value > 0)
+        && terminal_marker_metadata_matches(
+            marker_phase.as_deref(),
+            marker_result_hash.as_deref(),
+            marker_settlement_state.as_deref(),
+            result_hash.as_deref(),
+            &settlement_state,
+        );
+    let durable_generation_exact = durable_actor_generation == Some(high_water.actor_generation);
+    let durable_publication_acknowledged = durable_publication_state == "acknowledged";
+    let recovered_marker = if terminal_exact && marker_generation.is_none() && mutation_allowed {
+        let result_hash = result_hash
+            .as_deref()
+            .ok_or_else(|| "terminal publication ACK result hash is missing".to_string())?;
+        let inserted = sqlx::query::query(
+            "insert into trnm_online_terminal_publication_acks (
+                match_id, actor_generation, actor_epoch, authoritative_tick,
+                next_sequence, match_revision, next_input_sequences, snapshot_hash,
+                phase, result_hash, published_settlement_state,
+                instance_id, physical_host_id, local_tombstone_state
+             ) values ($1, $2, $3, $4, $5, $6, $7, $8, 'complete', $9, $10, $11, $12,
+                       'hot_pending')
+             on conflict (match_id) do nothing",
+        )
+        .bind(high_water.match_id)
+        .bind(high_water.actor_generation)
+        .bind(high_water.actor_epoch)
+        .bind(high_water.tick as i64)
+        .bind(high_water.next_sequence as i64)
+        .bind(high_water.match_revision as i64)
+        .bind(
+            serde_json::to_value(&high_water.next_input_sequences)
+                .map_err(|error| error.to_string())?,
+        )
+        .bind(&high_water.snapshot_hash)
+        .bind(result_hash)
+        .bind(&settlement_state)
+        .bind(&high_water.instance_id)
+        .bind(&high_water.physical_host_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| error.to_string())?
+        .rows_affected()
+            == 1;
+        inserted
+            || terminal_publication_marker_matches_high_water(
+                &mut *transaction,
+                high_water,
+                result_hash,
+                &settlement_state,
+            )
+            .await?
+    } else {
+        false
+    };
+    let bound_terminal_authority = if terminal_exact
+        && (marker_tuple_exact || recovered_marker)
+        && (!durable_generation_exact || !durable_publication_acknowledged)
+        && mutation_allowed
+    {
+        let bound = sqlx::query::query(
+            "update trnm_online_matches
+             set terminal_publication_actor_generation = $2,
+                 terminal_publication_state = 'acknowledged',
+                 updated_at = now()
+             where match_id = $1 and phase = 'complete'
+               and (
+                   terminal_publication_actor_generation is null
+                   or terminal_publication_actor_generation = $2
+               )",
+        )
+        .bind(high_water.match_id)
+        .bind(high_water.actor_generation)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| error.to_string())?;
+        if bound.rows_affected() != 1 {
+            return Err(
+                "terminal publication ACK conflicts with durable actor generation".to_string(),
+            );
+        }
+        true
+    } else {
+        false
+    };
+    if recovered_marker || bound_terminal_authority {
+        if let Some(state) = runtime_mutation_state {
+            lock_current_fleet_epoch_for_commit(&mut transaction, state, true).await?;
+        }
+    }
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| error.to_string())?;
+    let durable_acknowledgement = terminal_exact
+        && (marker_tuple_exact || recovered_marker)
+        && (durable_generation_exact || bound_terminal_authority)
+        && (durable_publication_acknowledged || bound_terminal_authority);
+    if !durable_acknowledgement {
+        return Ok(false);
+    }
+    let evidence =
+        load_terminal_ack_database_evidence_by_match(&mut *connection, high_water.match_id)
+            .await?
+            .ok_or_else(|| "terminal ACK disappeared after durable revalidation".to_string())?;
+    if !evidence.matches_high_water(high_water) {
+        return Err("terminal ACK no longer matches its hot witness".to_string());
+    }
+    let lineage = database_lineage(&mut *connection).await?;
+    let commit = TerminalPublicationCommit {
+        result_hash: evidence.result_hash.clone(),
+        settlement_state: evidence.settlement_state.clone(),
+        acknowledged_at_unix_ms: evidence.acknowledged_at_unix_ms,
+    };
+    match evidence.local_tombstone_state.as_str() {
+        "sealed" => {
+            let tombstone = journal.ack_tombstone(high_water.match_id)?.ok_or_else(|| {
+                "sealed terminal ACK is missing its durable cold tombstone".to_string()
+            })?;
+            if !evidence.matches_tombstone(&tombstone, &lineage) {
+                return Err(
+                    "sealed terminal ACK conflicts with its durable cold tombstone".to_string(),
+                );
+            }
+            if !exact_terminal_publication_marker_exists(&mut *connection, high_water.match_id)
+                .await?
+            {
+                return Ok(false);
+            }
+        }
+        "legacy_bootstrap_pending" | "hot_pending" => {
+            if !mutation_allowed {
+                return Ok(false);
+            }
+            let tombstone =
+                ensure_cold_terminal_ack(journal, high_water, &commit, &lineage).await?;
+            seal_terminal_ack_in_database(
+                &mut connection,
+                &tombstone,
+                runtime_mutation_state,
+                database_host_authority,
+            )
+            .await?;
+        }
+        _ => return Err("terminal ACK has an unsupported local tombstone state".to_string()),
+    }
+    if let Some(state) = runtime_state {
+        state
+            .terminal_acknowledged_high_waters
+            .write()
+            .await
+            .insert(high_water.match_id);
+    }
+    Ok(true)
+}
+
+struct StartupCommandRecoveryEvidence {
+    simulation: MissionSimV1,
+    accepted_revision: u64,
+    player_id: String,
+    input_sequence: u64,
+    member_role: String,
+    order: trnm_rts_protocol::RtsFrameOrder,
+}
+
+async fn load_startup_command_recovery_evidence(
+    transaction: &mut sqlx::transaction::Transaction<'_, Postgres>,
+    match_id: Uuid,
+    sequence: u64,
+    label: &str,
+) -> Result<StartupCommandRecoveryEvidence, String> {
+    let sequence = i64::try_from(sequence)
+        .map_err(|_| format!("{label} command sequence exceeds PostgreSQL range"))?;
+    let row = sqlx::query::query(
+        "select c.player_id, c.input_sequence, c.post_simulation_json,
+                c.accepted_snapshot_hash, c.accepted_match_revision,
+                c.target_tick, c.client_observed_tick, c.order_json,
+                mm.member_role
+         from trnm_online_commands c
+         join trnm_online_match_members mm
+           on mm.match_id = c.match_id and mm.player_id = c.player_id
+         where c.match_id = $1 and c.sequence = $2",
+    )
+    .bind(match_id)
+    .bind(sequence)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| format!("{label} command recovery event is missing"))?;
+    let simulation_value = row
+        .try_get::<Option<Value>, _>("post_simulation_json")
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("{label} command recovery simulation is missing"))?;
+    let simulation = serde_json::from_value::<MissionSimV1>(simulation_value)
+        .map_err(|error| format!("decode {label} command recovery simulation: {error}"))?;
+    let accepted_hash = row
+        .try_get::<String, _>("accepted_snapshot_hash")
+        .map_err(|error| error.to_string())?;
+    validate_recovery_simulation(&simulation, Some(simulation.tick), &accepted_hash, label)?;
+    let order_value = row
+        .try_get::<Value, _>("order_json")
+        .map_err(|error| error.to_string())?;
+    validate_recovered_command_timing(
+        &simulation,
+        row.try_get::<i64, _>("target_tick")
+            .map_err(|error| error.to_string())?,
+        row.try_get::<Option<i64>, _>("client_observed_tick")
+            .map_err(|error| error.to_string())?,
+        order_value.clone(),
+        label,
+    )?;
+    let input_sequence = row
+        .try_get::<Option<i64>, _>("input_sequence")
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("{label} command input cursor is missing"))?;
+    Ok(StartupCommandRecoveryEvidence {
+        simulation,
+        accepted_revision: u64::try_from(
+            row.try_get::<i64, _>("accepted_match_revision")
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|_| format!("{label} accepted revision is negative"))?,
+        player_id: row
+            .try_get("player_id")
+            .map_err(|error| error.to_string())?,
+        input_sequence: u64::try_from(input_sequence)
+            .map_err(|_| format!("{label} input cursor is negative"))?,
+        member_role: row
+            .try_get("member_role")
+            .map_err(|error| error.to_string())?,
+        order: serde_json::from_value(order_value)
+            .map_err(|error| format!("decode {label} command order: {error}"))?,
+    })
+}
+
+fn replay_running_high_water_to_terminal(
+    mut source: MissionSimV1,
+    high_water: &PublishedTickHighWater,
+    successor: Option<&StartupCommandRecoveryEvidence>,
+    terminal_simulation: &MissionSimV1,
+    terminal_hash: &str,
+    match_mode: &str,
+) -> Result<(), String> {
+    replay_recovery_to_tick(&mut source, high_water.tick)?;
+    verify_recovery_hash(&source, &high_water.snapshot_hash)?;
+    if source.terminal() {
+        return Err("running high-water already contains terminal simulation".to_string());
+    }
+    if let Some(successor) = successor {
+        replay_recovery_to_tick(&mut source, successor.simulation.tick)?;
+        let reconstructed = prepare_and_apply_actor_order(
+            &mut source,
+            match_mode,
+            &successor.member_role,
+            u64::from(successor.order.frame),
+            successor.order.clone(),
+        )
+        .map_err(|error| error.body.error)?;
+        if reconstructed != successor.order {
+            return Err(
+                "terminal successor command order changed during reconstruction".to_string(),
+            );
+        }
+        verify_recovery_hash(
+            &source,
+            &successor
+                .simulation
+                .snapshot_hash()
+                .map_err(|error| error.to_string())?,
+        )?;
+        source = successor.simulation.clone();
+    }
+    replay_recovery_to_tick(&mut source, terminal_simulation.tick)?;
+    verify_recovery_hash(&source, terminal_hash)?;
+    if !source.terminal()
+        || source.snapshot_hash().map_err(|error| error.to_string())? != terminal_hash
+    {
+        return Err(
+            "running high-water did not deterministically reach exact terminal state".to_string(),
+        );
+    }
+    Ok(())
+}
+
+async fn recover_terminal_high_water_after_running_crash(
+    pool: &PgPool,
+    journal: &PublishedTickJournal,
+    high_water: &PublishedTickHighWater,
+    database_host_authority: &DatabaseHostAuthorityFence,
+) -> Result<Option<PublishedTickHighWater>, String> {
+    if high_water.phase != "running" || !high_water.receipts_replayable {
+        return Ok(None);
+    }
+    let mut transaction = pool.begin().await.map_err(|error| error.to_string())?;
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    let Some(row) = sqlx::query::query(
+        "select phase, simulation_json, initial_simulation_json, snapshot_hash,
+                authoritative_tick, next_sequence, match_revision, checkpoint_sequence,
+                result_json, result_hash, settlement_state, match_mode,
+                assigned_instance_id, assigned_instance_epoch, assigned_physical_host_id,
+                terminal_stage_simulation_json, terminal_stage_result_json,
+                terminal_stage_result_hash, terminal_stage_snapshot_hash,
+                terminal_stage_authoritative_tick, terminal_stage_next_sequence,
+                terminal_stage_match_revision
+         from trnm_online_matches where match_id = $1 for share",
+    )
+    .bind(high_water.match_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let durable_phase = row
+        .try_get::<String, _>("phase")
+        .map_err(|error| error.to_string())?;
+    let match_mode = row
+        .try_get::<String, _>("match_mode")
+        .map_err(|error| error.to_string())?;
+    let (
+        terminal_simulation,
+        terminal_hash,
+        durable_hash,
+        authoritative_tick,
+        next_sequence,
+        match_revision,
+        checkpoint_sequence,
+        result_valid,
+        terminal_settlement_state,
+    ) = if durable_phase == "complete" {
+        let terminal_value = row
+            .try_get::<Option<Value>, _>("simulation_json")
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "completed match is missing terminal simulation".to_string())?;
+        let terminal_simulation = serde_json::from_value::<MissionSimV1>(terminal_value)
+            .map_err(|error| format!("decode completed terminal simulation: {error}"))?;
+        let terminal_hash = terminal_simulation
+            .snapshot_hash()
+            .map_err(|error| format!("hash completed terminal simulation: {error}"))?;
+        let result_hash = row
+            .try_get::<Option<String>, _>("result_hash")
+            .map_err(|error| error.to_string())?;
+        let result_valid = terminal_result_matches_simulation(
+            &terminal_simulation,
+            row.try_get::<Option<Value>, _>("result_json")
+                .map_err(|error| error.to_string())?,
+            result_hash.as_deref(),
+            &match_mode,
+        )?;
+        (
+            terminal_simulation,
+            terminal_hash,
+            row.try_get::<String, _>("snapshot_hash")
+                .map_err(|error| error.to_string())?,
+            u64::try_from(
+                row.try_get::<i64, _>("authoritative_tick")
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|_| "completed terminal tick is negative".to_string())?,
+            u64::try_from(
+                row.try_get::<i64, _>("next_sequence")
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|_| "completed terminal sequence is negative".to_string())?,
+            u64::try_from(
+                row.try_get::<i64, _>("match_revision")
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|_| "completed terminal revision is negative".to_string())?,
+            u64::try_from(
+                row.try_get::<i64, _>("checkpoint_sequence")
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|_| "completed checkpoint sequence is negative".to_string())?,
+            result_valid,
+            row.try_get::<String, _>("settlement_state")
+                .map_err(|error| error.to_string())?,
+        )
+    } else if durable_phase == "running" {
+        let Some(staged) = staged_terminal_authority_from_row(&row, &match_mode)? else {
+            transaction
+                .commit()
+                .await
+                .map_err(|error| error.to_string())?;
+            return Ok(None);
+        };
+        (
+            staged.simulation,
+            staged.snapshot_hash.clone(),
+            staged.snapshot_hash,
+            staged.authoritative_tick,
+            staged.next_sequence,
+            staged.match_revision,
+            staged.next_sequence,
+            true,
+            "staged".to_string(),
+        )
+    } else {
+        transaction
+            .commit()
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(None);
+    };
+    let member_rows = sqlx::query::query(
+        "select player_id, next_input_sequence from trnm_online_match_members
+         where match_id = $1 order by player_id",
+    )
+    .bind(high_water.match_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let mut member_cursors = BTreeMap::new();
+    for member in member_rows {
+        let cursor = u64::try_from(
+            member
+                .try_get::<i64, _>("next_input_sequence")
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|_| "completed member cursor is negative".to_string())?;
+        member_cursors.insert(
+            member
+                .try_get("player_id")
+                .map_err(|error| error.to_string())?,
+            cursor,
+        );
+    }
+    let view = DurableTerminalCompactionView {
+        phase: "complete".to_string(),
+        simulation_tick: terminal_simulation.tick,
+        simulation_terminal: terminal_simulation.terminal(),
+        simulation_hash: terminal_hash.clone(),
+        durable_snapshot_hash: durable_hash,
+        authoritative_tick: Some(authoritative_tick),
+        next_sequence: Some(next_sequence),
+        checkpoint_sequence: Some(checkpoint_sequence),
+        match_revision: Some(match_revision),
+        result_valid,
+        settlement_state: terminal_settlement_state,
+        next_input_sequences: member_cursors.clone(),
+        assigned_instance_id: row
+            .try_get("assigned_instance_id")
+            .map_err(|error| error.to_string())?,
+        assigned_instance_epoch: row
+            .try_get("assigned_instance_epoch")
+            .map_err(|error| error.to_string())?,
+        assigned_physical_host_id: row
+            .try_get("assigned_physical_host_id")
+            .map_err(|error| error.to_string())?,
+    };
+    if !terminal_authority_succeeds_running_high_water(&view, high_water) {
+        return Err(
+            "completed database authority is not an exact successor of its running high-water"
+                .to_string(),
+        );
+    }
+
+    let source = if high_water.next_sequence == 0 {
+        let initial_value = row
+            .try_get::<Option<Value>, _>("initial_simulation_json")
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                "running high-water recovery is missing initial simulation".to_string()
+            })?;
+        let initial = serde_json::from_value::<MissionSimV1>(initial_value.clone())
+            .map_err(|error| format!("decode running high-water initial simulation: {error}"))?;
+        let frame = sqlx::query::query(
+            "select tick, snapshot_hash, simulation_json from trnm_online_replay_frames
+             where match_id = $1 and frame_kind = 'initial' order by tick limit 1",
+        )
+        .bind(high_water.match_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "running high-water recovery is missing initial replay frame".to_string())?;
+        let frame_value = frame
+            .try_get::<Value, _>("simulation_json")
+            .map_err(|error| error.to_string())?;
+        if frame_value != initial_value {
+            return Err("initial simulation and replay frame disagree".to_string());
+        }
+        let initial_tick = u64::try_from(
+            frame
+                .try_get::<i64, _>("tick")
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|_| "running high-water initial frame tick is negative".to_string())?;
+        validate_recovery_simulation(
+            &initial,
+            Some(initial_tick),
+            &frame
+                .try_get::<String, _>("snapshot_hash")
+                .map_err(|error| error.to_string())?,
+            "running high-water initial state",
+        )?;
+        initial
+    } else {
+        let source = load_startup_command_recovery_evidence(
+            &mut transaction,
+            high_water.match_id,
+            high_water.next_sequence.saturating_sub(1),
+            "running high-water source",
+        )
+        .await?;
+        if source.accepted_revision != high_water.match_revision
+            || high_water
+                .next_input_sequences
+                .get(&source.player_id)
+                .copied()
+                != Some(source.input_sequence.saturating_add(1))
+        {
+            return Err(
+                "running high-water source command cursor does not match journal".to_string(),
+            );
+        }
+        source.simulation
+    };
+
+    let successor = if next_sequence == high_water.next_sequence {
+        None
+    } else {
+        let successor = load_startup_command_recovery_evidence(
+            &mut transaction,
+            high_water.match_id,
+            high_water.next_sequence,
+            "terminal successor",
+        )
+        .await?;
+        if successor.accepted_revision != match_revision
+            || high_water
+                .next_input_sequences
+                .get(&successor.player_id)
+                .copied()
+                != Some(successor.input_sequence)
+            || member_cursors.get(&successor.player_id).copied()
+                != Some(successor.input_sequence.saturating_add(1))
+        {
+            return Err("terminal successor command cursor does not match authority".to_string());
+        }
+        Some(successor)
+    };
+    replay_running_high_water_to_terminal(
+        source,
+        high_water,
+        successor.as_ref(),
+        &terminal_simulation,
+        &terminal_hash,
+        &match_mode,
+    )?;
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| error.to_string())?;
+    journal
+        .new_record(PublishedTickRecordInput {
+            instance_id: high_water.instance_id.clone(),
+            match_id: high_water.match_id,
+            actor_generation: high_water.actor_generation,
+            actor_epoch: high_water.actor_epoch,
+            tick: terminal_simulation.tick,
+            next_sequence,
+            match_revision,
+            next_input_sequences: member_cursors,
+            phase: "complete".to_string(),
+            receipts_replayable: true,
+            snapshot_hash: terminal_hash,
+        })
+        .map(Some)
+}
+
+#[derive(Clone, Copy)]
+struct FailedClosedMaintenanceExpectation<'a> {
+    instance_id: &'a str,
+    physical_host_id: &'a str,
+    failure_reason: &'a str,
+}
+
+fn failed_closed_maintenance_expectation_matches(
+    high_water: &PublishedTickHighWater,
+    durable_failure_reason: &str,
+    expected: FailedClosedMaintenanceExpectation<'_>,
+) -> bool {
+    high_water.instance_id == expected.instance_id
+        && high_water.physical_host_id == expected.physical_host_id
+        && durable_failure_reason == expected.failure_reason
+}
+
+async fn failed_closed_match_originates_before_v13(
+    connection: &mut PgConnection,
+    match_id: Uuid,
+) -> Result<bool, String> {
+    let migration_checksum = migration_checksum_sha256(MIGRATION_V13);
+    sqlx::query_scalar::query_scalar::<_, bool>(
+        "select m.updated_at < migration.applied_at
+           from trnm_online_matches m
+           join public.trnm_online_schema_migrations migration
+             on migration.migration_version = 13
+            and migration.migration_name = '0013_online_failed_closed_abandonment_v1'
+            and migration.checksum_sha256 = $2
+          where m.match_id = $1 and m.phase = 'failed_closed'",
+    )
+    .bind(match_id)
+    .bind(migration_checksum)
+    .fetch_optional(connection)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "failed-closed match or exact V13 migration ledger is missing".to_string())
+}
+
+async fn ensure_failed_closed_abandonment_marker(
+    connection: &mut PgConnection,
+    high_water: &PublishedTickHighWater,
+    database_host_authority: &DatabaseHostAuthorityFence,
+    adopt_legacy_pre_v13: bool,
+    maintenance_expectation: Option<FailedClosedMaintenanceExpectation<'_>>,
+) -> Result<Option<(AbandonmentDatabaseEvidence, DatabaseLineage, bool)>, String> {
+    if high_water.phase != "running" || !high_water.receipts_replayable {
+        return Ok(None);
+    }
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|error| error.to_string())?;
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    let Some(row) = sqlx::query::query(
+        "select m.phase, m.settlement_state, m.terminal_publication_state,
+                m.simulation_json, m.snapshot_hash, m.authoritative_tick,
+                m.next_sequence, m.checkpoint_sequence, m.match_revision,
+                m.updated_at,
+                m.assigned_instance_id,
+                m.assigned_instance_epoch, m.assigned_physical_host_id,
+                m.result_json, m.result_hash, m.failure_reason,
+                m.terminal_publication_actor_generation,
+                m.terminal_stage_simulation_json is null
+                    and m.terminal_stage_result_json is null
+                    and m.terminal_stage_result_hash is null
+                    and m.terminal_stage_snapshot_hash is null
+                    and m.terminal_stage_authoritative_tick is null
+                    and m.terminal_stage_next_sequence is null
+                    and m.terminal_stage_match_revision is null
+                    and m.terminal_staged_at is null as terminal_stage_empty,
+                exists(
+                    select 1 from trnm_online_terminal_publication_acks a
+                    where a.match_id = m.match_id
+                ) as has_terminal_ack
+           from trnm_online_matches m
+          where m.match_id = $1
+          for update",
+    )
+    .bind(high_water.match_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?
+    else {
+        transaction
+            .commit()
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(None);
+    };
+    if row
+        .try_get::<String, _>("phase")
+        .map_err(|error| error.to_string())?
+        != "failed_closed"
+    {
+        transaction
+            .commit()
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(None);
+    }
+    let simulation_value = row
+        .try_get::<Value, _>("simulation_json")
+        .map_err(|error| error.to_string())?;
+    let simulation = serde_json::from_value::<MissionSimV1>(simulation_value)
+        .map_err(|error| format!("decode failed-closed simulation: {error}"))?;
+    let durable_tick = u64::try_from(
+        row.try_get::<i64, _>("authoritative_tick")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "failed-closed authoritative tick is negative".to_string())?;
+    let durable_next_sequence = u64::try_from(
+        row.try_get::<i64, _>("next_sequence")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "failed-closed next sequence is negative".to_string())?;
+    let durable_match_revision = u64::try_from(
+        row.try_get::<i64, _>("match_revision")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "failed-closed match revision is negative".to_string())?;
+    let durable_checkpoint_sequence = u64::try_from(
+        row.try_get::<i64, _>("checkpoint_sequence")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "failed-closed checkpoint sequence is negative".to_string())?;
+    let member_rows = sqlx::query::query(
+        "select player_id, next_input_sequence
+           from trnm_online_match_members
+          where match_id = $1
+          order by player_id
+          for update",
+    )
+    .bind(high_water.match_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let mut durable_member_cursors = BTreeMap::new();
+    for member in member_rows {
+        durable_member_cursors.insert(
+            member
+                .try_get::<String, _>("player_id")
+                .map_err(|error| error.to_string())?,
+            u64::try_from(
+                member
+                    .try_get::<i64, _>("next_input_sequence")
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|_| "failed-closed member cursor is negative".to_string())?,
+        );
+    }
+    let durable_snapshot_hash = row
+        .try_get::<String, _>("snapshot_hash")
+        .map_err(|error| error.to_string())?;
+    let failure_reason = row
+        .try_get::<Option<String>, _>("failure_reason")
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    if let Some(expected) = maintenance_expectation {
+        if !failed_closed_maintenance_expectation_matches(high_water, &failure_reason, expected) {
+            return Err(
+                "maintenance identity or failure reason conflicts with failed-closed authority"
+                    .to_string(),
+            );
+        }
+    }
+    let exact = row
+        .try_get::<String, _>("settlement_state")
+        .map_err(|error| error.to_string())?
+        == "failed_closed"
+        && row
+            .try_get::<String, _>("terminal_publication_state")
+            .map_err(|error| error.to_string())?
+            == "pending"
+        && row
+            .try_get::<Option<String>, _>("assigned_instance_id")
+            .map_err(|error| error.to_string())?
+            .as_deref()
+            == Some(high_water.instance_id.as_str())
+        && row
+            .try_get::<Option<i64>, _>("assigned_instance_epoch")
+            .map_err(|error| error.to_string())?
+            == Some(high_water.actor_epoch)
+        && row
+            .try_get::<Option<String>, _>("assigned_physical_host_id")
+            .map_err(|error| error.to_string())?
+            .as_deref()
+            == Some(high_water.physical_host_id.as_str())
+        && row
+            .try_get::<Option<String>, _>("result_hash")
+            .map_err(|error| error.to_string())?
+            .is_none()
+        && row
+            .try_get::<Option<Value>, _>("result_json")
+            .map_err(|error| error.to_string())?
+            .is_none()
+        && row
+            .try_get::<Option<Uuid>, _>("terminal_publication_actor_generation")
+            .map_err(|error| error.to_string())?
+            .is_none()
+        && !row
+            .try_get::<bool, _>("has_terminal_ack")
+            .map_err(|error| error.to_string())?
+        && row
+            .try_get::<bool, _>("terminal_stage_empty")
+            .map_err(|error| error.to_string())?
+        && !simulation.terminal()
+        && simulation.tick == durable_tick
+        && simulation
+            .snapshot_hash()
+            .map_err(|error| format!("hash failed-closed simulation: {error}"))?
+            == durable_snapshot_hash
+        && durable_tick == high_water.tick
+        && durable_next_sequence == high_water.next_sequence
+        && durable_checkpoint_sequence == high_water.next_sequence
+        && durable_match_revision == high_water.match_revision
+        && durable_member_cursors == high_water.next_input_sequences
+        && durable_snapshot_hash == high_water.snapshot_hash
+        && valid_abandonment_failure_reason(&failure_reason);
+    if !exact {
+        return Err(
+            "failed-closed authority does not exactly match its retained hot witness".to_string(),
+        );
+    }
+    let marker_exists = sqlx::query_scalar::query_scalar::<_, bool>(
+        "select exists(
+            select 1 from trnm_online_failed_closed_abandonment_markers
+             where match_id = $1
+        )",
+    )
+    .bind(high_water.match_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let match_updated_at: DateTime<Utc> = row
+        .try_get("updated_at")
+        .map_err(|error| error.to_string())?;
+    let migration_checksum = migration_checksum_sha256(MIGRATION_V13);
+    let migration_applied_at = sqlx::query_scalar::query_scalar::<_, DateTime<Utc>>(
+        "select applied_at
+           from public.trnm_online_schema_migrations
+          where migration_version = 13
+            and migration_name = '0013_online_failed_closed_abandonment_v1'
+            and checksum_sha256 = $1",
+    )
+    .bind(migration_checksum)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "V13 migration ledger entry is absent or drifted".to_string())?;
+    let legacy_origin = match_updated_at < migration_applied_at;
+    if !marker_exists {
+        if !adopt_legacy_pre_v13 {
+            return Err(format!(
+                "failed-closed match {} has no atomic abandonment marker; use the explicit pre-V13 adoption maintenance path only for a proven legacy row",
+                high_water.match_id
+            ));
+        }
+        if !legacy_abandonment_adoption_allowed(
+            adopt_legacy_pre_v13,
+            match_updated_at,
+            migration_applied_at,
+        ) {
+            return Err(format!(
+                "failed-closed match {} is not strictly older than the V13 ledger and cannot use legacy adoption",
+                high_water.match_id
+            ));
+        }
+        if maintenance_expectation.is_none() {
+            return Err(
+                "legacy abandonment adoption requires explicit maintenance identity and reason"
+                    .to_string(),
+            );
+        }
+        sqlx::query::query(
+            "insert into trnm_online_failed_closed_abandonment_markers (
+            match_id, journal_owner_id, actor_generation, instance_id,
+            actor_epoch, physical_host_id, authoritative_tick, next_sequence,
+            match_revision, next_input_sequences, snapshot_hash, failure_reason
+         ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         ",
+        )
+        .bind(high_water.match_id)
+        .bind(high_water.journal_owner_id)
+        .bind(high_water.actor_generation)
+        .bind(&high_water.instance_id)
+        .bind(high_water.actor_epoch)
+        .bind(&high_water.physical_host_id)
+        .bind(
+            i64::try_from(high_water.tick).map_err(|_| {
+                "failed-closed high-water tick exceeds PostgreSQL range".to_string()
+            })?,
+        )
+        .bind(i64::try_from(high_water.next_sequence).map_err(|_| {
+            "failed-closed high-water sequence exceeds PostgreSQL range".to_string()
+        })?)
+        .bind(i64::try_from(high_water.match_revision).map_err(|_| {
+            "failed-closed high-water revision exceeds PostgreSQL range".to_string()
+        })?)
+        .bind(
+            serde_json::to_value(&high_water.next_input_sequences)
+                .map_err(|error| error.to_string())?,
+        )
+        .bind(&high_water.snapshot_hash)
+        .bind(&failure_reason)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| error.to_string())?;
+    }
+    let evidence =
+        load_abandonment_database_evidence_by_match(&mut *transaction, high_water.match_id)
+            .await?
+            .ok_or_else(|| {
+                "failed-closed abandonment marker disappeared after insert".to_string()
+            })?;
+    if !evidence.matches_high_water(high_water) || evidence.failure_reason != failure_reason {
+        return Err(
+            "failed-closed abandonment marker conflicts with the exact hot witness".to_string(),
+        );
+    }
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| error.to_string())?;
+    let lineage = database_lineage(&mut *connection).await?;
+    Ok(Some((evidence, lineage, legacy_origin)))
+}
+
+async fn lock_maintenance_fleet_assignment(
+    transaction: &mut sqlx::transaction::Transaction<'_, Postgres>,
+    instance_id: &str,
+    physical_host_id: &str,
+    expected_epoch: Option<i64>,
+) -> Result<(), String> {
+    let row = sqlx::query::query(
+        "select instance_epoch, physical_host_id
+           from trnm_online_fleet_instances
+          where instance_id = $1
+          for share",
+    )
+    .bind(instance_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "maintenance fleet assignment is missing".to_string())?;
+    let durable_epoch: i64 = row
+        .try_get("instance_epoch")
+        .map_err(|error| error.to_string())?;
+    let durable_host: String = row
+        .try_get("physical_host_id")
+        .map_err(|error| error.to_string())?;
+    if durable_host != physical_host_id
+        || expected_epoch.is_some_and(|epoch| epoch != durable_epoch)
+    {
+        return Err(
+            "maintenance fleet assignment is fenced by a different host or epoch".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn running_maintenance_successor_is_monotonic(
+    high_water: &PublishedTickHighWater,
+    durable_tick: u64,
+    durable_next_sequence: u64,
+    durable_match_revision: u64,
+    durable_member_cursors: &BTreeMap<String, u64>,
+    durable_snapshot_hash: &str,
+) -> bool {
+    if durable_tick < high_water.tick
+        || durable_next_sequence < high_water.next_sequence
+        || durable_match_revision < high_water.match_revision
+        || durable_member_cursors.len() != high_water.next_input_sequences.len()
+        || high_water
+            .next_input_sequences
+            .iter()
+            .any(|(player_id, cursor)| {
+                durable_member_cursors
+                    .get(player_id)
+                    .is_none_or(|durable| durable < cursor)
+            })
+    {
+        return false;
+    }
+    let same_position = durable_tick == high_water.tick
+        && durable_next_sequence == high_water.next_sequence
+        && durable_match_revision == high_water.match_revision
+        && *durable_member_cursors == high_water.next_input_sequences;
+    !same_position || durable_snapshot_hash == high_water.snapshot_hash
+}
+
+/// Rebind the retained hot witness to the exact durable running checkpoint
+/// before making the irreversible failed-closed transition. PostgreSQL is the
+/// authority here: maintenance never replays or invents state. It accepts only
+/// the same tuple or a fully validated monotonic successor, fsyncs that exact
+/// DB tuple to the existing journal ownership, then lets the transition
+/// transaction re-check every field against the newly retained witness.
+async fn prepare_final_abandonment_high_water(
+    connection: &mut PgConnection,
+    journal: &PublishedTickJournal,
+    high_water: &PublishedTickHighWater,
+    database_host_authority: &DatabaseHostAuthorityFence,
+) -> Result<PublishedTickHighWater, String> {
+    if high_water.phase != "running" || !high_water.receipts_replayable {
+        return Err("maintenance requires a replayable running hot witness".to_string());
+    }
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|error| error.to_string())?;
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    lock_maintenance_fleet_assignment(
+        &mut transaction,
+        &high_water.instance_id,
+        &high_water.physical_host_id,
+        Some(high_water.actor_epoch),
+    )
+    .await?;
+    let row = sqlx::query::query(
+        "select m.phase, m.settlement_state, m.terminal_publication_state,
+                m.simulation_json, m.snapshot_hash, m.authoritative_tick,
+                m.next_sequence, m.checkpoint_sequence, m.match_revision,
+                m.assigned_instance_id, m.assigned_instance_epoch,
+                m.assigned_physical_host_id, m.result_json, m.result_hash,
+                m.failure_reason, m.terminal_publication_actor_generation,
+                m.terminal_stage_simulation_json is null
+                    and m.terminal_stage_result_json is null
+                    and m.terminal_stage_result_hash is null
+                    and m.terminal_stage_snapshot_hash is null
+                    and m.terminal_stage_authoritative_tick is null
+                    and m.terminal_stage_next_sequence is null
+                    and m.terminal_stage_match_revision is null
+                    and m.terminal_staged_at is null as terminal_stage_empty,
+                exists(
+                    select 1 from trnm_online_terminal_publication_acks terminal
+                     where terminal.match_id = m.match_id
+                ) as has_terminal_ack,
+                exists(
+                    select 1 from trnm_online_failed_closed_abandonment_markers marker
+                     where marker.match_id = m.match_id
+                ) as has_abandonment_marker
+           from trnm_online_matches m
+          where m.match_id = $1
+          for share",
+    )
+    .bind(high_water.match_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "running maintenance exact match UUID disappeared".to_string())?;
+    let simulation_value = row
+        .try_get::<Option<Value>, _>("simulation_json")
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "running maintenance durable simulation is missing".to_string())?;
+    let simulation = serde_json::from_value::<MissionSimV1>(simulation_value)
+        .map_err(|error| format!("decode running maintenance simulation: {error}"))?;
+    let durable_tick = u64::try_from(
+        row.try_get::<i64, _>("authoritative_tick")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "running maintenance authoritative tick is negative".to_string())?;
+    let durable_next_sequence = u64::try_from(
+        row.try_get::<i64, _>("next_sequence")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "running maintenance next sequence is negative".to_string())?;
+    let durable_checkpoint_sequence = u64::try_from(
+        row.try_get::<i64, _>("checkpoint_sequence")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "running maintenance checkpoint sequence is negative".to_string())?;
+    let durable_match_revision = u64::try_from(
+        row.try_get::<i64, _>("match_revision")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "running maintenance match revision is negative".to_string())?;
+    let durable_snapshot_hash = row
+        .try_get::<String, _>("snapshot_hash")
+        .map_err(|error| error.to_string())?;
+    validate_recovery_simulation(
+        &simulation,
+        Some(durable_tick),
+        &durable_snapshot_hash,
+        "running maintenance database checkpoint",
+    )?;
+    let member_rows = sqlx::query::query(
+        "select player_id, next_input_sequence
+           from trnm_online_match_members
+          where match_id = $1
+          order by player_id
+          for share",
+    )
+    .bind(high_water.match_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let mut durable_member_cursors = BTreeMap::new();
+    for member in member_rows {
+        durable_member_cursors.insert(
+            member
+                .try_get::<String, _>("player_id")
+                .map_err(|error| error.to_string())?,
+            u64::try_from(
+                member
+                    .try_get::<i64, _>("next_input_sequence")
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|_| "running maintenance member cursor is negative".to_string())?,
+        );
+    }
+    let exact_running_shape = row
+        .try_get::<String, _>("phase")
+        .map_err(|error| error.to_string())?
+        == "running"
+        && row
+            .try_get::<String, _>("settlement_state")
+            .map_err(|error| error.to_string())?
+            == "not_ready"
+        && row
+            .try_get::<String, _>("terminal_publication_state")
+            .map_err(|error| error.to_string())?
+            == "pending"
+        && row
+            .try_get::<Option<String>, _>("assigned_instance_id")
+            .map_err(|error| error.to_string())?
+            .as_deref()
+            == Some(high_water.instance_id.as_str())
+        && row
+            .try_get::<i64, _>("assigned_instance_epoch")
+            .map_err(|error| error.to_string())?
+            == high_water.actor_epoch
+        && row
+            .try_get::<Option<String>, _>("assigned_physical_host_id")
+            .map_err(|error| error.to_string())?
+            .as_deref()
+            == Some(high_water.physical_host_id.as_str())
+        && durable_checkpoint_sequence == durable_next_sequence
+        && row
+            .try_get::<Option<Value>, _>("result_json")
+            .map_err(|error| error.to_string())?
+            .is_none()
+        && row
+            .try_get::<Option<String>, _>("result_hash")
+            .map_err(|error| error.to_string())?
+            .is_none()
+        && row
+            .try_get::<Option<String>, _>("failure_reason")
+            .map_err(|error| error.to_string())?
+            .is_none()
+        && row
+            .try_get::<Option<Uuid>, _>("terminal_publication_actor_generation")
+            .map_err(|error| error.to_string())?
+            .is_none()
+        && row
+            .try_get::<bool, _>("terminal_stage_empty")
+            .map_err(|error| error.to_string())?
+        && !row
+            .try_get::<bool, _>("has_terminal_ack")
+            .map_err(|error| error.to_string())?
+        && !row
+            .try_get::<bool, _>("has_abandonment_marker")
+            .map_err(|error| error.to_string())?
+        && !simulation.terminal();
+    if !exact_running_shape
+        || !running_maintenance_successor_is_monotonic(
+            high_water,
+            durable_tick,
+            durable_next_sequence,
+            durable_match_revision,
+            &durable_member_cursors,
+            &durable_snapshot_hash,
+        )
+    {
+        return Err(
+            "running database authority is not an exact monotonic successor of its hot witness"
+                .to_string(),
+        );
+    }
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let unchanged = durable_tick == high_water.tick
+        && durable_next_sequence == high_water.next_sequence
+        && durable_match_revision == high_water.match_revision
+        && durable_member_cursors == high_water.next_input_sequences
+        && durable_snapshot_hash == high_water.snapshot_hash;
+    if unchanged {
+        return Ok(high_water.clone());
+    }
+    let final_high_water = journal.new_record(PublishedTickRecordInput {
+        instance_id: high_water.instance_id.clone(),
+        match_id: high_water.match_id,
+        actor_generation: high_water.actor_generation,
+        actor_epoch: high_water.actor_epoch,
+        tick: durable_tick,
+        next_sequence: durable_next_sequence,
+        match_revision: durable_match_revision,
+        next_input_sequences: durable_member_cursors.clone(),
+        phase: "running".to_string(),
+        receipts_replayable: true,
+        snapshot_hash: durable_snapshot_hash,
+    })?;
+    record_published_tick_with_timeout(
+        journal,
+        final_high_water.clone(),
+        durable_next_sequence,
+        durable_match_revision,
+        durable_member_cursors,
+    )
+    .await?;
+    Ok(final_high_water)
+}
+
+async fn transition_running_to_failed_closed(
+    connection: &mut PgConnection,
+    high_water: &PublishedTickHighWater,
+    failure_reason: &str,
+    database_host_authority: &DatabaseHostAuthorityFence,
+) -> Result<(AbandonmentDatabaseEvidence, DatabaseLineage), String> {
+    let tick = i64::try_from(high_water.tick)
+        .map_err(|_| "maintenance high-water tick exceeds PostgreSQL range".to_string())?;
+    let next_sequence = i64::try_from(high_water.next_sequence)
+        .map_err(|_| "maintenance high-water sequence exceeds PostgreSQL range".to_string())?;
+    let match_revision = i64::try_from(high_water.match_revision)
+        .map_err(|_| "maintenance high-water revision exceeds PostgreSQL range".to_string())?;
+    let next_input_sequences = serde_json::to_value(&high_water.next_input_sequences)
+        .map_err(|error| error.to_string())?;
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|error| error.to_string())?;
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    lock_maintenance_fleet_assignment(
+        &mut transaction,
+        &high_water.instance_id,
+        &high_water.physical_host_id,
+        Some(high_water.actor_epoch),
+    )
+    .await?;
+    let locked_match = sqlx::query::query(
+        "select simulation_json from trnm_online_matches where match_id = $1 for update",
+    )
+    .bind(high_water.match_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let locked_match = locked_match
+        .ok_or_else(|| "running maintenance exact match UUID disappeared".to_string())?;
+    let locked_simulation = serde_json::from_value::<MissionSimV1>(
+        locked_match
+            .try_get::<Option<Value>, _>("simulation_json")
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "running maintenance durable simulation is missing".to_string())?,
+    )
+    .map_err(|error| format!("decode running maintenance simulation: {error}"))?;
+    validate_recovery_simulation(
+        &locked_simulation,
+        Some(high_water.tick),
+        &high_water.snapshot_hash,
+        "running maintenance transition checkpoint",
+    )?;
+    if locked_simulation.terminal() {
+        return Err("running maintenance checkpoint is terminal".to_string());
+    }
+    let member_rows = sqlx::query::query(
+        "select player_id, next_input_sequence
+           from trnm_online_match_members
+          where match_id = $1
+          order by player_id
+          for update",
+    )
+    .bind(high_water.match_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let mut locked_member_cursors = BTreeMap::new();
+    for member in member_rows {
+        locked_member_cursors.insert(
+            member
+                .try_get::<String, _>("player_id")
+                .map_err(|error| error.to_string())?,
+            u64::try_from(
+                member
+                    .try_get::<i64, _>("next_input_sequence")
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|_| "maintenance member cursor is negative".to_string())?,
+        );
+    }
+    if locked_member_cursors != high_water.next_input_sequences {
+        return Err(
+            "running maintenance member cursors do not match the exact hot witness".to_string(),
+        );
+    }
+    let transitioned = sqlx::query::query(
+        "update trnm_online_matches m
+            set phase = 'failed_closed', settlement_state = 'failed_closed',
+                failure_reason = $2, updated_at = clock_timestamp()
+          where m.match_id = $1
+            and m.phase = 'running'
+            and m.settlement_state = 'not_ready'
+            and m.terminal_publication_state = 'pending'
+            and m.assigned_instance_id = $3
+            and m.assigned_instance_epoch = $4
+            and m.assigned_physical_host_id = $5
+            and m.authoritative_tick = $6
+            and m.next_sequence = $7
+            and m.checkpoint_sequence = $7
+            and m.match_revision = $8
+            and m.snapshot_hash = $10
+            and m.simulation_json is not null
+            and m.result_json is null
+            and m.result_hash is null
+            and m.terminal_publication_actor_generation is null
+            and m.terminal_stage_simulation_json is null
+            and m.terminal_stage_result_json is null
+            and m.terminal_stage_result_hash is null
+            and m.terminal_stage_snapshot_hash is null
+            and m.terminal_stage_authoritative_tick is null
+            and m.terminal_stage_next_sequence is null
+            and m.terminal_stage_match_revision is null
+            and m.terminal_staged_at is null
+            and $9 = coalesce(
+                (select jsonb_object_agg(
+                    member.player_id,
+                    to_jsonb(member.next_input_sequence)
+                    order by member.player_id
+                 ) from trnm_online_match_members member
+                  where member.match_id = m.match_id),
+                '{}'::jsonb
+            )
+            and not exists (
+                select 1 from trnm_online_terminal_publication_acks terminal
+                 where terminal.match_id = m.match_id
+            )
+            and not exists (
+                select 1 from trnm_online_failed_closed_abandonment_markers marker
+                 where marker.match_id = m.match_id
+            )
+        returning m.match_id",
+    )
+    .bind(high_water.match_id)
+    .bind(failure_reason)
+    .bind(&high_water.instance_id)
+    .bind(high_water.actor_epoch)
+    .bind(&high_water.physical_host_id)
+    .bind(tick)
+    .bind(next_sequence)
+    .bind(match_revision)
+    .bind(next_input_sequences.clone())
+    .bind(&high_water.snapshot_hash)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    if transitioned.is_none() {
+        return Err(
+            "running maintenance selector did not match one exact durable authority tuple"
+                .to_string(),
+        );
+    }
+    sqlx::query::query(
+        "insert into trnm_online_failed_closed_abandonment_markers (
+            match_id, journal_owner_id, actor_generation, instance_id,
+            actor_epoch, physical_host_id, authoritative_tick, next_sequence,
+            match_revision, next_input_sequences, snapshot_hash, failure_reason
+         ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+    )
+    .bind(high_water.match_id)
+    .bind(high_water.journal_owner_id)
+    .bind(high_water.actor_generation)
+    .bind(&high_water.instance_id)
+    .bind(high_water.actor_epoch)
+    .bind(&high_water.physical_host_id)
+    .bind(tick)
+    .bind(next_sequence)
+    .bind(match_revision)
+    .bind(next_input_sequences)
+    .bind(&high_water.snapshot_hash)
+    .bind(failure_reason)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let evidence =
+        load_abandonment_database_evidence_by_match(&mut *transaction, high_water.match_id)
+            .await?
+            .ok_or_else(|| "atomic maintenance marker disappeared before commit".to_string())?;
+    if !evidence.matches_high_water(high_water) || evidence.failure_reason != failure_reason {
+        return Err("atomic maintenance marker is not exact before commit".to_string());
+    }
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| error.to_string())?;
+    let lineage = database_lineage(&mut *connection).await?;
+    Ok((evidence, lineage))
+}
+
+async fn transition_waiting_to_failed_closed(
+    connection: &mut PgConnection,
+    config: &FailCloseMaintenanceConfig,
+    database_host_authority: &DatabaseHostAuthorityFence,
+) -> Result<(), String> {
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|error| error.to_string())?;
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    lock_maintenance_fleet_assignment(
+        &mut transaction,
+        config.instance_id.trim(),
+        config.physical_host_id.trim(),
+        None,
+    )
+    .await?;
+    let locked = sqlx::query_scalar::query_scalar::<_, Uuid>(
+        "select match_id from trnm_online_matches where match_id = $1 for update",
+    )
+    .bind(config.match_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    if locked.is_none() {
+        return Err("waiting maintenance exact match UUID disappeared".to_string());
+    }
+    let _transitioned = sqlx::query::query(
+        "update trnm_online_matches m
+            set phase = 'failed_closed', settlement_state = 'failed_closed',
+                failure_reason = $2, updated_at = clock_timestamp()
+          where m.match_id = $1
+            and m.phase = 'waiting'
+            and m.settlement_state = 'not_ready'
+            and m.terminal_publication_state = 'pending'
+            and m.assigned_instance_id is null
+            and m.assigned_instance_epoch = 0
+            and m.assigned_physical_host_id is null
+            and m.simulation_json is null
+            and m.result_json is null
+            and m.result_hash is null
+            and m.terminal_publication_actor_generation is null
+            and m.terminal_stage_simulation_json is null
+            and m.terminal_stage_result_json is null
+            and m.terminal_stage_result_hash is null
+            and m.terminal_stage_snapshot_hash is null
+            and m.terminal_stage_authoritative_tick is null
+            and m.terminal_stage_next_sequence is null
+            and m.terminal_stage_match_revision is null
+            and m.terminal_staged_at is null
+            and not exists (
+                select 1 from trnm_online_terminal_publication_acks terminal
+                 where terminal.match_id = m.match_id
+            )
+            and not exists (
+                select 1 from trnm_online_failed_closed_abandonment_markers marker
+                 where marker.match_id = m.match_id
+            )
+        returning m.match_id",
+    )
+    .bind(config.match_id)
+    .bind(&config.failure_reason)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let exact_db_only = sqlx::query_scalar::query_scalar::<_, bool>(
+        "select exists(
+            select 1 from trnm_online_matches m
+             where m.match_id = $1
+               and m.phase = 'failed_closed'
+               and m.settlement_state = 'failed_closed'
+               and m.failure_reason = $2
+               and m.terminal_publication_state = 'pending'
+               and m.assigned_instance_id is null
+               and m.assigned_instance_epoch = 0
+               and m.assigned_physical_host_id is null
+               and m.simulation_json is null
+               and m.snapshot_hash = ''
+               and m.authoritative_tick = 0
+               and m.next_sequence = 0
+               and m.checkpoint_sequence = 0
+               and m.match_revision = 0
+               and m.result_json is null
+               and m.result_hash is null
+               and m.terminal_publication_actor_generation is null
+               and m.terminal_stage_simulation_json is null
+               and m.terminal_stage_result_json is null
+               and m.terminal_stage_result_hash is null
+               and m.terminal_stage_snapshot_hash is null
+               and m.terminal_stage_authoritative_tick is null
+               and m.terminal_stage_next_sequence is null
+               and m.terminal_stage_match_revision is null
+               and m.terminal_staged_at is null
+               and not exists (
+                   select 1 from trnm_online_match_members member
+                    where member.match_id = m.match_id
+                      and member.next_input_sequence <> 0
+               )
+               and not exists (
+                   select 1 from trnm_online_commands command
+                    where command.match_id = m.match_id
+               )
+               and not exists (
+                   select 1 from trnm_online_terminal_publication_acks terminal
+                    where terminal.match_id = m.match_id
+               )
+               and not exists (
+                   select 1 from trnm_online_failed_closed_abandonment_markers marker
+                    where marker.match_id = m.match_id
+               )
+        )",
+    )
+    .bind(config.match_id)
+    .bind(&config.failure_reason)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    if !exact_db_only {
+        return Err("waiting maintenance selector is not an exact DB-only match".to_string());
+    }
+    require_database_host_authority(&mut transaction, database_host_authority).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+pub async fn run_fail_close_maintenance(
+    config: FailCloseMaintenanceConfig,
+) -> Result<FailCloseMaintenanceReport, String> {
+    if config.match_id.is_nil()
+        || config.instance_id.trim().is_empty()
+        || config.instance_id.trim() != config.instance_id
+        || config.physical_host_id.trim().is_empty()
+        || config.physical_host_id.trim() != config.physical_host_id
+        || !valid_abandonment_failure_reason(&config.failure_reason)
+    {
+        return Err(
+            "maintenance identity, exact match UUID and failure reason are invalid".to_string(),
+        );
+    }
+    let journal = PublishedTickJournal::open(
+        config.published_tick_journal_dir.clone(),
+        config.physical_host_id.clone(),
+    )?;
+    if journal.ack_tombstone(config.match_id)?.is_some() {
+        return Err("maintenance target already has terminal ACK cold evidence".to_string());
+    }
+    let hot = journal.high_water(config.match_id)?;
+    let cold = journal.abandonment_tombstone(config.match_id)?;
+    let hot_witness_present_before = hot.is_some();
+    let database_host_authority =
+        bootstrap_database_host_authority(&config.database_url, config.physical_host_id.trim())
+            .await?;
+    let mut connection = database_host_authority.connection.lock().await;
+    let previous_phase = sqlx::query_scalar::query_scalar::<_, String>(
+        "select phase from trnm_online_matches where match_id = $1",
+    )
+    .bind(config.match_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "maintenance exact match UUID does not exist".to_string())?;
+    if config.adopt_legacy_pre_v13 && previous_phase != "failed_closed" {
+        return Err(
+            "--adopt-legacy-pre-v13 is valid only for an already failed_closed row".to_string(),
+        );
+    }
+    let mut legacy_adoption = false;
+    let (waiting_db_only, cold_witness_sealed, local_marker_state) = match previous_phase.as_str() {
+        "waiting" => {
+            if hot.is_some() || cold.is_some() {
+                return Err(
+                    "waiting maintenance target must not have hot or cold journal evidence"
+                        .to_string(),
+                );
+            }
+            transition_waiting_to_failed_closed(&mut connection, &config, &database_host_authority)
+                .await?;
+            (true, false, None)
+        }
+        "running" => {
+            if cold.is_some() {
+                return Err(
+                    "running maintenance target already has abandonment cold evidence".to_string(),
+                );
+            }
+            let retained_high_water = hot.as_ref().ok_or_else(|| {
+                "running maintenance requires its retained exact hot witness".to_string()
+            })?;
+            if retained_high_water.instance_id != config.instance_id
+                || retained_high_water.physical_host_id != config.physical_host_id
+                || retained_high_water.phase != "running"
+                || !retained_high_water.receipts_replayable
+            {
+                return Err(
+                    "running maintenance hot witness has different ownership or phase".to_string(),
+                );
+            }
+            let high_water = prepare_final_abandonment_high_water(
+                &mut connection,
+                &journal,
+                retained_high_water,
+                &database_host_authority,
+            )
+            .await?;
+            let (evidence, lineage) = transition_running_to_failed_closed(
+                &mut connection,
+                &high_water,
+                &config.failure_reason,
+                &database_host_authority,
+            )
+            .await?;
+            let tombstone =
+                ensure_cold_abandonment(&journal, &high_water, &evidence, &lineage).await?;
+            seal_abandonment_in_database(
+                &mut connection,
+                &tombstone,
+                None,
+                &database_host_authority,
+            )
+            .await?;
+            (false, true, Some("sealed".to_string()))
+        }
+        "failed_closed" => {
+            if hot.is_none() && cold.is_none() {
+                if config.adopt_legacy_pre_v13 {
+                    return Err(
+                        "legacy abandonment adoption requires an exact retained hot witness"
+                            .to_string(),
+                    );
+                }
+                transition_waiting_to_failed_closed(
+                    &mut connection,
+                    &config,
+                    &database_host_authority,
+                )
+                .await?;
+                (true, false, None)
+            } else {
+                let (evidence, lineage, adopted) = if let Some(high_water) = hot.as_ref() {
+                    let Some(resolved) = ensure_failed_closed_abandonment_marker(
+                        &mut connection,
+                        high_water,
+                        &database_host_authority,
+                        config.adopt_legacy_pre_v13,
+                        Some(FailedClosedMaintenanceExpectation {
+                            instance_id: &config.instance_id,
+                            physical_host_id: &config.physical_host_id,
+                            failure_reason: &config.failure_reason,
+                        }),
+                    )
+                    .await?
+                    else {
+                        return Err(
+                            "failed-closed maintenance hot witness is not running".to_string()
+                        );
+                    };
+                    resolved
+                } else if let Some(tombstone) = cold.as_ref() {
+                    let legacy_origin =
+                        failed_closed_match_originates_before_v13(&mut connection, config.match_id)
+                            .await?;
+                    if config.adopt_legacy_pre_v13 && !legacy_origin {
+                        return Err(
+                            "post-V13 failed-closed authority cannot use legacy adoption"
+                                .to_string(),
+                        );
+                    }
+                    let evidence = load_abandonment_database_evidence_by_match(
+                        &mut *connection,
+                        config.match_id,
+                    )
+                    .await?
+                    .ok_or_else(|| "cold abandonment is absent from PostgreSQL".to_string())?;
+                    let lineage = database_lineage(&mut *connection).await?;
+                    if !abandonment_tombstone_matches_evidence(tombstone, &evidence, &lineage) {
+                        return Err("cold abandonment conflicts with PostgreSQL".to_string());
+                    }
+                    (evidence, lineage, legacy_origin)
+                } else {
+                    unreachable!("hot or cold presence checked above")
+                };
+                if evidence.failure_reason != config.failure_reason {
+                    return Err(
+                        "maintenance failure reason conflicts with existing authority".to_string(),
+                    );
+                }
+                legacy_adoption = adopted;
+                if cold.as_ref().is_some_and(|tombstone| {
+                    !abandonment_tombstone_matches_evidence(tombstone, &evidence, &lineage)
+                }) {
+                    return Err(
+                        "retained cold abandonment conflicts with exact authority".to_string()
+                    );
+                }
+                let tombstone = if let Some(tombstone) = cold {
+                    tombstone
+                } else {
+                    ensure_cold_abandonment(
+                        &journal,
+                        hot.as_ref().expect("hot branch checked above"),
+                        &evidence,
+                        &lineage,
+                    )
+                    .await?
+                };
+                if evidence.local_tombstone_state == "hot_pending" {
+                    seal_abandonment_in_database(
+                        &mut connection,
+                        &tombstone,
+                        None,
+                        &database_host_authority,
+                    )
+                    .await?;
+                }
+                (false, true, Some("sealed".to_string()))
+            }
+        }
+        "complete" => {
+            return Err("maintenance may not fail-close a complete match".to_string());
+        }
+        phase => return Err(format!("maintenance found unsupported match phase {phase}")),
+    };
+    let final_phase = sqlx::query_scalar::query_scalar::<_, String>(
+        "select phase from trnm_online_matches where match_id = $1",
+    )
+    .bind(config.match_id)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(|error| error.to_string())?;
+    if final_phase != "failed_closed" || journal.high_water(config.match_id)?.is_some() {
+        return Err(
+            "maintenance postcondition did not reach failed_closed with no hot witness".to_string(),
+        );
+    }
+    Ok(FailCloseMaintenanceReport {
+        contract_version: "trnm_online_maintenance_fail_close_v1",
+        status: "completed",
+        match_id: config.match_id,
+        selector: "exact_match_id",
+        transition_atomic: !legacy_adoption,
+        previous_phase,
+        final_phase: "failed_closed",
+        waiting_db_only,
+        hot_witness_present_before,
+        cold_witness_sealed,
+        local_marker_state,
+        legacy_adoption,
+        adoption_contract: legacy_adoption.then_some("legacy_pre_v13_adoption_v1"),
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalJournalReconciliationOutcome {
+    NotTerminal,
+    FailedClosed,
+    Recovered,
+}
+
+trait TerminalOrphanAuthority {
+    async fn recover_running_high_water(
+        &self,
+        high_water: &PublishedTickHighWater,
+    ) -> Result<Option<PublishedTickHighWater>, String>;
+
+    async fn acknowledge_terminal_high_water(
+        &self,
+        high_water: &PublishedTickHighWater,
+    ) -> Result<bool, String>;
+
+    async fn reconcile_failed_closed_high_water(
+        &self,
+        high_water: &PublishedTickHighWater,
+    ) -> Result<bool, String>;
+}
+
+struct PostgresTerminalOrphanAuthority<'a> {
+    pool: &'a PgPool,
+    journal: &'a PublishedTickJournal,
+    runtime_state: Option<&'a AppState>,
+    database_host_authority: &'a DatabaseHostAuthorityFence,
+}
+
+impl TerminalOrphanAuthority for PostgresTerminalOrphanAuthority<'_> {
+    async fn recover_running_high_water(
+        &self,
+        high_water: &PublishedTickHighWater,
+    ) -> Result<Option<PublishedTickHighWater>, String> {
+        tokio::time::timeout(
+            MATCH_ACTOR_INITIALIZATION_TIMEOUT,
+            recover_terminal_high_water_after_running_crash(
+                self.pool,
+                self.journal,
+                high_water,
+                self.database_host_authority,
+            ),
+        )
+        .await
+        .map_err(|_| "running high-water terminal recovery exceeded its hard timeout".to_string())?
+    }
+
+    async fn acknowledge_terminal_high_water(
+        &self,
+        high_water: &PublishedTickHighWater,
+    ) -> Result<bool, String> {
+        tokio::time::timeout(
+            MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+            terminal_high_water_is_durably_acknowledged(
+                self.pool,
+                self.journal,
+                high_water,
+                self.runtime_state,
+                self.database_host_authority,
+            ),
+        )
+        .await
+        .map_err(|_| "terminal high-water validation exceeded its hard timeout".to_string())?
+    }
+
+    async fn reconcile_failed_closed_high_water(
+        &self,
+        high_water: &PublishedTickHighWater,
+    ) -> Result<bool, String> {
+        tokio::time::timeout(
+            MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+            reconcile_failed_closed_high_water(
+                self.pool,
+                self.journal,
+                high_water,
+                self.runtime_state,
+                self.database_host_authority,
+            ),
+        )
+        .await
+        .map_err(|_| "failed-closed high-water validation exceeded its hard timeout".to_string())?
+    }
+}
+
+/// Closes all three durable terminal crash windows with the same transition
+/// during startup and while the process remains alive:
+///
+/// 1. DB complete + running HWM -> exact terminal HWM;
+/// 2. terminal HWM + missing marker -> exact durable marker;
+/// 3. exact marker + retained HWM -> exact durable revalidation.
+///
+/// A sealed terminal hot record is atomically replaced by a cold tombstone.
+/// That immutable local witness detects a PostgreSQL PITR rollback to a
+/// pre-terminal state and is not garbage-collected by live reconciliation.
+async fn reconcile_terminal_journal_record<A: TerminalOrphanAuthority>(
+    authority: &A,
+    journal: &PublishedTickJournal,
+    high_water: &PublishedTickHighWater,
+) -> Result<TerminalJournalReconciliationOutcome, String> {
+    let terminal_high_water = if high_water.phase == "running" {
+        let Some(recovered) = authority.recover_running_high_water(high_water).await? else {
+            return if authority
+                .reconcile_failed_closed_high_water(high_water)
+                .await?
+            {
+                Ok(TerminalJournalReconciliationOutcome::FailedClosed)
+            } else {
+                Ok(TerminalJournalReconciliationOutcome::NotTerminal)
+            };
+        };
+        record_published_tick_with_timeout(
+            journal,
+            recovered.clone(),
+            recovered.next_sequence,
+            recovered.match_revision,
+            recovered.next_input_sequences.clone(),
+        )
+        .await?;
+        recovered
+    } else if high_water.phase == "complete" {
+        high_water.clone()
+    } else {
+        return Err("published-tick journal contains an unsupported phase".to_string());
+    };
+
+    if !authority
+        .acknowledge_terminal_high_water(&terminal_high_water)
+        .await?
+    {
+        return Err(
+            "terminal high-water did not create or match its exact durable marker".to_string(),
+        );
+    }
+    Ok(TerminalJournalReconciliationOutcome::Recovered)
+}
+
+pub fn validate_operations_bind_addr(bind_addr: SocketAddr) -> Result<(), String> {
+    if !bind_addr.ip().is_loopback() {
+        return Err(
+            "public/non-loopback game-server bind is blocked until KMS/HSM custody, edge rate limiting, DDoS protection and an approved deployment attestation are implemented"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn api_error(status: StatusCode, message: impl Into<String>, recoverable: bool) -> ApiError {
+    ApiError {
+        status,
+        body: OnlineAuthorityError {
+            error: message.into(),
+            recoverable,
+            authoritative_revision: None,
+        },
+    }
+}
+
+fn reject_command_during_drain(state: &AppState) -> Result<(), ApiError> {
+    command_drain_error(*state.draining.borrow(), *state.shutdown.borrow()).map_or(Ok(()), Err)
+}
+
+fn command_drain_error(draining: bool, shutdown: bool) -> Option<ApiError> {
+    (draining || shutdown).then(|| {
+        api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "game server is draining; retry this command on active authority",
+            true,
+        )
+    })
+}
+
+async fn lock_current_fleet_epoch(
+    transaction: &mut sqlx::transaction::Transaction<'_, sqlx_postgres::Postgres>,
+    state: &AppState,
+    allow_draining: bool,
+) -> Result<(), String> {
+    require_database_host_authority(transaction, &state.database_host_authority).await?;
+    let row = sqlx::query::query(
+        "select instance_epoch, status, physical_host_id,
+                lease_expires_at > now() as lease_current
+         from trnm_online_fleet_instances where instance_id = $1",
+    )
+    .bind(state.instance_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "fleet instance registration is missing".to_string())?;
+    let instance_epoch: i64 = row
+        .try_get("instance_epoch")
+        .map_err(|error| error.to_string())?;
+    let status: String = row.try_get("status").map_err(|error| error.to_string())?;
+    let physical_host_id: String = row
+        .try_get("physical_host_id")
+        .map_err(|error| error.to_string())?;
+    let lease_current: bool = row
+        .try_get("lease_current")
+        .map_err(|error| error.to_string())?;
+    let status_current = status == "active" || (allow_draining && status == "draining");
+    if instance_epoch != state.instance_epoch
+        || physical_host_id != *state.physical_host_id
+        || !status_current
+        || !lease_current
+    {
+        return Err(
+            "fleet instance epoch/physical host is fenced, expired or not routable".to_string(),
+        );
+    }
+    Ok(())
+}
+
+async fn lock_current_fleet_epoch_for_commit(
+    transaction: &mut sqlx::transaction::Transaction<'_, sqlx_postgres::Postgres>,
+    state: &AppState,
+    allow_draining: bool,
+) -> Result<(), String> {
+    require_database_host_authority(transaction, &state.database_host_authority).await?;
+    let row = sqlx::query::query(
+        "select instance_epoch, status, physical_host_id,
+                lease_expires_at > now() as lease_current
+         from trnm_online_fleet_instances where instance_id = $1 for share",
+    )
+    .bind(state.instance_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "fleet instance registration is missing".to_string())?;
+    let instance_epoch: i64 = row
+        .try_get("instance_epoch")
+        .map_err(|error| error.to_string())?;
+    let status: String = row.try_get("status").map_err(|error| error.to_string())?;
+    let physical_host_id: String = row
+        .try_get("physical_host_id")
+        .map_err(|error| error.to_string())?;
+    let lease_current: bool = row
+        .try_get("lease_current")
+        .map_err(|error| error.to_string())?;
+    let status_current = status == "active" || (allow_draining && status == "draining");
+    if instance_epoch != state.instance_epoch
+        || physical_host_id != *state.physical_host_id
+        || !status_current
+        || !lease_current
+    {
+        return Err(
+            "fleet instance epoch/physical host changed before transaction commit".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn conflict(message: impl Into<String>, revision: u64) -> ApiError {
+    ApiError {
+        status: StatusCode::CONFLICT,
+        body: OnlineAuthorityError {
+            error: message.into(),
+            recoverable: true,
+            authoritative_revision: Some(revision),
+        },
+    }
+}
+
+fn session_header(headers: &HeaderMap) -> Result<&str, ApiError> {
+    headers
+        .get(PLAYER_SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::UNAUTHORIZED,
+                "player session is required",
+                false,
+            )
+        })
+}
+
+async fn verify_identity(
+    state: &AppState,
+    headers: &HeaderMap,
+    player_id: &str,
+    account_id: &str,
+) -> Result<cex::SessionVerifyResponse, ApiError> {
+    let token = session_header(headers)?;
+    let verified = state
+        .cex
+        .verify_session(token, player_id, account_id)
+        .await
+        .map_err(|error| api_error(StatusCode::UNAUTHORIZED, error, false))?;
+    if verified.player_id != player_id || verified.account_id != account_id {
+        return Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "verified session identity mismatch",
+            false,
+        ));
+    }
+    if verified.session_id.is_empty()
+        || verified.device_id.is_empty()
+        || verified.recovery_generation <= 0
+        || verified.expires_at_epoch < chrono::Utc::now().timestamp()
+    {
+        return Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "verified session metadata is expired or incomplete",
+            false,
+        ));
+    }
+    Ok(verified)
+}
+
+fn hash_json<T: serde::Serialize>(value: &T) -> Result<String, ApiError> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), false))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn validate_slot_key(value: &str) -> Result<(), ApiError> {
+    if value.is_empty()
+        || value.len() > 32
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "slot_key must be 1-32 ASCII letters, digits, '-' or '_'",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_command_id(value: &str) -> Result<(), ApiError> {
+    if value.is_empty()
+        || value.len() > 160
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.'))
+    {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "command_id must be 1-160 portable ASCII identifier characters",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn mission_for_map(map_id: &str) -> Result<CampaignMission, ApiError> {
+    match map_id {
+        "first_contact" => Ok(CampaignMission::FirstContact),
+        "iron_delta" => Ok(CampaignMission::IronDeltaSkirmish),
+        "night_watch_crossing" => Ok(CampaignMission::NightWatchCrossingSkirmish),
+        "glass_basin" => Ok(CampaignMission::GlassBasinSkirmish),
+        "ember_orchard" => Ok(CampaignMission::EmberOrchardSkirmish),
+        "salt_marsh" => Ok(CampaignMission::SaltMarshSkirmish),
+        "cinder_crown" => Ok(CampaignMission::CinderCrownSkirmish),
+        _ => Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "map is not in the Online Authority authored allowlist",
+            false,
+        )),
+    }
+}
+
+fn prepare_campaign_seed(
+    campaign: &mut CampaignSaveV1,
+    map_id: &str,
+    map: BattleMapSeedV1,
+) -> Result<BattleSeedV1, ApiError> {
+    if map_id == "first_contact" {
+        campaign
+            .move_to(trnm_campaign_core::CampaignRoom::MentorHall)
+            .and_then(|_| campaign.talk_to_mentor())
+            .and_then(|_| campaign.train_with_mentor())
+            .and_then(|_| campaign.equip_starter_weapon())
+            .and_then(|_| campaign.move_to(trnm_campaign_core::CampaignRoom::ExpeditionGate))
+            .and_then(|_| campaign.accept_first_contact_quest())
+            .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string(), false))?;
+    } else {
+        campaign
+            .prepare_standalone_skirmish()
+            .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string(), false))?;
+        campaign.active_mission = mission_for_map(map_id)?;
+    }
+    campaign
+        .start_first_contact_battle(map)
+        .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string(), false))
+}
+
+fn member_units(
+    seed: &BattleSeedV1,
+    member_tag: &str,
+    slot_offset: usize,
+) -> (
+    Vec<trnm_campaign_core::BattleUnitSeedV1>,
+    BTreeMap<String, String>,
+) {
+    let mut id_map = BTreeMap::new();
+    let units = seed.party[..2]
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            let mut unit = source.clone();
+            unit.unit_id = format!("{member_tag}:{}", source.unit_id);
+            unit.spawn_slot = format!("party_{}", slot_offset + index);
+            id_map.insert(unit.unit_id.clone(), source.unit_id.clone());
+            unit
+        })
+        .collect();
+    (units, id_map)
+}
+
+fn distributed_admission_bucket_key(identity: &str, method: &str, endpoint_class: &str) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(format!("{identity}:{method}:{endpoint_class}").as_bytes())
+    )
+}
+
+fn is_operational_probe_path(path: &str) -> bool {
+    matches!(path, "/health" | "/v1/online/readiness")
+}
+
+async fn production_rate_limit(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let request_started = Instant::now();
+    let path = request.uri().path();
+    // Liveness and readiness are infrastructure control-plane probes. Sending
+    // them through the durable player admission window adds a database write,
+    // lets business traffic starve the probe before its fail-closed checks run,
+    // and can feed orchestrator restarts back into a saturated service.
+    if is_operational_probe_path(path) {
+        return next.run(request).await;
+    }
+    let command_request = path.ends_with("/commands");
+    if command_request {
+        // A valid running command commits its distributed admission counter in
+        // the same V15 PostgreSQL statement as the command event. Keeping the
+        // generic admission write here would force two protocol round trips
+        // before the authoritative effect can be streamed.
+        let response = next.run(request).await;
+        let total_ms = u64::try_from(request_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if total_ms > 300 {
+            tracing::warn!(
+                total_ms,
+                admission_ms = 0_u64,
+                handler_ms = total_ms,
+                status = response.status().as_u16(),
+                "slow online command request"
+            );
+        }
+        return response;
+    }
+    let effective_limit = if path.ends_with("/snapshot")
+        || path.ends_with("/commands")
+        || path.ends_with("/reconnect")
+        || path.ends_with("/stream")
+    {
+        state.rate_limit_per_minute.saturating_mul(20)
+    } else {
+        state.rate_limit_per_minute
+    };
+    let identity = request
+        .headers()
+        .get(PLAYER_SESSION_HEADER)
+        .or_else(|| request.headers().get("x-trnm-moderator"))
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("anonymous");
+    let endpoint_class = path.split('/').take(5).collect::<Vec<_>>().join("/");
+    let request_class = if effective_limit == state.rate_limit_per_minute {
+        "control"
+    } else {
+        "data"
+    };
+    let key =
+        distributed_admission_bucket_key(identity, request.method().as_str(), &endpoint_class);
+    let admission_started = Instant::now();
+    let count = sqlx::query_scalar::query_scalar::<_, i64>(
+        "insert into trnm_online_admission_windows (
+            bucket_key, window_started_at, request_class, request_count,
+            rejection_count, last_instance_id
+         ) values ($1, date_trunc('minute', now()), $2, 1, 0, $3)
+         on conflict (bucket_key, window_started_at) do update set
+            request_count = trnm_online_admission_windows.request_count + 1,
+            last_instance_id = excluded.last_instance_id, updated_at = now()
+         returning request_count",
+    )
+    .bind(&key)
+    .bind(request_class)
+    .bind(state.instance_id.as_str())
+    .fetch_one(&state.pool)
+    .await;
+    let admission_ms = u64::try_from(admission_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    if admission_ms > 300 {
+        tracing::warn!(
+            admission_ms,
+            request_class,
+            endpoint_class,
+            "slow distributed admission commit"
+        );
+    }
+    let count = match count {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(%error, "distributed admission failed closed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "distributed admission is unavailable"})),
+            )
+                .into_response();
+        }
+    };
+    if count > i64::from(effective_limit) {
+        if let Err(error) = sqlx::query::query(
+            "update trnm_online_admission_windows set
+                rejection_count = rejection_count + 1, updated_at = now()
+             where bucket_key = $1 and window_started_at = date_trunc('minute', now())",
+        )
+        .bind(&key)
+        .execute(&state.pool)
+        .await
+        {
+            tracing::error!(%error, "distributed admission rejection audit failed");
+        }
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({
+                "error": "production request rate limit exceeded",
+                "retry_after_seconds": 60,
+            })),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+pub fn build_router(state: AppState) -> Router {
+    let body_limit = state.request_body_limit_bytes as usize;
+    Router::new()
+        .route("/health", get(health))
+        .route("/v1/online/readiness", get(readiness))
+        .route("/v1/online/campaigns/connect", post(connect_campaign))
+        .route("/v1/online/matches", post(create_match))
+        .route("/v1/online/matches/join", post(join_match))
+        .route("/v1/online/matches/:match_id/start", post(start_match))
+        .route(
+            "/v1/online/matches/:match_id/commands",
+            post(submit_command),
+        )
+        .route("/v1/online/matches/:match_id/snapshot", post(get_snapshot))
+        .route(
+            "/v1/online/matches/:match_id/stream",
+            get(stream::stream_match),
+        )
+        .route(
+            "/v1/online/matches/:match_id/reconnect",
+            post(reconnect_match),
+        )
+        .route("/v1/product/lobbies", post(create_lobby))
+        .route("/v1/product/lobbies/:lobby_id/view", post(get_lobby))
+        .route(
+            "/v1/product/lobbies/:lobby_id/invites",
+            post(invite_to_lobby),
+        )
+        .route(
+            "/v1/product/lobbies/invites/accept",
+            post(accept_lobby_invite),
+        )
+        .route("/v1/product/lobbies/:lobby_id/ready", post(set_lobby_ready))
+        .route("/v1/product/lobbies/:lobby_id/queue", post(queue_lobby))
+        .route(
+            "/v1/product/solo-queue/join",
+            post(product_v2::join_solo_queue),
+        )
+        .route(
+            "/v1/product/solo-queue/status",
+            post(product_v2::get_solo_queue),
+        )
+        .route(
+            "/v1/product/solo-queue/cancel",
+            post(product_v2::cancel_solo_queue),
+        )
+        .route("/v1/product/rating", post(product_v2::get_rating))
+        .route(
+            "/v1/product/social/friends/request",
+            post(product_v2::request_friend),
+        )
+        .route(
+            "/v1/product/social/friends/resolve",
+            post(product_v2::resolve_friend),
+        )
+        .route("/v1/product/social/block", post(product_v2::set_block))
+        .route("/v1/product/social/view", post(product_v2::get_social))
+        .route("/v1/product/reports", post(product_v2::create_report))
+        .route(
+            "/v1/product/moderation/reports/resolve",
+            post(product_v2::resolve_report),
+        )
+        .route(
+            "/v1/operations/leaderboard",
+            post(operations_v1::get_leaderboard),
+        )
+        .route("/v1/operations/replays", post(operations_v1::get_replay))
+        .route(
+            "/v1/operations/replays/playback",
+            post(operations_v1::get_replay_playback),
+        )
+        .route(
+            "/v1/operations/replays/latest/playback",
+            post(operations_v1::get_latest_replay_playback),
+        )
+        .route(
+            "/v1/operations/reports/replay",
+            post(operations_v1::create_replay_report),
+        )
+        .route(
+            "/v1/operations/moderation/queue",
+            post(operations_v1::moderation_queue),
+        )
+        .route(
+            "/v1/operations/moderation/action",
+            post(operations_v1::moderate_case),
+        )
+        .route(
+            "/v1/operations/enforcements/appeals",
+            post(operations_v1::create_enforcement_appeal),
+        )
+        .route(
+            "/v1/operations/moderation/appeals",
+            post(operations_v1::enforcement_appeal_queue),
+        )
+        .route(
+            "/v1/operations/moderation/appeals/resolve",
+            post(operations_v1::resolve_enforcement_appeal),
+        )
+        .route(
+            "/v1/operations/seasons/admin",
+            post(operations_v1::admin_season),
+        )
+        .route(
+            "/v1/operations/fleet/route",
+            post(operations_v1::route_fleet),
+        )
+        .route(
+            "/v1/operations/fleet/admin",
+            post(operations_v1::admin_fleet),
+        )
+        .route(
+            "/v1/production/seasons/automation",
+            post(production_v1::configure_season_automation),
+        )
+        .route(
+            "/v1/production/spectators/invites",
+            post(production_v1::create_spectator_invite),
+        )
+        .route(
+            "/v1/production/spectators/invites/accept",
+            post(production_v1::accept_spectator_invite),
+        )
+        .route(
+            "/v1/production/spectators/playback",
+            post(production_v1::spectator_playback),
+        )
+        .route(
+            "/v1/production/player/status",
+            post(production_v1::player_production_status),
+        )
+        .route(
+            "/v1/production/host-attestation",
+            post(production_v1::host_attestation),
+        )
+        .route(
+            "/v1/production/moderation/shifts/start",
+            post(production_v1::start_moderation_shift),
+        )
+        .route(
+            "/v1/production/moderation/shifts/heartbeat",
+            post(production_v1::heartbeat_moderation_shift),
+        )
+        .route(
+            "/v1/production/moderation/claims",
+            post(production_v1::claim_moderation_case),
+        )
+        .route(
+            "/v1/production/moderation/shifts/close",
+            post(production_v1::close_moderation_shift),
+        )
+        .route(
+            "/v1/production/status",
+            get(production_v1::production_status),
+        )
+        .layer(DefaultBodyLimit::max(body_limit))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            production_rate_limit,
+        ))
+        .with_state(state)
+}
+
+async fn health() -> &'static str {
+    "trnm-game-server ok"
+}
+
+async fn readiness(State(state): State<AppState>) -> Response {
+    let database_host_authority_observed_at = Instant::now();
+    let database_host_authority_healthy = state.database_host_authority_is_healthy();
+    let database_host_authority_fresh = state
+        .database_host_authority
+        .is_fresh(database_host_authority_observed_at);
+    let database_host_authority_last_success_age_ms = state
+        .database_host_authority
+        .last_success_age(database_host_authority_observed_at)
+        .map(|age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX));
+    let database_host_authority_freshness_limit_ms =
+        u64::try_from(DATABASE_HOST_FENCE_FRESHNESS.as_millis()).unwrap_or(u64::MAX);
+    // Readiness is a hot operational surface. Under WAN-like database RTT,
+    // serial probes used to accumulate more than five seconds of round trips
+    // and could consume the command pool while reporting the service dead.
+    // One prepared aggregate query owns all independent database counters;
+    // the external dependencies and the exact latest cold-witness check run
+    // concurrently, keeping the endpoint both fail-closed and non-disruptive.
+    let (
+        database_summary,
+        cex_readiness,
+        signer_readiness,
+        signer_attestation,
+        latest_cold_witness_sentinel,
+    ) = tokio::join!(
+        load_readiness_database_summary(
+            &state.readiness_pool,
+            state.instance_id.as_str(),
+            state.instance_epoch,
+            state.physical_host_id.as_str(),
+        ),
+        state.cex.readiness(),
+        state.cex.signer_readiness(),
+        state.cex.signer_attestation(),
+        latest_cold_witness_sentinel_is_healthy(&state),
+    );
+    let database_summary_query_healthy = database_summary.is_ok();
+    let database_summary = database_summary.unwrap_or_else(|error| {
+        tracing::warn!(%error, "readiness database summary failed closed");
+        ReadinessDatabaseSummary::blocked()
+    });
+    let postgres = database_summary_query_healthy && database_summary.postgres_healthy;
+    let cex = cex_readiness.is_ok();
+    let signer = signer_readiness.ok();
+    let signer_registry_verified = signer_attestation.is_ok();
+    let fleet_epoch_current =
+        database_summary_query_healthy && database_summary.fleet_epoch_current;
+    let healthy_fleet_instances = database_summary.healthy_fleet_instances;
+    let active_matches_query_healthy = database_summary_query_healthy;
+    let active_matches = database_summary.active_matches;
+    let terminal_ack_gap_scan_saturated =
+        terminal_ack_gap_scan_is_saturated(database_summary.terminal_ack_gap_count);
+    let terminal_ack_gap_query_healthy =
+        database_summary_query_healthy && !terminal_ack_gap_scan_saturated;
+    let terminal_ack_gap_count = if terminal_ack_gap_query_healthy {
+        database_summary.terminal_ack_gap_count
+    } else {
+        usize::MAX
+    };
+    let historical_projection_quarantine_query_healthy = database_summary_query_healthy;
+    let historical_projection_quarantine = database_summary.historical_projection;
+    let actor_observed_at = Instant::now();
+    let (
+        actor_states,
+        actor_initializations,
+        mut actor_tracked_match_ids,
+        bounded_terminal_transition_match_ids,
+    ) = {
+        let registry = state.match_actors.read().await;
+        let actor_states = registry
+            .actors
+            .iter()
+            .map(|(match_id, actor)| {
+                (
+                    *match_id,
+                    actor.published.borrow().clone(),
+                    actor.clock.snapshot(actor_observed_at, state.tick_interval),
+                    *actor.lifecycle.borrow(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let actor_initializations = registry
+            .initializing
+            .iter()
+            .map(|(match_id, initialization)| {
+                (
+                    *match_id,
+                    initialization.kind,
+                    actor_observed_at.saturating_duration_since(initialization.started_at),
+                )
+            })
+            .collect::<Vec<_>>();
+        let actor_tracked_match_ids =
+            actor_tracked_published_tick_match_ids(&registry, actor_observed_at);
+        let bounded_terminal_transition_match_ids =
+            bounded_match_actor_transition_ids(&registry, actor_observed_at);
+        (
+            actor_states,
+            actor_initializations,
+            actor_tracked_match_ids,
+            bounded_terminal_transition_match_ids,
+        )
+    };
+    let initializing_match_actors = actor_initializations
+        .iter()
+        .filter(|(_, kind, _)| *kind == MatchActorInitializationKind::Actor)
+        .count();
+    let terminal_recovery_initializations = actor_initializations
+        .iter()
+        .filter(|(_, kind, _)| *kind == MatchActorInitializationKind::TerminalRecovery)
+        .count();
+    let max_match_actor_initialization_age_ms = actor_initializations
+        .iter()
+        .filter(|(_, kind, _)| *kind == MatchActorInitializationKind::Actor)
+        .map(|(_, _, age)| age.as_secs_f64() * 1_000.0)
+        .fold(0.0_f64, f64::max);
+    let match_actor_initializations_operational = actor_initializations
+        .iter()
+        .filter(|(_, kind, _)| *kind == MatchActorInitializationKind::Actor)
+        .all(|(_, _, age)| *age < MATCH_ACTOR_INITIALIZATION_TIMEOUT);
+    let warming_match_actor_clocks = actor_states
+        .iter()
+        .filter(|(_, _, _, lifecycle)| matches!(lifecycle, MatchActorLifecycle::Warming { .. }))
+        .count();
+    let terminalizing_match_actors = actor_states
+        .iter()
+        .filter(|(_, _, _, lifecycle)| {
+            matches!(lifecycle, MatchActorLifecycle::Terminalizing { .. })
+        })
+        .count();
+    let running_match_actors = actor_states
+        .iter()
+        .filter(|(_, _, _, lifecycle)| matches!(lifecycle, MatchActorLifecycle::Running))
+        .count();
+    let max_match_actor_terminal_transition_age_ms = actor_states
+        .iter()
+        .filter_map(|(_, _, _, lifecycle)| match lifecycle {
+            MatchActorLifecycle::Warming { .. } => None,
+            MatchActorLifecycle::Running => None,
+            MatchActorLifecycle::Terminalizing { started_at } => Some(
+                actor_observed_at
+                    .saturating_duration_since(*started_at)
+                    .as_secs_f64()
+                    * 1_000.0,
+            ),
+        })
+        .fold(0.0_f64, f64::max);
+    let terminal_ack_gap_transition_owned = terminal_ack_gap_query_healthy
+        && match_ids_are_exactly_owned(
+            &database_summary.terminal_ack_gap_match_ids,
+            terminal_ack_gap_count,
+            &bounded_terminal_transition_match_ids,
+        );
+    let terminal_ack_gap_recovery_operational = terminal_ack_gap_recovery_is_operational(
+        terminal_ack_gap_query_healthy,
+        terminal_ack_gap_count,
+        terminal_ack_gap_transition_owned,
+    );
+    let historical_projection_public_credit = historical_projection_quarantine_query_healthy
+        && historical_projection_quarantine.public_credit_is_clean()
+        && terminal_ack_gap_recovery_operational;
+    actor_tracked_match_ids.extend(
+        state
+            .terminal_acknowledged_high_waters
+            .read()
+            .await
+            .iter()
+            .copied(),
+    );
+    let failed_closed_high_waters = state.failed_closed_high_waters.read().await;
+    actor_tracked_match_ids.extend(failed_closed_high_waters.iter().copied());
+    let tracked_failed_closed_high_water_count = failed_closed_high_waters.len();
+    drop(failed_closed_high_waters);
+    let active_match_actors = actor_states.len();
+    let actor_clock_samples = actor_states
+        .iter()
+        .map(|(_, published, clock, lifecycle)| {
+            let stale_ms = actor_observed_at
+                .saturating_duration_since(published.published_at)
+                .as_secs_f64()
+                * 1_000.0;
+            // A newly installed actor needs three 10 Hz observations before a
+            // drift window exists. Keep this transition numeric and ready only
+            // while its independently bounded warm-up remains healthy; an old,
+            // silent, late, or malformed clock still maps to infinity and
+            // therefore fails closed.
+            let drift_ticks = match lifecycle {
+                MatchActorLifecycle::Warming { started_at }
+                    if match_actor_clock_warmup_is_operational(
+                        clock.as_ref(),
+                        actor_observed_at.saturating_duration_since(*started_at),
+                        stale_ms,
+                        state.tick_interval,
+                    ) =>
+                {
+                    clock
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.window_drift_ticks)
+                        .unwrap_or(0.0)
+                }
+                _ => clock
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.window_drift_ticks)
+                    .unwrap_or(f64::INFINITY),
+            };
+            (drift_ticks, stale_ms, clock.as_ref(), *lifecycle)
+        })
+        .collect::<Vec<_>>();
+    let max_actor_clock_abs_drift_ticks = actor_clock_samples
+        .iter()
+        .map(|(drift, _, _, _)| drift.abs())
+        .fold(0.0_f64, f64::max);
+    let max_actor_clock_cumulative_abs_drift_ticks = actor_clock_samples
+        .iter()
+        .filter_map(|(_, _, clock, _)| clock.map(|clock| clock.cumulative_drift_ticks.abs()))
+        .fold(0.0_f64, f64::max);
+    let max_actor_clock_recent_lateness_ticks = actor_clock_samples
+        .iter()
+        .filter_map(|(_, _, clock, _)| clock.and_then(|clock| clock.max_recent_lateness_ticks))
+        .fold(0.0_f64, f64::max);
+    let max_actor_clock_last_wake_age_ms = actor_clock_samples
+        .iter()
+        .filter_map(|(_, _, clock, _)| clock.and_then(|clock| clock.last_wake_age_ms))
+        .fold(0.0_f64, f64::max);
+    let max_actor_publish_stale_ms = actor_clock_samples
+        .iter()
+        .map(|(_, stale_ms, _, _)| *stale_ms)
+        .fold(0.0_f64, f64::max);
+    let match_actor_registry_coverage_operational = active_matches_query_healthy
+        && match_actor_registry_coverage_is_operational(
+            active_matches,
+            running_match_actors,
+            active_match_actors,
+            initializing_match_actors,
+        );
+    let match_actor_clocks_operational = match_actor_registry_coverage_operational
+        && match_actor_initializations_operational
+        && actor_clock_samples
+            .iter()
+            .all(|(_, stale_ms, clock, lifecycle)| match lifecycle {
+                MatchActorLifecycle::Warming { started_at } => {
+                    match_actor_clock_warmup_is_operational(
+                        *clock,
+                        actor_observed_at.saturating_duration_since(*started_at),
+                        *stale_ms,
+                        state.tick_interval,
+                    )
+                }
+                MatchActorLifecycle::Running => {
+                    match_actor_clock_is_operational(*clock, *stale_ms, state.tick_interval)
+                }
+                MatchActorLifecycle::Terminalizing { started_at } => {
+                    actor_observed_at.saturating_duration_since(*started_at)
+                        < MATCH_ACTOR_TERMINAL_TRANSITION_TIMEOUT
+                        && authority_clock_is_operational(*clock, state.tick_interval)
+                }
+            });
+    let authority_clock_snapshot = state
+        .authority_clock
+        .snapshot(Instant::now(), state.tick_interval);
+    let authority_clock_elapsed_ms = authority_clock_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.elapsed_ms);
+    let authority_clock_wake_count = authority_clock_snapshot
+        .as_ref()
+        .map_or(0, |snapshot| snapshot.wake_count);
+    let authority_clock_drift_ticks = authority_clock_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.window_drift_ticks);
+    let authority_clock_cumulative_drift_ticks = authority_clock_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.cumulative_drift_ticks);
+    let authority_clock_latest_lateness_ticks = authority_clock_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.latest_lateness_ticks);
+    let authority_clock_max_recent_lateness_ticks = authority_clock_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.max_recent_lateness_ticks);
+    let authority_clock_last_wake_age_ms = authority_clock_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.last_wake_age_ms);
+    let authority_clock_window_sample_count = authority_clock_snapshot
+        .as_ref()
+        .map_or(0, |snapshot| snapshot.window_sample_count);
+    let authority_clock_operational =
+        authority_clock_is_operational(authority_clock_snapshot.as_ref(), state.tick_interval);
+    let database_pool_size = state.pool.size();
+    let database_pool_idle_connections = state.pool.num_idle();
+    let database_pool_saturation_healthy = database_pool_is_operational(
+        database_pool_size,
+        database_pool_idle_connections,
+        GAME_SERVER_DATABASE_MAX_CONNECTIONS,
+    );
+    let readiness_database_pool_size = state.readiness_pool.size();
+    let readiness_database_pool_idle_connections = state.readiness_pool.num_idle();
+    let readiness_database_pool_saturation_healthy = database_pool_is_operational(
+        readiness_database_pool_size,
+        readiness_database_pool_idle_connections,
+        READINESS_DATABASE_MAX_CONNECTIONS,
+    );
+    let published_tick_journal_operational = state.published_tick_journal.is_operational();
+    let published_tick_records = state.published_tick_journal.recorded_match_ids();
+    let published_tick_record_query_healthy = published_tick_records.is_ok();
+    let published_tick_hot_record_count = published_tick_records
+        .as_ref()
+        .map(Vec::len)
+        .unwrap_or(usize::MAX);
+    let published_tick_terminal_tombstones = state.published_tick_journal.ack_tombstone_count();
+    let published_tick_abandonment_tombstones =
+        state.published_tick_journal.abandonment_tombstone_count();
+    let published_tick_cold_tombstones = state.published_tick_journal.cold_witness_count();
+    let published_tick_cold_tombstone_query_healthy = published_tick_terminal_tombstones.is_ok()
+        && published_tick_abandonment_tombstones.is_ok()
+        && published_tick_cold_tombstones.is_ok();
+    let published_tick_terminal_tombstone_count =
+        published_tick_terminal_tombstones.unwrap_or(usize::MAX);
+    let published_tick_failed_closed_witness_count =
+        published_tick_abandonment_tombstones.unwrap_or(usize::MAX);
+    let published_tick_cold_tombstone_count = published_tick_cold_tombstones.unwrap_or(usize::MAX);
+    let latest_cold_witness_sentinel_query_healthy = latest_cold_witness_sentinel.is_ok();
+    let latest_cold_witness_sentinel_healthy = latest_cold_witness_sentinel.unwrap_or(false);
+    let cold_witness_database_summary_query_healthy = database_summary_query_healthy;
+    let cold_witness_database_summary = database_summary.cold_witness;
+    let pending_terminal_tombstone_seal_count = cold_witness_database_summary
+        .terminal_total_count
+        .saturating_sub(cold_witness_database_summary.terminal_sealed_count);
+    let pending_abandonment_tombstone_seal_count = cold_witness_database_summary
+        .abandonment_total_count
+        .saturating_sub(cold_witness_database_summary.abandonment_sealed_count);
+    let pending_local_tombstone_seal_count = pending_terminal_tombstone_seal_count
+        .saturating_add(pending_abandonment_tombstone_seal_count);
+    let pending_local_tombstone_seal_query_healthy = cold_witness_database_summary_query_healthy;
+    let sealed_local_tombstone_ack_query_healthy = cold_witness_database_summary_query_healthy;
+    let sealed_local_tombstone_ack_count = cold_witness_database_summary.terminal_sealed_count;
+    let sealed_local_abandonment_count = cold_witness_database_summary.abandonment_sealed_count;
+    let local_tombstone_counts_exact = published_tick_cold_tombstone_query_healthy
+        && cold_witness_database_summary_query_healthy
+        && usize::try_from(cold_witness_database_summary.terminal_total_count).ok()
+            == Some(published_tick_terminal_tombstone_count)
+        && usize::try_from(cold_witness_database_summary.abandonment_total_count).ok()
+            == Some(published_tick_failed_closed_witness_count)
+        && published_tick_terminal_tombstone_count
+            .checked_add(published_tick_failed_closed_witness_count)
+            == Some(published_tick_cold_tombstone_count);
+    let bounded_terminal_seal_transition_owned = pending_local_tombstone_seal_query_healthy
+        && pending_terminal_tombstone_seal_count > 0
+        && pending_abandonment_tombstone_seal_count == 0
+        && database_summary
+            .pending_abandonment_seal_match_ids
+            .is_empty()
+        && usize::try_from(pending_terminal_tombstone_seal_count)
+            .ok()
+            .is_some_and(|pending_count| {
+                match_ids_are_exactly_owned(
+                    &database_summary.pending_terminal_seal_match_ids,
+                    pending_count,
+                    &bounded_terminal_transition_match_ids,
+                )
+            });
+    let bounded_transition_local_tombstone_count = if bounded_terminal_seal_transition_owned {
+        database_summary
+            .pending_terminal_seal_match_ids
+            .iter()
+            .try_fold(0_usize, |count, match_id| {
+                state
+                    .published_tick_journal
+                    .ack_tombstone(*match_id)
+                    .map(|tombstone| count + usize::from(tombstone.is_some()))
+            })
+            .ok()
+    } else {
+        None
+    };
+    let local_tombstone_counts_transition_exact = bounded_transition_local_tombstone_count
+        .and_then(|local_pending_count| {
+            database_summary
+                .pending_terminal_seal_match_ids
+                .len()
+                .checked_sub(local_pending_count)
+        })
+        .is_some_and(|missing_local_terminal_count| {
+            usize::try_from(cold_witness_database_summary.terminal_total_count).ok()
+                == published_tick_terminal_tombstone_count.checked_add(missing_local_terminal_count)
+                && usize::try_from(cold_witness_database_summary.abandonment_total_count).ok()
+                    == Some(published_tick_failed_closed_witness_count)
+                && published_tick_terminal_tombstone_count
+                    .checked_add(published_tick_failed_closed_witness_count)
+                    == Some(published_tick_cold_tombstone_count)
+        });
+    let latest_cold_witness_sentinel_operational =
+        latest_cold_witness_sentinel_healthy || bounded_terminal_seal_transition_owned;
+    let local_tombstone_counts_operational =
+        local_tombstone_counts_exact || local_tombstone_counts_transition_exact;
+    let local_tombstone_seal_operational = published_tick_cold_tombstone_query_healthy
+        && latest_cold_witness_sentinel_query_healthy
+        && latest_cold_witness_sentinel_operational
+        && pending_local_tombstone_seal_query_healthy
+        && sealed_local_tombstone_ack_query_healthy
+        && ((pending_local_tombstone_seal_count == 0
+            && cold_witness_database_summary.all_sealed()
+            && local_tombstone_counts_exact)
+            || (bounded_terminal_seal_transition_owned && local_tombstone_counts_transition_exact));
+    let published_tick_untracked_records = published_tick_records
+        .as_ref()
+        .map(|match_ids| {
+            count_untracked_published_tick_records(match_ids, &actor_tracked_match_ids)
+        })
+        .unwrap_or(usize::MAX);
+    let terminal_orphan_recovery_operational = terminal_orphan_recovery_is_operational(
+        published_tick_record_query_healthy,
+        published_tick_untracked_records,
+    );
+    let accepting_commands = !*state.draining.borrow() && !*state.shutdown.borrow();
+    let ready = postgres
+        && database_host_authority_fresh
+        && cex
+        && signer.is_some()
+        && signer_registry_verified
+        && fleet_epoch_current
+        && authority_clock_operational
+        && active_matches_query_healthy
+        && match_actor_clocks_operational
+        && database_pool_saturation_healthy
+        && readiness_database_pool_saturation_healthy
+        && published_tick_journal_operational
+        && local_tombstone_seal_operational
+        && terminal_orphan_recovery_operational
+        && terminal_ack_gap_recovery_operational
+        && historical_projection_quarantine_query_healthy
+        && accepting_commands;
+    let operational_readiness = json!({
+        "postgres": postgres,
+        "database_host_authority": database_host_authority_fresh,
+        "cex": cex,
+        "signer": signer.is_some(),
+        "signer_registry": signer_registry_verified,
+        "fleet_epoch": fleet_epoch_current,
+        "authority_clock": authority_clock_operational,
+        "match_actor_clocks": match_actor_clocks_operational,
+        "active_match_registry_query": active_matches_query_healthy,
+        "database_pool": database_pool_saturation_healthy,
+        "readiness_database_pool": readiness_database_pool_saturation_healthy,
+        "published_tick_journal": published_tick_journal_operational,
+        "local_cold_witness_seal": local_tombstone_seal_operational,
+        "local_terminal_tombstone_seal": local_tombstone_seal_operational,
+        "terminal_orphan_recovery": terminal_orphan_recovery_operational,
+        "terminal_ack_gap_recovery": terminal_ack_gap_recovery_operational,
+        "historical_projection_quarantine_query": historical_projection_quarantine_query_healthy,
+        "accepting_commands": accepting_commands,
+    });
+    let mut readiness_body = json!({
+            "status": if ready { "ok" } else { "blocked" },
+            "protocol": ONLINE_AUTHORITY_PROTOCOL,
+            "build_id": ONLINE_AUTHORITY_BUILD,
+            "postgres_persistent": postgres,
+            "database_host_authority_healthy": database_host_authority_healthy,
+            "database_host_authority_fresh": database_host_authority_fresh,
+            "database_host_authority_last_success_age_ms":
+                database_host_authority_last_success_age_ms,
+            "database_host_authority_freshness_limit_ms":
+                database_host_authority_freshness_limit_ms,
+            "database_host_authority_session_lock": database_host_authority_fresh,
+            "database_host_authority_pool_barrier": "shared_session_per_physical_connection",
+            "database_host_authority_incarnation_pinned": true,
+            "fleet_epoch_current": fleet_epoch_current,
+            "cex_identity_and_settlement": cex,
+            "server_authoritative_campaign": true,
+            "server_authoritative_rts": true,
+            "published_tick_journal_operational": published_tick_journal_operational,
+            "published_tick_hot_record_count": published_tick_hot_record_count,
+            "published_tick_cold_tombstone_query_healthy":
+                published_tick_cold_tombstone_query_healthy,
+            "published_tick_cold_tombstone_count": published_tick_cold_tombstone_count,
+            "published_tick_terminal_tombstone_count":
+                published_tick_terminal_tombstone_count,
+            "published_tick_abandonment_tombstone_count":
+                published_tick_failed_closed_witness_count,
+            "latest_cold_witness_sentinel_query_healthy":
+                latest_cold_witness_sentinel_query_healthy,
+            "latest_cold_witness_sentinel_healthy":
+                latest_cold_witness_sentinel_healthy,
+            "latest_cold_witness_sentinel_operational":
+                latest_cold_witness_sentinel_operational,
+            "latest_terminal_ack_sentinel_query_healthy":
+                latest_cold_witness_sentinel_query_healthy,
+            "latest_terminal_ack_sentinel_healthy":
+                latest_cold_witness_sentinel_healthy,
+            "latest_terminal_ack_sentinel_operational":
+                latest_cold_witness_sentinel_operational,
+            "pending_local_tombstone_seal_query_healthy":
+                pending_local_tombstone_seal_query_healthy,
+            "pending_local_tombstone_seal_count": pending_local_tombstone_seal_count,
+            "pending_terminal_tombstone_seal_count":
+                pending_terminal_tombstone_seal_count,
+            "pending_abandonment_tombstone_seal_count":
+                pending_abandonment_tombstone_seal_count,
+            "bounded_terminal_seal_transition_owned":
+                bounded_terminal_seal_transition_owned,
+            "sealed_local_tombstone_ack_query_healthy":
+                sealed_local_tombstone_ack_query_healthy,
+            "sealed_local_tombstone_ack_count": sealed_local_tombstone_ack_count,
+            "sealed_local_abandonment_count": sealed_local_abandonment_count,
+            "cold_witness_database_summary_query_healthy":
+                cold_witness_database_summary_query_healthy,
+            "local_tombstone_counts_exact": local_tombstone_counts_exact,
+            "local_tombstone_counts_transition_exact":
+                local_tombstone_counts_transition_exact,
+            "local_tombstone_counts_operational": local_tombstone_counts_operational,
+            "local_tombstone_seal_operational": local_tombstone_seal_operational,
+            "published_tick_terminal_orphan_recovery_operational": terminal_orphan_recovery_operational,
+            "published_tick_untracked_records": published_tick_untracked_records,
+            "published_tick_failed_closed_witness_count":
+                published_tick_failed_closed_witness_count,
+            "tracked_failed_closed_high_water_count":
+                tracked_failed_closed_high_water_count,
+            "terminal_publication_ack_gap_query_healthy": terminal_ack_gap_query_healthy,
+            "terminal_publication_ack_gap_count": terminal_ack_gap_count,
+            "terminal_publication_ack_gap_transition_owned":
+                terminal_ack_gap_transition_owned,
+            "terminal_publication_ack_gap_scan_limit": TERMINAL_ACK_GAP_SCAN_LIMIT,
+            "terminal_publication_ack_gap_scan_saturated":
+                terminal_ack_gap_scan_is_saturated(terminal_ack_gap_count),
+            "legacy_terminal_publication_quarantine_count": historical_projection_quarantine
+                .legacy_terminal_match_count,
+            "historical_campaign_projection_polluted": historical_projection_quarantine
+                .campaign_projection_polluted,
+            "historical_rating_projection_polluted": historical_projection_quarantine
+                .rating_projection_polluted,
+            "historical_projection_quarantine_query_healthy":
+                historical_projection_quarantine_query_healthy,
+            "historical_projection_public_credit": historical_projection_public_credit,
+            "published_tick_journal_host_local_single_process": true,
+            "published_tick_journal_requires_one_canonical_directory_per_physical_host": true,
+            "tick_rate_hz": 1.0 / state.tick_interval.as_secs_f64(),
+            "simulation_ticks_per_wake": 1,
+            "simulation_design_tick_rate_hz": TICKS_PER_SECOND,
+            "tick_interval_ms": state.tick_interval.as_millis(),
+            "clock_mode": if state.accelerated_test_clock {
+                "accelerated_test_only_no_catch_up"
+            } else {
+                "real_time_no_catch_up"
+            },
+            "restart_grants_immediate_tick": false,
+            "authority_clock_elapsed_ms": authority_clock_elapsed_ms,
+            "authority_clock_wake_count": authority_clock_wake_count,
+            "authority_clock_drift_ticks": authority_clock_drift_ticks,
+            "command_event_log": "bounded_async_postgres_with_post_command_recovery_state",
+            "command_persistence_queue_per_actor": MATCH_COMMAND_PERSISTENCE_QUEUE,
+            "simulation_persistence": "validated_postgres_checkpoint_or_command_state_plus_host_local_fsync_publication_high_water_v2",
+            "checkpoint_interval_ticks": MATCH_CHECKPOINT_INTERVAL_TICKS,
+            "published_tick_max_recovery_steps": MAX_PUBLISHED_TICK_RECOVERY_STEPS,
+            "published_tick_recovery_scope": "single_physical_host_only",
+            "published_tick_cross_host_rpo_zero": false,
+            "published_tick_fail_closed_hash_verification": true,
+            "published_tick_receipt_barrier": "full_tick_hash_phase_global_revision_and_member_cursors",
+            "single_authority_process_per_physical_host": true,
+            "database_write_per_simulation_tick": false,
+            "command_sequence_and_idempotency": true,
+            "restart_recovery": true,
+            "authenticated_reconnect": true,
+            "bounded_command_replay": 256,
+            "mode": "private coop plus ranked head-to-head authoritative PvP",
+            "independent_member_progression": true,
+            "inventory_event_provenance": true,
+            "public_matchmaking": true,
+            "online_product_protocol": ONLINE_PRODUCT_PROTOCOL,
+            "online_product_build": ONLINE_PRODUCT_BUILD,
+            "private_lobby_invites": true,
+            "coop_vs_ai_match_allocation": true,
+            "ranked_solo_queue": true,
+            "authoritative_pvp": true,
+            "persistent_mmr": historical_projection_public_credit,
+            "friends_and_blocks": true,
+            "report_and_moderation_workflow": true,
+            "online_operations_protocol": trnm_online_protocol::ONLINE_OPERATIONS_PROTOCOL,
+            "online_operations_build": trnm_online_protocol::ONLINE_OPERATIONS_BUILD,
+            "native_text_login_and_kernel_keyring": true,
+            "active_season_and_leaderboard": historical_projection_public_credit,
+            "authoritative_replay_index": true,
+            "replay_bound_reports": true,
+            "integrity_signal_triage": true,
+            "moderation_console_and_enforcement": true,
+            "fleet_instance_id": state.instance_id.as_str(),
+            "fleet_instance_epoch": state.instance_epoch,
+            "fleet_region": state.region.as_str(),
+            "fleet_capacity": state.capacity,
+            "healthy_fleet_instances": healthy_fleet_instances,
+            "cross_instance_failover": false,
+            "database_fenced_cross_instance_assignment": true,
+            "operations_v2_fenced_fleet_leases": true,
+            "operations_v2_replay_playback_frames": true,
+            "operations_v2_season_admin_and_archival": true,
+            "operations_v2_enforcement_appeals_sla": true,
+            "operations_v2_drain_and_capacity_control": true,
+            "operations_v2_loopback_only_public_bind_gate": true,
+            "online_production_protocol": trnm_online_protocol::ONLINE_OPERATIONS_PROTOCOL,
+            "online_production_build": trnm_online_protocol::ONLINE_OPERATIONS_BUILD,
+            "production_v1_isolated_entitlement_signer": signer.is_some(),
+            "production_v1_signer_key_id": signer.as_ref().map(|value| value.key_id.as_str()),
+            "production_v1_signer_private_key_exported_to_game_server": false,
+            "production_v1_durable_signing_receipts": true,
+            "production_v1_rate_limit_per_minute": state.rate_limit_per_minute,
+            "production_v1_request_body_limit_bytes": state.request_body_limit_bytes,
+            "production_v1_automatic_season_rotation": true,
+            "production_v1_targeted_delayed_spectating": true,
+            "production_v1_appeal_sla_escalation": true,
+            "production_v2_distributed_admission": true,
+            "production_v2_capacity_sampling": true,
+            "production_v2_signer_key_possession": true,
+            "production_v2_signer_registry_verified": signer_registry_verified,
+            "production_v2_player_season_spectator_status": true,
+            "production_v2_moderation_shift_ownership": true,
+            "production_v2_host_challenge_evidence": true,
+            "fleet_physical_host_id": state.physical_host_id.as_str(),
+            "entitlement_key_custody": signer.as_ref().map(|value| value.custody.as_str())
+                .unwrap_or("isolated_signer_unavailable"),
+            "kms_hsm_attested": false,
+            "public_edge_ddos_attested": false,
+    });
+    readiness_body["authority_clock_operational"] = Value::Bool(authority_clock_operational);
+    readiness_body["authority_clock_max_abs_drift_ticks"] =
+        json!(MAX_AUTHORITY_CLOCK_ABS_DRIFT_TICKS);
+    readiness_body["authority_clock_cumulative_drift_ticks"] =
+        json!(authority_clock_cumulative_drift_ticks);
+    readiness_body["authority_clock_latest_lateness_ticks"] =
+        json!(authority_clock_latest_lateness_ticks);
+    readiness_body["authority_clock_max_recent_lateness_ticks"] =
+        json!(authority_clock_max_recent_lateness_ticks);
+    readiness_body["authority_clock_last_wake_age_ms"] = json!(authority_clock_last_wake_age_ms);
+    readiness_body["authority_clock_window_sample_count"] =
+        json!(authority_clock_window_sample_count);
+    readiness_body["authority_clock_window_ticks"] = json!(AUTHORITY_CLOCK_WINDOW_TICKS);
+    readiness_body["active_matches"] = json!(active_matches);
+    readiness_body["active_match_actors"] = json!(active_match_actors);
+    readiness_body["running_match_actors"] = json!(running_match_actors);
+    readiness_body["terminalizing_match_actors"] = json!(terminalizing_match_actors);
+    readiness_body["warming_match_actor_clocks"] = json!(warming_match_actor_clocks);
+    readiness_body["initializing_match_actors"] = json!(initializing_match_actors);
+    readiness_body["terminal_recovery_initializations"] = json!(terminal_recovery_initializations);
+    readiness_body["match_actor_initializations_operational"] =
+        Value::Bool(match_actor_initializations_operational);
+    readiness_body["match_actor_registry_coverage_operational"] =
+        Value::Bool(match_actor_registry_coverage_operational);
+    readiness_body["max_match_actor_initialization_age_ms"] =
+        json!(max_match_actor_initialization_age_ms);
+    readiness_body["max_match_actor_terminal_transition_age_ms"] =
+        json!(max_match_actor_terminal_transition_age_ms);
+    readiness_body["match_actor_terminal_transition_timeout_ms"] =
+        json!(MATCH_ACTOR_TERMINAL_TRANSITION_TIMEOUT.as_millis());
+    readiness_body["match_actor_clocks_operational"] = Value::Bool(match_actor_clocks_operational);
+    readiness_body["max_actor_clock_abs_drift_ticks"] = json!(max_actor_clock_abs_drift_ticks);
+    readiness_body["max_actor_clock_cumulative_abs_drift_ticks"] =
+        json!(max_actor_clock_cumulative_abs_drift_ticks);
+    readiness_body["max_actor_clock_recent_lateness_ticks"] =
+        json!(max_actor_clock_recent_lateness_ticks);
+    readiness_body["max_actor_clock_last_wake_age_ms"] = json!(max_actor_clock_last_wake_age_ms);
+    readiness_body["max_actor_publish_stale_ms"] = json!(max_actor_publish_stale_ms);
+    readiness_body["match_actor_publication_freshness_limit_ms"] =
+        json!(MATCH_ACTOR_PUBLICATION_FRESHNESS.as_millis());
+    readiness_body["match_actor_clock_warmup_limit_ms"] =
+        json!(match_actor_clock_warmup_limit(state.tick_interval).as_millis());
+    readiness_body["operational_readiness"] = operational_readiness;
+    readiness_body["database_pool_saturation_healthy"] =
+        Value::Bool(database_pool_saturation_healthy);
+    readiness_body["database_pool_max_connections"] = json!(GAME_SERVER_DATABASE_MAX_CONNECTIONS);
+    readiness_body["database_pool_size"] = json!(database_pool_size);
+    readiness_body["database_pool_idle_connections"] = json!(database_pool_idle_connections);
+    readiness_body["readiness_database_pool_saturation_healthy"] =
+        Value::Bool(readiness_database_pool_saturation_healthy);
+    readiness_body["readiness_database_pool_min_connections"] =
+        json!(READINESS_DATABASE_MIN_CONNECTIONS);
+    readiness_body["readiness_database_pool_max_connections"] =
+        json!(READINESS_DATABASE_MAX_CONNECTIONS);
+    readiness_body["readiness_database_pool_size"] = json!(readiness_database_pool_size);
+    readiness_body["readiness_database_pool_idle_connections"] =
+        json!(readiness_database_pool_idle_connections);
+    (
+        if ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(readiness_body),
+    )
+        .into_response()
+}
+
+fn count_untracked_published_tick_records(
+    recorded_match_ids: &[Uuid],
+    actor_tracked_match_ids: &BTreeSet<Uuid>,
+) -> usize {
+    recorded_match_ids
+        .iter()
+        .filter(|match_id| !actor_tracked_match_ids.contains(match_id))
+        .count()
+}
+
+fn actor_tracked_published_tick_match_ids(
+    registry: &MatchActorRegistry,
+    observed_at: Instant,
+) -> BTreeSet<Uuid> {
+    let mut match_ids = registry.actors.keys().copied().collect::<BTreeSet<_>>();
+    // A bounded actor initialization owns the running HWM it writes before
+    // the handle can be installed in the registry. Keep that deliberate
+    // hand-off ready while the independent initialization timeout remains
+    // healthy. Terminal-recovery reservations stay excluded: they are
+    // reconciling an already-orphaned HWM and must not turn readiness green.
+    match_ids.extend(
+        registry
+            .initializing
+            .iter()
+            .filter_map(|(match_id, initialization)| {
+                (initialization.kind == MatchActorInitializationKind::Actor
+                    && observed_at.saturating_duration_since(initialization.started_at)
+                        < MATCH_ACTOR_INITIALIZATION_TIMEOUT)
+                    .then_some(*match_id)
+            }),
+    );
+    match_ids
+}
+
+fn bounded_match_actor_transition_ids(
+    registry: &MatchActorRegistry,
+    observed_at: Instant,
+) -> BTreeSet<Uuid> {
+    let mut match_ids = registry
+        .actors
+        .iter()
+        .filter_map(|(match_id, actor)| match *actor.lifecycle.borrow() {
+            MatchActorLifecycle::Warming { .. } => None,
+            MatchActorLifecycle::Running => None,
+            MatchActorLifecycle::Terminalizing { started_at }
+                if observed_at.saturating_duration_since(started_at)
+                    < MATCH_ACTOR_TERMINAL_TRANSITION_TIMEOUT =>
+            {
+                Some(*match_id)
+            }
+            MatchActorLifecycle::Terminalizing { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
+    match_ids.extend(
+        registry
+            .initializing
+            .iter()
+            .filter_map(|(match_id, initialization)| {
+                let timeout = match initialization.kind {
+                    MatchActorInitializationKind::Actor => MATCH_ACTOR_INITIALIZATION_TIMEOUT,
+                    MatchActorInitializationKind::TerminalRecovery => {
+                        MATCH_ACTOR_TERMINAL_TRANSITION_TIMEOUT
+                    }
+                };
+                (observed_at.saturating_duration_since(initialization.started_at) < timeout)
+                    .then_some(*match_id)
+            }),
+    );
+    match_ids
+}
+
+fn terminal_orphan_recovery_is_operational(
+    published_tick_record_query_healthy: bool,
+    published_tick_untracked_records: usize,
+) -> bool {
+    published_tick_record_query_healthy && published_tick_untracked_records == 0
+}
+
+fn match_actor_registry_coverage_is_operational(
+    active_matches: i64,
+    running_match_actors: usize,
+    total_match_actors: usize,
+    initializing_match_actors: usize,
+) -> bool {
+    usize::try_from(active_matches).ok().is_some_and(|active| {
+        running_match_actors <= active
+            && active <= total_match_actors.saturating_add(initializing_match_actors)
+    })
+}
+
+fn match_ids_are_exactly_owned(
+    match_ids: &[Uuid],
+    expected_count: usize,
+    bounded_owners: &BTreeSet<Uuid>,
+) -> bool {
+    let unique = match_ids.iter().copied().collect::<BTreeSet<_>>();
+    match_ids.len() == expected_count
+        && unique.len() == expected_count
+        && unique.is_subset(bounded_owners)
+}
+
+fn authority_clock_is_operational(
+    snapshot: Option<&AuthorityClockSnapshot>,
+    tick_interval: Duration,
+) -> bool {
+    snapshot.is_some_and(|snapshot| {
+        snapshot.window_sample_count >= AUTHORITY_CLOCK_MIN_SAMPLES
+            && snapshot.window_drift_ticks.is_some_and(|drift| {
+                drift.is_finite() && drift.abs() < MAX_AUTHORITY_CLOCK_ABS_DRIFT_TICKS
+            })
+            && snapshot.latest_lateness_ticks.is_some_and(|lateness| {
+                (0.0..MAX_AUTHORITY_CLOCK_ABS_DRIFT_TICKS).contains(&lateness)
+            })
+            && snapshot.max_recent_lateness_ticks.is_some_and(|lateness| {
+                (0.0..MAX_AUTHORITY_CLOCK_ABS_DRIFT_TICKS).contains(&lateness)
+            })
+            && snapshot.last_wake_age_ms.is_some_and(|age_ms| {
+                (0.0..tick_interval.as_secs_f64() * 2_000.0).contains(&age_ms)
+            })
+    })
+}
+
+fn match_actor_clock_is_operational(
+    snapshot: Option<&AuthorityClockSnapshot>,
+    published_stale_ms: f64,
+    tick_interval: Duration,
+) -> bool {
+    authority_clock_is_operational(snapshot, tick_interval)
+        && published_stale_ms.is_finite()
+        && published_stale_ms < MATCH_ACTOR_PUBLICATION_FRESHNESS.as_secs_f64() * 1_000.0
+}
+
+fn match_actor_clock_warmup_limit(tick_interval: Duration) -> Duration {
+    tick_interval.saturating_mul(
+        u32::try_from(AUTHORITY_CLOCK_MIN_SAMPLES)
+            .unwrap_or(u32::MAX)
+            .saturating_add(MATCH_ACTOR_CLOCK_WARMUP_EXTRA_TICKS),
+    )
+}
+
+fn match_actor_clock_warmup_is_operational(
+    snapshot: Option<&AuthorityClockSnapshot>,
+    warmup_age: Duration,
+    published_stale_ms: f64,
+    tick_interval: Duration,
+) -> bool {
+    let warmup_limit = match_actor_clock_warmup_limit(tick_interval);
+    if warmup_age >= warmup_limit
+        || !published_stale_ms.is_finite()
+        || published_stale_ms >= MATCH_ACTOR_PUBLICATION_FRESHNESS.as_secs_f64() * 1_000.0
+    {
+        return false;
+    }
+    let first_wake_grace = tick_interval.saturating_mul(MATCH_ACTOR_CLOCK_FIRST_WAKE_GRACE_TICKS);
+    let Some(snapshot) = snapshot else {
+        return warmup_age < first_wake_grace;
+    };
+    if snapshot.window_sample_count >= AUTHORITY_CLOCK_MIN_SAMPLES {
+        return authority_clock_is_operational(Some(snapshot), tick_interval);
+    }
+    if !snapshot.elapsed_ms.is_finite()
+        || snapshot.elapsed_ms < 0.0
+        || !snapshot.cumulative_drift_ticks.is_finite()
+        || u64::try_from(snapshot.window_sample_count).ok() != Some(snapshot.wake_count)
+    {
+        return false;
+    }
+    if snapshot.window_sample_count == 0 {
+        return warmup_age < first_wake_grace
+            && snapshot.window_drift_ticks.is_none()
+            && snapshot.latest_lateness_ticks.is_none()
+            && snapshot.max_recent_lateness_ticks.is_none()
+            && snapshot.last_wake_age_ms.is_none();
+    }
+    let lateness_is_healthy = |value: Option<f64>| {
+        value.is_some_and(|value| (0.0..MAX_AUTHORITY_CLOCK_ABS_DRIFT_TICKS).contains(&value))
+    };
+    let drift_is_healthy = match snapshot.window_drift_ticks {
+        Some(drift) => {
+            snapshot.window_sample_count >= 2
+                && drift.is_finite()
+                && drift.abs() < MAX_AUTHORITY_CLOCK_ABS_DRIFT_TICKS
+        }
+        None => snapshot.window_sample_count == 1,
+    };
+    drift_is_healthy
+        && lateness_is_healthy(snapshot.latest_lateness_ticks)
+        && lateness_is_healthy(snapshot.max_recent_lateness_ticks)
+        && snapshot
+            .last_wake_age_ms
+            .is_some_and(|age_ms| (0.0..tick_interval.as_secs_f64() * 2_000.0).contains(&age_ms))
+}
+
+fn receipt_protocol_for_observed_tick(client_observed_tick: Option<i64>) -> &'static str {
+    if client_observed_tick.is_some() {
+        ONLINE_AUTHORITY_PROTOCOL
+    } else {
+        ONLINE_AUTHORITY_V2_PROTOCOL
+    }
+}
+
+fn database_pool_is_operational(
+    pool_size: u32,
+    idle_connections: usize,
+    max_connections: u32,
+) -> bool {
+    idle_connections > 0 || pool_size < max_connections
+}
+
+async fn connect_campaign(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<OnlineCampaignConnectRequest>,
+) -> Result<Json<OnlineCampaignView>, ApiError> {
+    validate_client_contract(&request.protocol_version, &request.build_id)
+        .map_err(|error| api_error(StatusCode::UPGRADE_REQUIRED, error, false))?;
+    validate_slot_key(&request.slot_key)?;
+    let account_id = Uuid::parse_str(&request.account_id)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "account_id must be a UUID", false))?;
+    verify_identity(&state, &headers, &request.player_id, &request.account_id).await?;
+
+    if let Some(row) = sqlx::query::query(
+        "select campaign_id, player_id, account_id, slot_key, campaign_revision,
+                schema_revision, state_hash, campaign_json
+         from trnm_online_campaigns where account_id = $1 and slot_key = $2",
+    )
+    .bind(account_id)
+    .bind(&request.slot_key)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal_db)?
+    {
+        let stored_player: String = row.try_get("player_id").map_err(internal_db)?;
+        if stored_player != request.player_id {
+            return Err(api_error(
+                StatusCode::FORBIDDEN,
+                "campaign slot belongs to another player identity",
+                false,
+            ));
+        }
+        let campaign_id: String = row.try_get("campaign_id").map_err(internal_db)?;
+        ensure_campaign_progression_is_published(&state.pool, &campaign_id).await?;
+        return Ok(Json(campaign_view_from_row(&row)?));
+    }
+
+    let mut campaign = CampaignSaveV1 {
+        campaign_id: format!("online-campaign:{}", Uuid::new_v4()),
+        ..CampaignSaveV1::default()
+    };
+    campaign
+        .bind_cex_economy_account(&request.player_id, &request.account_id)
+        .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string(), false))?;
+    campaign.ensure_gameplay_defaults();
+    let state_hash = hash_json(&campaign)?;
+    let campaign_json = serde_json::to_value(&campaign)
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), false))?;
+    sqlx::query::query(
+        "insert into trnm_online_campaigns (
+            campaign_id, player_id, account_id, slot_key, campaign_revision,
+            schema_revision, state_hash, campaign_json
+         ) values ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(&campaign.campaign_id)
+    .bind(&request.player_id)
+    .bind(account_id)
+    .bind(&request.slot_key)
+    .bind(campaign.revision as i64)
+    .bind(i32::from(campaign.schema_revision))
+    .bind(&state_hash)
+    .bind(campaign_json)
+    .execute(&state.pool)
+    .await
+    .map_err(internal_db)?;
+    Ok(Json(OnlineCampaignView {
+        protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
+        campaign_id: campaign.campaign_id,
+        player_id: request.player_id,
+        account_id: request.account_id,
+        slot_key: request.slot_key,
+        campaign_revision: campaign.revision,
+        schema_revision: campaign.schema_revision,
+        state_hash,
+        level: campaign.progression.level,
+        experience: campaign.progression.experience,
+        reputation: campaign.character.attributes.reputation,
+        inventory: campaign
+            .progression
+            .inventory
+            .iter()
+            .map(|stack| OnlineInventoryStack {
+                item_id: stack.item_id.clone(),
+                quantity: stack.quantity,
+            })
+            .collect(),
+        settled_match_count: campaign.settled_battle_ids.len(),
+    }))
+}
+
+async fn create_lobby(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<OnlineLobbyCreateRequest>,
+) -> Result<Json<OnlineLobbyView>, ApiError> {
+    validate_product_contract(&request.protocol_version, &request.build_id)
+        .map_err(|error| api_error(StatusCode::UPGRADE_REQUIRED, error, false))?;
+    mission_for_map(&request.map_id)?;
+    if request.display_name.trim().is_empty() || request.display_name.chars().count() > 80 {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "lobby display_name must contain 1..80 characters",
+            false,
+        ));
+    }
+    let account_id = Uuid::parse_str(&request.account_id)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "account_id must be a UUID", false))?;
+    verify_identity(&state, &headers, &request.player_id, &request.account_id).await?;
+    let mut transaction = state.pool.begin().await.map_err(internal_db)?;
+    lock_player_lobby_scope(&mut transaction, &request.player_id).await?;
+    ensure_campaign_owner(
+        &mut transaction,
+        &request.campaign_id,
+        &request.player_id,
+        account_id,
+    )
+    .await?;
+    ensure_player_has_no_active_lobby(&mut transaction, &request.player_id).await?;
+    let lobby_id = Uuid::new_v4();
+    sqlx::query::query(
+        "insert into trnm_online_lobbies (
+            lobby_id, display_name, owner_player_id, owner_account_id, map_id
+         ) values ($1, $2, $3, $4, $5)",
+    )
+    .bind(lobby_id)
+    .bind(request.display_name.trim())
+    .bind(&request.player_id)
+    .bind(account_id)
+    .bind(&request.map_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    sqlx::query::query(
+        "insert into trnm_online_lobby_members (
+            lobby_id, player_id, account_id, campaign_id, member_role
+         ) values ($1, $2, $3, $4, 'owner')",
+    )
+    .bind(lobby_id)
+    .bind(&request.player_id)
+    .bind(account_id)
+    .bind(&request.campaign_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    transaction.commit().await.map_err(internal_db)?;
+    Ok(Json(fetch_lobby_view(&state.pool, lobby_id).await?))
+}
+
+async fn get_lobby(
+    State(state): State<AppState>,
+    Path(lobby_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<OnlineLobbyAccessRequest>,
+) -> Result<Json<OnlineLobbyView>, ApiError> {
+    validate_product_contract(&request.protocol_version, &request.build_id)
+        .map_err(|error| api_error(StatusCode::UPGRADE_REQUIRED, error, false))?;
+    let account_id = Uuid::parse_str(&request.account_id)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "account_id must be a UUID", false))?;
+    verify_identity(&state, &headers, &request.player_id, &request.account_id).await?;
+    let member: bool = sqlx::query_scalar::query_scalar(
+        "select exists(select 1 from trnm_online_lobby_members
+         where lobby_id = $1 and player_id = $2 and account_id = $3)",
+    )
+    .bind(lobby_id)
+    .bind(&request.player_id)
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(internal_db)?;
+    if !member {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "identity is not a lobby member",
+            false,
+        ));
+    }
+    Ok(Json(fetch_lobby_view(&state.pool, lobby_id).await?))
+}
+
+async fn invite_to_lobby(
+    State(state): State<AppState>,
+    Path(lobby_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<OnlineLobbyInviteRequest>,
+) -> Result<Json<OnlineLobbyInviteReceipt>, ApiError> {
+    validate_product_contract(&request.protocol_version, &request.build_id)
+        .map_err(|error| api_error(StatusCode::UPGRADE_REQUIRED, error, false))?;
+    if request.target_player_id == request.player_id {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "lobby owner cannot invite itself",
+            false,
+        ));
+    }
+    let account_id = Uuid::parse_str(&request.account_id)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "account_id must be a UUID", false))?;
+    verify_identity(&state, &headers, &request.player_id, &request.account_id).await?;
+    let mut transaction = state.pool.begin().await.map_err(internal_db)?;
+    let lobby = lock_lobby(&mut transaction, lobby_id).await?;
+    require_lobby_owner(&lobby, &request.player_id, account_id)?;
+    require_open_lobby_revision(&lobby, request.expected_lobby_revision)?;
+    let blocked: bool = sqlx::query_scalar::query_scalar(
+        "select exists(select 1 from trnm_online_blocks
+         where (blocker_player_id = $1 and blocked_player_id = $2)
+            or (blocker_player_id = $2 and blocked_player_id = $1))",
+    )
+    .bind(&request.player_id)
+    .bind(&request.target_player_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    if blocked {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "lobby invitation is blocked by a player safety rule",
+            false,
+        ));
+    }
+    let member_count: i64 = sqlx::query_scalar::query_scalar(
+        "select count(*) from trnm_online_lobby_members where lobby_id = $1",
+    )
+    .bind(lobby_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    if member_count != 1 {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "lobby already has the maximum two members",
+            false,
+        ));
+    }
+    ensure_player_has_no_active_lobby(&mut transaction, &request.target_player_id).await?;
+    let invite_id = Uuid::new_v4();
+    let invite_token = format!("trnm-invite-{}", Uuid::new_v4());
+    let invite_token_hash = sha256_text(&invite_token);
+    let expires_at_epoch = Utc::now().timestamp().saturating_add(900);
+    sqlx::query::query(
+        "insert into trnm_online_lobby_invites (
+            invite_id, lobby_id, inviter_player_id, target_player_id,
+            invite_token_hash, expires_at
+         ) values ($1, $2, $3, $4, $5, to_timestamp($6))",
+    )
+    .bind(invite_id)
+    .bind(lobby_id)
+    .bind(&request.player_id)
+    .bind(&request.target_player_id)
+    .bind(invite_token_hash)
+    .bind(expires_at_epoch)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| {
+        if error
+            .as_database_error()
+            .is_some_and(|db| db.is_unique_violation())
+        {
+            return api_error(
+                StatusCode::CONFLICT,
+                "target player already has a pending invite to this lobby",
+                true,
+            );
+        }
+        internal_db(error)
+    })?;
+    transaction.commit().await.map_err(internal_db)?;
+    Ok(Json(OnlineLobbyInviteReceipt {
+        lobby: fetch_lobby_view(&state.pool, lobby_id).await?,
+        invite_id: invite_id.to_string(),
+        invite_token,
+        target_player_id: request.target_player_id,
+        expires_at_epoch,
+    }))
+}
+
+async fn accept_lobby_invite(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<OnlineLobbyInviteAcceptRequest>,
+) -> Result<Json<OnlineLobbyView>, ApiError> {
+    validate_product_contract(&request.protocol_version, &request.build_id)
+        .map_err(|error| api_error(StatusCode::UPGRADE_REQUIRED, error, false))?;
+    let account_id = Uuid::parse_str(&request.account_id)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "account_id must be a UUID", false))?;
+    verify_identity(&state, &headers, &request.player_id, &request.account_id).await?;
+    let mut transaction = state.pool.begin().await.map_err(internal_db)?;
+    lock_player_lobby_scope(&mut transaction, &request.player_id).await?;
+    ensure_campaign_owner(
+        &mut transaction,
+        &request.campaign_id,
+        &request.player_id,
+        account_id,
+    )
+    .await?;
+    ensure_player_has_no_active_lobby(&mut transaction, &request.player_id).await?;
+    let invite = sqlx::query::query(
+        "select invite_id, lobby_id, target_player_id, status,
+                extract(epoch from expires_at)::bigint as expires_at_epoch
+         from trnm_online_lobby_invites where invite_token_hash = $1 for update",
+    )
+    .bind(sha256_text(&request.invite_token))
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(internal_db)?
+    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "lobby invite not found", false))?;
+    let lobby_id: Uuid = invite.try_get("lobby_id").map_err(internal_db)?;
+    let target_player_id: String = invite.try_get("target_player_id").map_err(internal_db)?;
+    let status: String = invite.try_get("status").map_err(internal_db)?;
+    let expires_at_epoch: i64 = invite.try_get("expires_at_epoch").map_err(internal_db)?;
+    if target_player_id != request.player_id
+        || status != "pending"
+        || expires_at_epoch <= Utc::now().timestamp()
+    {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "lobby invite is expired, consumed, or belongs to another player",
+            false,
+        ));
+    }
+    let lobby = lock_lobby(&mut transaction, lobby_id).await?;
+    if lobby.try_get::<String, _>("status").map_err(internal_db)? != "open" {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "lobby is no longer accepting members",
+            false,
+        ));
+    }
+    let member_count: i64 = sqlx::query_scalar::query_scalar(
+        "select count(*) from trnm_online_lobby_members where lobby_id = $1",
+    )
+    .bind(lobby_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    if member_count != 1 {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "lobby already has the maximum two members",
+            false,
+        ));
+    }
+    sqlx::query::query(
+        "insert into trnm_online_lobby_members (
+            lobby_id, player_id, account_id, campaign_id, member_role
+         ) values ($1, $2, $3, $4, 'member')",
+    )
+    .bind(lobby_id)
+    .bind(&request.player_id)
+    .bind(account_id)
+    .bind(&request.campaign_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    sqlx::query::query(
+        "update trnm_online_lobby_invites set status = 'accepted', accepted_at = now()
+         where invite_id = $1",
+    )
+    .bind(
+        invite
+            .try_get::<Uuid, _>("invite_id")
+            .map_err(internal_db)?,
+    )
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    sqlx::query::query(
+        "update trnm_online_lobbies set lobby_revision = lobby_revision + 1,
+             updated_at = now() where lobby_id = $1",
+    )
+    .bind(lobby_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    transaction.commit().await.map_err(internal_db)?;
+    Ok(Json(fetch_lobby_view(&state.pool, lobby_id).await?))
+}
+
+async fn set_lobby_ready(
+    State(state): State<AppState>,
+    Path(lobby_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<OnlineLobbyReadyRequest>,
+) -> Result<Json<OnlineLobbyView>, ApiError> {
+    validate_product_contract(&request.protocol_version, &request.build_id)
+        .map_err(|error| api_error(StatusCode::UPGRADE_REQUIRED, error, false))?;
+    let account_id = Uuid::parse_str(&request.account_id)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "account_id must be a UUID", false))?;
+    verify_identity(&state, &headers, &request.player_id, &request.account_id).await?;
+    let mut transaction = state.pool.begin().await.map_err(internal_db)?;
+    let lobby = lock_lobby(&mut transaction, lobby_id).await?;
+    require_open_lobby_revision(&lobby, request.expected_lobby_revision)?;
+    let updated = sqlx::query::query(
+        "update trnm_online_lobby_members set ready = $4
+         where lobby_id = $1 and player_id = $2 and account_id = $3",
+    )
+    .bind(lobby_id)
+    .bind(&request.player_id)
+    .bind(account_id)
+    .bind(request.ready)
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    if updated.rows_affected() != 1 {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "identity is not a lobby member",
+            false,
+        ));
+    }
+    sqlx::query::query(
+        "update trnm_online_lobbies set lobby_revision = lobby_revision + 1,
+             updated_at = now() where lobby_id = $1",
+    )
+    .bind(lobby_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    transaction.commit().await.map_err(internal_db)?;
+    Ok(Json(fetch_lobby_view(&state.pool, lobby_id).await?))
+}
+
+async fn queue_lobby(
+    State(state): State<AppState>,
+    Path(lobby_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<OnlineLobbyQueueRequest>,
+) -> Result<Json<OnlineMatchmakingReceipt>, ApiError> {
+    validate_product_contract(&request.protocol_version, &request.build_id)
+        .map_err(|error| api_error(StatusCode::UPGRADE_REQUIRED, error, false))?;
+    let account_id = Uuid::parse_str(&request.account_id)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "account_id must be a UUID", false))?;
+    verify_identity(&state, &headers, &request.player_id, &request.account_id).await?;
+    let mut transaction = state.pool.begin().await.map_err(internal_db)?;
+    let lobby = lock_lobby(&mut transaction, lobby_id).await?;
+    require_lobby_owner(&lobby, &request.player_id, account_id)?;
+    require_open_lobby_revision(&lobby, request.expected_lobby_revision)?;
+    let members = sqlx::query::query(
+        "select player_id, account_id, campaign_id, member_role, ready
+         from trnm_online_lobby_members where lobby_id = $1
+         order by case member_role when 'owner' then 0 else 1 end for update",
+    )
+    .bind(lobby_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    if members.len() != 2
+        || members
+            .iter()
+            .any(|member| !member.try_get::<bool, _>("ready").unwrap_or(false))
+    {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "coop matchmaking requires exactly two ready members",
+            true,
+        ));
+    }
+    for member in &members {
+        ensure_campaign_progression_is_published(
+            &mut *transaction,
+            &member
+                .try_get::<String, _>("campaign_id")
+                .map_err(internal_db)?,
+        )
+        .await?;
+    }
+    let match_id = Uuid::new_v4();
+    let join_code = match_id.simple().to_string()[..10].to_ascii_uppercase();
+    let map_id: String = lobby.try_get("map_id").map_err(internal_db)?;
+    let host_campaign_id: String = members[0].try_get("campaign_id").map_err(internal_db)?;
+    sqlx::query::query(
+        "insert into trnm_online_matches (
+            match_id, campaign_id, host_player_id, host_account_id, join_code,
+            phase, build_id, map_id, rules_version
+         ) values ($1, $2, $3, $4, $5, 'waiting', $6, $7, $8)",
+    )
+    .bind(match_id)
+    .bind(&host_campaign_id)
+    .bind(
+        members[0]
+            .try_get::<String, _>("player_id")
+            .map_err(internal_db)?,
+    )
+    .bind(
+        members[0]
+            .try_get::<Uuid, _>("account_id")
+            .map_err(internal_db)?,
+    )
+    .bind(&join_code)
+    .bind(ONLINE_AUTHORITY_BUILD)
+    .bind(&map_id)
+    .bind(trnm_campaign_core::FIRST_CONTACT_RULES_VERSION)
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    for (index, member) in members.iter().enumerate() {
+        sqlx::query::query(
+            "insert into trnm_online_match_members (
+                match_id, player_id, account_id, campaign_id, member_role
+             ) values ($1, $2, $3, $4, $5)",
+        )
+        .bind(match_id)
+        .bind(
+            member
+                .try_get::<String, _>("player_id")
+                .map_err(internal_db)?,
+        )
+        .bind(
+            member
+                .try_get::<Uuid, _>("account_id")
+                .map_err(internal_db)?,
+        )
+        .bind(
+            member
+                .try_get::<String, _>("campaign_id")
+                .map_err(internal_db)?,
+        )
+        .bind(if index == 0 { "host" } else { "coop_guest" })
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal_db)?;
+    }
+    sqlx::query::query(
+        "update trnm_online_lobbies set status = 'queued',
+             lobby_revision = lobby_revision + 1, updated_at = now()
+         where lobby_id = $1",
+    )
+    .bind(lobby_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    transaction.commit().await.map_err(internal_db)?;
+
+    let started = match start_match(
+        State(state.clone()),
+        Path(match_id),
+        headers,
+        Json(OnlineMatchStartRequest {
+            protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
+            build_id: ONLINE_AUTHORITY_BUILD.to_string(),
+            player_id: request.player_id.clone(),
+            account_id: request.account_id.clone(),
+            expected_match_revision: 0,
+        }),
+    )
+    .await
+    {
+        Ok(Json(view)) => view,
+        Err(error) => {
+            let mut cleanup = state.pool.begin().await.map_err(internal_db)?;
+            sqlx::query::query("delete from trnm_online_matches where match_id = $1")
+                .bind(match_id)
+                .execute(&mut *cleanup)
+                .await
+                .map_err(internal_db)?;
+            sqlx::query::query(
+                "update trnm_online_lobbies set status = 'open',
+                     lobby_revision = lobby_revision + 1, updated_at = now()
+                 where lobby_id = $1",
+            )
+            .bind(lobby_id)
+            .execute(&mut *cleanup)
+            .await
+            .map_err(internal_db)?;
+            cleanup.commit().await.map_err(internal_db)?;
+            return Err(error);
+        }
+    };
+    let allocation_id = Uuid::new_v4();
+    let mut allocation = state.pool.begin().await.map_err(internal_db)?;
+    sqlx::query::query(
+        "insert into trnm_online_matchmaking_allocations (
+            allocation_id, lobby_id, match_id, queue_mode, member_count
+         ) values ($1, $2, $3, 'coop_vs_ai', 2)",
+    )
+    .bind(allocation_id)
+    .bind(lobby_id)
+    .bind(match_id)
+    .execute(&mut *allocation)
+    .await
+    .map_err(internal_db)?;
+    sqlx::query::query(
+        "update trnm_online_lobbies set status = 'matched', match_id = $2,
+             lobby_revision = lobby_revision + 1, updated_at = now()
+         where lobby_id = $1 and status = 'queued'",
+    )
+    .bind(lobby_id)
+    .bind(match_id)
+    .execute(&mut *allocation)
+    .await
+    .map_err(internal_db)?;
+    allocation.commit().await.map_err(internal_db)?;
+    Ok(Json(OnlineMatchmakingReceipt {
+        lobby: fetch_lobby_view(&state.pool, lobby_id).await?,
+        match_view: started,
+        queue_mode: "coop_vs_ai".to_string(),
+        allocation_id: allocation_id.to_string(),
+    }))
+}
+
+async fn create_match(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<OnlineMatchCreateRequest>,
+) -> Result<Json<OnlineMatchView>, ApiError> {
+    validate_client_contract(&request.protocol_version, &request.build_id)
+        .map_err(|error| api_error(StatusCode::UPGRADE_REQUIRED, error, false))?;
+    mission_for_map(&request.map_id)?;
+    let campaign_row = sqlx::query::query(
+        "select player_id, account_id, campaign_revision from trnm_online_campaigns
+         where campaign_id = $1",
+    )
+    .bind(&request.campaign_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal_db)?
+    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "campaign not found", false))?;
+    let player_id: String = campaign_row.try_get("player_id").map_err(internal_db)?;
+    let account_id: Uuid = campaign_row.try_get("account_id").map_err(internal_db)?;
+    let revision: i64 = campaign_row
+        .try_get("campaign_revision")
+        .map_err(internal_db)?;
+    if revision as u64 != request.expected_campaign_revision {
+        return Err(conflict("campaign revision changed", revision as u64));
+    }
+    verify_identity(&state, &headers, &player_id, &account_id.to_string()).await?;
+    ensure_campaign_progression_is_published(&state.pool, &request.campaign_id).await?;
+
+    let match_id = Uuid::new_v4();
+    let join_code = match_id.simple().to_string()[..10].to_ascii_uppercase();
+    let mut transaction = state.pool.begin().await.map_err(internal_db)?;
+    sqlx::query::query(
+        "insert into trnm_online_matches (
+            match_id, campaign_id, host_player_id, host_account_id, join_code,
+            phase, build_id, map_id, rules_version
+         ) values ($1, $2, $3, $4, $5, 'waiting', $6, $7, $8)",
+    )
+    .bind(match_id)
+    .bind(&request.campaign_id)
+    .bind(&player_id)
+    .bind(account_id)
+    .bind(&join_code)
+    .bind(ONLINE_AUTHORITY_BUILD)
+    .bind(&request.map_id)
+    .bind(trnm_campaign_core::FIRST_CONTACT_RULES_VERSION)
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    sqlx::query::query(
+        "insert into trnm_online_match_members (
+            match_id, player_id, account_id, campaign_id, member_role
+         ) values ($1, $2, $3, $4, 'host')",
+    )
+    .bind(match_id)
+    .bind(&player_id)
+    .bind(account_id)
+    .bind(&request.campaign_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    transaction.commit().await.map_err(internal_db)?;
+    Ok(Json(fetch_match_view(&state.pool, match_id).await?))
+}
+
+async fn join_match(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<OnlineMatchJoinRequest>,
+) -> Result<Json<OnlineMatchView>, ApiError> {
+    validate_client_contract(&request.protocol_version, &request.build_id)
+        .map_err(|error| api_error(StatusCode::UPGRADE_REQUIRED, error, false))?;
+    let account_id = Uuid::parse_str(&request.account_id)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "account_id must be a UUID", false))?;
+    verify_identity(&state, &headers, &request.player_id, &request.account_id).await?;
+    let mut transaction = state.pool.begin().await.map_err(internal_db)?;
+    let campaign_owner = sqlx::query::query(
+        "select player_id, account_id from trnm_online_campaigns where campaign_id = $1",
+    )
+    .bind(&request.campaign_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(internal_db)?
+    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "guest campaign not found", false))?;
+    let campaign_player_id: String = campaign_owner.try_get("player_id").map_err(internal_db)?;
+    let campaign_account_id: Uuid = campaign_owner.try_get("account_id").map_err(internal_db)?;
+    if campaign_player_id != request.player_id || campaign_account_id != account_id {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "guest campaign does not belong to the authenticated player/account",
+            false,
+        ));
+    }
+    ensure_campaign_progression_is_published(&mut *transaction, &request.campaign_id).await?;
+    let row = sqlx::query::query(
+        "select match_id, phase from trnm_online_matches where join_code = $1 for update",
+    )
+    .bind(request.join_code.to_ascii_uppercase())
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(internal_db)?
+    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "join code not found", false))?;
+    let match_id: Uuid = row.try_get("match_id").map_err(internal_db)?;
+    let phase: String = row.try_get("phase").map_err(internal_db)?;
+    if phase != "waiting" {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "match is no longer accepting members",
+            false,
+        ));
+    }
+    sqlx::query::query(
+        "insert into trnm_online_match_members (
+            match_id, player_id, account_id, campaign_id, member_role
+         ) values ($1, $2, $3, $4, 'coop_guest')",
+    )
+    .bind(match_id)
+    .bind(&request.player_id)
+    .bind(account_id)
+    .bind(&request.campaign_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| {
+        if let sqlx::Error::Database(database) = &error {
+            if database.is_unique_violation() {
+                return api_error(
+                    StatusCode::CONFLICT,
+                    "match already has a co-op guest or this identity already joined",
+                    false,
+                );
+            }
+        }
+        internal_db(error)
+    })?;
+    transaction.commit().await.map_err(internal_db)?;
+    Ok(Json(fetch_match_view(&state.pool, match_id).await?))
+}
+
+fn start_match_retry_is_idempotent(
+    phase: &str,
+    durable_revision: u64,
+    expected_revision: u64,
+    assignment_matches_current_authority: bool,
+) -> bool {
+    phase == "running"
+        && expected_revision.checked_add(1) == Some(durable_revision)
+        && assignment_matches_current_authority
+}
+
+async fn start_match(
+    State(state): State<AppState>,
+    Path(match_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<OnlineMatchStartRequest>,
+) -> Result<Json<OnlineMatchView>, ApiError> {
+    validate_client_contract(&request.protocol_version, &request.build_id)
+        .map_err(|error| api_error(StatusCode::UPGRADE_REQUIRED, error, false))?;
+    verify_identity(&state, &headers, &request.player_id, &request.account_id).await?;
+    let account_id = Uuid::parse_str(&request.account_id)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "account_id must be a UUID", false))?;
+    let mut transaction = state.pool.begin().await.map_err(internal_db)?;
+    lock_current_fleet_epoch(&mut transaction, &state, false)
+        .await
+        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error, true))?;
+    let match_row = sqlx::query::query(
+        "select campaign_id, host_player_id, host_account_id, phase, map_id, match_revision,
+                match_mode, assigned_instance_id, assigned_instance_epoch,
+                assigned_physical_host_id
+         from trnm_online_matches where match_id = $1 for update",
+    )
+    .bind(match_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(internal_db)?
+    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "match not found", false))?;
+    let host_player_id: String = match_row.try_get("host_player_id").map_err(internal_db)?;
+    let host_account_id: Uuid = match_row.try_get("host_account_id").map_err(internal_db)?;
+    if host_player_id != request.player_id || host_account_id != account_id {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "only the authenticated host may start the match",
+            false,
+        ));
+    }
+    let phase: String = match_row.try_get("phase").map_err(internal_db)?;
+    let revision = u64::try_from(
+        match_row
+            .try_get::<i64, _>("match_revision")
+            .map_err(internal_db)?,
+    )
+    .map_err(|_| {
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "match revision is negative",
+            false,
+        )
+    })?;
+    if phase != "waiting" {
+        let assignment_matches_current_authority = match_row
+            .try_get::<Option<String>, _>("assigned_instance_id")
+            .map_err(internal_db)?
+            .as_deref()
+            == Some(state.instance_id.as_str())
+            && match_row
+                .try_get::<Option<i64>, _>("assigned_instance_epoch")
+                .map_err(internal_db)?
+                == Some(state.instance_epoch)
+            && match_row
+                .try_get::<Option<String>, _>("assigned_physical_host_id")
+                .map_err(internal_db)?
+                .as_deref()
+                == Some(state.physical_host_id.as_str());
+        if start_match_retry_is_idempotent(
+            &phase,
+            revision,
+            request.expected_match_revision,
+            assignment_matches_current_authority,
+        ) {
+            transaction.commit().await.map_err(internal_db)?;
+            ensure_match_actor(&state, match_id)
+                .await
+                .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error, true))?
+                .ok_or_else(|| {
+                    api_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "running match actor did not start",
+                        true,
+                    )
+                })?;
+            return Ok(Json(fetch_match_view(&state.pool, match_id).await?));
+        }
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "match is not waiting",
+            false,
+        ));
+    }
+    if revision != request.expected_match_revision {
+        return Err(conflict("match revision changed", revision));
+    }
+    let member_count: i64 = sqlx::query_scalar::query_scalar(
+        "select count(*) from trnm_online_match_members where match_id = $1",
+    )
+    .bind(match_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    if member_count != 2 {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "Online Authority requires exactly host + one co-op guest",
+            true,
+        ));
+    }
+    let map_id: String = match_row.try_get("map_id").map_err(internal_db)?;
+    let match_mode: String = match_row.try_get("match_mode").map_err(internal_db)?;
+    let map = map::load_authoritative_map(&state.asset_root, &map_id)
+        .map_err(|error| api_error(StatusCode::BAD_REQUEST, error, false))?;
+    let member_rows = sqlx::query::query(
+        "select player_id, account_id, member_role, campaign_id
+         from trnm_online_match_members where match_id = $1
+         order by case member_role when 'host' then 0 else 1 end for update",
+    )
+    .bind(match_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    if member_rows.len() != 2 {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "both online members must bind a cloud campaign",
+            true,
+        ));
+    }
+    let mut prepared = Vec::with_capacity(2);
+    for member in &member_rows {
+        let campaign_id: Option<String> = member.try_get("campaign_id").map_err(internal_db)?;
+        let campaign_id = campaign_id.ok_or_else(|| {
+            api_error(
+                StatusCode::CONFLICT,
+                "online member is missing a cloud campaign",
+                false,
+            )
+        })?;
+        ensure_campaign_progression_is_published(&mut *transaction, &campaign_id).await?;
+        let campaign_value: Value = sqlx::query_scalar::query_scalar(
+            "select campaign_json from trnm_online_campaigns where campaign_id = $1 for update",
+        )
+        .bind(&campaign_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(internal_db)?;
+        let mut campaign: CampaignSaveV1 =
+            serde_json::from_value(campaign_value).map_err(|error| {
+                api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), false)
+            })?;
+        let ranked_campaign = (match_mode == "ranked_pvp").then(|| campaign.clone());
+        let seed = prepare_campaign_seed(&mut campaign, &map_id, map.clone())?;
+        if let Some(original) = ranked_campaign {
+            campaign = original;
+        }
+        prepared.push((campaign_id, campaign, seed));
+    }
+    let (host_units, host_id_map) = member_units(&prepared[0].2, "host", 0);
+    let (guest_units, guest_id_map) = member_units(&prepared[1].2, "guest", 2);
+    let mut seed = prepared[0].2.clone();
+    seed.battle_id = format!("online-v2-{match_id}");
+    seed.party = host_units
+        .iter()
+        .chain(guest_units.iter())
+        .cloned()
+        .collect();
+    seed.seed_hash = seed
+        .computed_hash()
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), false))?;
+    seed.validate()
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), false))?;
+    let mut sim = MissionSimV1::from_seed(seed.clone())
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), false))?;
+    if match_mode == "ranked_pvp" {
+        let guest_control = guest_units
+            .iter()
+            .map(|unit| unit.unit_id.clone())
+            .collect::<BTreeSet<_>>();
+        sim.enable_human_enemy_authority(&guest_control)
+            .map_err(|error| {
+                api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), false)
+            })?;
+    }
+    let snapshot_hash = sim
+        .snapshot_hash()
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), false))?;
+    let match_season_id = if match_mode == "ranked_pvp" {
+        Some(
+            operations_v1::active_season(&mut transaction)
+                .await
+                .map_err(|error| api_error(StatusCode::CONFLICT, error, true))?
+                .0,
+        )
+    } else {
+        None
+    };
+    for (index, (campaign_id, campaign, member_seed)) in prepared.iter().enumerate() {
+        let (units, id_map) = if index == 0 {
+            (&host_units, &host_id_map)
+        } else {
+            (&guest_units, &guest_id_map)
+        };
+        sqlx::query::query(
+            "update trnm_online_match_members set controlled_unit_ids = $2,
+                settlement_seed_json = $3, unit_id_map = $4
+             where match_id = $1 and campaign_id = $5",
+        )
+        .bind(match_id)
+        .bind(json!(units
+            .iter()
+            .map(|unit| &unit.unit_id)
+            .collect::<Vec<_>>()))
+        .bind(serde_json::to_value(member_seed).map_err(internal_serialization)?)
+        .bind(serde_json::to_value(id_map).map_err(internal_serialization)?)
+        .bind(campaign_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal_db)?;
+        persist_campaign(&mut transaction, campaign).await?;
+    }
+    let initial_simulation = serde_json::to_value(&sim).map_err(internal_serialization)?;
+    sqlx::query::query(
+        "update trnm_online_matches set
+            phase = 'running', seed_hash = $2, seed_json = $3,
+            simulation_json = $4, snapshot_hash = $5,
+            authoritative_tick = 0, checkpoint_sequence = 0,
+            match_revision = match_revision + 1,
+            assigned_instance_id = $6, assigned_region = $7,
+            assigned_instance_epoch = $8, initial_simulation_json = $4,
+            season_id = $9, assigned_physical_host_id = $10, updated_at = now()
+         where match_id = $1",
+    )
+    .bind(match_id)
+    .bind(&seed.seed_hash)
+    .bind(serde_json::to_value(&seed).map_err(internal_serialization)?)
+    .bind(&initial_simulation)
+    .bind(&snapshot_hash)
+    .bind(state.instance_id.as_str())
+    .bind(state.region.as_str())
+    .bind(state.instance_epoch)
+    .bind(&match_season_id)
+    .bind(state.physical_host_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    sqlx::query::query(
+        "insert into trnm_online_replay_frames (
+            match_id, tick, snapshot_hash, simulation_json, frame_kind
+         ) values ($1, 0, $2, $3, 'initial')
+         on conflict (match_id, tick) do nothing",
+    )
+    .bind(match_id)
+    .bind(&snapshot_hash)
+    .bind(initial_simulation)
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    lock_current_fleet_epoch_for_commit(&mut transaction, &state, false)
+        .await
+        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error, true))?;
+    // Reserve local authority before the running phase becomes visible. The
+    // reservation is a bounded readiness owner and is released automatically
+    // if the database commit or the request future is cancelled.
+    let (actor_initialization, actor_reservation) = reserve_starting_match_actor(&state, match_id)
+        .await
+        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error, true))?;
+    transaction.commit().await.map_err(internal_db)?;
+    initialize_reserved_match_actor(&state, match_id, actor_initialization, actor_reservation)
+        .await
+        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error, true))?
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "running match actor did not start",
+                true,
+            )
+        })?;
+    Ok(Json(fetch_match_view(&state.pool, match_id).await?))
+}
+
+async fn submit_command(
+    State(state): State<AppState>,
+    Path(match_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<OnlineCommandSubmitRequest>,
+) -> Result<Json<OnlineCommandReceipt>, ApiError> {
+    let handler_started = Instant::now();
+    reject_command_during_drain(&state)?;
+    validate_client_contract(&request.protocol_version, &request.build_id)
+        .map_err(|error| api_error(StatusCode::UPGRADE_REQUIRED, error, false))?;
+    validate_command_id(&request.command_id)?;
+    let admission = ActorCommandAdmission {
+        bucket_key: distributed_admission_bucket_key(
+            session_header(&headers)?,
+            "POST",
+            &format!("/v1/online/matches/{match_id}"),
+        ),
+        limit: i64::from(state.rate_limit_per_minute.saturating_mul(20)),
+    };
+    let identity_started = Instant::now();
+    verify_identity(&state, &headers, &request.player_id, &request.account_id).await?;
+    let identity_ms = u64::try_from(identity_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let account_id = Uuid::parse_str(&request.account_id)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "account_id must be a UUID", false))?;
+    let request_hash = hash_json(&request)?;
+    let actor_lookup_started = Instant::now();
+    let existing_actor = state
+        .match_actors
+        .read()
+        .await
+        .actors
+        .get(&match_id)
+        .cloned();
+    let actor = if let Some(actor) = existing_actor {
+        Some(actor)
+    } else {
+        // Completed actors intentionally leave the registry. Resolve an exact
+        // retry from the prepared receipt query before invoking recovery; the
+        // latter owns several fenced terminal transactions and must not sit on
+        // the latency path of an already-durable receipt.
+        if let Some(receipt) = fetch_duplicate_command_receipt(
+            &state,
+            match_id,
+            &request.command_id,
+            &request.player_id,
+            &request_hash,
+        )
+        .await?
+        {
+            return Ok(Json(receipt));
+        }
+        ensure_match_actor(&state, match_id)
+            .await
+            .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error, true))?
+    };
+    let actor_lookup_ms =
+        u64::try_from(actor_lookup_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let Some(actor) = actor else {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "match is not running",
+            false,
+        ));
+    };
+    // Running-match membership, account binding, role and unit controls are
+    // immutable. The actor loaded them under the same fenced transaction as
+    // its simulation and cursors, so the hot command path does not spend a
+    // separate database RTT rediscovering immutable authority.
+    let member = actor.members.get(&request.player_id).ok_or_else(|| {
+        api_error(
+            StatusCode::FORBIDDEN,
+            "identity is not a match member",
+            false,
+        )
+    })?;
+    if member.account_id != account_id {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "identity is not bound to this match account",
+            false,
+        ));
+    }
+    let published_cursor = actor.publication_acked.borrow().clone();
+    let duplicate_lookup_needed = if request.protocol_version == ONLINE_AUTHORITY_PROTOCOL {
+        request.input_sequence.is_some_and(|input_sequence| {
+            published_cursor
+                .next_input_sequences
+                .get(&request.player_id)
+                .is_some_and(|current| input_sequence < *current)
+        })
+    } else {
+        request.sequence < published_cursor.next_sequence
+    };
+    if duplicate_lookup_needed {
+        if let Some(receipt) = fetch_duplicate_command_receipt(
+            &state,
+            match_id,
+            &request.command_id,
+            &request.player_id,
+            &request_hash,
+        )
+        .await?
+        {
+            return Ok(Json(receipt));
+        }
+    }
+    let requested_subjects = request
+        .order
+        .subject_actor_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if requested_subjects.is_empty() || !requested_subjects.is_subset(&member.controlled_unit_ids) {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "command subjects are outside this member's authoritative control set",
+            false,
+        ));
+    }
+    let controlled = member.controlled_unit_ids.clone();
+    let member_role = member.member_role.clone();
+    reject_command_during_drain(&state)?;
+    let (response_tx, response_rx) = oneshot::channel();
+    let actor_wait_started = Instant::now();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        actor.commands.send(ActorCommandEnvelope {
+            request,
+            request_hash,
+            admission,
+            controlled_unit_ids: controlled,
+            member_role,
+            response: response_tx,
+        }),
+    )
+    .await
+    .map_err(|_| {
+        api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "match actor command queue timed out",
+            true,
+        )
+    })?
+    .map_err(|_| {
+        api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "match actor stopped before accepting the command",
+            true,
+        )
+    })?;
+    let receipt = tokio::time::timeout(Duration::from_secs(5), response_rx)
+        .await
+        .map_err(|_| {
+            api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "match actor command persistence timed out",
+                true,
+            )
+        })?
+        .map_err(|_| {
+            api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "match actor stopped before command acknowledgement",
+                true,
+            )
+        })??;
+    let actor_wait_ms = u64::try_from(actor_wait_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let handler_ms = u64::try_from(handler_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    if handler_ms > 200 {
+        tracing::warn!(
+            %match_id,
+            handler_ms,
+            identity_ms,
+            actor_lookup_ms,
+            actor_wait_ms,
+            "slow online command handler"
+        );
+    }
+    Ok(Json(receipt))
+}
+
+async fn fetch_duplicate_command_receipt(
+    state: &AppState,
+    match_id: Uuid,
+    command_id: &str,
+    player_id: &str,
+    request_hash: &str,
+) -> Result<Option<OnlineCommandReceipt>, ApiError> {
+    let Some(row) = sqlx::query::query(DUPLICATE_COMMAND_RECEIPT_SQL)
+        .bind(match_id)
+        .bind(command_id)
+        .bind(state.physical_host_id.as_str())
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(internal_db)?
+    else {
+        return Ok(None);
+    };
+    if row
+        .try_get::<Option<String>, _>("assigned_physical_host_id")
+        .map_err(internal_db)?
+        .as_deref()
+        != Some(state.physical_host_id.as_str())
+    {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "duplicate command authority physical host is fenced",
+            true,
+        ));
+    }
+    let stored_player_id: String = row.try_get("player_id").map_err(internal_db)?;
+    let stored_request_hash: Option<String> = row.try_get("request_hash").map_err(internal_db)?;
+    if stored_player_id != player_id || stored_request_hash.as_deref() != Some(request_hash) {
+        return Err(conflict(
+            "command_id was already used with a different authenticated request",
+            row.try_get::<i64, _>("current_match_revision")
+                .map_err(internal_db)? as u64,
+        ));
+    }
+    let client_observed_tick = row
+        .try_get::<Option<i64>, _>("client_observed_tick")
+        .map_err(internal_db)?;
+    let sequence = row.try_get::<i64, _>("sequence").map_err(internal_db)? as u64;
+    let accepted_revision = row
+        .try_get::<i64, _>("accepted_match_revision")
+        .map_err(internal_db)? as u64;
+    let durable_next_sequence = row
+        .try_get::<i64, _>("current_next_sequence")
+        .map_err(internal_db)? as u64;
+    let checkpoint_sequence = row
+        .try_get::<i64, _>("checkpoint_sequence")
+        .map_err(internal_db)? as u64;
+    let phase: String = row.try_get("phase").map_err(internal_db)?;
+    let terminal_publication_acked: bool = row
+        .try_get("terminal_publication_acked")
+        .map_err(internal_db)?;
+    let input_sequence = row
+        .try_get::<i64, _>("input_sequence")
+        .map_err(internal_db)? as u64;
+    let durable_member_input_sequence = row
+        .try_get::<i64, _>("current_member_input_sequence")
+        .map_err(internal_db)? as u64;
+    let actor_cursor = state
+        .match_actors
+        .read()
+        .await
+        .actors
+        .get(&match_id)
+        .map(|actor| actor.publication_acked.borrow().clone());
+    if !command_receipt_publication_is_acked(CommandReceiptPublicationBarrier {
+        sequence,
+        accepted_revision,
+        durable_next_sequence,
+        checkpoint_sequence,
+        player_id: &stored_player_id,
+        input_sequence,
+        durable_member_input_sequence,
+        phase: &phase,
+        terminal_publication_acked,
+        actor_cursor: actor_cursor.as_ref(),
+    }) {
+        return Ok(None);
+    }
+    Ok(Some(OnlineCommandReceipt {
+        protocol_version: receipt_protocol_for_observed_tick(client_observed_tick).to_string(),
+        match_id: match_id.to_string(),
+        player_id: stored_player_id,
+        command_id: command_id.to_string(),
+        sequence,
+        input_sequence,
+        duplicate: true,
+        accepted_tick: row.try_get::<i64, _>("target_tick").map_err(internal_db)? as u64,
+        client_observed_tick: client_observed_tick.map(|value| value as u64),
+        match_revision: accepted_revision,
+        snapshot_hash: row.try_get("accepted_snapshot_hash").map_err(internal_db)?,
+    }))
+}
+
+fn command_receipt_publication_is_acked(barrier: CommandReceiptPublicationBarrier<'_>) -> bool {
+    let command_next_sequence = barrier.sequence.saturating_add(1);
+    let command_next_input_sequence = barrier.input_sequence.saturating_add(1);
+    if command_next_sequence > barrier.durable_next_sequence
+        || command_next_input_sequence > barrier.durable_member_input_sequence
+    {
+        return false;
+    }
+    if barrier.phase == "complete" {
+        return barrier.terminal_publication_acked
+            && barrier.checkpoint_sequence >= command_next_sequence
+            && barrier.checkpoint_sequence == barrier.durable_next_sequence;
+    }
+    if barrier.phase != "running" {
+        return false;
+    }
+    barrier.actor_cursor.is_some_and(|cursor| {
+        cursor.phase == OnlineMatchPhase::Running
+            && cursor.receipts_replayable
+            && cursor.next_sequence >= command_next_sequence
+            && cursor.next_sequence <= barrier.durable_next_sequence
+            && cursor.match_revision >= barrier.accepted_revision
+            && cursor
+                .next_input_sequences
+                .get(barrier.player_id)
+                .is_some_and(|cursor| *cursor >= command_next_input_sequence)
+    })
+}
+
+fn prepare_actor_command(
+    loaded: &LoadedMatchActor,
+    request: OnlineCommandSubmitRequest,
+    request_hash: String,
+    admission: ActorCommandAdmission,
+    controlled_unit_ids: &BTreeSet<String>,
+    member_role: &str,
+) -> Result<PreparedActorCommand, ApiError> {
+    let realtime_v3 = request.protocol_version == ONLINE_AUTHORITY_PROTOCOL;
+    if (!realtime_v3 && request.expected_match_revision != loaded.match_revision)
+        || (realtime_v3 && request.expected_match_revision > loaded.match_revision)
+    {
+        return Err(conflict("match revision changed", loaded.match_revision));
+    }
+    if !realtime_v3 && request.sequence != loaded.next_sequence {
+        return Err(conflict(
+            format!("expected command sequence {}", loaded.next_sequence),
+            loaded.match_revision,
+        ));
+    }
+    let member_input_sequence = loaded
+        .next_input_sequences
+        .get(&request.player_id)
+        .copied()
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "match actor member input cursor is unavailable",
+                true,
+            )
+        })?;
+    let input_sequence = if realtime_v3 {
+        request.input_sequence.ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "Authority v3 requires input_sequence",
+                false,
+            )
+        })?
+    } else {
+        member_input_sequence
+    };
+    if input_sequence != member_input_sequence {
+        return Err(conflict(
+            format!("expected player input sequence {member_input_sequence}"),
+            loaded.match_revision,
+        ));
+    }
+    let client_observed_tick = if realtime_v3 {
+        let observed = request.client_observed_tick.ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "Authority v3 requires client_observed_tick",
+                false,
+            )
+        })?;
+        if observed > loaded.simulation.tick {
+            return Err(conflict(
+                "client observed a tick beyond server authority",
+                loaded.match_revision,
+            ));
+        }
+        Some(observed)
+    } else {
+        if request.target_tick < loaded.simulation.tick
+            || request.target_tick > loaded.simulation.tick.saturating_add(200)
+        {
+            return Err(conflict(
+                "target_tick is outside the authoritative window",
+                loaded.match_revision,
+            ));
+        }
+        None
+    };
+    let requested_subjects = request
+        .order
+        .subject_actor_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if requested_subjects.is_empty() || !requested_subjects.is_subset(controlled_unit_ids) {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "command subjects are outside this member's authoritative control set",
+            false,
+        ));
+    }
+    let mut candidate = loaded.simulation.clone();
+    let effective_tick = if realtime_v3 {
+        candidate.tick
+    } else {
+        request.target_tick
+    };
+    let order_frame = if realtime_v3 {
+        let last_member_order_frame =
+            if loaded.match_mode == "ranked_pvp" && member_role == "coop_guest" {
+                candidate.enemy_last_order_frame
+            } else {
+                candidate.last_order_frame
+            };
+        effective_tick.max(u64::from(last_member_order_frame.unwrap_or_default()))
+    } else {
+        effective_tick
+    };
+    let order = prepare_and_apply_actor_order(
+        &mut candidate,
+        &loaded.match_mode,
+        member_role,
+        order_frame,
+        request.order.clone(),
+    )?;
+    let snapshot_hash = candidate
+        .snapshot_hash()
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), false))?;
+    let accepted_revision = loaded.match_revision.saturating_add(1);
+    let post_simulation = serde_json::to_value(&candidate).map_err(internal_serialization)?;
+    Ok(PreparedActorCommand {
+        candidate_simulation: candidate,
+        persistence: ActorCommandPersistence {
+            request,
+            request_hash,
+            admission,
+            order,
+            post_simulation,
+            snapshot_hash,
+            input_sequence,
+            client_observed_tick,
+            effective_tick,
+            base_next_sequence: loaded.next_sequence,
+            base_match_revision: loaded.match_revision,
+            accepted_revision,
+        },
+    })
+}
+
+async fn persist_actor_command(
+    state: &AppState,
+    match_id: Uuid,
+    job: ActorCommandPersistence,
+) -> Result<OnlineCommandReceipt, ApiError> {
+    if !state.database_host_authority.is_healthy() {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "PostgreSQL host authority is fail-closed",
+            true,
+        ));
+    }
+    let identity = &state.database_host_authority.identity;
+    let order_json = serde_json::to_value(&job.order).map_err(internal_serialization)?;
+    // This is intentionally one PostgreSQL statement. The migration function
+    // revalidates the exact K1 leader, holds the pool session's lifetime K2
+    // barrier, locks fleet -> match -> member, and either advances the command
+    // event plus both cursors atomically or changes nothing.
+    let database_started = Instant::now();
+    let row = sqlx::query::query(ONLINE_COMMAND_COMMIT_V2_SQL)
+        .bind(match_id)
+        .bind(&job.request.command_id)
+        .bind(&job.request.player_id)
+        .bind(job.input_sequence as i64)
+        .bind(&job.request_hash)
+        .bind(job.effective_tick as i64)
+        .bind(job.client_observed_tick.map(|value| value as i64))
+        .bind(order_json)
+        .bind(&job.snapshot_hash)
+        .bind(job.accepted_revision as i64)
+        .bind(&job.post_simulation)
+        .bind(job.base_next_sequence as i64)
+        .bind(job.base_match_revision as i64)
+        .bind(state.instance_id.as_str())
+        .bind(state.instance_epoch)
+        .bind(state.physical_host_id.as_str())
+        .bind(identity.owner_nonce)
+        .bind(&identity.application_name)
+        .bind(identity.backend_pid)
+        .bind(identity.backend_started_at)
+        .bind(&identity.database_system_identifier)
+        .bind(identity.database_timeline_id)
+        .bind(identity.database_postmaster_started_at)
+        .bind(identity.leader_lock_key)
+        .bind(identity.barrier_lock_key)
+        .bind(&job.admission.bucket_key)
+        .bind(job.admission.limit)
+        .fetch_one(&state.pool)
+        .await;
+    let database_ms = u64::try_from(database_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    if database_ms > 150 {
+        tracing::warn!(%match_id, database_ms, "slow atomic command database commit");
+    }
+    let row = row.map_err(internal_db)?;
+
+    let outcome: String = row.try_get("result_outcome").map_err(internal_db)?;
+    let durable_revision = row
+        .try_get::<Option<i64>, _>("result_durable_match_revision")
+        .map_err(internal_db)?
+        .unwrap_or(job.base_match_revision as i64)
+        .max(0) as u64;
+    if outcome == "match_not_found" {
+        return Err(api_error(StatusCode::NOT_FOUND, "match not found", false));
+    }
+    if outcome == "command_conflict" {
+        return Err(conflict(
+            "command_id was already used with a different authenticated request",
+            durable_revision,
+        ));
+    }
+    if outcome == "match_not_running" {
+        return Err(conflict("match is not running", durable_revision));
+    }
+    if outcome == "rate_limited" {
+        return Err(api_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "production request rate limit exceeded",
+            true,
+        ));
+    }
+    if outcome == "duplicate_publication_pending" {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "duplicate command is awaiting its durable publication barrier",
+            true,
+        ));
+    }
+    if outcome != "inserted" && outcome != "duplicate" {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("atomic command commit failed closed: {outcome}"),
+            true,
+        ));
+    }
+
+    let stored_player_id: String = row.try_get("result_player_id").map_err(internal_db)?;
+    let stored_request_hash: String = row.try_get("result_request_hash").map_err(internal_db)?;
+    if stored_player_id != job.request.player_id || stored_request_hash != job.request_hash {
+        return Err(conflict(
+            "atomic command result did not bind the authenticated request",
+            durable_revision,
+        ));
+    }
+    let sequence = row
+        .try_get::<i64, _>("result_sequence")
+        .map_err(internal_db)? as u64;
+    let input_sequence = row
+        .try_get::<i64, _>("result_input_sequence")
+        .map_err(internal_db)? as u64;
+    let accepted_revision = row
+        .try_get::<i64, _>("result_accepted_match_revision")
+        .map_err(internal_db)? as u64;
+    let accepted_snapshot_hash: String = row
+        .try_get("result_accepted_snapshot_hash")
+        .map_err(internal_db)?;
+    let accepted_tick = row
+        .try_get::<i64, _>("result_target_tick")
+        .map_err(internal_db)? as u64;
+    let stored_client_observed_tick = row
+        .try_get::<Option<i64>, _>("result_client_observed_tick")
+        .map_err(internal_db)?;
+    let duplicate = outcome == "duplicate";
+    if duplicate {
+        let durable_next_sequence = row
+            .try_get::<i64, _>("result_durable_next_sequence")
+            .map_err(internal_db)? as u64;
+        let checkpoint_sequence = row
+            .try_get::<i64, _>("result_checkpoint_sequence")
+            .map_err(internal_db)? as u64;
+        let durable_member_input_sequence = row
+            .try_get::<i64, _>("result_durable_member_input_sequence")
+            .map_err(internal_db)? as u64;
+        let phase: String = row.try_get("result_phase").map_err(internal_db)?;
+        let actor_cursor = state
+            .match_actors
+            .read()
+            .await
+            .actors
+            .get(&match_id)
+            .map(|actor| actor.publication_acked.borrow().clone());
+        if !command_receipt_publication_is_acked(CommandReceiptPublicationBarrier {
+            sequence,
+            accepted_revision,
+            durable_next_sequence,
+            checkpoint_sequence,
+            player_id: &stored_player_id,
+            input_sequence,
+            durable_member_input_sequence,
+            phase: &phase,
+            terminal_publication_acked: false,
+            actor_cursor: actor_cursor.as_ref(),
+        }) {
+            return Err(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "duplicate command is awaiting its durable publication barrier",
+                true,
+            ));
+        }
+    }
+    Ok(OnlineCommandReceipt {
+        protocol_version: receipt_protocol_for_observed_tick(stored_client_observed_tick)
+            .to_string(),
+        match_id: match_id.to_string(),
+        player_id: stored_player_id,
+        command_id: job.request.command_id,
+        sequence,
+        input_sequence,
+        duplicate,
+        accepted_tick,
+        client_observed_tick: stored_client_observed_tick.map(|value| value as u64),
+        match_revision: accepted_revision,
+        snapshot_hash: accepted_snapshot_hash,
+    })
+}
+
+async fn run_actor_command_persistence_worker(
+    state: AppState,
+    match_id: Uuid,
+    mut jobs: mpsc::Receiver<ActorCommandPersistence>,
+    completions: mpsc::Sender<ActorPersistenceCompletion>,
+) {
+    while let Some(job) = jobs.recv().await {
+        let command_id = job.request.command_id.clone();
+        let result = tokio::time::timeout(
+            MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+            persist_actor_command(&state, match_id, job),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "command persistence exceeded its hard timeout",
+                true,
+            ))
+        })
+        .map_err(|error| {
+            if error.status == StatusCode::INTERNAL_SERVER_ERROR {
+                api_error(StatusCode::SERVICE_UNAVAILABLE, error.body.error, true)
+            } else {
+                error
+            }
+        });
+        if !matches!(
+            tokio::time::timeout(
+                MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+                completions.send(ActorPersistenceCompletion { command_id, result }),
+            )
+            .await,
+            Ok(Ok(()))
+        ) {
+            break;
+        }
+    }
+}
+
+fn cached_actor_command_result(
+    cache: &BTreeMap<String, ActorReceiptCacheEntry>,
+    command_id: &str,
+    player_id: &str,
+    request_hash: &str,
+    authoritative_revision: u64,
+) -> Option<Result<OnlineCommandReceipt, ApiError>> {
+    cache.get(command_id).map(|entry| {
+        if entry.player_id != player_id || entry.request_hash != request_hash {
+            Err(conflict(
+                "command_id was already used with a different authenticated request",
+                authoritative_revision,
+            ))
+        } else {
+            let mut receipt = entry.receipt.clone();
+            receipt.duplicate = true;
+            Ok(receipt)
+        }
+    })
+}
+
+fn cache_actor_receipt(
+    cache: &mut BTreeMap<String, ActorReceiptCacheEntry>,
+    cache_order: &mut VecDeque<String>,
+    request_hash: String,
+    receipt: &OnlineCommandReceipt,
+) {
+    let command_id = receipt.command_id.clone();
+    if !cache.contains_key(&command_id) {
+        cache_order.push_back(command_id.clone());
+    }
+    cache.insert(
+        command_id,
+        ActorReceiptCacheEntry {
+            player_id: receipt.player_id.clone(),
+            request_hash,
+            receipt: receipt.clone(),
+        },
+    );
+    while cache_order.len() > MATCH_ACTOR_RECEIPT_CACHE {
+        if let Some(expired) = cache_order.pop_front() {
+            cache.remove(&expired);
+        }
+    }
+}
+
+fn committed_receipt_matches_pending(
+    receipt: &OnlineCommandReceipt,
+    command_id: &str,
+    player_id: &str,
+    sequence: u64,
+    input_sequence: u64,
+    accepted_revision: u64,
+    accepted_snapshot_hash: &str,
+) -> bool {
+    !receipt.duplicate
+        && receipt.command_id == command_id
+        && receipt.player_id == player_id
+        && receipt.sequence == sequence
+        && receipt.input_sequence == input_sequence
+        && receipt.match_revision == accepted_revision
+        && receipt.snapshot_hash == accepted_snapshot_hash
+}
+
+fn prepare_and_apply_actor_order(
+    simulation: &mut MissionSimV1,
+    match_mode: &str,
+    member_role: &str,
+    target_tick: u64,
+    mut order: trnm_rts_protocol::RtsFrameOrder,
+) -> Result<trnm_rts_protocol::RtsFrameOrder, ApiError> {
+    order.player_id = if match_mode == "ranked_pvp" && member_role == "coop_guest" {
+        "enemy-player".to_string()
+    } else {
+        "player".to_string()
+    };
+    order.frame = u32::try_from(target_tick).map_err(|_| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "target_tick exceeds frame range",
+            false,
+        )
+    })?;
+    order.source = RtsOrderSource::LocalInput;
+    if match_mode == "ranked_pvp" && order.kind == trnm_rts_protocol::RtsOrderKind::Extract {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "ranked PvP does not allow withdrawal",
+            false,
+        ));
+    }
+    let merged_with_active_coop_order = match_mode == "coop_vs_ai"
+        && order.queued
+        && simulation.active_order.as_ref().is_some_and(|active| {
+            active.kind == order.kind
+                && active.target_tile == order.target_tile
+                && active.target_actor_id == order.target_actor_id
+                && active.target_rule_id == order.target_rule_id
+        });
+    if merged_with_active_coop_order {
+        let active = simulation
+            .active_order
+            .as_mut()
+            .expect("compatible active order was checked above");
+        active
+            .subject_actor_ids
+            .extend(order.subject_actor_ids.clone());
+        active.subject_actor_ids.sort();
+        active.subject_actor_ids.dedup();
+    } else if match_mode == "ranked_pvp" && member_role == "coop_guest" {
+        simulation
+            .issue_human_enemy_order(order.clone())
+            .map_err(|error| {
+                api_error(StatusCode::UNPROCESSABLE_ENTITY, error.to_string(), false)
+            })?;
+    } else {
+        simulation.issue_order(order.clone()).map_err(|error| {
+            api_error(StatusCode::UNPROCESSABLE_ENTITY, error.to_string(), false)
+        })?;
+    }
+    Ok(order)
+}
+
+async fn published_actor_state(
+    state: &AppState,
+    match_id: Uuid,
+) -> Result<Option<PublishedMatchState>, ApiError> {
+    let handle = ensure_match_actor(state, match_id)
+        .await
+        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error, true))?;
+    let Some(actor) = handle else {
+        return Ok(None);
+    };
+    let published = actor.published.borrow().clone();
+    let acknowledged = actor.publication_acked.borrow().clone();
+    if !publication_tuple_matches(&published, &acknowledged) {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "match authority is crossing its durable publication barrier",
+            true,
+        ));
+    }
+    Ok(Some(published))
+}
+
+fn publication_tuple_matches(
+    published: &PublishedMatchState,
+    acknowledged: &ActorPublicationCursor,
+) -> bool {
+    acknowledged.tick == published.simulation.tick
+        && acknowledged.next_sequence == published.next_sequence
+        && acknowledged.match_revision == published.match_revision
+        && acknowledged.next_input_sequences == *published.next_input_sequences
+        && acknowledged.phase == published.phase
+        && acknowledged.receipts_replayable
+        && acknowledged.snapshot_hash == *published.snapshot_hash
+}
+
+fn apply_published_actor_view(view: &mut OnlineMatchView, published: &PublishedMatchState) {
+    view.authoritative_tick = published.simulation.tick;
+    view.next_sequence = published.next_sequence;
+    view.match_revision = published.match_revision;
+    view.snapshot_hash = published.snapshot_hash.as_ref().clone();
+    for member in &mut view.members {
+        if let Some(cursor) = published.next_input_sequences.get(&member.player_id) {
+            member.next_input_sequence = *cursor;
+        }
+    }
+    apply_published_authority_view(
+        view,
+        published.phase,
+        published.result_hash.clone(),
+        published.settlement_state.clone(),
+    );
+}
+
+fn apply_published_authority_view(
+    view: &mut OnlineMatchView,
+    phase: OnlineMatchPhase,
+    result_hash: Option<String>,
+    settlement_state: String,
+) {
+    let effective_settlement_state =
+        effective_published_settlement_state(&settlement_state, &view.settlement_state);
+    view.phase = phase;
+    view.result_hash = result_hash;
+    view.settlement_state = effective_settlement_state;
+}
+
+fn effective_published_settlement_state(
+    published_settlement_state: &str,
+    durable_settlement_state: &str,
+) -> String {
+    if published_settlement_state == "pending" && durable_settlement_state == "settled" {
+        durable_settlement_state.to_string()
+    } else {
+        published_settlement_state.to_string()
+    }
+}
+
+fn published_authority_matches_view(
+    published: &PublishedMatchState,
+    view: &OnlineMatchView,
+) -> bool {
+    authority_metadata_matches(
+        published.phase,
+        published.result_hash.as_deref(),
+        &published.settlement_state,
+        view.phase,
+        view.result_hash.as_deref(),
+        &view.settlement_state,
+    )
+}
+
+fn published_cursor_is_within_durable_view(
+    published: &PublishedMatchState,
+    view: &OnlineMatchView,
+) -> bool {
+    published.next_sequence <= view.next_sequence
+        && published.match_revision <= view.match_revision
+        && published.next_input_sequences.len() == view.members.len()
+        && published
+            .next_input_sequences
+            .iter()
+            .all(|(player_id, cursor)| {
+                view.members
+                    .iter()
+                    .find(|member| member.player_id == *player_id)
+                    .is_some_and(|member| *cursor <= member.next_input_sequence)
+            })
+}
+
+fn published_authority_matches_durable(
+    published: &PublishedMatchState,
+    phase: OnlineMatchPhase,
+    result_hash: Option<&str>,
+    settlement_state: &str,
+) -> bool {
+    authority_metadata_matches(
+        published.phase,
+        published.result_hash.as_deref(),
+        &published.settlement_state,
+        phase,
+        result_hash,
+        settlement_state,
+    )
+}
+
+fn authority_metadata_matches(
+    published_phase: OnlineMatchPhase,
+    published_result_hash: Option<&str>,
+    published_settlement_state: &str,
+    durable_phase: OnlineMatchPhase,
+    durable_result_hash: Option<&str>,
+    durable_settlement_state: &str,
+) -> bool {
+    published_phase == durable_phase
+        && published_result_hash == durable_result_hash
+        && (published_settlement_state == durable_settlement_state
+            || (published_settlement_state == "pending" && durable_settlement_state == "settled"))
+}
+
+async fn get_snapshot(
+    State(state): State<AppState>,
+    Path(match_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<OnlineMatchAccessRequest>,
+) -> Result<Json<OnlineSnapshotResponse>, ApiError> {
+    validate_client_contract(&request.protocol_version, &request.build_id)
+        .map_err(|error| api_error(StatusCode::UPGRADE_REQUIRED, error, false))?;
+    verify_identity(&state, &headers, &request.player_id, &request.account_id).await?;
+    let account_id = Uuid::parse_str(&request.account_id)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "account_id must be a UUID", false))?;
+    let member: i64 = sqlx::query_scalar::query_scalar(
+        "select count(*) from trnm_online_match_members
+         where match_id = $1 and player_id = $2 and account_id = $3",
+    )
+    .bind(match_id)
+    .bind(&request.player_id)
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(internal_db)?;
+    if member != 1 {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "identity is not a match member",
+            false,
+        ));
+    }
+    let mut view = fetch_match_view(&state.pool, match_id).await?;
+    let snapshot = if let Some(published) = published_actor_state(&state, match_id).await? {
+        if !published_authority_matches_view(&published, &view) {
+            view = fetch_match_view(&state.pool, match_id).await?;
+        }
+        if !published_authority_matches_view(&published, &view) {
+            return Err(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "match phase is crossing its durable terminal publication barrier",
+                true,
+            ));
+        }
+        if !published_cursor_is_within_durable_view(&published, &view) {
+            return Err(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "snapshot crossed a durable database cursor rollback",
+                true,
+            ));
+        }
+        apply_published_actor_view(&mut view, &published);
+        serde_json::to_value(published.simulation.as_ref()).map_err(internal_serialization)?
+    } else {
+        let snapshot = load_durable_nonrunning_snapshot(&state.pool, match_id).await?;
+        view = fetch_match_view(&state.pool, match_id).await?;
+        snapshot
+    };
+    Ok(Json(OnlineSnapshotResponse { view, snapshot }))
+}
+
+async fn load_durable_nonrunning_snapshot(
+    pool: &PgPool,
+    match_id: Uuid,
+) -> Result<Value, ApiError> {
+    let row = sqlx::query::query(
+        "select phase, simulation_json, snapshot_hash, authoritative_tick,
+                next_sequence, checkpoint_sequence
+         from trnm_online_matches where match_id = $1",
+    )
+    .bind(match_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal_db)?
+    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "match not found", false))?;
+    let phase: String = row.try_get("phase").map_err(internal_db)?;
+    if phase == "running" {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "running match has no acknowledged publication owner",
+            true,
+        ));
+    }
+    let simulation_json = row
+        .try_get::<Option<Value>, _>("simulation_json")
+        .map_err(internal_db)?
+        .unwrap_or(Value::Null);
+    if phase != "complete" {
+        return Ok(simulation_json);
+    }
+    let exact_marker_exists = exact_terminal_publication_marker_exists(pool, match_id)
+        .await
+        .map_err(|error| {
+            api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("terminal publication marker lookup failed: {error}"),
+                true,
+            )
+        })?;
+    if !terminal_read_surface_is_releasable(OnlineMatchPhase::Complete, exact_marker_exists) {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "terminal snapshot is waiting for its exact publication marker",
+            true,
+        ));
+    }
+    let next_sequence = row
+        .try_get::<i64, _>("next_sequence")
+        .map_err(internal_db)? as u64;
+    let checkpoint_sequence = row
+        .try_get::<i64, _>("checkpoint_sequence")
+        .map_err(internal_db)? as u64;
+    if checkpoint_sequence != next_sequence || simulation_json.is_null() {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "terminal match is missing its exact durable checkpoint",
+            true,
+        ));
+    }
+    let simulation = serde_json::from_value::<MissionSimV1>(simulation_json.clone())
+        .map_err(internal_serialization)?;
+    let expected_tick = row
+        .try_get::<i64, _>("authoritative_tick")
+        .map_err(internal_db)? as u64;
+    let expected_hash: String = row.try_get("snapshot_hash").map_err(internal_db)?;
+    let computed_hash = simulation
+        .snapshot_hash()
+        .map_err(|error| api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), false))?;
+    if !simulation.terminal() || simulation.tick != expected_tick || computed_hash != expected_hash
+    {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "terminal durable checkpoint failed tick/hash validation",
+            true,
+        ));
+    }
+    Ok(simulation_json)
+}
+
+async fn reconnect_match(
+    State(state): State<AppState>,
+    Path(match_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<OnlineReconnectRequest>,
+) -> Result<Json<OnlineReconnectResponse>, ApiError> {
+    validate_client_contract(&request.protocol_version, &request.build_id)
+        .map_err(|error| api_error(StatusCode::UPGRADE_REQUIRED, error, false))?;
+    verify_identity(&state, &headers, &request.player_id, &request.account_id).await?;
+    let account_id = Uuid::parse_str(&request.account_id)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "account_id must be a UUID", false))?;
+    let actor = ensure_match_actor(&state, match_id)
+        .await
+        .map_err(|error| api_error(StatusCode::SERVICE_UNAVAILABLE, error, true))?;
+    let mut transaction = state.pool.begin().await.map_err(internal_db)?;
+    let match_row = sqlx::query::query(
+        "select match_id, join_code, phase, build_id, map_id, match_mode, rules_version,
+                seed_hash, snapshot_hash, authoritative_tick, next_sequence, match_revision,
+                result_hash, settlement_state, simulation_json, checkpoint_sequence
+         from trnm_online_matches where match_id = $1 for share",
+    )
+    .bind(match_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(internal_db)?
+    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "match not found", false))?;
+    let durable_next_sequence = match_row
+        .try_get::<i64, _>("next_sequence")
+        .map_err(internal_db)? as u64;
+    let durable_match_revision = match_row
+        .try_get::<i64, _>("match_revision")
+        .map_err(internal_db)? as u64;
+    let durable_phase = match match_row
+        .try_get::<String, _>("phase")
+        .map_err(internal_db)?
+        .as_str()
+    {
+        "waiting" => OnlineMatchPhase::Waiting,
+        "running" => OnlineMatchPhase::Running,
+        "complete" => OnlineMatchPhase::Complete,
+        _ => OnlineMatchPhase::FailedClosed,
+    };
+    let durable_result_hash: Option<String> =
+        match_row.try_get("result_hash").map_err(internal_db)?;
+    let durable_settlement_state: String =
+        match_row.try_get("settlement_state").map_err(internal_db)?;
+    let durable_member_rows = sqlx::query::query(
+        "select m.player_id, m.account_id, m.campaign_id, m.member_role,
+                m.controlled_unit_ids, m.next_input_sequence,
+                c.campaign_revision, c.campaign_json
+         from trnm_online_match_members m
+         join trnm_online_campaigns c on c.campaign_id = m.campaign_id
+         where m.match_id = $1 order by m.member_role desc",
+    )
+    .bind(match_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    let mut identity_is_member = false;
+    for row in &durable_member_rows {
+        let member_player_id = row.try_get::<String, _>("player_id").map_err(internal_db)?;
+        let member_account_id = row.try_get::<Uuid, _>("account_id").map_err(internal_db)?;
+        identity_is_member |=
+            member_player_id == request.player_id && member_account_id == account_id;
+    }
+    if !identity_is_member {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "identity is not a match member",
+            false,
+        ));
+    }
+    let mut durable_next_input_sequences = BTreeMap::new();
+    for row in &durable_member_rows {
+        durable_next_input_sequences.insert(
+            row.try_get::<String, _>("player_id").map_err(internal_db)?,
+            row.try_get::<i64, _>("next_input_sequence")
+                .map_err(internal_db)? as u64,
+        );
+    }
+    let exact_terminal_marker = if durable_phase == OnlineMatchPhase::Complete {
+        exact_terminal_publication_marker_exists(&mut *transaction, match_id)
+            .await
+            .map_err(|error| {
+                api_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("terminal reconnect marker lookup failed: {error}"),
+                    true,
+                )
+            })?
+    } else {
+        false
+    };
+    if !terminal_read_surface_is_releasable(durable_phase, exact_terminal_marker) {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "terminal reconnect is waiting for its exact publication marker",
+            true,
+        ));
+    }
+
+    let (published, next_sequence, match_revision, next_input_sequences, snapshot_hash, snapshot) =
+        if let Some(actor) = actor {
+            let published = actor.published.borrow().clone();
+            let acknowledged = actor.publication_acked.borrow().clone();
+            if !publication_tuple_matches(&published, &acknowledged)
+                || !published_authority_matches_durable(
+                    &published,
+                    durable_phase,
+                    durable_result_hash.as_deref(),
+                    &durable_settlement_state,
+                )
+                || acknowledged.next_sequence > durable_next_sequence
+                || acknowledged.match_revision > durable_match_revision
+                || acknowledged.next_input_sequences.len() != durable_next_input_sequences.len()
+                || acknowledged
+                    .next_input_sequences
+                    .iter()
+                    .any(|(player_id, cursor)| {
+                        durable_next_input_sequences
+                            .get(player_id)
+                            .is_none_or(|durable| cursor > durable)
+                    })
+            {
+                return Err(api_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "reconnect crossed an unacknowledged publication transition",
+                    true,
+                ));
+            }
+            let snapshot = serde_json::to_value(published.simulation.as_ref())
+                .map_err(internal_serialization)?;
+            (
+                Some(published.clone()),
+                acknowledged.next_sequence,
+                acknowledged.match_revision,
+                acknowledged.next_input_sequences,
+                acknowledged.snapshot_hash,
+                snapshot,
+            )
+        } else {
+            if durable_phase == OnlineMatchPhase::Running {
+                return Err(api_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "running match has no acknowledged publication owner",
+                    true,
+                ));
+            }
+            let snapshot = match_row
+                .try_get::<Option<Value>, _>("simulation_json")
+                .map_err(internal_db)?
+                .unwrap_or(Value::Null);
+            let snapshot_hash: String = match_row.try_get("snapshot_hash").map_err(internal_db)?;
+            if durable_phase == OnlineMatchPhase::Complete {
+                let checkpoint_sequence = match_row
+                    .try_get::<i64, _>("checkpoint_sequence")
+                    .map_err(internal_db)? as u64;
+                if checkpoint_sequence != durable_next_sequence || snapshot.is_null() {
+                    return Err(api_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "terminal reconnect is missing its exact durable checkpoint",
+                        true,
+                    ));
+                }
+                let simulation = serde_json::from_value::<MissionSimV1>(snapshot.clone())
+                    .map_err(internal_serialization)?;
+                let computed_hash = simulation.snapshot_hash().map_err(|error| {
+                    api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), false)
+                })?;
+                let authoritative_tick = match_row
+                    .try_get::<i64, _>("authoritative_tick")
+                    .map_err(internal_db)? as u64;
+                if !simulation.terminal()
+                    || simulation.tick != authoritative_tick
+                    || computed_hash != snapshot_hash
+                {
+                    return Err(api_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "terminal reconnect checkpoint failed hash validation",
+                        true,
+                    ));
+                }
+            }
+            (
+                None,
+                durable_next_sequence,
+                durable_match_revision,
+                durable_next_input_sequences.clone(),
+                snapshot_hash,
+                snapshot,
+            )
+        };
+    let replay_from_sequence = if request.protocol_version == ONLINE_AUTHORITY_PROTOCOL {
+        request.next_receipt_sequence.ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "Authority v3 reconnect requires next_receipt_sequence",
+                false,
+            )
+        })?
+    } else {
+        request
+            .next_receipt_sequence
+            .unwrap_or(request.last_acknowledged_sequence)
+    };
+    if replay_from_sequence > next_sequence {
+        return Err(conflict(
+            "client acknowledged a command sequence beyond server authority",
+            match_revision,
+        ));
+    }
+    let command_rows = sqlx::query::query(
+        "select sequence, input_sequence, command_id, player_id, target_tick,
+                client_observed_tick,
+                accepted_match_revision, accepted_snapshot_hash
+         from trnm_online_commands
+         where match_id = $1 and sequence >= $2 and sequence < $3
+         order by sequence asc limit 257",
+    )
+    .bind(match_id)
+    .bind(replay_from_sequence as i64)
+    .bind(next_sequence as i64)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(internal_db)?;
+    let replay_truncated = command_rows.len() > 256;
+    let replayed_commands = command_rows
+        .into_iter()
+        .take(256)
+        .map(|row| {
+            let client_observed_tick = row
+                .try_get::<Option<i64>, _>("client_observed_tick")
+                .map_err(internal_db)?;
+            Ok(OnlineCommandReceipt {
+                protocol_version: receipt_protocol_for_observed_tick(client_observed_tick)
+                    .to_string(),
+                match_id: match_id.to_string(),
+                player_id: row.try_get("player_id").map_err(internal_db)?,
+                command_id: row.try_get("command_id").map_err(internal_db)?,
+                sequence: row.try_get::<i64, _>("sequence").map_err(internal_db)? as u64,
+                input_sequence: row
+                    .try_get::<i64, _>("input_sequence")
+                    .map_err(internal_db)? as u64,
+                duplicate: true,
+                accepted_tick: row.try_get::<i64, _>("target_tick").map_err(internal_db)? as u64,
+                client_observed_tick: client_observed_tick.map(|value| value as u64),
+                match_revision: row
+                    .try_get::<i64, _>("accepted_match_revision")
+                    .map_err(internal_db)? as u64,
+                snapshot_hash: row.try_get("accepted_snapshot_hash").map_err(internal_db)?,
+            })
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    let mut expected_replay_sequence = replay_from_sequence;
+    for receipt in &replayed_commands {
+        if receipt.sequence != expected_replay_sequence {
+            return Err(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "authoritative command replay contains a sequence gap",
+                true,
+            ));
+        }
+        expected_replay_sequence = expected_replay_sequence.saturating_add(1);
+    }
+    let next_receipt_sequence = replayed_commands
+        .last()
+        .map(|receipt| receipt.sequence.saturating_add(1))
+        .unwrap_or(replay_from_sequence);
+    if !replay_truncated && next_receipt_sequence != next_sequence {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "authoritative command replay does not reach the locked authority cursor",
+            true,
+        ));
+    }
+    // Release the match authority snapshot before updating reconnect telemetry.
+    // Keeping the member row lock inside this transaction lets concurrent
+    // reconnects queue while all of them still hold a match FOR SHARE lock,
+    // which blocks the actor's canonical match FOR UPDATE command commit.
+    transaction.commit().await.map_err(internal_db)?;
+    let reconnect_count: i64 = sqlx::query_scalar::query_scalar(
+        "update trnm_online_match_members set reconnect_count = reconnect_count + 1,
+            last_acknowledged_sequence = greatest(last_acknowledged_sequence, $4),
+            last_snapshot_hash = $5, last_seen_at = now()
+         where match_id = $1 and player_id = $2 and account_id = $3
+         returning reconnect_count",
+    )
+    .bind(match_id)
+    .bind(&request.player_id)
+    .bind(account_id)
+    .bind(next_receipt_sequence as i64)
+    .bind(&snapshot_hash)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal_db)?
+    .ok_or_else(|| {
+        api_error(
+            StatusCode::FORBIDDEN,
+            "identity is not a match member",
+            false,
+        )
+    })?;
+    let reconnect_count = reconnect_count as u64;
+    let mut view = match_view_from_rows(&match_row, &durable_member_rows)?;
+    if !snapshot.is_null() {
+        let simulation = serde_json::from_value::<MissionSimV1>(snapshot.clone())
+            .map_err(internal_serialization)?;
+        let computed_hash = simulation.snapshot_hash().map_err(|error| {
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), false)
+        })?;
+        if computed_hash != snapshot_hash {
+            return Err(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "reconnect snapshot hash does not match the locked authority state",
+                true,
+            ));
+        }
+        view.authoritative_tick = simulation.tick;
+    }
+    view.next_sequence = next_sequence;
+    view.match_revision = match_revision;
+    view.snapshot_hash = snapshot_hash.clone();
+    for member in &mut view.members {
+        if let Some(cursor) = next_input_sequences.get(&member.player_id) {
+            member.next_input_sequence = *cursor;
+        }
+    }
+    apply_published_authority_view(
+        &mut view,
+        published
+            .as_ref()
+            .map_or(durable_phase, |state| state.phase),
+        published
+            .as_ref()
+            .map_or(durable_result_hash, |state| state.result_hash.clone()),
+        published
+            .as_ref()
+            .map_or(durable_settlement_state, |state| {
+                state.settlement_state.clone()
+            }),
+    );
+    Ok(Json(OnlineReconnectResponse {
+        view,
+        snapshot,
+        replayed_commands,
+        reconnect_count,
+        full_snapshot_required: request.last_snapshot_hash != snapshot_hash || replay_truncated,
+        replay_from_sequence,
+        next_receipt_sequence,
+        replay_truncated,
+    }))
+}
+
+async fn apply_member_progression(
+    transaction: &mut sqlx::transaction::Transaction<'_, sqlx_postgres::Postgres>,
+    match_id: Uuid,
+    combined_result: &BattleResultV1,
+    combined_result_hash: &str,
+) -> Result<bool, String> {
+    let match_mode: String = sqlx::query_scalar::query_scalar(
+        "select match_mode from trnm_online_matches where match_id = $1",
+    )
+    .bind(match_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let members = sqlx::query::query(
+        "select player_id, account_id, campaign_id, member_role,
+                settlement_seed_json, unit_id_map
+         from trnm_online_match_members where match_id = $1 order by member_role for update",
+    )
+    .bind(match_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    if members.len() != 2 {
+        return Err("terminal online match is missing one member campaign".to_string());
+    }
+    let mut participant_ids = members
+        .iter()
+        .map(|member| member.try_get::<String, _>("player_id"))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    participant_ids.sort();
+    let participants_hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&participant_ids).map_err(|error| error.to_string())?)
+    );
+    let mut any_pending = false;
+    for member in members {
+        let player_id: String = member
+            .try_get("player_id")
+            .map_err(|error| error.to_string())?;
+        let member_role: String = member
+            .try_get("member_role")
+            .map_err(|error| error.to_string())?;
+        let account_id: Uuid = member
+            .try_get("account_id")
+            .map_err(|error| error.to_string())?;
+        let campaign_id: Option<String> = member
+            .try_get("campaign_id")
+            .map_err(|error| error.to_string())?;
+        let campaign_id = campaign_id
+            .ok_or_else(|| "terminal online member has no cloud campaign".to_string())?;
+        let seed_value: Option<Value> = member
+            .try_get("settlement_seed_json")
+            .map_err(|error| error.to_string())?;
+        let settlement_seed: BattleSeedV1 = serde_json::from_value(
+            seed_value
+                .ok_or_else(|| "terminal online member has no settlement seed".to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let id_map_value: Value = member
+            .try_get("unit_id_map")
+            .map_err(|error| error.to_string())?;
+        let id_map: BTreeMap<String, String> =
+            serde_json::from_value(id_map_value).map_err(|error| error.to_string())?;
+        let campaign_value: Value = sqlx::query_scalar::query_scalar(
+            "select campaign_json from trnm_online_campaigns where campaign_id = $1 for update",
+        )
+        .bind(&campaign_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|error| error.to_string())?;
+        let mut campaign: CampaignSaveV1 =
+            serde_json::from_value(campaign_value).map_err(|error| error.to_string())?;
+        if match_mode == "ranked_pvp" {
+            sqlx::query::query(
+                "insert into trnm_online_progression_events (
+                    event_id, match_id, player_id, account_id, campaign_id, result_hash,
+                    experience_delta, reputation_delta, inventory_delta, campaign_revision
+                 ) values ($1, $2, $3, $4, $5, $6, 0, 0, '[]'::jsonb, $7)",
+            )
+            .bind(format!("online-progression:{match_id}:{player_id}"))
+            .bind(match_id)
+            .bind(&player_id)
+            .bind(account_id)
+            .bind(&campaign_id)
+            .bind(combined_result_hash)
+            .bind(campaign.revision as i64)
+            .execute(&mut **transaction)
+            .await
+            .map_err(|error| error.to_string())?;
+            continue;
+        }
+        let experience_before = campaign.progression.experience;
+        let reputation_before = campaign.character.attributes.reputation;
+        let member_outcome = if match_mode == "ranked_pvp" && member_role == "coop_guest" {
+            match combined_result.outcome {
+                BattleOutcome::Victory => BattleOutcome::Defeat,
+                BattleOutcome::Defeat => BattleOutcome::Victory,
+                BattleOutcome::Withdrawal => BattleOutcome::Defeat,
+            }
+        } else {
+            combined_result.outcome
+        };
+        let mut unit_reports = Vec::with_capacity(settlement_seed.party.len());
+        for seeded_unit in &settlement_seed.party {
+            let combined_id = id_map
+                .iter()
+                .find_map(|(combined, local)| (local == &seeded_unit.unit_id).then_some(combined));
+            let report = combined_id
+                .and_then(|combined| {
+                    combined_result
+                        .units
+                        .iter()
+                        .find(|report| &report.unit_id == combined)
+                })
+                .map(|report| {
+                    let mut local = report.clone();
+                    local.unit_id = seeded_unit.unit_id.clone();
+                    local
+                })
+                .unwrap_or_else(|| UnitBattleReportV1 {
+                    unit_id: seeded_unit.unit_id.clone(),
+                    status: UnitBattleStatus::Healthy,
+                    remaining_hp: seeded_unit.stats.max_hp,
+                    experience_gained: 0,
+                    veteran_rank: seeded_unit.veteran_rank,
+                    confirmed_kills: 0,
+                });
+            let mut report = report;
+            if match_mode == "ranked_pvp" {
+                report.experience_gained = if member_outcome == BattleOutcome::Victory {
+                    25
+                } else {
+                    5
+                };
+            }
+            unit_reports.push(report);
+        }
+        let member_result = BattleResultV1 {
+            contract_version: combined_result.contract_version.clone(),
+            battle_id: settlement_seed.battle_id.clone(),
+            seed_hash: settlement_seed.seed_hash.clone(),
+            outcome: member_outcome,
+            units: unit_reports,
+            loot: if match_mode == "ranked_pvp" {
+                Vec::new()
+            } else {
+                combined_result.loot.clone()
+            },
+            resource_delta: if match_mode == "ranked_pvp" {
+                0
+            } else {
+                combined_result.resource_delta
+            },
+            reputation_delta: if match_mode == "ranked_pvp" {
+                i32::from(member_outcome == BattleOutcome::Victory)
+            } else {
+                combined_result.reputation_delta
+            },
+            world_flags: if match_mode == "ranked_pvp" {
+                vec![format!(
+                    "ranked_pvp_{}",
+                    if member_outcome == BattleOutcome::Victory {
+                        "won"
+                    } else {
+                        "lost"
+                    }
+                )]
+            } else {
+                combined_result.world_flags.clone()
+            },
+            elapsed_ticks: combined_result.elapsed_ticks,
+            final_snapshot_hash: combined_result.final_snapshot_hash.clone(),
+        };
+        campaign
+            .submit_battle_result(member_result)
+            .map_err(|error| error.to_string())?;
+        for intent in campaign
+            .pending_economic_intents
+            .iter_mut()
+            .chain(campaign.pending_economic_compensations.iter_mut())
+        {
+            if matches!(
+                intent.kind,
+                trnm_economy_protocol::EconomicIntentKind::ReleaseReward
+            ) && intent.amount_credits.unwrap_or_default() > 0
+            {
+                intent.metadata["online_match_id"] = json!(match_id.to_string());
+                intent.metadata["online_rules_version"] =
+                    json!(trnm_campaign_core::FIRST_CONTACT_RULES_VERSION);
+                intent.metadata["online_build_id"] = json!(ONLINE_AUTHORITY_BUILD);
+                intent.metadata["online_result_hash"] = json!(combined_result_hash);
+                intent.metadata["online_participants_hash"] = json!(participants_hash);
+            }
+        }
+        let experience_delta = campaign
+            .progression
+            .experience
+            .saturating_sub(experience_before);
+        let reputation_delta = campaign
+            .character
+            .attributes
+            .reputation
+            .saturating_sub(reputation_before);
+        persist_campaign_string(transaction, &campaign)
+            .await
+            .map_err(|error| error.body.error.clone())?;
+        sqlx::query::query(
+            "insert into trnm_online_progression_events (
+                event_id, match_id, player_id, account_id, campaign_id, result_hash,
+                experience_delta, reputation_delta, inventory_delta, campaign_revision
+             ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        )
+        .bind(format!("online-progression:{match_id}:{player_id}"))
+        .bind(match_id)
+        .bind(&player_id)
+        .bind(account_id)
+        .bind(&campaign_id)
+        .bind(combined_result_hash)
+        .bind(experience_delta as i64)
+        .bind(reputation_delta)
+        .bind(serde_json::to_value(&combined_result.loot).map_err(|error| error.to_string())?)
+        .bind(campaign.revision as i64)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| error.to_string())?;
+        any_pending |= !campaign.pending_economic_intents.is_empty()
+            || !campaign.pending_economic_compensations.is_empty();
+    }
+    Ok(any_pending)
+}
+
+pub fn production_authority_tick_interval() -> Duration {
+    assert_eq!(1_000 % TICKS_PER_SECOND, 0);
+    Duration::from_millis(1_000 / TICKS_PER_SECOND)
+}
+
+pub fn resolve_authority_tick_interval(
+    requested_ms: Option<u64>,
+    allow_accelerated_test_clock: bool,
+) -> Result<Duration, String> {
+    let production = production_authority_tick_interval();
+    let requested = Duration::from_millis(
+        requested_ms.unwrap_or_else(|| u64::try_from(production.as_millis()).unwrap_or(100)),
+    );
+    if requested.is_zero() || requested > Duration::from_secs(1) {
+        return Err("TRNM_GAME_SERVER_TICK_MS must be between 1 and 1000".to_string());
+    }
+    if requested != production && !allow_accelerated_test_clock {
+        return Err(format!(
+            "production authority is fixed at {}ms ({}Hz); non-real-time clocks require TRNM_ALLOW_ACCELERATED_TEST_CLOCK=1",
+            production.as_millis(),
+            TICKS_PER_SECOND
+        ));
+    }
+    Ok(requested)
+}
+
+pub async fn run_authority_loop(state: AppState, tick_interval: Duration) {
+    let initial_database_fence = tokio::time::timeout(
+        DATABASE_HOST_FENCE_MONITOR_TIMEOUT,
+        state.verify_database_host_authority_session(),
+    )
+    .await;
+    if !matches!(initial_database_fence, Ok(Ok(()))) {
+        tracing::error!("initial PostgreSQL host-authority verification failed closed");
+        state.fail_database_host_authority();
+        return;
+    }
+
+    let database_fence_state = state.clone();
+    let database_fence_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(DATABASE_HOST_FENCE_MONITOR_INTERVAL);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let verification = tokio::time::timeout(
+                DATABASE_HOST_FENCE_MONITOR_TIMEOUT,
+                database_fence_state.verify_database_host_authority_session(),
+            )
+            .await;
+            match verification {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::error!(%error, "PostgreSQL host-authority monitor failed closed");
+                    database_fence_state.fail_database_host_authority();
+                    return;
+                }
+                Err(_) => {
+                    tracing::error!("PostgreSQL host-authority monitor exceeded its hard timeout");
+                    database_fence_state.fail_database_host_authority();
+                    return;
+                }
+            }
+        }
+    });
+
+    if let Err(error) = operations_v1::heartbeat_fleet(&state).await {
+        tracing::error!(%error, "initial online fleet heartbeat failed closed");
+        state.fail_database_host_authority();
+        database_fence_task.abort();
+        return;
+    }
+
+    let heartbeat_state = state.clone();
+    let heartbeat_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(error) = operations_v1::heartbeat_fleet(&heartbeat_state).await {
+                tracing::error!(%error, "online fleet heartbeat failed closed");
+                heartbeat_state.fail_database_host_authority();
+                return;
+            }
+        }
+    });
+
+    let initial_recovery = tokio::time::timeout(INITIAL_AUTHORITY_RECOVERY_TIMEOUT, async {
+        reconcile_terminal_publication_orphans(&state).await?;
+        advance_running_matches(&state, i64::from(state.capacity)).await?;
+        Ok::<(), String>(())
+    })
+    .await;
+    let initial_recovery_error = match initial_recovery {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(error),
+        Err(_) => Some(format!(
+            "initial authority recovery exceeded its {} second total budget",
+            INITIAL_AUTHORITY_RECOVERY_TIMEOUT.as_secs()
+        )),
+    };
+    if let Some(error) = initial_recovery_error {
+        tracing::error!(%error, "initial online authority recovery failed closed");
+        heartbeat_task.abort();
+        database_fence_task.abort();
+        state.begin_draining().await;
+        state.shutdown.send_replace(true);
+        state.fatal_shutdown.send_replace(true);
+        return;
+    }
+
+    let maintenance_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if let Err(error) = production_v1::run_production_maintenance(&maintenance_state).await
+            {
+                tracing::error!(%error, "online production maintenance failed closed");
+            }
+        }
+    });
+
+    let reconciliation_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if let Err(error) = reconcile_terminal_publication_orphans(&reconciliation_state).await
+            {
+                tracing::error!(%error, "terminal publication orphan recovery failed closed");
+            }
+            if let Err(error) = advance_running_matches(
+                &reconciliation_state,
+                i64::from(reconciliation_state.capacity),
+            )
+            .await
+            {
+                tracing::error!(%error, "online match actor reconciliation failed closed");
+            }
+        }
+    });
+
+    // This clock does no database or simulation work. Match actors own their
+    // independent 10 Hz loops, while heartbeat, maintenance, settlement and
+    // discovery run in separate tasks and cannot stall the realtime cadence.
+    let started_at = Instant::now();
+    state.authority_clock.reset(started_at);
+    let mut interval = tokio::time::interval_at(started_at + tick_interval, tick_interval);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        let scheduled_at = interval.tick().await;
+        state
+            .authority_clock
+            .record_wake(scheduled_at, Instant::now(), tick_interval);
+    }
+}
+
+#[derive(Default)]
+struct TerminalOrphanReconciliationReport {
+    scanned: u64,
+    recovered: u64,
+    failed_closed: u64,
+    pending: u64,
+    failed: u64,
+    terminal_ack_gaps: u64,
+    quarantined_without_high_water: u64,
+}
+
+async fn reconcile_terminal_publication_orphans(
+    state: &AppState,
+) -> Result<TerminalOrphanReconciliationReport, String> {
+    let high_waters = state
+        .published_tick_journal
+        .recorded_match_ids()?
+        .into_iter()
+        .map(|match_id| state.published_tick_journal.high_water(match_id))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let mut attempts = futures_util::stream::iter(high_waters)
+        .map(|high_water| async move {
+            let initialization = {
+                let mut registry = state.match_actors.write().await;
+                reserve_terminal_orphan_recovery(&mut registry, high_water.match_id)
+            };
+            let Some(initialization) = initialization else {
+                return (high_water.match_id, None);
+            };
+            let mut reservation = MatchActorInitializationReservation::new(
+                state.match_actors.clone(),
+                high_water.match_id,
+                &initialization,
+            );
+            let authority = PostgresTerminalOrphanAuthority {
+                pool: &state.pool,
+                journal: &state.published_tick_journal,
+                runtime_state: Some(state),
+                database_host_authority: &state.database_host_authority,
+            };
+            let result = reconcile_terminal_journal_record(
+                &authority,
+                &state.published_tick_journal,
+                &high_water,
+            )
+            .await;
+            let mut registry = state.match_actors.write().await;
+            let owns_reservation = registry
+                .initializing
+                .get(&high_water.match_id)
+                .is_some_and(|current| current.token == initialization.token);
+            if owns_reservation {
+                registry.initializing.remove(&high_water.match_id);
+            }
+            reservation.disarm();
+            initialization.ready.send_replace(true);
+            let result = if owns_reservation {
+                result
+            } else {
+                Err("terminal recovery reservation was replaced".to_string())
+            };
+            (high_water.match_id, Some(result))
+        })
+        .buffer_unordered(TERMINAL_ORPHAN_RECONCILIATION_CONCURRENCY);
+
+    let mut report = TerminalOrphanReconciliationReport::default();
+    while let Some((match_id, result)) = attempts.next().await {
+        let Some(result) = result else {
+            continue;
+        };
+        report.scanned = report.scanned.saturating_add(1);
+        match result {
+            Ok(TerminalJournalReconciliationOutcome::Recovered) => {
+                state
+                    .terminal_acknowledged_high_waters
+                    .write()
+                    .await
+                    .insert(match_id);
+                state
+                    .failed_closed_high_waters
+                    .write()
+                    .await
+                    .remove(&match_id);
+                report.recovered = report.recovered.saturating_add(1);
+                tracing::info!(%match_id, "terminal publication high-water revalidated in-process");
+            }
+            Ok(TerminalJournalReconciliationOutcome::FailedClosed) => {
+                state
+                    .terminal_acknowledged_high_waters
+                    .write()
+                    .await
+                    .remove(&match_id);
+                state
+                    .failed_closed_high_waters
+                    .write()
+                    .await
+                    .insert(match_id);
+                report.failed_closed = report.failed_closed.saturating_add(1);
+                tracing::info!(%match_id, "failed-closed published-tick high-water retained as rollback witness");
+            }
+            Ok(TerminalJournalReconciliationOutcome::NotTerminal) => {
+                state
+                    .terminal_acknowledged_high_waters
+                    .write()
+                    .await
+                    .remove(&match_id);
+                state
+                    .failed_closed_high_waters
+                    .write()
+                    .await
+                    .remove(&match_id);
+                report.pending = report.pending.saturating_add(1);
+            }
+            Err(error) => {
+                state
+                    .terminal_acknowledged_high_waters
+                    .write()
+                    .await
+                    .remove(&match_id);
+                state
+                    .failed_closed_high_waters
+                    .write()
+                    .await
+                    .remove(&match_id);
+                report.failed = report.failed.saturating_add(1);
+                tracing::error!(%match_id, %error, "terminal publication orphan quarantined");
+            }
+        }
+    }
+    let terminal_ack_gaps =
+        local_terminal_publication_ack_gaps(&state.pool, state.physical_host_id.as_str()).await?;
+    let recorded_match_ids = state
+        .published_tick_journal
+        .recorded_match_ids()?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let bounded_transitions = {
+        let registry = state.match_actors.read().await;
+        bounded_match_actor_transition_ids(&registry, Instant::now())
+    };
+    let terminal_ack_gaps = terminal_ack_gaps
+        .into_iter()
+        .filter(|match_id| !bounded_transitions.contains(match_id))
+        .collect::<Vec<_>>();
+    report.terminal_ack_gaps = terminal_ack_gaps.len() as u64;
+    let unrecoverable =
+        terminal_ack_gaps_without_high_water(&terminal_ack_gaps, &recorded_match_ids);
+    report.quarantined_without_high_water = unrecoverable.len() as u64;
+    for match_id in &terminal_ack_gaps {
+        if recorded_match_ids.contains(match_id) {
+            tracing::warn!(%match_id, "terminal publication ACK remains pending behind host journal recovery");
+        }
+    }
+    for match_id in unrecoverable {
+        tracing::error!(%match_id, "terminal publication gap has no recoverable host high-water and remains quarantined");
+    }
+    Ok(report)
+}
+
+pub async fn advance_running_matches(state: &AppState, limit: i64) -> Result<u64, String> {
+    if *state.draining.borrow() || *state.shutdown.borrow() {
+        return Ok(0);
+    }
+    let candidates = sqlx::query::query(
+        "select m.match_id, m.assigned_instance_id, m.assigned_instance_epoch,
+                m.assigned_physical_host_id
+         from trnm_online_matches m
+         left join trnm_online_fleet_instances f
+           on f.instance_id = m.assigned_instance_id
+          and f.instance_epoch = m.assigned_instance_epoch
+          and f.physical_host_id = m.assigned_physical_host_id
+         where m.phase = 'running'
+           and (m.assigned_instance_id is null or m.assigned_physical_host_id = $4)
+           and (
+            (m.assigned_instance_id = $2 and m.assigned_instance_epoch = $3
+             and m.assigned_physical_host_id = $4)
+            or m.assigned_instance_id is null
+            or f.status is null or f.status = 'offline'
+            or f.lease_expires_at <= now()
+         ) order by m.updated_at limit $1",
+    )
+    .bind(limit)
+    .bind(state.instance_id.as_str())
+    .bind(state.instance_epoch)
+    .bind(state.physical_host_id.as_str())
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    let mut active = 0u64;
+    for candidate in candidates {
+        let match_id = candidate
+            .try_get::<Uuid, _>("match_id")
+            .map_err(|error| error.to_string())?;
+        let assigned_instance_id = candidate
+            .try_get::<Option<String>, _>("assigned_instance_id")
+            .map_err(|error| error.to_string())?;
+        let assigned_instance_epoch = candidate
+            .try_get::<i64, _>("assigned_instance_epoch")
+            .map_err(|error| error.to_string())?;
+        let assigned_physical_host_id = candidate
+            .try_get::<Option<String>, _>("assigned_physical_host_id")
+            .map_err(|error| error.to_string())?;
+        if !reconciliation_candidate_is_local(
+            assigned_instance_id.as_deref(),
+            assigned_physical_host_id.as_deref(),
+            state.physical_host_id.as_str(),
+        ) {
+            return Err(
+                "match reconciliation query returned a remote physical-host assignment".to_string(),
+            );
+        }
+        match ensure_match_actor(state, match_id).await {
+            Ok(Some(_)) => active = active.saturating_add(1),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::error!(%match_id, %error, "running match quarantined after actor recovery failure");
+                // Rotate a bad match behind healthy candidates. One corrupt
+                // recovery record must not permanently consume the first slot
+                // of every bounded reconciliation batch.
+                if let Err(update_error) = sqlx::query::query(
+                    "update trnm_online_matches set updated_at = now()
+                     where match_id = $1 and phase = 'running'
+                       and assigned_instance_id is not distinct from $2
+                       and assigned_instance_epoch = $3
+                       and assigned_physical_host_id is not distinct from $4
+                       and (assigned_instance_id is null or assigned_physical_host_id = $5)",
+                )
+                .bind(match_id)
+                .bind(&assigned_instance_id)
+                .bind(assigned_instance_epoch)
+                .bind(&assigned_physical_host_id)
+                .bind(state.physical_host_id.as_str())
+                .execute(&state.pool)
+                .await
+                {
+                    tracing::error!(%match_id, %update_error, "failed to rotate quarantined match");
+                }
+            }
+        }
+    }
+    Ok(active)
+}
+
+async fn ensure_match_actor(
+    state: &AppState,
+    match_id: Uuid,
+) -> Result<Option<MatchActorHandle>, String> {
+    loop {
+        if *state.draining.borrow() || *state.shutdown.borrow() {
+            return Err(
+                "game server is draining and cannot initialize match authority".to_string(),
+            );
+        }
+        let decision = {
+            let mut registry = state.match_actors.write().await;
+            reserve_match_actor_initialization(&mut registry, match_id, state.capacity)?
+        };
+        match decision {
+            MatchActorEnsureDecision::Existing(handle) => return Ok(Some(handle)),
+            MatchActorEnsureDecision::Wait(mut ready) => {
+                tokio::time::timeout(MATCH_ACTOR_INITIALIZATION_TIMEOUT, ready.changed())
+                    .await
+                    .map_err(|_| {
+                        "timed out waiting for this match actor initialization".to_string()
+                    })?
+                    .map_err(|_| "match actor initializer stopped without a result".to_string())?;
+            }
+            MatchActorEnsureDecision::Initialize(initialization) => {
+                let reservation = MatchActorInitializationReservation::new(
+                    state.match_actors.clone(),
+                    match_id,
+                    &initialization,
+                );
+                return initialize_reserved_match_actor(
+                    state,
+                    match_id,
+                    initialization,
+                    reservation,
+                )
+                .await;
+            }
+        }
+    }
+}
+
+async fn reserve_starting_match_actor(
+    state: &AppState,
+    match_id: Uuid,
+) -> Result<
+    (
+        MatchActorInitialization,
+        MatchActorInitializationReservation,
+    ),
+    String,
+> {
+    let initialization = {
+        let mut registry = state.match_actors.write().await;
+        match reserve_match_actor_initialization(&mut registry, match_id, state.capacity)? {
+            MatchActorEnsureDecision::Initialize(initialization) => initialization,
+            MatchActorEnsureDecision::Existing(_) => {
+                return Err("waiting match already has a local actor".to_string());
+            }
+            MatchActorEnsureDecision::Wait(_) => {
+                return Err("waiting match actor initialization is already reserved".to_string());
+            }
+        }
+    };
+    let reservation = MatchActorInitializationReservation::new(
+        state.match_actors.clone(),
+        match_id,
+        &initialization,
+    );
+    Ok((initialization, reservation))
+}
+
+async fn initialize_reserved_match_actor(
+    state: &AppState,
+    match_id: Uuid,
+    initialization: MatchActorInitialization,
+    mut reservation: MatchActorInitializationReservation,
+) -> Result<Option<MatchActorHandle>, String> {
+    let initialized = tokio::time::timeout(
+        MATCH_ACTOR_INITIALIZATION_TIMEOUT,
+        initialize_match_actor(state, match_id),
+    )
+    .await
+    .map_err(|_| "match actor initialization exceeded its hard timeout".to_string())
+    .and_then(|result| result);
+    let mut registry = state.match_actors.write().await;
+    let owns_reservation = registry
+        .initializing
+        .get(&match_id)
+        .is_some_and(|current| current.token == initialization.token);
+    if !owns_reservation {
+        reservation.disarm();
+        initialization.ready.send_replace(true);
+        return Err("match actor initialization reservation was replaced".to_string());
+    }
+    if !match_actor_install_is_allowed(*state.draining.borrow(), *state.shutdown.borrow()) {
+        registry.initializing.remove(&match_id);
+        reservation.disarm();
+        initialization.ready.send_replace(true);
+        return Err("game server began draining before match actor installation".to_string());
+    }
+    registry.initializing.remove(&match_id);
+    reservation.disarm();
+    match initialized {
+        Ok(Some(initialized)) => {
+            let handle = initialized.handle.clone();
+            registry.actors.insert(match_id, handle.clone());
+            initialization.ready.send_replace(true);
+            drop(registry);
+            let actor_state = state.clone();
+            tokio::spawn(async move {
+                run_match_actor(actor_state, match_id, initialized).await;
+            });
+            Ok(Some(handle))
+        }
+        Ok(None) => {
+            initialization.ready.send_replace(true);
+            Ok(None)
+        }
+        Err(error) => {
+            initialization.ready.send_replace(true);
+            Err(error)
+        }
+    }
+}
+
+fn match_actor_install_is_allowed(draining: bool, shutdown: bool) -> bool {
+    !draining && !shutdown
+}
+
+fn reserve_match_actor_initialization(
+    registry: &mut MatchActorRegistry,
+    match_id: Uuid,
+    capacity: i32,
+) -> Result<MatchActorEnsureDecision, String> {
+    if let Some(handle) = registry.actors.get(&match_id).cloned() {
+        return Ok(MatchActorEnsureDecision::Existing(handle));
+    }
+    if let Some(initialization) = registry.initializing.get(&match_id) {
+        return Ok(MatchActorEnsureDecision::Wait(
+            initialization.ready.subscribe(),
+        ));
+    }
+    let reserved = registry.actors.len().saturating_add(
+        registry
+            .initializing
+            .values()
+            .filter(|initialization| initialization.kind == MatchActorInitializationKind::Actor)
+            .count(),
+    );
+    if reserved >= usize::try_from(capacity).unwrap_or(usize::MAX) {
+        return Err(format!(
+            "local match actor capacity {capacity} is exhausted"
+        ));
+    }
+    let (ready, _) = watch::channel(false);
+    let initialization = MatchActorInitialization {
+        token: Uuid::new_v4(),
+        ready,
+        kind: MatchActorInitializationKind::Actor,
+        started_at: Instant::now(),
+    };
+    registry
+        .initializing
+        .insert(match_id, initialization.clone());
+    Ok(MatchActorEnsureDecision::Initialize(initialization))
+}
+
+fn reserve_terminal_orphan_recovery(
+    registry: &mut MatchActorRegistry,
+    match_id: Uuid,
+) -> Option<MatchActorInitialization> {
+    if registry.actors.contains_key(&match_id) || registry.initializing.contains_key(&match_id) {
+        return None;
+    }
+    let (ready, _) = watch::channel(false);
+    let initialization = MatchActorInitialization {
+        token: Uuid::new_v4(),
+        ready,
+        kind: MatchActorInitializationKind::TerminalRecovery,
+        started_at: Instant::now(),
+    };
+    registry
+        .initializing
+        .insert(match_id, initialization.clone());
+    Some(initialization)
+}
+
+async fn initialize_match_actor(
+    state: &AppState,
+    match_id: Uuid,
+) -> Result<Option<InitializedMatchActor>, String> {
+    let actor_id = Uuid::new_v4();
+    let Some(loaded) = load_match_actor(state, match_id).await? else {
+        return Ok(None);
+    };
+    let initial_hash = loaded
+        .simulation
+        .snapshot_hash()
+        .map_err(|error| error.to_string())?;
+    if !match_actor_assignment_is_current(state, match_id).await? {
+        return Ok(None);
+    }
+    if loaded.simulation.terminal() {
+        adopt_actor_high_water(state, match_id, actor_id, &loaded).await?;
+        let terminal_job = MatchCheckpointJob {
+            simulation: loaded.simulation.clone(),
+            snapshot_hash: initial_hash.clone(),
+            next_sequence: loaded.next_sequence,
+            match_revision: loaded.match_revision,
+            terminal: true,
+            completion: None,
+        };
+        persist_terminal_actor_checkpoint(state, match_id, &terminal_job).await?;
+        let (_result, result_hash) =
+            derive_terminal_result(&loaded.simulation, &loaded.match_mode)?;
+        let terminal_evidence = TerminalPublicationEvidence {
+            authoritative_tick: loaded.simulation.tick,
+            next_sequence: loaded.next_sequence,
+            match_revision: loaded.match_revision,
+            next_input_sequences: loaded.next_input_sequences.clone(),
+            snapshot_hash: initial_hash.clone(),
+            phase: OnlineMatchPhase::Complete,
+            result_hash: Some(result_hash),
+            settlement_state: "staged".to_string(),
+        };
+        let terminal_record =
+            state
+                .published_tick_journal
+                .new_record(PublishedTickRecordInput {
+                    instance_id: state.instance_id.as_str().to_string(),
+                    match_id,
+                    actor_generation: actor_id,
+                    actor_epoch: state.instance_epoch,
+                    tick: loaded.simulation.tick,
+                    next_sequence: loaded.next_sequence,
+                    match_revision: loaded.match_revision,
+                    next_input_sequences: loaded.next_input_sequences.clone(),
+                    phase: "complete".to_string(),
+                    receipts_replayable: true,
+                    snapshot_hash: initial_hash,
+                })?;
+        record_published_tick_with_timeout(
+            &state.published_tick_journal,
+            terminal_record,
+            loaded.next_sequence,
+            loaded.match_revision,
+            loaded.next_input_sequences.clone(),
+        )
+        .await?;
+        persist_terminal_publication_ack(state, match_id, actor_id, &loaded, &terminal_evidence)
+            .await?;
+        return Ok(None);
+    }
+    record_initial_actor_publication(state, match_id, actor_id, &loaded, &initial_hash).await?;
+    if !match_actor_assignment_is_current(state, match_id).await? {
+        return Ok(None);
+    }
+    let published_at = Instant::now();
+    let initial = PublishedMatchState {
+        simulation: Arc::new(loaded.simulation.clone()),
+        snapshot_hash: Arc::new(initial_hash.clone()),
+        next_sequence: loaded.next_sequence,
+        match_revision: loaded.match_revision,
+        next_input_sequences: Arc::new(loaded.next_input_sequences.clone()),
+        phase: OnlineMatchPhase::Running,
+        result_hash: None,
+        settlement_state: "not_ready".to_string(),
+        state_sequence: 0,
+        published_at,
+    };
+    let (published_tx, published_rx) = watch::channel(initial);
+    let (publication_acked_tx, publication_acked_rx) = watch::channel(ActorPublicationCursor {
+        tick: loaded.simulation.tick,
+        next_sequence: loaded.next_sequence,
+        match_revision: loaded.match_revision,
+        next_input_sequences: loaded.next_input_sequences.clone(),
+        phase: OnlineMatchPhase::Running,
+        receipts_replayable: true,
+        snapshot_hash: initial_hash,
+    });
+    let (command_tx, command_rx) = mpsc::channel(MATCH_ACTOR_COMMAND_QUEUE);
+    let clock = Arc::new(AuthorityClockTelemetry::default());
+    let (lifecycle_tx, lifecycle_rx) = watch::channel(MatchActorLifecycle::Warming {
+        started_at: Instant::now(),
+    });
+    let handle = MatchActorHandle {
+        actor_id,
+        commands: command_tx,
+        members: loaded.members.clone(),
+        published: published_rx,
+        publication_acked: publication_acked_rx,
+        clock,
+        lifecycle: lifecycle_rx,
+    };
+    Ok(Some(InitializedMatchActor {
+        actor_id,
+        handle,
+        loaded,
+        commands: command_rx,
+        published: published_tx,
+        publication_acked: publication_acked_tx,
+        lifecycle: lifecycle_tx,
+    }))
+}
+
+async fn match_actor_assignment_is_current(
+    state: &AppState,
+    match_id: Uuid,
+) -> Result<bool, String> {
+    sqlx::query_scalar::query_scalar(
+        "select exists(
+            select 1 from trnm_online_matches m
+            join trnm_online_fleet_instances f
+              on f.instance_id = m.assigned_instance_id
+             and f.instance_epoch = m.assigned_instance_epoch
+            where m.match_id = $1 and m.phase = 'running'
+              and m.assigned_instance_id = $2
+              and m.assigned_instance_epoch = $3
+              and m.assigned_physical_host_id = $4
+              and f.physical_host_id = $4
+              and f.status in ('active', 'draining')
+              and f.lease_expires_at > now()
+        )",
+    )
+    .bind(match_id)
+    .bind(state.instance_id.as_str())
+    .bind(state.instance_epoch)
+    .bind(state.physical_host_id.as_str())
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|error| error.to_string())
+}
+
+async fn load_match_actor(
+    state: &AppState,
+    match_id: Uuid,
+) -> Result<Option<LoadedMatchActor>, String> {
+    let high_water = state.published_tick_journal.high_water(match_id)?;
+    let mut transaction = state
+        .pool
+        .begin()
+        .await
+        .map_err(|error| error.to_string())?;
+    lock_current_fleet_epoch(&mut transaction, state, true).await?;
+    let Some(row) = sqlx::query::query(
+        "select campaign_id, phase, simulation_json, snapshot_hash, authoritative_tick, match_mode,
+                    next_sequence, match_revision, checkpoint_sequence,
+                    assigned_instance_id, assigned_region, assigned_instance_epoch,
+                    assigned_physical_host_id,
+                    terminal_stage_simulation_json, terminal_stage_result_json,
+                    terminal_stage_result_hash, terminal_stage_snapshot_hash,
+                    terminal_stage_authoritative_tick, terminal_stage_next_sequence,
+                    terminal_stage_match_revision
+             from trnm_online_matches
+             where match_id = $1 for update",
+    )
+    .bind(match_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    if row
+        .try_get::<String, _>("phase")
+        .map_err(|error| error.to_string())?
+        != "running"
+    {
+        transaction
+            .commit()
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(None);
+    }
+    let previous_instance: Option<String> = row
+        .try_get("assigned_instance_id")
+        .map_err(|error| error.to_string())?;
+    let previous_region: Option<String> = row
+        .try_get("assigned_region")
+        .map_err(|error| error.to_string())?;
+    let previous_epoch: i64 = row
+        .try_get("assigned_instance_epoch")
+        .map_err(|error| error.to_string())?;
+    let previous_physical_host: Option<String> = row
+        .try_get("assigned_physical_host_id")
+        .map_err(|error| error.to_string())?;
+    let terminal_staged = row
+        .try_get::<Option<String>, _>("terminal_stage_snapshot_hash")
+        .map_err(|error| error.to_string())?
+        .is_some();
+    if !match_assignment_uses_local_physical_host(
+        previous_instance.as_deref(),
+        previous_physical_host.as_deref(),
+        state.physical_host_id.as_str(),
+    ) {
+        return Err(
+            "match assignment physical host differs from the host-local publication journal; cross-host takeover is blocked"
+                .to_string(),
+        );
+    }
+    if previous_instance.as_deref() != Some(state.instance_id.as_str())
+        || previous_epoch != state.instance_epoch
+    {
+        if terminal_staged {
+            return Err(
+                "private terminal stage must be finalized by its exact journal ownership before takeover"
+                    .to_string(),
+            );
+        }
+        let previous_healthy: bool = if let Some(previous) = previous_instance.as_deref() {
+            sqlx::query_scalar::query_scalar(
+                "select exists(select 1 from trnm_online_fleet_instances
+                 where instance_id = $1 and instance_epoch = $2
+                   and status in ('active', 'draining')
+                   and lease_expires_at > now())",
+            )
+            .bind(previous)
+            .bind(previous_epoch)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(|error| error.to_string())?
+        } else {
+            false
+        };
+        if previous_healthy {
+            transaction
+                .commit()
+                .await
+                .map_err(|error| error.to_string())?;
+            return Ok(None);
+        }
+        sqlx::query::query(
+            "update trnm_online_matches set assigned_instance_id = $2,
+                assigned_region = $3, assigned_instance_epoch = $4,
+                assigned_physical_host_id = $5, updated_at = now() where match_id = $1",
+        )
+        .bind(match_id)
+        .bind(state.instance_id.as_str())
+        .bind(state.region.as_str())
+        .bind(state.instance_epoch)
+        .bind(state.physical_host_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| error.to_string())?;
+        sqlx::query::query(
+            "insert into trnm_online_fleet_failovers (
+                failover_id, match_id, previous_instance_id, new_instance_id,
+                previous_region, new_region, reason,
+                previous_instance_epoch, new_instance_epoch,
+                previous_physical_host_id, new_physical_host_id
+             ) values ($1, $2, $3, $4, $5, $6, 'owner lease expired or epoch fenced', $7, $8, $9, $10)
+             on conflict do nothing",
+        )
+        .bind(Uuid::new_v4())
+        .bind(match_id)
+        .bind(&previous_instance)
+        .bind(state.instance_id.as_str())
+        .bind(&previous_region)
+        .bind(state.region.as_str())
+        .bind(previous_epoch)
+        .bind(state.instance_epoch)
+        .bind(&previous_physical_host)
+        .bind(state.physical_host_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| error.to_string())?;
+    }
+    let checkpoint_sequence = row
+        .try_get::<i64, _>("checkpoint_sequence")
+        .map_err(|error| error.to_string())? as u64;
+    let next_sequence = row
+        .try_get::<i64, _>("next_sequence")
+        .map_err(|error| error.to_string())? as u64;
+    let match_revision = row
+        .try_get::<i64, _>("match_revision")
+        .map_err(|error| error.to_string())? as u64;
+    let value: Value = row
+        .try_get("simulation_json")
+        .map_err(|error| error.to_string())?;
+    let checkpoint_simulation: MissionSimV1 =
+        serde_json::from_value(value).map_err(|error| error.to_string())?;
+    let checkpoint_hash: String = row
+        .try_get("snapshot_hash")
+        .map_err(|error| error.to_string())?;
+    let checkpoint_tick = row
+        .try_get::<i64, _>("authoritative_tick")
+        .map_err(|error| error.to_string())?;
+    let checkpoint_tick = u64::try_from(checkpoint_tick)
+        .map_err(|_| "durable checkpoint tick is negative".to_string())?;
+    validate_recovery_simulation(
+        &checkpoint_simulation,
+        Some(checkpoint_tick),
+        &checkpoint_hash,
+        "database checkpoint",
+    )?;
+    let mut simulation = checkpoint_simulation.clone();
+    if checkpoint_sequence < next_sequence {
+        let recovered_row = sqlx::query::query(
+            "select post_simulation_json, accepted_snapshot_hash, accepted_match_revision,
+                    target_tick, client_observed_tick, order_json
+             from trnm_online_commands
+             where match_id = $1 and sequence = $2",
+        )
+        .bind(match_id)
+        .bind(next_sequence.saturating_sub(1) as i64)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "latest command recovery event is missing".to_string())?;
+        let accepted_revision = recovered_row
+            .try_get::<i64, _>("accepted_match_revision")
+            .map_err(|error| error.to_string())? as u64;
+        if accepted_revision != match_revision {
+            return Err("latest command recovery revision does not match authority".to_string());
+        }
+        let accepted_hash: String = recovered_row
+            .try_get("accepted_snapshot_hash")
+            .map_err(|error| error.to_string())?;
+        let recovered: Option<Value> = recovered_row
+            .try_get("post_simulation_json")
+            .map_err(|error| error.to_string())?;
+        let recovered = recovered.ok_or_else(|| {
+            "command recovery event is missing its post-command simulation".to_string()
+        })?;
+        simulation = serde_json::from_value(recovered).map_err(|error| error.to_string())?;
+        validate_recovery_simulation(
+            &simulation,
+            Some(simulation.tick),
+            &accepted_hash,
+            "latest command recovery state",
+        )?;
+        validate_recovered_command_timing(
+            &simulation,
+            recovered_row
+                .try_get::<i64, _>("target_tick")
+                .map_err(|error| error.to_string())?,
+            recovered_row
+                .try_get::<Option<i64>, _>("client_observed_tick")
+                .map_err(|error| error.to_string())?,
+            recovered_row
+                .try_get::<Value, _>("order_json")
+                .map_err(|error| error.to_string())?,
+            "latest command recovery state",
+        )?;
+    }
+    let match_mode: String = row
+        .try_get("match_mode")
+        .map_err(|error| error.to_string())?;
+    let staged_terminal = staged_terminal_authority_from_row(&row, &match_mode)?;
+    let input_rows = sqlx::query::query(
+        "select player_id, account_id, controlled_unit_ids, member_role,
+                next_input_sequence
+         from trnm_online_match_members where match_id = $1",
+    )
+    .bind(match_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let mut next_input_sequences = BTreeMap::new();
+    let mut members = BTreeMap::new();
+    for input_row in input_rows {
+        let player_id: String = input_row
+            .try_get("player_id")
+            .map_err(|error| error.to_string())?;
+        let next_input_sequence = input_row
+            .try_get::<i64, _>("next_input_sequence")
+            .map_err(|error| error.to_string())?;
+        let next_input_sequence = u64::try_from(next_input_sequence)
+            .map_err(|_| "member input sequence is negative".to_string())?;
+        let controlled_unit_ids = serde_json::from_value::<Vec<String>>(
+            input_row
+                .try_get::<Value, _>("controlled_unit_ids")
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("decode match actor member controls: {error}"))?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let authority = ActorMemberAuthority {
+            account_id: input_row
+                .try_get("account_id")
+                .map_err(|error| error.to_string())?,
+            controlled_unit_ids,
+            member_role: input_row
+                .try_get("member_role")
+                .map_err(|error| error.to_string())?,
+        };
+        if next_input_sequences
+            .insert(player_id.clone(), next_input_sequence)
+            .is_some()
+            || members.insert(player_id, authority).is_some()
+        {
+            return Err("match actor member authority is duplicated".to_string());
+        }
+    }
+    if members.is_empty() || members.len() != next_input_sequences.len() {
+        return Err("match actor member authority is incomplete".to_string());
+    }
+    let bridge_simulation = if let Some(staged) = staged_terminal.as_ref() {
+        let high_water = high_water.as_ref().ok_or_else(|| {
+            "private terminal stage has no host-journal publication witness".to_string()
+        })?;
+        if high_water.phase != "complete"
+            || high_water.instance_id != *state.instance_id
+            || high_water.actor_epoch != state.instance_epoch
+            || high_water.physical_host_id != *state.physical_host_id
+            || high_water.tick != staged.authoritative_tick
+            || high_water.next_sequence != staged.next_sequence
+            || high_water.match_revision != staged.match_revision
+            || high_water.next_input_sequences != next_input_sequences
+            || high_water.snapshot_hash != staged.snapshot_hash
+        {
+            return Err(
+                "private terminal stage does not match its exact terminal HWM witness".to_string(),
+            );
+        }
+        None
+    } else if let Some(high_water) = high_water.as_ref() {
+        if high_water.phase != "running" {
+            return Err(
+                "a running database match has a terminal published-tick high-water".to_string(),
+            );
+        }
+        if high_water.next_sequence == next_sequence
+            && high_water.match_revision == match_revision
+            && high_water.next_input_sequences == next_input_sequences
+        {
+            None
+        } else if high_water.next_sequence == checkpoint_sequence {
+            let commands_after_checkpoint = next_sequence
+                .checked_sub(checkpoint_sequence)
+                .ok_or_else(|| "checkpoint sequence is ahead of authority".to_string())?;
+            let checkpoint_revision = match_revision
+                .checked_sub(commands_after_checkpoint)
+                .ok_or_else(|| "checkpoint revision underflowed authority".to_string())?;
+            if high_water.match_revision != checkpoint_revision {
+                return Err(
+                    "published-tick checkpoint bridge revision does not match authority"
+                        .to_string(),
+                );
+            }
+            Some(checkpoint_simulation.clone())
+        } else if high_water.next_sequence > checkpoint_sequence
+            && high_water.next_sequence < next_sequence
+        {
+            let bridge_row = sqlx::query::query(
+                "select post_simulation_json, accepted_snapshot_hash,
+                        accepted_match_revision, target_tick, client_observed_tick, order_json
+                 from trnm_online_commands
+                 where match_id = $1 and sequence = $2",
+            )
+            .bind(match_id)
+            .bind(high_water.next_sequence.saturating_sub(1) as i64)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "published-tick bridge command is missing".to_string())?;
+            let bridge_revision = bridge_row
+                .try_get::<i64, _>("accepted_match_revision")
+                .map_err(|error| error.to_string())? as u64;
+            if bridge_revision != high_water.match_revision {
+                return Err(
+                    "published-tick bridge command revision does not match high-water".to_string(),
+                );
+            }
+            let bridge_hash: String = bridge_row
+                .try_get("accepted_snapshot_hash")
+                .map_err(|error| error.to_string())?;
+            let bridge_value = bridge_row
+                .try_get::<Option<Value>, _>("post_simulation_json")
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| {
+                    "published-tick bridge command has no recovery simulation".to_string()
+                })?;
+            let bridge = serde_json::from_value::<MissionSimV1>(bridge_value)
+                .map_err(|error| error.to_string())?;
+            validate_recovery_simulation(
+                &bridge,
+                Some(bridge.tick),
+                &bridge_hash,
+                "published-tick bridge command",
+            )?;
+            validate_recovered_command_timing(
+                &bridge,
+                bridge_row
+                    .try_get::<i64, _>("target_tick")
+                    .map_err(|error| error.to_string())?,
+                bridge_row
+                    .try_get::<Option<i64>, _>("client_observed_tick")
+                    .map_err(|error| error.to_string())?,
+                bridge_row
+                    .try_get::<Value, _>("order_json")
+                    .map_err(|error| error.to_string())?,
+                "published-tick bridge command",
+            )?;
+            Some(bridge)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(staged) = staged_terminal.as_ref() {
+        simulation = staged.simulation.clone();
+    }
+    let durable_recovery_tick = simulation.tick;
+    let mut loaded = LoadedMatchActor {
+        simulation,
+        match_mode,
+        members: Arc::new(members),
+        next_sequence,
+        match_revision,
+        next_input_sequences,
+        durable_recovery_tick,
+    };
+    lock_current_fleet_epoch_for_commit(&mut transaction, state, true).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| error.to_string())?;
+    if staged_terminal.is_none() {
+        if let Some(high_water) = high_water.as_ref() {
+            recover_to_published_high_water(
+                &mut loaded.simulation,
+                loaded.next_sequence,
+                loaded.match_revision,
+                &loaded.next_input_sequences,
+                bridge_simulation,
+                high_water,
+            )?;
+        }
+    }
+    Ok(Some(loaded))
+}
+
+fn match_assignment_uses_local_physical_host(
+    assigned_instance: Option<&str>,
+    assigned_physical_host: Option<&str>,
+    local_physical_host: &str,
+) -> bool {
+    assigned_instance.is_none() || assigned_physical_host == Some(local_physical_host)
+}
+
+const MAX_PUBLISHED_TICK_RECOVERY_STEPS: u64 = 10_000;
+
+fn recover_to_published_high_water(
+    simulation: &mut MissionSimV1,
+    durable_db_next_sequence: u64,
+    durable_db_match_revision: u64,
+    durable_db_next_input_sequences: &BTreeMap<String, u64>,
+    bridge_simulation: Option<MissionSimV1>,
+    high_water: &PublishedTickHighWater,
+) -> Result<(), String> {
+    if high_water.phase != "running" || !high_water.receipts_replayable {
+        return Err(
+            "running recovery requires a replayable running published-tick record".to_string(),
+        );
+    }
+    if high_water.next_sequence > durable_db_next_sequence
+        || high_water.match_revision > durable_db_match_revision
+        || high_water.next_input_sequences.len() != durable_db_next_input_sequences.len()
+        || high_water
+            .next_input_sequences
+            .iter()
+            .any(|(player_id, cursor)| {
+                durable_db_next_input_sequences
+                    .get(player_id)
+                    .is_none_or(|durable| cursor > durable)
+            })
+    {
+        return Err(
+            "published-tick journal is ahead of durable database command cursors; recovery failed closed"
+                .to_string(),
+        );
+    }
+    if simulation.tick > high_water.tick {
+        // The caller strictly validated this newer database checkpoint/event
+        // against its own persisted tick/hash before entering recovery.
+        return Ok(());
+    }
+    let same_cursor = high_water.next_sequence == durable_db_next_sequence
+        && high_water.match_revision == durable_db_match_revision
+        && high_water.next_input_sequences == *durable_db_next_input_sequences;
+    if same_cursor {
+        replay_recovery_to_tick(simulation, high_water.tick)?;
+        verify_recovery_hash(simulation, &high_water.snapshot_hash)?;
+        return Ok(());
+    }
+    if !is_single_command_cursor_successor(
+        high_water,
+        durable_db_next_sequence,
+        durable_db_match_revision,
+        durable_db_next_input_sequences,
+    ) {
+        return Err(
+            "published-tick recovery cannot bridge a non-adjacent durable command boundary"
+                .to_string(),
+        );
+    }
+    let mut bridge = bridge_simulation.ok_or_else(|| {
+        "published-tick recovery is missing the prior durable cursor bridge".to_string()
+    })?;
+    replay_recovery_to_tick(&mut bridge, high_water.tick)?;
+    verify_recovery_hash(&bridge, &high_water.snapshot_hash)?;
+    replay_recovery_to_tick(simulation, high_water.tick)
+}
+
+fn validate_recovery_simulation(
+    simulation: &MissionSimV1,
+    expected_tick: Option<u64>,
+    expected_hash: &str,
+    label: &str,
+) -> Result<(), String> {
+    if expected_tick.is_some_and(|tick| simulation.tick != tick) {
+        return Err(format!("{label} tick does not match persisted authority"));
+    }
+    let computed_hash = simulation
+        .snapshot_hash()
+        .map_err(|error| format!("hash {label}: {error}"))?;
+    if computed_hash != expected_hash {
+        return Err(format!("{label} hash does not match persisted authority"));
+    }
+    Ok(())
+}
+
+fn validate_recovered_command_timing(
+    simulation: &MissionSimV1,
+    persisted_target_tick: i64,
+    persisted_client_observed_tick: Option<i64>,
+    persisted_order: Value,
+    label: &str,
+) -> Result<(), String> {
+    let target_tick = u64::try_from(persisted_target_tick)
+        .map_err(|_| format!("{label} target tick is negative"))?;
+    let observed_tick = persisted_client_observed_tick
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| format!("{label} observed tick is negative"))?;
+    let order = serde_json::from_value::<trnm_rts_protocol::RtsFrameOrder>(persisted_order)
+        .map_err(|error| format!("decode {label} order: {error}"))?;
+    let order_tick = u64::from(order.frame);
+    if let Some(observed_tick) = observed_tick {
+        if simulation.tick != target_tick || observed_tick > target_tick || order_tick < target_tick
+        {
+            return Err(format!(
+                "{label} realtime accepted/observed/order ticks do not match its post-command state"
+            ));
+        }
+    } else if target_tick < simulation.tick
+        || target_tick > simulation.tick.saturating_add(200)
+        || order_tick != target_tick
+    {
+        return Err(format!(
+            "{label} scheduled target/order tick does not match its post-command state"
+        ));
+    }
+    Ok(())
+}
+
+fn is_single_command_cursor_successor(
+    high_water: &PublishedTickHighWater,
+    durable_next_sequence: u64,
+    durable_match_revision: u64,
+    durable_next_input_sequences: &BTreeMap<String, u64>,
+) -> bool {
+    if durable_next_sequence != high_water.next_sequence.saturating_add(1)
+        || durable_match_revision != high_water.match_revision.saturating_add(1)
+        || durable_next_input_sequences.len() != high_water.next_input_sequences.len()
+    {
+        return false;
+    }
+    let mut advanced_members = 0usize;
+    for (player_id, high_water_cursor) in &high_water.next_input_sequences {
+        let Some(durable_cursor) = durable_next_input_sequences.get(player_id) else {
+            return false;
+        };
+        if *durable_cursor == high_water_cursor.saturating_add(1) {
+            advanced_members += 1;
+        } else if durable_cursor != high_water_cursor {
+            return false;
+        }
+    }
+    advanced_members == 1
+}
+
+fn replay_recovery_to_tick(simulation: &mut MissionSimV1, target_tick: u64) -> Result<(), String> {
+    if simulation.tick > target_tick {
+        return Err("published-tick recovery attempted to regress a validated source".to_string());
+    }
+    let recovery_steps = target_tick.saturating_sub(simulation.tick);
+    if recovery_steps > MAX_PUBLISHED_TICK_RECOVERY_STEPS {
+        return Err(format!(
+            "published-tick recovery requires {recovery_steps} steps, exceeding the bounded {MAX_PUBLISHED_TICK_RECOVERY_STEPS}-step limit"
+        ));
+    }
+    while simulation.tick < target_tick {
+        if simulation.terminal() {
+            return Err(
+                "published-tick recovery reached terminal state before its high-water tick"
+                    .to_string(),
+            );
+        }
+        simulation.step().map_err(|error| {
+            format!("deterministic published-tick recovery step failed: {error}")
+        })?;
+    }
+    Ok(())
+}
+
+fn verify_recovery_hash(simulation: &MissionSimV1, expected_hash: &str) -> Result<(), String> {
+    let recovered_hash = simulation
+        .snapshot_hash()
+        .map_err(|error| error.to_string())?;
+    if recovered_hash != expected_hash {
+        return Err(
+            "published-tick recovery hash mismatched after deterministic replay".to_string(),
+        );
+    }
+    Ok(())
+}
+
+async fn record_initial_actor_publication(
+    state: &AppState,
+    match_id: Uuid,
+    actor_id: Uuid,
+    loaded: &LoadedMatchActor,
+    snapshot_hash: &str,
+) -> Result<(), String> {
+    adopt_actor_high_water(state, match_id, actor_id, loaded).await?;
+    let initial = state
+        .published_tick_journal
+        .new_record(PublishedTickRecordInput {
+            instance_id: state.instance_id.as_str().to_string(),
+            match_id,
+            actor_generation: actor_id,
+            actor_epoch: state.instance_epoch,
+            tick: loaded.simulation.tick,
+            next_sequence: loaded.next_sequence,
+            match_revision: loaded.match_revision,
+            next_input_sequences: loaded.next_input_sequences.clone(),
+            phase: "running".to_string(),
+            receipts_replayable: true,
+            snapshot_hash: snapshot_hash.to_string(),
+        })?;
+    record_published_tick_with_timeout(
+        &state.published_tick_journal,
+        initial,
+        loaded.next_sequence,
+        loaded.match_revision,
+        loaded.next_input_sequences.clone(),
+    )
+    .await
+}
+
+async fn adopt_actor_high_water(
+    state: &AppState,
+    match_id: Uuid,
+    actor_id: Uuid,
+    loaded: &LoadedMatchActor,
+) -> Result<(), String> {
+    if let Some(high_water) = state.published_tick_journal.high_water(match_id)? {
+        if high_water.actor_generation != actor_id || high_water.instance_id != *state.instance_id {
+            let adopted = state
+                .published_tick_journal
+                .new_record(PublishedTickRecordInput {
+                    instance_id: state.instance_id.as_str().to_string(),
+                    match_id,
+                    actor_generation: actor_id,
+                    actor_epoch: state.instance_epoch,
+                    tick: high_water.tick,
+                    next_sequence: high_water.next_sequence,
+                    match_revision: high_water.match_revision,
+                    next_input_sequences: high_water.next_input_sequences.clone(),
+                    phase: high_water.phase.clone(),
+                    receipts_replayable: high_water.receipts_replayable,
+                    snapshot_hash: high_water.snapshot_hash,
+                })?;
+            record_published_tick_with_timeout(
+                &state.published_tick_journal,
+                adopted,
+                loaded.next_sequence,
+                loaded.match_revision,
+                loaded.next_input_sequences.clone(),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn reload_visible_actor_after_persistence_failure(
+    state: &AppState,
+    match_id: Uuid,
+    visible: LoadedMatchActor,
+    recovery_target_tick: u64,
+    minimum_public_tick: u64,
+) -> Result<LoadedMatchActor, String> {
+    let Some(mut durable) = load_match_actor(state, match_id).await? else {
+        return Err("running match disappeared during command recovery".to_string());
+    };
+    if durable.match_mode != visible.match_mode
+        || durable.next_sequence != visible.next_sequence
+        || durable.match_revision != visible.match_revision
+        || durable.next_input_sequences != visible.next_input_sequences
+    {
+        return Err(
+            "durable authority advanced while speculative command recovery was in progress"
+                .to_string(),
+        );
+    }
+    // Rebuild from the durable pre-command cursor, never from the speculative
+    // command lane. Catch autonomous simulation up to the highest internally
+    // reached safe tick so a multi-second persistence wait cannot regress time.
+    // A deterministic terminal reached during replay may stop earlier, but it
+    // must still be at or beyond the last publicly visible tick.
+    replay_durable_actor_after_pending(&mut durable, recovery_target_tick, minimum_public_tick)?;
+    Ok(durable)
+}
+
+fn replay_durable_actor_after_pending(
+    durable: &mut LoadedMatchActor,
+    recovery_target_tick: u64,
+    minimum_public_tick: u64,
+) -> Result<(), String> {
+    if !publication_within_recovery_budget(recovery_target_tick, durable.durable_recovery_tick) {
+        return Err(
+            "command recovery target exceeded the bounded durable replay horizon".to_string(),
+        );
+    }
+    while durable.simulation.tick < recovery_target_tick && !durable.simulation.terminal() {
+        durable
+            .simulation
+            .step()
+            .map_err(|error| format!("command recovery deterministic step failed: {error}"))?;
+    }
+    if durable.simulation.tick < minimum_public_tick {
+        return Err("command recovery would regress the last publicly safe tick".to_string());
+    }
+    Ok(())
+}
+
+async fn record_published_tick_with_timeout(
+    journal: &PublishedTickJournal,
+    record: PublishedTickHighWater,
+    durable_db_next_sequence: u64,
+    durable_db_match_revision: u64,
+    durable_db_next_input_sequences: BTreeMap<String, u64>,
+) -> Result<(), String> {
+    let mut guard = JournalOperationGuard::new(journal);
+    let result = match tokio::time::timeout(
+        MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+        journal.record(
+            record,
+            durable_db_next_sequence,
+            durable_db_match_revision,
+            durable_db_next_input_sequences,
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            // Once an fsync request was accepted, cancellation cannot prove
+            // whether the blocking filesystem operation took effect. Poison
+            // the host journal for this process so no replacement actor can
+            // publish over an uncertain high-water until restart recovery.
+            journal.fail_closed();
+            Err(
+                "published-tick journal operation exceeded its hard timeout and is failed closed"
+                    .to_string(),
+            )
+        }
+    };
+    guard.complete();
+    result
+}
+
+async fn seal_terminal_ack_with_timeout(
+    journal: &PublishedTickJournal,
+    input: PublishedTickAckTombstoneInput,
+) -> Result<PublishedTickAckTombstone, String> {
+    let mut guard = JournalOperationGuard::new(journal);
+    let result = match tokio::time::timeout(
+        MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+        journal.seal_terminal_ack(input),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            journal.fail_closed();
+            Err(
+                "published-tick ACK tombstone seal exceeded its hard timeout and is failed closed"
+                    .to_string(),
+            )
+        }
+    };
+    guard.complete();
+    result
+}
+
+async fn seal_abandonment_with_timeout(
+    journal: &PublishedTickJournal,
+    input: PublishedTickAbandonmentTombstoneInput,
+) -> Result<PublishedTickAbandonmentTombstone, String> {
+    let mut guard = JournalOperationGuard::new(journal);
+    let result = match tokio::time::timeout(
+        MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+        journal.seal_abandonment(input),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            journal.fail_closed();
+            Err(
+                "published-tick abandonment tombstone seal exceeded its hard timeout and is failed closed"
+                    .to_string(),
+            )
+        }
+    };
+    guard.complete();
+    result
+}
+
+async fn compact_published_tick_journal_with_timeout(
+    journal: &PublishedTickJournal,
+    active_matches: BTreeSet<Uuid>,
+) -> Result<(), String> {
+    let mut guard = JournalOperationGuard::new(journal);
+    let result = match tokio::time::timeout(
+        MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+        journal.compact_to_active(active_matches),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            journal.fail_closed();
+            Err(
+                "published-tick compaction exceeded its hard timeout and is failed closed"
+                    .to_string(),
+            )
+        }
+    };
+    guard.complete();
+    result
+}
+
+struct JournalOperationGuard<'a> {
+    journal: &'a PublishedTickJournal,
+    completed: bool,
+}
+
+impl<'a> JournalOperationGuard<'a> {
+    fn new(journal: &'a PublishedTickJournal) -> Self {
+        Self {
+            journal,
+            completed: false,
+        }
+    }
+
+    fn complete(&mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for JournalOperationGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.journal.fail_closed();
+        }
+    }
+}
+
+fn release_deferred_terminal_publication(
+    deferred: DeferredTerminalPublication,
+    published: &watch::Sender<PublishedMatchState>,
+    publication_acked: &watch::Sender<ActorPublicationCursor>,
+) -> Result<(), String> {
+    if deferred.state.phase != OnlineMatchPhase::Complete
+        || deferred.cursor.phase != OnlineMatchPhase::Complete
+        || !publication_tuple_matches(&deferred.state, &deferred.cursor)
+        || TerminalPublicationEvidence::from_state(&deferred.state).as_ref()
+            != Some(&deferred.evidence)
+    {
+        return Err(
+            "deferred terminal publication tuple changed before marker acknowledgement".to_string(),
+        );
+    }
+    if deferred.publish_to_watch {
+        published.send_replace(deferred.state);
+    }
+    publication_acked.send_replace(deferred.cursor);
+    Ok(())
+}
+
+fn bind_deferred_terminal_commit(
+    deferred: &mut DeferredTerminalPublication,
+    commit: &TerminalPublicationCommit,
+) -> Result<(), String> {
+    if deferred.state.phase != OnlineMatchPhase::Complete
+        || deferred.state.result_hash.as_deref() != Some(commit.result_hash.as_str())
+        || !matches!(commit.settlement_state.as_str(), "pending" | "settled")
+        || commit.acknowledged_at_unix_ms == 0
+    {
+        return Err("terminal database commit did not match its deferred HWM tuple".to_string());
+    }
+    deferred.state.settlement_state = commit.settlement_state.clone();
+    deferred.evidence = TerminalPublicationEvidence::from_state(&deferred.state)
+        .ok_or_else(|| "terminal commit could not rebuild publication evidence".to_string())?;
+    if !terminal_publication_metadata_matches_durable(
+        &deferred.evidence,
+        Some(&commit.result_hash),
+        &commit.settlement_state,
+    ) {
+        return Err("terminal commit metadata did not match its deferred publication".to_string());
+    }
+    Ok(())
+}
+
+async fn run_actor_publication_worker(worker: ActorPublicationWorker) {
+    let ActorPublicationWorker {
+        journal,
+        instance_id,
+        match_id,
+        actor_id,
+        actor_epoch,
+        mut candidates,
+        mut permit,
+        durable_recovery_tick,
+        published,
+        publication_acked,
+        completions,
+    } = worker;
+    loop {
+        tokio::select! {
+            changed = permit.changed() => {
+                if changed.is_err() || !*permit.borrow() {
+                    return;
+                }
+                continue;
+            }
+            changed = candidates.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+        }
+        if !*permit.borrow() {
+            return;
+        }
+        let Some(candidate) = candidates.borrow_and_update().clone() else {
+            continue;
+        };
+        let state_sequence = candidate.state.state_sequence;
+        let acknowledged_cursor = ActorPublicationCursor {
+            tick: candidate.state.simulation.tick,
+            next_sequence: candidate.state.next_sequence,
+            match_revision: candidate.state.match_revision,
+            next_input_sequences: candidate.state.next_input_sequences.as_ref().clone(),
+            phase: candidate.state.phase,
+            receipts_replayable: candidate.receipts_replayable,
+            snapshot_hash: candidate.state.snapshot_hash.as_ref().clone(),
+        };
+        let journal_started = Instant::now();
+        let result = if !publication_within_recovery_budget(
+            candidate.state.simulation.tick,
+            *durable_recovery_tick.borrow(),
+        ) {
+            Err(format!(
+                "published tick {} exceeded durable recovery tick {} plus the bounded {}-tick replay budget",
+                candidate.state.simulation.tick,
+                *durable_recovery_tick.borrow(),
+                MAX_PUBLISHED_TICK_RECOVERY_STEPS,
+            ))
+        } else {
+            let record = journal.new_record(PublishedTickRecordInput {
+                instance_id: instance_id.as_str().to_string(),
+                match_id,
+                actor_generation: actor_id,
+                actor_epoch,
+                tick: candidate.state.simulation.tick,
+                next_sequence: candidate.state.next_sequence,
+                match_revision: candidate.state.match_revision,
+                next_input_sequences: candidate.state.next_input_sequences.as_ref().clone(),
+                phase: match candidate.state.phase {
+                    OnlineMatchPhase::Running => "running".to_string(),
+                    OnlineMatchPhase::Complete => "complete".to_string(),
+                    _ => "invalid".to_string(),
+                },
+                receipts_replayable: candidate.receipts_replayable,
+                snapshot_hash: candidate.state.snapshot_hash.as_ref().clone(),
+            });
+            match record {
+                Ok(record) => {
+                    record_published_tick_with_timeout(
+                        &journal,
+                        record,
+                        candidate.durable_db_next_sequence,
+                        candidate.durable_db_match_revision,
+                        candidate.durable_db_next_input_sequences,
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            }
+        };
+        let journal_ms = u64::try_from(journal_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if journal_ms > 100 {
+            tracing::warn!(%match_id, state_sequence, journal_ms, "slow published-tick journal commit");
+        }
+        if !*permit.borrow() {
+            return;
+        }
+        // A terminal HWM proves what may be recovered after a crash, but it is
+        // not yet the semantic publication ACK. Keep both public channels on
+        // their prior running tuple until the actor commits the exact database
+        // marker and explicitly releases this deferred terminal value.
+        let deferred_terminal = result
+            .is_ok()
+            .then(|| TerminalPublicationEvidence::from_state(&candidate.state))
+            .flatten()
+            .map(|evidence| DeferredTerminalPublication {
+                state: candidate.state.clone(),
+                cursor: acknowledged_cursor.clone(),
+                evidence,
+                publish_to_watch: candidate.publish_to_watch,
+            });
+        if result.is_ok() && deferred_terminal.is_none() {
+            if candidate.publish_to_watch {
+                published.send_replace(candidate.state);
+            }
+            publication_acked.send_replace(acknowledged_cursor);
+        }
+        let failed = result.is_err();
+        if !matches!(
+            tokio::time::timeout(
+                MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+                completions.send(ActorPublicationCompletion {
+                    state_sequence,
+                    deferred_terminal,
+                    result,
+                }),
+            )
+            .await,
+            Ok(Ok(()))
+        ) {
+            return;
+        }
+        if failed {
+            return;
+        }
+    }
+}
+
+fn publication_within_recovery_budget(candidate_tick: u64, durable_tick: u64) -> bool {
+    candidate_tick <= durable_tick.saturating_add(MAX_PUBLISHED_TICK_RECOVERY_STEPS)
+}
+
+async fn checkpoint_barrier_with_timeout(
+    checkpoints: &mpsc::Sender<MatchCheckpointJob>,
+    job: MatchCheckpointJob,
+    label: &str,
+) -> Result<(), String> {
+    checkpoint_barrier_with_deadline(
+        checkpoints,
+        job,
+        label,
+        MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+    )
+    .await
+}
+
+async fn checkpoint_barrier_with_deadline(
+    checkpoints: &mpsc::Sender<MatchCheckpointJob>,
+    mut job: MatchCheckpointJob,
+    label: &str,
+    deadline: Duration,
+) -> Result<(), String> {
+    let (completion, completed) = oneshot::channel();
+    job.completion = Some(completion);
+    tokio::time::timeout(deadline, async {
+        checkpoints
+            .send(job)
+            .await
+            .map_err(|_| format!("{label} checkpoint worker is unavailable"))?;
+        completed
+            .await
+            .map_err(|_| format!("{label} checkpoint worker stopped before acknowledgement"))?
+    })
+    .await
+    .map_err(|_| format!("{label} checkpoint barrier exceeded its hard timeout"))?
+}
+
+async fn run_match_actor(state: AppState, match_id: Uuid, initialized: InitializedMatchActor) {
+    let InitializedMatchActor {
+        actor_id,
+        handle,
+        mut loaded,
+        mut commands,
+        published,
+        publication_acked,
+        lifecycle,
+    } = initialized;
+    let MatchActorHandle { clock, .. } = handle;
+    if *state.shutdown.borrow() {
+        let mut registry = state.match_actors.write().await;
+        if registry
+            .actors
+            .get(&match_id)
+            .is_some_and(|handle| handle.actor_id == actor_id)
+        {
+            registry.actors.remove(&match_id);
+        }
+        return;
+    }
+    let mut state_sequence = 0_u64;
+    let mut latest_visible_candidate_tick = loaded.simulation.tick;
+    let mut pending_command = None::<PendingActorCommand>;
+    let mut pending_published_receipt = None::<PendingPublishedCommandReceipt>;
+    let mut pending_terminal_receipt = None::<PendingPublishedCommandReceipt>;
+    let mut terminal_publication_sequence = None::<u64>;
+    let mut receipt_cache = BTreeMap::<String, ActorReceiptCacheEntry>::new();
+    let mut receipt_cache_order = VecDeque::<String>::new();
+    let (persistence_tx, persistence_rx) = mpsc::channel(MATCH_COMMAND_PERSISTENCE_QUEUE);
+    let (persistence_completion_tx, mut persistence_completion_rx) =
+        mpsc::channel(MATCH_COMMAND_PERSISTENCE_QUEUE);
+    let persistence_state = state.clone();
+    let persistence_handle = tokio::spawn(async move {
+        run_actor_command_persistence_worker(
+            persistence_state,
+            match_id,
+            persistence_rx,
+            persistence_completion_tx,
+        )
+        .await;
+    });
+    let (publication_candidates, publication_candidate_rx) =
+        watch::channel(None::<ActorPublicationCandidate>);
+    let (publication_completion_tx, mut publication_completion_rx) =
+        mpsc::channel(MATCH_ACTOR_PUBLICATION_COMPLETION_QUEUE);
+    let publication_journal = state.published_tick_journal.clone();
+    let publication_instance_id = state.instance_id.clone();
+    let publication_epoch = state.instance_epoch;
+    let (publication_permit_tx, publication_permit_rx) = watch::channel(true);
+    let terminal_published = published.clone();
+    let terminal_publication_acked = publication_acked.clone();
+    let (durable_recovery_tick_tx, durable_recovery_tick_rx) =
+        watch::channel(loaded.durable_recovery_tick);
+    let command_durable_recovery_tick_tx = durable_recovery_tick_tx.clone();
+    let publication_handle = tokio::spawn(async move {
+        run_actor_publication_worker(ActorPublicationWorker {
+            journal: publication_journal,
+            instance_id: publication_instance_id,
+            match_id,
+            actor_id,
+            actor_epoch: publication_epoch,
+            candidates: publication_candidate_rx,
+            permit: publication_permit_rx,
+            durable_recovery_tick: durable_recovery_tick_rx,
+            published,
+            publication_acked,
+            completions: publication_completion_tx,
+        })
+        .await;
+    });
+    let (checkpoint_tx, checkpoint_rx) = mpsc::channel(MATCH_CHECKPOINT_QUEUE);
+    let (terminal_checkpoint_completion_tx, mut terminal_checkpoint_completion_rx) =
+        mpsc::channel::<TerminalCheckpointCompletion>(1);
+    let mut terminal_checkpoint_handle = None::<tokio::task::JoinHandle<()>>;
+    let (terminal_ack_completion_tx, mut terminal_ack_completion_rx) =
+        mpsc::channel::<TerminalAckCompletion>(1);
+    let mut terminal_ack_handle = None::<tokio::task::JoinHandle<()>>;
+    let (checkpoint_failed_tx, mut checkpoint_failed_rx) = watch::channel(None::<String>);
+    let checkpoint_state = state.clone();
+    let checkpoint_handle = tokio::spawn(async move {
+        run_match_checkpoint_writer(
+            checkpoint_state,
+            match_id,
+            checkpoint_rx,
+            checkpoint_failed_tx,
+            durable_recovery_tick_tx,
+        )
+        .await;
+    });
+    let (fenced_tx, mut fenced_rx) = watch::channel(false);
+    let fence_state = state.clone();
+    let fence_publication_permit = publication_permit_tx.clone();
+    let fence_handle = tokio::spawn(async move {
+        run_match_fence_monitor(fence_state, match_id, fence_publication_permit, fenced_tx).await;
+    });
+    if loaded.simulation.tick > loaded.durable_recovery_tick {
+        match loaded.simulation.snapshot_hash() {
+            Ok(snapshot_hash) => {
+                let _ = checkpoint_tx.try_send(MatchCheckpointJob {
+                    simulation: loaded.simulation.clone(),
+                    snapshot_hash,
+                    next_sequence: loaded.next_sequence,
+                    match_revision: loaded.match_revision,
+                    terminal: false,
+                    completion: None,
+                });
+            }
+            Err(error) => {
+                tracing::error!(%match_id, %error, "recovered actor startup checkpoint hash failed");
+            }
+        }
+    }
+    let started_at = Instant::now();
+    clock.reset(started_at);
+    let mut shutdown = state.shutdown.subscribe();
+    let mut interval =
+        tokio::time::interval_at(started_at + state.tick_interval, state.tick_interval);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            biased;
+            changed = shutdown_changed_or_current(&mut shutdown) => {
+                if changed.is_err() || *shutdown.borrow() {
+                    if let Some(pending) = pending_published_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "server shutdown interrupted the durable publication barrier",
+                            true,
+                        )));
+                        break;
+                    }
+                    if let Some(pending) = pending_terminal_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "server shutdown interrupted terminal publication",
+                            true,
+                        )));
+                        break;
+                    }
+                    if terminal_checkpoint_handle.is_some()
+                        || terminal_publication_sequence.is_some()
+                        || terminal_ack_handle.is_some()
+                    {
+                        // The terminal pipeline is already fenced and durable at
+                        // one of its crash-recoverable boundaries. Do not start a
+                        // second checkpoint while shutdown drains its workers.
+                        break;
+                    }
+                    if !actor_checkpoint_allowed(
+                        ActorCheckpointBoundary::Shutdown,
+                        pending_command.is_some(),
+                    ) {
+                        let pending = pending_command
+                            .take()
+                            .expect("pending command must own the shutdown checkpoint barrier");
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "server shutdown interrupted command persistence",
+                            true,
+                        )));
+                        break;
+                    }
+                    let snapshot_hash = match loaded.simulation.snapshot_hash() {
+                        Ok(value) => value,
+                        Err(error) => {
+                            tracing::error!(%match_id, %error, "shutdown actor snapshot failed closed");
+                            break;
+                        }
+                    };
+                    let job = MatchCheckpointJob {
+                        simulation: loaded.simulation.clone(),
+                        snapshot_hash: snapshot_hash.clone(),
+                        next_sequence: loaded.next_sequence,
+                        match_revision: loaded.match_revision,
+                        terminal: false,
+                        completion: None,
+                    };
+                    let result = checkpoint_barrier_with_timeout(&checkpoint_tx, job, "shutdown").await;
+                    if let Err(error) = result {
+                        tracing::error!(%match_id, %error, "shutdown actor checkpoint failed closed");
+                    }
+                    break;
+                }
+            }
+            changed = fenced_rx.changed() => {
+                if changed.is_err() || *fenced_rx.borrow() {
+                    debug_assert!(!actor_checkpoint_allowed(
+                        ActorCheckpointBoundary::Fenced,
+                        pending_command.is_some(),
+                    ));
+                    if let Some(pending) = pending_command.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "match actor was fenced during command persistence",
+                            true,
+                        )));
+                    }
+                    if let Some(pending) = pending_published_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "match actor was fenced during the durable publication barrier",
+                            true,
+                        )));
+                    }
+                    if let Some(pending) = pending_terminal_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "match actor was fenced during terminal publication",
+                            true,
+                        )));
+                    }
+                    tracing::warn!(%match_id, "match actor stopped after fleet epoch fencing");
+                    break;
+                }
+            }
+            changed = checkpoint_failed_rx.changed() => {
+                if changed.is_err() {
+                    debug_assert!(!actor_checkpoint_allowed(
+                        ActorCheckpointBoundary::CheckpointFailure,
+                        pending_command.is_some(),
+                    ));
+                    if let Some(pending) = pending_command.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "checkpoint worker stopped during command persistence",
+                            true,
+                        )));
+                    }
+                    if let Some(pending) = pending_published_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "publication checkpoint worker stopped during command acknowledgement",
+                            true,
+                        )));
+                    }
+                    if let Some(pending) = pending_terminal_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "checkpoint worker stopped during terminal publication",
+                            true,
+                        )));
+                    }
+                    tracing::error!(%match_id, "match actor checkpoint writer stopped unexpectedly");
+                    break;
+                }
+                if let Some(error) = checkpoint_failed_rx.borrow().as_deref() {
+                    debug_assert!(!actor_checkpoint_allowed(
+                        ActorCheckpointBoundary::CheckpointFailure,
+                        pending_command.is_some(),
+                    ));
+                    if let Some(pending) = pending_command.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "checkpoint writer failed during command persistence",
+                            true,
+                        )));
+                    }
+                    if let Some(pending) = pending_published_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "checkpoint writer failed during the durable publication barrier",
+                            true,
+                        )));
+                    }
+                    if let Some(pending) = pending_terminal_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "checkpoint writer failed during terminal publication",
+                            true,
+                        )));
+                    }
+                    tracing::error!(%match_id, %error, "match actor stopped after checkpoint failure");
+                    break;
+                }
+            }
+            completion = terminal_checkpoint_completion_rx.recv(),
+                if terminal_checkpoint_handle.is_some() => {
+                terminal_checkpoint_handle.take();
+                let Some(TerminalCheckpointCompletion { snapshot_hash, result }) = completion else {
+                    tracing::error!(%match_id, "terminal checkpoint task stopped before acknowledgement");
+                    break;
+                };
+                if let Err(error) = result {
+                    tracing::error!(%match_id, %error, "terminal actor checkpoint failed closed");
+                    break;
+                }
+                match derive_terminal_result(&loaded.simulation, &loaded.match_mode) {
+                    Ok((_result, result_hash)) => {
+                        state_sequence = state_sequence.saturating_add(1);
+                        publication_candidates.send_replace(Some(ActorPublicationCandidate {
+                            state: PublishedMatchState {
+                                simulation: Arc::new(loaded.simulation.clone()),
+                                snapshot_hash: Arc::new(snapshot_hash),
+                                next_sequence: loaded.next_sequence,
+                                match_revision: loaded.match_revision,
+                                next_input_sequences: Arc::new(
+                                    loaded.next_input_sequences.clone(),
+                                ),
+                                phase: OnlineMatchPhase::Complete,
+                                result_hash: Some(result_hash),
+                                // Internal-only until the fenced ACK transaction
+                                // returns the committed settlement state.
+                                settlement_state: "staged".to_string(),
+                                state_sequence,
+                                published_at: Instant::now(),
+                            },
+                            durable_db_next_sequence: loaded.next_sequence,
+                            durable_db_match_revision: loaded.match_revision,
+                            durable_db_next_input_sequences: loaded
+                                .next_input_sequences
+                                .clone(),
+                            receipts_replayable: true,
+                            publish_to_watch: true,
+                        }));
+                        terminal_publication_sequence = Some(state_sequence);
+                        if let Some(pending) = pending_terminal_receipt.as_mut() {
+                            pending.state_sequence = state_sequence;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            %match_id,
+                            %error,
+                            "terminal stage committed but its deterministic result could not be derived"
+                        );
+                        break;
+                    }
+                }
+            }
+            completion = publication_completion_rx.recv() => {
+                let Some(completion) = completion else {
+                    if let Some(pending) = pending_published_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "published-tick journal stopped before command acknowledgement",
+                            true,
+                        )));
+                    }
+                    if let Some(pending) = pending_terminal_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "published-tick journal stopped before terminal acknowledgement",
+                            true,
+                        )));
+                    }
+                    tracing::error!(%match_id, "published-tick journal worker stopped unexpectedly");
+                    break;
+                };
+                let ActorPublicationCompletion {
+                    state_sequence: completed_sequence,
+                    deferred_terminal,
+                    result,
+                } = completion;
+                if let Err(error) = result {
+                    if let Some(pending) = pending_published_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            format!("durable publication failed: {error}"),
+                            true,
+                        )));
+                    }
+                    if let Some(pending) = pending_terminal_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            format!("terminal durable publication failed: {error}"),
+                            true,
+                        )));
+                    }
+                    tracing::error!(%match_id, %error, "published-tick durability failed closed");
+                    break;
+                }
+                if terminal_publication_sequence == Some(completed_sequence) {
+                    let Some(deferred_terminal) = deferred_terminal else {
+                        tracing::error!(%match_id, "terminal publication completion omitted its deferred public tuple");
+                        break;
+                    };
+                    if terminal_ack_handle.is_some() {
+                        tracing::error!(%match_id, "terminal publication produced two ACK tasks");
+                        break;
+                    }
+                    let ack_state = state.clone();
+                    let ack_loaded = loaded.clone();
+                    let ack_completion = terminal_ack_completion_tx.clone();
+                    terminal_ack_handle = Some(tokio::spawn(async move {
+                        let result = tokio::time::timeout(
+                            MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+                            persist_terminal_publication_ack(
+                                &ack_state,
+                                match_id,
+                                actor_id,
+                                &ack_loaded,
+                                &deferred_terminal.evidence,
+                            ),
+                        )
+                        .await
+                        .map_err(|_| "terminal publication ACK marker timed out".to_string())
+                        .and_then(|result| result);
+                        let _ = ack_completion
+                            .send(TerminalAckCompletion {
+                                deferred_terminal,
+                                result,
+                            })
+                            .await;
+                    }));
+                    continue;
+                }
+                if pending_published_receipt
+                    .as_ref()
+                    .is_some_and(|pending| pending.state_sequence == completed_sequence)
+                {
+                    let pending = pending_published_receipt
+                        .take()
+                        .expect("publication sequence was checked above");
+                    cache_actor_receipt(
+                        &mut receipt_cache,
+                        &mut receipt_cache_order,
+                        pending.request_hash,
+                        &pending.receipt,
+                    );
+                    let _ = pending.response.send(Ok(pending.receipt));
+                }
+            }
+            completion = terminal_ack_completion_rx.recv(), if terminal_ack_handle.is_some() => {
+                terminal_ack_handle.take();
+                let Some(TerminalAckCompletion {
+                    mut deferred_terminal,
+                    result,
+                }) = completion else {
+                    tracing::error!(%match_id, "terminal ACK task stopped before acknowledgement");
+                    break;
+                };
+                let commit = match result {
+                    Ok(commit) => commit,
+                    Err(error) => {
+                        if let Some(pending) = pending_terminal_receipt.take() {
+                            let _ = pending.response.send(Err(api_error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                format!("terminal publication ACK marker failed: {error}"),
+                                true,
+                            )));
+                        }
+                        tracing::error!(%match_id, %error, "terminal publication ACK marker failed closed");
+                        break;
+                    }
+                };
+                if let Err(error) = bind_deferred_terminal_commit(&mut deferred_terminal, &commit) {
+                    if let Some(pending) = pending_terminal_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            format!("terminal committed tuple binding failed: {error}"),
+                            true,
+                        )));
+                    }
+                    tracing::error!(%match_id, %error, "terminal commit could not bind its deferred HWM tuple");
+                    break;
+                }
+                if let Err(error) = release_deferred_terminal_publication(
+                    deferred_terminal,
+                    &terminal_published,
+                    &terminal_publication_acked,
+                ) {
+                    if let Some(pending) = pending_terminal_receipt.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            format!("terminal public release failed: {error}"),
+                            true,
+                        )));
+                    }
+                    tracing::error!(%match_id, %error, "terminal marker committed but public tuple release failed closed");
+                    break;
+                }
+                let completed_sequence = terminal_publication_sequence
+                    .expect("terminal ACK task requires a publication sequence");
+                if pending_terminal_receipt
+                    .as_ref()
+                    .is_some_and(|pending| pending.state_sequence == completed_sequence)
+                {
+                    let pending = pending_terminal_receipt
+                        .take()
+                        .expect("terminal publication sequence was checked above");
+                    cache_actor_receipt(
+                        &mut receipt_cache,
+                        &mut receipt_cache_order,
+                        pending.request_hash,
+                        &pending.receipt,
+                    );
+                    let _ = pending.response.send(Ok(pending.receipt));
+                }
+                break;
+            }
+            completion = persistence_completion_rx.recv(), if pending_command.is_some() => {
+                let Some(completion) = completion else {
+                    if let Some(pending) = pending_command.take() {
+                        let _ = pending.response.send(Err(api_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "command persistence worker stopped before acknowledgement",
+                            true,
+                        )));
+                    }
+                    tracing::error!(%match_id, "match actor command persistence worker stopped unexpectedly");
+                    break;
+                };
+                let Some(pending) = pending_command.take() else {
+                    tracing::error!(%match_id, "command persistence completed without an actor barrier");
+                    break;
+                };
+                if completion.command_id != pending.command_id {
+                    let _ = pending.response.send(Err(api_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "command persistence completion did not match the actor barrier",
+                        true,
+                    )));
+                    tracing::error!(
+                        %match_id,
+                        expected_command_id = %pending.command_id,
+                        completed_command_id = %completion.command_id,
+                        "match actor command persistence ordering failed closed"
+                    );
+                    break;
+                }
+                match completion.result {
+                    Ok(receipt) if receipt.duplicate => {
+                        debug_assert!(!actor_command_lane_publish_allowed(true, false));
+                        let recovery_target_tick = loaded
+                            .simulation
+                            .tick
+                            .max(latest_visible_candidate_tick);
+                        let recovery = tokio::time::timeout(
+                            MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+                            reload_visible_actor_after_persistence_failure(
+                                &state,
+                                match_id,
+                                pending.visible,
+                                recovery_target_tick,
+                                latest_visible_candidate_tick,
+                            ),
+                        )
+                        .await
+                        .map_err(|_| "duplicate command recovery timed out".to_string())
+                        .and_then(|result| result);
+                        match recovery {
+                            Ok(reloaded) => {
+                                loaded = reloaded;
+                                let recovered_at = Instant::now();
+                                clock.reset(recovered_at);
+                                interval.reset_at(recovered_at + state.tick_interval);
+                                cache_actor_receipt(
+                                    &mut receipt_cache,
+                                    &mut receipt_cache_order,
+                                    pending.request_hash,
+                                    &receipt,
+                                );
+                                let _ = pending.response.send(Ok(receipt));
+                            }
+                            Err(error) => {
+                                let _ = pending.response.send(Err(api_error(
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    format!("duplicate command recovery failed: {error}"),
+                                    true,
+                                )));
+                                tracing::error!(%match_id, %error, "duplicate command race failed closed");
+                                break;
+                            }
+                        }
+                    }
+                    Ok(receipt) => {
+                        debug_assert!(actor_command_lane_publish_allowed(true, true));
+                        if !committed_receipt_matches_pending(
+                            &receipt,
+                            &pending.command_id,
+                            &pending.player_id,
+                            pending.sequence,
+                            pending.input_sequence,
+                            pending.accepted_revision,
+                            &pending.accepted_snapshot_hash,
+                        ) {
+                            let _ = pending.response.send(Err(api_error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "durable command receipt did not match the actor barrier",
+                                true,
+                            )));
+                            tracing::error!(%match_id, command_id = %receipt.command_id, "durable command receipt failed actor correlation");
+                            break;
+                        }
+                        loaded.durable_recovery_tick = loaded
+                            .durable_recovery_tick
+                            .max(pending.durable_simulation_tick);
+                        command_durable_recovery_tick_tx
+                            .send_replace(loaded.durable_recovery_tick);
+                        if !committed_publication_tick_is_monotonic(
+                            latest_visible_candidate_tick,
+                            loaded.simulation.tick,
+                        ) {
+                            let _ = pending.response.send(Err(api_error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "committed command publication would regress the visible tick",
+                                true,
+                            )));
+                            tracing::error!(
+                                %match_id,
+                                command_id = %receipt.command_id,
+                                latest_visible_candidate_tick,
+                                committed_tick = loaded.simulation.tick,
+                                "committed command publication failed monotonicity barrier"
+                            );
+                            break;
+                        }
+                        let snapshot_hash = match loaded.simulation.snapshot_hash() {
+                            Ok(value) => value,
+                            Err(error) => {
+                                let _ = pending.response.send(Err(api_error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "committed actor state could not enter the publication journal",
+                                    true,
+                                )));
+                                tracing::error!(%match_id, %error, "committed actor snapshot failed closed");
+                                break;
+                            }
+                        };
+                        if loaded.simulation.terminal() {
+                            // A terminal command receipt is withheld until the
+                            // phase/result/checkpoint transaction and the final
+                            // terminal journal/publication record both ACK.
+                            pending_terminal_receipt = Some(PendingPublishedCommandReceipt {
+                                state_sequence: 0,
+                                request_hash: pending.request_hash,
+                                receipt,
+                                response: pending.response,
+                            });
+                        } else {
+                            state_sequence = state_sequence.saturating_add(1);
+                            publication_candidates.send_replace(Some(ActorPublicationCandidate {
+                                state: PublishedMatchState {
+                                    simulation: Arc::new(loaded.simulation.clone()),
+                                    snapshot_hash: Arc::new(snapshot_hash),
+                                    next_sequence: loaded.next_sequence,
+                                    match_revision: loaded.match_revision,
+                                    next_input_sequences: Arc::new(
+                                        loaded.next_input_sequences.clone(),
+                                    ),
+                                    phase: OnlineMatchPhase::Running,
+                                    result_hash: None,
+                                    settlement_state: "not_ready".to_string(),
+                                    state_sequence,
+                                    published_at: Instant::now(),
+                                },
+                                durable_db_next_sequence: loaded.next_sequence,
+                                durable_db_match_revision: loaded.match_revision,
+                                durable_db_next_input_sequences: loaded
+                                    .next_input_sequences
+                                    .clone(),
+                                receipts_replayable: true,
+                                publish_to_watch: true,
+                            }));
+                            pending_published_receipt = Some(PendingPublishedCommandReceipt {
+                                state_sequence,
+                                request_hash: pending.request_hash,
+                                receipt,
+                                response: pending.response,
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        debug_assert!(!actor_command_lane_publish_allowed(true, false));
+                        let persistence_error = error.body.error.clone();
+                        let recovery_target_tick = loaded
+                            .simulation
+                            .tick
+                            .max(latest_visible_candidate_tick);
+                        let recovery = tokio::time::timeout(
+                            MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+                            reload_visible_actor_after_persistence_failure(
+                                &state,
+                                match_id,
+                                pending.visible,
+                                recovery_target_tick,
+                                latest_visible_candidate_tick,
+                            ),
+                        )
+                        .await
+                        .map_err(|_| "command persistence recovery timed out".to_string())
+                        .and_then(|result| result);
+                        match recovery {
+                            Ok(reloaded) => {
+                                loaded = reloaded;
+                                let recovered_at = Instant::now();
+                                clock.reset(recovered_at);
+                                interval.reset_at(recovered_at + state.tick_interval);
+                                let _ = pending.response.send(Err(error));
+                            }
+                            Err(reload_error) => {
+                                let _ = pending.response.send(Err(api_error(
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    format!("command persistence recovery failed: {reload_error}"),
+                                    true,
+                                )));
+                                tracing::error!(
+                                    %match_id,
+                                    %persistence_error,
+                                    %reload_error,
+                                    "command persistence failure could not be reconciled"
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            scheduled_at = interval.tick() => {
+                let observed_at = Instant::now();
+                clock.record_wake(scheduled_at, observed_at, state.tick_interval);
+                let warming = matches!(*lifecycle.borrow(), MatchActorLifecycle::Warming { .. });
+                if warming
+                    && clock
+                        .snapshot(observed_at, state.tick_interval)
+                        .is_some_and(|snapshot| {
+                            snapshot.window_sample_count >= AUTHORITY_CLOCK_MIN_SAMPLES
+                        })
+                {
+                    lifecycle.send_replace(MatchActorLifecycle::Running);
+                }
+                if terminal_checkpoint_handle.is_some()
+                    || terminal_publication_sequence.is_some()
+                    || terminal_ack_handle.is_some()
+                {
+                    continue;
+                }
+                if !loaded.simulation.terminal()
+                    && !publication_within_recovery_budget(
+                        loaded.simulation.tick.saturating_add(1),
+                        *command_durable_recovery_tick_tx.borrow(),
+                    )
+                {
+                    // A stuck checkpoint writer cannot let the public high-water
+                    // cross the bounded deterministic replay horizon. Resume
+                    // automatically when a checkpoint or command event advances
+                    // the durable recovery tick.
+                    continue;
+                }
+                if pending_published_receipt.is_some() {
+                    if !loaded.simulation.terminal() {
+                        if let Err(error) = loaded.simulation.step() {
+                            tracing::error!(%match_id, %error, "match simulation failed while awaiting durable publication");
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                if pending_command.is_some() {
+                    debug_assert!(!actor_command_lane_publish_allowed(true, false));
+                    if !loaded.simulation.terminal() {
+                        if let Err(error) = loaded.simulation.step() {
+                            tracing::error!(%match_id, %error, "speculative match simulation failed closed");
+                            break;
+                        }
+                    }
+                    // Freeze the old public cursor while PostgreSQL decides the
+                    // command. Publishing an independently stepped old lane can
+                    // create an unrecoverable old-cursor/high-tick record after
+                    // the database commits a new-cursor/low-tick event.
+                    continue;
+                }
+                if !loaded.simulation.terminal() {
+                    if let Err(error) = loaded.simulation.step() {
+                        tracing::error!(%match_id, %error, "match actor simulation failed closed");
+                        break;
+                    }
+                }
+                let snapshot_hash = match loaded.simulation.snapshot_hash() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::error!(%match_id, %error, "match actor snapshot failed closed");
+                        break;
+                    }
+                };
+                if loaded.simulation.terminal() {
+                    debug_assert!(actor_checkpoint_allowed(
+                        ActorCheckpointBoundary::Terminal,
+                        false,
+                    ));
+                    let job = MatchCheckpointJob {
+                        simulation: loaded.simulation.clone(),
+                        snapshot_hash: snapshot_hash.clone(),
+                        next_sequence: loaded.next_sequence,
+                        match_revision: loaded.match_revision,
+                        terminal: true,
+                        completion: None,
+                    };
+                    lifecycle.send_replace(MatchActorLifecycle::Terminalizing {
+                        started_at: Instant::now(),
+                    });
+                    let terminal_checkpoints = checkpoint_tx.clone();
+                    let terminal_checkpoint_completion =
+                        terminal_checkpoint_completion_tx.clone();
+                    terminal_checkpoint_handle = Some(tokio::spawn(async move {
+                        let result = checkpoint_barrier_with_timeout(
+                            &terminal_checkpoints,
+                            job,
+                            "terminal",
+                        )
+                        .await;
+                        let _ = terminal_checkpoint_completion
+                            .send(TerminalCheckpointCompletion {
+                                snapshot_hash,
+                                result,
+                            })
+                            .await;
+                    }));
+                    continue;
+                }
+                state_sequence = state_sequence.saturating_add(1);
+                latest_visible_candidate_tick = loaded.simulation.tick;
+                publication_candidates.send_replace(Some(ActorPublicationCandidate {
+                    state: PublishedMatchState {
+                        simulation: Arc::new(loaded.simulation.clone()),
+                        snapshot_hash: Arc::new(snapshot_hash.clone()),
+                        next_sequence: loaded.next_sequence,
+                        match_revision: loaded.match_revision,
+                        next_input_sequences: Arc::new(loaded.next_input_sequences.clone()),
+                        phase: OnlineMatchPhase::Running,
+                        result_hash: None,
+                        settlement_state: "not_ready".to_string(),
+                        state_sequence,
+                        published_at: Instant::now(),
+                    },
+                    durable_db_next_sequence: loaded.next_sequence,
+                    durable_db_match_revision: loaded.match_revision,
+                    durable_db_next_input_sequences: loaded.next_input_sequences.clone(),
+                    receipts_replayable: true,
+                    publish_to_watch: true,
+                }));
+                if loaded.simulation.tick.is_multiple_of(MATCH_CHECKPOINT_INTERVAL_TICKS)
+                    && actor_checkpoint_allowed(ActorCheckpointBoundary::Periodic, false)
+                {
+                    let job = MatchCheckpointJob {
+                        simulation: loaded.simulation.clone(),
+                        snapshot_hash,
+                        next_sequence: loaded.next_sequence,
+                        match_revision: loaded.match_revision,
+                        terminal: false,
+                        completion: None,
+                    };
+                    if checkpoint_tx.try_send(job).is_err() {
+                        tracing::warn!(%match_id, tick = loaded.simulation.tick, "checkpoint writer busy; latest durable checkpoint retained");
+                    }
+                }
+            }
+            envelope = commands.recv(), if pending_command.is_none()
+                && pending_published_receipt.is_none()
+                && pending_terminal_receipt.is_none()
+                && terminal_publication_sequence.is_none() => {
+                let Some(envelope) = envelope else {
+                    break;
+                };
+                let ActorCommandEnvelope {
+                    request,
+                    request_hash,
+                    admission,
+                    controlled_unit_ids,
+                    member_role,
+                    response,
+                } = envelope;
+                if let Some(result) = cached_actor_command_result(
+                    &receipt_cache,
+                    &request.command_id,
+                    &request.player_id,
+                    &request_hash,
+                    loaded.match_revision,
+                ) {
+                    let _ = response.send(result);
+                    continue;
+                }
+                let prepared = match prepare_actor_command(
+                    &loaded,
+                    request,
+                    request_hash,
+                    admission,
+                    &controlled_unit_ids,
+                    &member_role,
+                ) {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        let _ = response.send(Err(error));
+                        continue;
+                    }
+                };
+                let PreparedActorCommand {
+                    candidate_simulation,
+                    persistence,
+                } = prepared;
+                let command_id = persistence.request.command_id.clone();
+                let player_id = persistence.request.player_id.clone();
+                let request_hash = persistence.request_hash.clone();
+                let input_sequence = persistence.input_sequence;
+                let accepted_revision = persistence.accepted_revision;
+                let sequence = persistence.base_next_sequence;
+                let accepted_snapshot_hash = persistence.snapshot_hash.clone();
+                let visible = loaded.clone();
+                let durable_simulation_tick = candidate_simulation.tick;
+                if persistence_tx.try_send(persistence).is_err() {
+                    let _ = response.send(Err(api_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "command persistence queue is unavailable",
+                        true,
+                    )));
+                    continue;
+                }
+                loaded.simulation = candidate_simulation;
+                loaded.next_sequence = sequence.saturating_add(1);
+                loaded.match_revision = accepted_revision;
+                loaded
+                    .next_input_sequences
+                    .insert(player_id.clone(), input_sequence.saturating_add(1));
+                pending_command = Some(PendingActorCommand {
+                    command_id,
+                    player_id,
+                    request_hash,
+                    input_sequence,
+                    accepted_revision,
+                    sequence,
+                    accepted_snapshot_hash,
+                    durable_simulation_tick,
+                    visible,
+                    response,
+                });
+            }
+        }
+    }
+    publication_permit_tx.send_replace(false);
+    commands.close();
+    if let Some(handle) = terminal_checkpoint_handle.take() {
+        stop_actor_worker(match_id, "terminal checkpoint", handle).await;
+    }
+    if let Some(handle) = terminal_ack_handle.take() {
+        stop_actor_worker(match_id, "terminal ACK", handle).await;
+    }
+    drop(persistence_tx);
+    drop(persistence_completion_rx);
+    drop(publication_candidates);
+    drop(publication_completion_rx);
+    drop(checkpoint_tx);
+    drop(terminal_checkpoint_completion_rx);
+    drop(terminal_ack_completion_rx);
+    drop(checkpoint_failed_rx);
+    drop(fenced_rx);
+    stop_actor_worker(match_id, "command persistence", persistence_handle).await;
+    stop_actor_worker(match_id, "checkpoint", checkpoint_handle).await;
+    stop_actor_worker(match_id, "publication", publication_handle).await;
+    stop_actor_worker(match_id, "fence", fence_handle).await;
+    let mut registry = state.match_actors.write().await;
+    if registry
+        .actors
+        .get(&match_id)
+        .is_some_and(|handle| handle.actor_id == actor_id)
+    {
+        registry.actors.remove(&match_id);
+    }
+}
+
+async fn shutdown_changed_or_current(
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<(), watch::error::RecvError> {
+    if *shutdown.borrow() {
+        Ok(())
+    } else {
+        shutdown.changed().await
+    }
+}
+
+async fn stop_actor_worker(
+    match_id: Uuid,
+    label: &'static str,
+    mut handle: tokio::task::JoinHandle<()>,
+) {
+    match tokio::time::timeout(MATCH_ACTOR_WORKER_JOIN_TIMEOUT, &mut handle).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::error!(%match_id, %error, worker = label, "match actor worker join failed closed");
+        }
+        Err(_) => {
+            tracing::error!(%match_id, worker = label, "match actor worker join timed out; cancelling");
+            handle.abort();
+            match tokio::time::timeout(MATCH_ACTOR_WORKER_ABORT_TIMEOUT, handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) if error.is_cancelled() => {}
+                Ok(Err(error)) => {
+                    tracing::error!(%match_id, %error, worker = label, "cancelled match actor worker join failed");
+                }
+                Err(_) => {
+                    tracing::error!(%match_id, worker = label, "cancelled match actor worker did not stop within hard timeout");
+                }
+            }
+        }
+    }
+}
+
+async fn run_match_fence_monitor(
+    state: AppState,
+    match_id: Uuid,
+    publication_permit: watch::Sender<bool>,
+    fenced: watch::Sender<bool>,
+) {
+    let mut interval = tokio::time::interval(MATCH_ACTOR_FENCE_INTERVAL);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = fenced.closed() => return,
+            _ = interval.tick() => {
+                let owns_match = tokio::time::timeout(
+                    MATCH_ACTOR_WORKER_OPERATION_TIMEOUT,
+                    sqlx::query_scalar::query_scalar::<_, bool>(MATCH_ACTOR_FENCE_OWNERSHIP_SQL)
+                .bind(match_id)
+                .bind(state.instance_id.as_str())
+                .bind(state.instance_epoch)
+                .bind(state.physical_host_id.as_str())
+                .fetch_one(&state.pool),
+                )
+                .await
+                .map_err(|_| "match actor fence query exceeded its hard timeout".to_string())
+                .and_then(|result| result.map_err(|error| error.to_string()));
+                match owns_match {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        publication_permit.send_replace(false);
+                        fenced.send_replace(true);
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::error!(%match_id, %error, "match actor fence check failed closed");
+                        publication_permit.send_replace(false);
+                        fenced.send_replace(true);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn run_match_checkpoint_writer(
+    state: AppState,
+    match_id: Uuid,
+    mut checkpoints: mpsc::Receiver<MatchCheckpointJob>,
+    failed: watch::Sender<Option<String>>,
+    durable_recovery_tick: watch::Sender<u64>,
+) {
+    while let Some(mut job) = checkpoints.recv().await {
+        let result = tokio::time::timeout(MATCH_ACTOR_WORKER_OPERATION_TIMEOUT, async {
+            if job.terminal {
+                persist_terminal_actor_checkpoint(&state, match_id, &job).await
+            } else {
+                persist_actor_checkpoint(&state, match_id, &job).await
+            }
+        })
+        .await
+        .unwrap_or_else(|_| Err("checkpoint persistence exceeded its hard timeout".to_string()));
+        if let Some(completion) = job.completion.take() {
+            let _ = completion.send(result.clone());
+        }
+        if let Err(error) = result {
+            tracing::error!(%match_id, %error, terminal = job.terminal, "match actor checkpoint failed");
+            failed.send_replace(Some(error));
+            break;
+        }
+        let durable_tick = (*durable_recovery_tick.borrow()).max(job.simulation.tick);
+        durable_recovery_tick.send_replace(durable_tick);
+        // Keep the worker alive until the actor drains it. Closing this sender
+        // immediately after a successful terminal checkpoint races the final
+        // terminal journal/publication ACK and would look like a checkpoint
+        // failure to the actor's fail-closed select loop.
+    }
+}
+
+async fn persist_actor_checkpoint(
+    state: &AppState,
+    match_id: Uuid,
+    job: &MatchCheckpointJob,
+) -> Result<(), String> {
+    let simulation_json =
+        serde_json::to_value(&job.simulation).map_err(|error| error.to_string())?;
+    if !state.database_host_authority.is_healthy() {
+        return Err("PostgreSQL host authority is fail-closed".to_string());
+    }
+    let identity = &state.database_host_authority.identity;
+    let persisted = sqlx::query_scalar::query_scalar::<_, bool>(ONLINE_CHECKPOINT_ACTOR_V1_SQL)
+        .bind(match_id)
+        .bind(job.simulation.tick as i64)
+        .bind(&job.snapshot_hash)
+        .bind(&simulation_json)
+        .bind(job.next_sequence as i64)
+        .bind(job.match_revision as i64)
+        .bind(state.instance_id.as_str())
+        .bind(state.instance_epoch)
+        .bind(state.physical_host_id.as_str())
+        .bind(identity.owner_nonce)
+        .bind(&identity.application_name)
+        .bind(identity.backend_pid)
+        .bind(identity.backend_started_at)
+        .bind(&identity.database_system_identifier)
+        .bind(identity.database_timeline_id)
+        .bind(identity.database_postmaster_started_at)
+        .bind(identity.leader_lock_key)
+        .bind(identity.barrier_lock_key)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !persisted {
+        return Err("checkpoint was fenced or superseded".to_string());
+    }
+    Ok(())
+}
+
+fn staged_terminal_authority_from_row(
+    row: &sqlx_postgres::PgRow,
+    match_mode: &str,
+) -> Result<Option<StagedTerminalAuthority>, String> {
+    let simulation_value = row
+        .try_get::<Option<Value>, _>("terminal_stage_simulation_json")
+        .map_err(|error| error.to_string())?;
+    let result_value = row
+        .try_get::<Option<Value>, _>("terminal_stage_result_json")
+        .map_err(|error| error.to_string())?;
+    let result_hash = row
+        .try_get::<Option<String>, _>("terminal_stage_result_hash")
+        .map_err(|error| error.to_string())?;
+    let snapshot_hash = row
+        .try_get::<Option<String>, _>("terminal_stage_snapshot_hash")
+        .map_err(|error| error.to_string())?;
+    let authoritative_tick = row
+        .try_get::<Option<i64>, _>("terminal_stage_authoritative_tick")
+        .map_err(|error| error.to_string())?;
+    let next_sequence = row
+        .try_get::<Option<i64>, _>("terminal_stage_next_sequence")
+        .map_err(|error| error.to_string())?;
+    let match_revision = row
+        .try_get::<Option<i64>, _>("terminal_stage_match_revision")
+        .map_err(|error| error.to_string())?;
+    if simulation_value.is_none()
+        && result_value.is_none()
+        && result_hash.is_none()
+        && snapshot_hash.is_none()
+        && authoritative_tick.is_none()
+        && next_sequence.is_none()
+        && match_revision.is_none()
+    {
+        return Ok(None);
+    }
+    let simulation = serde_json::from_value::<MissionSimV1>(
+        simulation_value.ok_or_else(|| "terminal stage simulation is missing".to_string())?,
+    )
+    .map_err(|error| format!("decode terminal stage simulation: {error}"))?;
+    if !simulation.terminal() {
+        return Err("terminal stage simulation is not terminal".to_string());
+    }
+    let result = serde_json::from_value::<BattleResultV1>(
+        result_value.ok_or_else(|| "terminal stage result is missing".to_string())?,
+    )
+    .map_err(|error| format!("decode terminal stage result: {error}"))?;
+    let result_hash =
+        result_hash.ok_or_else(|| "terminal stage result hash is missing".to_string())?;
+    let snapshot_hash =
+        snapshot_hash.ok_or_else(|| "terminal stage snapshot hash is missing".to_string())?;
+    let authoritative_tick = u64::try_from(
+        authoritative_tick.ok_or_else(|| "terminal stage tick is missing".to_string())?,
+    )
+    .map_err(|_| "terminal stage tick is negative".to_string())?;
+    let next_sequence = u64::try_from(
+        next_sequence.ok_or_else(|| "terminal stage sequence is missing".to_string())?,
+    )
+    .map_err(|_| "terminal stage sequence is negative".to_string())?;
+    let match_revision = u64::try_from(
+        match_revision.ok_or_else(|| "terminal stage revision is missing".to_string())?,
+    )
+    .map_err(|_| "terminal stage revision is negative".to_string())?;
+    let computed_snapshot_hash = simulation
+        .snapshot_hash()
+        .map_err(|error| format!("hash terminal stage simulation: {error}"))?;
+    let (expected_result, expected_result_hash) = derive_terminal_result(&simulation, match_mode)?;
+    if simulation.tick != authoritative_tick
+        || computed_snapshot_hash != snapshot_hash
+        || result != expected_result
+        || result_hash != expected_result_hash
+    {
+        return Err("terminal stage does not match its deterministic result authority".to_string());
+    }
+    Ok(Some(StagedTerminalAuthority {
+        simulation,
+        result,
+        result_hash,
+        snapshot_hash,
+        authoritative_tick,
+        next_sequence,
+        match_revision,
+    }))
+}
+
+async fn finalize_staged_terminal_authority(
+    transaction: &mut sqlx::transaction::Transaction<'_, Postgres>,
+    expected: TerminalFinalizationExpectation<'_>,
+) -> Result<Option<TerminalPublicationCommit>, String> {
+    let row = sqlx::query::query(
+        "select phase, match_mode, next_sequence, match_revision,
+                assigned_instance_id, assigned_instance_epoch, assigned_physical_host_id,
+                terminal_stage_simulation_json, terminal_stage_result_json,
+                terminal_stage_result_hash, terminal_stage_snapshot_hash,
+                terminal_stage_authoritative_tick, terminal_stage_next_sequence,
+                terminal_stage_match_revision
+         from trnm_online_matches where match_id = $1 for update",
+    )
+    .bind(expected.match_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "terminal finalization match disappeared".to_string())?;
+    let phase = row
+        .try_get::<String, _>("phase")
+        .map_err(|error| error.to_string())?;
+    if phase != "running" {
+        return Ok(None);
+    }
+    let match_mode = row
+        .try_get::<String, _>("match_mode")
+        .map_err(|error| error.to_string())?;
+    let staged = staged_terminal_authority_from_row(&row, &match_mode)?
+        .ok_or_else(|| "terminal finalization has no private staged authority".to_string())?;
+    let assigned_instance = row
+        .try_get::<Option<String>, _>("assigned_instance_id")
+        .map_err(|error| error.to_string())?;
+    let assigned_epoch = row
+        .try_get::<i64, _>("assigned_instance_epoch")
+        .map_err(|error| error.to_string())?;
+    let assigned_physical_host = row
+        .try_get::<Option<String>, _>("assigned_physical_host_id")
+        .map_err(|error| error.to_string())?;
+    let durable_next_sequence = u64::try_from(
+        row.try_get::<i64, _>("next_sequence")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "terminal finalization sequence is negative".to_string())?;
+    let durable_revision = u64::try_from(
+        row.try_get::<i64, _>("match_revision")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "terminal finalization revision is negative".to_string())?;
+    let member_rows = sqlx::query::query(
+        "select player_id, next_input_sequence from trnm_online_match_members
+         where match_id = $1 order by player_id for update",
+    )
+    .bind(expected.match_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let mut durable_cursors = BTreeMap::new();
+    for member in member_rows {
+        durable_cursors.insert(
+            member
+                .try_get::<String, _>("player_id")
+                .map_err(|error| error.to_string())?,
+            u64::try_from(
+                member
+                    .try_get::<i64, _>("next_input_sequence")
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|_| "terminal finalization member cursor is negative".to_string())?,
+        );
+    }
+    if !match_assignment_matches_local(
+        assigned_instance.as_deref(),
+        assigned_epoch,
+        assigned_physical_host.as_deref(),
+        expected.instance_id,
+        expected.actor_epoch,
+        expected.physical_host_id,
+    ) || staged.authoritative_tick != expected.authoritative_tick
+        || staged.next_sequence != expected.next_sequence
+        || staged.match_revision != expected.match_revision
+        || staged.snapshot_hash != expected.snapshot_hash
+        || expected
+            .result_hash
+            .is_some_and(|result_hash| result_hash != staged.result_hash)
+        || durable_next_sequence != expected.next_sequence
+        || durable_revision != expected.match_revision
+        || durable_cursors != *expected.next_input_sequences
+    {
+        return Err(
+            "terminal finalization was fenced or differed from its exact staged/HWM authority"
+                .to_string(),
+        );
+    }
+
+    let any_pending = apply_member_progression(
+        transaction,
+        expected.match_id,
+        &staged.result,
+        &staged.result_hash,
+    )
+    .await?;
+    product_v2::apply_ranked_result(
+        transaction,
+        expected.match_id,
+        staged.result.outcome,
+        &staged.result_hash,
+    )
+    .await?;
+    operations_v1::finalize_ranked_operations(
+        transaction,
+        expected.match_id,
+        staged.result.outcome,
+        &staged.result_hash,
+        &staged.snapshot_hash,
+    )
+    .await?;
+    sqlx::query::query(
+        "insert into trnm_online_replay_frames (
+            match_id, tick, snapshot_hash, simulation_json, frame_kind
+         ) values ($1, $2, $3, $4, 'terminal')
+         on conflict (match_id, tick) do update set
+            snapshot_hash = excluded.snapshot_hash,
+            simulation_json = excluded.simulation_json,
+            frame_kind = excluded.frame_kind",
+    )
+    .bind(expected.match_id)
+    .bind(staged.authoritative_tick as i64)
+    .bind(&staged.snapshot_hash)
+    .bind(serde_json::to_value(&staged.simulation).map_err(|error| error.to_string())?)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let settlement_state = if any_pending { "pending" } else { "settled" };
+    let updated = sqlx::query::query(
+        "update trnm_online_matches set phase = 'complete',
+            simulation_json = terminal_stage_simulation_json,
+            result_json = terminal_stage_result_json,
+            result_hash = terminal_stage_result_hash,
+            snapshot_hash = terminal_stage_snapshot_hash,
+            authoritative_tick = terminal_stage_authoritative_tick,
+            checkpoint_sequence = terminal_stage_next_sequence,
+            settlement_state = $2,
+            terminal_stage_simulation_json = null,
+            terminal_stage_result_json = null,
+            terminal_stage_result_hash = null,
+            terminal_stage_snapshot_hash = null,
+            terminal_stage_authoritative_tick = null,
+            terminal_stage_next_sequence = null,
+            terminal_stage_match_revision = null,
+            terminal_staged_at = null,
+            terminal_publication_actor_generation = $9,
+            terminal_publication_state = 'acknowledged',
+            updated_at = now()
+         where match_id = $1 and phase = 'running'
+           and assigned_instance_id = $3 and assigned_instance_epoch = $4
+           and assigned_physical_host_id = $5
+           and next_sequence = $6 and match_revision = $7
+           and terminal_stage_snapshot_hash = $8",
+    )
+    .bind(expected.match_id)
+    .bind(settlement_state)
+    .bind(expected.instance_id)
+    .bind(expected.actor_epoch)
+    .bind(expected.physical_host_id)
+    .bind(expected.next_sequence as i64)
+    .bind(expected.match_revision as i64)
+    .bind(expected.snapshot_hash)
+    .bind(expected.actor_generation)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    if updated.rows_affected() != 1 {
+        return Err("terminal finalization was fenced before commit".to_string());
+    }
+    let marker = sqlx::query::query(
+        "insert into trnm_online_terminal_publication_acks (
+            match_id, actor_generation, actor_epoch, authoritative_tick,
+            next_sequence, match_revision, next_input_sequences, snapshot_hash,
+            phase, result_hash, published_settlement_state,
+            instance_id, physical_host_id, local_tombstone_state
+         ) values ($1, $2, $3, $4, $5, $6, $7, $8, 'complete', $9, $10, $11, $12,
+                   'hot_pending')
+         on conflict (match_id) do update set
+            published_settlement_state = excluded.published_settlement_state
+         where trnm_online_terminal_publication_acks.actor_generation = excluded.actor_generation
+           and trnm_online_terminal_publication_acks.instance_id = excluded.instance_id
+           and trnm_online_terminal_publication_acks.actor_epoch = excluded.actor_epoch
+           and trnm_online_terminal_publication_acks.physical_host_id = excluded.physical_host_id
+           and trnm_online_terminal_publication_acks.authoritative_tick = excluded.authoritative_tick
+           and trnm_online_terminal_publication_acks.next_sequence = excluded.next_sequence
+           and trnm_online_terminal_publication_acks.match_revision = excluded.match_revision
+           and trnm_online_terminal_publication_acks.next_input_sequences = excluded.next_input_sequences
+           and trnm_online_terminal_publication_acks.snapshot_hash = excluded.snapshot_hash
+           and trnm_online_terminal_publication_acks.phase = excluded.phase
+           and trnm_online_terminal_publication_acks.result_hash = excluded.result_hash
+           and (
+               trnm_online_terminal_publication_acks.published_settlement_state = excluded.published_settlement_state
+               or (
+                   trnm_online_terminal_publication_acks.published_settlement_state = 'pending'
+                   and excluded.published_settlement_state = 'settled'
+               )
+           )
+         returning floor(extract(epoch from acknowledged_at) * 1000)::bigint
+                   as acknowledged_at_unix_ms",
+    )
+    .bind(expected.match_id)
+    .bind(expected.actor_generation)
+    .bind(expected.actor_epoch)
+    .bind(expected.authoritative_tick as i64)
+    .bind(expected.next_sequence as i64)
+    .bind(expected.match_revision as i64)
+    .bind(
+        serde_json::to_value(expected.next_input_sequences)
+            .map_err(|error| error.to_string())?,
+    )
+    .bind(expected.snapshot_hash)
+    .bind(&staged.result_hash)
+    .bind(settlement_state)
+    .bind(expected.instance_id)
+    .bind(expected.physical_host_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    let Some(marker) = marker else {
+        return Err(
+            "terminal finalization conflicts with immutable published evidence".to_string(),
+        );
+    };
+    let acknowledged_at_unix_ms = u64::try_from(
+        marker
+            .try_get::<i64, _>("acknowledged_at_unix_ms")
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "terminal ACK acknowledgement timestamp is not positive".to_string())?;
+    if acknowledged_at_unix_ms == 0 {
+        return Err("terminal ACK acknowledgement timestamp is not positive".to_string());
+    }
+    Ok(Some(TerminalPublicationCommit {
+        result_hash: staged.result_hash,
+        settlement_state: settlement_state.to_string(),
+        acknowledged_at_unix_ms,
+    }))
+}
+
+async fn persist_terminal_actor_checkpoint(
+    state: &AppState,
+    match_id: Uuid,
+    job: &MatchCheckpointJob,
+) -> Result<(), String> {
+    let mut transaction = state
+        .pool
+        .begin()
+        .await
+        .map_err(|error| error.to_string())?;
+    lock_current_fleet_epoch(&mut transaction, state, true).await?;
+    let row = sqlx::query::query(
+        "select phase, match_mode, next_sequence, match_revision,
+                assigned_instance_id, assigned_instance_epoch,
+                assigned_physical_host_id,
+                terminal_stage_simulation_json, terminal_stage_result_json,
+                terminal_stage_result_hash, terminal_stage_snapshot_hash,
+                terminal_stage_authoritative_tick, terminal_stage_next_sequence,
+                terminal_stage_match_revision
+         from trnm_online_matches where match_id = $1 for update",
+    )
+    .bind(match_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "terminal match disappeared".to_string())?;
+    let phase: String = row.try_get("phase").map_err(|error| error.to_string())?;
+    let assigned_instance: Option<String> = row
+        .try_get("assigned_instance_id")
+        .map_err(|error| error.to_string())?;
+    let assigned_epoch: i64 = row
+        .try_get("assigned_instance_epoch")
+        .map_err(|error| error.to_string())?;
+    let assigned_physical_host: Option<String> = row
+        .try_get("assigned_physical_host_id")
+        .map_err(|error| error.to_string())?;
+    let durable_next_sequence = row
+        .try_get::<i64, _>("next_sequence")
+        .map_err(|error| error.to_string())? as u64;
+    let durable_revision = row
+        .try_get::<i64, _>("match_revision")
+        .map_err(|error| error.to_string())? as u64;
+    let assignment_is_local = match_assignment_matches_local(
+        assigned_instance.as_deref(),
+        assigned_epoch,
+        assigned_physical_host.as_deref(),
+        state.instance_id.as_str(),
+        state.instance_epoch,
+        state.physical_host_id.as_str(),
+    );
+    if phase == "complete" {
+        if !assignment_is_local
+            || durable_next_sequence != job.next_sequence
+            || durable_revision != job.match_revision
+        {
+            return Err("completed terminal checkpoint belongs to fenced authority".to_string());
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    if phase != "running"
+        || !assignment_is_local
+        || durable_next_sequence != job.next_sequence
+        || durable_revision != job.match_revision
+    {
+        return Err("terminal checkpoint was fenced by newer authority".to_string());
+    }
+    let match_mode: String = row
+        .try_get("match_mode")
+        .map_err(|error| error.to_string())?;
+    let simulation_json =
+        serde_json::to_value(&job.simulation).map_err(|error| error.to_string())?;
+    let (result, result_hash) = derive_terminal_result(&job.simulation, &match_mode)?;
+    if let Some(staged) = staged_terminal_authority_from_row(&row, &match_mode)? {
+        if staged.simulation != job.simulation
+            || staged.result != result
+            || staged.result_hash != result_hash
+            || staged.snapshot_hash != job.snapshot_hash
+            || staged.authoritative_tick != job.simulation.tick
+            || staged.next_sequence != job.next_sequence
+            || staged.match_revision != job.match_revision
+        {
+            return Err("terminal checkpoint conflicts with an existing private stage".to_string());
+        }
+        lock_current_fleet_epoch_for_commit(&mut transaction, state, true).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    let updated = sqlx::query::query(
+        "update trnm_online_matches set
+            terminal_stage_simulation_json = $2,
+            terminal_stage_result_json = $3,
+            terminal_stage_result_hash = $4,
+            terminal_stage_snapshot_hash = $5,
+            terminal_stage_authoritative_tick = $6,
+            terminal_stage_next_sequence = $7,
+            terminal_stage_match_revision = $8,
+            terminal_staged_at = now(), updated_at = now()
+         where match_id = $1 and phase = 'running' and assigned_instance_id = $9
+           and assigned_instance_epoch = $10 and next_sequence = $7
+           and assigned_physical_host_id = $12 and match_revision = $11
+           and terminal_stage_snapshot_hash is null
+           and exists (
+             select 1 from trnm_online_fleet_instances f
+             where f.instance_id = $9 and f.instance_epoch = $10
+               and f.physical_host_id = $12
+               and f.status in ('active', 'draining')
+               and f.lease_expires_at > now()
+           )",
+    )
+    .bind(match_id)
+    .bind(simulation_json)
+    .bind(serde_json::to_value(result).map_err(|error| error.to_string())?)
+    .bind(result_hash)
+    .bind(&job.snapshot_hash)
+    .bind(job.simulation.tick as i64)
+    .bind(job.next_sequence as i64)
+    .bind(job.match_revision as i64)
+    .bind(state.instance_id.as_str())
+    .bind(state.instance_epoch)
+    .bind(job.match_revision as i64)
+    .bind(state.physical_host_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    if updated.rows_affected() != 1 {
+        return Err("terminal private staging was fenced by a newer fleet epoch".to_string());
+    }
+    lock_current_fleet_epoch_for_commit(&mut transaction, state, true).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn persist_terminal_publication_ack(
+    state: &AppState,
+    match_id: Uuid,
+    actor_generation: Uuid,
+    loaded: &LoadedMatchActor,
+    evidence: &TerminalPublicationEvidence,
+) -> Result<TerminalPublicationCommit, String> {
+    let mut connection = state
+        .pool
+        .acquire()
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut transaction = (*connection)
+        .begin()
+        .await
+        .map_err(|error| error.to_string())?;
+    lock_current_fleet_epoch(&mut transaction, state, true).await?;
+    let loaded_hash = loaded
+        .simulation
+        .snapshot_hash()
+        .map_err(|error| error.to_string())?;
+    if evidence.phase != OnlineMatchPhase::Complete
+        || evidence.result_hash.is_none()
+        || evidence.authoritative_tick != loaded.simulation.tick
+        || evidence.next_sequence != loaded.next_sequence
+        || evidence.match_revision != loaded.match_revision
+        || evidence.next_input_sequences != loaded.next_input_sequences
+        || evidence.snapshot_hash != loaded_hash
+    {
+        return Err(
+            "terminal publication ACK did not match its staged actor authority".to_string(),
+        );
+    }
+    let commit = finalize_staged_terminal_authority(
+        &mut transaction,
+        TerminalFinalizationExpectation {
+            match_id,
+            actor_generation,
+            actor_epoch: state.instance_epoch,
+            instance_id: state.instance_id.as_str(),
+            physical_host_id: state.physical_host_id.as_str(),
+            authoritative_tick: evidence.authoritative_tick,
+            next_sequence: evidence.next_sequence,
+            match_revision: evidence.match_revision,
+            next_input_sequences: &evidence.next_input_sequences,
+            snapshot_hash: &evidence.snapshot_hash,
+            result_hash: evidence.result_hash.as_deref(),
+        },
+    )
+    .await?
+    .ok_or_else(|| "terminal publication ACK found no private staged authority".to_string())?;
+    lock_current_fleet_epoch_for_commit(&mut transaction, state, true).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| error.to_string())?;
+    // Observe a post-commit WAL flush bound on this exact session, convert
+    // the exact hot witness into a cold ACK tombstone, and only then publish
+    // the DB marker by a second fenced transaction on the same connection.
+    let lineage = database_lineage(&mut *connection).await?;
+    let high_water =
+        if let Some(tombstone) = state.published_tick_journal.ack_tombstone(match_id)? {
+            tombstone.high_water
+        } else {
+            state
+                .published_tick_journal
+                .high_water(match_id)?
+                .ok_or_else(|| "terminal publication ACK lost its exact hot witness".to_string())?
+        };
+    if high_water.instance_id != *state.instance_id
+        || high_water.physical_host_id != *state.physical_host_id
+        || high_water.match_id != match_id
+        || high_water.actor_generation != actor_generation
+        || high_water.actor_epoch != state.instance_epoch
+        || high_water.tick != evidence.authoritative_tick
+        || high_water.next_sequence != evidence.next_sequence
+        || high_water.match_revision != evidence.match_revision
+        || high_water.next_input_sequences != evidence.next_input_sequences
+        || high_water.phase != "complete"
+        || !high_water.receipts_replayable
+        || high_water.snapshot_hash != evidence.snapshot_hash
+    {
+        return Err("terminal publication ACK hot witness is not exact".to_string());
+    }
+    let tombstone = ensure_cold_terminal_ack(
+        &state.published_tick_journal,
+        &high_water,
+        &commit,
+        &lineage,
+    )
+    .await?;
+    seal_terminal_ack_in_database(
+        &mut connection,
+        &tombstone,
+        Some(state),
+        &state.database_host_authority,
+    )
+    .await?;
+    state
+        .terminal_acknowledged_high_waters
+        .write()
+        .await
+        .insert(match_id);
+    Ok(commit)
+}
+
+/// Compatibility API retained only to fail closed for downstream callers.
+///
+/// Terminal economic settlement is owned by the independently deployed
+/// `trnm-settlement-worker`. The game-server process must never execute signer
+/// or CEX I/O, mutate campaign economic queues, or advance the terminal
+/// settlement marker itself.
+pub async fn settle_pending_matches(_state: &AppState, _limit: i64) -> Result<u64, String> {
+    Err(
+        "terminal settlement is owned by trnm-settlement-worker; in-process settlement is prohibited"
+            .to_string(),
+    )
+}
+
+async fn persist_campaign(
+    transaction: &mut sqlx::transaction::Transaction<'_, sqlx_postgres::Postgres>,
+    campaign: &CampaignSaveV1,
+) -> Result<(), ApiError> {
+    persist_campaign_string(transaction, campaign).await
+}
+
+async fn persist_campaign_string(
+    transaction: &mut sqlx::transaction::Transaction<'_, sqlx_postgres::Postgres>,
+    campaign: &CampaignSaveV1,
+) -> Result<(), ApiError> {
+    let state_hash = hash_json(campaign)?;
+    sqlx::query::query(
+        "update trnm_online_campaigns set campaign_revision = $2, schema_revision = $3,
+            state_hash = $4, campaign_json = $5, updated_at = now()
+         where campaign_id = $1",
+    )
+    .bind(&campaign.campaign_id)
+    .bind(campaign.revision as i64)
+    .bind(i32::from(campaign.schema_revision))
+    .bind(state_hash)
+    .bind(serde_json::to_value(campaign).map_err(internal_serialization)?)
+    .execute(&mut **transaction)
+    .await
+    .map_err(internal_db)?;
+    Ok(())
+}
+
+async fn ensure_campaign_progression_is_published<'e, E>(
+    executor: E,
+    campaign_id: &str,
+) -> Result<(), ApiError>
+where
+    E: sqlx::executor::Executor<'e, Database = Postgres>,
+{
+    if campaign_has_unacknowledged_progression(executor, campaign_id)
+        .await
+        .map_err(|error| {
+            api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("campaign terminal publication lookup failed: {error}"),
+                true,
+            )
+        })?
+    {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "campaign progression is quarantined behind an unacknowledged terminal publication",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+async fn ensure_campaign_owner(
+    transaction: &mut sqlx::transaction::Transaction<'_, sqlx_postgres::Postgres>,
+    campaign_id: &str,
+    player_id: &str,
+    account_id: Uuid,
+) -> Result<(), ApiError> {
+    let owner = sqlx::query::query(
+        "select player_id, account_id from trnm_online_campaigns where campaign_id = $1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(internal_db)?
+    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "cloud campaign not found", false))?;
+    if owner
+        .try_get::<String, _>("player_id")
+        .map_err(internal_db)?
+        != player_id
+        || owner
+            .try_get::<Uuid, _>("account_id")
+            .map_err(internal_db)?
+            != account_id
+    {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "cloud campaign does not belong to the authenticated player/account",
+            false,
+        ));
+    }
+    ensure_campaign_progression_is_published(&mut **transaction, campaign_id).await?;
+    Ok(())
+}
+
+async fn lock_player_lobby_scope(
+    transaction: &mut sqlx::transaction::Transaction<'_, sqlx_postgres::Postgres>,
+    player_id: &str,
+) -> Result<(), ApiError> {
+    sqlx::query::query("select pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("trnm-online-lobby:{player_id}"))
+        .execute(&mut **transaction)
+        .await
+        .map_err(internal_db)?;
+    Ok(())
+}
+
+async fn ensure_player_has_no_active_lobby(
+    transaction: &mut sqlx::transaction::Transaction<'_, sqlx_postgres::Postgres>,
+    player_id: &str,
+) -> Result<(), ApiError> {
+    let active: bool = sqlx::query_scalar::query_scalar(
+        "select exists(
+            select 1 from trnm_online_lobby_members m
+            join trnm_online_lobbies l on l.lobby_id = m.lobby_id
+            where m.player_id = $1 and l.status in ('open', 'queued')
+         )",
+    )
+    .bind(player_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(internal_db)?;
+    if active {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "player already belongs to an active lobby",
+            true,
+        ));
+    }
+    Ok(())
+}
+
+async fn lock_lobby(
+    transaction: &mut sqlx::transaction::Transaction<'_, sqlx_postgres::Postgres>,
+    lobby_id: Uuid,
+) -> Result<sqlx_postgres::PgRow, ApiError> {
+    sqlx::query::query(
+        "select owner_player_id, owner_account_id, status, lobby_revision, map_id
+         from trnm_online_lobbies where lobby_id = $1 for update",
+    )
+    .bind(lobby_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(internal_db)?
+    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "lobby not found", false))
+}
+
+fn require_lobby_owner(
+    lobby: &sqlx_postgres::PgRow,
+    player_id: &str,
+    account_id: Uuid,
+) -> Result<(), ApiError> {
+    if lobby
+        .try_get::<String, _>("owner_player_id")
+        .map_err(internal_db)?
+        != player_id
+        || lobby
+            .try_get::<Uuid, _>("owner_account_id")
+            .map_err(internal_db)?
+            != account_id
+    {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "only the authenticated lobby owner may perform this operation",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn require_open_lobby_revision(
+    lobby: &sqlx_postgres::PgRow,
+    expected_revision: u64,
+) -> Result<(), ApiError> {
+    if lobby.try_get::<String, _>("status").map_err(internal_db)? != "open" {
+        return Err(api_error(StatusCode::CONFLICT, "lobby is not open", false));
+    }
+    let revision = lobby
+        .try_get::<i64, _>("lobby_revision")
+        .map_err(internal_db)? as u64;
+    if revision != expected_revision {
+        return Err(conflict("lobby revision changed", revision));
+    }
+    Ok(())
+}
+
+async fn fetch_lobby_view(pool: &PgPool, lobby_id: Uuid) -> Result<OnlineLobbyView, ApiError> {
+    let lobby = sqlx::query::query(
+        "select display_name, owner_player_id, status, lobby_revision, map_id,
+                queue_mode, match_id
+         from trnm_online_lobbies where lobby_id = $1",
+    )
+    .bind(lobby_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal_db)?
+    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "lobby not found", false))?;
+    let rows = sqlx::query::query(
+        "select player_id, account_id, campaign_id, member_role, ready
+         from trnm_online_lobby_members where lobby_id = $1
+         order by case member_role when 'owner' then 0 else 1 end",
+    )
+    .bind(lobby_id)
+    .fetch_all(pool)
+    .await
+    .map_err(internal_db)?;
+    let members = rows
+        .into_iter()
+        .map(|row| {
+            Ok(OnlineLobbyMemberView {
+                player_id: row.try_get("player_id").map_err(internal_db)?,
+                account_id: row
+                    .try_get::<Uuid, _>("account_id")
+                    .map_err(internal_db)?
+                    .to_string(),
+                campaign_id: row.try_get("campaign_id").map_err(internal_db)?,
+                role: row.try_get("member_role").map_err(internal_db)?,
+                ready: row.try_get("ready").map_err(internal_db)?,
+            })
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    let status: String = lobby.try_get("status").map_err(internal_db)?;
+    Ok(OnlineLobbyView {
+        protocol_version: ONLINE_PRODUCT_PROTOCOL.to_string(),
+        build_id: ONLINE_PRODUCT_BUILD.to_string(),
+        lobby_id: lobby_id.to_string(),
+        display_name: lobby.try_get("display_name").map_err(internal_db)?,
+        owner_player_id: lobby.try_get("owner_player_id").map_err(internal_db)?,
+        status: match status.as_str() {
+            "open" => OnlineLobbyStatus::Open,
+            "queued" => OnlineLobbyStatus::Queued,
+            "matched" => OnlineLobbyStatus::Matched,
+            _ => OnlineLobbyStatus::Closed,
+        },
+        lobby_revision: lobby
+            .try_get::<i64, _>("lobby_revision")
+            .map_err(internal_db)? as u64,
+        map_id: lobby.try_get("map_id").map_err(internal_db)?,
+        queue_mode: lobby.try_get("queue_mode").map_err(internal_db)?,
+        members,
+        match_id: lobby
+            .try_get::<Option<Uuid>, _>("match_id")
+            .map_err(internal_db)?
+            .map(|value| value.to_string()),
+    })
+}
+
+fn sha256_text(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+async fn fetch_match_view(pool: &PgPool, match_id: Uuid) -> Result<OnlineMatchView, ApiError> {
+    let row = sqlx::query::query(
+        "select match_id, join_code, phase, build_id, map_id, match_mode, rules_version, seed_hash,
+                snapshot_hash, authoritative_tick, next_sequence, match_revision,
+                result_hash, settlement_state
+         from trnm_online_matches where match_id = $1",
+    )
+    .bind(match_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal_db)?
+    .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "match not found", false))?;
+    let member_rows = sqlx::query::query(
+        "select m.player_id, m.account_id, m.campaign_id, m.member_role,
+                m.controlled_unit_ids, m.next_input_sequence,
+                c.campaign_revision, c.campaign_json
+         from trnm_online_match_members m
+         join trnm_online_campaigns c on c.campaign_id = m.campaign_id
+         where m.match_id = $1 order by m.member_role desc",
+    )
+    .bind(match_id)
+    .fetch_all(pool)
+    .await
+    .map_err(internal_db)?;
+    match_view_from_rows(&row, &member_rows)
+}
+
+fn match_view_from_rows(
+    row: &sqlx_postgres::PgRow,
+    member_rows: &[sqlx_postgres::PgRow],
+) -> Result<OnlineMatchView, ApiError> {
+    let mut members = Vec::with_capacity(member_rows.len());
+    for member in member_rows {
+        let controlled: Value = member.try_get("controlled_unit_ids").map_err(internal_db)?;
+        let campaign_value: Value = member.try_get("campaign_json").map_err(internal_db)?;
+        let campaign: CampaignSaveV1 =
+            serde_json::from_value(campaign_value).map_err(internal_serialization)?;
+        members.push(OnlineMatchMemberView {
+            player_id: member.try_get("player_id").map_err(internal_db)?,
+            account_id: member
+                .try_get::<Uuid, _>("account_id")
+                .map_err(internal_db)?
+                .to_string(),
+            campaign_id: member.try_get("campaign_id").map_err(internal_db)?,
+            role: member.try_get("member_role").map_err(internal_db)?,
+            controlled_unit_ids: serde_json::from_value(controlled)
+                .map_err(internal_serialization)?,
+            campaign_revision: member
+                .try_get::<i64, _>("campaign_revision")
+                .map_err(internal_db)? as u64,
+            level: campaign.progression.level,
+            experience: campaign.progression.experience,
+            inventory_count: campaign
+                .progression
+                .inventory
+                .iter()
+                .map(|stack| u64::from(stack.quantity))
+                .sum(),
+            next_input_sequence: member
+                .try_get::<i64, _>("next_input_sequence")
+                .map_err(internal_db)? as u64,
+        });
+    }
+    let phase: String = row.try_get("phase").map_err(internal_db)?;
+    Ok(OnlineMatchView {
+        protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
+        build_id: row.try_get("build_id").map_err(internal_db)?,
+        match_id: row
+            .try_get::<Uuid, _>("match_id")
+            .map_err(internal_db)?
+            .to_string(),
+        join_code: row.try_get("join_code").map_err(internal_db)?,
+        phase: match phase.as_str() {
+            "waiting" => OnlineMatchPhase::Waiting,
+            "running" => OnlineMatchPhase::Running,
+            "complete" => OnlineMatchPhase::Complete,
+            _ => OnlineMatchPhase::FailedClosed,
+        },
+        match_revision: row
+            .try_get::<i64, _>("match_revision")
+            .map_err(internal_db)? as u64,
+        authoritative_tick: row
+            .try_get::<i64, _>("authoritative_tick")
+            .map_err(internal_db)? as u64,
+        next_sequence: row
+            .try_get::<i64, _>("next_sequence")
+            .map_err(internal_db)? as u64,
+        map_id: row.try_get("map_id").map_err(internal_db)?,
+        match_mode: row.try_get("match_mode").map_err(internal_db)?,
+        rules_version: row.try_get("rules_version").map_err(internal_db)?,
+        seed_hash: row.try_get("seed_hash").map_err(internal_db)?,
+        snapshot_hash: row.try_get("snapshot_hash").map_err(internal_db)?,
+        members,
+        result_hash: row.try_get("result_hash").map_err(internal_db)?,
+        settlement_state: row.try_get("settlement_state").map_err(internal_db)?,
+    })
+}
+
+fn campaign_view_from_row(row: &sqlx_postgres::PgRow) -> Result<OnlineCampaignView, ApiError> {
+    let campaign_value: Value = row.try_get("campaign_json").map_err(internal_db)?;
+    let campaign: CampaignSaveV1 =
+        serde_json::from_value(campaign_value).map_err(internal_serialization)?;
+    Ok(OnlineCampaignView {
+        protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
+        campaign_id: row.try_get("campaign_id").map_err(internal_db)?,
+        player_id: row.try_get("player_id").map_err(internal_db)?,
+        account_id: row
+            .try_get::<Uuid, _>("account_id")
+            .map_err(internal_db)?
+            .to_string(),
+        slot_key: row.try_get("slot_key").map_err(internal_db)?,
+        campaign_revision: row
+            .try_get::<i64, _>("campaign_revision")
+            .map_err(internal_db)? as u64,
+        schema_revision: row
+            .try_get::<i32, _>("schema_revision")
+            .map_err(internal_db)? as u16,
+        state_hash: row.try_get("state_hash").map_err(internal_db)?,
+        level: campaign.progression.level,
+        experience: campaign.progression.experience,
+        reputation: campaign.character.attributes.reputation,
+        inventory: campaign
+            .progression
+            .inventory
+            .iter()
+            .map(|stack| OnlineInventoryStack {
+                item_id: stack.item_id.clone(),
+                quantity: stack.quantity,
+            })
+            .collect(),
+        settled_match_count: campaign.settled_battle_ids.len(),
+    })
+}
+
+fn internal_serialization(error: serde_json::Error) -> ApiError {
+    api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), false)
+}
+
+fn internal_db(error: sqlx::Error) -> ApiError {
+    api_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("Online Authority persistence failed: {error}"),
+        false,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FakeTerminalOrphanAuthority {
+        recovered: Option<PublishedTickHighWater>,
+        marker: Mutex<Option<PublishedTickHighWater>>,
+        fail_acknowledgement: bool,
+        durably_failed_closed: bool,
+    }
+
+    impl TerminalOrphanAuthority for FakeTerminalOrphanAuthority {
+        async fn recover_running_high_water(
+            &self,
+            _high_water: &PublishedTickHighWater,
+        ) -> Result<Option<PublishedTickHighWater>, String> {
+            Ok(self.recovered.clone())
+        }
+
+        async fn acknowledge_terminal_high_water(
+            &self,
+            high_water: &PublishedTickHighWater,
+        ) -> Result<bool, String> {
+            if self.fail_acknowledgement {
+                return Err("injected terminal marker failure".to_string());
+            }
+            *self.marker.lock().expect("fake marker lock") = Some(high_water.clone());
+            Ok(true)
+        }
+
+        async fn reconcile_failed_closed_high_water(
+            &self,
+            _high_water: &PublishedTickHighWater,
+        ) -> Result<bool, String> {
+            Ok(self.durably_failed_closed)
+        }
+    }
+
+    fn published_tick_recovery_simulation() -> MissionSimV1 {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../assets");
+        let map = map::load_authoritative_map(&assets, "first_contact").unwrap();
+        let mut campaign = CampaignSaveV1::default();
+        let seed = prepare_campaign_seed(&mut campaign, "first_contact", map).unwrap();
+        MissionSimV1::from_seed(seed).unwrap()
+    }
+
+    fn test_input_cursors() -> BTreeMap<String, u64> {
+        BTreeMap::from([("player-a".to_string(), 2), ("player-b".to_string(), 2)])
+    }
+
+    fn test_high_water(
+        tick: u64,
+        next_sequence: u64,
+        match_revision: u64,
+        next_input_sequences: BTreeMap<String, u64>,
+        snapshot_hash: String,
+    ) -> PublishedTickHighWater {
+        PublishedTickHighWater::new(
+            Uuid::new_v4(),
+            "host-a".to_string(),
+            PublishedTickRecordInput {
+                instance_id: "instance-a".to_string(),
+                match_id: Uuid::new_v4(),
+                actor_generation: Uuid::new_v4(),
+                actor_epoch: 4,
+                tick,
+                next_sequence,
+                match_revision,
+                next_input_sequences,
+                phase: "running".to_string(),
+                receipts_replayable: true,
+                snapshot_hash,
+            },
+        )
+        .unwrap()
+    }
+
+    async fn test_terminal_orphan_journal(
+        label: &str,
+    ) -> (
+        PathBuf,
+        PublishedTickJournal,
+        PublishedTickHighWater,
+        PublishedTickHighWater,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "trnm-terminal-orphan-{label}-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let journal = PublishedTickJournal::open(
+            root.clone(),
+            format!("host-terminal-orphan-{}", Uuid::new_v4()),
+        )
+        .unwrap();
+        let match_id = Uuid::new_v4();
+        let actor_generation = Uuid::new_v4();
+        let cursors = test_input_cursors();
+        let running = journal
+            .new_record(PublishedTickRecordInput {
+                instance_id: "instance-a".to_string(),
+                match_id,
+                actor_generation,
+                actor_epoch: 4,
+                tick: 19,
+                next_sequence: 3,
+                match_revision: 8,
+                next_input_sequences: cursors.clone(),
+                phase: "running".to_string(),
+                receipts_replayable: true,
+                snapshot_hash: "a".repeat(64),
+            })
+            .unwrap();
+        journal
+            .record(running.clone(), 3, 8, cursors.clone())
+            .await
+            .unwrap();
+        let terminal = journal
+            .new_record(PublishedTickRecordInput {
+                instance_id: running.instance_id.clone(),
+                match_id,
+                actor_generation,
+                actor_epoch: running.actor_epoch,
+                tick: 20,
+                next_sequence: 3,
+                match_revision: 8,
+                next_input_sequences: cursors,
+                phase: "complete".to_string(),
+                receipts_replayable: true,
+                snapshot_hash: "b".repeat(64),
+            })
+            .unwrap();
+        (root, journal, running, terminal)
+    }
+
+    #[test]
+    fn online_map_allowlist_is_explicit() {
+        assert_eq!(
+            mission_for_map("iron_delta").unwrap().map_id(),
+            "iron_delta"
+        );
+        assert_eq!(
+            mission_for_map("first_contact").unwrap().map_id(),
+            "first_contact"
+        );
+        assert!(mission_for_map("../../secret").is_err());
+    }
+
+    #[test]
+    fn start_match_transport_retry_is_idempotent_only_for_current_running_authority() {
+        assert!(start_match_retry_is_idempotent("running", 1, 0, true));
+        assert!(!start_match_retry_is_idempotent("running", 8, 0, true));
+        assert!(!start_match_retry_is_idempotent("waiting", 0, 0, true));
+        assert!(!start_match_retry_is_idempotent("complete", 8, 0, true));
+        assert!(!start_match_retry_is_idempotent("running", 1, 1, true));
+        assert!(!start_match_retry_is_idempotent(
+            "running",
+            u64::MAX,
+            u64::MAX,
+            true,
+        ));
+        assert!(!start_match_retry_is_idempotent("running", 1, 0, false));
+    }
+
+    #[test]
+    fn authority_materializes_base_and_overlay_maps() {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../assets");
+        for map_id in [
+            "first_contact",
+            "iron_delta",
+            "night_watch_crossing",
+            "glass_basin",
+            "ember_orchard",
+            "salt_marsh",
+            "cinder_crown",
+        ] {
+            let map = map::load_authoritative_map(&assets, map_id)
+                .unwrap_or_else(|error| panic!("{map_id}: {error}"));
+            assert_eq!((map.width, map.height), (40, 24));
+            assert!(!map.enemy_spawns.is_empty());
+        }
+    }
+
+    #[test]
+    fn slot_keys_are_bounded_and_portable() {
+        assert!(validate_slot_key("main_01").is_ok());
+        assert!(validate_slot_key("").is_err());
+        assert!(validate_slot_key("bad/slot").is_err());
+    }
+
+    #[test]
+    fn command_ids_are_bounded_and_portable() {
+        assert!(validate_command_id("native:match.player_01-command").is_ok());
+        assert!(validate_command_id("").is_err());
+        assert!(validate_command_id("bad/command").is_err());
+        assert!(validate_command_id(&"x".repeat(161)).is_err());
+    }
+
+    #[test]
+    fn campaign_hash_changes_with_authoritative_revision() {
+        let first = CampaignSaveV1::default();
+        let mut second = first.clone();
+        second.revision += 1;
+        assert_ne!(hash_json(&first).unwrap(), hash_json(&second).unwrap());
+    }
+
+    #[test]
+    fn online_campaign_starts_from_cex_connected_authority() {
+        let mut campaign = CampaignSaveV1::default();
+        campaign
+            .bind_cex_economy_account("player-a", "00000000-0000-0000-0000-000000000001")
+            .unwrap();
+        assert_eq!(
+            campaign.economy_mode,
+            trnm_campaign_core::EconomyMode::CexConnected
+        );
+        campaign.prepare_standalone_skirmish().unwrap();
+        assert_eq!(
+            campaign.room,
+            trnm_campaign_core::CampaignRoom::ExpeditionGate
+        );
+    }
+
+    #[test]
+    fn public_bind_fails_closed_without_production_security_boundary() {
+        assert!(validate_operations_bind_addr("127.0.0.1:7005".parse().unwrap()).is_ok());
+        assert!(validate_operations_bind_addr("[::1]:7005".parse().unwrap()).is_ok());
+        assert!(validate_operations_bind_addr("0.0.0.0:7005".parse().unwrap()).is_err());
+        assert!(validate_operations_bind_addr("192.0.2.10:7005".parse().unwrap()).is_err());
+    }
+
+    #[test]
+    fn sigterm_drain_classifies_commands_as_retryable_service_unavailable() {
+        assert!(command_drain_error(false, false).is_none());
+        for error in [
+            command_drain_error(true, false).unwrap(),
+            command_drain_error(false, true).unwrap(),
+        ] {
+            assert_eq!(error.status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(error.body.recoverable);
+            let response = error.into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(
+                response.headers().get(header::RETRY_AFTER),
+                Some(&HeaderValue::from_static("1"))
+            );
+        }
+    }
+
+    #[test]
+    fn production_authority_clock_is_exactly_ten_hz() {
+        let interval = production_authority_tick_interval();
+        assert_eq!(TICKS_PER_SECOND, 10);
+        assert_eq!(interval, Duration::from_millis(100));
+        assert_eq!(interval.saturating_mul(1_800), Duration::from_secs(180));
+    }
+
+    #[test]
+    fn accelerated_clock_is_explicitly_test_only() {
+        assert_eq!(
+            resolve_authority_tick_interval(None, false).unwrap(),
+            Duration::from_millis(100)
+        );
+        assert!(resolve_authority_tick_interval(Some(50), false).is_err());
+        assert_eq!(
+            resolve_authority_tick_interval(Some(20), true).unwrap(),
+            Duration::from_millis(20)
+        );
+        assert!(resolve_authority_tick_interval(Some(0), true).is_err());
+    }
+
+    #[test]
+    fn readiness_fails_closed_on_authority_clock_degradation() {
+        let tick_interval = Duration::from_millis(100);
+        let snapshot = |drift_ticks: f64,
+                        lateness_ticks: f64,
+                        last_wake_age_ms: f64,
+                        sample_count: usize| AuthorityClockSnapshot {
+            elapsed_ms: 1_000.0,
+            wake_count: 10,
+            cumulative_drift_ticks: 0.0,
+            window_sample_count: sample_count,
+            window_drift_ticks: Some(drift_ticks),
+            latest_lateness_ticks: Some(lateness_ticks),
+            max_recent_lateness_ticks: Some(lateness_ticks),
+            last_wake_age_ms: Some(last_wake_age_ms),
+        };
+
+        assert!(authority_clock_is_operational(
+            Some(&snapshot(1.99, 1.99, 199.0, AUTHORITY_CLOCK_MIN_SAMPLES)),
+            tick_interval
+        ));
+        assert!(authority_clock_is_operational(
+            Some(&snapshot(-1.99, 0.0, 0.0, AUTHORITY_CLOCK_MIN_SAMPLES)),
+            tick_interval
+        ));
+        assert!(!authority_clock_is_operational(
+            Some(&snapshot(2.0, 0.0, 0.0, AUTHORITY_CLOCK_MIN_SAMPLES)),
+            tick_interval
+        ));
+        assert!(!authority_clock_is_operational(
+            Some(&snapshot(0.0, 2.0, 0.0, AUTHORITY_CLOCK_MIN_SAMPLES)),
+            tick_interval
+        ));
+        assert!(!authority_clock_is_operational(
+            Some(&snapshot(0.0, 0.0, 200.0, AUTHORITY_CLOCK_MIN_SAMPLES)),
+            tick_interval
+        ));
+        assert!(!authority_clock_is_operational(
+            Some(&snapshot(0.0, 0.0, 0.0, AUTHORITY_CLOCK_MIN_SAMPLES - 1)),
+            tick_interval
+        ));
+        assert!(!authority_clock_is_operational(
+            Some(&snapshot(f64::NAN, 0.0, 0.0, AUTHORITY_CLOCK_MIN_SAMPLES)),
+            tick_interval
+        ));
+        assert!(!authority_clock_is_operational(None, tick_interval));
+    }
+
+    #[test]
+    fn authority_clock_window_self_heals_after_transient_stall() {
+        let telemetry = AuthorityClockTelemetry::default();
+        let tick_interval = Duration::from_millis(100);
+        let started_at = Instant::now();
+        telemetry.reset(started_at);
+
+        for tick in 1..=AUTHORITY_CLOCK_WINDOW_TICKS + 1 {
+            let observed_at = started_at + tick_interval.saturating_mul(tick as u32);
+            telemetry.record_wake(observed_at, observed_at, tick_interval);
+        }
+        let healthy = telemetry
+            .snapshot(
+                started_at
+                    + tick_interval.saturating_mul((AUTHORITY_CLOCK_WINDOW_TICKS + 1) as u32),
+                tick_interval,
+            )
+            .unwrap();
+        assert!(authority_clock_is_operational(
+            Some(&healthy),
+            tick_interval
+        ));
+
+        let scheduled_at =
+            started_at + tick_interval.saturating_mul((AUTHORITY_CLOCK_WINDOW_TICKS + 2) as u32);
+        let recovered_epoch = started_at + Duration::from_secs(60);
+        telemetry.record_wake(scheduled_at, recovered_epoch, tick_interval);
+        let stalled = telemetry.snapshot(recovered_epoch, tick_interval).unwrap();
+        assert!(!authority_clock_is_operational(
+            Some(&stalled),
+            tick_interval
+        ));
+
+        for tick in 1..=AUTHORITY_CLOCK_WINDOW_TICKS + 1 {
+            let observed_at = recovered_epoch + tick_interval.saturating_mul(tick as u32);
+            telemetry.record_wake(observed_at, observed_at, tick_interval);
+        }
+        let recovered = telemetry
+            .snapshot(
+                recovered_epoch
+                    + tick_interval.saturating_mul((AUTHORITY_CLOCK_WINDOW_TICKS + 1) as u32),
+                tick_interval,
+            )
+            .unwrap();
+        assert!(recovered.cumulative_drift_ticks < -500.0);
+        assert_eq!(recovered.window_drift_ticks, Some(0.0));
+        assert!(authority_clock_is_operational(
+            Some(&recovered),
+            tick_interval
+        ));
+    }
+
+    #[test]
+    fn authority_clock_window_rejects_sustained_slow_cadence() {
+        let telemetry = AuthorityClockTelemetry::default();
+        let tick_interval = Duration::from_millis(100);
+        let started_at = Instant::now();
+        telemetry.reset(started_at);
+
+        for tick in 1..=10_u32 {
+            let observed_at = started_at + Duration::from_millis(u64::from(tick) * 150);
+            telemetry.record_wake(observed_at, observed_at, tick_interval);
+        }
+        let snapshot = telemetry
+            .snapshot(started_at + Duration::from_millis(1_500), tick_interval)
+            .unwrap();
+        assert_eq!(snapshot.window_drift_ticks, Some(-4.5));
+        assert!(!authority_clock_is_operational(
+            Some(&snapshot),
+            tick_interval
+        ));
+    }
+
+    #[test]
+    fn match_actor_clock_self_heals_and_allows_one_bounded_command_publication_window() {
+        let tick_interval = Duration::from_millis(100);
+        let telemetry = AuthorityClockTelemetry::default();
+        let started_at = Instant::now();
+        telemetry.reset(started_at);
+        telemetry.record_wake(
+            started_at + tick_interval,
+            started_at + Duration::from_secs(3),
+            tick_interval,
+        );
+        for tick in 1..=AUTHORITY_CLOCK_WINDOW_TICKS + 1 {
+            let observed_at =
+                started_at + Duration::from_secs(3) + tick_interval.saturating_mul(tick as u32);
+            telemetry.record_wake(observed_at, observed_at, tick_interval);
+        }
+        let snapshot = telemetry
+            .snapshot(
+                started_at
+                    + Duration::from_secs(3)
+                    + tick_interval.saturating_mul((AUTHORITY_CLOCK_WINDOW_TICKS + 1) as u32),
+                tick_interval,
+            )
+            .unwrap();
+        assert!(match_actor_clock_is_operational(
+            Some(&snapshot),
+            749.0,
+            tick_interval
+        ));
+        assert!(!match_actor_clock_is_operational(
+            Some(&snapshot),
+            750.0,
+            tick_interval
+        ));
+    }
+
+    #[test]
+    fn match_actor_clock_warmup_is_bounded_and_fails_closed_on_bad_samples() {
+        let tick_interval = Duration::from_millis(100);
+        assert_eq!(
+            match_actor_clock_warmup_limit(tick_interval),
+            Duration::from_millis(500)
+        );
+        assert!(match_actor_clock_warmup_is_operational(
+            None,
+            Duration::from_millis(199),
+            0.0,
+            tick_interval,
+        ));
+        assert!(!match_actor_clock_warmup_is_operational(
+            None,
+            Duration::from_millis(200),
+            0.0,
+            tick_interval,
+        ));
+
+        let mut first_wake = AuthorityClockSnapshot {
+            elapsed_ms: 150.0,
+            wake_count: 1,
+            cumulative_drift_ticks: -0.5,
+            window_sample_count: 1,
+            window_drift_ticks: None,
+            latest_lateness_ticks: Some(0.01),
+            max_recent_lateness_ticks: Some(0.01),
+            last_wake_age_ms: Some(50.0),
+        };
+        assert!(match_actor_clock_warmup_is_operational(
+            Some(&first_wake),
+            Duration::from_millis(150),
+            100.0,
+            tick_interval,
+        ));
+        assert!(!match_actor_clock_warmup_is_operational(
+            Some(&first_wake),
+            Duration::from_millis(500),
+            100.0,
+            tick_interval,
+        ));
+        assert!(!match_actor_clock_warmup_is_operational(
+            Some(&first_wake),
+            Duration::from_millis(150),
+            750.0,
+            tick_interval,
+        ));
+
+        first_wake.latest_lateness_ticks = Some(MAX_AUTHORITY_CLOCK_ABS_DRIFT_TICKS);
+        assert!(!match_actor_clock_warmup_is_operational(
+            Some(&first_wake),
+            Duration::from_millis(150),
+            100.0,
+            tick_interval,
+        ));
+        first_wake.latest_lateness_ticks = Some(0.01);
+        first_wake.wake_count = 2;
+        assert!(!match_actor_clock_warmup_is_operational(
+            Some(&first_wake),
+            Duration::from_millis(150),
+            100.0,
+            tick_interval,
+        ));
+
+        let mature = AuthorityClockSnapshot {
+            elapsed_ms: 300.0,
+            wake_count: 3,
+            cumulative_drift_ticks: 0.0,
+            window_sample_count: AUTHORITY_CLOCK_MIN_SAMPLES,
+            window_drift_ticks: Some(0.0),
+            latest_lateness_ticks: Some(0.01),
+            max_recent_lateness_ticks: Some(0.01),
+            last_wake_age_ms: Some(1.0),
+        };
+        assert!(match_actor_clock_warmup_is_operational(
+            Some(&mature),
+            Duration::from_millis(300),
+            100.0,
+            tick_interval,
+        ));
+    }
+
+    #[test]
+    fn actor_registry_coverage_accepts_only_bounded_initializing_or_terminalizing_edges() {
+        assert!(match_actor_registry_coverage_is_operational(1, 1, 1, 0));
+        assert!(match_actor_registry_coverage_is_operational(1, 0, 0, 1));
+        assert!(match_actor_registry_coverage_is_operational(1, 0, 1, 0));
+        assert!(match_actor_registry_coverage_is_operational(0, 0, 1, 0));
+        assert!(!match_actor_registry_coverage_is_operational(0, 1, 1, 0));
+        assert!(!match_actor_registry_coverage_is_operational(2, 1, 1, 0));
+        assert!(!match_actor_registry_coverage_is_operational(-1, 0, 0, 0));
+    }
+
+    #[test]
+    fn readiness_transition_ownership_requires_an_exact_unique_match_set() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let owners = BTreeSet::from([first, second]);
+        assert!(match_ids_are_exactly_owned(&[first], 1, &owners));
+        assert!(match_ids_are_exactly_owned(&[first, second], 2, &owners));
+        assert!(!match_ids_are_exactly_owned(&[first], 2, &owners));
+        assert!(!match_ids_are_exactly_owned(&[first, first], 2, &owners));
+        assert!(!match_ids_are_exactly_owned(&[Uuid::new_v4()], 1, &owners));
+    }
+
+    #[test]
+    fn match_actor_clock_rejects_sustained_slow_cadence() {
+        let tick_interval = Duration::from_millis(100);
+        let telemetry = AuthorityClockTelemetry::default();
+        let started_at = Instant::now();
+        telemetry.reset(started_at);
+        for tick in 1..=10_u32 {
+            let observed_at = started_at + Duration::from_millis(u64::from(tick) * 150);
+            telemetry.record_wake(observed_at, observed_at, tick_interval);
+        }
+        let snapshot = telemetry
+            .snapshot(started_at + Duration::from_millis(1_500), tick_interval)
+            .unwrap();
+        assert!(!match_actor_clock_is_operational(
+            Some(&snapshot),
+            0.0,
+            tick_interval
+        ));
+    }
+
+    #[test]
+    fn readiness_fails_closed_on_database_pool_saturation() {
+        assert!(database_pool_is_operational(1, 0, 8));
+        assert!(database_pool_is_operational(8, 1, 8));
+        assert!(!database_pool_is_operational(8, 0, 8));
+        assert_eq!(GAME_SERVER_DATABASE_MIN_CONNECTIONS, 12);
+        assert_eq!(GAME_SERVER_DATABASE_MAX_CONNECTIONS, 12);
+        assert_eq!(READINESS_DATABASE_MIN_CONNECTIONS, 4);
+        assert_eq!(READINESS_DATABASE_MAX_CONNECTIONS, 12);
+    }
+
+    #[test]
+    fn terminal_checkpoint_lock_window_never_aligns_mixed_phase_authority() {
+        assert!(authority_metadata_matches(
+            OnlineMatchPhase::Running,
+            None,
+            "not_ready",
+            OnlineMatchPhase::Running,
+            None,
+            "not_ready",
+        ));
+        assert!(!authority_metadata_matches(
+            OnlineMatchPhase::Complete,
+            Some("result-a"),
+            "pending",
+            OnlineMatchPhase::Running,
+            None,
+            "not_ready",
+        ));
+        assert!(!authority_metadata_matches(
+            OnlineMatchPhase::Running,
+            None,
+            "not_ready",
+            OnlineMatchPhase::Complete,
+            Some("result-a"),
+            "pending",
+        ));
+        assert!(authority_metadata_matches(
+            OnlineMatchPhase::Complete,
+            Some("result-a"),
+            "pending",
+            OnlineMatchPhase::Complete,
+            Some("result-a"),
+            "pending",
+        ));
+        assert!(authority_metadata_matches(
+            OnlineMatchPhase::Complete,
+            Some("result-a"),
+            "pending",
+            OnlineMatchPhase::Complete,
+            Some("result-a"),
+            "settled",
+        ));
+        assert!(!authority_metadata_matches(
+            OnlineMatchPhase::Complete,
+            Some("result-a"),
+            "settled",
+            OnlineMatchPhase::Complete,
+            Some("result-a"),
+            "pending",
+        ));
+        assert_eq!(
+            effective_published_settlement_state("pending", "settled"),
+            "settled"
+        );
+        assert_eq!(
+            effective_published_settlement_state("settled", "pending"),
+            "settled"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_watch_update_stays_unaligned_until_durable_phase_commits() {
+        let (published_tx, mut published_rx) = watch::channel((
+            OnlineMatchPhase::Running,
+            None::<String>,
+            "not_ready".to_string(),
+        ));
+        published_tx.send_replace((
+            OnlineMatchPhase::Complete,
+            Some("result-a".to_string()),
+            "pending".to_string(),
+        ));
+        published_rx.changed().await.unwrap();
+        let published = published_rx.borrow().clone();
+        assert!(!authority_metadata_matches(
+            published.0,
+            published.1.as_deref(),
+            &published.2,
+            OnlineMatchPhase::Running,
+            None,
+            "not_ready",
+        ));
+        assert!(authority_metadata_matches(
+            published.0,
+            published.1.as_deref(),
+            &published.2,
+            OnlineMatchPhase::Complete,
+            Some("result-a"),
+            "pending",
+        ));
+    }
+
+    #[test]
+    fn published_terminal_authority_overwrites_running_stream_view_metadata() {
+        let mut view = OnlineMatchView {
+            protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
+            build_id: ONLINE_AUTHORITY_BUILD.to_string(),
+            match_id: Uuid::nil().to_string(),
+            join_code: "TEST".to_string(),
+            phase: OnlineMatchPhase::Running,
+            match_revision: 4,
+            authoritative_tick: 10,
+            next_sequence: 3,
+            map_id: "first_contact".to_string(),
+            match_mode: "coop_vs_ai".to_string(),
+            rules_version: "test".to_string(),
+            seed_hash: "seed".to_string(),
+            snapshot_hash: "snapshot".to_string(),
+            members: Vec::new(),
+            result_hash: None,
+            settlement_state: "not_ready".to_string(),
+        };
+        apply_published_authority_view(
+            &mut view,
+            OnlineMatchPhase::Complete,
+            Some("result-a".to_string()),
+            "settled".to_string(),
+        );
+        assert_eq!(view.phase, OnlineMatchPhase::Complete);
+        assert_eq!(view.result_hash.as_deref(), Some("result-a"));
+        assert_eq!(view.settlement_state, "settled");
+    }
+
+    #[test]
+    fn pending_command_barrier_blocks_every_checkpoint_exit() {
+        for boundary in [
+            ActorCheckpointBoundary::Periodic,
+            ActorCheckpointBoundary::Shutdown,
+            ActorCheckpointBoundary::Terminal,
+            ActorCheckpointBoundary::Fenced,
+            ActorCheckpointBoundary::CheckpointFailure,
+        ] {
+            assert!(!actor_checkpoint_allowed(boundary, true));
+        }
+        assert!(actor_checkpoint_allowed(
+            ActorCheckpointBoundary::Periodic,
+            false
+        ));
+        assert!(actor_checkpoint_allowed(
+            ActorCheckpointBoundary::Shutdown,
+            false
+        ));
+        assert!(actor_checkpoint_allowed(
+            ActorCheckpointBoundary::Terminal,
+            false
+        ));
+        assert!(!actor_checkpoint_allowed(
+            ActorCheckpointBoundary::Fenced,
+            false
+        ));
+        assert!(!actor_checkpoint_allowed(
+            ActorCheckpointBoundary::CheckpointFailure,
+            false
+        ));
+    }
+
+    #[test]
+    fn different_matches_reserve_independent_initialization_slots() {
+        let mut registry = MatchActorRegistry::default();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        assert!(matches!(
+            reserve_match_actor_initialization(&mut registry, first, 4).unwrap(),
+            MatchActorEnsureDecision::Initialize(_)
+        ));
+        assert!(matches!(
+            reserve_match_actor_initialization(&mut registry, second, 4).unwrap(),
+            MatchActorEnsureDecision::Initialize(_)
+        ));
+        assert!(matches!(
+            reserve_match_actor_initialization(&mut registry, first, 4).unwrap(),
+            MatchActorEnsureDecision::Wait(_)
+        ));
+        assert_eq!(registry.initializing.len(), 2);
+    }
+
+    #[test]
+    fn bounded_actor_initialization_owns_its_running_high_water_readiness_window() {
+        let mut registry = MatchActorRegistry::default();
+        let match_id = Uuid::new_v4();
+        let initialization =
+            match reserve_match_actor_initialization(&mut registry, match_id, 1).unwrap() {
+                MatchActorEnsureDecision::Initialize(initialization) => initialization,
+                _ => panic!("first reservation must initialize the match"),
+            };
+        let recorded = [match_id];
+        let tracked = actor_tracked_published_tick_match_ids(&registry, Instant::now());
+        assert_eq!(
+            count_untracked_published_tick_records(&recorded, &tracked),
+            0
+        );
+        assert!(terminal_orphan_recovery_is_operational(true, 0));
+
+        let timed_out_at = initialization.started_at + MATCH_ACTOR_INITIALIZATION_TIMEOUT;
+        let tracked = actor_tracked_published_tick_match_ids(&registry, timed_out_at);
+        assert_eq!(
+            count_untracked_published_tick_records(&recorded, &tracked),
+            1
+        );
+        assert!(!terminal_orphan_recovery_is_operational(true, 1));
+    }
+
+    #[tokio::test]
+    async fn cancelled_match_initialization_releases_its_capacity_reservation() {
+        let registry = Arc::new(RwLock::new(MatchActorRegistry::default()));
+        let match_id = Uuid::new_v4();
+        let initialization = {
+            let mut locked = registry.write().await;
+            match reserve_match_actor_initialization(&mut locked, match_id, 1).unwrap() {
+                MatchActorEnsureDecision::Initialize(initialization) => initialization,
+                _ => panic!("first reservation must initialize the match"),
+            }
+        };
+        let mut ready = initialization.ready.subscribe();
+        drop(MatchActorInitializationReservation::new(
+            registry.clone(),
+            match_id,
+            &initialization,
+        ));
+        tokio::time::timeout(Duration::from_secs(1), ready.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(*ready.borrow());
+        assert!(!registry.read().await.initializing.contains_key(&match_id));
+    }
+
+    #[test]
+    fn sigterm_during_match_initialization_prevents_actor_installation() {
+        assert!(match_actor_install_is_allowed(false, false));
+        assert!(!match_actor_install_is_allowed(true, false));
+        assert!(!match_actor_install_is_allowed(false, true));
+        assert!(!match_actor_install_is_allowed(true, true));
+    }
+
+    #[tokio::test]
+    async fn actor_started_after_shutdown_observes_the_current_watch_value() {
+        let (shutdown, mut receiver) = watch::channel(false);
+        shutdown.send_replace(true);
+        tokio::time::timeout(
+            Duration::from_millis(10),
+            shutdown_changed_or_current(&mut receiver),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+
+    #[test]
+    fn pending_command_lane_requires_durable_commit_before_publication() {
+        assert!(!actor_command_lane_publish_allowed(true, false));
+        assert!(actor_command_lane_publish_allowed(true, true));
+        assert!(actor_command_lane_publish_allowed(false, false));
+    }
+
+    #[tokio::test]
+    async fn checkpoint_barrier_has_a_hard_deadline_when_worker_never_acknowledges() {
+        let simulation = published_tick_recovery_simulation();
+        let (checkpoint_tx, mut checkpoint_rx) = mpsc::channel(1);
+        let holder = tokio::spawn(async move {
+            let _held = checkpoint_rx.recv().await;
+            std::future::pending::<()>().await;
+        });
+        let error = checkpoint_barrier_with_deadline(
+            &checkpoint_tx,
+            MatchCheckpointJob {
+                snapshot_hash: simulation.snapshot_hash().unwrap(),
+                simulation,
+                next_sequence: 2,
+                match_revision: 3,
+                terminal: false,
+                completion: None,
+            },
+            "test",
+            Duration::from_millis(10),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("hard timeout"));
+        holder.abort();
+        let _ = holder.await;
+    }
+
+    #[test]
+    fn committed_command_publication_never_rolls_back_visible_tick() {
+        assert!(committed_publication_tick_is_monotonic(40, 40));
+        assert!(committed_publication_tick_is_monotonic(40, 41));
+        assert!(!committed_publication_tick_is_monotonic(41, 40));
+    }
+
+    #[test]
+    fn published_tick_recovery_replays_autonomous_ticks_without_regression() {
+        let mut recovered = published_tick_recovery_simulation();
+        let mut expected = recovered.clone();
+        for _ in 0..7 {
+            expected.step().unwrap();
+        }
+        let cursors = test_input_cursors();
+        let high_water = test_high_water(
+            expected.tick,
+            3,
+            8,
+            cursors.clone(),
+            expected.snapshot_hash().unwrap(),
+        );
+
+        recover_to_published_high_water(&mut recovered, 3, 8, &cursors, None, &high_water).unwrap();
+        assert_eq!(recovered.tick, expected.tick);
+        assert_eq!(
+            recovered.snapshot_hash().unwrap(),
+            expected.snapshot_hash().unwrap()
+        );
+    }
+
+    #[test]
+    fn published_tick_recovery_fails_closed_on_hash_or_cursor_rollback() {
+        let mut simulation = published_tick_recovery_simulation();
+        let mut expected = simulation.clone();
+        expected.step().unwrap();
+        let cursors = test_input_cursors();
+        let mut high_water = test_high_water(
+            expected.tick,
+            6,
+            9,
+            cursors.clone(),
+            expected.snapshot_hash().unwrap(),
+        );
+        high_water.snapshot_hash = "0".repeat(64);
+        assert!(recover_to_published_high_water(
+            &mut simulation,
+            6,
+            9,
+            &cursors,
+            None,
+            &high_water,
+        )
+        .unwrap_err()
+        .contains("hash mismatched"));
+
+        let mut simulation = published_tick_recovery_simulation();
+        high_water.snapshot_hash = expected.snapshot_hash().unwrap();
+        assert!(recover_to_published_high_water(
+            &mut simulation,
+            5,
+            9,
+            &cursors,
+            None,
+            &high_water,
+        )
+        .unwrap_err()
+        .contains("ahead of durable database command cursors"));
+    }
+
+    #[test]
+    fn recovered_command_timing_rejects_tampered_post_tick_or_order_frame() {
+        let simulation = published_tick_recovery_simulation();
+        let realtime_order = trnm_rts_protocol::RtsFrameOrder::new(
+            simulation.tick as u32,
+            "player",
+            vec!["player-leader".to_string()],
+            trnm_rts_protocol::RtsOrderKind::Hold,
+            RtsOrderSource::LocalInput,
+        );
+        let realtime_json = serde_json::to_value(&realtime_order).unwrap();
+        validate_recovered_command_timing(
+            &simulation,
+            simulation.tick as i64,
+            Some(simulation.tick as i64),
+            realtime_json.clone(),
+            "realtime",
+        )
+        .unwrap();
+        assert!(validate_recovered_command_timing(
+            &simulation,
+            simulation.tick.saturating_add(1) as i64,
+            Some(simulation.tick as i64),
+            realtime_json,
+            "realtime",
+        )
+        .is_err());
+
+        let scheduled_tick = simulation.tick.saturating_add(10);
+        let scheduled_order = trnm_rts_protocol::RtsFrameOrder::new(
+            scheduled_tick as u32,
+            "player",
+            vec!["player-leader".to_string()],
+            trnm_rts_protocol::RtsOrderKind::Hold,
+            RtsOrderSource::LocalInput,
+        );
+        validate_recovered_command_timing(
+            &simulation,
+            scheduled_tick as i64,
+            None,
+            serde_json::to_value(&scheduled_order).unwrap(),
+            "scheduled",
+        )
+        .unwrap();
+        assert!(validate_recovered_command_timing(
+            &simulation,
+            scheduled_tick.saturating_add(1) as i64,
+            None,
+            serde_json::to_value(&scheduled_order).unwrap(),
+            "scheduled",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn published_tick_recovery_bridges_one_committed_command_without_tick_regression() {
+        let bridge = published_tick_recovery_simulation();
+        let mut expected_old_lane = bridge.clone();
+        for _ in 0..5 {
+            expected_old_lane.step().unwrap();
+        }
+        let old_cursors = test_input_cursors();
+        let high_water = test_high_water(
+            expected_old_lane.tick,
+            3,
+            8,
+            old_cursors.clone(),
+            expected_old_lane.snapshot_hash().unwrap(),
+        );
+        let mut durable_cursors = old_cursors;
+        *durable_cursors.get_mut("player-a").unwrap() += 1;
+        let mut new_lane = published_tick_recovery_simulation();
+        recover_to_published_high_water(
+            &mut new_lane,
+            4,
+            9,
+            &durable_cursors,
+            Some(bridge),
+            &high_water,
+        )
+        .unwrap();
+        assert_eq!(new_lane.tick, high_water.tick);
+    }
+
+    #[test]
+    fn publication_budget_stops_before_recovery_becomes_unbounded() {
+        assert!(publication_within_recovery_budget(10_000, 0));
+        assert!(!publication_within_recovery_budget(10_001, 0));
+        assert!(publication_within_recovery_budget(20_000, 10_000));
+    }
+
+    #[test]
+    fn physical_host_mismatch_is_rejected_even_when_instance_identity_matches() {
+        assert!(match_assignment_uses_local_physical_host(
+            Some("instance-a"),
+            Some("host-a"),
+            "host-a"
+        ));
+        assert!(!match_assignment_uses_local_physical_host(
+            Some("instance-a"),
+            Some("host-b"),
+            "host-a"
+        ));
+        assert!(!match_assignment_uses_local_physical_host(
+            Some("instance-a"),
+            None,
+            "host-a"
+        ));
+        assert!(match_assignment_uses_local_physical_host(
+            None, None, "host-a"
+        ));
+    }
+
+    #[test]
+    fn startup_terminal_compaction_rejects_tampered_tick_hash_or_member_cursor() {
+        let cursors = test_input_cursors();
+        let mut high_water = test_high_water(20, 4, 9, cursors.clone(), "a".repeat(64));
+        high_water.phase = "complete".to_string();
+        let mut view = DurableTerminalCompactionView {
+            phase: "complete".to_string(),
+            simulation_tick: 20,
+            simulation_terminal: true,
+            simulation_hash: "a".repeat(64),
+            durable_snapshot_hash: "a".repeat(64),
+            authoritative_tick: Some(20),
+            next_sequence: Some(4),
+            checkpoint_sequence: Some(4),
+            match_revision: Some(9),
+            result_valid: true,
+            settlement_state: "pending".to_string(),
+            next_input_sequences: cursors,
+            assigned_instance_id: Some("instance-a".to_string()),
+            assigned_instance_epoch: Some(4),
+            assigned_physical_host_id: Some("host-a".to_string()),
+        };
+        assert!(terminal_authority_matches_high_water(&view, &high_water));
+        view.simulation_tick = 19;
+        assert!(!terminal_authority_matches_high_water(&view, &high_water));
+        view.simulation_tick = 20;
+        view.durable_snapshot_hash = "b".repeat(64);
+        assert!(!terminal_authority_matches_high_water(&view, &high_water));
+        view.durable_snapshot_hash = "a".repeat(64);
+        view.next_input_sequences.insert("player-a".to_string(), 3);
+        assert!(!terminal_authority_matches_high_water(&view, &high_water));
+        view.next_input_sequences.insert("player-a".to_string(), 2);
+        view.assigned_instance_epoch = Some(5);
+        assert!(!terminal_authority_matches_high_water(&view, &high_water));
+        view.assigned_instance_epoch = Some(4);
+        view.assigned_physical_host_id = Some("host-b".to_string());
+        assert!(!terminal_authority_matches_high_water(&view, &high_water));
+        view.assigned_physical_host_id = Some("host-a".to_string());
+        view.result_valid = false;
+        assert!(!terminal_authority_matches_high_water(&view, &high_water));
+    }
+
+    #[test]
+    fn terminal_running_high_water_crash_windows_preserve_owner_and_exact_successor() {
+        let source = published_tick_recovery_simulation();
+        let mut running = source.clone();
+        for _ in 0..5 {
+            running.step().unwrap();
+        }
+        let cursors = test_input_cursors();
+        let high_water = test_high_water(
+            running.tick,
+            3,
+            8,
+            cursors.clone(),
+            running.snapshot_hash().unwrap(),
+        );
+        let mut terminal = running.clone();
+        for _ in 0..MAX_PUBLISHED_TICK_RECOVERY_STEPS {
+            if terminal.terminal() {
+                break;
+            }
+            terminal.step().unwrap();
+        }
+        assert!(terminal.terminal());
+        let terminal_hash = terminal.snapshot_hash().unwrap();
+        let mut view = DurableTerminalCompactionView {
+            phase: "complete".to_string(),
+            simulation_tick: terminal.tick,
+            simulation_terminal: true,
+            simulation_hash: terminal_hash.clone(),
+            durable_snapshot_hash: terminal_hash.clone(),
+            authoritative_tick: Some(terminal.tick),
+            next_sequence: Some(high_water.next_sequence),
+            checkpoint_sequence: Some(high_water.next_sequence),
+            match_revision: Some(high_water.match_revision),
+            result_valid: true,
+            settlement_state: "pending".to_string(),
+            next_input_sequences: cursors.clone(),
+            assigned_instance_id: Some(high_water.instance_id.clone()),
+            assigned_instance_epoch: Some(high_water.actor_epoch),
+            assigned_physical_host_id: Some(high_water.physical_host_id.clone()),
+        };
+        assert!(terminal_authority_succeeds_running_high_water(
+            &view,
+            &high_water
+        ));
+        view.next_sequence = Some(4);
+        view.match_revision = Some(9);
+        view.checkpoint_sequence = Some(4);
+        view.next_input_sequences.insert("player-a".to_string(), 3);
+        assert!(terminal_authority_succeeds_running_high_water(
+            &view,
+            &high_water
+        ));
+        view.next_input_sequences.insert("player-b".to_string(), 3);
+        assert!(!terminal_authority_succeeds_running_high_water(
+            &view,
+            &high_water
+        ));
+        view.next_sequence = Some(3);
+        view.match_revision = Some(8);
+        view.checkpoint_sequence = Some(3);
+        view.next_input_sequences = test_input_cursors();
+        view.assigned_instance_epoch = Some(high_water.actor_epoch + 1);
+        assert!(!terminal_authority_succeeds_running_high_water(
+            &view,
+            &high_water
+        ));
+        view.assigned_instance_epoch = Some(high_water.actor_epoch);
+        view.assigned_physical_host_id = Some("host-b".to_string());
+        assert!(!terminal_authority_succeeds_running_high_water(
+            &view,
+            &high_water
+        ));
+        view.assigned_physical_host_id = Some(high_water.physical_host_id.clone());
+        replay_running_high_water_to_terminal(
+            source,
+            &high_water,
+            None,
+            &terminal,
+            &terminal_hash,
+            "coop_vs_ai",
+        )
+        .unwrap();
+        let mut tampered_prefix = high_water.clone();
+        tampered_prefix.snapshot_hash = "b".repeat(64);
+        assert!(replay_running_high_water_to_terminal(
+            published_tick_recovery_simulation(),
+            &tampered_prefix,
+            None,
+            &terminal,
+            &terminal_hash,
+            "coop_vs_ai",
+        )
+        .is_err());
+
+        // Window 1 (DB complete, disk still running) is converted to a
+        // terminal record without changing owner/generation/epoch.
+        let terminal_high_water = PublishedTickHighWater::new(
+            high_water.journal_owner_id,
+            high_water.physical_host_id.clone(),
+            PublishedTickRecordInput {
+                instance_id: high_water.instance_id.clone(),
+                match_id: high_water.match_id,
+                actor_generation: high_water.actor_generation,
+                actor_epoch: high_water.actor_epoch,
+                tick: terminal.tick,
+                next_sequence: high_water.next_sequence,
+                match_revision: high_water.match_revision,
+                next_input_sequences: cursors,
+                phase: "complete".to_string(),
+                receipts_replayable: true,
+                snapshot_hash: terminal_hash,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            terminal_high_water.journal_owner_id,
+            high_water.journal_owner_id
+        );
+        assert_eq!(
+            terminal_high_water.actor_generation,
+            high_water.actor_generation
+        );
+        assert_eq!(terminal_high_water.actor_epoch, high_water.actor_epoch);
+        assert!(terminal_authority_matches_high_water(
+            &view,
+            &terminal_high_water
+        ));
+
+        // Window 2 is terminal HWM without marker; the exact predicate above
+        // is the only state allowed to create it. Window 3 is marker plus the
+        // retained PITR witness; duplicate ACK remains explicitly marker-gated.
+        let barrier = |terminal_publication_acked| CommandReceiptPublicationBarrier {
+            sequence: 2,
+            accepted_revision: 8,
+            durable_next_sequence: 3,
+            checkpoint_sequence: 3,
+            player_id: "player-a",
+            input_sequence: 1,
+            durable_member_input_sequence: 2,
+            phase: "complete",
+            terminal_publication_acked,
+            actor_cursor: None,
+        };
+        assert!(!command_receipt_publication_is_acked(barrier(false)));
+        assert!(command_receipt_publication_is_acked(barrier(true)));
+        assert!(!command_receipt_publication_is_acked(
+            CommandReceiptPublicationBarrier {
+                sequence: 3,
+                accepted_revision: 9,
+                durable_next_sequence: 4,
+                checkpoint_sequence: 4,
+                player_id: "player-a",
+                input_sequence: 2,
+                durable_member_input_sequence: 3,
+                phase: "waiting",
+                terminal_publication_acked: true,
+                actor_cursor: None,
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn in_process_terminal_orphan_recovery_retains_revalidated_pitr_witness() {
+        let (root, journal, running, terminal) = test_terminal_orphan_journal("success").await;
+        let authority = FakeTerminalOrphanAuthority {
+            recovered: Some(terminal.clone()),
+            marker: Mutex::new(None),
+            fail_acknowledgement: false,
+            durably_failed_closed: false,
+        };
+        let actor_tracked = BTreeSet::new();
+        assert_eq!(
+            count_untracked_published_tick_records(&[running.match_id], &actor_tracked),
+            1
+        );
+        assert!(!terminal_orphan_recovery_is_operational(true, 1));
+
+        assert_eq!(
+            reconcile_terminal_journal_record(&authority, &journal, &running)
+                .await
+                .unwrap(),
+            TerminalJournalReconciliationOutcome::Recovered
+        );
+        assert_eq!(
+            authority.marker.lock().expect("fake marker lock").as_ref(),
+            Some(&terminal)
+        );
+        assert_eq!(
+            journal.high_water(running.match_id).unwrap().as_ref(),
+            Some(&terminal)
+        );
+        let actor_tracked = BTreeSet::from([running.match_id]);
+        assert!(terminal_orphan_recovery_is_operational(
+            true,
+            count_untracked_published_tick_records(
+                &journal.recorded_match_ids().unwrap(),
+                &actor_tracked,
+            ),
+        ));
+
+        drop(journal);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn terminal_orphan_recovery_failure_keeps_record_and_readiness_blocked() {
+        let (root, journal, running, terminal) = test_terminal_orphan_journal("failure").await;
+        let authority = FakeTerminalOrphanAuthority {
+            recovered: Some(terminal.clone()),
+            marker: Mutex::new(None),
+            fail_acknowledgement: true,
+            durably_failed_closed: false,
+        };
+        assert!(
+            reconcile_terminal_journal_record(&authority, &journal, &running)
+                .await
+                .unwrap_err()
+                .contains("injected terminal marker failure")
+        );
+        assert_eq!(
+            journal.high_water(running.match_id).unwrap().as_ref(),
+            Some(&terminal)
+        );
+        let mut registry = MatchActorRegistry::default();
+        let initialization =
+            reserve_terminal_orphan_recovery(&mut registry, running.match_id).unwrap();
+        assert_eq!(
+            initialization.kind,
+            MatchActorInitializationKind::TerminalRecovery
+        );
+        let actor_tracked = actor_tracked_published_tick_match_ids(&registry, Instant::now());
+        let untracked = count_untracked_published_tick_records(
+            &journal.recorded_match_ids().unwrap(),
+            &actor_tracked,
+        );
+        assert_eq!(untracked, 1);
+        assert!(!terminal_orphan_recovery_is_operational(true, untracked));
+        assert!(!terminal_orphan_recovery_is_operational(false, 0));
+
+        drop(journal);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_closed_running_high_water_remains_a_tracked_rollback_witness() {
+        let (root, journal, running, _terminal) =
+            test_terminal_orphan_journal("failed-closed").await;
+        let authority = FakeTerminalOrphanAuthority {
+            recovered: None,
+            marker: Mutex::new(None),
+            fail_acknowledgement: false,
+            durably_failed_closed: true,
+        };
+        assert_eq!(
+            reconcile_terminal_journal_record(&authority, &journal, &running)
+                .await
+                .unwrap(),
+            TerminalJournalReconciliationOutcome::FailedClosed
+        );
+        assert_eq!(
+            journal.high_water(running.match_id).unwrap().as_ref(),
+            Some(&running)
+        );
+        let tracked = BTreeSet::from([running.match_id]);
+        assert_eq!(
+            count_untracked_published_tick_records(
+                &journal.recorded_match_ids().unwrap(),
+                &tracked,
+            ),
+            0
+        );
+
+        drop(journal);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn terminal_ack_gap_detection_is_host_wide_exact_bounded_and_fails_closed() {
+        for predicate in [
+            "m.phase = 'complete'",
+            "m.assigned_physical_host_id = $1",
+            "m.terminal_publication_state <> 'legacy_quarantined'",
+            "m.terminal_publication_state = 'acknowledged'",
+            "a.local_tombstone_state = 'sealed'",
+            "m.checkpoint_sequence = m.next_sequence",
+            "a.instance_id = m.assigned_instance_id",
+            "a.actor_epoch = m.assigned_instance_epoch",
+            "a.physical_host_id = m.assigned_physical_host_id",
+            "a.authoritative_tick = m.authoritative_tick",
+            "a.next_sequence = m.next_sequence",
+            "a.match_revision = m.match_revision",
+            "a.next_input_sequences =",
+            "a.snapshot_hash = m.snapshot_hash",
+            "a.result_hash = m.result_hash",
+            "a.published_settlement_state = m.settlement_state",
+            "limit $2",
+        ] {
+            assert!(
+                LOCAL_TERMINAL_ACK_GAPS_SQL.contains(predicate),
+                "missing terminal ACK gap predicate: {predicate}"
+            );
+        }
+        assert!(terminal_ack_gap_recovery_is_operational(true, 0, false));
+        assert!(terminal_ack_gap_recovery_is_operational(true, 1, true));
+        assert!(!terminal_ack_gap_recovery_is_operational(true, 1, false));
+        assert!(!terminal_ack_gap_recovery_is_operational(false, 0, false));
+        assert!(!LOCAL_TERMINAL_ACK_GAPS_SQL.contains("trnm_online_fleet_instances"));
+        assert!(!terminal_ack_gap_scan_is_saturated(
+            usize::try_from(TERMINAL_ACK_GAP_SCAN_LIMIT).unwrap()
+        ));
+        assert!(terminal_ack_gap_scan_is_saturated(
+            usize::try_from(TERMINAL_ACK_GAP_SCAN_LIMIT).unwrap() + 1
+        ));
+
+        let recoverable = Uuid::new_v4();
+        let unrecoverable = Uuid::new_v4();
+        assert_eq!(
+            terminal_ack_gaps_without_high_water(
+                &[recoverable, unrecoverable],
+                &BTreeSet::from([recoverable]),
+            ),
+            vec![unrecoverable]
+        );
+    }
+
+    #[test]
+    fn readiness_database_summary_collapses_exact_host_checks_and_fails_closed() {
+        for predicate in [
+            "m.phase = 'complete'",
+            "m.assigned_physical_host_id = $3",
+            "m.terminal_publication_state <> 'legacy_quarantined'",
+            "m.terminal_publication_state = 'acknowledged'",
+            "a.local_tombstone_state = 'sealed'",
+            "a.actor_generation = m.terminal_publication_actor_generation",
+            "a.instance_id = m.assigned_instance_id",
+            "a.actor_epoch = m.assigned_instance_epoch",
+            "a.physical_host_id = m.assigned_physical_host_id",
+            "a.authoritative_tick = m.authoritative_tick",
+            "a.next_sequence = m.next_sequence",
+            "a.match_revision = m.match_revision",
+            "a.next_input_sequences =",
+            "a.snapshot_hash = m.snapshot_hash",
+            "a.result_hash = m.result_hash",
+            "a.published_settlement_state = m.settlement_state",
+            "limit $4",
+            "instance_id = $1 and instance_epoch = $2",
+            "status in ('active', 'draining') and lease_expires_at > now()",
+            "phase = 'running' and assigned_instance_id = $1",
+            "terminal_publication_state = 'legacy_quarantined'",
+            "left join trnm_online_local_cold_witness_summaries cold",
+            "cold.physical_host_id = $3",
+            "pending_terminal_seals as materialized",
+            "trnm_online_failed_closed_abandonment_markers marker",
+            "a.local_tombstone_state <> 'sealed'",
+            "marker.local_tombstone_state <> 'sealed'",
+            "terminal_ack_gap_match_ids",
+            "pending_terminal_seal_match_ids",
+            "pending_abandonment_seal_match_ids",
+        ] {
+            assert!(
+                READINESS_DATABASE_SUMMARY_SQL.contains(predicate),
+                "missing readiness database summary predicate: {predicate}"
+            );
+        }
+        let blocked = ReadinessDatabaseSummary::blocked();
+        assert!(!blocked.postgres_healthy);
+        assert!(!blocked.fleet_epoch_current);
+        assert_eq!(blocked.active_matches, -1);
+        assert_eq!(blocked.terminal_ack_gap_count, usize::MAX);
+        assert!(blocked.terminal_ack_gap_match_ids.is_empty());
+        assert!(blocked.pending_terminal_seal_match_ids.is_empty());
+        assert!(blocked.pending_abandonment_seal_match_ids.is_empty());
+        assert!(!blocked.historical_projection.public_credit_is_clean());
+        assert!(blocked.cold_witness.all_sealed());
+    }
+
+    #[test]
+    fn legacy_terminal_rows_are_quarantined_without_forging_acknowledgements() {
+        assert!(MIGRATION_V12
+            .contains("create table if not exists trnm_online_physical_host_authorities"));
+        assert!(MIGRATION_V12.contains("database_system_identifier ~ '^[1-9][0-9]*$'"));
+        assert!(MIGRATION_V12.contains("leader_lock_key bigint not null"));
+        assert!(MIGRATION_V12.contains("barrier_lock_key bigint not null"));
+        assert!(MIGRATION_V12.contains("else 'legacy_quarantined'"));
+        assert!(MIGRATION_V12.contains("'legacy_bootstrap_pending'"));
+        assert!(
+            MIGRATION_V12.contains("alter column local_tombstone_state set default 'hot_pending'")
+        );
+        assert!(MIGRATION_V12.contains(
+            "local_tombstone_state in ('legacy_bootstrap_pending', 'hot_pending', 'sealed')"
+        ));
+        assert!(!MIGRATION_V12.contains("acknowledged_at = now()"));
+        assert!(MIGRATION_V12.contains("where m.terminal_publication_state is null"));
+        assert!(MIGRATION_V12.contains("phase = 'complete'"));
+        assert!(MIGRATION_V12
+            .contains("terminal_publication_state in ('acknowledged', 'legacy_quarantined')"));
+        assert!(!MIGRATION_V12.contains("insert into trnm_online_terminal_publication_acks"));
+        assert!(LOCAL_TERMINAL_ACK_GAPS_SQL
+            .contains("m.terminal_publication_state <> 'legacy_quarantined'"));
+        assert!(CAMPAIGN_HAS_UNACKNOWLEDGED_PROGRESSION_SQL
+            .contains("m.terminal_publication_state = 'acknowledged'"));
+        assert!(CAMPAIGN_HAS_UNACKNOWLEDGED_PROGRESSION_SQL
+            .contains("a.local_tombstone_state = 'sealed'"));
+        assert!(CAMPAIGN_HAS_UNACKNOWLEDGED_PROGRESSION_SQL
+            .contains("a.actor_epoch = m.assigned_instance_epoch"));
+        assert!(MIGRATION_V12.contains("trnm_online_rating_events_publication_gate_idx"));
+        assert!(MIGRATION_V12.contains("trnm_online_progression_events_publication_gate_idx"));
+
+        assert!(HistoricalTerminalProjectionQuarantine::default().public_credit_is_clean());
+        let polluted = HistoricalTerminalProjectionQuarantine {
+            legacy_terminal_match_count: 1,
+            ..HistoricalTerminalProjectionQuarantine::default()
+        };
+        assert!(!polluted.public_credit_is_clean());
+    }
+
+    #[test]
+    fn abandonment_failure_reason_validation_matches_v13_byte_and_control_contract() {
+        assert!(valid_abandonment_failure_reason("actor lease expired"));
+        assert!(valid_abandonment_failure_reason(" reason with edges "));
+        assert!(valid_abandonment_failure_reason(&"a".repeat(1_024)));
+        assert!(!valid_abandonment_failure_reason(&"a".repeat(1_025)));
+
+        // Rust String::len and PostgreSQL octet_length both enforce the bound
+        // in UTF-8 bytes, not Unicode scalar values.
+        assert!(valid_abandonment_failure_reason(&"界".repeat(341)));
+        assert!(!valid_abandonment_failure_reason(&"界".repeat(342)));
+
+        for invalid in [
+            "",
+            "   ",
+            "failure\nreason",
+            "failure\treason",
+            "failure\0reason",
+            "failure\u{7f}reason",
+            "failure\u{85}reason",
+        ] {
+            assert!(
+                !valid_abandonment_failure_reason(invalid),
+                "accepted invalid abandonment reason: {invalid:?}"
+            );
+        }
+
+        assert!(MIGRATION_V13.contains("btrim(failure_reason) <> ''"));
+        assert!(MIGRATION_V13.contains("octet_length(failure_reason) <= 1024"));
+        assert!(MIGRATION_V13.contains("failure_reason !~ '[[:cntrl:]]'"));
+    }
+
+    #[test]
+    fn legacy_abandonment_adoption_is_explicit_and_strictly_pre_v13() {
+        let applied_at = Utc::now();
+        let older = applied_at - chrono::Duration::milliseconds(1);
+        let newer = applied_at + chrono::Duration::milliseconds(1);
+        assert!(legacy_abandonment_adoption_allowed(true, older, applied_at));
+        assert!(!legacy_abandonment_adoption_allowed(
+            false, older, applied_at
+        ));
+        assert!(!legacy_abandonment_adoption_allowed(
+            true, applied_at, applied_at
+        ));
+        assert!(!legacy_abandonment_adoption_allowed(
+            true, newer, applied_at
+        ));
+    }
+
+    #[test]
+    fn maintenance_final_high_water_accepts_only_exact_monotonic_db_successors() {
+        let cursors = BTreeMap::from([("player-a".to_string(), 4), ("player-b".to_string(), 7)]);
+        let high_water = test_high_water(20, 5, 9, cursors.clone(), "a".repeat(64));
+        assert!(running_maintenance_successor_is_monotonic(
+            &high_water,
+            20,
+            5,
+            9,
+            &cursors,
+            &"a".repeat(64),
+        ));
+        assert!(!running_maintenance_successor_is_monotonic(
+            &high_water,
+            20,
+            5,
+            9,
+            &cursors,
+            &"b".repeat(64),
+        ));
+
+        let successor_cursors =
+            BTreeMap::from([("player-a".to_string(), 5), ("player-b".to_string(), 7)]);
+        assert!(running_maintenance_successor_is_monotonic(
+            &high_water,
+            21,
+            6,
+            10,
+            &successor_cursors,
+            &"b".repeat(64),
+        ));
+        for (tick, sequence, revision, candidate) in [
+            (19, 6, 10, successor_cursors.clone()),
+            (21, 4, 10, successor_cursors.clone()),
+            (21, 6, 8, successor_cursors.clone()),
+            (
+                21,
+                6,
+                10,
+                BTreeMap::from([("player-a".to_string(), 3), ("player-b".to_string(), 7)]),
+            ),
+            (
+                21,
+                6,
+                10,
+                BTreeMap::from([("player-a".to_string(), 5), ("player-c".to_string(), 7)]),
+            ),
+        ] {
+            assert!(!running_maintenance_successor_is_monotonic(
+                &high_water,
+                tick,
+                sequence,
+                revision,
+                &candidate,
+                &"b".repeat(64),
+            ));
+        }
+    }
+
+    #[test]
+    fn legacy_adoption_expectation_rejects_identity_or_reason_before_insert() {
+        let high_water = test_high_water(
+            20,
+            5,
+            9,
+            BTreeMap::from([("player-a".to_string(), 4)]),
+            "a".repeat(64),
+        );
+        let exact = FailedClosedMaintenanceExpectation {
+            instance_id: "instance-a",
+            physical_host_id: "host-a",
+            failure_reason: "operator fail-close",
+        };
+        assert!(failed_closed_maintenance_expectation_matches(
+            &high_water,
+            "operator fail-close",
+            exact,
+        ));
+        for mismatch in [
+            FailedClosedMaintenanceExpectation {
+                instance_id: "instance-b",
+                ..exact
+            },
+            FailedClosedMaintenanceExpectation {
+                physical_host_id: "host-b",
+                ..exact
+            },
+            FailedClosedMaintenanceExpectation {
+                failure_reason: "different reason",
+                ..exact
+            },
+        ] {
+            assert!(!failed_closed_maintenance_expectation_matches(
+                &high_water,
+                "operator fail-close",
+                mismatch,
+            ));
+        }
+    }
+
+    #[test]
+    fn v13_running_fail_close_requires_deferred_exact_hot_pending_marker() {
+        let sql = MIGRATION_V13
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(sql.contains(
+            "create constraint trigger trnm_online_require_atomic_running_abandonment after \
+             update on trnm_online_matches deferrable initially deferred for each row when \
+             (old.phase = 'running' and new.phase = 'failed_closed')"
+        ));
+        assert!(sql.contains(
+            "create trigger trnm_online_guard_abandonment_marker_insert before insert on \
+             trnm_online_failed_closed_abandonment_markers"
+        ));
+        assert!(sql.contains("new.local_tombstone_state <> 'hot_pending' or not exists"));
+        assert!(sql.contains("match_row.phase = 'failed_closed'"));
+        assert!(sql.contains("match_row.simulation_json is not null"));
+        assert!(
+            sql.contains("old.phase = 'running' and new.phase = 'failed_closed' and not exists")
+        );
+        assert!(sql.contains("marker.local_tombstone_state = 'hot_pending'"));
+        for exact in [
+            "marker.failure_reason = new.failure_reason",
+            "marker.instance_id = new.assigned_instance_id",
+            "marker.actor_epoch = new.assigned_instance_epoch",
+            "marker.physical_host_id = new.assigned_physical_host_id",
+            "marker.authoritative_tick = new.authoritative_tick",
+            "marker.next_sequence = new.next_sequence",
+            "marker.match_revision = new.match_revision",
+            "marker.snapshot_hash = new.snapshot_hash",
+            "marker.next_input_sequences = coalesce",
+        ] {
+            assert!(
+                sql.contains(exact),
+                "atomic fail-close guard omitted {exact}"
+            );
+        }
+        assert!(!sql.contains("old.phase = 'waiting' and new.phase = 'failed_closed'"));
+        assert!(sql.contains(
+            "create trigger trnm_online_guard_marked_abandonment_match_update before update on \
+             trnm_online_matches for each row when (old.phase = 'failed_closed' or new.phase is \
+             distinct from old.phase) execute function \
+             trnm_online_guard_marked_abandonment_match_update()"
+        ));
+        assert!(!sql.contains("trnm_online_guard_marked_abandonment_member"));
+        assert!(sql.contains("raise exception 'online match phase transition is not monotonic'"));
+        assert!(sql.contains("raise exception 'marked failed-closed match authority is immutable'"));
+        for exact in [
+            "new.simulation_json is distinct from old.simulation_json",
+            "new.snapshot_hash is distinct from old.snapshot_hash",
+            "new.authoritative_tick is distinct from old.authoritative_tick",
+            "new.next_sequence is distinct from old.next_sequence",
+            "new.checkpoint_sequence is distinct from old.checkpoint_sequence",
+            "new.match_revision is distinct from old.match_revision",
+            "new.failure_reason is distinct from old.failure_reason",
+        ] {
+            assert!(
+                sql.contains(exact),
+                "marked authority guard omitted {exact}"
+            );
+        }
+    }
+
+    #[test]
+    fn v14_command_commit_rpc_keeps_one_statement_atomic_fencing_contract() {
+        assert!(MIGRATION_V14
+            .contains("create or replace function public.trnm_online_commit_actor_command_v1"));
+        assert!(MIGRATION_V14.contains("for share;"));
+        assert!(MIGRATION_V14.contains("for update;"));
+        assert!(MIGRATION_V14.contains("authority.owner_nonce = p_host_owner_nonce"));
+        assert!(MIGRATION_V14.contains("authority_lock.mode = 'ExclusiveLock'"));
+        assert!(MIGRATION_V14.contains("insert into public.trnm_online_commands"));
+        assert!(MIGRATION_V14.contains("set next_input_sequence = p_input_sequence + 1"));
+        assert!(MIGRATION_V14.contains("set next_sequence = p_base_next_sequence + 1"));
+        assert!(MIGRATION_V14.contains("result_outcome := 'duplicate'"));
+        assert!(MIGRATION_V14.contains("result_outcome := 'command_conflict'"));
+        assert!(!MIGRATION_V14.contains("commit;"));
+    }
+
+    #[test]
+    fn v15_realtime_hot_path_collapses_admission_heartbeat_and_checkpoint_round_trips() {
+        let sql = MIGRATION_V15
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            sql.contains("create or replace function public.trnm_online_commit_actor_command_v2")
+        );
+        assert!(sql.contains("insert into public.trnm_online_admission_windows"));
+        assert!(sql.contains("from public.trnm_online_commit_actor_command_v1"));
+        assert!(
+            sql.find("insert into public.trnm_online_admission_windows")
+                .unwrap()
+                < sql
+                    .find("from public.trnm_online_commit_actor_command_v1")
+                    .unwrap()
+        );
+        assert!(sql.contains("result_outcome := 'rate_limited'"));
+        assert!(sql.contains("barrier_lock.pid = pg_catalog.pg_backend_pid()"));
+        assert!(sql.contains("barrier_lock.mode = 'ShareLock'"));
+        assert!(sql.contains("create or replace function public.trnm_online_heartbeat_fleet_v1"));
+        assert!(sql.contains("create or replace function public.trnm_online_checkpoint_actor_v1"));
+        assert!(sql.contains("from public.trnm_online_fleet_instances fleet"));
+        assert!(sql.contains("from public.trnm_online_matches match"));
+        assert!(sql.contains("for share;"));
+        assert!(sql.contains("for update;"));
+        assert!(!sql.contains("commit;"));
+
+        let command =
+            distributed_admission_bucket_key("session-a", "POST", "/v1/online/matches/match-a");
+        assert_eq!(command.len(), 64);
+        assert_ne!(
+            command,
+            distributed_admission_bucket_key("session-a", "GET", "/v1/online/matches/match-a")
+        );
+        assert!(is_operational_probe_path("/health"));
+        assert!(is_operational_probe_path("/v1/online/readiness"));
+        assert!(!is_operational_probe_path("/v1/production/status"));
+        assert!(!is_operational_probe_path(
+            "/v1/online/matches/match-a/snapshot"
+        ));
+    }
+
+    #[test]
+    fn v13_cold_witness_history_is_restrictive_immutable_and_monotonic() {
+        let sql = MIGRATION_V13
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(sql.contains(
+            "alter table trnm_online_terminal_publication_acks drop constraint if exists \
+             trnm_online_terminal_publication_acks_match_id_fkey"
+        ));
+        assert!(sql.contains(
+            "add constraint trnm_online_terminal_publication_acks_match_id_fkey foreign key \
+             (match_id) references trnm_online_matches(match_id) on delete restrict"
+        ));
+
+        for (trigger, table) in [
+            (
+                "trnm_online_forbid_terminal_ack_delete",
+                "trnm_online_terminal_publication_acks",
+            ),
+            (
+                "trnm_online_forbid_abandonment_delete",
+                "trnm_online_failed_closed_abandonment_markers",
+            ),
+        ] {
+            assert!(sql.contains(&format!(
+                "create trigger {trigger} before delete on {table} for each row execute \
+                 function trnm_online_forbid_cold_witness_delete()"
+            )));
+        }
+        assert!(sql.contains("raise exception 'durable cold witness history cannot be deleted'"));
+
+        for field in [
+            "match_id",
+            "actor_generation",
+            "actor_epoch",
+            "authoritative_tick",
+            "next_sequence",
+            "match_revision",
+            "next_input_sequences",
+            "snapshot_hash",
+            "phase",
+            "result_hash",
+            "acknowledged_at",
+            "instance_id",
+            "physical_host_id",
+        ] {
+            assert!(
+                sql.contains(&format!("new.{field} is distinct from old.{field}")),
+                "terminal ACK immutable tuple omitted {field}"
+            );
+        }
+        assert!(sql.contains(
+            "old.published_settlement_state = 'pending' and \
+             new.published_settlement_state = 'settled'"
+        ));
+        assert!(sql.contains(
+            "old.local_tombstone_state in ('legacy_bootstrap_pending', 'hot_pending') and \
+             new.local_tombstone_state = 'sealed'"
+        ));
+        assert!(sql.contains(
+            "raise exception 'terminal publication ACK settlement state cannot regress or change'"
+        ));
+        assert!(sql.contains(
+            "raise exception 'terminal publication ACK cold-seal state cannot regress or change'"
+        ));
+        assert!(sql.contains(
+            "create trigger trnm_online_guard_terminal_ack_update before update on \
+             trnm_online_terminal_publication_acks for each row execute function \
+             trnm_online_guard_terminal_ack_update()"
+        ));
+
+        for field in [
+            "match_id",
+            "journal_owner_id",
+            "actor_generation",
+            "instance_id",
+            "actor_epoch",
+            "physical_host_id",
+            "authoritative_tick",
+            "next_sequence",
+            "match_revision",
+            "next_input_sequences",
+            "snapshot_hash",
+            "failure_reason",
+            "abandoned_at",
+        ] {
+            assert!(
+                sql.contains(&format!("new.{field} <> old.{field}")),
+                "abandonment immutable tuple omitted {field}"
+            );
+        }
+        assert!(sql.contains(
+            "old.local_tombstone_state = 'sealed' and \
+             new.local_tombstone_state <> 'sealed'"
+        ));
+        assert!(sql.contains(
+            "create trigger trnm_online_guard_abandonment_marker_update before update on \
+             trnm_online_failed_closed_abandonment_markers for each row execute function \
+             trnm_online_guard_abandonment_marker_update()"
+        ));
+    }
+
+    #[test]
+    fn v13_cold_witness_summary_has_exact_triggers_and_rebuild() {
+        let sql = MIGRATION_V13
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        for column in [
+            "terminal_total_count bigint not null default 0",
+            "terminal_sealed_count bigint not null default 0",
+            "abandonment_total_count bigint not null default 0",
+            "abandonment_sealed_count bigint not null default 0",
+        ] {
+            assert!(sql.contains(column), "summary omitted {column}");
+        }
+        assert!(sql.contains("check (terminal_sealed_count <= terminal_total_count)"));
+        assert!(sql.contains("check (abandonment_sealed_count <= abandonment_total_count)"));
+        assert!(sql.contains(
+            "create trigger trnm_online_terminal_ack_cold_witness_summary after insert or update \
+             of physical_host_id, local_tombstone_state on \
+             trnm_online_terminal_publication_acks for each row execute function \
+             trnm_online_maintain_cold_witness_summary('terminal')"
+        ));
+        assert!(sql.contains(
+            "create trigger trnm_online_abandonment_cold_witness_summary after insert or update \
+             of physical_host_id, local_tombstone_state on \
+             trnm_online_failed_closed_abandonment_markers for each row execute function \
+             trnm_online_maintain_cold_witness_summary('abandonment')"
+        ));
+        assert!(sql.contains(
+            "terminal_total_count = \
+             trnm_online_local_cold_witness_summaries.terminal_total_count + 1"
+        ));
+        assert!(sql.contains(
+            "abandonment_total_count = \
+             trnm_online_local_cold_witness_summaries.abandonment_total_count + 1"
+        ));
+        assert!(sql.contains("set terminal_sealed_count = terminal_sealed_count + 1"));
+        assert!(sql.contains("set abandonment_sealed_count = abandonment_sealed_count + 1"));
+
+        assert!(sql.contains("delete from trnm_online_local_cold_witness_summaries"));
+        assert!(sql.contains(
+            "select physical_host_id from trnm_online_terminal_publication_acks union select \
+             physical_host_id from trnm_online_failed_closed_abandonment_markers"
+        ));
+        assert!(sql.contains(
+            "count(*) filter (where local_tombstone_state = 'sealed')::bigint as sealed_count"
+        ));
+        assert!(sql.contains("coalesce(terminals.total_count, 0)"));
+        assert!(sql.contains("coalesce(terminals.sealed_count, 0)"));
+        assert!(sql.contains("coalesce(abandonments.total_count, 0)"));
+        assert!(sql.contains("coalesce(abandonments.sealed_count, 0)"));
+    }
+
+    #[test]
+    fn database_system_identifier_must_be_canonical_positive_decimal() {
+        assert!(canonical_database_system_identifier("7632232469463367718"));
+        assert!(!canonical_database_system_identifier(""));
+        assert!(!canonical_database_system_identifier("0"));
+        assert!(!canonical_database_system_identifier("0123"));
+        assert!(!canonical_database_system_identifier("123x"));
+    }
+
+    #[test]
+    fn database_host_authority_success_is_monotonic_and_readiness_requires_freshness() {
+        let first = Instant::now();
+        let second = first + Duration::from_millis(250);
+        assert_eq!(
+            monotonic_database_host_authority_success(first, second),
+            second
+        );
+        assert_eq!(
+            monotonic_database_host_authority_success(second, first),
+            second
+        );
+
+        assert!(database_host_authority_success_is_fresh(
+            true,
+            first,
+            first + DATABASE_HOST_FENCE_FRESHNESS,
+            DATABASE_HOST_FENCE_FRESHNESS,
+        ));
+        assert!(!database_host_authority_success_is_fresh(
+            true,
+            first,
+            first + DATABASE_HOST_FENCE_FRESHNESS + Duration::from_millis(1),
+            DATABASE_HOST_FENCE_FRESHNESS,
+        ));
+        assert!(!database_host_authority_success_is_fresh(
+            false,
+            first,
+            first,
+            DATABASE_HOST_FENCE_FRESHNESS,
+        ));
+        assert!(!database_host_authority_success_is_fresh(
+            true,
+            second,
+            first,
+            DATABASE_HOST_FENCE_FRESHNESS,
+        ));
+    }
+
+    #[test]
+    fn migration_ledger_skips_only_exact_version_name_and_checksum() {
+        let checksum = migration_checksum_sha256("select 1");
+        assert_eq!(checksum.len(), 64);
+        assert_ne!(checksum, migration_checksum_sha256("select 2"));
+        assert!(
+            !migration_ledger_entry_is_applied(1, "0001_online_authority_v1", &checksum, None,)
+                .unwrap()
+        );
+        assert!(migration_ledger_entry_is_applied(
+            1,
+            "0001_online_authority_v1",
+            &checksum,
+            Some(("0001_online_authority_v1", &checksum)),
+        )
+        .unwrap());
+        assert!(migration_ledger_entry_is_applied(
+            1,
+            "0001_online_authority_v1",
+            &checksum,
+            Some(("renamed", &checksum)),
+        )
+        .is_err());
+        assert!(migration_ledger_entry_is_applied(
+            1,
+            "0001_online_authority_v1",
+            &checksum,
+            Some(("0001_online_authority_v1", &"0".repeat(64))),
+        )
+        .is_err());
+        assert!(MIGRATION_LEDGER_DDL.contains("migration_version integer primary key"));
+        assert!(MIGRATION_LEDGER_DDL.contains("checksum_sha256 ~ '^[0-9a-f]{64}$'"));
+        assert!(DATABASE_MIGRATION_STATEMENT_TIMEOUT > DATABASE_STATEMENT_TIMEOUT);
+        assert!(DATABASE_MIGRATION_LOCK_TIMEOUT > DATABASE_LOCK_TIMEOUT);
+    }
+
+    #[test]
+    fn postgres_wal_lsn_and_latest_cold_rollback_boundary_are_canonical() {
+        assert_eq!(parse_postgres_wal_lsn("0/0"), Some(0));
+        assert_eq!(parse_postgres_wal_lsn("1/ABCDEF"), Some(0x1_00ab_cdef));
+        for invalid in ["", "0", "0/00", "01/0", "0/abcdef", "0/G", "0/0/0"] {
+            assert_eq!(parse_postgres_wal_lsn(invalid), None, "accepted {invalid}");
+        }
+
+        let mut high_water = test_high_water(4, 3, 2, test_input_cursors(), "a".repeat(64));
+        high_water.phase = "complete".to_string();
+        let tombstone = PublishedTickAckTombstone {
+            contract_version: "test".to_string(),
+            journal_seal_sequence: 1,
+            high_water,
+            result_hash: "b".repeat(64),
+            settlement_state: "pending".to_string(),
+            acknowledged_at_unix_ms: 1,
+            database_system_identifier: "7632232469463367718".to_string(),
+            database_timeline_id: 7,
+            database_wal_lsn: "1/20".to_string(),
+        };
+        let lineage = |system_identifier: &str, timeline_id, wal_flush_lsn: &str| DatabaseLineage {
+            system_identifier: system_identifier.to_string(),
+            timeline_id,
+            wal_flush_lsn: wal_flush_lsn.to_string(),
+        };
+        assert!(database_lineage_covers_tombstone(
+            &lineage("7632232469463367718", 7, "1/20"),
+            &tombstone,
+        ));
+        assert!(database_lineage_covers_tombstone(
+            &lineage("7632232469463367718", 7, "1/21"),
+            &tombstone,
+        ));
+        assert!(!database_lineage_covers_tombstone(
+            &lineage("7632232469463367718", 7, "1/1F"),
+            &tombstone,
+        ));
+        assert!(!database_lineage_covers_tombstone(
+            &lineage("7632232469463367719", 7, "1/21"),
+            &tombstone,
+        ));
+        assert!(!database_lineage_covers_tombstone(
+            &lineage("7632232469463367718", 8, "1/21"),
+            &tombstone,
+        ));
+    }
+
+    #[test]
+    fn startup_terminal_ack_sources_never_rebuild_nonlegacy_db_evidence() {
+        assert_eq!(
+            startup_terminal_ack_seal_source("legacy_bootstrap_pending", false, false),
+            Some(StartupTerminalAckSealSource::LegacyDatabaseBootstrap)
+        );
+        assert_eq!(
+            startup_terminal_ack_seal_source("legacy_bootstrap_pending", true, false),
+            Some(StartupTerminalAckSealSource::Hot)
+        );
+        assert_eq!(
+            startup_terminal_ack_seal_source("hot_pending", true, false),
+            Some(StartupTerminalAckSealSource::Hot)
+        );
+        assert_eq!(
+            startup_terminal_ack_seal_source("hot_pending", false, true),
+            Some(StartupTerminalAckSealSource::Cold)
+        );
+        assert_eq!(
+            startup_terminal_ack_seal_source("hot_pending", false, false),
+            None
+        );
+        assert_eq!(
+            startup_terminal_ack_seal_source("sealed", true, false),
+            None
+        );
+        assert_eq!(
+            startup_terminal_ack_seal_source("sealed", false, true),
+            Some(StartupTerminalAckSealSource::Cold)
+        );
+        assert!(terminal_tombstone_settlement_matches("pending", "settled"));
+        assert!(!terminal_tombstone_settlement_matches("settled", "pending"));
+        assert!(LOCAL_TERMINAL_ACK_STARTUP_PAGE_SQL
+            .contains("a.local_tombstone_state in ('legacy_bootstrap_pending', 'hot_pending')"));
+    }
+
+    #[test]
+    fn terminal_reads_use_durable_assignment_while_running_fences_use_serving_authority() {
+        assert!(EXACT_TERMINAL_PUBLICATION_MARKER_SQL
+            .contains("a.instance_id = m.assigned_instance_id"));
+        assert!(EXACT_TERMINAL_PUBLICATION_MARKER_SQL
+            .contains("a.physical_host_id = m.assigned_physical_host_id"));
+        assert!(
+            EXACT_TERMINAL_PUBLICATION_MARKER_SQL.contains("a.local_tombstone_state = 'sealed'")
+        );
+        assert!(!EXACT_TERMINAL_PUBLICATION_MARKER_SQL.contains("$2"));
+        assert!(MATCH_ACTOR_FENCE_OWNERSHIP_SQL.contains("and f.physical_host_id = $4"));
+    }
+
+    #[test]
+    fn retained_terminal_ack_revalidation_survives_runtime_epoch_advance() {
+        assert!(terminal_runtime_revalidation_is_allowed(
+            "instance-a",
+            4,
+            "host-a",
+            "instance-a",
+            5,
+            "host-a",
+            false,
+        ));
+        assert!(!terminal_runtime_revalidation_is_allowed(
+            "instance-a",
+            4,
+            "host-a",
+            "instance-a",
+            5,
+            "host-a",
+            true,
+        ));
+        assert!(terminal_runtime_revalidation_is_allowed(
+            "instance-a",
+            5,
+            "host-a",
+            "instance-a",
+            5,
+            "host-a",
+            true,
+        ));
+    }
+
+    #[test]
+    fn multi_second_failed_or_duplicate_pending_lane_replays_without_tick_loss() {
+        let simulation = published_tick_recovery_simulation();
+        let cursors = test_input_cursors();
+        let mut durable = LoadedMatchActor {
+            simulation: simulation.clone(),
+            match_mode: "coop_vs_ai".to_string(),
+            members: Arc::new(BTreeMap::new()),
+            next_sequence: 3,
+            match_revision: 8,
+            next_input_sequences: cursors.clone(),
+            durable_recovery_tick: simulation.tick,
+        };
+        let mut expected = simulation;
+        for _ in 0..40 {
+            expected.step().unwrap();
+        }
+        replay_durable_actor_after_pending(&mut durable, expected.tick, expected.tick).unwrap();
+        assert_eq!(durable.simulation.tick, expected.tick);
+        assert_eq!(
+            durable.simulation.snapshot_hash().unwrap(),
+            expected.snapshot_hash().unwrap()
+        );
+        assert_eq!(durable.next_sequence, 3);
+        assert_eq!(durable.match_revision, 8);
+        assert_eq!(durable.next_input_sequences, cursors);
+    }
+
+    #[tokio::test]
+    async fn actor_watch_advances_only_after_published_tick_durability_ack() {
+        let root = std::env::temp_dir().join(format!(
+            "trnm-actor-publication-barrier-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let journal = PublishedTickJournal::open(
+            root.clone(),
+            format!("host-publication-{}", Uuid::new_v4()),
+        )
+        .unwrap();
+        let match_id = Uuid::new_v4();
+        let actor_id = Uuid::new_v4();
+        let mut simulation = published_tick_recovery_simulation();
+        let initial_hash = simulation.snapshot_hash().unwrap();
+        let started_at = Instant::now();
+        let input_cursors = test_input_cursors();
+        let initial = PublishedMatchState {
+            simulation: Arc::new(simulation.clone()),
+            snapshot_hash: Arc::new(initial_hash),
+            next_sequence: 2,
+            match_revision: 3,
+            next_input_sequences: Arc::new(input_cursors.clone()),
+            phase: OnlineMatchPhase::Running,
+            result_hash: None,
+            settlement_state: "not_ready".to_string(),
+            state_sequence: 0,
+            published_at: started_at,
+        };
+        simulation.step().unwrap();
+        let next_hash = simulation.snapshot_hash().unwrap();
+        let candidate = ActorPublicationCandidate {
+            state: PublishedMatchState {
+                simulation: Arc::new(simulation.clone()),
+                snapshot_hash: Arc::new(next_hash.clone()),
+                next_sequence: 2,
+                match_revision: 3,
+                next_input_sequences: Arc::new(input_cursors.clone()),
+                phase: OnlineMatchPhase::Running,
+                result_hash: None,
+                settlement_state: "not_ready".to_string(),
+                state_sequence: 1,
+                published_at: Instant::now(),
+            },
+            durable_db_next_sequence: 2,
+            durable_db_match_revision: 3,
+            durable_db_next_input_sequences: input_cursors.clone(),
+            receipts_replayable: true,
+            publish_to_watch: true,
+        };
+        let (published_tx, mut published_rx) = watch::channel(initial);
+        let (publication_acked_tx, publication_acked_rx) = watch::channel(ActorPublicationCursor {
+            tick: simulation.tick.saturating_sub(1),
+            next_sequence: 2,
+            match_revision: 3,
+            next_input_sequences: input_cursors,
+            phase: OnlineMatchPhase::Running,
+            receipts_replayable: true,
+            snapshot_hash: "0".repeat(64),
+        });
+        let (candidate_tx, candidate_rx) = watch::channel(None);
+        let (permit_tx, permit_rx) = watch::channel(true);
+        let (_durable_tick_tx, durable_tick_rx) = watch::channel(simulation.tick);
+        let (completion_tx, mut completion_rx) = mpsc::channel(1);
+        let worker = tokio::spawn(run_actor_publication_worker(ActorPublicationWorker {
+            journal: journal.clone(),
+            instance_id: Arc::new("instance-a".to_string()),
+            match_id,
+            actor_id,
+            actor_epoch: 1,
+            candidates: candidate_rx,
+            permit: permit_rx,
+            durable_recovery_tick: durable_tick_rx,
+            published: published_tx,
+            publication_acked: publication_acked_tx,
+            completions: completion_tx,
+        }));
+
+        candidate_tx.send_replace(Some(candidate));
+        assert_eq!(published_rx.borrow().state_sequence, 0);
+        let completion = tokio::time::timeout(Duration::from_secs(2), completion_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(completion.state_sequence, 1);
+        completion.result.unwrap();
+        published_rx.changed().await.unwrap();
+        assert_eq!(published_rx.borrow().state_sequence, 1);
+        assert_eq!(publication_acked_rx.borrow().tick, simulation.tick);
+        let high_water = journal.high_water(match_id).unwrap().unwrap();
+        assert_eq!(high_water.tick, simulation.tick);
+        assert_eq!(high_water.snapshot_hash, next_hash);
+
+        permit_tx.send_replace(false);
+        drop(candidate_tx);
+        worker.await.unwrap();
+        drop(journal);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn terminal_hwm_waits_for_exact_marker_before_public_watch_and_cursor_release() {
+        let root = std::env::temp_dir().join(format!(
+            "trnm-terminal-publication-barrier-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let journal = PublishedTickJournal::open(
+            root.clone(),
+            format!("host-terminal-publication-{}", Uuid::new_v4()),
+        )
+        .unwrap();
+        let match_id = Uuid::new_v4();
+        let actor_id = Uuid::new_v4();
+        let mut simulation = published_tick_recovery_simulation();
+        let initial_hash = simulation.snapshot_hash().unwrap();
+        let input_cursors = test_input_cursors();
+        let initial = PublishedMatchState {
+            simulation: Arc::new(simulation.clone()),
+            snapshot_hash: Arc::new(initial_hash.clone()),
+            next_sequence: 2,
+            match_revision: 3,
+            next_input_sequences: Arc::new(input_cursors.clone()),
+            phase: OnlineMatchPhase::Running,
+            result_hash: None,
+            settlement_state: "not_ready".to_string(),
+            state_sequence: 0,
+            published_at: Instant::now(),
+        };
+        simulation.step().unwrap();
+        let terminal_hash = simulation.snapshot_hash().unwrap();
+        let terminal = PublishedMatchState {
+            simulation: Arc::new(simulation.clone()),
+            snapshot_hash: Arc::new(terminal_hash.clone()),
+            next_sequence: 2,
+            match_revision: 3,
+            next_input_sequences: Arc::new(input_cursors.clone()),
+            phase: OnlineMatchPhase::Complete,
+            result_hash: Some("terminal-result".to_string()),
+            settlement_state: "staged".to_string(),
+            state_sequence: 1,
+            published_at: Instant::now(),
+        };
+        let candidate = ActorPublicationCandidate {
+            state: terminal.clone(),
+            durable_db_next_sequence: 2,
+            durable_db_match_revision: 3,
+            durable_db_next_input_sequences: input_cursors.clone(),
+            receipts_replayable: true,
+            publish_to_watch: true,
+        };
+        let (published_tx, published_rx) = watch::channel(initial);
+        let (publication_acked_tx, publication_acked_rx) = watch::channel(ActorPublicationCursor {
+            tick: simulation.tick.saturating_sub(1),
+            next_sequence: 2,
+            match_revision: 3,
+            next_input_sequences: input_cursors,
+            phase: OnlineMatchPhase::Running,
+            receipts_replayable: true,
+            snapshot_hash: initial_hash,
+        });
+        let (candidate_tx, candidate_rx) = watch::channel(None);
+        let (permit_tx, permit_rx) = watch::channel(true);
+        let (_durable_tick_tx, durable_tick_rx) = watch::channel(simulation.tick);
+        let (completion_tx, mut completion_rx) = mpsc::channel(1);
+        let worker = tokio::spawn(run_actor_publication_worker(ActorPublicationWorker {
+            journal: journal.clone(),
+            instance_id: Arc::new("instance-a".to_string()),
+            match_id,
+            actor_id,
+            actor_epoch: 1,
+            candidates: candidate_rx,
+            permit: permit_rx,
+            durable_recovery_tick: durable_tick_rx,
+            published: published_tx.clone(),
+            publication_acked: publication_acked_tx.clone(),
+            completions: completion_tx,
+        }));
+
+        candidate_tx.send_replace(Some(candidate));
+        let completion = tokio::time::timeout(Duration::from_secs(2), completion_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(completion.state_sequence, terminal.state_sequence);
+        completion.result.unwrap();
+        let deferred = completion
+            .deferred_terminal
+            .expect("terminal completion must retain the public tuple");
+
+        // The host journal is durable, but neither HTTP/WS state nor the
+        // receipt cursor may expose terminal authority before the exact DB
+        // marker commits.
+        let high_water = journal.high_water(match_id).unwrap().unwrap();
+        assert_eq!(high_water.phase, "complete");
+        assert_eq!(high_water.tick, terminal.simulation.tick);
+        assert_eq!(high_water.snapshot_hash, terminal_hash);
+        assert_eq!(published_rx.borrow().phase, OnlineMatchPhase::Running);
+        assert_eq!(published_rx.borrow().state_sequence, 0);
+        assert_eq!(
+            publication_acked_rx.borrow().phase,
+            OnlineMatchPhase::Running
+        );
+        assert_eq!(publication_acked_rx.borrow().tick, simulation.tick - 1);
+
+        let mut deferred = deferred;
+        bind_deferred_terminal_commit(
+            &mut deferred,
+            &TerminalPublicationCommit {
+                result_hash: "terminal-result".to_string(),
+                settlement_state: "pending".to_string(),
+                acknowledged_at_unix_ms: 1,
+            },
+        )
+        .unwrap();
+        release_deferred_terminal_publication(deferred, &published_tx, &publication_acked_tx)
+            .unwrap();
+        assert_eq!(published_rx.borrow().phase, OnlineMatchPhase::Complete);
+        assert_eq!(published_rx.borrow().settlement_state, "pending");
+        assert_eq!(published_rx.borrow().state_sequence, 1);
+        assert_eq!(
+            publication_acked_rx.borrow().phase,
+            OnlineMatchPhase::Complete
+        );
+        assert!(publication_tuple_matches(
+            &published_rx.borrow(),
+            &publication_acked_rx.borrow()
+        ));
+
+        permit_tx.send_replace(false);
+        drop(candidate_tx);
+        worker.await.unwrap();
+        drop(journal);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn terminal_read_surfaces_require_the_exact_durable_marker() {
+        assert!(terminal_read_surface_is_releasable(
+            OnlineMatchPhase::Running,
+            false
+        ));
+        assert!(!terminal_read_surface_is_releasable(
+            OnlineMatchPhase::Complete,
+            false
+        ));
+        assert!(terminal_read_surface_is_releasable(
+            OnlineMatchPhase::Complete,
+            true
+        ));
+    }
+
+    #[tokio::test]
+    async fn revoked_publication_permit_blocks_watch_and_ack_updates() {
+        let root = std::env::temp_dir().join(format!(
+            "trnm-actor-publication-revoke-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let journal =
+            PublishedTickJournal::open(root.clone(), format!("host-revoke-{}", Uuid::new_v4()))
+                .unwrap();
+        let mut simulation = published_tick_recovery_simulation();
+        let initial_hash = simulation.snapshot_hash().unwrap();
+        let cursors = test_input_cursors();
+        let started_at = Instant::now();
+        let initial = PublishedMatchState {
+            simulation: Arc::new(simulation.clone()),
+            snapshot_hash: Arc::new(initial_hash.clone()),
+            next_sequence: 2,
+            match_revision: 3,
+            next_input_sequences: Arc::new(cursors.clone()),
+            phase: OnlineMatchPhase::Running,
+            result_hash: None,
+            settlement_state: "not_ready".to_string(),
+            state_sequence: 0,
+            published_at: started_at,
+        };
+        simulation.step().unwrap();
+        let candidate = ActorPublicationCandidate {
+            state: PublishedMatchState {
+                simulation: Arc::new(simulation.clone()),
+                snapshot_hash: Arc::new(simulation.snapshot_hash().unwrap()),
+                next_sequence: 2,
+                match_revision: 3,
+                next_input_sequences: Arc::new(cursors.clone()),
+                phase: OnlineMatchPhase::Running,
+                result_hash: None,
+                settlement_state: "not_ready".to_string(),
+                state_sequence: 1,
+                published_at: Instant::now(),
+            },
+            durable_db_next_sequence: 2,
+            durable_db_match_revision: 3,
+            durable_db_next_input_sequences: cursors.clone(),
+            receipts_replayable: true,
+            publish_to_watch: true,
+        };
+        let (published_tx, published_rx) = watch::channel(initial);
+        let (acked_tx, acked_rx) = watch::channel(ActorPublicationCursor {
+            tick: 0,
+            next_sequence: 2,
+            match_revision: 3,
+            next_input_sequences: cursors,
+            phase: OnlineMatchPhase::Running,
+            receipts_replayable: true,
+            snapshot_hash: initial_hash,
+        });
+        let (candidate_tx, candidate_rx) = watch::channel(None);
+        let (_permit_tx, permit_rx) = watch::channel(false);
+        let (_durable_tx, durable_rx) = watch::channel(simulation.tick);
+        let (completion_tx, _completion_rx) = mpsc::channel(1);
+        let match_id = Uuid::new_v4();
+        let worker = tokio::spawn(run_actor_publication_worker(ActorPublicationWorker {
+            journal: journal.clone(),
+            instance_id: Arc::new("instance-a".to_string()),
+            match_id,
+            actor_id: Uuid::new_v4(),
+            actor_epoch: 1,
+            candidates: candidate_rx,
+            permit: permit_rx,
+            durable_recovery_tick: durable_rx,
+            published: published_tx,
+            publication_acked: acked_tx,
+            completions: completion_tx,
+        }));
+        candidate_tx.send_replace(Some(candidate));
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(published_rx.borrow().state_sequence, 0);
+        assert_eq!(acked_rx.borrow().tick, 0);
+        assert!(journal.high_water(match_id).unwrap().is_none());
+        drop(candidate_tx);
+        drop(journal);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_receipt_waits_for_full_publication_cursor() {
+        fn barrier(
+            actor_cursor: Option<&ActorPublicationCursor>,
+        ) -> CommandReceiptPublicationBarrier<'_> {
+            CommandReceiptPublicationBarrier {
+                sequence: 3,
+                accepted_revision: 9,
+                durable_next_sequence: 4,
+                checkpoint_sequence: 3,
+                player_id: "player-a",
+                input_sequence: 2,
+                durable_member_input_sequence: 3,
+                phase: "running",
+                terminal_publication_acked: false,
+                actor_cursor,
+            }
+        }
+        let mut cursor = ActorPublicationCursor {
+            tick: 20,
+            next_sequence: 4,
+            match_revision: 9,
+            next_input_sequences: BTreeMap::from([
+                ("player-a".to_string(), 3),
+                ("player-b".to_string(), 2),
+            ]),
+            phase: OnlineMatchPhase::Running,
+            receipts_replayable: false,
+            snapshot_hash: "a".repeat(64),
+        };
+        assert!(!command_receipt_publication_is_acked(barrier(Some(
+            &cursor
+        ))));
+        cursor.receipts_replayable = true;
+        assert!(command_receipt_publication_is_acked(barrier(Some(&cursor))));
+        cursor
+            .next_input_sequences
+            .insert("player-a".to_string(), 2);
+        assert!(!command_receipt_publication_is_acked(barrier(Some(
+            &cursor
+        ))));
+    }
+
+    #[test]
+    fn terminal_duplicate_waits_for_durable_terminal_publication_marker() {
+        let barrier = |terminal_publication_acked| CommandReceiptPublicationBarrier {
+            sequence: 3,
+            accepted_revision: 9,
+            durable_next_sequence: 4,
+            checkpoint_sequence: 4,
+            player_id: "player-a",
+            input_sequence: 2,
+            durable_member_input_sequence: 3,
+            phase: "complete",
+            terminal_publication_acked,
+            actor_cursor: None,
+        };
+        assert!(!command_receipt_publication_is_acked(barrier(false)));
+        assert!(command_receipt_publication_is_acked(barrier(true)));
+    }
+
+    #[test]
+    fn terminal_marker_rejects_phase_result_or_settlement_tampering() {
+        assert!(terminal_marker_metadata_matches(
+            Some("complete"),
+            Some("result-a"),
+            Some("pending"),
+            Some("result-a"),
+            "pending",
+        ));
+        assert!(!terminal_marker_metadata_matches(
+            Some("complete"),
+            Some("result-a"),
+            Some("pending"),
+            Some("result-a"),
+            "settled",
+        ));
+        assert!(!terminal_marker_metadata_matches(
+            Some("running"),
+            Some("result-a"),
+            Some("pending"),
+            Some("result-a"),
+            "pending",
+        ));
+        assert!(!terminal_marker_metadata_matches(
+            Some("complete"),
+            Some("result-b"),
+            Some("pending"),
+            Some("result-a"),
+            "pending",
+        ));
+        assert!(!terminal_marker_metadata_matches(
+            Some("complete"),
+            Some("result-a"),
+            Some("settled"),
+            Some("result-a"),
+            "pending",
+        ));
+
+        let mut evidence = TerminalPublicationEvidence {
+            authoritative_tick: 20,
+            next_sequence: 4,
+            match_revision: 9,
+            next_input_sequences: test_input_cursors(),
+            snapshot_hash: "a".repeat(64),
+            phase: OnlineMatchPhase::Complete,
+            result_hash: Some("result-a".to_string()),
+            settlement_state: "pending".to_string(),
+        };
+        assert!(!terminal_publication_metadata_matches_durable(
+            &evidence,
+            Some("result-a"),
+            "settled",
+        ));
+        // Durable settlement and its marker advance in one transaction; a
+        // stale pending marker is not exact publication evidence.
+        assert_eq!(evidence.settlement_state, "pending");
+        evidence.result_hash = Some("result-b".to_string());
+        assert!(!terminal_publication_metadata_matches_durable(
+            &evidence,
+            Some("result-a"),
+            "settled",
+        ));
+        evidence.result_hash = Some("result-a".to_string());
+        evidence.settlement_state = "settled".to_string();
+        assert!(!terminal_publication_metadata_matches_durable(
+            &evidence,
+            Some("result-a"),
+            "pending",
+        ));
+    }
+
+    #[test]
+    fn same_instance_and_epoch_on_a_different_physical_host_is_fenced() {
+        assert!(match_assignment_matches_local(
+            Some("instance-a"),
+            4,
+            Some("host-a"),
+            "instance-a",
+            4,
+            "host-a",
+        ));
+        assert!(!match_assignment_matches_local(
+            Some("instance-a"),
+            4,
+            Some("host-b"),
+            "instance-a",
+            4,
+            "host-a",
+        ));
+        assert!(reconciliation_candidate_is_local(None, None, "host-a"));
+        assert!(reconciliation_candidate_is_local(
+            Some("instance-a"),
+            Some("host-a"),
+            "host-a",
+        ));
+        assert!(!reconciliation_candidate_is_local(
+            Some("instance-b"),
+            Some("host-b"),
+            "host-a",
+        ));
+    }
+
+    #[test]
+    fn terminal_checkpoint_phase_remains_owned_until_publication_finishes() {
+        assert!(!MATCH_ACTOR_FENCE_OWNERSHIP_SQL.contains("m.phase"));
+        assert!(MATCH_ACTOR_FENCE_OWNERSHIP_SQL.contains("m.assigned_instance_epoch = $3"));
+        assert!(MATCH_ACTOR_FENCE_OWNERSHIP_SQL.contains("f.lease_expires_at > now()"));
+    }
+
+    #[test]
+    fn snapshot_publication_requires_exact_hash_phase_and_member_cursors() {
+        let simulation = published_tick_recovery_simulation();
+        let hash = simulation.snapshot_hash().unwrap();
+        let cursors = test_input_cursors();
+        let state = PublishedMatchState {
+            simulation: Arc::new(simulation.clone()),
+            snapshot_hash: Arc::new(hash.clone()),
+            next_sequence: 3,
+            match_revision: 8,
+            next_input_sequences: Arc::new(cursors.clone()),
+            phase: OnlineMatchPhase::Running,
+            result_hash: None,
+            settlement_state: "not_ready".to_string(),
+            state_sequence: 1,
+            published_at: Instant::now(),
+        };
+        let mut acknowledged = ActorPublicationCursor {
+            tick: simulation.tick,
+            next_sequence: 3,
+            match_revision: 8,
+            next_input_sequences: cursors,
+            phase: OnlineMatchPhase::Running,
+            receipts_replayable: true,
+            snapshot_hash: hash,
+        };
+        assert!(publication_tuple_matches(&state, &acknowledged));
+        acknowledged.phase = OnlineMatchPhase::Complete;
+        assert!(!publication_tuple_matches(&state, &acknowledged));
+        acknowledged.phase = OnlineMatchPhase::Running;
+        acknowledged
+            .next_input_sequences
+            .insert("player-a".to_string(), 99);
+        assert!(!publication_tuple_matches(&state, &acknowledged));
+    }
+
+    #[test]
+    fn snapshot_rejects_actor_cursor_ahead_of_durable_database_view() {
+        let simulation = published_tick_recovery_simulation();
+        let published = PublishedMatchState {
+            snapshot_hash: Arc::new(simulation.snapshot_hash().unwrap()),
+            simulation: Arc::new(simulation),
+            next_sequence: 4,
+            match_revision: 9,
+            next_input_sequences: Arc::new(BTreeMap::from([
+                ("player-a".to_string(), 3),
+                ("player-b".to_string(), 2),
+            ])),
+            phase: OnlineMatchPhase::Running,
+            result_hash: None,
+            settlement_state: "not_ready".to_string(),
+            state_sequence: 1,
+            published_at: Instant::now(),
+        };
+        let member = |player_id: &str, next_input_sequence| OnlineMatchMemberView {
+            player_id: player_id.to_string(),
+            account_id: Uuid::nil().to_string(),
+            campaign_id: Uuid::nil().to_string(),
+            role: "host".to_string(),
+            controlled_unit_ids: Vec::new(),
+            campaign_revision: 1,
+            level: 1,
+            experience: 0,
+            inventory_count: 0,
+            next_input_sequence,
+        };
+        let mut view = OnlineMatchView {
+            protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
+            build_id: ONLINE_AUTHORITY_BUILD.to_string(),
+            match_id: Uuid::nil().to_string(),
+            join_code: "TEST".to_string(),
+            phase: OnlineMatchPhase::Running,
+            match_revision: 9,
+            authoritative_tick: published.simulation.tick,
+            next_sequence: 4,
+            map_id: "first_contact".to_string(),
+            match_mode: "coop_vs_ai".to_string(),
+            rules_version: "test".to_string(),
+            seed_hash: "seed".to_string(),
+            snapshot_hash: published.snapshot_hash.as_ref().clone(),
+            members: vec![member("player-a", 3), member("player-b", 2)],
+            result_hash: None,
+            settlement_state: "not_ready".to_string(),
+        };
+        assert!(published_cursor_is_within_durable_view(&published, &view));
+        assert!(stream::published_stream_view_is_aligned(&published, &view));
+        let mut next = published.clone();
+        next.state_sequence = next.state_sequence.saturating_add(1);
+        next.next_sequence = next.next_sequence.saturating_add(1);
+        next.match_revision = next.match_revision.saturating_add(1);
+        next.next_input_sequences = Arc::new(BTreeMap::from([
+            ("player-a".to_string(), 4),
+            ("player-b".to_string(), 2),
+        ]));
+        assert!(stream::running_publication_can_reuse_stream_view(
+            &published, &next, &view
+        ));
+        next.phase = OnlineMatchPhase::Complete;
+        assert!(!stream::running_publication_can_reuse_stream_view(
+            &published, &next, &view
+        ));
+        view.next_sequence = 3;
+        assert!(!published_cursor_is_within_durable_view(&published, &view));
+        assert!(!stream::published_stream_view_is_aligned(&published, &view));
+        view.next_sequence = 4;
+        view.members[0].next_input_sequence = 2;
+        assert!(!published_cursor_is_within_durable_view(&published, &view));
+        assert!(!stream::published_stream_view_is_aligned(&published, &view));
+    }
+
+    #[test]
+    fn actor_receipt_cache_preserves_retry_idempotency_and_request_binding() {
+        let receipt = OnlineCommandReceipt {
+            protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
+            match_id: Uuid::nil().to_string(),
+            player_id: "player-a".to_string(),
+            command_id: "command-a".to_string(),
+            sequence: 7,
+            input_sequence: 3,
+            duplicate: false,
+            accepted_tick: 42,
+            client_observed_tick: Some(41),
+            match_revision: 8,
+            snapshot_hash: "a".repeat(64),
+        };
+        let mut cache = BTreeMap::new();
+        let mut cache_order = VecDeque::new();
+        cache_actor_receipt(
+            &mut cache,
+            &mut cache_order,
+            "request-a".to_string(),
+            &receipt,
+        );
+
+        let duplicate =
+            cached_actor_command_result(&cache, "command-a", "player-a", "request-a", 8)
+                .unwrap()
+                .unwrap();
+        assert!(duplicate.duplicate);
+        assert_eq!(duplicate.sequence, 7);
+        assert!(cached_actor_command_result(
+            &cache,
+            "command-a",
+            "player-a",
+            "different-request",
+            8,
+        )
+        .unwrap()
+        .is_err());
+        assert!(committed_receipt_matches_pending(
+            &receipt,
+            "command-a",
+            "player-a",
+            7,
+            3,
+            8,
+            &"a".repeat(64),
+        ));
+        let mut wrong_receipt = receipt;
+        wrong_receipt.match_revision = 9;
+        assert!(!committed_receipt_matches_pending(
+            &wrong_receipt,
+            "command-a",
+            "player-a",
+            7,
+            3,
+            8,
+            &"a".repeat(64),
+        ));
+    }
+}
