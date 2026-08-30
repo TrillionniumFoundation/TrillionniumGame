@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-session-foundation
+  group: temporary-session-foundation-v2
   cancel-in-progress: false
 
 jobs:
@@ -36,6 +36,53 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/tmp/apply-session-foundation.py')
+          source = path.read_text(encoding='utf-8')
+          start_marker = 'for checker in (\n'
+          end_marker = '\nreplace_exact(\n    "scripts/check-trnm-server.py",\n    \'\'\'REQUIRED_FILES'
+          start = source.find(start_marker)
+          end = source.find(end_marker, start)
+          if start < 0 or end < 0 or source.find(start_marker, start + 1) >= 0:
+              raise SystemExit('ambiguous dependency-patch loop in session patch')
+          replacement = '''replace_exact(
+              "scripts/check-rust-foundation.py",
+              \'\'\'    "crates/trnm-persistence-pg": {
+                  "native-tls": "=0.2.18",
+                  "postgres": "=0.19.14",
+                  "postgres-native-tls": "=0.5.3",
+                  "r2d2": "=0.8.10",
+                  "r2d2_postgres": "=0.18.2",
+                  "trnm-contracts": {"path": "../trnm-contracts"},
+              },
+          \'\'\',
+              \'\'\'    "crates/trnm-persistence-pg": {
+                  "native-tls": "=0.2.18",
+                  "postgres": "=0.19.14",
+                  "postgres-native-tls": "=0.5.3",
+                  "r2d2": "=0.8.10",
+                  "r2d2_postgres": "=0.18.2",
+                  "trnm-contracts": {"path": "../trnm-contracts"},
+                  "trnm-session-core": {"path": "../trnm-session-core"},
+                  "trnm-token-jwt-adapter": {"path": "../trnm-token-jwt-adapter"},
+              },
+          \'\'\',
+          )
+
+          replace_exact(
+              "scripts/check-trnm-server.py",
+              \'\'\'        "trnm-contracts": {"path": "../trnm-contracts"},
+          \'\'\',
+              \'\'\'        "trnm-contracts": {"path": "../trnm-contracts"},
+                  "trnm-session-core": {"path": "../trnm-session-core"},
+                  "trnm-token-jwt-adapter": {"path": "../trnm-token-jwt-adapter"},
+          \'\'\',
+          )
+          '''
+          path.write_text(source[:start] + replacement + source[end:], encoding='utf-8')
+          PY
           python3 -m py_compile .github/tmp/apply-session-foundation.py
           python3 .github/tmp/apply-session-foundation.py
           rm .github/tmp/apply-session-foundation.py
