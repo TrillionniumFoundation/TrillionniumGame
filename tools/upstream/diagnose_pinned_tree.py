@@ -16,6 +16,8 @@ import os
 import stat
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -27,13 +29,76 @@ from tools.upstream.pinned_archive import (  # noqa: E402
     SourceArchiveError,
     extract_github_tarball,
     git_blob_sha1_bytes,
-    http_bytes,
-    normalize_gitlink_map,
 )
 
 
 class DiagnosticError(RuntimeError):
     """Raised when the mismatch itself cannot be diagnosed safely."""
+
+
+def http_bytes(
+    url: str,
+    *,
+    token: str | None,
+    timeout_seconds: int = 120,
+    max_bytes: int = 512 * 1024 * 1024,
+) -> bytes:
+    """Fetch bounded HTTPS diagnostic input without relaxing tree verification."""
+    require(url.startswith("https://"), f"non-HTTPS diagnostic URL: {url}")
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "TrillionniumGame-pinned-tree-diagnostic/1",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        response = urllib.request.urlopen(request, timeout=timeout_seconds)
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise DiagnosticError(f"diagnostic download failed: {error}") from error
+    chunks: list[bytes] = []
+    size = 0
+    with response:
+        resolved_url = response.geturl()
+        require(
+            resolved_url.startswith("https://"),
+            f"diagnostic redirect resolved to non-HTTPS URL: {resolved_url}",
+        )
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            require(size <= max_bytes, f"diagnostic response exceeds {max_bytes} bytes")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def normalize_gitlink_map(value: dict[str, str]) -> dict[PurePosixPath, bytes]:
+    """Convert a profile gitlink map into validated local tree-hash material."""
+    require(isinstance(value, dict), "gitlink map must be an object")
+    result: dict[PurePosixPath, bytes] = {}
+    for path_text, commit in value.items():
+        require(isinstance(path_text, str) and path_text, "gitlink path is invalid")
+        require(
+            isinstance(commit, str)
+            and len(commit) == 40
+            and commit != "0" * 40
+            and all(character in "0123456789abcdef" for character in commit),
+            f"gitlink commit is invalid: {path_text}",
+        )
+        path = PurePosixPath(path_text)
+        require(
+            not path.is_absolute()
+            and path.parts
+            and all(part not in {"", ".", ".."} for part in path.parts)
+            and path.as_posix() == path_text,
+            f"gitlink path is not canonical: {path_text!r}",
+        )
+        require(path not in result, f"duplicate gitlink path: {path_text}")
+        result[path] = bytes.fromhex(commit)
+    return result
 
 
 def require(condition: bool, message: str) -> None:
@@ -308,9 +373,12 @@ def diagnostic(registry: Path, profile_id: str, limit: int) -> dict[str, Any]:
     links = gitlinks_from_profile(profile)
 
     with tempfile.TemporaryDirectory(prefix="trnm-tree-diagnostic-") as temporary:
-        destination = Path(temporary) / "source"
-        extracted_root = extract_github_tarball(archive, destination)
-        observed_tree, observed = local_inventory(extracted_root, links)
+        temporary_root = Path(temporary)
+        archive_path = temporary_root / "source.tar.gz"
+        archive_path.write_bytes(archive)
+        destination = temporary_root / "source"
+        extract_github_tarball(archive_path, destination)
+        observed_tree, observed = local_inventory(destination, links)
         expected = expected_inventory(repository, expected_tree, token=token)
         differences = compare(expected, observed)
 
