@@ -1,0 +1,306 @@
+name: temporary-pr-body-sync
+
+on:
+  push:
+    branches:
+      - feat/plan-v3-gap-closure-2026-08-29
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: temporary-pr-body-sync
+  cancel-in-progress: false
+
+jobs:
+  seal-identity-and-sync-pr:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      TARGET_BRANCH: feat/plan-v3-gap-closure-2026-08-29
+      TARGET_PR: "42"
+    steps:
+      - name: Fetch exact triggering branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$TARGET_BRANCH"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$TARGET_BRANCH" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Remove temporary control files and validate final tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/temporary-pr-body-sync.yml \
+            .github/workflows/temporary-final-gap-orchestrator.yml
+          test ! -e .github/workflows/temporary-pr-body-sync.yml
+          test ! -e .github/workflows/temporary-final-gap-orchestrator.yml
+          git diff --check
+
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.85.1
+          python3 scripts/check-plan.py
+          python3 scripts/check-workflow-action-policy.py
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          if test -f runtime/go.mod; then
+            (cd runtime && go test ./...)
+          fi
+          git diff --check
+
+      - name: Push final exact candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "trillionnium-pr-identity-sync"
+          git config user.email "pr-identity-sync@users.noreply.github.com"
+          git add -A
+          git commit -m "ci: bind PR to final exact candidate"
+          git push origin "HEAD:${TARGET_BRANCH}"
+          echo "FINAL_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "FINAL_TREE=$(git rev-parse HEAD^{tree})" >> "$GITHUB_ENV"
+
+      - name: Synchronize PR body, ready state, review routing, and exact-head observation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          sha = os.environ["FINAL_SHA"]
+          tree = os.environ["FINAL_TREE"]
+          pr_number = int(os.environ["TARGET_PR"])
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "trillionnium-pr-identity-sync",
+          }
+
+          def request(method, path, payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              req = urllib.request.Request(
+                  "https://api.github.com" + path,
+                  data=data,
+                  method=method,
+                  headers=headers,
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      raw = response.read().decode()
+                      return response.status, json.loads(raw) if raw else None
+              except urllib.error.HTTPError as error:
+                  raw = error.read().decode(errors="replace")
+                  try:
+                      body = json.loads(raw)
+                  except Exception:
+                      body = raw
+                  return error.code, body
+
+          gaps = json.loads(Path("docs/status/GAP_REGISTER.json").read_text())
+          evidence = json.loads(Path("docs/evidence/index.json").read_text())
+          gap_rows = gaps.get("gaps", [])
+          unclosed = [row for row in gap_rows if row.get("status") != "closed"]
+          accepted = [
+              row for row in evidence.get("entries", [])
+              if row.get("status") == "accepted"
+              and row.get("schema_valid") is True
+              and row.get("target_identity_verified_by_current_repo") is True
+              and (row.get("independent_review") or {}).get("decision") == "accepted"
+              and (row.get("independent_review") or {}).get("reviewer_identity")
+          ]
+
+          pr_http, pr = request("GET", f"/repos/{repo}/pulls/{pr_number}")
+          if pr_http == 200 and pr.get("draft"):
+              node_id = pr["node_id"]
+              request(
+                  "POST",
+                  "/graphql",
+                  {
+                      "query": "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}",
+                      "variables": {"id": node_id},
+                  },
+              )
+          request(
+              "POST",
+              f"/repos/{repo}/pulls/{pr_number}/requested_reviewers",
+              {"reviewers": ["ProfHepta"]},
+          )
+
+          essentials = {
+              "trillionnium-game-merge-gate",
+              "pgwire-vertical-slice",
+              "world-command-deployed-runtime-v1",
+              "denominator-review-bundle",
+              "repository-governance-contract",
+              "pull-request-contract",
+          }
+
+          def observe_runs():
+              status, body = request(
+                  "GET", f"/repos/{repo}/actions/runs?head_sha={sha}&per_page=100"
+              )
+              selected = {}
+              if status == 200:
+                  for run in body.get("workflow_runs", []):
+                      name = run.get("name")
+                      old = selected.get(name)
+                      score = (run.get("event") == "pull_request", run.get("id", 0))
+                      old_score = (
+                          old.get("event") == "pull_request", old.get("id", 0)
+                      ) if old else (-1, -1)
+                      if old is None or score > old_score:
+                          selected[name] = run
+              return selected
+
+          selected = {}
+          for _ in range(80):
+              selected = observe_runs()
+              if essentials <= set(selected) and all(
+                  selected[name].get("status") == "completed" for name in essentials
+              ):
+                  break
+              time.sleep(15)
+
+          reviews_http, reviews = request(
+              "GET", f"/repos/{repo}/pulls/{pr_number}/reviews"
+          )
+          latest = {}
+          if reviews_http == 200:
+              for review in reviews:
+                  latest[review.get("user", {}).get("login")] = review
+          approvals = [
+              review for review in latest.values()
+              if review.get("state") == "APPROVED"
+              and review.get("commit_id") == sha
+              and review.get("user", {}).get("login") not in {"Tomasrgbsf"}
+          ]
+
+          rulesets_http, rulesets = request("GET", f"/repos/{repo}/rulesets")
+          branch_http, branch = request("GET", f"/repos/{repo}/branches/main")
+          ruleset_count = len(rulesets) if rulesets_http == 200 else None
+          main_protected = branch.get("protected") if branch_http == 200 else None
+
+          workflow_lines = []
+          all_essential_success = True
+          for name in sorted(essentials):
+              run = selected.get(name)
+              if run is None:
+                  workflow_lines.append(f"| `{name}` | `absent` | `none` | `none` |")
+                  all_essential_success = False
+              else:
+                  conclusion = run.get("conclusion")
+                  workflow_lines.append(
+                      f"| `{name}` | `{run.get('status')}` | `{conclusion}` | `{run.get('id')}` |"
+                  )
+                  all_essential_success &= (
+                      run.get("status") == "completed"
+                      and conclusion in {"success", "neutral"}
+                  )
+
+          first_unclosed = unclosed[0].get("id") if unclosed else None
+          body = "\n".join([
+              "## Purpose",
+              "",
+              "Execute plan v3 as a fail-closed blocker-closure program. Source, CI and review inputs may advance independently; no compatibility or production claim is inferred from source presence.",
+              "",
+              "## Exact current candidate",
+              "",
+              f"- base: `main@{pr['base']['sha'] if pr_http == 200 else 'unknown'}`",
+              f"- head: `{sha}`",
+              f"- tree: `{tree}`",
+              f"- branch: `{os.environ['TARGET_BRANCH']}`",
+              "- temporary finalization workflows in candidate: `false`",
+              "",
+              "Any later push invalidates this identity, all exact-head workflow observations and all approvals tied to it.",
+              "",
+              "## Final-tree local validation",
+              "",
+              "The self-removed candidate tree passed `check-plan.py`, workflow-action policy, workspace format/test/strict Clippy, the Python contract corpus and the runtime Go test suite before commit.",
+              "",
+              "## Exact-head essential CI observation",
+              "",
+              "| workflow | status | conclusion | run |",
+              "|---|---|---|---:|",
+              *workflow_lines,
+              "",
+              f"Essential exact-head collection successful: `{str(all_essential_success).lower()}`.",
+              "",
+              "## Evidence and gap state",
+              "",
+              f"- authoritative gap rows: `{len(gap_rows)}`",
+              f"- closed gap rows: `{len(gap_rows) - len(unclosed)}`",
+              f"- unclosed gap rows: `{len(unclosed)}`",
+              f"- first unclosed gap: `{first_unclosed}`",
+              f"- independently accepted evidence entries: `{len(accepted)}`",
+              f"- exact-head independent approvals: `{len(approvals)}`",
+              f"- repository rulesets readback HTTP/count: `{rulesets_http}/{ruleset_count}`",
+              f"- main protected readback: `{main_protected}`",
+              "",
+              "## Required independent acceptance",
+              "",
+              "Two independent reviewers per denominator and a separate SG1 gate reviewer remain required where specified. Security, database, protocol, realtime, migration, operational and production evidence must be accepted by the named independent roles. Source authors and automation may not self-issue those decisions.",
+              "",
+              "## Claim boundary",
+              "",
+              "This PR does **not** claim SG1–SG9, C1–C5, complete Nakama compatibility, production readiness, public online, drop-in replacement, supported full replacement or Nakama retirement unless those claims are derived from accepted exact-target evidence.",
+          ])
+          patch_http, patch_body = request(
+              "PATCH",
+              f"/repos/{repo}/pulls/{pr_number}",
+              {"body": body},
+          )
+          comment = "\n".join([
+              "## Exact candidate identity synchronized",
+              "",
+              f"- commit: `{sha}`",
+              f"- tree: `{tree}`",
+              f"- PR body update HTTP: `{patch_http}`",
+              f"- essential exact-head CI successful: `{str(all_essential_success).lower()}`",
+              f"- independent exact-head approvals: `{len(approvals)}`",
+              f"- unclosed authoritative gaps: `{len(unclosed)}`",
+              f"- accepted evidence entries: `{len(accepted)}`",
+              f"- rulesets/main protection: `{ruleset_count}` / `{main_protected}`",
+              "",
+              "Any subsequent push invalidates this observation.",
+          ])
+          request(
+              "POST", f"/repos/{repo}/issues/{pr_number}/comments", {"body": comment}
+          )
+          print(json.dumps({
+              "sha": sha,
+              "tree": tree,
+              "patch_http": patch_http,
+              "all_essential_success": all_essential_success,
+              "approvals": len(approvals),
+              "unclosed_gaps": len(unclosed),
+              "accepted_evidence": len(accepted),
+              "ruleset_count": ruleset_count,
+              "main_protected": main_protected,
+          }, sort_keys=True))
+          PY
