@@ -7,6 +7,7 @@ use super::{
 };
 
 const MAX_CLAIM_BATCH: usize = 64;
+const MAX_OUTBOX_ATTEMPTS: u32 = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OutboxLease {
@@ -48,7 +49,7 @@ impl PgRepository {
             .ok_or_else(counter_overflow)?;
         let now_ms_i64 = to_i64(now_ms)?;
         let lease_expires_at_ms_i64 = to_i64(lease_expires_at_ms)?;
-        let max_attempts_i32 = i32::try_from(max_attempts).map_err(|_| counter_overflow())?;
+        let max_attempts_i64 = i64::from(max_attempts);
         let mut transaction = self
             .client
             .build_transaction()
@@ -64,7 +65,7 @@ impl PgRepository {
                      FROM trnm_outbox \
                      WHERE state IN (0, 1) AND available_at_ms <= $1 AND attempt < $2 \
                      ORDER BY available_at_ms, intent_id LIMIT 1 FOR UPDATE",
-                    &[&now_ms_i64, &max_attempts_i32],
+                    &[&now_ms_i64, &max_attempts_i64],
                 )
                 .map_err(map_postgres_error)?
             else {
@@ -85,8 +86,8 @@ impl PgRepository {
             let kind = IntentKind::from_database_value(kind_value)
                 .ok_or_else(|| data_loss("invalid_outbox_kind"))?;
             let payload = decode_digest(row.get(4), "invalid_outbox_payload_digest_bytes")?;
-            let prior_attempt_i32: i32 = row.get(5);
-            let prior_attempt = u32::try_from(prior_attempt_i32)
+            let prior_attempt_i64: i64 = row.get(5);
+            let prior_attempt = u32::try_from(prior_attempt_i64)
                 .map_err(|_| data_loss("invalid_outbox_attempt"))?;
             let prior_generation = from_i64(row.get(6), "negative_outbox_lease_generation")?;
             let prior_state: i16 = row.get(7);
@@ -94,7 +95,7 @@ impl PgRepository {
             let generation = prior_generation
                 .checked_add(1)
                 .ok_or_else(counter_overflow)?;
-            let attempt_i32 = i32::try_from(attempt).map_err(|_| counter_overflow())?;
+            let attempt_i64 = i64::from(attempt);
             let generation_i64 = to_i64(generation)?;
             let prior_generation_i64 = to_i64(prior_generation)?;
             let updated = transaction
@@ -105,7 +106,7 @@ impl PgRepository {
                     &[
                         &now_ms_i64,
                         &owner.as_bytes().as_slice(),
-                        &attempt_i32,
+                        &attempt_i64,
                         &generation_i64,
                         &lease_expires_at_ms_i64,
                         &intent_id.as_bytes().as_slice(),
@@ -178,6 +179,7 @@ impl PgRepository {
     ) -> Result<OutboxRetryOutcome, DomainError> {
         validate_lease(lease)?;
         if max_attempts == 0
+            || max_attempts > MAX_OUTBOX_ATTEMPTS
             || lease.attempt == 0
             || next_available_at_ms < now_ms
             || dead_reason.is_zero()
@@ -187,7 +189,7 @@ impl PgRepository {
         let generation = to_i64(lease.lease_generation)?;
         let now_ms_i64 = to_i64(now_ms)?;
         let next_available_at_ms_i64 = to_i64(next_available_at_ms)?;
-        let max_attempts_i32 = i32::try_from(max_attempts).map_err(|_| counter_overflow())?;
+        let max_attempts_i64 = i64::from(max_attempts);
         let mut transaction = self
             .client
             .build_transaction()
@@ -195,7 +197,7 @@ impl PgRepository {
             .start()
             .map_err(map_postgres_error)?;
         let attempt = load_fenced_attempt(&mut transaction, lease, generation)?;
-        let outcome = if attempt >= max_attempts_i32 {
+        let outcome = if attempt >= max_attempts_i64 {
             let updated = transaction
                 .execute(
                     "UPDATE trnm_outbox SET state = 3, owner_node = NULL, \
@@ -253,6 +255,7 @@ fn validate_claim(
     if owner.is_zero()
         || lease_duration_ms == 0
         || max_attempts == 0
+        || max_attempts > MAX_OUTBOX_ATTEMPTS
         || limit == 0
         || limit > MAX_CLAIM_BATCH
     {
@@ -279,7 +282,7 @@ fn load_fenced_attempt(
     transaction: &mut Transaction<'_>,
     lease: &OutboxLease,
     generation: i64,
-) -> Result<i32, DomainError> {
+) -> Result<i64, DomainError> {
     let row = transaction
         .query_opt(
             "SELECT attempt FROM trnm_outbox WHERE intent_id = $1 AND state = 1 \
@@ -298,7 +301,7 @@ fn load_fenced_attempt(
                 RetryClass::SafeImmediate,
             )
         })?;
-    let attempt: i32 = row.get(0);
+    let attempt: i64 = row.get(0);
     if attempt <= 0 || u32::try_from(attempt).ok() != Some(lease.attempt) {
         return Err(error(
             StableCode::Aborted,
@@ -362,6 +365,12 @@ mod tests {
         );
         assert_eq!(
             validate_claim(NodeId::new([1; 16]), 1, 1, MAX_CLAIM_BATCH + 1)
+                .unwrap_err()
+                .reason(),
+            "invalid_outbox_claim"
+        );
+        assert_eq!(
+            validate_claim(NodeId::new([1; 16]), 1, MAX_OUTBOX_ATTEMPTS + 1, 1,)
                 .unwrap_err()
                 .reason(),
             "invalid_outbox_claim"
