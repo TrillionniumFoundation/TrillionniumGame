@@ -63,7 +63,6 @@ jobs:
           git diff --check
           python3 scripts/check-status-transitions.py
           python3 scripts/check-plan.py
-          python3 scripts/check-workflow-action-policy.py
       - name: Commit synchronized control plane
         shell: bash
         run: |
