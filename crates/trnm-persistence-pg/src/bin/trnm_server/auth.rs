@@ -3,9 +3,9 @@ use std::fmt;
 
 use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode, UserId};
 use trnm_session_core::{RefreshTokenId, SessionFamilyId};
+use trnm_token_jwt_adapter::json::{JsonNumber, JsonValue};
 use trnm_token_jwt_adapter::{
-    sha256_digest, JsonNumber, JsonValue, KeyRing, SecretKey, TokenRoute,
-    VerificationProfile,
+    sha256_digest, KeyRing, SecretKey, TokenRoute, VerificationProfile,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
