@@ -32,9 +32,19 @@ jobs:
           git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
-          cd "$GITHUB_WORKSPACE"
-          bash scripts/project-preflight.sh
-          test -z "$(git status --porcelain)"
+          test -z "$(git -C "$GITHUB_WORKSPACE" status --porcelain)"
+          python3 - "$GITHUB_WORKSPACE/PROJECT_BOUNDARY.json" <<'PY'
+          import json
+          import sys
+          with open(sys.argv[1], encoding="utf-8") as stream:
+              boundary = json.load(stream)
+          assert boundary["project_id"] == "trillionnium-game"
+          assert boundary["repository_id"] == 1323087470
+          assert boundary["current_repository"] == "TrillionniumFoundation/TrillionniumGame"
+          assert boundary["lane"] == "game-backend-platform"
+          assert "world-gameplay-rules" in boundary["does_not_own"]
+          assert "cross-repository-release-orchestration" in boundary["does_not_own"]
+          PY
 
       - name: Fetch exact World candidate without external actions
         shell: bash
