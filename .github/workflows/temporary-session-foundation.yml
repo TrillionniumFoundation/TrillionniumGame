@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-session-foundation-v3
+  group: temporary-session-foundation-v4
   cancel-in-progress: false
 
 jobs:
@@ -114,16 +114,18 @@ jobs:
           if source.count(expired_arm) != 1:
               raise SystemExit('expired revocation arm anchor mismatch')
           source = source.replace(expired_arm, '', 1)
-          expired_test = '''        assert_eq!(
-              revocation_reason_code(RevocationReason::Expired)
-                  .unwrap_err()
-                  .reason(),
-              "expired_revocation_reason_not_persisted"
-          );
-          '''
-          if source.count(expired_test) != 1:
-              raise SystemExit('expired revocation test anchor mismatch')
-          session.write_text(source.replace(expired_test, '', 1), encoding='utf-8')
+
+          needle = 'revocation_reason_code(RevocationReason::Expired)'
+          if source.count(needle) != 1:
+              raise SystemExit('expired revocation test call mismatch')
+          call = source.index(needle)
+          assertion_start = source.rfind('        assert_eq!(', 0, call)
+          assertion_end = source.find('        );\n', call)
+          if assertion_start < 0 or assertion_end < 0:
+              raise SystemExit('expired revocation assertion boundaries missing')
+          assertion_end += len('        );\n')
+          source = source[:assertion_start] + source[assertion_end:]
+          session.write_text(source, encoding='utf-8')
 
           auth = Path('crates/trnm-persistence-pg/src/bin/trnm_server/auth.rs')
           source = auth.read_text(encoding='utf-8')
