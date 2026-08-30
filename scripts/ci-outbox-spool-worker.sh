@@ -247,8 +247,9 @@ PY
 
 test "$(sql_exec "SELECT count(*) FROM trnm_outbox WHERE state=2 AND receipt_digest IS NOT NULL AND owner_node IS NULL" | tr -d '[:space:]')" = 1
 
-# Scenario 2: durable write succeeds, acknowledgement is lost, then a new lease
-# owner reclaims the row and validates the same stable spool bytes.
+# Scenario 2: the real worker process exits after its durable write and before
+# database acknowledgement. A distinct node waits for expiry, reclaims the lease,
+# validates the same stable bytes, and completes the intent.
 "$command_bin" bootstrap \
   --entity-byte 48 --authority-generation 1 --state-byte 49 --updated-at-ms 30 \
   >"$evidence/bootstrap-reclaim.json"
@@ -256,56 +257,38 @@ test "$(sql_exec "SELECT count(*) FROM trnm_outbox WHERE state=2 AND receipt_dig
   --entity-byte 48 --command-byte 64 --fingerprint-byte 65 \
   --expected-revision 0 --authority-generation 1 --state-byte 66 --committed-at-ms 40 \
   >"$evidence/apply-reclaim.json"
-sql_exec "UPDATE trnm_outbox SET state=1, owner_node=entity_id, attempt=1, lease_generation=1, available_at_ms=0, updated_at_ms=0 WHERE state=0" \
-  >"$evidence/force-expired-lease.txt"
+export TRNM_OUTBOX_NODE_ID_HEX=$(printf 'aa%.0s' {1..16})
+export TRNM_OUTBOX_ENABLE_TEST_FAILPOINTS=1
+export TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY=1
+if "$worker_bin" run-once \
+  >"$evidence/worker-crash.stdout" \
+  2>"$evidence/worker-crash.stderr"; then
+  echo 'expected post-delivery worker exit did not occur' >&2
+  exit 1
+else
+  crash_status=$?
+fi
+test "$crash_status" -eq 70
+grep -q 'exiting after durable spool and before database acknowledgement' \
+  "$evidence/worker-crash.stderr"
+unset TRNM_OUTBOX_ENABLE_TEST_FAILPOINTS
+unset TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY
 
-python3 - "$spool" 48 64 66 reclaim <<'PY'
-import hashlib
-import pathlib
-import sys
-
-spool = pathlib.Path(sys.argv[1])
-entity = int(sys.argv[2])
-command = int(sys.argv[3])
-intent = int(sys.argv[4])
-label = sys.argv[5]
-hex16 = lambda value: f"{value:02x}" * 16
-hex32 = lambda value: f"{value:02x}" * 32
-record = (
-    '{"schema":"trillionnium.outbox-spool.v1",'
-    f'"intent_id":"{hex16(intent)}",'
-    f'"entity_id":"{hex16(entity)}",'
-    f'"command_id":"{hex16(command)}",'
-    '"kind":"broadcast",'
-    f'"payload_digest":"{hex32(intent)}"}}\n'
-).encode()
-path = spool / f"{hex16(intent)}.json"
-path.write_bytes(record)
-(spool.parent / f"{label}-preexisting-sha256.txt").write_text(
-    hashlib.sha256(record).hexdigest() + "\n",
-    encoding="utf-8",
-)
-PY
+reclaim_path="$spool/$(printf '42%.0s' {1..16}).json"
+test -f "$reclaim_path"
+sha256sum "$reclaim_path" >"$evidence/reclaim-before.sha256"
+test "$(sql_exec "SELECT count(*) FROM trnm_outbox WHERE state=1 AND attempt=1 AND lease_generation=1 AND owner_node IS NOT NULL" | tr -d '[:space:]')" = 1
+sleep 2
 
 export TRNM_OUTBOX_NODE_ID_HEX=$(printf 'bb%.0s' {1..16})
 "$worker_bin" run-once | tee "$evidence/worker-reclaim.txt"
 grep -q 'claimed=1 completed=1 retried=0 dead_lettered=0' \
   "$evidence/worker-reclaim.txt"
+sha256sum "$reclaim_path" >"$evidence/reclaim-after.sha256"
+test "$(cut -d' ' -f1 "$evidence/reclaim-before.sha256")" = \
+  "$(cut -d' ' -f1 "$evidence/reclaim-after.sha256")"
 test "$(sql_exec "SELECT count(*) FROM trnm_outbox WHERE state=2" | tr -d '[:space:]')" = 2
 test "$(sql_exec "SELECT count(*) FROM trnm_outbox WHERE state=2 AND attempt=2 AND lease_generation=2 AND owner_node IS NULL" | tr -d '[:space:]')" = 1
-
-python3 - "$spool" <<'PY'
-import hashlib
-import pathlib
-import sys
-
-root = pathlib.Path(sys.argv[1]).parent
-before = (root / "reclaim-preexisting-sha256.txt").read_text().strip()
-path = pathlib.Path(sys.argv[1]) / (("42" * 16) + ".json")
-after = hashlib.sha256(path.read_bytes()).hexdigest()
-assert before == after, (before, after)
-(root / "reclaim-final-sha256.txt").write_text(after + "\n", encoding="utf-8")
-PY
 
 # Scenario 3: a conflicting durable receipt cannot be overwritten and reaches
 # the atomic dead-letter terminal state at the configured attempt limit.
@@ -325,8 +308,36 @@ grep -q 'claimed=1 completed=0 retried=0 dead_lettered=1' \
 test "$(cat "$spool/$(printf '62%.0s' {1..16}).json")" = 'conflicting durable bytes'
 test "$(sql_exec "SELECT count(*) FROM trnm_outbox WHERE state=3 AND dead_reason_digest IS NOT NULL AND owner_node IS NULL" | tr -d '[:space:]')" = 1
 
-test "$(sql_exec 'SELECT count(*) FROM trnm_outbox' | tr -d '[:space:]')" = 3
-test "$(sql_exec 'SELECT count(*) FROM trnm_outbox WHERE state=2' | tr -d '[:space:]')" = 2
+# Scenario 4: two distinct worker processes race for one pending intent. Exactly
+# one process claims and publishes; the other observes no eligible row. The final
+# database state and spool namespace contain one visible effect.
+"$command_bin" bootstrap \
+  --entity-byte 112 --authority-generation 1 --state-byte 113 --updated-at-ms 70 \
+  >"$evidence/bootstrap-concurrent.json"
+"$command_bin" apply \
+  --entity-byte 112 --command-byte 128 --fingerprint-byte 129 \
+  --expected-revision 0 --authority-generation 1 --state-byte 130 --committed-at-ms 80 \
+  >"$evidence/apply-concurrent.json"
+export TRNM_OUTBOX_MAX_ATTEMPTS=8
+TRNM_OUTBOX_NODE_ID_HEX=$(printf 'dd%.0s' {1..16}) \
+  "$worker_bin" run-once >"$evidence/worker-concurrent-a.txt" 2>&1 &
+worker_a=$!
+TRNM_OUTBOX_NODE_ID_HEX=$(printf 'ee%.0s' {1..16}) \
+  "$worker_bin" run-once >"$evidence/worker-concurrent-b.txt" 2>&1 &
+worker_b=$!
+wait "$worker_a"
+wait "$worker_b"
+cat "$evidence/worker-concurrent-a.txt" "$evidence/worker-concurrent-b.txt" \
+  >"$evidence/worker-concurrent-combined.txt"
+test "$(grep -c 'claimed=1 completed=1 retried=0 dead_lettered=0' "$evidence/worker-concurrent-combined.txt")" = 1
+test "$(grep -c 'claimed=0 completed=0 retried=0 dead_lettered=0' "$evidence/worker-concurrent-combined.txt")" = 1
+concurrent_path="$spool/$(printf '82%.0s' {1..16}).json"
+test -f "$concurrent_path"
+test "$(find "$spool" -maxdepth 1 -type f -name "$(printf '82%.0s' {1..16}).json" | wc -l | tr -d '[:space:]')" = 1
+test "$(sql_exec "SELECT count(*) FROM trnm_outbox WHERE state=2 AND intent_id IS NOT NULL" | tr -d '[:space:]')" = 3
+
+test "$(sql_exec 'SELECT count(*) FROM trnm_outbox' | tr -d '[:space:]')" = 4
+test "$(sql_exec 'SELECT count(*) FROM trnm_outbox WHERE state=2' | tr -d '[:space:]')" = 3
 test "$(sql_exec 'SELECT count(*) FROM trnm_outbox WHERE state=3' | tr -d '[:space:]')" = 1
 
 capture_container_diagnostics
@@ -365,17 +376,22 @@ manifest = {
     "assertions": {
         "normal_delivery_completed": True,
         "stable_receipt_digest": True,
+        "real_process_exit_after_spool_observed": True,
         "post_write_pre_ack_reclaim_completed": True,
+        "distinct_node_identity_reclaimed_expired_lease": True,
         "lease_owner_and_generation_fenced": True,
         "conflicting_receipt_not_overwritten": True,
         "attempt_exhaustion_dead_lettered": True,
-        "completed_count": 2,
+        "two_worker_claim_exclusion_passed": True,
+        "duplicate_visible_effect_count": 0,
+        "completed_count": 3,
         "dead_letter_count": 1,
     },
     "artifacts": artifacts,
     "claims": {
         "single_node_dual_profile_source_slice_executed": True,
         "external_effect_provider_executed": False,
+        "single_host_multi_process_reclaim_proven": True,
         "multi_node_failover_proven": False,
         "endurance_proven": False,
         "compatibility_credit": False,
@@ -383,7 +399,7 @@ manifest = {
     },
     "limitations": [
         "The sink is a durable local spool, not a provider or realtime consumer.",
-        "The run is single-node and does not prove cross-host filesystem semantics.",
+        "The run uses distinct process and node identities on one host; it does not prove cross-host filesystem semantics or multi-node HA.",
         "Independent database/data-integrity review is still required for gap credit.",
     ],
 }

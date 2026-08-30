@@ -45,6 +45,10 @@ revalidates the same bytes and can safely complete the original intent.
   at the schema's maximum of 32 attempts.
 - Retry delay is deterministic per intent/owner/generation and lies between half and
   all of the capped exponential backoff.
+- A complete claim → durable spool → acknowledgement unit retries only explicit
+  `SafeImmediate`/`SafeBackoff` database failures, with five attempts and a
+  5–100 ms bounded exponential delay. Stable spool bytes make retries after a
+  committed file write idempotent.
 - Stale owner/generation completion remains fenced by the repository transaction.
 
 ## Required environment
@@ -91,10 +95,12 @@ cargo clippy --package trnm-persistence-pg --all-targets --locked -- -D warnings
 
 The full aggregate merge gate remains mandatory because the worker changes the shared
 persistence package and its target inventory. The dedicated dual-profile workflow
-also executes normal delivery, post-write/pre-ack reclaim, and conflicting-receipt
-dead-letter scenarios against immutable PostgreSQL and CockroachDB images. A repair
-runner passing those scenarios before writing a commit is not a substitute for the
-final exact-head workflow collection.
+executes normal delivery, a real process exit after durable spool and before database
+acknowledgement, expired-lease reclaim by a distinct node identity, conflicting-receipt
+dead-letter, and two-process claim exclusion against immutable PostgreSQL and
+CockroachDB images. This remains single-host process-fault evidence, not multi-node HA.
+A repair runner passing those scenarios before writing a commit is not a substitute for
+the final exact-head workflow collection.
 
 ## Review gate
 

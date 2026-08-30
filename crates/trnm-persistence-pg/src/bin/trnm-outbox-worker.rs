@@ -5,11 +5,11 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{self, ExitCode};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use trnm_contracts::{Digest32, DomainError};
+use trnm_contracts::{Digest32, DomainError, RetryClass};
 use trnm_persistence_pg::{
     DatabaseProfile, IntentKind, NodeId, OutboxLease, OutboxRetryOutcome, PgPool, PgPoolConfig,
     PgTlsConfig,
@@ -26,6 +26,10 @@ const DEFAULT_POOL_MIN_IDLE: u64 = 1;
 const DEFAULT_POOL_ACQUIRE_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_STATEMENT_TIMEOUT_MS: u64 = 5_000;
 const MAX_CONSECUTIVE_DATABASE_FAILURES: u32 = 20;
+const TEST_FAIL_AFTER_DELIVERY_EXIT_CODE: i32 = 70;
+const DATABASE_RETRY_MAX_ATTEMPTS: u8 = 5;
+const DATABASE_RETRY_INITIAL_BACKOFF_MS: u64 = 5;
+const DATABASE_RETRY_MAX_BACKOFF_MS: u64 = 100;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
@@ -57,6 +61,7 @@ struct WorkerConfig {
     max_attempts: u32,
     poll_interval: Duration,
     max_backoff_ms: u64,
+    test_fail_after_delivery: bool,
 }
 
 impl fmt::Debug for WorkerConfig {
@@ -84,6 +89,7 @@ impl fmt::Debug for WorkerConfig {
             .field("max_attempts", &self.max_attempts)
             .field("poll_interval", &self.poll_interval)
             .field("max_backoff_ms", &self.max_backoff_ms)
+            .field("test_fail_after_delivery", &self.test_fail_after_delivery)
             .finish()
     }
 }
@@ -188,6 +194,26 @@ impl WorkerConfig {
             "spool_directory_missing",
         )?;
         let stop_file = optional_path(lookup("TRNM_OUTBOX_STOP_FILE"))?;
+        let enable_test_failpoints = parse_bool(
+            lookup("TRNM_OUTBOX_ENABLE_TEST_FAILPOINTS").as_deref(),
+            false,
+            "enable_test_failpoints_invalid",
+        )?;
+        let test_fail_after_delivery = parse_bool(
+            lookup("TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY").as_deref(),
+            false,
+            "test_fail_after_delivery_invalid",
+        )?;
+        if test_fail_after_delivery && !enable_test_failpoints {
+            return Err(WorkerError::Configuration(
+                "test_failpoint_requires_explicit_opt_in",
+            ));
+        }
+        if test_fail_after_delivery && command != Command::RunOnce {
+            return Err(WorkerError::Configuration(
+                "test_failpoint_requires_run_once",
+            ));
+        }
 
         let batch_size = usize::try_from(parse_u64(
             lookup("TRNM_OUTBOX_BATCH_SIZE").as_deref(),
@@ -285,6 +311,7 @@ impl WorkerConfig {
                 max_attempts,
                 poll_interval: Duration::from_millis(poll_interval_ms),
                 max_backoff_ms,
+                test_fail_after_delivery,
             },
         ))
     }
@@ -465,6 +492,41 @@ fn process_once(
     sink: &SpoolSink,
     config: &WorkerConfig,
 ) -> Result<BatchReport, WorkerError> {
+    let mut attempt = 0_u8;
+    let mut backoff_ms = DATABASE_RETRY_INITIAL_BACKOFF_MS;
+    loop {
+        attempt = attempt.saturating_add(1);
+        match process_once_attempt(pool, sink, config) {
+            Ok(report) => return Ok(report),
+            Err(WorkerError::Domain(error))
+                if retryable_database_error(error.retry())
+                    && attempt < DATABASE_RETRY_MAX_ATTEMPTS =>
+            {
+                eprintln!(
+                    "trnm-outbox-worker retrying database unit code={} retry={:?} attempt={}",
+                    error.code().as_str(),
+                    error.retry(),
+                    attempt,
+                );
+                thread::sleep(Duration::from_millis(backoff_ms));
+                backoff_ms = backoff_ms
+                    .saturating_mul(2)
+                    .min(DATABASE_RETRY_MAX_BACKOFF_MS);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+const fn retryable_database_error(retry: RetryClass) -> bool {
+    matches!(retry, RetryClass::SafeImmediate | RetryClass::SafeBackoff)
+}
+
+fn process_once_attempt(
+    pool: &PgPool,
+    sink: &SpoolSink,
+    config: &WorkerConfig,
+) -> Result<BatchReport, WorkerError> {
     let now_ms = now_millis()?;
     let mut repository = pool.acquire()?;
     let leases = repository.claim_outbox(
@@ -481,6 +543,12 @@ fn process_once(
     for lease in leases {
         match sink.deliver(&lease) {
             Ok(receipt) => {
+                if config.test_fail_after_delivery {
+                    eprintln!(
+                        "trnm-outbox-worker test failpoint: exiting after durable spool and before database acknowledgement"
+                    );
+                    process::exit(TEST_FAIL_AFTER_DELIVERY_EXIT_CODE);
+                }
                 repository.complete_outbox(&lease, receipt, now_millis()?)?;
                 report.completed = report.completed.saturating_add(1);
             }
@@ -932,6 +1000,49 @@ mod tests {
         assert!(matches!(
             load(&values),
             Err(WorkerError::Configuration("max_attempts_invalid"))
+        ));
+    }
+
+    #[test]
+    fn database_unit_retry_policy_is_bounded_and_classified() {
+        assert_eq!(DATABASE_RETRY_MAX_ATTEMPTS, 5);
+        assert!(retryable_database_error(RetryClass::SafeImmediate));
+        assert!(retryable_database_error(RetryClass::SafeBackoff));
+        assert!(!retryable_database_error(RetryClass::Never));
+        assert!(!retryable_database_error(RetryClass::ResyncRequired));
+    }
+
+    #[test]
+    fn post_delivery_failpoint_requires_two_explicit_guards() {
+        let directory = temporary_directory("failpoint");
+        let mut values = base_config(&directory);
+        values.insert(
+            "TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY".to_owned(),
+            "1".to_owned(),
+        );
+        assert!(matches!(
+            load(&values),
+            Err(WorkerError::Configuration(
+                "test_failpoint_requires_explicit_opt_in"
+            ))
+        ));
+
+        values.insert(
+            "TRNM_OUTBOX_ENABLE_TEST_FAILPOINTS".to_owned(),
+            "1".to_owned(),
+        );
+        let (_, config) = load(&values).unwrap();
+        assert!(config.test_fail_after_delivery);
+
+        let result = WorkerConfig::from_lookup(
+            &["trnm-outbox-worker".to_owned(), "serve".to_owned()],
+            |name| values.get(name).cloned(),
+        );
+        assert!(matches!(
+            result,
+            Err(WorkerError::Configuration(
+                "test_failpoint_requires_run_once"
+            ))
         ));
     }
 
