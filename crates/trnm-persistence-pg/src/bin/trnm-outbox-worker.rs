@@ -536,16 +536,12 @@ fn build_pool(config: &WorkerConfig) -> Result<PgPool, WorkerError> {
 
 fn spool_record(lease: &OutboxLease) -> Vec<u8> {
     format!(
-        "{{\"schema\":\"trillionnium.outbox-spool.v1\",\"intent_id\":\"{}\",\"entity_id\":\"{}\",\"command_id\":\"{}\",\"kind\":\"{}\",\"payload_digest\":\"{}\",\"attempt\":{},\"lease_generation\":{},\"owner_node\":\"{}\",\"lease_expires_at_ms\":{}}}\n",
+        "{{\"schema\":\"trillionnium.outbox-spool.v1\",\"intent_id\":\"{}\",\"entity_id\":\"{}\",\"command_id\":\"{}\",\"kind\":\"{}\",\"payload_digest\":\"{}\"}}\n",
         encode_hex(lease.id.as_bytes()),
         encode_hex(lease.entity.as_bytes()),
         encode_hex(lease.command.as_bytes()),
         intent_kind_name(lease.kind),
         encode_hex(lease.payload.as_bytes()),
-        lease.attempt,
-        lease.lease_generation,
-        encode_hex(lease.owner.as_bytes()),
-        lease.lease_expires_at_ms,
     )
     .into_bytes()
 }
@@ -856,6 +852,30 @@ mod tests {
         assert!(String::from_utf8(content)
             .unwrap()
             .contains("\"schema\":\"trillionnium.outbox-spool.v1\""));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn lease_reclaim_preserves_stable_spool_bytes_and_receipt() {
+        let directory = temporary_directory("reclaim");
+        let sink = SpoolSink::new(directory.clone()).unwrap();
+        let original = lease();
+        let mut reclaimed = original;
+        reclaimed.attempt = original.attempt + 1;
+        reclaimed.lease_generation = original.lease_generation + 1;
+        reclaimed.owner = NodeId::new([6; 16]);
+        reclaimed.lease_expires_at_ms = original.lease_expires_at_ms + 60_000;
+
+        let original_receipt = sink.deliver(&original).unwrap();
+        let reclaimed_receipt = sink.deliver(&reclaimed).unwrap();
+        assert_eq!(original_receipt, reclaimed_receipt);
+
+        let final_path = directory.join(format!("{}.json", encode_hex(original.id.as_bytes())));
+        let content = String::from_utf8(fs::read(final_path).unwrap()).unwrap();
+        assert!(!content.contains("attempt"));
+        assert!(!content.contains("lease_generation"));
+        assert!(!content.contains("owner_node"));
+        assert!(!content.contains("lease_expires_at_ms"));
         fs::remove_dir_all(directory).unwrap();
     }
 

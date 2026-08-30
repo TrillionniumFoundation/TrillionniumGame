@@ -20,8 +20,10 @@ The worker supports:
 
 For each lease, the worker writes a temporary record, calls `sync_all`, creates the
 final path with an atomic same-filesystem hard link, removes the temporary path, and
-syncs the directory on Unix. The final filename is the lowercase intent ID and the
-receipt digest is SHA-256 over the exact final bytes.
+syncs the directory on Unix. The final filename is the lowercase intent ID and the receipt digest is SHA-256 over
+the exact final bytes. Final bytes contain only stable intent identity and payload
+fields; attempt, lease generation, owner and expiry are deliberately excluded so a
+post-write/pre-ack crash can be reclaimed without creating a false conflict.
 
 A repeated delivery of the same intent is successful only when the existing bytes
 match exactly. A conflicting regular file, symlink, directory, or different payload
