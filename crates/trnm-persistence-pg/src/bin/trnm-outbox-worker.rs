@@ -108,11 +108,7 @@ impl WorkerConfig {
             }
         };
 
-        let database_url = required(
-            &lookup,
-            "TRNM_OUTBOX_DATABASE_URL",
-            "database_url_missing",
-        )?;
+        let database_url = required(&lookup, "TRNM_OUTBOX_DATABASE_URL", "database_url_missing")?;
         if database_url.len() > 4096
             || database_url
                 .bytes()
@@ -380,7 +376,11 @@ impl SpoolSink {
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 verify_existing_file(&final_path, &record)?;
             }
-            Err(_) => return Err(DeliveryFailure { code: "spool_link_failed" }),
+            Err(_) => {
+                return Err(DeliveryFailure {
+                    code: "spool_link_failed",
+                })
+            }
         }
         let _ = fs::remove_file(&temporary_path);
         sync_directory(&self.directory)?;
@@ -443,8 +443,7 @@ fn serve(config: &WorkerConfig) -> Result<(), WorkerError> {
                 }
             }
             Err(WorkerError::Domain(error)) => {
-                consecutive_database_failures =
-                    consecutive_database_failures.saturating_add(1);
+                consecutive_database_failures = consecutive_database_failures.saturating_add(1);
                 eprintln!(
                     "trnm-outbox-worker database operation failed code={} retry={:?} consecutive_failures={}",
                     error.code().as_str(),
@@ -554,33 +553,46 @@ fn spool_record(lease: &OutboxLease) -> Vec<u8> {
 fn prepare_temporary_file(path: &Path, expected: &[u8]) -> Result<(), DeliveryFailure> {
     match OpenOptions::new().write(true).create_new(true).open(path) {
         Ok(mut file) => {
-            file.write_all(expected)
-                .map_err(|_| DeliveryFailure { code: "spool_write_failed" })?;
-            file.sync_all()
-                .map_err(|_| DeliveryFailure { code: "spool_sync_failed" })?;
+            file.write_all(expected).map_err(|_| DeliveryFailure {
+                code: "spool_write_failed",
+            })?;
+            file.sync_all().map_err(|_| DeliveryFailure {
+                code: "spool_sync_failed",
+            })?;
             Ok(())
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             verify_existing_file(path, expected)?;
             File::open(path)
                 .and_then(|file| file.sync_all())
-                .map_err(|_| DeliveryFailure { code: "spool_sync_failed" })
+                .map_err(|_| DeliveryFailure {
+                    code: "spool_sync_failed",
+                })
         }
-        Err(_) => Err(DeliveryFailure { code: "spool_create_failed" }),
+        Err(_) => Err(DeliveryFailure {
+            code: "spool_create_failed",
+        }),
     }
 }
 
 fn verify_existing_file(path: &Path, expected: &[u8]) -> Result<(), DeliveryFailure> {
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|_| DeliveryFailure { code: "spool_read_failed" })?;
+    let metadata = fs::symlink_metadata(path).map_err(|_| DeliveryFailure {
+        code: "spool_read_failed",
+    })?;
     if !metadata.file_type().is_file() {
-        return Err(DeliveryFailure { code: "spool_not_regular_file" });
+        return Err(DeliveryFailure {
+            code: "spool_not_regular_file",
+        });
     }
-    let actual = fs::read(path).map_err(|_| DeliveryFailure { code: "spool_read_failed" })?;
+    let actual = fs::read(path).map_err(|_| DeliveryFailure {
+        code: "spool_read_failed",
+    })?;
     if constant_time_eq(&actual, expected) {
         Ok(())
     } else {
-        Err(DeliveryFailure { code: "spool_receipt_conflict" })
+        Err(DeliveryFailure {
+            code: "spool_receipt_conflict",
+        })
     }
 }
 
@@ -588,7 +600,9 @@ fn verify_existing_file(path: &Path, expected: &[u8]) -> Result<(), DeliveryFail
 fn sync_directory(path: &Path) -> Result<(), DeliveryFailure> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
-        .map_err(|_| DeliveryFailure { code: "spool_directory_sync_failed" })
+        .map_err(|_| DeliveryFailure {
+            code: "spool_directory_sync_failed",
+        })
 }
 
 #[cfg(not(unix))]
@@ -813,10 +827,7 @@ mod tests {
                 "TRNM_OUTBOX_ALLOW_PLAINTEXT_DATABASE".to_owned(),
                 "1".to_owned(),
             ),
-            (
-                "TRNM_OUTBOX_NODE_ID_HEX".to_owned(),
-                "11".repeat(16),
-            ),
+            ("TRNM_OUTBOX_NODE_ID_HEX".to_owned(), "11".repeat(16)),
             (
                 "TRNM_OUTBOX_SPOOL_DIRECTORY".to_owned(),
                 directory.display().to_string(),
@@ -824,9 +835,7 @@ mod tests {
         ])
     }
 
-    fn load(
-        values: &BTreeMap<String, String>,
-    ) -> Result<(Command, WorkerConfig), WorkerError> {
+    fn load(values: &BTreeMap<String, String>) -> Result<(Command, WorkerConfig), WorkerError> {
         WorkerConfig::from_lookup(
             &["trnm-outbox-worker".to_owned(), "run-once".to_owned()],
             |name| values.get(name).cloned(),
