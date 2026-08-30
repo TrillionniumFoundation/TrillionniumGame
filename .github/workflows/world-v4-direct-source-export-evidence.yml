@@ -109,4 +109,4 @@ jobs:
             'INPUT_COMPRESSION-LEVEL=0' \
             'INPUT_OVERWRITE=false' \
             'INPUT_INCLUDE-HIDDEN-FILES=false' \
-            node "$UPLOADER/dist/index.js"
+            node "$UPLOADER/dist/upload/index.js"
