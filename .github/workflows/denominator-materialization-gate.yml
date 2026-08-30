@@ -9,6 +9,8 @@ on:
       - 'docs/status/DENOMINATOR_MATERIALIZATION.json'
       - 'docs/review/DENOMINATOR_REVIEW_PACKET.md'
       - 'manifests/upstream/candidates/**'
+      - 'manifests/upstream/review-requests/**'
+      - 'manifests/upstream/denominator-review-worklist.json'
       - 'manifests/upstream/denominator-review-packet.draft.json'
       - '.github/workflows/denominator-materialization-gate.yml'
   push:
@@ -19,6 +21,8 @@ on:
       - 'docs/status/DENOMINATOR_MATERIALIZATION.json'
       - 'docs/review/DENOMINATOR_REVIEW_PACKET.md'
       - 'manifests/upstream/candidates/**'
+      - 'manifests/upstream/review-requests/**'
+      - 'manifests/upstream/denominator-review-worklist.json'
       - 'manifests/upstream/denominator-review-packet.draft.json'
       - '.github/workflows/denominator-materialization-gate.yml'
 
@@ -51,16 +55,34 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
-      - name: Validate candidates, digests, counts and claim boundary
-        run: python3 scripts/check-denominator-materialization.py
+      - name: Require complete committed review input
+        run: |
+          set -euo pipefail
+          python3 scripts/check-denominator-materialization.py \
+            --require-present --require-review-ready \
+            | tee denominator-materialization-result.json
+          jq -e '
+            .source == "committed-review-worklist" and
+            .materialized_denominator_count == 14 and
+            .leaf_count_total > 0 and
+            .proposal_classified_count == .leaf_count_total and
+            .owner_bound_count == .leaf_count_total and
+            .task_bound_count == .leaf_count_total and
+            .test_bound_count == .leaf_count_total and
+            .independent_review_completed == false and
+            .claims.sg1_eligible == false and
+            .claims.compatibility_credit == false and
+            .claims.production_ready == false
+          ' denominator-materialization-result.json >/dev/null
       - name: Run materialization regression tests
         run: python3 -m unittest tests.control_plane.test_denominator_materialization -v
-      - name: Prove draft packet cannot grant SG1
+      - name: Prove review-ready input still cannot grant SG1
         shell: bash
         run: |
           set -euo pipefail
-          if python3 scripts/check-denominator-materialization.py --require-review-ready; then
-            echo 'materialization is ready for independent review; SG1 still remains external-review gated'
-          else
-            echo 'materialization remains incomplete and grants no SG1 credit'
+          python3 scripts/check-denominator-materialization.py --require-review-ready >/dev/null
+          if python3 scripts/check-denominator-review-bundle.py --require-sg1; then
+            echo 'review-ready proposals incorrectly granted SG1' >&2
+            exit 1
           fi
+          echo 'review input is complete; independent acceptance and reviewed locks remain mandatory'
