@@ -64,13 +64,7 @@ where
         queue_capacity,
     );
 
-    let accept_result = accept_loop(
-        &listener,
-        &sender,
-        config,
-        &draining,
-        &worker_failed,
-    );
+    let accept_result = accept_loop(&listener, &sender, config, &draining, &worker_failed);
     drop(sender);
     let join_result = join_workers(workers);
     accept_result?;
@@ -207,8 +201,7 @@ fn handle_connection<R: Repository>(
 }
 
 fn request_rejected_while_draining(request: &Request) -> bool {
-    websocket::is_route(request)
-        || (request.method == "POST" && request.target != "/-/drain")
+    websocket::is_route(request) || (request.method == "POST" && request.target != "/-/drain")
 }
 
 fn is_readiness(request: &Request) -> bool {
@@ -306,12 +299,7 @@ mod tests {
 
     #[test]
     fn global_drain_rejects_new_mutations_but_keeps_control_reads() {
-        let mutation = Request::new(
-            "POST",
-            "/v1/authority/commit",
-            BTreeMap::new(),
-            Vec::new(),
-        );
+        let mutation = Request::new("POST", "/v1/authority/commit", BTreeMap::new(), Vec::new());
         let metrics = Request::new("GET", "/metrics", BTreeMap::new(), Vec::new());
         let readiness = Request::new("GET", "/readyz", BTreeMap::new(), Vec::new());
         assert!(request_rejected_while_draining(&mutation));
