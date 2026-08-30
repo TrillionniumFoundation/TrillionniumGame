@@ -83,6 +83,8 @@ jobs:
           set -euo pipefail
           WORLD="$RUNNER_TEMP/trillionnium-world"
           CRATE="$WORLD/trillionnium/crates/trnm-game-server"
+          git -C "$WORLD" checkout "$WORLD_COMMIT" -- \
+            trillionnium/crates/trnm-game-server/src/cex.rs
           test ! -e "$CRATE/build.rs"
           test ! -e "$CRATE/src/lib.rs.in"
           test "$(git -C "$WORLD" hash-object trillionnium/crates/trnm-game-server/Cargo.toml)" = \
