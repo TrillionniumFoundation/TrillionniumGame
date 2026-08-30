@@ -1,4 +1,5 @@
 pub(crate) mod app;
+#[allow(dead_code)]
 #[path = "../../auth.rs"]
 pub(crate) mod auth;
 pub(crate) mod codec;
