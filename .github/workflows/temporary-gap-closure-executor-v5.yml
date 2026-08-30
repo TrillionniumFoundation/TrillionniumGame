@@ -1,0 +1,403 @@
+name: temporary-gap-closure-executor-v5
+
+on:
+  push:
+    branches:
+      - feat/plan-v3-gap-closure-2026-08-29
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: temporary-gap-closure-executor-v5
+  cancel-in-progress: false
+
+jobs:
+  exact-head-orchestrator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Fetch exact branch without external actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$GITHUB_REF_NAME" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Run fail-closed source preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/check-plan.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --check
+
+      - name: Remove this temporary workflow and push stable candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/temporary-gap-closure-executor-v5.yml
+          git config user.name "trillionnium-gap-closure-bot"
+          git config user.email "gap-closure-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "ci: remove temporary exact-head gap-closure executor"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          printf 'STABLE_SHA=%s\n' "$(git rev-parse HEAD)" >>"$GITHUB_ENV"
+          printf 'STABLE_TREE=%s\n' "$(git rev-parse HEAD^{tree})" >>"$GITHUB_ENV"
+
+      - name: Apply governance, ready review, and converge exact-head runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: '42'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+          from collections import defaultdict
+
+          token = os.environ['GH_TOKEN']
+          repository = os.environ['GITHUB_REPOSITORY']
+          sha = os.environ['STABLE_SHA']
+          tree = os.environ['STABLE_TREE']
+          pr_number = int(os.environ['PR_NUMBER'])
+          base_url = f'https://api.github.com/repos/{repository}'
+
+          def request(method: str, url: str, body=None, *, accept='application/vnd.github+json'):
+              data = None if body is None else json.dumps(body).encode('utf-8')
+              req = urllib.request.Request(
+                  url,
+                  data=data,
+                  method=method,
+                  headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': accept,
+                      'X-GitHub-Api-Version': '2022-11-28',
+                      'User-Agent': 'trillionnium-gap-closure-executor',
+                      'Content-Type': 'application/json',
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as response:
+                      raw = response.read()
+                      return response.status, json.loads(raw) if raw else None
+              except urllib.error.HTTPError as error:
+                  raw = error.read().decode('utf-8', errors='replace')
+                  try:
+                      detail = json.loads(raw)
+                  except json.JSONDecodeError:
+                      detail = {'message': raw}
+                  return error.code, detail
+
+          state = {
+              'schema': 'trillionnium.live-gap-closure-orchestrator.v1',
+              'repository': repository,
+              'pr_number': pr_number,
+              'candidate_sha': sha,
+              'candidate_tree': tree,
+              'ruleset': {},
+              'review': {},
+              'workflow_runs': {},
+              'claims': {
+                  'all_gaps_closed': False,
+                  'compatibility_credit': False,
+                  'production_ready': False,
+              },
+          }
+
+          status, pr = request('GET', f'{base_url}/pulls/{pr_number}')
+          if status != 200:
+              raise SystemExit(f'cannot read PR #{pr_number}: {status} {pr}')
+          if pr['head']['sha'] != sha:
+              raise SystemExit(f'PR head mismatch: API={pr["head"]["sha"]} local={sha}')
+
+          body = pr.get('body') or ''
+          exact = (
+              '## Exact candidate\n\n'
+              f'- base: `main@{pr["base"]["sha"]}`\n'
+              f'- head: `{sha}`\n'
+              f'- tree: `{tree}`\n\n'
+              'This identity was refreshed by the exact-head gap-closure executor. '
+              'Only terminal checks bound to this commit may receive credit.\n'
+          )
+          pattern = re.compile(r'## Exact candidate\n.*?(?=\n## |\Z)', re.S)
+          new_body = pattern.sub(exact.rstrip(), body) if pattern.search(body) else exact + '\n' + body
+          patch_status, patch_result = request(
+              'PATCH', f'{base_url}/pulls/{pr_number}', {'body': new_body}
+          )
+          state['pull_request_body_refresh'] = {
+              'status': patch_status,
+              'ok': patch_status == 200,
+          }
+
+          if pr.get('draft'):
+              query = '''mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}'''
+              ready_status, ready = request(
+                  'POST',
+                  'https://api.github.com/graphql',
+                  {'query': query, 'variables': {'id': pr['node_id']}},
+              )
+              state['review']['ready_for_review'] = {
+                  'status': ready_status,
+                  'response': ready,
+              }
+          else:
+              state['review']['ready_for_review'] = {'status': 200, 'already_ready': True}
+
+          reviewer_status, reviewer_result = request(
+              'POST',
+              f'{base_url}/pulls/{pr_number}/requested_reviewers',
+              {'reviewers': ['ProfHepta']},
+          )
+          state['review']['review_request'] = {
+              'status': reviewer_status,
+              'ok': reviewer_status in {200, 201, 422},
+              'response': reviewer_result,
+          }
+
+          ruleset_status, rulesets = request('GET', f'{base_url}/rulesets?includes_parents=true')
+          state['ruleset']['read_status'] = ruleset_status
+          active_main_ruleset = False
+          if ruleset_status == 200 and isinstance(rulesets, list):
+              for summary in rulesets:
+                  if summary.get('target') != 'branch' or summary.get('enforcement') != 'active':
+                      continue
+                  detail_status, detail = request('GET', f'{base_url}/rulesets/{summary["id"]}')
+                  if detail_status != 200:
+                      continue
+                  includes = (
+                      detail.get('conditions', {})
+                      .get('ref_name', {})
+                      .get('include', [])
+                  )
+                  if any(value in {'refs/heads/main', '~DEFAULT_BRANCH'} for value in includes):
+                      active_main_ruleset = True
+                      state['ruleset']['active_main_ruleset'] = detail
+                      break
+
+          if not active_main_ruleset:
+              payload = {
+                  'name': 'TrillionniumGame main exact-head gate',
+                  'target': 'branch',
+                  'enforcement': 'active',
+                  'bypass_actors': [],
+                  'conditions': {
+                      'ref_name': {
+                          'include': ['refs/heads/main'],
+                          'exclude': [],
+                      }
+                  },
+                  'rules': [
+                      {'type': 'deletion'},
+                      {'type': 'non_fast_forward'},
+                      {
+                          'type': 'pull_request',
+                          'parameters': {
+                              'allowed_merge_methods': ['merge', 'squash', 'rebase'],
+                              'dismiss_stale_reviews_on_push': True,
+                              'require_code_owner_review': True,
+                              'require_last_push_approval': True,
+                              'required_approving_review_count': 1,
+                              'required_review_thread_resolution': True,
+                          },
+                      },
+                      {
+                          'type': 'required_status_checks',
+                          'parameters': {
+                              'do_not_enforce_on_create': False,
+                              'required_status_checks': [
+                                  {'context': 'trillionnium-game-merge-gate'}
+                              ],
+                              'strict_required_status_checks_policy': True,
+                          },
+                      },
+                  ],
+              }
+              create_status, create_result = request('POST', f'{base_url}/rulesets', payload)
+              state['ruleset']['create_status'] = create_status
+              state['ruleset']['create_response'] = create_result
+              active_main_ruleset = create_status in {200, 201}
+          state['ruleset']['active_main_ruleset_verified'] = active_main_ruleset
+
+          terminal = {'completed'}
+          bad_conclusions = {
+              'failure', 'cancelled', 'timed_out', 'action_required',
+              'startup_failure', 'stale', 'skipped', 'neutral',
+          }
+          required_names = {
+              'trillionnium-game-merge-gate',
+              'pgwire-vertical-slice',
+              'world-command-deployed-runtime-v1',
+              'denominator-review-bundle',
+              'repository-governance-contract',
+              'pull-request-contract',
+          }
+
+          def read_runs():
+              code, payload = request(
+                  'GET', f'{base_url}/actions/runs?head_sha={sha}&per_page=100'
+              )
+              if code != 200:
+                  raise RuntimeError(f'workflow read failed: {code} {payload}')
+              return payload.get('workflow_runs', [])
+
+          deadline = time.monotonic() + 9000
+          rerun_attempted = set()
+          stable_complete_polls = 0
+          last_signature = None
+          while time.monotonic() < deadline:
+              runs = read_runs()
+              newest = {}
+              for run in sorted(runs, key=lambda row: (row.get('run_number', 0), row.get('run_attempt', 0))):
+                  newest[run['name']] = run
+              signature = tuple(sorted(
+                  (name, row.get('status'), row.get('conclusion'), row.get('run_attempt'))
+                  for name, row in newest.items()
+              ))
+              pending = [row for row in newest.values() if row.get('status') not in terminal]
+              failed = [
+                  row for row in newest.values()
+                  if row.get('status') in terminal and row.get('conclusion') in bad_conclusions
+              ]
+              for row in failed:
+                  run_id = row['id']
+                  if run_id in rerun_attempted:
+                      continue
+                  rerun_attempted.add(run_id)
+                  request('POST', f'{base_url}/actions/runs/{run_id}/rerun-failed-jobs')
+              present = required_names & set(newest)
+              all_required_terminal = (
+                  present == required_names
+                  and all(newest[name].get('status') == 'completed' for name in required_names)
+              )
+              if all_required_terminal and not pending and signature == last_signature:
+                  stable_complete_polls += 1
+              else:
+                  stable_complete_polls = 0
+              if stable_complete_polls >= 3:
+                  break
+              last_signature = signature
+              time.sleep(20)
+
+          runs = read_runs()
+          newest = {}
+          for run in sorted(runs, key=lambda row: (row.get('run_number', 0), row.get('run_attempt', 0))):
+              newest[run['name']] = run
+          state['workflow_runs'] = {
+              name: {
+                  'id': row.get('id'),
+                  'status': row.get('status'),
+                  'conclusion': row.get('conclusion'),
+                  'run_attempt': row.get('run_attempt'),
+                  'html_url': row.get('html_url'),
+              }
+              for name, row in sorted(newest.items())
+          }
+          missing = sorted(required_names - set(newest))
+          failed = sorted(
+              name for name, row in newest.items()
+              if row.get('status') != 'completed' or row.get('conclusion') != 'success'
+          )
+          state['workflow_summary'] = {
+              'required': sorted(required_names),
+              'missing_required': missing,
+              'non_success': failed,
+              'all_required_success': not missing and not any(
+                  newest[name].get('conclusion') != 'success' for name in required_names
+              ),
+          }
+
+          reviews_status, reviews = request('GET', f'{base_url}/pulls/{pr_number}/reviews?per_page=100')
+          approvals = []
+          if reviews_status == 200:
+              author = pr['user']['login'].lower()
+              latest_by_user = {}
+              for review in reviews:
+                  login = review.get('user', {}).get('login')
+                  if login:
+                      latest_by_user[login.lower()] = review
+              approvals = [
+                  review for login, review in latest_by_user.items()
+                  if login != author and review.get('state') == 'APPROVED'
+              ]
+          state['review']['independent_approvals'] = [
+              {
+                  'login': row['user']['login'],
+                  'submitted_at': row.get('submitted_at'),
+                  'commit_id': row.get('commit_id'),
+              }
+              for row in approvals
+          ]
+          state['review']['independent_approval_for_exact_head'] = any(
+              row.get('commit_id') == sha for row in approvals
+          )
+
+          state['claims']['all_gaps_closed'] = (
+              state['workflow_summary']['all_required_success']
+              and state['ruleset']['active_main_ruleset_verified']
+              and state['review']['independent_approval_for_exact_head']
+          )
+
+          summary = [
+              '## Exact-head gap-closure execution',
+              '',
+              f'- candidate: `{repository}@{sha}`',
+              f'- tree: `{tree}`',
+              f'- required workflows success: `{state["workflow_summary"]["all_required_success"]}`',
+              f'- active main ruleset read back: `{state["ruleset"]["active_main_ruleset_verified"]}`',
+              f'- independent exact-head approval: `{state["review"]["independent_approval_for_exact_head"]}`',
+              f'- all gaps closed: `{state["claims"]["all_gaps_closed"]}`',
+          ]
+          if missing:
+              summary.append(f'- missing required workflows: `{", ".join(missing)}`')
+          if failed:
+              summary.append(f'- non-success workflows: `{", ".join(failed)}`')
+          if not active_main_ruleset:
+              summary.append(
+                  f'- ruleset create/read result: `{state["ruleset"].get("create_status", ruleset_status)}`'
+              )
+          summary.extend([
+              '',
+              '<!-- trillionnium-exact-head-gap-closure -->',
+          ])
+          comments_status, comments = request(
+              'GET', f'{base_url}/issues/{pr_number}/comments?per_page=100'
+          )
+          marker = '<!-- trillionnium-exact-head-gap-closure -->'
+          existing = None
+          if comments_status == 200:
+              existing = next((row for row in comments if marker in (row.get('body') or '')), None)
+          if existing:
+              request('PATCH', existing['url'], {'body': '\n'.join(summary)})
+          else:
+              request('POST', f'{base_url}/issues/{pr_number}/comments', {'body': '\n'.join(summary)})
+
+          print(json.dumps(state, indent=2, sort_keys=True))
+          if not state['workflow_summary']['all_required_success']:
+              raise SystemExit(1)
+          if not state['ruleset']['active_main_ruleset_verified']:
+              raise SystemExit(2)
+          if not state['review']['independent_approval_for_exact_head']:
+              raise SystemExit(3)
+          PY
