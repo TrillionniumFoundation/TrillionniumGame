@@ -110,6 +110,38 @@ class ReviewLockTests(unittest.TestCase):
         self.assertEqual(result.lock["status"], "reviewed-locked")
         self.assertTrue(result.can_write_reviewed_lock)
 
+    def test_immutable_job_log_exact_head_evidence_is_accepted(self):
+        raw = candidate()
+        bundle = review(raw)
+        bundle["remote_evidence"] = {
+            "evidence_kind": "immutable-job-log",
+            "head_sha": "1" * 40,
+            "pull_request": 123,
+            "workflow_run_id": 44,
+            "job_id": 66,
+            "job_name": "exact-denominator-candidate",
+            "conclusion": "success",
+            "archive_sha256": "sha256:" + "d" * 64,
+            "assertion_count": 9,
+            "log_sealed": True,
+        }
+        result = self.run_review(raw, bundle, require_remote_evidence=True)
+        self.assertEqual(result.lock["status"], "reviewed-locked")
+        self.assertTrue(result.can_write_reviewed_lock)
+        remote = result.lock["review"]["remote_evidence"]
+        self.assertEqual(remote["evidence_kind"], "immutable-job-log")
+        self.assertEqual(
+            remote["seal_kind"],
+            "deterministic-archive-digest-in-job-log",
+        )
+
+        for field, invalid_value in (("job_id", 0), ("log_sealed", False)):
+            invalid = review(raw)
+            invalid["remote_evidence"] = dict(bundle["remote_evidence"])
+            invalid["remote_evidence"][field] = invalid_value
+            with self.assertRaises(ReviewError):
+                self.run_review(raw, invalid, require_remote_evidence=True)
+
     def test_self_approval_is_rejected(self):
         raw = candidate()
         bundle = review(raw)

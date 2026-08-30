@@ -145,35 +145,79 @@ def _reviewers(review: Mapping[str, Any], policy: Mapping[str, Any]) -> dict[str
     return result
 
 
-def _remote(value: Any, required: bool) -> dict[str, Any] | None:
+def _remote(
+    value: Any,
+    required: bool,
+    policy: Mapping[str, Any],
+) -> dict[str, Any] | None:
     if value is None:
         if required:
             raise ReviewError("non-empty exact-head remote evidence is required")
         return None
     if not isinstance(value, dict):
         raise ReviewError("remote_evidence must be an object")
+    allowed_kinds = set(
+        policy.get(
+            "remote_evidence_kinds",
+            ["artifact", "immutable-job-log"],
+        )
+    )
+    evidence_kind = value.get("evidence_kind", "artifact")
+    if evidence_kind not in allowed_kinds:
+        raise ReviewError(
+            f"remote_evidence.evidence_kind is not allowed: {evidence_kind!r}"
+        )
     head = _git_sha(value.get("head_sha"), "remote_evidence.head_sha")
+    pull_request = value.get("pull_request")
     run_id = value.get("workflow_run_id")
-    artifact_id = value.get("artifact_id")
     assertions = value.get("assertion_count")
+    if not isinstance(pull_request, int) or pull_request <= 0:
+        raise ReviewError("remote_evidence.pull_request must be positive")
     if not isinstance(run_id, int) or run_id <= 0:
         raise ReviewError("remote_evidence.workflow_run_id must be positive")
     if value.get("conclusion") != "success":
         raise ReviewError("remote workflow conclusion must be success")
-    if not isinstance(artifact_id, int) or artifact_id <= 0:
-        raise ReviewError("remote_evidence.artifact_id must be positive")
     if not isinstance(assertions, int) or assertions <= 0:
         raise ReviewError("remote_evidence.assertion_count must be positive")
-    return {
+    result: dict[str, Any] = {
+        "evidence_kind": evidence_kind,
         "head_sha": head,
-        "pull_request": int(value.get("pull_request", 0)),
+        "pull_request": pull_request,
         "workflow_run_id": run_id,
-        "artifact_id": artifact_id,
-        "artifact_sha256": _sha256(value.get("artifact_sha256"), "remote_evidence.artifact_sha256"),
         "assertion_count": assertions,
         "conclusion": "success",
     }
-
+    if evidence_kind == "artifact":
+        artifact_id = value.get("artifact_id")
+        if not isinstance(artifact_id, int) or artifact_id <= 0:
+            raise ReviewError("remote_evidence.artifact_id must be positive")
+        result.update(
+            artifact_id=artifact_id,
+            artifact_sha256=_sha256(
+                value.get("artifact_sha256"),
+                "remote_evidence.artifact_sha256",
+            ),
+        )
+    else:
+        job_id = value.get("job_id")
+        if not isinstance(job_id, int) or job_id <= 0:
+            raise ReviewError("remote_evidence.job_id must be positive")
+        if value.get("log_sealed") is not True:
+            raise ReviewError("remote_evidence.log_sealed must be true")
+        result.update(
+            job_id=job_id,
+            job_name=_string(
+                value.get("job_name"),
+                "remote_evidence.job_name",
+            ),
+            archive_sha256=_sha256(
+                value.get("archive_sha256"),
+                "remote_evidence.archive_sha256",
+            ),
+            log_sealed=True,
+            seal_kind="deterministic-archive-digest-in-job-log",
+        )
+    return result
 
 def _leaf_decision(
     leaf: Mapping[str, Any],
@@ -336,7 +380,7 @@ def review_candidate(
         raise ReviewError("review candidate_sha256 does not match exact bytes")
     head = _git_sha(review.get("candidate_head"), "review.candidate_head")
     reviewers = _reviewers(review, policy)
-    remote = _remote(review.get("remote_evidence"), require_remote_evidence)
+    remote = _remote(review.get("remote_evidence"), require_remote_evidence, policy)
     if remote is not None and remote["head_sha"] != head:
         raise ReviewError("remote evidence head does not match candidate head")
 

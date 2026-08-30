@@ -19,3 +19,18 @@ sg1-independent-gate-review-required
 ```
 
 It never sets `sg1_complete=true` and grants no compatibility or production credit. Restricted Console material, unresolved manual contracts and absent remote evidence remain explicit blockers.
+
+## Exact-head remote evidence carriers
+
+A reviewed lock may bind either of two fail-closed remote carriers:
+
+1. `artifact`: a positive GitHub Actions artifact ID plus an exact SHA-256;
+2. `immutable-job-log`: a positive workflow run/job identity whose successful log
+   contains the deterministic evidence-archive SHA-256, with `log_sealed=true`.
+
+The job-log carrier exists for repositories that deliberately avoid external upload
+Actions. It does not weaken reviewer independence, candidate-head equality,
+non-empty assertion counts, or successful terminal execution. Missing or older
+heads, zero IDs, non-success conclusions, absent digests and unsealed logs are
+rejected. Neither carrier grants SG1 by itself; two independent reviewers and the
+global SG1 gate review remain mandatory.
