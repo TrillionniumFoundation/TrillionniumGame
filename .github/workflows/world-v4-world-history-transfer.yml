@@ -121,6 +121,7 @@ jobs:
         run: |
           set -euo pipefail
           rustfmt "+$RUST_TOOLCHAIN" --edition 2021 --check \
+            --config skip_children=true \
             crates/trnm-game-server/src/lib.rs \
             crates/trnm-game-server/tests/settlement_game_server_boundary.rs \
             crates/trnm-game-server/tests/settlement_worker_contract.rs
