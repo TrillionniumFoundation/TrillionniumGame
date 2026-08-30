@@ -33,7 +33,7 @@ def load_object(path: Path) -> dict[str, Any]:
     return value
 
 
-def indexed_evidence(index: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def indexed_evidence_rows(index: dict[str, Any]) -> dict[str, dict[str, Any]]:
     rows: Any = None
     for key in ("evidence", "items", "entries"):
         if key in index:
@@ -57,6 +57,12 @@ def indexed_evidence(index: dict[str, Any]) -> dict[str, dict[str, Any]]:
         )
         result[evidence_id] = row
     return result
+
+
+def indexed_evidence_ids(index: dict[str, Any]) -> set[str]:
+    """Return indexed IDs while preserving the original checker module API."""
+
+    return set(indexed_evidence_rows(index))
 
 
 def accepted_review(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -118,7 +124,7 @@ def validate_closed_evidence(
 def validate() -> dict[str, Any]:
     register = load_object(REGISTER)
     index = load_object(EVIDENCE_INDEX)
-    evidence = indexed_evidence(index)
+    evidence = indexed_evidence_rows(index)
     known_evidence = set(evidence)
 
     require(
