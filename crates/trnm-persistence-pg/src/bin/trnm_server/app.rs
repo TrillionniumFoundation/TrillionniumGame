@@ -1,13 +1,19 @@
-use trnm_contracts::{CommandId, Digest32, DomainError, RetryClass, StableCode};
+use trnm_contracts::{
+    CommandId, Digest32, DomainError, RetryClass, SessionFamilyId, StableCode, UserId,
+};
 use trnm_persistence_pg::{
     CommitOutcome, CommitReceipt, CommitRequest, EntityHead, EntityId, EventId, EventInput,
-    IntentId, IntentKind, OutboxInput, PgRepository,
+    IntentId, IntentKind, OutboxInput, PgRepository, RefreshRotationOutcome, RotateRefreshToken,
+    SessionFamilyRecord,
 };
+use trnm_session_core::RevocationReason;
 
+use super::auth::AccessTokenVerifier;
 use super::codec::{decode_hex, encode_hex};
 use super::error::InputError;
 use super::http::{Request, Response};
 use super::json::Object;
+use super::session_api::{SessionApi, SessionError};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RepositoryOperationalMetrics {
@@ -34,6 +40,35 @@ pub trait Repository: std::fmt::Debug {
 
     fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError>;
 
+    fn verify_access_session(
+        &mut self,
+        family: SessionFamilyId,
+        user: UserId,
+        generation: u64,
+    ) -> Result<SessionFamilyRecord, DomainError> {
+        let _ = (family, user, generation);
+        Err(session_repository_unavailable())
+    }
+
+    fn rotate_refresh_token(
+        &mut self,
+        request: &RotateRefreshToken,
+    ) -> Result<RefreshRotationOutcome, DomainError> {
+        let _ = request;
+        Err(session_repository_unavailable())
+    }
+
+    fn revoke_session_family(
+        &mut self,
+        family: SessionFamilyId,
+        user: UserId,
+        reason: RevocationReason,
+        revoked_at_ms: u64,
+    ) -> Result<SessionFamilyRecord, DomainError> {
+        let _ = (family, user, reason, revoked_at_ms);
+        Err(session_repository_unavailable())
+    }
+
     fn operational_metrics(&self) -> RepositoryOperationalMetrics {
         RepositoryOperationalMetrics::default()
     }
@@ -53,6 +88,40 @@ impl Repository for PgRepository {
     fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError> {
         PgRepository::commit_command(self, request)
     }
+
+    fn verify_access_session(
+        &mut self,
+        family: SessionFamilyId,
+        user: UserId,
+        generation: u64,
+    ) -> Result<SessionFamilyRecord, DomainError> {
+        PgRepository::verify_access_session(self, family, user, generation)
+    }
+
+    fn rotate_refresh_token(
+        &mut self,
+        request: &RotateRefreshToken,
+    ) -> Result<RefreshRotationOutcome, DomainError> {
+        PgRepository::rotate_refresh_token(self, request)
+    }
+
+    fn revoke_session_family(
+        &mut self,
+        family: SessionFamilyId,
+        user: UserId,
+        reason: RevocationReason,
+        revoked_at_ms: u64,
+    ) -> Result<SessionFamilyRecord, DomainError> {
+        PgRepository::revoke_session_family(self, family, user, reason, revoked_at_ms)
+    }
+}
+
+const fn session_repository_unavailable() -> DomainError {
+    DomainError::new(
+        StableCode::Unimplemented,
+        "session_repository_unavailable",
+        RetryClass::Never,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -77,6 +146,7 @@ impl Metrics {
 pub struct App<R> {
     repository: R,
     admin_token: String,
+    sessions: SessionApi,
     draining: bool,
     metrics: Metrics,
 }
@@ -87,9 +157,16 @@ impl<R: Repository> App<R> {
         Self {
             repository,
             admin_token,
+            sessions: SessionApi::default(),
             draining: false,
             metrics: Metrics::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_access_token_verifier(mut self, verifier: AccessTokenVerifier) -> Self {
+        self.sessions.configure(verifier);
+        self
     }
 
     #[must_use]
@@ -103,6 +180,9 @@ impl<R: Repository> App<R> {
             ("GET", "/healthz") => Response::json(200, br#"{"status":"ok"}"#.to_vec()),
             ("GET", "/readyz") => self.readiness(),
             ("GET", "/metrics") => self.metrics_response(),
+            ("GET", "/v1/session/me")
+            | ("POST", "/v1/session/refresh")
+            | ("POST", "/v1/session/logout") => self.session_request(request),
             ("POST", "/-/drain") => self.drain(request),
             ("POST", "/v1/authority/bootstrap") => self.bootstrap(request),
             ("POST", "/v1/authority/commit") => self.commit(request),
@@ -133,6 +213,7 @@ impl<R: Repository> App<R> {
     fn metrics_response(&self) -> Response {
         let ready = u8::from(!self.draining);
         let repository = self.repository.operational_metrics();
+        let session = self.sessions.metrics();
         let mut body = format!(
             "# TYPE trnm_server_requests_total counter\n\
 trnm_server_requests_total {}\n\
@@ -194,7 +275,37 @@ trnm_server_database_retry_sleep_milliseconds_total {}\n",
             repository.retry_exhausted,
             repository.retry_sleep_milliseconds,
         ));
+        body.push_str(&format!(
+            "# TYPE trnm_server_session_access_verified_total counter\n\
+trnm_server_session_access_verified_total {}\n\
+# TYPE trnm_server_session_access_rejected_total counter\n\
+trnm_server_session_access_rejected_total {}\n\
+# TYPE trnm_server_session_refresh_rotated_total counter\n\
+trnm_server_session_refresh_rotated_total {}\n\
+# TYPE trnm_server_session_refresh_replay_revoked_total counter\n\
+trnm_server_session_refresh_replay_revoked_total {}\n\
+# TYPE trnm_server_session_logout_revoked_total counter\n\
+trnm_server_session_logout_revoked_total {}\n",
+            session.access_verified,
+            session.access_rejected,
+            session.refresh_rotated,
+            session.refresh_replay_revoked,
+            session.logout_revoked,
+        ));
         Response::text(200, body)
+    }
+
+    fn session_request(&mut self, request: &Request) -> Response {
+        let result = {
+            let sessions = &mut self.sessions;
+            let repository = &mut self.repository;
+            sessions.handle(repository, request)
+        };
+        match result {
+            Ok(response) => response,
+            Err(SessionError::Input(error)) => self.input_failure(error),
+            Err(SessionError::Domain(error)) => self.domain_failure(error),
+        }
     }
 
     fn drain(&mut self, request: &Request) -> Response {
@@ -305,6 +416,9 @@ fn known_path(path: &str) -> bool {
         "/healthz"
             | "/readyz"
             | "/metrics"
+            | "/v1/session/me"
+            | "/v1/session/refresh"
+            | "/v1/session/logout"
             | "/-/drain"
             | "/v1/authority/bootstrap"
             | "/v1/authority/commit"

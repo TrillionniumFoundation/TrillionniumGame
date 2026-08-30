@@ -1,7 +1,7 @@
 {
   "schema": "trillionnium.trnm-server-status.v1",
   "project_id": "trillionnium-game",
-  "stage": "http-websocket-database-vertical-source-candidate",
+  "stage": "http-websocket-session-database-vertical-source-candidate",
   "binary_target": "trnm-server",
   "temporary_package": "crates/trnm-persistence-pg",
   "source_paths": [
@@ -40,7 +40,13 @@
     "strict epoch-routed access-token verifier with issuer, audience, lifetime, subject, token-id, family and generation checks",
     "opaque ID-prefixed refresh credentials hashed before persistence",
     "serializable refresh-family creation, rotation, replay revocation and logout repository operations",
-    "generic unauthenticated identity-state failures that do not disclose family, token or user existence"
+    "generic unauthenticated identity-state failures that do not disclose family, token or user existence",
+    "explicit opt-in session-auth configuration with issuer, audience, epoch and redacted 256-bit key material",
+    "GET /v1/session/me binds a verified access token to the persisted user, family and generation",
+    "POST /v1/session/refresh rotates opaque refresh credentials and converts replay into generic unauthenticated failure after atomic family revocation",
+    "POST /v1/session/logout revokes the persisted family using the verified access principal",
+    "session access, rejection, refresh, replay-revocation and logout process metrics",
+    "generic retry supervisor deliberately does not repeat refresh rotation or logout mutation"
   ],
   "not_implemented_or_verified": [
     "final exact-head Rust formatting, compile, tests and strict Clippy after this status/checker synchronization",
@@ -52,16 +58,20 @@
     "concurrent bounded connection supervision beyond the current one-request-per-connection server loop",
     "gRPC server and grpc-gateway behavior",
     "WebSocket protobuf subprotocol, heartbeat, continuation, reconnect and persistent lifecycle",
-    "HTTP middleware/endpoints and persistent socket revocation integration for the new session verifier and refresh-family repository",
     "distributed route registry, presence and cross-node fanout",
     "outbox worker lease, dispatch, reconciliation and restart",
     "immutable Nakama wire/database differential",
     "official SDK black-box tests",
-    "load, failover, endurance, security and independent review"
+    "load, failover, endurance, security and independent review",
+    "access-token issuance and complete Nakama session endpoint compatibility",
+    "authorization binding from session principals to all authority, storage and runtime domain operations",
+    "persistent WebSocket session expiry and revocation fanout",
+    "independent security review and exact oracle differential for the session HTTP source candidate"
   ],
   "gap_ids": [
     "GAP-P0-SERVER-001",
-    "GAP-P1-PG-001"
+    "GAP-P1-PG-001",
+    "GAP-P0-CRYPTO-001"
   ],
   "claims": {
     "source_candidate": true,
@@ -86,6 +96,7 @@
     "public_online": false,
     "nakama_replaced": false,
     "access_token_verifier_source_candidate": true,
-    "refresh_family_repository_source_candidate": true
+    "refresh_family_repository_source_candidate": true,
+    "session_http_source_candidate": true
   }
 }

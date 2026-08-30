@@ -12,6 +12,9 @@ pub fn serve<R: Repository>(config: &ServerConfig, repository: R) -> Result<(), 
     let listener = TcpListener::bind(config.bind)?;
     let repository = RetryingRepository::new(repository, RetryPolicy::candidate_default())?;
     let mut app = App::new(repository, config.admin_token.clone());
+    if let Some(session_auth) = &config.session_auth {
+        app = app.with_access_token_verifier(session_auth.verifier()?);
+    }
     eprintln!(
         "trnm-server source candidate listening on {} profile={}",
         config.bind,

@@ -3,8 +3,12 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode};
-use trnm_persistence_pg::{CommitOutcome, CommitRequest, EntityHead, EntityId};
+use trnm_contracts::{Digest32, DomainError, RetryClass, SessionFamilyId, StableCode, UserId};
+use trnm_persistence_pg::{
+    CommitOutcome, CommitRequest, EntityHead, EntityId, RefreshRotationOutcome, RotateRefreshToken,
+    SessionFamilyRecord,
+};
+use trnm_session_core::RevocationReason;
 
 use super::app::{Repository, RepositoryOperationalMetrics};
 
@@ -86,6 +90,37 @@ impl<R: Repository> Repository for RetryingRepository<R> {
         execute_with_metrics(self.policy, &self.metrics, || {
             self.inner.commit_command(request)
         })
+    }
+
+    fn verify_access_session(
+        &mut self,
+        family: SessionFamilyId,
+        user: UserId,
+        generation: u64,
+    ) -> Result<SessionFamilyRecord, DomainError> {
+        self.inner.verify_access_session(family, user, generation)
+    }
+
+    fn rotate_refresh_token(
+        &mut self,
+        request: &RotateRefreshToken,
+    ) -> Result<RefreshRotationOutcome, DomainError> {
+        // Refresh rotation and replay revocation are deliberately not retried
+        // by the generic supervisor. A response-loss retry with the same
+        // presented credential is security-significant and must be reconciled
+        // by the caller instead of being repeated implicitly.
+        self.inner.rotate_refresh_token(request)
+    }
+
+    fn revoke_session_family(
+        &mut self,
+        family: SessionFamilyId,
+        user: UserId,
+        reason: RevocationReason,
+        revoked_at_ms: u64,
+    ) -> Result<SessionFamilyRecord, DomainError> {
+        self.inner
+            .revoke_session_family(family, user, reason, revoked_at_ms)
     }
 
     fn operational_metrics(&self) -> RepositoryOperationalMetrics {

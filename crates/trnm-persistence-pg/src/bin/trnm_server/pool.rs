@@ -1,5 +1,9 @@
-use trnm_contracts::{Digest32, DomainError};
-use trnm_persistence_pg::{CommitOutcome, CommitRequest, EntityHead, EntityId, PgPool};
+use trnm_contracts::{Digest32, DomainError, SessionFamilyId, UserId};
+use trnm_persistence_pg::{
+    CommitOutcome, CommitRequest, EntityHead, EntityId, PgPool, RefreshRotationOutcome,
+    RotateRefreshToken, SessionFamilyRecord,
+};
+use trnm_session_core::RevocationReason;
 
 use super::app::{Repository, RepositoryOperationalMetrics};
 
@@ -30,6 +34,36 @@ impl Repository for PooledRepository {
 
     fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError> {
         self.pool.acquire()?.commit_command(request)
+    }
+
+    fn verify_access_session(
+        &mut self,
+        family: SessionFamilyId,
+        user: UserId,
+        generation: u64,
+    ) -> Result<SessionFamilyRecord, DomainError> {
+        self.pool
+            .acquire()?
+            .verify_access_session(family, user, generation)
+    }
+
+    fn rotate_refresh_token(
+        &mut self,
+        request: &RotateRefreshToken,
+    ) -> Result<RefreshRotationOutcome, DomainError> {
+        self.pool.acquire()?.rotate_refresh_token(request)
+    }
+
+    fn revoke_session_family(
+        &mut self,
+        family: SessionFamilyId,
+        user: UserId,
+        reason: RevocationReason,
+        revoked_at_ms: u64,
+    ) -> Result<SessionFamilyRecord, DomainError> {
+        self.pool
+            .acquire()?
+            .revoke_session_family(family, user, reason, revoked_at_ms)
     }
 
     fn operational_metrics(&self) -> RepositoryOperationalMetrics {

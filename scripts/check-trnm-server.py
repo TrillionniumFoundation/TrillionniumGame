@@ -28,6 +28,7 @@ REQUIRED_FILES = {
     MODULE_ROOT / "retry.rs",
     MODULE_ROOT / "schema.rs",
     MODULE_ROOT / "server.rs",
+    MODULE_ROOT / "session_api.rs",
     MODULE_ROOT / "websocket.rs",
 }
 REQUIRED_TESTS = {
@@ -56,6 +57,13 @@ REQUIRED_TESTS = {
     "malformed_tampered_and_incomplete_access_tokens_fail_closed",
     "refresh_credential_is_bounded_id_prefixed_and_hashed",
     "verifier_debug_redacts_key_material",
+    "session_auth_is_explicit_bounded_and_redacted",
+    "session_auth_rejects_partial_or_noncanonical_key_material",
+    "configured_access_token_is_bound_to_persisted_family",
+    "refresh_rotation_hashes_credentials_and_advances_generation",
+    "refresh_replay_revokes_family_without_disclosing_state",
+    "logout_revokes_persisted_family",
+    "disabled_session_api_fails_closed_without_parsing_credentials",
     "default_pool_policy_is_bounded_and_valid",
     "invalid_pool_policy_fails_closed",
     "tls_identity_requires_cert_and_key_pair",
@@ -154,6 +162,7 @@ def main() -> int:
         "crates/trnm-persistence-pg/src/bin/trnm_server/mod.rs": [
             "pub(crate) mod auth;",
             "pub(crate) mod pool;",
+            "pub(crate) mod session_api;",
             "pub(crate) mod websocket;",
         ],
         "crates/trnm-persistence-pg/src/bin/trnm_server/config.rs": [
@@ -166,6 +175,9 @@ def main() -> int:
             "TRNM_SERVER_DATABASE_POOL_ACQUIRE_TIMEOUT_MS",
             "TRNM_SERVER_DATABASE_STATEMENT_TIMEOUT_MS",
             "TRNM_SERVER_DATABASE_LOCK_TIMEOUT_MS",
+            "pub struct SessionAuthConfig",
+            "TRNM_SERVER_SESSION_AUTH_ENABLED",
+            "TRNM_SERVER_SESSION_AUTH_KEY_HEX",
             '"<redacted>"',
         ],
         "crates/trnm-persistence-pg/src/bin/trnm_server/pool.rs": [
@@ -195,11 +207,23 @@ def main() -> int:
             "/-/drain",
             "/v1/authority/bootstrap",
             "/v1/authority/commit",
+            "/v1/session/me",
+            "/v1/session/refresh",
+            "/v1/session/logout",
+            "with_access_token_verifier",
             "acknowledgement-after-commit fence",
             "CommitOutcome::Duplicate",
             "if !self.authorized(request)",
             "trnm_server_database_pool_acquire_failures_total",
             "trnm_server_database_retry_exhausted_total",
+        ],
+        "crates/trnm-persistence-pg/src/bin/trnm_server/session_api.rs": [
+            "pub struct SessionApi",
+            "verify_access_session",
+            "rotate_refresh_token",
+            "revoke_session_family",
+            "RefreshRotationOutcome::ReplayRevoked",
+            "session_authentication_not_configured",
         ],
         "crates/trnm-persistence-pg/src/bin/trnm_server/retry.rs": [
             "max_attempts: 3",
@@ -222,6 +246,8 @@ def main() -> int:
         "crates/trnm-persistence-pg/src/bin/trnm_server/server.rs": [
             "RetryingRepository::new",
             "RetryPolicy::candidate_default",
+            "config.session_auth",
+            "with_access_token_verifier",
             "websocket::is_route",
             "websocket::serve_once",
         ],
@@ -237,8 +263,8 @@ def main() -> int:
     if missing_tests:
         fail(f"missing tests: {missing_tests}")
     test_count = combined.count("#[test]")
-    if test_count < 46:
-        fail(f"expected at least 46 server/session/pool source tests, got {test_count}")
+    if test_count < 53:
+        fail(f"expected at least 53 server/session/pool source tests, got {test_count}")
 
     workflow = (
         ROOT / ".github/workflows/trillionnium-game-merge-gate.yml"
@@ -264,7 +290,7 @@ def main() -> int:
     status = json.loads(
         (ROOT / "docs/status/TRNM_SERVER_STATUS.json").read_text(encoding="utf-8")
     )
-    if status.get("stage") != "http-websocket-database-vertical-source-candidate":
+    if status.get("stage") != "http-websocket-session-database-vertical-source-candidate":
         fail("unexpected server status stage")
     claims = status.get("claims", {})
     forbidden_positive_claims = [
@@ -295,6 +321,7 @@ def main() -> int:
         "retry_jitter_source_candidate",
         "access_token_verifier_source_candidate",
         "refresh_family_repository_source_candidate",
+        "session_http_source_candidate",
     ]
     if any(claims.get(field) is not True for field in required_source_claims):
         fail("server operational source-candidate claim missing")
@@ -314,6 +341,7 @@ def main() -> int:
                 "retry_jitter_source_candidate": True,
                 "access_token_verifier_source_candidate": True,
                 "refresh_family_repository_source_candidate": True,
+                "session_http_source_candidate": True,
                 "cargo_executed_here": False,
                 "live_database_executed_here": False,
                 "compatibility_credit": False,

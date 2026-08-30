@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use trnm_persistence_pg::{DatabaseProfile, PgPoolConfig};
 
+use super::auth::AccessTokenVerifier;
 use super::error::ServerError;
 
 const DEFAULT_BIND: &str = "127.0.0.1:7350";
@@ -35,6 +36,37 @@ pub enum DatabaseTlsMode {
 }
 
 #[derive(Clone)]
+pub struct SessionAuthConfig {
+    issuer: String,
+    audience: String,
+    epoch: u32,
+    key: Vec<u8>,
+}
+
+impl SessionAuthConfig {
+    pub fn verifier(&self) -> Result<AccessTokenVerifier, trnm_contracts::DomainError> {
+        AccessTokenVerifier::from_epoch_key(
+            self.issuer.clone(),
+            self.audience.clone(),
+            self.epoch,
+            self.key.clone(),
+        )
+    }
+}
+
+impl fmt::Debug for SessionAuthConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SessionAuthConfig")
+            .field("issuer", &self.issuer)
+            .field("audience", &self.audience)
+            .field("epoch", &self.epoch)
+            .field("key", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
     pub database_url: String,
@@ -46,6 +78,7 @@ pub struct ServerConfig {
     pub database_pool: PgPoolConfig,
     pub schema_source_commit: String,
     pub admin_token: String,
+    pub session_auth: Option<SessionAuthConfig>,
     pub max_request_bytes: usize,
     pub read_timeout: Duration,
     pub write_timeout: Duration,
@@ -71,6 +104,7 @@ impl fmt::Debug for ServerConfig {
             .field("database_pool", &self.database_pool)
             .field("schema_source_commit", &self.schema_source_commit)
             .field("admin_token", &"<redacted>")
+            .field("session_auth", &self.session_auth)
             .field("max_request_bytes", &self.max_request_bytes)
             .field("read_timeout", &self.read_timeout)
             .field("write_timeout", &self.write_timeout)
@@ -192,6 +226,7 @@ impl ServerConfig {
         if !(32..=512).contains(&admin_token.len()) || !admin_token.bytes().all(is_token_byte) {
             return Err(ServerError::Configuration("admin_token_invalid"));
         }
+        let session_auth = parse_session_auth(&lookup)?;
 
         let max_request_bytes = parse_usize(
             lookup("TRNM_SERVER_MAX_REQUEST_BYTES").as_deref(),
@@ -298,11 +333,99 @@ impl ServerConfig {
                 database_pool,
                 schema_source_commit,
                 admin_token,
+                session_auth,
                 max_request_bytes,
                 read_timeout: Duration::from_millis(read_timeout_ms),
                 write_timeout: Duration::from_millis(write_timeout_ms),
             },
         ))
+    }
+}
+
+fn parse_session_auth(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<SessionAuthConfig>, ServerError> {
+    let enabled = parse_bool(
+        lookup("TRNM_SERVER_SESSION_AUTH_ENABLED").as_deref(),
+        false,
+        "session_auth_enabled_invalid",
+    )?;
+    let names = [
+        "TRNM_SERVER_SESSION_AUTH_ISSUER",
+        "TRNM_SERVER_SESSION_AUTH_AUDIENCE",
+        "TRNM_SERVER_SESSION_AUTH_EPOCH",
+        "TRNM_SERVER_SESSION_AUTH_KEY_HEX",
+    ];
+    let material_present = names.iter().any(|name| lookup(name).is_some());
+    if !enabled {
+        if material_present {
+            return Err(ServerError::Configuration(
+                "session_auth_material_requires_enablement",
+            ));
+        }
+        return Ok(None);
+    }
+
+    let issuer = required(
+        lookup,
+        "TRNM_SERVER_SESSION_AUTH_ISSUER",
+        "session_auth_issuer_missing",
+    )?;
+    let audience = required(
+        lookup,
+        "TRNM_SERVER_SESSION_AUTH_AUDIENCE",
+        "session_auth_audience_missing",
+    )?;
+    if !valid_session_profile_text(&issuer) || !valid_session_profile_text(&audience) {
+        return Err(ServerError::Configuration("session_auth_profile_invalid"));
+    }
+    let epoch = u32::try_from(parse_u64(
+        lookup("TRNM_SERVER_SESSION_AUTH_EPOCH").as_deref(),
+        0,
+        1,
+        u64::from(u32::MAX),
+        "session_auth_epoch_invalid",
+    )?)
+    .map_err(|_| ServerError::Configuration("session_auth_epoch_invalid"))?;
+    let key_hex = required(
+        lookup,
+        "TRNM_SERVER_SESSION_AUTH_KEY_HEX",
+        "session_auth_key_missing",
+    )?;
+    let config = SessionAuthConfig {
+        issuer,
+        audience,
+        epoch,
+        key: decode_session_key(&key_hex)?,
+    };
+    config.verifier()?;
+    Ok(Some(config))
+}
+
+fn valid_session_profile_text(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && !value
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+}
+
+fn decode_session_key(value: &str) -> Result<Vec<u8>, ServerError> {
+    if value.len() != 64 || !value.bytes().all(is_lower_hex) {
+        return Err(ServerError::Configuration("session_auth_key_invalid"));
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| Ok((hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?))
+        .collect()
+}
+
+fn hex_nibble(value: u8) -> Result<u8, ServerError> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        _ => Err(ServerError::Configuration("session_auth_key_invalid")),
     }
 }
 
@@ -506,6 +629,72 @@ mod tests {
         assert!(matches!(
             load(&values),
             Err(ServerError::Configuration("database_lock_timeout_invalid"))
+        ));
+    }
+
+    #[test]
+    fn session_auth_is_explicit_bounded_and_redacted() {
+        let mut values = base();
+        values.insert(
+            "TRNM_SERVER_SESSION_AUTH_ISSUER".to_owned(),
+            "https://identity.test".to_owned(),
+        );
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration(
+                "session_auth_material_requires_enablement"
+            ))
+        ));
+
+        values.insert(
+            "TRNM_SERVER_SESSION_AUTH_ENABLED".to_owned(),
+            "1".to_owned(),
+        );
+        values.insert(
+            "TRNM_SERVER_SESSION_AUTH_AUDIENCE".to_owned(),
+            "trillionnium-game".to_owned(),
+        );
+        values.insert("TRNM_SERVER_SESSION_AUTH_EPOCH".to_owned(), "7".to_owned());
+        let key = "30".repeat(32);
+        values.insert("TRNM_SERVER_SESSION_AUTH_KEY_HEX".to_owned(), key.clone());
+        let (_, config) = load(&values).unwrap();
+        let session = config.session_auth.as_ref().unwrap();
+        assert!(session.verifier().is_ok());
+        let debug = format!("{config:?}");
+        assert!(debug.contains("SessionAuthConfig"));
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains(&key));
+    }
+
+    #[test]
+    fn session_auth_rejects_partial_or_noncanonical_key_material() {
+        let mut values = base();
+        values.extend([
+            (
+                "TRNM_SERVER_SESSION_AUTH_ENABLED".to_owned(),
+                "1".to_owned(),
+            ),
+            (
+                "TRNM_SERVER_SESSION_AUTH_ISSUER".to_owned(),
+                "https://identity.test".to_owned(),
+            ),
+            (
+                "TRNM_SERVER_SESSION_AUTH_AUDIENCE".to_owned(),
+                "trillionnium-game".to_owned(),
+            ),
+            ("TRNM_SERVER_SESSION_AUTH_EPOCH".to_owned(), "7".to_owned()),
+        ]);
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration("session_auth_key_missing"))
+        ));
+        values.insert(
+            "TRNM_SERVER_SESSION_AUTH_KEY_HEX".to_owned(),
+            "AA".repeat(32),
+        );
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration("session_auth_key_invalid"))
         ));
     }
 
