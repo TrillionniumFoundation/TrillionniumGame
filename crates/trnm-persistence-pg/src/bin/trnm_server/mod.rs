@@ -1,4 +1,6 @@
 pub(crate) mod app;
+#[path = "../../auth.rs"]
+pub(crate) mod auth;
 pub(crate) mod codec;
 pub(crate) mod config;
 pub(crate) mod error;
