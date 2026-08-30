@@ -96,6 +96,14 @@ dead-letter scenarios against immutable PostgreSQL and CockroachDB images. A rep
 runner passing those scenarios before writing a commit is not a substitute for the
 final exact-head workflow collection.
 
+## Review gate
+
+Moving the pull request out of Draft is only a routing transition. It does not count
+as independent acceptance. The reviewer must inspect the final commit and tree, the
+non-empty exact-head jobs, the deterministic diagnostic digests, the BIGINT type fix,
+and the lease-reclaim semantics. Any later source push invalidates prior approval and
+requires a fresh workflow collection and review decision.
+
 ## Remaining gap boundary
 
 This source candidate does not yet close `GAP-P1-OUTBOX-001` or `GAP-P1-PG-001`.
