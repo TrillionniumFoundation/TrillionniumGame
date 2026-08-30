@@ -85,10 +85,21 @@ jobs:
           CRATE="$WORLD/trillionnium/crates/trnm-game-server"
           git -C "$WORLD" checkout "$WORLD_COMMIT" -- \
             trillionnium/crates/trnm-game-server/src/cex.rs
+          python3 - "$CRATE/Cargo.toml" <<'PY'
+          from pathlib import Path
+          import sys
+          path = Path(sys.argv[1])
+          cargo = path.read_text(encoding='utf-8')
+          old = 'features = ["json", "rustls-tls"]'
+          new = 'features = ["blocking", "json", "rustls-tls"]'
+          if cargo.count(old) != 1:
+              raise SystemExit('reqwest feature declaration drifted')
+          path.write_text(cargo.replace(old, new, 1), encoding='utf-8', newline='\n')
+          PY
           test ! -e "$CRATE/build.rs"
           test ! -e "$CRATE/src/lib.rs.in"
           test "$(git -C "$WORLD" hash-object trillionnium/crates/trnm-game-server/Cargo.toml)" = \
-            24612a61fbe07f965c979c661e26d831297b8466
+            93749584aac91b7b7ad0569cb5baec4ecc68ec1c
           test "$(git -C "$WORLD" hash-object trillionnium/crates/trnm-game-server/src/lib.rs)" = \
             6e6c69147fdf78067d37a6022050bafab05eb4b2
           test "$(git -C "$WORLD" hash-object trillionnium/crates/trnm-game-server/tests/settlement_game_server_boundary.rs)" = \
