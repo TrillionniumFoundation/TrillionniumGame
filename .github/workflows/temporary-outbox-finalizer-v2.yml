@@ -1,0 +1,345 @@
+name: temporary-outbox-finalizer-v2
+
+on:
+  push:
+    branches:
+      - feat/plan-v3-gap-closure-2026-08-29
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: temporary-outbox-finalizer
+  cancel-in-progress: true
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Cancel obsolete temporary runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error
+          repo = os.environ['GITHUB_REPOSITORY']
+          current_sha = os.environ['GITHUB_SHA']
+          current_run = int(os.environ['GITHUB_RUN_ID'])
+          token = os.environ['GH_TOKEN']
+          base = os.environ['GITHUB_API_URL']
+          request = urllib.request.Request(
+              f'{base}/repos/{repo}/actions/runs?branch=feat/plan-v3-gap-closure-2026-08-29&per_page=100',
+              headers={
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'User-Agent': 'trillionnium-outbox-finalizer-v2',
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              runs = json.load(response).get('workflow_runs', [])
+          for run in runs:
+              run_id = int(run['id'])
+              if run_id == current_run or run.get('status') == 'completed':
+                  continue
+              if not str(run.get('name', '')).startswith('temporary-outbox-'):
+                  continue
+              if run.get('head_sha') == current_sha and run.get('name') == 'temporary-outbox-finalizer-v2':
+                  continue
+              cancel = urllib.request.Request(
+                  f'{base}/repos/{repo}/actions/runs/{run_id}/cancel',
+                  data=b'',
+                  method='POST',
+                  headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': 'application/vnd.github+json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                      'User-Agent': 'trillionnium-outbox-finalizer-v2',
+                  },
+              )
+              try:
+                  urllib.request.urlopen(cancel, timeout=30).read()
+              except urllib.error.HTTPError as error:
+                  if error.code not in (403, 409, 422):
+                      raise
+          PY
+
+      - name: Fetch exact latest branch head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_REF_NAME"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$GITHUB_REF_NAME" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+
+      - name: Integrate outbox and close exhausted-lease hole
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lib = Path('crates/trnm-persistence-pg/src/lib.rs')
+          outbox = Path('crates/trnm-persistence-pg/src/outbox.rs')
+          if not outbox.is_file():
+              raise SystemExit('outbox implementation is missing')
+          source = lib.read_text(encoding='utf-8')
+          if 'mod outbox;' not in source:
+              if 'mod pool;' in source:
+                  source = source.replace('mod pool;\n', 'mod outbox;\nmod pool;\n', 1)
+              else:
+                  header = '#![forbid(unsafe_code)]\n\n'
+                  if header not in source:
+                      raise SystemExit('crate header anchor drifted')
+                  source = source.replace(header, header + 'mod outbox;\n', 1)
+          export = 'pub use outbox::{OutboxLease, OutboxRetryOutcome};\n'
+          if export not in source:
+              pool_export = 'pub use pool::{PgPool, PgPoolConfig, PgPoolSnapshot, PgTlsConfig};\n'
+              if pool_export in source:
+                  source = source.replace(pool_export, export + pool_export, 1)
+              else:
+                  source = source.replace('mod outbox;\n', 'mod outbox;\n\n' + export, 1)
+          if 'from_database_value' not in source:
+              old = '''impl IntentKind {
+              const fn database_value(self) -> i16 {
+                  self as i16
+              }
+          }
+          '''
+              new = '''impl IntentKind {
+              const fn database_value(self) -> i16 {
+                  self as i16
+              }
+
+              const fn from_database_value(value: i16) -> Option<Self> {
+                  match value {
+                      0 => Some(Self::Broadcast),
+                      1 => Some(Self::SearchIndex),
+                      2 => Some(Self::Notification),
+                      3 => Some(Self::ExternalEffect),
+                      4 => Some(Self::Completion),
+                      _ => None,
+                  }
+              }
+          }
+          '''
+              if old not in source:
+                  raise SystemExit('IntentKind implementation anchor drifted')
+              source = source.replace(old, new, 1)
+          lib.write_text(source, encoding='utf-8')
+
+          source = outbox.read_text(encoding='utf-8')
+          if 'exhausted_reason: Digest32' not in source:
+              old = '''        max_attempts: u32,
+                  limit: usize,
+              ) -> Result<Vec<OutboxLease>, DomainError> {
+                  validate_claim(owner, lease_duration_ms, max_attempts, limit)?;
+          '''
+              new = '''        max_attempts: u32,
+                  exhausted_reason: Digest32,
+                  limit: usize,
+              ) -> Result<Vec<OutboxLease>, DomainError> {
+                  validate_claim(
+                      owner,
+                      lease_duration_ms,
+                      max_attempts,
+                      exhausted_reason,
+                      limit,
+                  )?;
+          '''
+              if old not in source:
+                  raise SystemExit('claim signature anchor drifted')
+              source = source.replace(old, new, 1)
+              source = source.replace(
+                  '''        let max_attempts_i32 =
+                      i32::try_from(max_attempts).map_err(|_| counter_overflow())?;
+          ''',
+                  '',
+                  1,
+              )
+              old = '''                     WHERE state IN (0, 1) AND available_at_ms <= $1 AND attempt < $2 \\
+                     ORDER BY available_at_ms, intent_id LIMIT 1 FOR UPDATE",
+                              &[&now_ms_i64, &max_attempts_i32],
+          '''
+              new = '''                     WHERE state IN (0, 1) AND available_at_ms <= $1 \\
+                     ORDER BY available_at_ms, intent_id LIMIT 1 FOR UPDATE",
+                              &[&now_ms_i64],
+          '''
+              if old not in source:
+                  raise SystemExit('claim selection anchor drifted')
+              source = source.replace(old, new, 1)
+              old = '''            let prior_generation =
+                          from_i64(row.get(6), "negative_outbox_lease_generation")?;
+                      let prior_state: i16 = row.get(7);
+                      let attempt = prior_attempt.checked_add(1).ok_or_else(counter_overflow)?;
+          '''
+              new = '''            let prior_generation =
+                          from_i64(row.get(6), "negative_outbox_lease_generation")?;
+                      let prior_state: i16 = row.get(7);
+                      if prior_attempt >= max_attempts {
+                          dead_letter_exhausted(
+                              &mut transaction,
+                              intent_id,
+                              prior_state,
+                              prior_generation,
+                              exhausted_reason,
+                              now_ms_i64,
+                          )?;
+                          continue;
+                      }
+                      let attempt = prior_attempt.checked_add(1).ok_or_else(counter_overflow)?;
+          '''
+              if old not in source:
+                  raise SystemExit('claim attempt anchor drifted')
+              source = source.replace(old, new, 1)
+              helper_anchor = '''fn validate_claim(
+                  owner: NodeId,
+                  lease_duration_ms: u64,
+                  max_attempts: u32,
+                  limit: usize,
+              ) -> Result<(), DomainError> {
+                  if owner.is_zero()
+                      || lease_duration_ms == 0
+                      || max_attempts == 0
+                      || limit == 0
+          '''
+              helper_new = '''fn dead_letter_exhausted(
+                  transaction: &mut Transaction<'_>,
+                  intent_id: IntentId,
+                  prior_state: i16,
+                  prior_generation: u64,
+                  reason: Digest32,
+                  now_ms: i64,
+              ) -> Result<(), DomainError> {
+                  let prior_generation = to_i64(prior_generation)?;
+                  let updated = transaction
+                      .execute(
+                          "UPDATE trnm_outbox SET state = 3, owner_node = NULL, \\
+                           receipt_digest = NULL, dead_reason_digest = $2, updated_at_ms = $3 \\
+                           WHERE intent_id = $1 AND state = $4 AND lease_generation = $5",
+                          &[
+                              &intent_id.as_bytes().as_slice(),
+                              &reason.as_bytes().as_slice(),
+                              &now_ms,
+                              &prior_state,
+                              &prior_generation,
+                          ],
+                      )
+                      .map_err(map_postgres_error)?;
+                  require_one_fenced_update(updated, "outbox_exhausted_reclaim_stale")
+              }
+
+              fn validate_claim(
+                  owner: NodeId,
+                  lease_duration_ms: u64,
+                  max_attempts: u32,
+                  exhausted_reason: Digest32,
+                  limit: usize,
+              ) -> Result<(), DomainError> {
+                  if owner.is_zero()
+                      || lease_duration_ms == 0
+                      || max_attempts == 0
+                      || exhausted_reason.is_zero()
+                      || limit == 0
+          '''
+              if helper_anchor not in source:
+                  raise SystemExit('validate_claim anchor drifted')
+              source = source.replace(helper_anchor, helper_new, 1)
+              source = source.replace(
+                  'validate_claim(NodeId::new([0; 16]), 1, 1, 1)',
+                  'validate_claim(NodeId::new([0; 16]), 1, 1, Digest32::new([9; 32]), 1)',
+                  1,
+              )
+              source = source.replace(
+                  'validate_claim(NodeId::new([1; 16]), 1, 1, MAX_CLAIM_BATCH + 1)',
+                  'validate_claim(\n                NodeId::new([1; 16]),\n                1,\n                1,\n                Digest32::new([9; 32]),\n                MAX_CLAIM_BATCH + 1,\n            )',
+                  1,
+              )
+              outbox.write_text(source, encoding='utf-8')
+
+          for path in Path('.github/workflows').glob('temporary-outbox-*.yml'):
+              path.unlink()
+          PY
+          test -z "$(find .github/workflows -maxdepth 1 -name 'temporary-outbox-*.yml' -print -quit)"
+          git diff --check
+
+      - name: Format, compile, test and strictly lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo check --package trnm-persistence-pg --all-targets
+          cargo clippy --package trnm-persistence-pg --all-targets --fix --allow-dirty --allow-staged -- -W clippy::all
+          cargo fmt --all
+          git diff --check
+          cargo fmt --all -- --check
+          cargo test --package trnm-persistence-pg --all-targets --locked
+          cargo clippy --package trnm-persistence-pg --all-targets --locked -- -D warnings
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          python3 scripts/check-plan.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Reject stale writer and commit clean source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$GITHUB_REF_NAME"
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          test -z "$(find .github/workflows -maxdepth 1 -name 'temporary-outbox-*.yml' -print -quit)"
+          git diff --check
+          git config user.name "trillionnium-gap-closure-bot"
+          git config user.email "gap-closure-bot@users.noreply.github.com"
+          git add -A
+          test -n "$(git diff --cached --name-only)"
+          git commit -m "feat(pg): add crash-safe fenced outbox transitions"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Record failure without claim promotion
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -u
+          python3 - <<'PY'
+          import json, os, urllib.request
+          body = (
+              f"Outbox finalizer v2 failed for exact head `{os.environ['GITHUB_SHA']}`. "
+              f"No gap or claim was promoted. Run: {os.environ['GITHUB_SERVER_URL']}/"
+              f"{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          )
+          request = urllib.request.Request(
+              f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/issues/42/comments",
+              data=json.dumps({'body': body}).encode(),
+              method='POST',
+              headers={
+                  'Authorization': f"Bearer {os.environ['GH_TOKEN']}",
+                  'Accept': 'application/vnd.github+json',
+                  'Content-Type': 'application/json',
+                  'User-Agent': 'trillionnium-outbox-finalizer-v2',
+              },
+          )
+          try:
+              urllib.request.urlopen(request, timeout=30).read()
+          except Exception:
+              pass
+          PY
