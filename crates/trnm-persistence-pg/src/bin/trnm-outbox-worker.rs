@@ -208,7 +208,7 @@ impl WorkerConfig {
             lookup("TRNM_OUTBOX_MAX_ATTEMPTS").as_deref(),
             DEFAULT_MAX_ATTEMPTS,
             1,
-            100,
+            32,
             "max_attempts_invalid",
         )?)
         .map_err(|_| WorkerError::Configuration("max_attempts_invalid"))?;
@@ -925,6 +925,13 @@ mod tests {
         assert!(matches!(
             load(&values),
             Err(WorkerError::Configuration("node_id_invalid"))
+        ));
+
+        let mut values = base_config(&directory);
+        values.insert("TRNM_OUTBOX_MAX_ATTEMPTS".to_owned(), "33".to_owned());
+        assert!(matches!(
+            load(&values),
+            Err(WorkerError::Configuration("max_attempts_invalid"))
         ));
     }
 
