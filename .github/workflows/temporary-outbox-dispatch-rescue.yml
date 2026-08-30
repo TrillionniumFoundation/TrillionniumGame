@@ -1,0 +1,197 @@
+name: temporary-outbox-dispatch-rescue
+
+on:
+  push:
+    branches:
+      - feat/plan-v3-gap-closure-2026-08-29
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-outbox-dispatch-closure
+  cancel-in-progress: false
+
+jobs:
+  rescue-test-and-push:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - name: Fetch exact triggering head without external actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$GITHUB_REF_NAME" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+
+      - name: Recover source payload and apply idempotently
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          root = Path('.')
+          primary = root / '.github/workflows/temporary-outbox-dispatch-closure.yml'
+          if not primary.is_file():
+              raise SystemExit('primary workflow/source payload missing')
+          workflow_text = primary.read_text(encoding='utf-8')
+          start_marker = "          cat > /tmp/outbox_dispatch.rs <<'RUST'\n"
+          end_marker = "          RUST\n\n          python3 - <<'PY'"
+          start = workflow_text.find(start_marker)
+          end = workflow_text.find(end_marker, start + len(start_marker))
+          if start < 0 or end < 0:
+              raise SystemExit('outbox source payload markers missing')
+          payload = workflow_text[start + len(start_marker):end]
+          lines = []
+          for line in payload.splitlines():
+              if line and not line.startswith('          '):
+                  raise SystemExit(f'outbox source indentation drift: {line!r}')
+              lines.append(line[10:] if line else '')
+          source = '\n'.join(lines) + '\n'
+          module = root / 'crates/trnm-persistence-pg/src/outbox_dispatch.rs'
+          if module.exists() and module.read_text(encoding='utf-8') != source:
+              raise SystemExit(f'{module}: existing implementation differs; refusing overwrite')
+          module.write_text(source, encoding='utf-8')
+
+          lib = root / 'crates/trnm-persistence-pg/src/lib.rs'
+          text = lib.read_text(encoding='utf-8')
+          if 'mod outbox_dispatch;' not in text:
+              marker = '#![forbid(unsafe_code)]\n\n'
+              if text.count(marker) != 1:
+                  raise SystemExit(f'{lib}: source anchor missing or ambiguous')
+              text = text.replace(marker, marker + 'mod outbox_dispatch;\n\n', 1)
+          export = (
+              'pub use outbox_dispatch::{\n'
+              '    LeasedOutboxIntent, OutboxFailureOutcome, OutboxIntentState, OutboxLeaseBatch,\n'
+              '    OutboxLeasePolicy,\n'
+              '};\n\n'
+          )
+          if 'pub use outbox_dispatch::' not in text:
+              text = text.replace('mod outbox_dispatch;\n\n', 'mod outbox_dispatch;\n\n' + export, 1)
+          lib.write_text(text, encoding='utf-8')
+
+          doc = root / 'docs/development/PG_OUTBOX_DISPATCH_SOURCE_CANDIDATE.md'
+          doc.write_text(
+              '''# PG outbox dispatch source candidate
+
+Status: `source-candidate`. Compatibility, durability, production and retirement credit remain false.
+
+The authoritative PG-wire repository now exposes a generation-fenced outbox transition core:
+
+- bounded ordered lease batches;
+- pending work acquisition and expired-lease node-failure reclaim;
+- owner plus lease-generation fencing on completion and failure;
+- exact atomic delivered, retry-pending and dead-letter transitions;
+- fail-closed attempt exhaustion inside the lease transaction;
+- stable validation/data-loss/stale-lease errors;
+- PostgreSQL/CockroachDB-compatible serializable transaction boundary.
+
+This closes no evidence gate by source presence alone. Remaining work includes the background dispatcher,
+external-effect adapters, acknowledgement reconciliation, both-profile fault injection, process/node-loss
+reclaim proof, endurance, metrics/SLO integration and independent data-integrity review.
+''',
+              encoding='utf-8',
+          )
+
+          inventory_path = root / 'docs/status/IMPLEMENTATION_INVENTORY.json'
+          inventory = json.loads(inventory_path.read_text(encoding='utf-8'))
+          for component in inventory.get('components', []):
+              if component.get('id') in {'COMP-PERSISTENCE-PG', 'COMP-TRNM-SERVER'}:
+                  implemented = component.setdefault('implemented', [])
+                  fact = 'generation-fenced PG outbox lease, reclaim, complete, retry and dead-letter source API'
+                  if fact not in implemented:
+                      implemented.append(fact)
+                  missing = component.setdefault('missing', [])
+                  if 'outbox delivery worker' in missing:
+                      missing.remove('outbox delivery worker')
+                  replacement = (
+                      'background outbox delivery loop, external-effect adapter, reconciliation and '
+                      'both-profile node-loss/endurance evidence'
+                  )
+                  if replacement not in missing:
+                      missing.append(replacement)
+          inventory_path.write_text(
+              json.dumps(inventory, indent=2, ensure_ascii=False) + '\n',
+              encoding='utf-8',
+          )
+
+          roadmap_path = root / 'docs/roadmap/NEXT_MILESTONE.json'
+          roadmap = json.loads(roadmap_path.read_text(encoding='utf-8'))
+          for item in roadmap.get('items', []):
+              if item.get('id') == 'TG-V3-024' and item.get('status') in {'planned', 'ready', 'blocked'}:
+                  item['status'] = 'in-progress'
+          roadmap_path.write_text(
+              json.dumps(roadmap, indent=2, ensure_ascii=False) + '\n',
+              encoding='utf-8',
+          )
+
+          current_path = root / 'docs/status/CURRENT_STATE.json'
+          current = json.loads(current_path.read_text(encoding='utf-8'))
+          current.setdefault('implementation', {})[
+              'pg_outbox_generation_fenced_dispatch_source_candidate'
+          ] = True
+          current_path.write_text(
+              json.dumps(current, indent=2, ensure_ascii=False) + '\n',
+              encoding='utf-8',
+          )
+
+          for workflow in (
+              root / '.github/workflows/temporary-outbox-dispatch-closure.yml',
+              root / '.github/workflows/temporary-outbox-dispatch-rescue.yml',
+          ):
+              if workflow.is_file():
+                  workflow.unlink()
+          PY
+          test ! -e .github/workflows/temporary-outbox-dispatch-closure.yml
+          test ! -e .github/workflows/temporary-outbox-dispatch-rescue.yml
+          git diff --check
+
+      - name: Compile, autoformat, test and strictly lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo check --package trnm-persistence-pg --all-targets --locked
+          cargo test --package trnm-persistence-pg --all-targets --locked
+          cargo clippy --fix --allow-dirty --allow-staged \
+            --package trnm-persistence-pg --all-targets --locked -- -D warnings
+          cargo fmt --all
+          git diff --check
+          cargo fmt --all -- --check
+          cargo test --package trnm-persistence-pg --all-targets --locked
+          cargo clippy --package trnm-persistence-pg --all-targets --locked -- -D warnings
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          python3 scripts/check-plan.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Commit only against unchanged branch tip
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_REF_NAME"
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          test ! -e .github/workflows/temporary-outbox-dispatch-closure.yml
+          test ! -e .github/workflows/temporary-outbox-dispatch-rescue.yml
+          git diff --check
+          git config user.name "trillionnium-gap-closure-bot"
+          git config user.email "gap-closure-bot@users.noreply.github.com"
+          git add -A
+          test -n "$(git diff --cached --name-only)"
+          git commit -m "feat(outbox): add generation-fenced PG dispatch transitions"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
