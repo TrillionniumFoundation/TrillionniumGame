@@ -6,6 +6,7 @@ on:
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'config/database-test-images.json'
       - 'crates/trnm-contracts/**'
       - 'crates/trnm-persistence-core/**'
       - 'crates/trnm-persistence-pg/**'
@@ -18,6 +19,7 @@ on:
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'config/database-test-images.json'
       - 'crates/trnm-contracts/**'
       - 'crates/trnm-persistence-core/**'
       - 'crates/trnm-persistence-pg/**'
@@ -54,7 +56,7 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
-      - name: Validate shell and claim boundaries
+      - name: Validate shell, immutable images and claim boundaries
         run: |
           set -euo pipefail
           bash -n scripts/ci-pgwire-vertical-slice.sh
@@ -62,6 +64,32 @@ jobs:
           grep -q 'serializable_conflict_injected.*False' scripts/ci-pgwire-vertical-slice.sh
           grep -q 'TRNM_POSTGRES_IMAGE.*immutable OCI digest is required' scripts/ci-pgwire-vertical-slice.sh
           grep -q 'TRNM_COCKROACH_IMAGE.*immutable OCI digest is required' scripts/ci-pgwire-vertical-slice.sh
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          value = json.loads(Path('config/database-test-images.json').read_text(encoding='utf-8'))
+          assert value['schema'] == 'trillionnium.database-test-images.v1'
+          assert value['project_id'] == 'trillionnium-game'
+          assert value['claims'] == {
+              'compatibility_credit': False,
+              'image_identity_pinned': True,
+              'production_ready': False,
+              'production_topology_evidence': False,
+              'tag_mutability_accepted': False,
+          }
+          expected = {
+              'postgresql': r'postgres@sha256:[0-9a-f]{64}',
+              'cockroachdb': r'cockroachdb/cockroach@sha256:[0-9a-f]{64}',
+          }
+          for profile, pattern in expected.items():
+              row = value['profiles'][profile]
+              assert re.fullmatch(pattern, row['image']), (profile, row['image'])
+              assert row['source_tag'] and row['version_output'] and row['test_topology']
+          assert 'PostgreSQL) 17.6' in value['profiles']['postgresql']['version_output']
+          assert 'Build Tag:        v26.2.6' in value['profiles']['cockroachdb']['version_output']
+          PY
 
   live-profile:
     strategy:
@@ -83,38 +111,113 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+      - name: Load reviewed immutable image pin
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          profile = os.environ['PROFILE']
+          value = json.loads(Path('config/database-test-images.json').read_text(encoding='utf-8'))
+          row = value['profiles'][profile]
+          patterns = {
+              'postgresql': r'postgres@sha256:[0-9a-f]{64}',
+              'cockroachdb': r'cockroachdb/cockroach@sha256:[0-9a-f]{64}',
+          }
+          image = row['image']
+          if re.fullmatch(patterns[profile], image) is None:
+              raise SystemExit(f'invalid immutable image for {profile}: {image!r}')
+          environment_name = {
+              'postgresql': 'TRNM_POSTGRES_IMAGE',
+              'cockroachdb': 'TRNM_COCKROACH_IMAGE',
+          }[profile]
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              output.write(f'{environment_name}={image}\n')
+          print(f'profile={profile}')
+          print(f'image={image}')
+          print(row['version_output'])
+          PY
       - name: Install exact Rust
         run: |
           set -euo pipefail
           rustup toolchain install 1.85.1 --profile minimal
           rustup override set 1.85.1
-      - name: Execute exact-image profile
+      - name: Verify pinned database binary version
         env:
-          TRNM_POSTGRES_IMAGE: ${{ vars.TRNM_POSTGRES_IMAGE }}
-          TRNM_COCKROACH_IMAGE: ${{ vars.TRNM_COCKROACH_IMAGE }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          case "$PROFILE" in
+            postgresql)
+              output=$(docker run --rm "$TRNM_POSTGRES_IMAGE" postgres --version)
+              grep -Eq 'PostgreSQL\) 17\.6([[:space:]]|$)' <<<"$output"
+              ;;
+            cockroachdb)
+              output=$(docker run --rm "$TRNM_COCKROACH_IMAGE" version)
+              grep -Eq 'Build Tag:[[:space:]]+v26\.2\.6([[:space:]]|$)' <<<"$output"
+              ;;
+            *)
+              echo "unsupported profile: $PROFILE" >&2
+              exit 64
+              ;;
+          esac
+          printf '%s\n' "$output"
+      - name: Execute exact-image profile
+        id: execute
+        env:
           TRNM_EVIDENCE_ROOT: run/pgwire-vertical-slice
           TRNM_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}
         run: bash scripts/ci-pgwire-vertical-slice.sh '${{ matrix.profile }}'
-      - name: Seal exact-head profile digest in immutable run log
+      - name: Seal exact-head profile diagnostic digest in immutable run log
         if: always()
+        env:
+          EXECUTION_OUTCOME: ${{ steps.execute.outcome }}
+          PROFILE: ${{ matrix.profile }}
         shell: bash
         run: |
           set -euo pipefail
-          evidence="run/pgwire-vertical-slice/${{ matrix.profile }}"
-          test -d "$evidence"
-          archive="run/pgwire-vertical-slice-${{ matrix.profile }}-${CANDIDATE_SHA}.tar.gz"
+          evidence="run/pgwire-vertical-slice/${PROFILE}"
+          mkdir -p "$evidence"
+          if ! find "$evidence" -type f -print -quit | grep -q .; then
+            python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path('run/pgwire-vertical-slice') / os.environ['PROFILE'] / 'workflow-diagnostic.json'
+          value = {
+              'schema': 'trillionnium.pgwire-workflow-diagnostic.v1',
+              'repository': os.environ['GITHUB_REPOSITORY'],
+              'candidate_sha': os.environ['CANDIDATE_SHA'],
+              'run_id': int(os.environ['GITHUB_RUN_ID']),
+              'profile': os.environ['PROFILE'],
+              'execution_outcome': os.environ['EXECUTION_OUTCOME'],
+              'execution_completed': False,
+              'compatibility_credit': False,
+              'production_ready': False,
+          }
+          path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          PY
+          fi
+          archive="run/pgwire-vertical-slice-${PROFILE}-${CANDIDATE_SHA}.tar.gz"
           tar --sort=name --mtime='UTC 1970-01-01' \
             --owner=0 --group=0 --numeric-owner \
             -czf "$archive" -C "$evidence" .
           digest=$(sha256sum "$archive")
-          printf 'repository=%s\nhead_sha=%s\nrun_id=%s\nprofile=%s\narchive=%s\n' \
+          printf 'repository=%s\nhead_sha=%s\nrun_id=%s\nprofile=%s\nexecution_outcome=%s\narchive=%s\n' \
             "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" "$GITHUB_RUN_ID" \
-            '${{ matrix.profile }}' "$digest"
+            "$PROFILE" "$EXECUTION_OUTCOME" "$digest"
           find "$evidence" -type f -print0 | sort -z | xargs -0 sha256sum
           {
-            printf '### PG-wire %s\n\n' '${{ matrix.profile }}'
+            printf '### PG-wire %s\n\n' "$PROFILE"
             printf -- '- candidate: `%s@%s`\n' "$CANDIDATE_REPOSITORY" "$CANDIDATE_SHA"
             printf -- '- run: `%s`\n' "$GITHUB_RUN_ID"
+            printf -- '- execution outcome: `%s`\n' "$EXECUTION_OUTCOME"
             printf -- '- deterministic archive: `%s`\n' "$digest"
             printf -- '- compatibility credit: `false`\n'
           } >>"$GITHUB_STEP_SUMMARY"

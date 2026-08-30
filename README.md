@@ -4,9 +4,9 @@
 
 ## Current status
 
-The repository contains substantial **source-level implementation candidates** for authority sequencing, sessions, canonical framing, storage, persistence/outbox, token policy and JWT compatibility, query parsing, transport errors, presence routing and separate PostgreSQL/CockroachDB foundations. Selected database slices have relay-produced evidence, but evidence targeting an older commit or lacking the v3 evidence/review contract earns no current-candidate claim credit.
+The repository contains substantial **source-level implementation candidates** for authority sequencing, sessions, canonical framing, storage, persistence/outbox, token policy and JWT compatibility, query parsing, transport errors, presence routing and separate PostgreSQL/CockroachDB foundations. It now also contains a bounded first-party Rust HTTP/WebSocket/database vertical-slice candidate under `crates/trnm-persistence-pg`; that slice is an integration seam, not a complete Nakama server or a production topology. Selected database and fault slices have exact-head workflow results, but evidence targeting an older commit, lacking the v3 evidence/review contract or not accepted by an independent reviewer earns no compatibility or production claim credit.
 
-The currently runnable repository path is still official Nakama `v3.40.0` loading the first-party Go plugin under `runtime/`. That Go module is a migration input and compatibility oracle. The repository does not yet contain an end-to-end first-party Rust server binary that accepts and durably completes the declared Nakama protocol surface.
+The currently proven broad runnable path is still official Nakama `v3.40.0` loading the first-party Go plugin under `runtime/`. That Go module is a migration input and compatibility oracle. The Rust candidate does not yet implement or prove the complete declared Nakama HTTP/gRPC/realtime/runtime/Console surface.
 
 This repository **does not yet claim complete Nakama compatibility, C1–C5, production readiness, public-online approval, drop-in replacement, or Nakama retirement**. Empty, absent, skipped, cancelled, older-head or unreviewed checks/evidence do not change that boundary.
 

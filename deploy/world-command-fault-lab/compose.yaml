@@ -46,6 +46,10 @@ services:
       - 127.0.0.1:${TRNM_WORLD_FIXTURE_PORT:-17443}:7443
     networks:
       - backend
+      # Docker Engine 29 does not activate host port publishing for a
+      # container attached only to an internal network. Edge exists solely
+      # for this loopback-bound fault-lab endpoint.
+      - edge
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -80,6 +84,8 @@ services:
       - 127.0.0.1:${TRNM_FAULT_PROXY_PORT:-17444}:7444
     networks:
       - backend
+      # See world-fixture. The published endpoint remains loopback-only.
+      - edge
     restart: unless-stopped
     read_only: true
     tmpfs:
