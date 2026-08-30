@@ -1,0 +1,171 @@
+name: World V4 exact-history transfer
+
+on:
+  push:
+    branches:
+      - evidence/world-v4-direct-source-export-20260830
+    paths:
+      - '.github/workflows/world-v4-world-history-transfer.yml'
+      - 'scripts/world_v4_direct_source_export.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: world-v4-exact-history-transfer-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_COMMIT: cb662abffce882aaeed8ec30402e889ba235d786
+  WORLD_TREE: 7a9be1f6859f5f57e4262b047e7b0243d384b9c2
+  TRANSFER_BRANCH: transfer/world-v4-direct-source-cb662abf
+  RUST_TOOLCHAIN: '1.98.0'
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  transfer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Fetch exact trusted transfer definition
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git -C "$GITHUB_WORKSPACE" status --porcelain)"
+
+      - name: Install exact Rust toolchain and preflight dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ripgrep
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+          rustc "+$RUST_TOOLCHAIN" --version --verbose
+          cargo "+$RUST_TOOLCHAIN" --version --verbose
+
+      - name: Fetch exact immutable World parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORLD="$RUNNER_TEMP/trillionnium-world"
+          rm -rf "$WORLD"
+          git init "$WORLD"
+          git -C "$WORLD" remote add origin \
+            "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$WORLD" fetch --no-tags --depth=1 origin "$WORLD_COMMIT"
+          git -C "$WORLD" checkout --detach FETCH_HEAD
+          test "$(git -C "$WORLD" rev-parse HEAD)" = "$WORLD_COMMIT"
+          test "$(git -C "$WORLD" rev-parse 'HEAD^{tree}')" = "$WORLD_TREE"
+          test -z "$(git -C "$WORLD" status --porcelain)"
+          (cd "$WORLD" && bash scripts/project-preflight.sh --audit)
+
+      - name: Reproduce the validated direct-source export
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/scripts/world_v4_direct_source_export.py" \
+            --repo "$RUNNER_TEMP/trillionnium-world" \
+            --output "$RUNNER_TEMP/world-v4-direct-source-export"
+
+      - name: Apply only the bounded six-path conversion
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORLD="$RUNNER_TEMP/trillionnium-world"
+          EXPORT="$RUNNER_TEMP/world-v4-direct-source-export"
+          CRATE="$WORLD/trillionnium/crates/trnm-game-server"
+          cp "$EXPORT/Cargo.toml" "$CRATE/Cargo.toml"
+          cp "$EXPORT/lib.rs" "$CRATE/src/lib.rs"
+          cp "$EXPORT/settlement_game_server_boundary.rs" \
+            "$CRATE/tests/settlement_game_server_boundary.rs"
+          cp "$EXPORT/settlement_worker_contract.rs" \
+            "$CRATE/tests/settlement_worker_contract.rs"
+          rm "$CRATE/build.rs" "$CRATE/src/lib.rs.in"
+
+          test "$(git -C "$WORLD" hash-object trillionnium/crates/trnm-game-server/Cargo.toml)" = \
+            24612a61fbe07f965c979c661e26d831297b8466
+          test "$(git -C "$WORLD" hash-object trillionnium/crates/trnm-game-server/src/lib.rs)" = \
+            6e6c69147fdf78067d37a6022050bafab05eb4b2
+          test "$(git -C "$WORLD" hash-object trillionnium/crates/trnm-game-server/tests/settlement_game_server_boundary.rs)" = \
+            a6621369ea8c9a4b77fe9e4eeb56abb32bee112e
+          test "$(git -C "$WORLD" hash-object trillionnium/crates/trnm-game-server/tests/settlement_worker_contract.rs)" = \
+            87b1cffeafbbfc0fdd01d1fe4baf98c43b6764fc
+
+          python3 - "$WORLD" <<'PY'
+          import subprocess
+          import sys
+          expected = {
+              'trillionnium/crates/trnm-game-server/Cargo.toml',
+              'trillionnium/crates/trnm-game-server/build.rs',
+              'trillionnium/crates/trnm-game-server/src/lib.rs',
+              'trillionnium/crates/trnm-game-server/src/lib.rs.in',
+              'trillionnium/crates/trnm-game-server/tests/settlement_game_server_boundary.rs',
+              'trillionnium/crates/trnm-game-server/tests/settlement_worker_contract.rs',
+          }
+          world = sys.argv[1]
+          changed = set(subprocess.check_output(
+              ['git', '-C', world, 'diff', '--name-only'], text=True
+          ).splitlines())
+          if changed != expected:
+              raise SystemExit(f'unexpected conversion paths: {sorted(changed ^ expected)}')
+          PY
+
+      - name: Validate directly compiled World source
+        working-directory: ${{ runner.temp }}/trillionnium-world/trillionnium
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt "+$RUST_TOOLCHAIN" --edition 2021 --check \
+            crates/trnm-game-server/src/lib.rs \
+            crates/trnm-game-server/tests/settlement_game_server_boundary.rs \
+            crates/trnm-game-server/tests/settlement_worker_contract.rs
+          cargo "+$RUST_TOOLCHAIN" check -p trnm-game-server --lib --locked
+          cargo "+$RUST_TOOLCHAIN" test -p trnm-game-server --lib --locked
+          cargo "+$RUST_TOOLCHAIN" test -p trnm-game-server \
+            --test settlement_game_server_boundary --locked
+          cargo "+$RUST_TOOLCHAIN" test -p trnm-game-server \
+            --test settlement_worker_contract --locked
+          cargo "+$RUST_TOOLCHAIN" test -p trnm-game-server \
+            --test settlement_fault_model --locked
+
+      - name: Publish a World-parented transport commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          WORLD="$RUNNER_TEMP/trillionnium-world"
+          git -C "$WORLD" config user.name github-actions[bot]
+          git -C "$WORLD" config user.email \
+            41898282+github-actions[bot]@users.noreply.github.com
+          git -C "$WORLD" add \
+            trillionnium/crates/trnm-game-server/Cargo.toml \
+            trillionnium/crates/trnm-game-server/build.rs \
+            trillionnium/crates/trnm-game-server/src/lib.rs \
+            trillionnium/crates/trnm-game-server/src/lib.rs.in \
+            trillionnium/crates/trnm-game-server/tests/settlement_game_server_boundary.rs \
+            trillionnium/crates/trnm-game-server/tests/settlement_worker_contract.rs
+          git -C "$WORLD" commit -m \
+            'fix(world): materialize directly compiled game-server source'
+          test "$(git -C "$WORLD" rev-parse HEAD^)" = "$WORLD_COMMIT"
+          git -C "$WORLD" remote add transfer \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$WORLD" push --force-with-lease transfer \
+            "HEAD:refs/heads/${TRANSFER_BRANCH}"
+          {
+            echo '### Exact World-history transport'
+            echo "- parent: \`$WORLD_COMMIT\`"
+            echo "- commit: \`$(git -C "$WORLD" rev-parse HEAD)\`"
+            echo "- tree: \`$(git -C "$WORLD" rev-parse 'HEAD^{tree}')\`"
+            echo "- direct lib blob: \`$(git -C "$WORLD" hash-object trillionnium/crates/trnm-game-server/src/lib.rs)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
