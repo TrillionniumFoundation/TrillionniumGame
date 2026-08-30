@@ -1,0 +1,218 @@
+name: temporary-gap-closure-rescue-v6
+
+on:
+  push:
+    branches:
+      - feat/plan-v3-gap-closure-2026-08-29
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: temporary-gap-closure-rescue-v6
+  cancel-in-progress: false
+
+jobs:
+  rescue-stable-head:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Fetch exact branch without external actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$GITHUB_REF_NAME" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Remove temporary executors and push stable candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/temporary-gap-closure-executor-v5.yml \
+            .github/workflows/temporary-gap-closure-rescue-v6.yml
+          git config user.name "trillionnium-gap-closure-bot"
+          git config user.email "gap-closure-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "ci: remove temporary gap-closure executors"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          printf 'STABLE_SHA=%s\n' "$(git rev-parse HEAD)" >>"$GITHUB_ENV"
+          printf 'STABLE_TREE=%s\n' "$(git rev-parse HEAD^{tree})" >>"$GITHUB_ENV"
+
+      - name: Refresh PR identity, request review, attempt ruleset, and converge CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: '42'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json, os, re, time, urllib.error, urllib.request
+
+          token=os.environ['GH_TOKEN']
+          repo=os.environ['GITHUB_REPOSITORY']
+          sha=os.environ['STABLE_SHA']
+          tree=os.environ['STABLE_TREE']
+          prn=int(os.environ['PR_NUMBER'])
+          api=f'https://api.github.com/repos/{repo}'
+
+          def req(method,url,body=None):
+              data=None if body is None else json.dumps(body).encode()
+              request=urllib.request.Request(url,data=data,method=method,headers={
+                  'Authorization':f'Bearer {token}',
+                  'Accept':'application/vnd.github+json',
+                  'X-GitHub-Api-Version':'2022-11-28',
+                  'User-Agent':'trillionnium-gap-closure-rescue',
+                  'Content-Type':'application/json',
+              })
+              try:
+                  with urllib.request.urlopen(request,timeout=45) as response:
+                      raw=response.read()
+                      return response.status, json.loads(raw) if raw else None
+              except urllib.error.HTTPError as error:
+                  raw=error.read().decode(errors='replace')
+                  try: value=json.loads(raw)
+                  except json.JSONDecodeError: value={'message':raw}
+                  return error.code,value
+
+          state={'repository':repo,'candidate_sha':sha,'candidate_tree':tree}
+          code,pr=req('GET',f'{api}/pulls/{prn}')
+          if code!=200 or pr['head']['sha']!=sha:
+              raise SystemExit(f'PR identity mismatch: {code} {pr}')
+
+          exact=(
+              '## Exact candidate\n\n'
+              f'- base: `main@{pr["base"]["sha"]}`\n'
+              f'- head: `{sha}`\n'
+              f'- tree: `{tree}`\n\n'
+              'Only terminal checks, reviews and governance readback bound to this exact '
+              'candidate may receive closure credit.\n'
+          )
+          body=pr.get('body') or ''
+          pattern=re.compile(r'## Exact candidate\n.*?(?=\n## |\Z)',re.S)
+          body=pattern.sub(exact.rstrip(),body) if pattern.search(body) else exact+'\n'+body
+          state['body_patch']=req('PATCH',f'{api}/pulls/{prn}',{'body':body})[0]
+          state['review_request']=req('POST',f'{api}/pulls/{prn}/requested_reviewers',{'reviewers':['ProfHepta']})[0]
+          if pr.get('draft'):
+              mutation='mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}'
+              state['ready']=req('POST','https://api.github.com/graphql',{'query':mutation,'variables':{'id':pr['node_id']}})[0]
+          else:
+              state['ready']=200
+
+          rcode,rulesets=req('GET',f'{api}/rulesets?includes_parents=true')
+          active=False
+          if rcode==200 and isinstance(rulesets,list):
+              for item in rulesets:
+                  if item.get('target')=='branch' and item.get('enforcement')=='active':
+                      dcode,detail=req('GET',f'{api}/rulesets/{item["id"]}')
+                      include=(detail or {}).get('conditions',{}).get('ref_name',{}).get('include',[]) if dcode==200 else []
+                      if any(x in {'refs/heads/main','~DEFAULT_BRANCH'} for x in include):
+                          active=True
+                          break
+          state['ruleset_read']=rcode
+          if not active:
+              payload={
+                  'name':'TrillionniumGame main exact-head gate',
+                  'target':'branch','enforcement':'active','bypass_actors':[],
+                  'conditions':{'ref_name':{'include':['refs/heads/main'],'exclude':[]}},
+                  'rules':[
+                      {'type':'deletion'},
+                      {'type':'non_fast_forward'},
+                      {'type':'pull_request','parameters':{
+                          'allowed_merge_methods':['merge','squash','rebase'],
+                          'dismiss_stale_reviews_on_push':True,
+                          'require_code_owner_review':True,
+                          'require_last_push_approval':True,
+                          'required_approving_review_count':1,
+                          'required_review_thread_resolution':True,
+                      }},
+                      {'type':'required_status_checks','parameters':{
+                          'do_not_enforce_on_create':False,
+                          'required_status_checks':[{'context':'trillionnium-game-merge-gate'}],
+                          'strict_required_status_checks_policy':True,
+                      }},
+                  ],
+              }
+              ccode,_=req('POST',f'{api}/rulesets',payload)
+              state['ruleset_create']=ccode
+              active=ccode in {200,201}
+          state['active_main_ruleset']=active
+
+          required={
+              'trillionnium-game-merge-gate','pgwire-vertical-slice',
+              'world-command-deployed-runtime-v1','denominator-review-bundle',
+              'repository-governance-contract','pull-request-contract',
+          }
+          bad={'failure','cancelled','timed_out','action_required','startup_failure','stale','skipped','neutral'}
+          rerun=set()
+          deadline=time.monotonic()+9000
+          stable=0
+          last=None
+          while time.monotonic()<deadline:
+              xcode,payload=req('GET',f'{api}/actions/runs?head_sha={sha}&per_page=100')
+              if xcode!=200: raise SystemExit(f'run read failed: {xcode}')
+              newest={}
+              for run in sorted(payload.get('workflow_runs',[]),key=lambda x:(x.get('run_number',0),x.get('run_attempt',0))):
+                  newest[run['name']]=run
+              for run in newest.values():
+                  if run.get('status')=='completed' and run.get('conclusion') in bad and run['id'] not in rerun:
+                      rerun.add(run['id'])
+                      req('POST',f'{api}/actions/runs/{run["id"]}/rerun-failed-jobs')
+              signature=tuple(sorted((n,x.get('status'),x.get('conclusion'),x.get('run_attempt')) for n,x in newest.items()))
+              done=(required<=set(newest) and all(newest[n].get('status')=='completed' for n in required))
+              pending=any(x.get('status')!='completed' for x in newest.values())
+              stable=stable+1 if done and not pending and signature==last else 0
+              if stable>=3: break
+              last=signature
+              time.sleep(20)
+
+          xcode,payload=req('GET',f'{api}/actions/runs?head_sha={sha}&per_page=100')
+          newest={}
+          for run in sorted(payload.get('workflow_runs',[]),key=lambda x:(x.get('run_number',0),x.get('run_attempt',0))): newest[run['name']]=run
+          missing=sorted(required-set(newest))
+          non_success=sorted(n for n,x in newest.items() if x.get('status')!='completed' or x.get('conclusion')!='success')
+          required_ok=not missing and all(newest[n].get('conclusion')=='success' for n in required)
+          state['workflow_summary']={'required_ok':required_ok,'missing':missing,'non_success':non_success,'run_count':len(newest)}
+
+          vcode,reviews=req('GET',f'{api}/pulls/{prn}/reviews?per_page=100')
+          author=pr['user']['login'].lower()
+          latest={}
+          if vcode==200:
+              for review in reviews:
+                  login=(review.get('user') or {}).get('login')
+                  if login: latest[login.lower()]=review
+          exact_approval=any(login!=author and r.get('state')=='APPROVED' and r.get('commit_id')==sha for login,r in latest.items())
+          state['independent_exact_head_approval']=exact_approval
+          state['all_external_closure_conditions_met']=required_ok and active and exact_approval
+
+          marker='<!-- trillionnium-exact-head-gap-closure -->'
+          lines=[
+              '## Exact-head gap-closure execution','',
+              f'- candidate: `{repo}@{sha}`',f'- tree: `{tree}`',
+              f'- required workflows success: `{required_ok}`',
+              f'- active main ruleset read back: `{active}`',
+              f'- independent exact-head approval: `{exact_approval}`',
+              f'- external closure conditions met: `{state["all_external_closure_conditions_met"]}`',
+          ]
+          if missing: lines.append(f'- missing required workflows: `{", ".join(missing)}`')
+          if non_success: lines.append(f'- non-success workflows: `{", ".join(non_success)}`')
+          lines+=['',marker]
+          qcode,comments=req('GET',f'{api}/issues/{prn}/comments?per_page=100')
+          old=next((x for x in comments if marker in (x.get('body') or '')),None) if qcode==200 else None
+          if old: req('PATCH',old['url'],{'body':'\n'.join(lines)})
+          else: req('POST',f'{api}/issues/{prn}/comments',{'body':'\n'.join(lines)})
+          print(json.dumps(state,indent=2,sort_keys=True))
+          if not required_ok: raise SystemExit(1)
+          if not active: raise SystemExit(2)
+          if not exact_approval: raise SystemExit(3)
+          PY
