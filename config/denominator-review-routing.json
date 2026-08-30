@@ -1,0 +1,22 @@
+{
+  "schema": "trillionnium.denominator-review-routing.v1",
+  "project_id": "trillionnium-game",
+  "default_task_id": "TG-W0-002",
+  "default_gate_id": "GATE-SCOPE",
+  "routes": {
+    "DEN-SOURCE": {"candidate_filename":"source-denominator.candidate.json","owner_role":"governance","reviewer_roles":["governance","security"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/43"},
+    "DEN-API": {"candidate_filename":"api-denominator.candidate.json","owner_role":"protocol","reviewer_roles":["protocol","security"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/43"},
+    "DEN-RTAPI": {"candidate_filename":"rtapi-denominator.candidate.json","owner_role":"realtime","reviewer_roles":["realtime","protocol"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/43"},
+    "DEN-CONSOLE": {"candidate_filename":"console-denominator.candidate.json","owner_role":"console","reviewer_roles":["console","legal"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/21"},
+    "DEN-RUNTIME": {"candidate_filename":"runtime-denominator.candidate.json","owner_role":"runtime","reviewer_roles":["runtime","security"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/15"},
+    "DEN-CONFIG": {"candidate_filename":"config-denominator.candidate.json","owner_role":"governance","reviewer_roles":["governance","sre"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/15"},
+    "DEN-CLI": {"candidate_filename":"cli-denominator.candidate.json","owner_role":"governance","reviewer_roles":["governance","sre"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/15"},
+    "DEN-DB": {"candidate_filename":"database-denominator.candidate.json","owner_role":"database","reviewer_roles":["database","security"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/15"},
+    "DEN-DATA": {"candidate_filename":"data-denominator.candidate.json","owner_role":"database","reviewer_roles":["database","governance"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/15"},
+    "DEN-METRICS": {"candidate_filename":"metrics-denominator.candidate.json","owner_role":"sre","reviewer_roles":["sre","security"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/21"},
+    "DEN-OPS": {"candidate_filename":"operations-denominator.candidate.json","owner_role":"sre","reviewer_roles":["sre","governance"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/21"},
+    "DEN-PROVIDERS": {"candidate_filename":"providers-denominator.candidate.json","owner_role":"security","reviewer_roles":["security","identity"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/21"},
+    "DEN-IAP": {"candidate_filename":"iap-denominator.candidate.json","owner_role":"iap","reviewer_roles":["iap","security"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/21"},
+    "DEN-SDK": {"candidate_filename":"sdk-denominator.candidate.json","owner_role":"sdk","reviewer_roles":["sdk","protocol"],"issue_url":"https://github.com/TrillionniumFoundation/TrillionniumGame/issues/21"}
+  }
+}

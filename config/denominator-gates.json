@@ -1,0 +1,12 @@
+{
+  "schema": "trillionnium.denominator-gates.v1",
+  "project_id": "trillionnium-game",
+  "gates": [
+    {
+      "gate_id": "GATE-SCOPE",
+      "stage_gate": "SG1",
+      "title": "Complete, independently reviewed denominator lock",
+      "claim_boundary": "Leaf proposals, candidate generation and remote execution do not close SG1 without accepted independent review."
+    }
+  ]
+}
