@@ -53,8 +53,12 @@ def source_candidates() -> dict[str, dict[str, object]]:
             ("SCHEMA_AUTHORITY.json", "FORBIDDEN_LITERAL"),
         ),
         "GAP-P0-SERVER-001": (
-            "crates/trnm-persistence-core/src/bin/trnm-server.rs",
-            ("/v1/command", "PrepareOutcome::Duplicate", "compatibility_credit=false"),
+            "crates/trnm-persistence-pg/src/bin/trnm_server/app.rs",
+            (
+                '"/v1/authority/commit"',
+                "CommitOutcome::Duplicate",
+                "acknowledgement-after-commit fence",
+            ),
         ),
         "GAP-P0-CRYPTO-001": (
             ".github/workflows/trillionnium-game-merge-gate.yml",
