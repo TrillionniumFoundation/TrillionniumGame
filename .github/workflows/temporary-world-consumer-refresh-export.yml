@@ -1,0 +1,141 @@
+name: Temporary World consumer refresh export
+
+on:
+  push:
+    branches:
+      - fix/world-consumer-lock-refresh-20260830
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WORLD_COMMIT: 77e7929a55ee41286bdb946fb33517f7f087058b
+      WORLD_TREE: 79575e7eaef38e4c964ce2f47c1220136afe9414
+      WORLD_SCHEMA_BLOB: e30719380c4dfa9df542aa1e20d8781755b1b7ba
+      WORLD_VECTOR_BLOB: e7fd8911821e109d6a91edaa0c21b51049b857b2
+      WORLD_PROTOCOL_BLOB: bfa95afc8f55b0b52896485ffc8b54259a27bc1d
+      WORLD_REFERENCE_BLOB: 19f6e312cda6bf486540d6e1fa0d840c131e7c61
+    steps:
+      - name: Check out exact pushed commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Assert exact checkout
+        run: test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+      - name: Fetch immutable World contract inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export/fixtures/world export/contracts
+          base="https://raw.githubusercontent.com/TrillionniumFoundation/Trillionnium-World/${WORLD_COMMIT}"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            "${base}/docs/protocol/schemas/trnm-world-transition-v1.schema.json" \
+            -o export/fixtures/world/trnm-world-transition-v1.schema.json
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            "${base}/docs/protocol/vectors/trnm-world-transition-v1.json" \
+            -o export/fixtures/world/trnm-world-transition-v1.json
+          test "$(git hash-object export/fixtures/world/trnm-world-transition-v1.schema.json)" = "$WORLD_SCHEMA_BLOB"
+          test "$(git hash-object export/fixtures/world/trnm-world-transition-v1.json)" = "$WORLD_VECTOR_BLOB"
+      - name: Generate single-source consumer lock
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          schema = Path('export/fixtures/world/trnm-world-transition-v1.schema.json')
+          vectors = Path('export/fixtures/world/trnm-world-transition-v1.json')
+
+          def artifact(path: Path, owner_path: str, blob: str) -> dict[str, object]:
+              data = path.read_bytes()
+              return {
+                  'path': owner_path,
+                  'git_blob_sha': blob,
+                  'sha256': hashlib.sha256(data).hexdigest(),
+                  'bytes': len(data),
+              }
+
+          lock = {
+              'lock_version': 'trnm_world_transition_v1_consumer_lock_v2',
+              'contract_version': 'trnm_world_transition_v1',
+              'world': {
+                  'repository': 'TrillionniumFoundation/Trillionnium-World',
+                  'branch': 'feature/world-deterministic-transition-contract-v1',
+                  'pull_request': 21,
+                  'commit': os.environ['WORLD_COMMIT'],
+                  'tree': os.environ['WORLD_TREE'],
+                  'protocol': {
+                      'path': 'docs/protocol/trnm-world-transition-v1.md',
+                      'git_blob_sha': os.environ['WORLD_PROTOCOL_BLOB'],
+                  },
+                  'schema': artifact(
+                      schema,
+                      'docs/protocol/schemas/trnm-world-transition-v1.schema.json',
+                      os.environ['WORLD_SCHEMA_BLOB'],
+                  ),
+                  'vectors': artifact(
+                      vectors,
+                      'docs/protocol/vectors/trnm-world-transition-v1.json',
+                      os.environ['WORLD_VECTOR_BLOB'],
+                  ),
+                  'reference_source': {
+                      'path': 'trillionnium/contracts/trnm-world-transition-v1/src/lib.rs',
+                      'git_blob_sha': os.environ['WORLD_REFERENCE_BLOB'],
+                  },
+              },
+              'consumer': {
+                  'repository': 'TrillionniumFoundation/TrillionniumGame',
+                  'branch': 'fix/world-consumer-lock-refresh-20260830',
+                  'implementation_path': 'internal/worldadapter/transition_adapter.go',
+                  'runtime_language': 'go',
+                  'exact_commit_required_at_evidence_time': True,
+              },
+              'authority_boundary': {
+                  'world_owns': [
+                      'deterministic transition execution for the locked ruleset',
+                      'transition_hash derivation',
+                      'world_outcome_hash derivation when an outcome is present',
+                  ],
+                  'consumer_owns': [
+                      'authenticated participant admission',
+                      'canonical online ordering and idempotency',
+                      'archive and completion-root construction',
+                      'MatchCompletedV1 signing',
+                      'Chain anchoring and CEX settlement dispatch',
+                  ],
+                  'world_hash_is_not_canonical_completion': True,
+                  'public_online_enabled': False,
+                  'public_player_market_enabled': False,
+              },
+              'qualification': {
+                  'source_lock_consistent': True,
+                  'exact_head_ci_required': True,
+                  'cross_repository_evidence_required': True,
+                  'deployed_fault_evidence_required': True,
+                  'runnable': False,
+                  'cutover_authorized': False,
+              },
+          }
+          Path('export/contracts/world-transition-v1-consumer-lock.json').write_text(
+              json.dumps(lock, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+      - name: Validate generated export
+        run: |
+          python3 -m json.tool export/contracts/world-transition-v1-consumer-lock.json >/dev/null
+          sha256sum export/contracts/world-transition-v1-consumer-lock.json \
+            export/fixtures/world/trnm-world-transition-v1.schema.json \
+            export/fixtures/world/trnm-world-transition-v1.json \
+            > export/SHA256SUMS
+      - name: Upload export
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-consumer-refresh-${{ github.sha }}
+          path: export
+          if-no-files-found: error
+          retention-days: 1
