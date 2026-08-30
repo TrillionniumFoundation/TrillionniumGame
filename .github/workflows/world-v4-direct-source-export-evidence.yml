@@ -64,6 +64,13 @@ jobs:
             7a9be1f6859f5f57e4262b047e7b0243d384b9c2
           test -z "$(git -C "$WORLD" status --porcelain)"
 
+      - name: Revalidate exact World project boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/trillionnium-world"
+          bash scripts/project-preflight.sh --audit
+
       - name: Export deterministic direct-source patch
         shell: bash
         run: |
