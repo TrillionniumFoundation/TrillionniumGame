@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use super::app::{App, Repository};
+use super::app::{App, Repository, SharedAppMetrics};
 use super::config::ServerConfig;
 use super::error::ServerError;
 use super::http::{read_request, Request, Response};
@@ -28,6 +28,7 @@ where
     let receiver = Arc::new(Mutex::new(receiver));
     let draining = Arc::new(AtomicBool::new(false));
     let worker_failed = Arc::new(AtomicBool::new(false));
+    let metrics = SharedAppMetrics::default();
     let mut workers = Vec::with_capacity(worker_count);
 
     for worker_index in 0..worker_count {
@@ -37,6 +38,7 @@ where
         let worker_receiver = Arc::clone(&receiver);
         let worker_draining = Arc::clone(&draining);
         let worker_failed = Arc::clone(&worker_failed);
+        let worker_metrics = metrics.clone();
         workers.push(
             thread::Builder::new()
                 .name(format!("trnm-connection-{worker_index}"))
@@ -47,6 +49,7 @@ where
                             worker_repository,
                             worker_receiver,
                             worker_draining,
+                            worker_metrics,
                         );
                     }));
                     if result.is_err() {
@@ -119,10 +122,11 @@ fn worker_loop<R>(
     repository: RetryingRepository<R>,
     receiver: Arc<Mutex<Receiver<TcpStream>>>,
     draining: Arc<AtomicBool>,
+    metrics: SharedAppMetrics,
 ) where
     R: Repository,
 {
-    let mut app = App::new(repository, config.admin_token.clone());
+    let mut app = App::with_shared_metrics(repository, config.admin_token.clone(), metrics);
     if let Some(session_auth) = &config.session_auth {
         match session_auth.verifier() {
             Ok(verifier) => app = app.with_access_token_verifier(verifier),

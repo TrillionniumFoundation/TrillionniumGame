@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use trnm_contracts::{
     CommandId, Digest32, DomainError, RetryClass, SessionFamilyId, StableCode, UserId,
 };
@@ -142,24 +144,54 @@ impl Metrics {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SharedAppMetrics(Arc<Mutex<Metrics>>);
+
+impl SharedAppMetrics {
+    fn increment(&self, field: fn(&mut Metrics) -> &mut u64) {
+        let mut metrics = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Metrics::increment(field(&mut metrics));
+    }
+
+    fn snapshot(&self) -> Metrics {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 #[derive(Debug)]
 pub struct App<R> {
     repository: R,
     admin_token: String,
     sessions: SessionApi,
     draining: bool,
-    metrics: Metrics,
+    metrics: SharedAppMetrics,
 }
 
 impl<R: Repository> App<R> {
+    #[cfg(test)]
     #[must_use]
     pub fn new(repository: R, admin_token: String) -> Self {
+        Self::with_shared_metrics(repository, admin_token, SharedAppMetrics::default())
+    }
+
+    #[must_use]
+    pub(crate) fn with_shared_metrics(
+        repository: R,
+        admin_token: String,
+        metrics: SharedAppMetrics,
+    ) -> Self {
         Self {
             repository,
             admin_token,
             sessions: SessionApi::default(),
             draining: false,
-            metrics: Metrics::default(),
+            metrics,
         }
     }
 
@@ -175,7 +207,7 @@ impl<R: Repository> App<R> {
     }
 
     pub fn handle(&mut self, request: &Request) -> Response {
-        Metrics::increment(&mut self.metrics.requests);
+        self.metrics.increment(|metrics| &mut metrics.requests);
         let response = match (request.method.as_str(), request.target.as_str()) {
             ("GET", "/healthz") => Response::json(200, br#"{"status":"ok"}"#.to_vec()),
             ("GET", "/readyz") => self.readiness(),
@@ -197,7 +229,7 @@ impl<R: Repository> App<R> {
             ),
         };
         if response.status < 400 {
-            Metrics::increment(&mut self.metrics.successes);
+            self.metrics.increment(|metrics| &mut metrics.successes);
         }
         response
     }
@@ -212,6 +244,7 @@ impl<R: Repository> App<R> {
 
     fn metrics_response(&self) -> Response {
         let ready = u8::from(!self.draining);
+        let metrics = self.metrics.snapshot();
         let repository = self.repository.operational_metrics();
         let session = self.sessions.metrics();
         let mut body = format!(
@@ -233,14 +266,14 @@ trnm_server_command_replays_total {}\n\
 trnm_server_drain_requests_total {}\n\
 # TYPE trnm_server_ready gauge\n\
 trnm_server_ready {}\n",
-            self.metrics.requests,
-            self.metrics.successes,
-            self.metrics.input_failures,
-            self.metrics.domain_failures,
-            self.metrics.bootstraps,
-            self.metrics.commands_applied,
-            self.metrics.command_replays,
-            self.metrics.drain_requests,
+            metrics.requests,
+            metrics.successes,
+            metrics.input_failures,
+            metrics.domain_failures,
+            metrics.bootstraps,
+            metrics.commands_applied,
+            metrics.command_replays,
+            metrics.drain_requests,
             ready,
         );
         body.push_str(&format!(
@@ -316,7 +349,8 @@ trnm_server_session_logout_revoked_total {}\n",
             return unauthenticated();
         }
         self.draining = true;
-        Metrics::increment(&mut self.metrics.drain_requests);
+        self.metrics
+            .increment(|metrics| &mut metrics.drain_requests);
         Response::json(200, br#"{"status":"draining"}"#.to_vec())
     }
 
@@ -339,7 +373,7 @@ trnm_server_session_logout_revoked_total {}\n",
             .bootstrap_entity(entity, generation, state, updated_at_ms)
         {
             Ok(head) => {
-                Metrics::increment(&mut self.metrics.bootstraps);
+                self.metrics.increment(|metrics| &mut metrics.bootstraps);
                 Response::json(
                     201,
                     format!(
@@ -376,11 +410,13 @@ trnm_server_session_logout_revoked_total {}\n",
         // response after this call is the acknowledgement-after-commit fence.
         match self.repository.commit_command(&commit) {
             Ok(CommitOutcome::Applied(receipt)) => {
-                Metrics::increment(&mut self.metrics.commands_applied);
+                self.metrics
+                    .increment(|metrics| &mut metrics.commands_applied);
                 receipt_response(201, "applied", &receipt)
             }
             Ok(CommitOutcome::Duplicate(receipt)) => {
-                Metrics::increment(&mut self.metrics.command_replays);
+                self.metrics
+                    .increment(|metrics| &mut metrics.command_replays);
                 receipt_response(200, "duplicate", &receipt)
             }
             Err(error) => self.domain_failure(error),
@@ -395,12 +431,14 @@ trnm_server_session_logout_revoked_total {}\n",
     }
 
     fn input_failure(&mut self, _error: InputError) -> Response {
-        Metrics::increment(&mut self.metrics.input_failures);
+        self.metrics
+            .increment(|metrics| &mut metrics.input_failures);
         error_response(400, "invalid_argument", "Request is invalid.", "never")
     }
 
     fn domain_failure(&mut self, error: DomainError) -> Response {
-        Metrics::increment(&mut self.metrics.domain_failures);
+        self.metrics
+            .increment(|metrics| &mut metrics.domain_failures);
         error_response(
             http_status(error.code()),
             error.code().as_str(),
@@ -853,6 +891,31 @@ mod tests {
             let response = app.handle(&Request::new("POST", path, BTreeMap::new(), body));
             assert_eq!(response.status, 401);
         }
+    }
+
+    #[test]
+    fn shared_metrics_aggregate_across_app_instances() {
+        let token = token();
+        let metrics = SharedAppMetrics::default();
+        let mut first =
+            App::with_shared_metrics(FakeRepository::default(), token.clone(), metrics.clone());
+        let mut second =
+            App::with_shared_metrics(FakeRepository::default(), token.clone(), metrics);
+        let response = first.handle(&Request::new(
+            "POST",
+            "/v1/authority/commit",
+            headers(&token),
+            commit_body(),
+        ));
+        assert_eq!(response.status, 201);
+        let response = second.handle(&Request::new(
+            "GET",
+            "/metrics",
+            BTreeMap::new(),
+            Vec::new(),
+        ));
+        let body = String::from_utf8(response.body).unwrap();
+        assert!(body.contains("trnm_server_commands_applied_total 1"));
     }
 
     #[test]
