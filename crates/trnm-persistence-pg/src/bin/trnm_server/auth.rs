@@ -3,7 +3,7 @@ use std::fmt;
 
 use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode, UserId};
 use trnm_session_core::{RefreshTokenId, SessionFamilyId};
-use trnm_token_jwt_adapter::json::{JsonNumber, JsonValue};
+use trnm_token_jwt_adapter::json::JsonValue;
 use trnm_token_jwt_adapter::{
     sha256_digest, KeyRing, SecretKey, TokenRoute, VerificationProfile,
 };
@@ -164,13 +164,10 @@ fn claim_unsigned(
     claims: &BTreeMap<String, JsonValue>,
     name: &str,
 ) -> Result<u64, DomainError> {
-    match claims.get(name) {
-        Some(JsonValue::Number(JsonNumber::Unsigned(value))) => Ok(*value),
-        Some(JsonValue::Number(JsonNumber::Integer(value))) => {
-            u64::try_from(*value).map_err(|_| unauthenticated())
-        }
-        _ => Err(unauthenticated()),
-    }
+    claims
+        .get(name)
+        .and_then(JsonValue::as_u64)
+        .ok_or_else(unauthenticated)
 }
 
 fn parse_lower_hex<const N: usize>(value: &str) -> Result<[u8; N], DomainError> {
@@ -228,22 +225,13 @@ mod tests {
             ("sub".to_owned(), JsonValue::String("11".repeat(16))),
             ("jti".to_owned(), JsonValue::String("22".repeat(16))),
             ("sid".to_owned(), JsonValue::String("33".repeat(16))),
-            (
-                "sgn".to_owned(),
-                JsonValue::Number(JsonNumber::Unsigned(4)),
-            ),
+            ("sgn".to_owned(), JsonValue::Unsigned(4)),
             (
                 "trnm_kep".to_owned(),
-                JsonValue::Number(JsonNumber::Unsigned(u64::from(EPOCH))),
+                JsonValue::Unsigned(u64::from(EPOCH)),
             ),
-            (
-                "iat".to_owned(),
-                JsonValue::Number(JsonNumber::Integer(1_000)),
-            ),
-            (
-                "exp".to_owned(),
-                JsonValue::Number(JsonNumber::Integer(1_600)),
-            ),
+            ("iat".to_owned(), JsonValue::Integer(1_000)),
+            ("exp".to_owned(), JsonValue::Integer(1_600)),
         ]))
     }
 
