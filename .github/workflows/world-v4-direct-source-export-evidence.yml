@@ -12,12 +12,210 @@ permissions:
   contents: read
 
 jobs:
-  probe:
+  export:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     steps:
-      - name: Prove hosted runner startup
+      - name: Checkout evidence definition
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Checkout exact World candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: TrillionniumFoundation/Trillionnium-World
+          ref: cb662abffce882aaeed8ec30402e889ba235d786
+          path: trillionnium-world
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Generate immutable direct-source patch
         shell: bash
         run: |
           set -euo pipefail
-          printf 'runner_started=true\n'
+          bash scripts/project-preflight.sh
+          test -z "$(git status --porcelain)"
+
+          ROOT="$PWD/trillionnium-world"
+          CRATE="$ROOT/trillionnium/crates/trnm-game-server"
+          EXPORT="$PWD/world-v4-direct-source-export"
+          GENERATED="$EXPORT/generated"
+          mkdir -p "$GENERATED"
+
+          test "$(git -C "$ROOT" rev-parse HEAD)" = cb662abffce882aaeed8ec30402e889ba235d786
+          test "$(git -C "$ROOT" rev-parse 'HEAD^{tree}')" = 7a9be1f6859f5f57e4262b047e7b0243d384b9c2
+          test "$(git -C "$ROOT" hash-object trillionnium/crates/trnm-game-server/src/lib.rs.in)" = 8882f47db55ca5993329594901c828c6faf325a8
+          test -z "$(git -C "$ROOT" status --porcelain)"
+          (cd "$ROOT" && bash scripts/project-preflight.sh --audit)
+
+          rustc --edition=2021 "$CRATE/build.rs" -o "$EXPORT/materialize-game-server"
+          (
+            cd "$CRATE"
+            OUT_DIR="$GENERATED" CARGO_MANIFEST_DIR="$CRATE" "$EXPORT/materialize-game-server"
+          )
+
+          python3 - <<'PY'
+          from __future__ import annotations
+          import re
+          from pathlib import Path
+
+          root = Path('trillionnium-world').resolve()
+          crate = root / 'trillionnium/crates/trnm-game-server'
+          export = Path('world-v4-direct-source-export').resolve()
+          template_path = crate / 'src/lib.rs.in'
+          generated_path = export / 'generated/trnm_game_server_lib_generated.rs'
+          template = template_path.read_text(encoding='utf-8').replace('\r\n', '\n')
+          generated = generated_path.read_text(encoding='utf-8').replace('\r\n', '\n')
+          marker = 'use axum::extract::DefaultBodyLimit;\n'
+          assert template.count(marker) == 1
+          assert generated.startswith(marker)
+          direct = template[:template.index(marker)] + generated
+          direct, replacements = re.subn(
+              r'include_str!\(concat!\(::std::env!\("CARGO_MANIFEST_DIR"\), "/migrations/([^"]+)"\)\)',
+              r'include_str!("../migrations/\1")',
+              direct,
+          )
+          assert replacements >= 19, replacements
+          required = (
+              'const MIGRATION_V16:',
+              'const MIGRATION_V17:',
+              'const MIGRATION_V18:',
+              'const MIGRATION_V19:',
+              '(16, "0016_online_settlement_outbox_v1", MIGRATION_V16)',
+              '"0017_online_settlement_worker_runtime_v1"',
+              '"0018_online_settlement_operator_controls_v1"',
+              '"0019_online_settlement_quarantine_v1"',
+              'terminal settlement is owned by trnm-settlement-worker; in-process settlement is prohibited',
+          )
+          forbidden = (
+              'include!(concat!(env!("OUT_DIR")',
+              'trnm_game_server_lib_generated.rs',
+              'reconcile_economy(&state.cex',
+              'settle_pending_matches(&settlement_state',
+          )
+          for needle in required:
+              assert needle in direct, needle
+          for needle in forbidden:
+              assert needle not in direct, needle
+          (crate / 'src/lib.rs').write_text(direct, encoding='utf-8', newline='\n')
+          template_path.unlink()
+          (crate / 'build.rs').unlink()
+
+          cargo_path = crate / 'Cargo.toml'
+          cargo = cargo_path.read_text(encoding='utf-8').replace('\r\n', '\n')
+          cargo, count = re.subn(r'(?m)^build = "build\.rs"\n', '', cargo)
+          assert count == 1, count
+          cargo_path.write_text(cargo, encoding='utf-8', newline='\n')
+
+          boundary = r'''use std::path::Path;
+
+          const GAME_SERVER_ENTRYPOINT: &str = include_str!("../src/lib.rs");
+          const SETTLEMENT_WORKER_ENTRYPOINT: &str = include_str!("../src/settlement_worker.rs");
+          const SETTLEMENT_WORKER_LEGACY: &str = include_str!("../src/settlement_worker_legacy.rs");
+          const SETTLEMENT_WORKER_RUNTIME_V2: &str =
+              include_str!("../src/settlement_worker_runtime_v2.rs");
+
+          #[test]
+          fn game_server_is_direct_source_and_does_not_execute_terminal_economy_settlement() {
+              let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+              assert!(!crate_root.join("build.rs").exists());
+              assert!(!crate_root.join("src/lib.rs.in").exists());
+              assert!(!GAME_SERVER_ENTRYPOINT.contains("OUT_DIR"));
+              assert!(!GAME_SERVER_ENTRYPOINT.contains("trnm_game_server_lib_generated.rs"));
+              assert!(!GAME_SERVER_ENTRYPOINT.contains("reconcile_economy(&state.cex"));
+              assert!(!GAME_SERVER_ENTRYPOINT.contains("settle_pending_matches(&settlement_state"));
+              assert!(GAME_SERVER_ENTRYPOINT.contains(
+                  "terminal settlement is owned by trnm-settlement-worker; in-process settlement is prohibited"
+              ));
+          }
+
+          #[test]
+          fn direct_runtime_entrypoints_register_the_complete_settlement_migration_chain() {
+              assert!(!SETTLEMENT_WORKER_ENTRYPOINT.contains("OUT_DIR"));
+              assert!(!SETTLEMENT_WORKER_ENTRYPOINT.contains("trnm_settlement_worker_generated.rs"));
+              let worker = format!("{SETTLEMENT_WORKER_LEGACY}\n{SETTLEMENT_WORKER_RUNTIME_V2}");
+              for marker in [
+                  "0016_online_settlement_outbox_v1",
+                  "0017_online_settlement_worker_runtime_v1",
+                  "0018_online_settlement_operator_controls_v1",
+                  "0019_online_settlement_quarantine_v1",
+              ] {
+                  assert!(GAME_SERVER_ENTRYPOINT.contains(marker), "direct game server lost {marker}");
+                  assert!(worker.contains(marker), "direct settlement worker lost {marker}");
+              }
+          }
+
+          #[test]
+          fn directly_compiled_migration_includes_are_source_relative() {
+              for source in [
+                  GAME_SERVER_ENTRYPOINT,
+                  SETTLEMENT_WORKER_LEGACY,
+                  SETTLEMENT_WORKER_RUNTIME_V2,
+              ] {
+                  assert!(source.contains("include_str!(\"../migrations/"));
+                  assert!(!source.contains("CARGO_MANIFEST_DIR"));
+              }
+          }
+          '''
+          boundary = re.sub(r'(?m)^          ', '', boundary).lstrip()
+          boundary_path = crate / 'tests/settlement_game_server_boundary.rs'
+          boundary_path.write_text(boundary, encoding='utf-8', newline='\n')
+
+          worker_path = crate / 'tests/settlement_worker_contract.rs'
+          worker = worker_path.read_text(encoding='utf-8').replace('\r\n', '\n')
+          worker, count = re.subn(
+              r'const BUILD_SCRIPT: &str = include_str!\("\.\./build\.rs"\);\n', '', worker
+          )
+          assert count == 1, count
+          replacement = r'''#[test]
+          fn settlement_worker_is_directly_compiled_from_reviewed_modules() {
+              assert!(WORKER_WRAPPER.contains("settlement_worker_legacy.rs"));
+              assert!(WORKER_WRAPPER.contains("settlement_worker_runtime_v2.rs"));
+              assert!(WORKER_WRAPPER.contains("run_v2 as run"));
+              assert!(!WORKER_WRAPPER.contains("OUT_DIR"));
+              assert!(!WORKER_WRAPPER.contains("trnm_settlement_worker_generated.rs"));
+
+              let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+              assert!(!crate_root.join("build.rs").exists());
+              assert!(!crate_root.join("src/lib.rs.in").exists());
+              assert!(!crate_root.join("src/settlement_worker.rs.in").exists());
+          }
+          '''
+          replacement = re.sub(r'(?m)^          ', '', replacement)
+          worker, count = re.subn(
+              r'#\[test\]\nfn settlement_worker_is_directly_compiled_from_reviewed_modules\(\) \{.*?\n\}\n(?=\n#\[test\])',
+              replacement.rstrip() + '\n', worker, count=1, flags=re.S,
+          )
+          assert count == 1, count
+          assert 'BUILD_SCRIPT' not in worker
+          assert 'include_str!("../build.rs")' not in worker
+          worker_path.write_text(worker, encoding='utf-8', newline='\n')
+          PY
+
+          rustfmt --edition 2021 "$CRATE/src/lib.rs"
+          rustfmt --edition 2021 \
+            "$CRATE/tests/settlement_game_server_boundary.rs" \
+            "$CRATE/tests/settlement_worker_contract.rs"
+
+          git -C "$ROOT" diff --binary > "$EXPORT/direct-source.patch"
+          test -s "$EXPORT/direct-source.patch"
+          cp "$CRATE/src/lib.rs" "$EXPORT/lib.rs"
+          cp "$CRATE/Cargo.toml" "$EXPORT/Cargo.toml"
+          cp "$CRATE/tests/settlement_game_server_boundary.rs" "$EXPORT/settlement_game_server_boundary.rs"
+          cp "$CRATE/tests/settlement_worker_contract.rs" "$EXPORT/settlement_worker_contract.rs"
+          git -C "$ROOT" hash-object "$CRATE/src/lib.rs" > "$EXPORT/lib.rs.git-blob"
+          printf 'repository=TrillionniumFoundation/Trillionnium-World\ncommit=cb662abffce882aaeed8ec30402e889ba235d786\ntree=7a9be1f6859f5f57e4262b047e7b0243d384b9c2\ntemplate_blob=8882f47db55ca5993329594901c828c6faf325a8\n' > "$EXPORT/identity.txt"
+          (
+            cd "$EXPORT"
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS
+          )
+
+      - name: Upload immutable direct-source evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-v4-direct-source-cb662abf
+          path: world-v4-direct-source-export/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
