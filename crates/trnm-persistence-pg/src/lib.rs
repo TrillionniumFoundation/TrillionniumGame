@@ -1,12 +1,14 @@
 #![forbid(unsafe_code)]
 
 mod auth;
+mod outbox;
 mod pool;
 mod session;
 
 pub use auth::{
     parse_refresh_credential, AccessTokenVerifier, ParsedRefreshCredential, SessionPrincipal,
 };
+pub use outbox::{OutboxLease, OutboxRetryOutcome};
 pub use pool::{PgPool, PgPoolConfig, PgPoolSnapshot, PgTlsConfig};
 pub use session::{
     CreateSessionFamily, RefreshRotationOutcome, RefreshTokenCredential, RotateRefreshToken,
@@ -79,6 +81,17 @@ pub enum IntentKind {
 impl IntentKind {
     const fn database_value(self) -> i16 {
         self as i16
+    }
+
+    const fn from_database_value(value: i16) -> Option<Self> {
+        match value {
+            0 => Some(Self::Broadcast),
+            1 => Some(Self::SearchIndex),
+            2 => Some(Self::Notification),
+            3 => Some(Self::ExternalEffect),
+            4 => Some(Self::Completion),
+            _ => None,
+        }
     }
 }
 

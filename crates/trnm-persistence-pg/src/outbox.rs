@@ -91,7 +91,9 @@ impl PgRepository {
             let prior_generation = from_i64(row.get(6), "negative_outbox_lease_generation")?;
             let prior_state: i16 = row.get(7);
             let attempt = prior_attempt.checked_add(1).ok_or_else(counter_overflow)?;
-            let generation = prior_generation.checked_add(1).ok_or_else(counter_overflow)?;
+            let generation = prior_generation
+                .checked_add(1)
+                .ok_or_else(counter_overflow)?;
             let attempt_i32 = i32::try_from(attempt).map_err(|_| counter_overflow())?;
             let generation_i64 = to_i64(generation)?;
             let prior_generation_i64 = to_i64(prior_generation)?;
@@ -211,8 +213,7 @@ impl PgRepository {
                 .map_err(map_postgres_error)?;
             require_one_fenced_update(updated, "outbox_dead_letter_stale_lease")?;
             OutboxRetryOutcome::DeadLetter {
-                attempt: u32::try_from(attempt)
-                    .map_err(|_| data_loss("invalid_outbox_attempt"))?,
+                attempt: u32::try_from(attempt).map_err(|_| data_loss("invalid_outbox_attempt"))?,
                 reason: dead_reason,
             }
         } else {
@@ -235,8 +236,7 @@ impl PgRepository {
             require_one_fenced_update(updated, "outbox_retry_stale_lease")?;
             OutboxRetryOutcome::Pending {
                 next_available_at_ms,
-                attempt: u32::try_from(attempt)
-                    .map_err(|_| data_loss("invalid_outbox_attempt"))?,
+                attempt: u32::try_from(attempt).map_err(|_| data_loss("invalid_outbox_attempt"))?,
             }
         };
         transaction.commit().map_err(map_postgres_error)?;
