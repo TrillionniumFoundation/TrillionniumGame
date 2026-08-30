@@ -143,12 +143,12 @@ if [[ "$profile" == postgresql ]]; then
   }
 else
   docker run -d --name "$container" \
-    -p 127.0.0.1::26257 \
+    --network host \
     "$image" start-single-node \
       --insecure \
-      --listen-addr=0.0.0.0:26257 \
+      --listen-addr=127.0.0.1:26257 \
       --advertise-addr=127.0.0.1:26257 \
-      --http-addr=0.0.0.0:8080 \
+      --http-addr=127.0.0.1:8080 \
       --store=type=mem,size=1GiB \
       --cache=128MiB \
       --max-sql-memory=128MiB \
@@ -171,8 +171,7 @@ else
 
   docker exec "$container" cockroach sql --insecure \
     --host=127.0.0.1:26257 --execute='CREATE DATABASE IF NOT EXISTS trnm'
-  port=$(docker port "$container" 26257/tcp | awk -F: 'NR==1 {print $NF}')
-  [[ "$port" =~ ^[0-9]+$ ]]
+  port=26257
   database_url="postgresql://root@127.0.0.1:${port}/trnm?sslmode=disable"
   docker exec -i "$container" cockroach sql --insecure \
     --host=127.0.0.1:26257 --database=trnm \

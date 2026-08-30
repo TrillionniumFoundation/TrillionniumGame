@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github/workflows"
-USES = re.compile(r"^\s*uses:\s*([^#\s]+)", re.MULTILINE)
+USES = re.compile(r"^\s*-?\s*uses:\s*([^#\s]+)", re.MULTILINE)
 IMAGE = re.compile(r"^\s*(?:image|container):\s*([^#\s]+)", re.MULTILINE)
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
@@ -30,7 +30,8 @@ def classify_image(value: str) -> str:
 
 def audit() -> dict[str, object]:
     references: list[dict[str, str]] = []
-    for path in sorted(WORKFLOWS.glob("*.y*ml")):
+    workflow_paths = sorted(WORKFLOWS.glob("*.y*ml"))
+    for path in workflow_paths:
         source = path.read_text(encoding="utf-8")
         for value in USES.findall(source):
             references.append(
@@ -58,12 +59,13 @@ def audit() -> dict[str, object]:
     return {
         "schema": "trillionnium.workflow-pin-audit.v1",
         "project_id": "trillionnium-game",
+        "workflow_count": len(workflow_paths),
         "reference_count": len(references),
         "problem_count": len(problems),
         "problems": problems,
         "references": references,
         "claims": {
-            "source_inventory_complete": True,
+            "source_inventory_complete": bool(workflow_paths),
             "all_references_immutable": not problems,
             "actions_enabled": False,
             "dependencies_reviewed": False,

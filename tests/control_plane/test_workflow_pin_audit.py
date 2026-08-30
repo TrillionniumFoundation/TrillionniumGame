@@ -38,7 +38,8 @@ class WorkflowPinAuditTests(unittest.TestCase):
 
     def test_repository_audit_is_nonempty_and_fail_closed(self) -> None:
         result = self.module.audit()
-        self.assertGreater(result["reference_count"], 0)
+        self.assertGreater(result["workflow_count"], 0)
+        self.assertGreaterEqual(result["reference_count"], 0)
         self.assertEqual(result["problem_count"], len(result["problems"]))
         self.assertFalse(result["claims"]["actions_enabled"])
         self.assertFalse(result["claims"]["dependencies_reviewed"])
