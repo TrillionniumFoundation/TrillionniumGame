@@ -1,9 +1,10 @@
 use std::env;
 use std::fmt;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 
-use trnm_persistence_pg::DatabaseProfile;
+use trnm_persistence_pg::{DatabaseProfile, PgPoolConfig};
 
 use super::error::ServerError;
 
@@ -11,6 +12,14 @@ const DEFAULT_BIND: &str = "127.0.0.1:7350";
 const DEFAULT_MAX_REQUEST_BYTES: usize = 128 * 1024;
 const DEFAULT_READ_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_WRITE_TIMEOUT_MS: u64 = 10_000;
+const DEFAULT_POOL_MAX_SIZE: u64 = 8;
+const DEFAULT_POOL_MIN_IDLE: u64 = 1;
+const DEFAULT_POOL_ACQUIRE_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_POOL_IDLE_TIMEOUT_MS: u64 = 60_000;
+const DEFAULT_POOL_MAX_LIFETIME_MS: u64 = 15 * 60_000;
+const DEFAULT_STATEMENT_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_LOCK_TIMEOUT_MS: u64 = 1_000;
+const DEFAULT_IDLE_TRANSACTION_TIMEOUT_MS: u64 = 5_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
@@ -19,11 +28,22 @@ pub enum Command {
     Serve,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DatabaseTlsMode {
+    PlaintextCandidate,
+    VerifyFull,
+}
+
 #[derive(Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
     pub database_url: String,
     pub database_profile: DatabaseProfile,
+    pub database_tls_mode: DatabaseTlsMode,
+    pub database_tls_root_cert: Option<PathBuf>,
+    pub database_tls_identity_cert: Option<PathBuf>,
+    pub database_tls_identity_key: Option<PathBuf>,
+    pub database_pool: PgPoolConfig,
     pub schema_source_commit: String,
     pub admin_token: String,
     pub max_request_bytes: usize,
@@ -38,6 +58,17 @@ impl fmt::Debug for ServerConfig {
             .field("bind", &self.bind)
             .field("database_url", &"<redacted>")
             .field("database_profile", &self.database_profile)
+            .field("database_tls_mode", &self.database_tls_mode)
+            .field(
+                "database_tls_root_cert_configured",
+                &self.database_tls_root_cert.is_some(),
+            )
+            .field(
+                "database_tls_identity_configured",
+                &self.database_tls_identity_cert.is_some(),
+            )
+            .field("database_tls_identity_key", &"<redacted>")
+            .field("database_pool", &self.database_pool)
             .field("schema_source_commit", &self.schema_source_commit)
             .field("admin_token", &"<redacted>")
             .field("max_request_bytes", &self.max_request_bytes)
@@ -90,16 +121,49 @@ impl ServerConfig {
         {
             return Err(ServerError::Configuration("database_url_invalid"));
         }
-        // The current repository adapter is deliberately NoTls. Requiring an
-        // explicit acknowledgement prevents a candidate binary from silently
-        // being treated as a production database transport.
-        if !parse_bool(
+
+        let database_tls_mode = match lookup("TRNM_SERVER_DATABASE_TLS_MODE").as_deref() {
+            None | Some("plaintext-candidate") => DatabaseTlsMode::PlaintextCandidate,
+            Some("verify-full") => DatabaseTlsMode::VerifyFull,
+            Some(_) => return Err(ServerError::Configuration("database_tls_mode_invalid")),
+        };
+        let allow_plaintext = parse_bool(
             lookup("TRNM_SERVER_ALLOW_PLAINTEXT_DATABASE").as_deref(),
             false,
             "allow_plaintext_database_invalid",
-        )? {
+        )?;
+        match database_tls_mode {
+            DatabaseTlsMode::PlaintextCandidate if !allow_plaintext => {
+                return Err(ServerError::Configuration(
+                    "plaintext_database_requires_explicit_candidate_opt_in",
+                ));
+            }
+            DatabaseTlsMode::VerifyFull if allow_plaintext => {
+                return Err(ServerError::Configuration(
+                    "tls_mode_conflicts_with_plaintext_opt_in",
+                ));
+            }
+            _ => {}
+        }
+
+        let database_tls_root_cert =
+            optional_path(lookup("TRNM_SERVER_DATABASE_TLS_ROOT_CERT_PEM"))?;
+        let database_tls_identity_cert =
+            optional_path(lookup("TRNM_SERVER_DATABASE_TLS_IDENTITY_CERT_PEM"))?;
+        let database_tls_identity_key =
+            optional_path(lookup("TRNM_SERVER_DATABASE_TLS_IDENTITY_KEY_PKCS8_PEM"))?;
+        if database_tls_identity_cert.is_some() != database_tls_identity_key.is_some() {
             return Err(ServerError::Configuration(
-                "plaintext_database_requires_explicit_candidate_opt_in",
+                "database_tls_identity_cert_key_pair_required",
+            ));
+        }
+        if database_tls_mode == DatabaseTlsMode::PlaintextCandidate
+            && (database_tls_root_cert.is_some()
+                || database_tls_identity_cert.is_some()
+                || database_tls_identity_key.is_some())
+        {
+            return Err(ServerError::Configuration(
+                "database_tls_material_requires_verify_full",
             ));
         }
 
@@ -151,12 +215,87 @@ impl ServerConfig {
             "write_timeout_invalid",
         )?;
 
+        let pool_max_size = parse_u64(
+            lookup("TRNM_SERVER_DATABASE_POOL_MAX_SIZE").as_deref(),
+            DEFAULT_POOL_MAX_SIZE,
+            1,
+            256,
+            "database_pool_max_size_invalid",
+        )?;
+        let pool_min_idle = parse_u64(
+            lookup("TRNM_SERVER_DATABASE_POOL_MIN_IDLE").as_deref(),
+            DEFAULT_POOL_MIN_IDLE,
+            0,
+            pool_max_size,
+            "database_pool_min_idle_invalid",
+        )?;
+        let pool_acquire_timeout_ms = parse_u64(
+            lookup("TRNM_SERVER_DATABASE_POOL_ACQUIRE_TIMEOUT_MS").as_deref(),
+            DEFAULT_POOL_ACQUIRE_TIMEOUT_MS,
+            10,
+            120_000,
+            "database_pool_acquire_timeout_invalid",
+        )?;
+        let pool_idle_timeout_ms = parse_u64(
+            lookup("TRNM_SERVER_DATABASE_POOL_IDLE_TIMEOUT_MS").as_deref(),
+            DEFAULT_POOL_IDLE_TIMEOUT_MS,
+            1_000,
+            3_600_000,
+            "database_pool_idle_timeout_invalid",
+        )?;
+        let pool_max_lifetime_ms = parse_u64(
+            lookup("TRNM_SERVER_DATABASE_POOL_MAX_LIFETIME_MS").as_deref(),
+            DEFAULT_POOL_MAX_LIFETIME_MS,
+            pool_idle_timeout_ms,
+            24 * 3_600_000,
+            "database_pool_max_lifetime_invalid",
+        )?;
+        let statement_timeout_ms = parse_u64(
+            lookup("TRNM_SERVER_DATABASE_STATEMENT_TIMEOUT_MS").as_deref(),
+            DEFAULT_STATEMENT_TIMEOUT_MS,
+            50,
+            600_000,
+            "database_statement_timeout_invalid",
+        )?;
+        let lock_timeout_ms = parse_u64(
+            lookup("TRNM_SERVER_DATABASE_LOCK_TIMEOUT_MS").as_deref(),
+            DEFAULT_LOCK_TIMEOUT_MS,
+            10,
+            statement_timeout_ms,
+            "database_lock_timeout_invalid",
+        )?;
+        let idle_transaction_timeout_ms = parse_u64(
+            lookup("TRNM_SERVER_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS").as_deref(),
+            DEFAULT_IDLE_TRANSACTION_TIMEOUT_MS,
+            50,
+            600_000,
+            "database_idle_transaction_timeout_invalid",
+        )?;
+        let database_pool = PgPoolConfig {
+            max_size: u32::try_from(pool_max_size)
+                .map_err(|_| ServerError::Configuration("database_pool_max_size_invalid"))?,
+            min_idle: u32::try_from(pool_min_idle)
+                .map_err(|_| ServerError::Configuration("database_pool_min_idle_invalid"))?,
+            acquire_timeout: Duration::from_millis(pool_acquire_timeout_ms),
+            idle_timeout: Duration::from_millis(pool_idle_timeout_ms),
+            max_lifetime: Duration::from_millis(pool_max_lifetime_ms),
+            statement_timeout: Duration::from_millis(statement_timeout_ms),
+            lock_timeout: Duration::from_millis(lock_timeout_ms),
+            idle_transaction_timeout: Duration::from_millis(idle_transaction_timeout_ms),
+        }
+        .validate()?;
+
         Ok((
             command,
             Self {
                 bind,
                 database_url,
                 database_profile,
+                database_tls_mode,
+                database_tls_root_cert,
+                database_tls_identity_cert,
+                database_tls_identity_key,
+                database_pool,
                 schema_source_commit,
                 admin_token,
                 max_request_bytes,
@@ -175,6 +314,20 @@ fn required(
     match lookup(name) {
         Some(value) if !value.is_empty() => Ok(value),
         _ => Err(ServerError::Configuration(reason)),
+    }
+}
+
+fn optional_path(value: Option<String>) -> Result<Option<PathBuf>, ServerError> {
+    match value {
+        None => Ok(None),
+        Some(value)
+            if !value.is_empty()
+                && value.len() <= 4096
+                && !value.bytes().any(|byte| byte.is_ascii_control()) =>
+        {
+            Ok(Some(PathBuf::from(value)))
+        }
+        Some(_) => Err(ServerError::Configuration("database_tls_path_invalid")),
     }
 }
 
@@ -277,6 +430,12 @@ mod tests {
         let (_, config) = load(&base()).unwrap();
         assert!(config.bind.ip().is_loopback());
         assert_eq!(config.max_request_bytes, 128 * 1024);
+        assert_eq!(config.database_pool.max_size, 8);
+        assert_eq!(config.database_pool.min_idle, 1);
+        assert_eq!(
+            config.database_tls_mode,
+            DatabaseTlsMode::PlaintextCandidate
+        );
         let debug = format!("{config:?}");
         assert!(!debug.contains("secret"));
         assert!(!debug.contains("a_secure_local"));
@@ -301,6 +460,54 @@ mod tests {
             Err(ServerError::Configuration(
                 "plaintext_database_requires_explicit_candidate_opt_in"
             ))
+        ));
+    }
+
+    #[test]
+    fn verify_full_tls_is_secure_by_default_and_material_is_paired() {
+        let mut values = base();
+        values.remove("TRNM_SERVER_ALLOW_PLAINTEXT_DATABASE");
+        values.insert(
+            "TRNM_SERVER_DATABASE_TLS_MODE".to_owned(),
+            "verify-full".to_owned(),
+        );
+        let (_, config) = load(&values).unwrap();
+        assert_eq!(config.database_tls_mode, DatabaseTlsMode::VerifyFull);
+
+        values.insert(
+            "TRNM_SERVER_DATABASE_TLS_IDENTITY_CERT_PEM".to_owned(),
+            "/run/secrets/client-cert.pem".to_owned(),
+        );
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration(
+                "database_tls_identity_cert_key_pair_required"
+            ))
+        ));
+    }
+
+    #[test]
+    fn pool_and_timeout_bounds_fail_closed() {
+        let mut values = base();
+        values.insert(
+            "TRNM_SERVER_DATABASE_POOL_MAX_SIZE".to_owned(),
+            "0".to_owned(),
+        );
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration(
+                "database_pool_max_size_invalid"
+            ))
+        ));
+
+        let mut values = base();
+        values.insert(
+            "TRNM_SERVER_DATABASE_LOCK_TIMEOUT_MS".to_owned(),
+            "6000".to_owned(),
+        );
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration("database_lock_timeout_invalid"))
         ));
     }
 

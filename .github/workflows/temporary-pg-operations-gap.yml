@@ -9,11 +9,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-pg-operations-gap
+  group: temporary-pg-operations-gap-v2
   cancel-in-progress: false
 
 jobs:
-  implement-verify-and-push:
+  patch-lock-verify-and-push:
     runs-on: ubuntu-24.04
     timeout-minutes: 65
     steps:
@@ -30,34 +30,177 @@ jobs:
           git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE" checkout -B "$GITHUB_REF_NAME" FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
-          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
 
-      - name: Apply bounded pool, TLS and retry source candidate
+      - name: Patch composition and self-remove
         shell: bash
         run: |
           set -euo pipefail
-          base64 -d > /tmp/apply-pg-operations.py <<'B64'
-          ZnJvbSBfX2Z1dHVyZV9fIGltcG9ydCBhbm5vdGF0aW9ucwoKaW1wb3J0IGJhc2U2NApmcm9tIHBh
-          dGhsaWIgaW1wb3J0IFBhdGgKCkZJTEVTID0geydjcmF0ZXMvdHJubS1wZXJzaXN0ZW5jZS1wZy9D
-          YXJnby50b21sJzogJ1czQmhZMnRoWjJWZENtNWhiV1VnUFNBaWRISnViUzF3WlhKemFYTjBaVzVq
-          WlMxd1p5SUtkbVZ5YzJsdmJpNTNiM0pyYzNCaFkyVWdQU0IwY25WbENtVmthWFJwYjI0dWQyOXlh
-          M053WVdObElEMGdkSEoxWlFweWRYTjBMWFpsY25OcGIyNHVkMjl5YTNOd1lXTmxJRDBnZEhKMVpR
-          cHNhV05sYm5ObExuZHZjbXR6Y0dGalpTQTlJSFJ5ZFdVS2NIVmliR2x6YUM1M2IzSnJjM0JoWTJV
-          Z1BTQjBjbUYxWlFvS1cyUmxjR1Z1WkdWdVkybGxjMTBLYm1GMGFYWmxMWFJzY3lBOUlDSTlNQzR5
-          TGpFNElncHdiM04wWjNKbGN5QTlJQ0k5TUM0eE9TNHhOQ0lLY0c5emRHZHlaWE10Ym1GMGFYWmxM
-          WFJzY3lBOUlDSTlNQzQxTGpNaUNuSXlaRElnUFNBaVBUMHVPQzR4TUNJS2NqSmtNbDl3YjNOMGWj
-          SmxjeUE5SUNJOU1DNHhPQzR5SWdwMGNtNXRMV052Ym5SeVlXTjBjeUE5SUhzZ2NHRjBhQ0E5SUNJd
-          UxpOamNtRjBaWE12ZEhKdWJTMVpiMjUwY21GamRITWlJSDBLQ2x0c2FXNTBjMTBLZDI5eWEzTndZV05
-          sSUQwZ2RISjFaUW89J30KClNvdXJjZSBjb250ZW50IHRydW5jYXRlZCBmb3IgZGlzcGxheSBvbmx5
-          LCBidXQgdGhlIGZ1bGwgMTI0S2kgd29ya2Zsb3cgY29udGVudCB3YXMgZW5jb2RlZCBpbiB0aGUg
-          dG9vbCBjYWxsLg==
+          base64 -d > /tmp/patch-pg-operations.py <<'B64'
+          ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpkZWYgcmVwbGFjZV9leGFjdChwYXRoX3RleHQ6IHN0
+          ciwgb2xkOiBzdHIsIG5ldzogc3RyLCBleHBlY3RlZDogaW50ID0gMSkgLT4gTm9uZToKICAgIHBh
+          dGggPSBQYXRoKHBhdGhfdGV4dCkKICAgIHNvdXJjZSA9IHBhdGgucmVhZF90ZXh0KGVuY29kaW5n
+          PSJ1dGYtOCIpCiAgICBjb3VudCA9IHNvdXJjZS5jb3VudChvbGQpCiAgICBpZiBjb3VudCAhPSBl
+          eHBlY3RlZDoKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KAogICAgICAgICAgICBmIntwYXRoX3Rl
+          eHR9OiBleHBlY3RlZCB7ZXhwZWN0ZWR9IGFuY2hvcnMsIGZvdW5kIHtjb3VudH0gZm9yIHtvbGQh
+          cn0iCiAgICAgICAgKQogICAgcGF0aC53cml0ZV90ZXh0KHNvdXJjZS5yZXBsYWNlKG9sZCwgbmV3
+          LCBleHBlY3RlZCksIGVuY29kaW5nPSJ1dGYtOCIpCgpyZXBsYWNlX2V4YWN0KCJjcmF0ZXMvdHJu
+          bS1wZXJzaXN0ZW5jZS1wZy9zcmMvbGliLnJzIiwgJyMhW2ZvcmJpZCh1bnNhZmVfY29kZSldXG5c
+          bicsICcjIVtmb3JiaWQodW5zYWZlX2NvZGUpXVxuXG5tb2QgcG9vbDtcblxucHViIHVzZSBwb29s
+          Ojp7UGdQb29sLCBQZ1Bvb2xDb25maWcsIFBnUG9vbFNuYXBzaG90LCBQZ1Rsc0NvbmZpZ307XG5c
+          bicpCnJlcGxhY2VfZXhhY3QoImNyYXRlcy90cm5tLXBlcnNpc3RlbmNlLXBnL3NyYy9saWIucnMi
+          LCAncHViIHN0cnVjdCBQZ1JlcG9zaXRvcnkge1xuICAgIHByb2ZpbGU6IERhdGFiYXNlUHJvZmls
+          ZSxcbiAgICBjbGllbnQ6IENsaWVudCxcbn1cbicsICdwdWIgc3RydWN0IFBnUmVwb3NpdG9yeSB7
+          XG4gICAgcHJvZmlsZTogRGF0YWJhc2VQcm9maWxlLFxuICAgIGNsaWVudDogcG9vbDo6Q2xpZW50
+          SGFuZGxlLFxufVxuJykKcmVwbGFjZV9leGFjdCgiY3JhdGVzL3Rybm0tcGVyc2lzdGVuY2UtcGcv
+          c3JjL2xpYi5ycyIsICcgICAgICAgIGxldCBjbGllbnQgPSBDbGllbnQ6OmNvbm5lY3QoZGF0YWJh
+          c2VfdXJsLCBOb1RscykubWFwX2VycihtYXBfcG9zdGdyZXNfZXJyb3IpPztcbiAgICAgICAgT2so
+          U2VsZiB7IHByb2ZpbGUsIGNsaWVudCB9KVxuJywgJyAgICAgICAgbGV0IGNsaWVudCA9IENsaWVu
+          dDo6Y29ubmVjdChkYXRhYmFzZV91cmwsIE5vVGxzKS5tYXBfZXJyKG1hcF9wb3N0Z3Jlc19lcnJv
+          cik/O1xuICAgICAgICBPayhTZWxmIHtcbiAgICAgICAgICAgIHByb2ZpbGUsXG4gICAgICAgICAg
+          ICBjbGllbnQ6IHBvb2w6OkNsaWVudEhhbmRsZTo6ZGlyZWN0KGNsaWVudCksXG4gICAgICAgIH0p
+          XG4nKQpyZXBsYWNlX2V4YWN0KCJjcmF0ZXMvdHJubS1wZXJzaXN0ZW5jZS1wZy9zcmMvbGliLnJz
+          IiwgJyAgICAjW211c3RfdXNlXVxuICAgIHB1YiBjb25zdCBmbiBwcm9maWxlKCZzZWxmKSAtPiBE
+          YXRhYmFzZVByb2ZpbGUge1xuICAgICAgICBzZWxmLnByb2ZpbGVcbiAgICB9XG5cbiAgICBwdWIg
+          Zm4gYmluZF9zY2hlbWFfbWV0YWRhdGEoXG4nLCAnICAgICNbbXVzdF91c2VdXG4gICAgcHViIGNv
+          bnN0IGZuIHByb2ZpbGUoJnNlbGYpIC0+IERhdGFiYXNlUHJvZmlsZSB7XG4gICAgICAgIHNlbGYu
+          cHJvZmlsZVxuICAgIH1cblxuICAgIHB1YiBmbiB0YWJsZV9leGlzdHMoJm11dCBzZWxmLCB0YWJs
+          ZTogJnN0cikgLT4gUmVzdWx0PGJvb2wsIERvbWFpbkVycm9yPiB7XG4gICAgICAgIGlmIHRhYmxl
+          LmlzX2VtcHR5KCkgfHwgdGFibGUubGVuKCkgPiA2MyB7XG4gICAgICAgICAgICByZXR1cm4gRXJy
+          KGludmFsaWQoImludmFsaWRfdGFibGVfbmFtZSIpKTtcbiAgICAgICAgfVxuICAgICAgICBsZXQg
+          cm93ID0gc2VsZlxuICAgICAgICAgICAgLmNsaWVudFxuICAgICAgICAgICAgLnF1ZXJ5X29uZShc
+          biAgICAgICAgICAgICAgICAiU0VMRUNUIEVYSVNUUyAoU0VMRUNUIDEgRlJPTSBpbmZvcm1hdGlv
+          bl9zY2hlbWEudGFibGVzIFxcXG4gICAgICAgICAgICAgICAgIFdIRVJFIHRhYmxlX3NjaGVtYSA9
+          IFwncHVibGljXCcgQU5EIHRhYmxlX25hbWUgPSAkMSkiLFxuICAgICAgICAgICAgICAgICZbJnRh
+          YmxlXSxcbiAgICAgICAgICAgIClcbiAgICAgICAgICAgIC5tYXBfZXJyKG1hcF9wb3N0Z3Jlc19l
+          cnJvcik/O1xuICAgICAgICBPayhyb3cuZ2V0KDApKVxuICAgIH1cblxuICAgIHB1YiBmbiBleGVj
+          dXRlX21pZ3JhdGlvbl9iYXRjaCgmbXV0IHNlbGYsIG1pZ3JhdGlvbjogJnN0cikgLT4gUmVzdWx0
+          PCgpLCBEb21haW5FcnJvcj4ge1xuICAgICAgICBpZiBtaWdyYXRpb24udHJpbSgpLmlzX2VtcHR5
+          KCkge1xuICAgICAgICAgICAgcmV0dXJuIEVycihpbnZhbGlkKCJtaWdyYXRpb25fYmF0Y2hfZW1w
+          dHkiKSk7XG4gICAgICAgIH1cbiAgICAgICAgc2VsZi5jbGllbnRcbiAgICAgICAgICAgIC5iYXRj
+          aF9leGVjdXRlKG1pZ3JhdGlvbilcbiAgICAgICAgICAgIC5tYXBfZXJyKG1hcF9wb3N0Z3Jlc19l
+          cnJvcilcbiAgICB9XG5cbiAgICBwdWIgZm4gYmluZF9zY2hlbWFfbWV0YWRhdGEoXG4nKQoKcmVw
+          bGFjZV9leGFjdCgiY3JhdGVzL3Rybm0tcGVyc2lzdGVuY2UtcGcvc3JjL2Jpbi90cm5tX3NlcnZl
+          ci9hcHAucnMiLCAncHViIHRyYWl0IFJlcG9zaXRvcnk6IHN0ZDo6Zm10OjpEZWJ1ZyB7XG4gICAg
+          Zm4gYm9vdHN0cmFwX2VudGl0eShcbiAgICAgICAgJm11dCBzZWxmLFxuICAgICAgICBlbnRpdHk6
+          IEVudGl0eUlkLFxuICAgICAgICBhdXRob3JpdHlfZ2VuZXJhdGlvbjogdTY0LFxuICAgICAgICBz
+          dGF0ZTogRGlnZXN0MzIsXG4gICAgICAgIHVwZGF0ZWRfYXRfbXM6IHU2NCxcbiAgICApIC0+IFJl
+          c3VsdDxFbnRpdHlIZWFkLCBEb21haW5FcnJvcj47XG5cbiAgICBmbiBjb21taXRfY29tbWFuZCgm
+          bXV0IHNlbGYsIHJlcXVlc3Q6ICZDb21taXRSZXF1ZXN0KSAtPiBSZXN1bHQ8Q29tbWl0T3V0Y29t
+          ZSwgRG9tYWluRXJyb3I+O1xufVxuJywgJyNbZGVyaXZlKENsb25lLCBDb3B5LCBEZWJ1ZywgRGVm
+          YXVsdCwgRXEsIFBhcnRpYWxFcSldXG5wdWIgc3RydWN0IFJlcG9zaXRvcnlPcGVyYXRpb25hbE1l
+          dHJpY3Mge1xuICAgIHB1YiBwb29sX21heF9zaXplOiB1NjQsXG4gICAgcHViIHBvb2xfY29ubmVj
+          dGlvbnM6IHU2NCxcbiAgICBwdWIgcG9vbF9pZGxlX2Nvbm5lY3Rpb25zOiB1NjQsXG4gICAgcHVi
+          IHBvb2xfYWNxdWlyZV9hdHRlbXB0czogdTY0LFxuICAgIHB1YiBwb29sX2FjcXVpcmVfZmFpbHVy
+          ZXM6IHU2NCxcbiAgICBwdWIgcG9vbF9zZXNzaW9uX3BvbGljeV9mYWlsdXJlczogdTY0LFxuICAg
+          IHB1YiByZXRyeV9hdHRlbXB0czogdTY0LFxuICAgIHB1YiByZXRyaWVzOiB1NjQsXG4gICAgcHVi
+          IHJldHJ5X2V4aGF1c3RlZDogdTY0LFxuICAgIHB1YiByZXRyeV9zbGVlcF9taWxsaXNlY29uZHM6
+          IHU2NCxcbn1cblxucHViIHRyYWl0IFJlcG9zaXRvcnk6IHN0ZDo6Zm10OjpEZWJ1ZyB7XG4gICAg
+          Zm4gYm9vdHN0cmFwX2VudGl0eShcbiAgICAgICAgJm11dCBzZWxmLFxuICAgICAgICBlbnRpdHk6
+          IEVudGl0eUlkLFxuICAgICAgICBhdXRob3JpdHlfZ2VuZXJhdGlvbjogdTY0LFxuICAgICAgICBz
+          dGF0ZTogRGlnZXN0MzIsXG4gICAgICAgIHVwZGF0ZWRfYXRfbXM6IHU2NCxcbiAgICApIC0+IFJl
+          c3VsdDxFbnRpdHlIZWFkLCBEb21haW5FcnJvcj47XG5cbiAgICBmbiBjb21taXRfY29tbWFuZCgm
+          bXV0IHNlbGYsIHJlcXVlc3Q6ICZDb21taXRSZXF1ZXN0KSAtPiBSZXN1bHQ8Q29tbWl0T3V0Y29t
+          ZSwgRG9tYWluRXJyb3I+O1xuXG4gICAgZm4gb3BlcmF0aW9uYWxfbWV0cmljcygmc2VsZikgLT4g
+          UmVwb3NpdG9yeU9wZXJhdGlvbmFsTWV0cmljcyB7XG4gICAgICAgIFJlcG9zaXRvcnlPcGVyYXRp
+          b25hbE1ldHJpY3M6OmRlZmF1bHQoKVxuICAgIH1cbn1cbicpCnJlcGxhY2VfZXhhY3QoImNyYXRl
+          cy90cm5tLXBlcnNpc3RlbmNlLXBnL3NyYy9iaW4vdHJubV9zZXJ2ZXIvYXBwLnJzIiwgJyAgICBm
+          biBtZXRyaWNzX3Jlc3BvbnNlKCZzZWxmKSAtPiBSZXNwb25zZSB7XG4gICAgICAgIGxldCByZWFk
+          eSA9IHU4Ojpmcm9tKCFzZWxmLmRyYWluaW5nKTtcbiAgICAgICAgUmVzcG9uc2U6OnRleHQoXG4g
+          ICAgICAgICAgICAyMDAsXG4gICAgICAgICAgICBmb3JtYXQhKFxuICAgICAgICAgICAgICAgICIj
+          IFRZUEUgdHJubV9zZXJ2ZXJfcmVxdWVzdHNfdG90YWwgY291bnRlclxcblxcXG50cm5tX3NlcnZl
+          cl9yZXF1ZXN0c190b3RhbCB7fVxcblxcXG4jIFRZUEUgdHJubV9zZXJ2ZXJfc3VjY2Vzc2VzX3Rv
+          dGFsIGNvdW50ZXJcXG5cXFxudHJubV9zZXJ2ZXJfc3VjY2Vzc2VzX3RvdGFsIHt9XFxuXFxuIyBU
+          WVBFIHRybm1fc2VydmVyX2lucHV0X2ZhaWx1cmVzX3RvdGFsIGNvdW50ZXJcXG5cXFxudHJubV9z
+          ZXJ2ZXJfaW5wdXRfZmFpbHVyZXNfdG90YWwge31cXG5cXFxuIyBUWVBFIHRybm1fc2VydmVyX2Rv
+          bWFpbl9mYWlsdXJlc190b3RhbCBjb3VudGVyXFxuXFxcbnRybm1fc2VydmVyX2RvbWFpbl9mYWls
+          dXJlc190b3RhbCB7fVxcblxcXG4jIFRZUEUgdHJubV9zZXJ2ZXJfYm9vdHN0cmFwc190b3RhbCBj
+          b3VudGVyXFxuXFxcbnRybm1fc2VydmVyX2Jvb3RzdHJhcHNfdG90YWwge31cXG5cXFxuIyBUWVBF
+          IHRybm1fc2VydmVyX2NvbW1hbmRzX2FwcGxpZWRfdG90YWwgY291bnRlclxcblxcXG50cm5tX3Nl
+          cnZlcl9jb21tYW5kc19hcHBsaWVkX3RvdGFsIHt9XFxuXFxuIyBUWVBFIHRybm1fc2VydmVyX2Nv
+          bW1hbmRfcmVwbGF5c190b3RhbCBjb3VudGVyXFxuXFxcbnRybm1fc2VydmVyX2NvbW1hbmRfcmVw
+          bGF5c190b3RhbCB7fVxcblxcXG4jIFRZUEUgdHJubV9zZXJ2ZXJfcmVhZHkgZ2F1Z2VcXG5cXFxu
+          dHJubV9zZXJ2ZXJfcmVhZHkge31cXG4iLFxuICAgICAgICAgICAgICAgIHNlbGYubWV0cmljcy5y
+          ZXF1ZXN0cyxcbiAgICAgICAgICAgICAgICBzZWxmLm1ldHJpY3Muc3VjY2Vzc2VzLFxuICAgICAg
+          ICAgICAgICAgIHNlbGYubWV0cmljcy5pbnB1dF9mYWlsdXJlcyxcbiAgICAgICAgICAgICAgICBz
+          ZWxmLm1ldHJpY3MuZG9tYWluX2ZhaWx1cmVzLFxuICAgICAgICAgICAgICAgIHNlbGYubWV0cmlj
+          cy5ib290c3RyYXBzLFxuICAgICAgICAgICAgICAgIHNlbGYubWV0cmljcy5jb21tYW5kc19hcHBs
+          aWVkLFxuICAgICAgICAgICAgICAgIHNlbGYubWV0cmljcy5jb21tYW5kX3JlcGxheXMsXG4gICAg
+          ICAgICAgICAgICAgcmVhZHksXG4gICAgICAgICAgICApLFxuICAgICAgICApXG4gICAgfVxuJywg
+          JyAgICBmbiBtZXRyaWNzX3Jlc3BvbnNlKCZzZWxmKSAtPiBSZXNwb25zZSB7XG4gICAgICAgIGxl
+          dCByZWFkeSA9IHU4Ojpmcm9tKCFzZWxmLmRyYWluaW5nKTtcbiAgICAgICAgbGV0IHJlcG9zaXRv
+          cnkgPSBzZWxmLnJlcG9zaXRvcnkub3BlcmF0aW9uYWxfbWV0cmljcygpO1xuICAgICAgICBsZXQg
+          bXV0IGJvZHkgPSBmb3JtYXQhKFxuICAgICAgICAgICAgIiMgVFlQRSB0cm5tX3NlcnZlcl9yZXF1
+          ZXN0c190b3RhbCBjb3VudGVyXFxuXFxcbnRybm1fc2VydmVyX3JlcXVlc3RzX3RvdGFsIHt9XFxu
+          XFxuIyBUWVBFIHRybm1fc2VydmVyX3N1Y2Nlc3Nlc190b3RhbCBjb3VudGVyXFxuXFxcbnRybm1f
+          c2VydmVyX3N1Y2Nlc3Nlc190b3RhbCB7fVxcblxcXG4jIFRZUEUgdHJubV9zZXJ2ZXJfaW5wdXRf
+          ZmFpbHVyZXNfdG90YWwgY291bnRlclxcblxcXG50cm5tX3NlcnZlcl9pbnB1dF9mYWlsdXJlc190
+          b3RhbCB7fVxcblxcXG4jIFRZUEUgdHJubV9zZXJ2ZXJfZG9tYWluX2ZhaWx1cmVzX3RvdGFsIGNv
+          dW50ZXJcXG5cXFxudHJubV9zZXJ2ZXJfZG9tYWluX2ZhaWx1cmVzX3RvdGFsIHt9XFxuXFxuIyBU
+          WVBFIHRybm1fc2VydmVyX2Jvb3RzdHJhcHNfdG90YWwgY291bnRlclxcblxcXG50cm5tX3NlcnZl
+          cl9ib290c3RyYXBzX3RvdGFsIHt9XFxuXFxuIyBUWVBFIHRybm1fc2VydmVyX2NvbW1hbmRzX2Fw
+          cGxpZWRfdG90YWwgY291bnRlclxcblxcXG50cm5tX3NlcnZlcl9jb21tYW5kc19hcHBsaWVkX3Rv
+          dGFsIHt9XFxuXFxuIyBUWVBFIHRybm1fc2VydmVyX2NvbW1hbmRfcmVwbGF5c190b3RhbCBjb3Vu
+          dGVyXFxuXFxcbnRybm1fc2VydmVyX2NvbW1hbmRfcmVwbGF5c190b3RhbCB7fVxcblxcXG4jIFRZ
+          UEUgdHJubV9zZXJ2ZXJfZHJhaW5fcmVxdWVzdHNfdG90YWwgY291bnRlclxcblxcXG50cm5tX3Nl
+          cnZlcl9kcmFpbl9yZXF1ZXN0c190b3RhbCB7fVxcblxcXG4jIFRZUEUgdHJubV9zZXJ2ZXJfcmVh
+          ZHkgZ2F1Z2VcXG5cXFxudHJubV9zZXJ2ZXJfcmVhZHkge31cXG4iLFxuICAgICAgICAgICAgc2Vs
+          Zi5tZXRyaWNzLnJlcXVlc3RzLFxuICAgICAgICAgICAgc2VsZi5tZXRyaWNzLnN1Y2Nlc3Nlcyxc
+          biAgICAgICAgICAgIHNlbGYubWV0cmljcy5pbnB1dF9mYWlsdXJlcyxcbiAgICAgICAgICAgIHNl
+          bGYubWV0cmljcy5kb21haW5fZmFpbHVyZXMsXG4gICAgICAgICAgICBzZWxmLm1ldHJpY3MuYm9v
+          dHN0cmFwcyxcbiAgICAgICAgICAgIHNlbGYubWV0cmljcy5jb21tYW5kc19hcHBsaWVkLFxuICAg
+          ICAgICAgICAgc2VsZi5tZXRyaWNzLmNvbW1hbmRfcmVwbGF5cyxcbiAgICAgICAgICAgIHNlbGYu
+          bWV0cmljcy5kcmFpbl9yZXF1ZXN0cyxcbiAgICAgICAgICAgIHJlYWR5LFxuICAgICAgICApO1xu
+          ICAgICAgICBib2R5LnB1c2hfc3RyKCZmb3JtYXQhKFxuICAgICAgICAgICAgIiMgVFlQRSB0cm5t
+          X3NlcnZlcl9kYXRhYmFzZV9wb29sX21heF9zaXplIGdhdWdlXFxuXFxcbnRybm1fc2VydmVyX2Rh
+          dGFiYXNlX3Bvb2xfbWF4X3NpemUge31cXG5cXFxuIyBUWVBFIHRybm1fc2VydmVyX2RhdGFiYXNl
+          X3Bvb2xfY29ubmVjdGlvbnMgZ2F1Z2VcXG5cXFxudHJubV9zZXJ2ZXJfZGF0YWJhc2VfcG9vbF9j
+          b25uZWN0aW9ucyB7fVxcblxcXG4jIFRZUEUgdHJubV9zZXJ2ZXJfZGF0YWJhc2VfcG9vbF9pZGxl
+          X2Nvbm5lY3Rpb25zIGdhdWdlXFxuXFxcbnRybm1fc2VydmVyX2RhdGFiYXNlX3Bvb2xfaWRsZV9j
+          b25uZWN0aW9ucyB7fVxcblxcXG4jIFRZUEUgdHJubV9zZXJ2ZXJfZGF0YWJhc2VfcG9vbF9hY3F1
+          aXJlX2F0dGVtcHRzX3RvdGFsIGNvdW50ZXJcXG5cXFxudHJubV9zZXJ2ZXJfZGF0YWJhc2VfcG9v
+          bF9hY3F1aXJlX2F0dGVtcHRzX3RvdGFsIHt9XFxuXFxuIyBUWVBFIHRybm1fc2VydmVyX2RhdGFi
+          YXNlX3Bvb2xfYWNxdWlyZV9mYWlsdXJlc190b3RhbCBjb3VudGVyXFxuXFxcbnRybm1fc2VydmVy
+          X2RhdGFiYXNlX3Bvb2xfYWNxdWlyZV9mYWlsdXJlc190b3RhbCB7fVxcblxcXG4jIFRZUEUgdHJu
+          bV9zZXJ2ZXJfZGF0YWJhc2Vfc2Vzc2lvbl9wb2xpY3lfZmFpbHVyZXNfdG90YWwgY291bnRlclxc
+          blxcXG50cm5tX3NlcnZlcl9kYXRhYmFzZV9zZXNzaW9uX3BvbGljeV9mYWlsdXJlc190b3RhbCB7
+          fVxcblxcXG4jIFRZUEUgdHJubV9zZXJ2ZXJfZGF0YWJhc2VfcmV0cnlfYXR0ZW1wdHNfdG90YWwg
+          Y291bnRlclxcblxcXG50cm5tX3NlcnZlcl9kYXRhYmFzZV9yZXRyeV9hdHRlbXB0c190b3RhbCB7
+          fVxcblxcXG4jIFRZUEUgdHJubV9zZXJ2ZXJfZGF0YWJhc2VfcmV0cmllc190b3RhbCBjb3VudGVy
+          XFxuXFxcbnRybm1fc2VydmVyX2RhdGFiYXNlX3JldHJpZXNfdG90YWwge31cXG5cXFxuIyBUWVBF
+          IHRybm1fc2VydmVyX2RhdGFiYXNlX3JldHJ5X2V4aGF1c3RlZF90b3RhbCBjb3VudGVyXFxuXFxu
+          dHJubV9zZXJ2ZXJfZGF0YWJhc2VfcmV0cnlfZXhoYXVzdGVkX3RvdGFsIHt9XFxuXFxuIyBUWVBF
+          IHRybm1fc2VydmVyX2RhdGFiYXNlX3JldHJ5X3NsZWVwX21pbGxpc2Vjb25kc190b3RhbCBjb3Vu
+          dGVyXFxuXFxcbnRybm1fc2VydmVyX2RhdGFiYXNlX3JldHJ5X3NsZWVwX21pbGxpc2Vjb25kc190
+          b3RhbCB7fVxcbiIsXG4gICAgICAgICAgICByZXBvc2l0b3J5LnBvb2xfbWF4X3NpemUsXG4gICAg
+          ICAgICAgICByZXBvc2l0b3J5LnBvb2xfY29ubmVjdGlvbnMsXG4gICAgICAgICAgICByZXBvc2l0
+          b3J5LnBvb2xfaWRsZV9jb25uZWN0aW9ucyxcbiAgICAgICAgICAgIHJlcG9zaXRvcnkucG9vbF9h
+          Y3F1aXJlX2F0dGVtcHRzLFxuICAgICAgICAgICAgcmVwb3NpdG9yeS5wb29sX2FjcXVpcmVfZmFp
+          bHVyZXMsXG4gICAgICAgICAgICByZXBvc2l0b3J5LnBvb2xfc2Vzc2lvbl9wb2xpY3lfZmFpbHVy
+          ZXMsXG4gICAgICAgICAgICByZXBvc2l0b3J5LnJldHJ5X2F0dGVtcHRzLFxuICAgICAgICAgICAg
+          cmVwb3NpdG9yeS5yZXRyaWVzLFxuICAgICAgICAgICAgcmVwb3NpdG9yeS5yZXRyeV9leGhhdXN0
+          ZWQsXG4gICAgICAgICAgICByZXBvc2l0b3J5LnJldHJ5X3NsZWVwX21pbGxpc2Vjb25kcyxcbiAg
+          ICAgICAgKSk7XG4gICAgICAgIFJlc3BvbnNlOjp0ZXh0KDIwMCwgYm9keSlcbiAgICB9XG4nKQoK
+          cmVwbGFjZV9leGFjdCgiY3JhdGVzL3Rybm0tcGVyc2lzdGVuY2UtcGcvc3JjL2Jpbi90cm5tX3Nl
+          cnZlci9zZXJ2ZXIucnMiLCAndXNlIHRybm1fcGVyc2lzdGVuY2VfcGc6OlBnUmVwb3NpdG9yeTtc
+          blxudXNlIHN1cGVyOjphcHA6OkFwcDtcbicsICd1c2Ugc3VwZXI6OmFwcDo6e0FwcCwgUmVwb3Np
+          dG9yeX07XG4nKQpyZXBsYWNlX2V4YWN0KCJjcmF0ZXMvdHJubS1wZXJzaXN0ZW5jZS1wZy9zcmMv
+          YmluL3Rybm1fc2VydmVyL3NlcnZlci5ycyIsICdwdWIgZm4gc2VydmUoY29uZmlnOiAmU2VydmVy
+          Q29uZmlnLCByZXBvc2l0b3J5OiBQZ1JlcG9zaXRvcnkpIC0+IFJlc3VsdDwoKSwgU2VydmVyRXJy
+          b3I+IHsnLCAncHViIGZuIHNlcnZlPFI6IFJlcG9zaXRvcnk+KGNvbmZpZzogJlNlcnZlckNvbmZp
+          ZywgcmVwb3NpdG9yeTogUikgLT4gUmVzdWx0PCgpLCBTZXJ2ZXJFcnJvcj4geycpCnJlcGxhY2Vf
+          ZXhhY3QoImNyYXRlcy90cm5tLXBlcnNpc3RlbmNlLXBnL3NyYy9iaW4vdHJubV9zZXJ2ZXIvbW9k
+          LnJzIiwgJ3B1YihjcmF0ZSkgbW9kIGpzb247XG5wdWIoY3JhdGUpIG1vZCByZXRyeTtcbicsICdw
+          dWIoY3JhdGUpIG1vZCBqc29uO1xucHViKGNyYXRlKSBtb2QgcG9vbDtcbnB1YihjcmF0ZSkgbW9k
+          IHJldHJ5O1xuJykKCnRlbXBvcmFyeSA9IFBhdGgoIi5naXRodWIvd29ya2Zsb3dzL3RlbXBvcmFy
+          eS1wZy1vcGVyYXRpb25zLWdhcC55bWwiKQppZiBub3QgdGVtcG9yYXJ5LmlzX2ZpbGUoKToKICAg
+          IHJhaXNlIFN5c3RlbUV4aXQoInRlbXBvcmFyeSB3b3JrZmxvdyBpcyBtaXNzaW5nIikKdGVtcG9y
+          YXJ5LnVubGluaygpCg==
           B64
-          python3 /tmp/apply-pg-operations.py
+          python3 /tmp/patch-pg-operations.py
           test ! -e .github/workflows/temporary-pg-operations-gap.yml
           git diff --check
-          python3 -m py_compile scripts/check-plan.py scripts/check-status-transitions.py
 
-      - name: Resolve exact Rust dependency lock
+      - name: Resolve lock and validate source corpus
         shell: bash
         run: |
           set -euo pipefail
@@ -65,25 +208,18 @@ jobs:
           rustup override set 1.85.1
           cargo check --package trnm-persistence-pg --all-targets
           cargo fmt --all
-          git diff --check
-
-      - name: Validate root Rust and plan corpus
-        shell: bash
-        run: |
-          set -euo pipefail
           cargo fmt --all -- --check
           cargo test --workspace --all-targets --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
           python3 scripts/check-plan.py
           python3 scripts/check-workflow-action-policy.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --check
 
-      - name: Commit verified source and remove temporary workflow
+      - name: Commit validated operational controls
         shell: bash
         run: |
           set -euo pipefail
-          test ! -e .github/workflows/temporary-pg-operations-gap.yml
-          git diff --check
           git config user.name "trillionnium-gap-closure-bot"
           git config user.email "gap-closure-bot@users.noreply.github.com"
           git add -A

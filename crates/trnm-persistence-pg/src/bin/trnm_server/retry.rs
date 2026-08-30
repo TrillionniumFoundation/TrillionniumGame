@@ -1,10 +1,14 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode};
-use trnm_persistence_pg::{CommitOutcome, CommitRequest, EntityHead, EntityId, PgRepository};
+use trnm_persistence_pg::{CommitOutcome, CommitRequest, EntityHead, EntityId};
 
-use super::app::Repository;
+use super::app::{Repository, RepositoryOperationalMetrics};
+
+static JITTER_SEQUENCE: AtomicU64 = AtomicU64::new(0x9e37_79b9_7f4a_7c15);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RetryPolicy {
@@ -41,10 +45,19 @@ impl RetryPolicy {
     }
 }
 
+#[derive(Debug, Default)]
+struct RetryMetrics {
+    attempts: AtomicU64,
+    retries: AtomicU64,
+    exhausted: AtomicU64,
+    sleep_nanos: AtomicU64,
+}
+
 #[derive(Debug)]
 pub struct RetryingRepository<R> {
     inner: R,
     policy: RetryPolicy,
+    metrics: Arc<RetryMetrics>,
 }
 
 impl<R> RetryingRepository<R> {
@@ -52,11 +65,12 @@ impl<R> RetryingRepository<R> {
         Ok(Self {
             inner,
             policy: policy.validate()?,
+            metrics: Arc::new(RetryMetrics::default()),
         })
     }
 }
 
-impl Repository for RetryingRepository<PgRepository> {
+impl<R: Repository> Repository for RetryingRepository<R> {
     fn bootstrap_entity(
         &mut self,
         entity: EntityId,
@@ -69,12 +83,36 @@ impl Repository for RetryingRepository<PgRepository> {
     }
 
     fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError> {
-        execute(self.policy, || self.inner.commit_command(request))
+        execute_with_metrics(self.policy, &self.metrics, || {
+            self.inner.commit_command(request)
+        })
+    }
+
+    fn operational_metrics(&self) -> RepositoryOperationalMetrics {
+        let mut metrics = self.inner.operational_metrics();
+        metrics.retry_attempts = self.metrics.attempts.load(Ordering::Relaxed);
+        metrics.retries = self.metrics.retries.load(Ordering::Relaxed);
+        metrics.retry_exhausted = self.metrics.exhausted.load(Ordering::Relaxed);
+        metrics.retry_sleep_milliseconds = self
+            .metrics
+            .sleep_nanos
+            .load(Ordering::Relaxed)
+            .saturating_div(1_000_000);
+        metrics
     }
 }
 
 pub fn execute<T>(
     policy: RetryPolicy,
+    operation: impl FnMut() -> Result<T, DomainError>,
+) -> Result<T, DomainError> {
+    let metrics = RetryMetrics::default();
+    execute_with_metrics(policy, &metrics, operation)
+}
+
+fn execute_with_metrics<T>(
+    policy: RetryPolicy,
+    metrics: &RetryMetrics,
     mut operation: impl FnMut() -> Result<T, DomainError>,
 ) -> Result<T, DomainError> {
     let policy = policy.validate()?;
@@ -83,9 +121,11 @@ pub fn execute<T>(
     let mut backoff = policy.initial_backoff;
     loop {
         if attempt > 0 && started.elapsed() >= policy.total_budget {
+            metrics.exhausted.fetch_add(1, Ordering::Relaxed);
             return Err(retry_budget_exhausted());
         }
         attempt = attempt.saturating_add(1);
+        metrics.attempts.fetch_add(1, Ordering::Relaxed);
         match operation() {
             Ok(value) => return Ok(value),
             Err(error) => {
@@ -96,12 +136,18 @@ pub fn execute<T>(
                     return Err(error);
                 }
                 if attempt >= policy.max_attempts || started.elapsed() >= policy.total_budget {
+                    metrics.exhausted.fetch_add(1, Ordering::Relaxed);
                     return Err(retry_budget_exhausted());
                 }
+                metrics.retries.fetch_add(1, Ordering::Relaxed);
                 if error.retry() == RetryClass::SafeBackoff {
                     let remaining = policy.total_budget.saturating_sub(started.elapsed());
-                    let delay = backoff.min(remaining);
+                    let delay = jittered_backoff(backoff).min(remaining);
                     if !delay.is_zero() {
+                        metrics.sleep_nanos.fetch_add(
+                            u64::try_from(delay.as_nanos()).unwrap_or(u64::MAX),
+                            Ordering::Relaxed,
+                        );
                         thread::sleep(delay);
                     }
                     backoff = backoff.saturating_mul(2).min(policy.maximum_backoff);
@@ -109,6 +155,21 @@ pub fn execute<T>(
             }
         }
     }
+}
+
+fn jittered_backoff(base: Duration) -> Duration {
+    if base.is_zero() {
+        return Duration::ZERO;
+    }
+    let sequence = JITTER_SEQUENCE
+        .fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed)
+        .rotate_left(17)
+        ^ 0xa076_1d64_78bd_642f;
+    let base_nanos = base.as_nanos();
+    let minimum = base_nanos / 2;
+    let width = base_nanos.saturating_sub(minimum).saturating_add(1);
+    let selected = minimum.saturating_add(u128::from(sequence) % width);
+    Duration::from_nanos(u64::try_from(selected).unwrap_or(u64::MAX))
 }
 
 const fn retry_budget_exhausted() -> DomainError {
@@ -219,5 +280,15 @@ mod tests {
         .unwrap_err();
         assert!(!called);
         assert_eq!(returned.reason(), "database_retry_policy_invalid");
+    }
+
+    #[test]
+    fn jitter_remains_inside_half_to_full_backoff() {
+        let base = Duration::from_millis(100);
+        for _ in 0..64 {
+            let value = jittered_backoff(base);
+            assert!(value >= Duration::from_millis(50));
+            assert!(value <= base);
+        }
     }
 }

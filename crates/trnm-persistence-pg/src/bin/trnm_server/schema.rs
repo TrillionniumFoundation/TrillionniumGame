@@ -1,10 +1,12 @@
+use std::fs;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use postgres::{Client, NoTls};
-use trnm_persistence_pg::{DatabaseProfile, PgRepository};
+use trnm_persistence_pg::{DatabaseProfile, PgPool, PgRepository, PgTlsConfig};
 
-use super::config::ServerConfig;
+use super::config::{DatabaseTlsMode, ServerConfig};
 use super::error::ServerError;
+use super::pool::PooledRepository;
 
 const POSTGRESQL_MIGRATION: &str =
     include_str!("../../../../../migrations/postgresql/0001_foundation_up.sql");
@@ -31,15 +33,13 @@ pub struct MigrationReport {
 }
 
 pub fn migrate(config: &ServerConfig) -> Result<MigrationReport, ServerError> {
-    let mut client = Client::connect(&config.database_url, NoTls)?;
-    let metadata_exists = table_exists(&mut client, "trnm_schema_metadata")?;
+    let pool = build_pool(config)?;
+    let mut repository = pool.acquire()?;
+    let metadata_exists = repository.table_exists("trnm_schema_metadata")?;
     if !metadata_exists {
-        client.batch_execute(migration_for(config.database_profile))?;
+        repository.execute_migration_batch(migration_for(config.database_profile))?;
     }
-    verify_required_tables(&mut client)?;
-    drop(client);
-
-    let mut repository = PgRepository::connect(&config.database_url, config.database_profile)?;
+    verify_required_tables(&mut repository)?;
     repository.bind_schema_metadata(&config.schema_source_commit, now_millis()?)?;
     Ok(MigrationReport {
         profile: config.database_profile,
@@ -48,14 +48,40 @@ pub fn migrate(config: &ServerConfig) -> Result<MigrationReport, ServerError> {
     })
 }
 
-pub fn open_verified_repository(config: &ServerConfig) -> Result<PgRepository, ServerError> {
-    let mut client = Client::connect(&config.database_url, NoTls)?;
-    verify_required_tables(&mut client)?;
-    drop(client);
+pub fn open_verified_repository(config: &ServerConfig) -> Result<PooledRepository, ServerError> {
+    let pool = build_pool(config)?;
+    {
+        let mut repository = pool.acquire()?;
+        verify_required_tables(&mut repository)?;
+        repository.bind_schema_metadata(&config.schema_source_commit, now_millis()?)?;
+    }
+    Ok(PooledRepository::new(pool))
+}
 
-    let mut repository = PgRepository::connect(&config.database_url, config.database_profile)?;
-    repository.bind_schema_metadata(&config.schema_source_commit, now_millis()?)?;
-    Ok(repository)
+fn build_pool(config: &ServerConfig) -> Result<PgPool, ServerError> {
+    match config.database_tls_mode {
+        DatabaseTlsMode::PlaintextCandidate => Ok(PgPool::connect_plain(
+            &config.database_url,
+            config.database_profile,
+            config.database_pool,
+        )?),
+        DatabaseTlsMode::VerifyFull => {
+            let root_certificate = read_optional(config.database_tls_root_cert.as_deref())?;
+            let identity_certificate = read_optional(config.database_tls_identity_cert.as_deref())?;
+            let identity_key = read_optional(config.database_tls_identity_key.as_deref())?;
+            let tls = PgTlsConfig::new(root_certificate, identity_certificate, identity_key)?;
+            Ok(PgPool::connect_tls(
+                &config.database_url,
+                config.database_profile,
+                config.database_pool,
+                &tls,
+            )?)
+        }
+    }
+}
+
+fn read_optional(path: Option<&Path>) -> Result<Option<Vec<u8>>, ServerError> {
+    path.map(fs::read).transpose().map_err(ServerError::from)
 }
 
 fn migration_for(profile: DatabaseProfile) -> &'static str {
@@ -65,24 +91,15 @@ fn migration_for(profile: DatabaseProfile) -> &'static str {
     }
 }
 
-fn verify_required_tables(client: &mut Client) -> Result<(), ServerError> {
+fn verify_required_tables(repository: &mut PgRepository) -> Result<(), ServerError> {
     for table in REQUIRED_TABLES {
-        if !table_exists(client, table)? {
+        if !repository.table_exists(table)? {
             return Err(ServerError::Configuration(
                 "authoritative_schema_table_missing",
             ));
         }
     }
     Ok(())
-}
-
-fn table_exists(client: &mut Client, table: &str) -> Result<bool, ServerError> {
-    let row = client.query_one(
-        "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
-         WHERE table_schema = 'public' AND table_name = $1)",
-        &[&table],
-    )?;
-    Ok(row.get(0))
 }
 
 fn now_millis() -> Result<u64, ServerError> {
