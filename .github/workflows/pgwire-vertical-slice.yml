@@ -1,0 +1,83 @@
+name: pgwire-vertical-slice
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/trnm-contracts/**'
+      - 'crates/trnm-persistence-core/**'
+      - 'crates/trnm-persistence-pg/**'
+      - 'migrations/**'
+      - 'scripts/ci-pgwire-vertical-slice.sh'
+      - 'docs/development/PGWIRE_*.md'
+      - '.github/workflows/pgwire-vertical-slice.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/trnm-contracts/**'
+      - 'crates/trnm-persistence-core/**'
+      - 'crates/trnm-persistence-pg/**'
+      - 'migrations/**'
+      - 'scripts/ci-pgwire-vertical-slice.sh'
+      - 'docs/development/PGWIRE_*.md'
+      - '.github/workflows/pgwire-vertical-slice.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pgwire-vertical-slice-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate shell and claim boundaries
+        run: |
+          set -euo pipefail
+          bash -n scripts/ci-pgwire-vertical-slice.sh
+          grep -q 'compatibility_credit.*False' scripts/ci-pgwire-vertical-slice.sh
+          grep -q 'serializable_conflict_injected.*False' scripts/ci-pgwire-vertical-slice.sh
+          grep -q 'TRNM_POSTGRES_IMAGE.*immutable OCI digest is required' scripts/ci-pgwire-vertical-slice.sh
+          grep -q 'TRNM_COCKROACH_IMAGE.*immutable OCI digest is required' scripts/ci-pgwire-vertical-slice.sh
+
+  live-profile:
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [postgresql, cockroachdb]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install exact Rust
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+      - name: Execute exact-image profile
+        env:
+          TRNM_POSTGRES_IMAGE: ${{ vars.TRNM_POSTGRES_IMAGE }}
+          TRNM_COCKROACH_IMAGE: ${{ vars.TRNM_COCKROACH_IMAGE }}
+          TRNM_EVIDENCE_ROOT: run/pgwire-vertical-slice
+          TRNM_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}
+        run: bash scripts/ci-pgwire-vertical-slice.sh '${{ matrix.profile }}'
+      - name: Upload exact-head profile artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pgwire-vertical-slice-${{ matrix.profile }}-${{ github.sha }}
+          path: run/pgwire-vertical-slice/${{ matrix.profile }}
+          if-no-files-found: error
+          retention-days: 30
