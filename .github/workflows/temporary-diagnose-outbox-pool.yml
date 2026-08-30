@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: temporary-diagnose-outbox-pool-v2
+  group: temporary-diagnose-outbox-pool-v3
   cancel-in-progress: true
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
           git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
-      - name: Give each pool boundary a stable diagnostic reason
+      - name: Instrument pooled connection health and session stages
         shell: bash
         run: |
           set -euo pipefail
@@ -52,41 +52,61 @@ jobs:
 
           pool = Path('crates/trnm-persistence-pg/src/pool.rs')
           source = pool.read_text(encoding='utf-8')
-          parse_old = '''        let mut database =
-                      Config::from_str(database_url).map_err(super::map_postgres_error)?;
-          '''
-          parse_new = '''        let mut database = Config::from_str(database_url)
-                      .map_err(|_| operational_error("diagnostic_database_url_parse_failed"))?;
-          '''
-          if source.count(parse_old) != 2:
-              raise SystemExit(f'expected two URL parse anchors, found {source.count(parse_old)}')
-          source = source.replace(parse_old, parse_new, 2)
+          start = source.index('fn configure_session(')
+          end = source.index('\nfn duration_millis(', start)
+          replacement = r'''fn configure_session(
+              client: &mut Client,
+              profile: DatabaseProfile,
+              policy: PgPoolConfig,
+          ) -> Result<(), DomainError> {
+              eprintln!("diagnostic_pool_stage=health_query_start");
+              client.simple_query("SELECT 1").map_err(|error| {
+                  eprintln!("diagnostic_pool_stage=health_query_error error={error}");
+                  operational_error("diagnostic_database_health_query_failed")
+              })?;
+              eprintln!("diagnostic_pool_stage=health_query_ok");
 
-          base_old = '''        .map_err(super::map_postgres_error)?;
-              if profile == DatabaseProfile::PostgreSql {
-          '''
-          base_new = '''        .map_err(|_| operational_error("diagnostic_database_base_session_failed"))?;
-              if profile == DatabaseProfile::PostgreSql {
-          '''
-          if source.count(base_old) != 1:
-              raise SystemExit(f'expected one base session anchor, found {source.count(base_old)}')
-          source = source.replace(base_old, base_new, 1)
+              client
+                  .simple_query("SET application_name = 'trillionnium-game'")
+                  .map_err(|error| {
+                      eprintln!("diagnostic_pool_stage=application_name_error error={error}");
+                      operational_error("diagnostic_database_application_name_failed")
+                  })?;
+              eprintln!("diagnostic_pool_stage=application_name_ok");
 
-          postgresql_old = '''            .map_err(super::map_postgres_error)?;
+              let statement_timeout = duration_millis(policy.statement_timeout)?;
+              client
+                  .simple_query(&format!("SET statement_timeout = '{statement_timeout}ms'"))
+                  .map_err(|error| {
+                      eprintln!("diagnostic_pool_stage=statement_timeout_error error={error}");
+                      operational_error("diagnostic_database_statement_timeout_failed")
+                  })?;
+              eprintln!("diagnostic_pool_stage=statement_timeout_ok");
+
+              if profile == DatabaseProfile::PostgreSql {
+                  let lock_timeout = duration_millis(policy.lock_timeout)?;
+                  let idle_transaction_timeout = duration_millis(policy.idle_transaction_timeout)?;
+                  client
+                      .simple_query(&format!("SET lock_timeout = '{lock_timeout}ms'"))
+                      .map_err(|error| {
+                          eprintln!("diagnostic_pool_stage=lock_timeout_error error={error}");
+                          operational_error("diagnostic_database_lock_timeout_failed")
+                      })?;
+                  eprintln!("diagnostic_pool_stage=lock_timeout_ok");
+                  client
+                      .simple_query(&format!(
+                          "SET idle_in_transaction_session_timeout = '{idle_transaction_timeout}ms'"
+                      ))
+                      .map_err(|error| {
+                          eprintln!("diagnostic_pool_stage=idle_transaction_timeout_error error={error}");
+                          operational_error("diagnostic_database_idle_transaction_timeout_failed")
+                      })?;
+                  eprintln!("diagnostic_pool_stage=idle_transaction_timeout_ok");
               }
               Ok(())
           }
           '''
-          postgresql_new = '''            .map_err(|_| operational_error("diagnostic_database_postgresql_session_failed"))?;
-              }
-              Ok(())
-          }
-          '''
-          if source.count(postgresql_old) != 1:
-              raise SystemExit(
-                  f'expected one PostgreSQL session anchor, found {source.count(postgresql_old)}'
-              )
-          pool.write_text(source.replace(postgresql_old, postgresql_new, 1), encoding='utf-8')
+          pool.write_text(source[:start] + replacement + source[end:], encoding='utf-8')
           PY
           rustup toolchain install 1.85.1 --profile minimal
           rustup override set 1.85.1
@@ -102,7 +122,7 @@ jobs:
           PY
           )
           echo "TRNM_POSTGRES_IMAGE=$TRNM_POSTGRES_IMAGE" >>"$GITHUB_ENV"
-      - name: Reproduce exact pool failure with stage reason
+      - name: Reproduce exact pool failure with staged probes
         env:
           TRNM_EVIDENCE_ROOT: run/outbox-pool-diagnostic
           TRNM_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
