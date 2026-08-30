@@ -8,6 +8,7 @@ on:
       - 'tools/sdk/**'
       - 'tools/upstream/**'
       - 'scripts/fetch-pinned-upstream.py'
+      - 'scripts/repair-pinned-github-archive.py'
       - 'scripts/generate-sdk-denominator.py'
       - 'scripts/check-sdk-denominator.sh'
       - 'tests/sdk/**'
@@ -64,7 +65,7 @@ jobs:
           set -euo pipefail
           # Diagnostic output never grants credit or relaxes the pinned root.
           # It exposes exact path/mode/object differences before the strict
-          # fetch below rejects any mismatch.
+          # archive-tree and canonical-tree verification below.
           python3 tools/upstream/diagnose_pinned_tree.py \
             --registry config/sdk-source-snapshots.json \
             --profile cpp \
@@ -78,14 +79,22 @@ jobs:
           import json
           import subprocess
 
-          for profile in json.load(open('config/sdk-source-snapshots.json'))['profiles']:
+          registry_path = 'config/sdk-source-snapshots.json'
+          for profile in json.load(open(registry_path, encoding='utf-8'))['profiles']:
+              archive_tree = profile.get('archive_tree', profile['tree'])
+              repairs = profile.get('archive_repairs', [])
+              if bool(repairs) != ('archive_tree' in profile):
+                  raise SystemExit(
+                      f"{profile['id']}: archive_tree and archive_repairs must be declared together"
+                  )
+              output = f"run/sdks/{profile['id']}"
               command = [
                   'python3',
                   'scripts/fetch-pinned-upstream.py',
                   '--repository', profile['repository'],
                   '--revision', profile['commit'],
-                  '--tree', profile['tree'],
-                  '--output', f"run/sdks/{profile['id']}",
+                  '--tree', archive_tree,
+                  '--output', output,
               ]
               for gitlink in profile.get('gitlinks', []):
                   command.extend([
@@ -93,6 +102,17 @@ jobs:
                       f"{gitlink['path']}={gitlink['commit']}",
                   ])
               subprocess.run(command, check=True)
+              if repairs:
+                  subprocess.run(
+                      [
+                          'python3',
+                          'scripts/repair-pinned-github-archive.py',
+                          '--registry', registry_path,
+                          '--profile', profile['id'],
+                          '--root', output,
+                      ],
+                      check=True,
+                  )
           PY
       - name: Generate twice and compare
         run: |
