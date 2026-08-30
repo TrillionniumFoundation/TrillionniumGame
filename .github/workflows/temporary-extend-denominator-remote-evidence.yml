@@ -1,4 +1,4 @@
-name: temporary-extend-denominator-remote-evidence
+name: temporary-extend-denominator-remote-evidence-v2
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-extend-denominator-remote-evidence
+  group: temporary-extend-denominator-remote-evidence-v2
   cancel-in-progress: false
 
 jobs:
@@ -31,236 +31,22 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout -B "$GITHUB_REF_NAME" FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
 
-      - name: Extend exact-head remote evidence without weakening review
-        shell: bash
+      - name: Apply exact remote-evidence patch
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          path = Path("tools/denominator/review_lock.py")
-          source = path.read_text(encoding="utf-8")
-          start = source.index("def _remote(")
-          end = source.index("\ndef _leaf_decision(", start)
-          replacement = '''def _remote(
-              value: Any,
-              required: bool,
-              policy: Mapping[str, Any],
-          ) -> dict[str, Any] | None:
-              if value is None:
-                  if required:
-                      raise ReviewError("non-empty exact-head remote evidence is required")
-                  return None
-              if not isinstance(value, dict):
-                  raise ReviewError("remote_evidence must be an object")
-              allowed_kinds = set(
-                  policy.get(
-                      "remote_evidence_kinds",
-                      ["artifact", "immutable-job-log"],
-                  )
-              )
-              evidence_kind = value.get("evidence_kind", "artifact")
-              if evidence_kind not in allowed_kinds:
-                  raise ReviewError(
-                      f"remote_evidence.evidence_kind is not allowed: {evidence_kind!r}"
-                  )
-              head = _git_sha(value.get("head_sha"), "remote_evidence.head_sha")
-              pull_request = value.get("pull_request")
-              run_id = value.get("workflow_run_id")
-              assertions = value.get("assertion_count")
-              if not isinstance(pull_request, int) or pull_request <= 0:
-                  raise ReviewError("remote_evidence.pull_request must be positive")
-              if not isinstance(run_id, int) or run_id <= 0:
-                  raise ReviewError("remote_evidence.workflow_run_id must be positive")
-              if value.get("conclusion") != "success":
-                  raise ReviewError("remote workflow conclusion must be success")
-              if not isinstance(assertions, int) or assertions <= 0:
-                  raise ReviewError("remote_evidence.assertion_count must be positive")
-              result: dict[str, Any] = {
-                  "evidence_kind": evidence_kind,
-                  "head_sha": head,
-                  "pull_request": pull_request,
-                  "workflow_run_id": run_id,
-                  "assertion_count": assertions,
-                  "conclusion": "success",
-              }
-              if evidence_kind == "artifact":
-                  artifact_id = value.get("artifact_id")
-                  if not isinstance(artifact_id, int) or artifact_id <= 0:
-                      raise ReviewError("remote_evidence.artifact_id must be positive")
-                  result.update(
-                      artifact_id=artifact_id,
-                      artifact_sha256=_sha256(
-                          value.get("artifact_sha256"),
-                          "remote_evidence.artifact_sha256",
-                      ),
-                  )
-              else:
-                  job_id = value.get("job_id")
-                  if not isinstance(job_id, int) or job_id <= 0:
-                      raise ReviewError("remote_evidence.job_id must be positive")
-                  if value.get("log_sealed") is not True:
-                      raise ReviewError("remote_evidence.log_sealed must be true")
-                  result.update(
-                      job_id=job_id,
-                      job_name=_string(
-                          value.get("job_name"),
-                          "remote_evidence.job_name",
-                      ),
-                      archive_sha256=_sha256(
-                          value.get("archive_sha256"),
-                          "remote_evidence.archive_sha256",
-                      ),
-                      log_sealed=True,
-                      seal_kind="deterministic-archive-digest-in-job-log",
-                  )
-              return result
-          '''
-          path.write_text(source[:start] + replacement + source[end:], encoding="utf-8")
-
-          path = Path("tools/denominator/review_lock.py")
-          source = path.read_text(encoding="utf-8")
-          old = '_remote(review.get("remote_evidence"), require_remote_evidence)'
-          new = '_remote(review.get("remote_evidence"), require_remote_evidence, policy)'
-          if source.count(old) != 1:
-              raise SystemExit("remote evidence call anchor drift")
-          path.write_text(source.replace(old, new, 1), encoding="utf-8")
-
-          policy_path = Path("config/denominator-review-policy.json")
-          policy = json.loads(policy_path.read_text(encoding="utf-8"))
-          policy["remote_evidence_kinds"] = ["artifact", "immutable-job-log"]
-          policy_path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
-
-          schema_path = Path("contracts/denominator/review-bundle.v1.schema.json")
-          schema = json.loads(schema_path.read_text(encoding="utf-8"))
-          sha = {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
-          common = {
-              "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-              "pull_request": {"type": "integer", "minimum": 1},
-              "workflow_run_id": {"type": "integer", "minimum": 1},
-              "assertion_count": {"type": "integer", "minimum": 1},
-              "conclusion": {"const": "success"},
-          }
-          schema["properties"]["remote_evidence"] = {
-              "oneOf": [
-                  {"type": "null"},
-                  {
-                      "type": "object",
-                      "required": [
-                          "evidence_kind", "head_sha", "pull_request",
-                          "workflow_run_id", "assertion_count", "conclusion",
-                          "artifact_id", "artifact_sha256"
-                      ],
-                      "properties": {
-                          "evidence_kind": {"const": "artifact"},
-                          **common,
-                          "artifact_id": {"type": "integer", "minimum": 1},
-                          "artifact_sha256": sha,
-                      },
-                      "additionalProperties": True,
-                  },
-                  {
-                      "type": "object",
-                      "required": [
-                          "evidence_kind", "head_sha", "pull_request",
-                          "workflow_run_id", "assertion_count", "conclusion",
-                          "job_id", "job_name", "archive_sha256", "log_sealed"
-                      ],
-                      "properties": {
-                          "evidence_kind": {"const": "immutable-job-log"},
-                          **common,
-                          "job_id": {"type": "integer", "minimum": 1},
-                          "job_name": {"type": "string", "minLength": 1},
-                          "archive_sha256": sha,
-                          "log_sealed": {"const": True},
-                      },
-                      "additionalProperties": True,
-                  },
-              ]
-          }
-          schema_path.write_text(json.dumps(schema, indent=2) + "\n", encoding="utf-8")
-
-          test_path = Path("tests/denominator/test_review_lock.py")
-          tests = test_path.read_text(encoding="utf-8")
-          marker = "    def test_self_approval_is_rejected(self):\n"
-          addition = '''    def test_immutable_job_log_exact_head_evidence_is_accepted(self):
-              raw = candidate()
-              bundle = review(raw)
-              bundle["remote_evidence"] = {
-                  "evidence_kind": "immutable-job-log",
-                  "head_sha": "1" * 40,
-                  "pull_request": 123,
-                  "workflow_run_id": 44,
-                  "job_id": 66,
-                  "job_name": "exact-denominator-candidate",
-                  "conclusion": "success",
-                  "archive_sha256": "sha256:" + "d" * 64,
-                  "assertion_count": 9,
-                  "log_sealed": True,
-              }
-              result = self.run_review(raw, bundle, require_remote_evidence=True)
-              self.assertEqual(result.lock["status"], "reviewed-locked")
-              self.assertTrue(result.can_write_reviewed_lock)
-              remote = result.lock["review"]["remote_evidence"]
-              self.assertEqual(remote["evidence_kind"], "immutable-job-log")
-              self.assertEqual(
-                  remote["seal_kind"],
-                  "deterministic-archive-digest-in-job-log",
-              )
-
-              for field, value in (("job_id", 0), ("log_sealed", False)):
-                  invalid = review(raw)
-                  invalid["remote_evidence"] = dict(bundle["remote_evidence"])
-                  invalid["remote_evidence"][field] = value
-                  with self.assertRaises(ReviewError):
-                      self.run_review(
-                          raw,
-                          invalid,
-                          require_remote_evidence=True,
-                      )
-
-          '''
-          if tests.count(marker) != 1:
-              raise SystemExit("review-lock test insertion anchor drift")
-          test_path.write_text(tests.replace(marker, addition + marker, 1), encoding="utf-8")
-
-          docs_path = Path("docs/development/DENOMINATOR_REVIEW_AND_LOCK.md")
-          docs = docs_path.read_text(encoding="utf-8")
-          section = '''
-
-## Exact-head remote evidence carriers
-
-A reviewed lock may bind either of two fail-closed remote carriers:
-
-1. `artifact`: a positive GitHub Actions artifact ID plus an exact SHA-256;
-2. `immutable-job-log`: a positive workflow run/job identity whose successful log
-   contains the deterministic evidence-archive SHA-256, with `log_sealed=true`.
-
-The job-log carrier exists for repositories that deliberately avoid external upload
-Actions. It does not weaken reviewer independence, candidate-head equality,
-non-empty assertion counts, or successful terminal execution. Missing/older heads,
-zero IDs, non-success conclusions, absent digests and unsealed logs are rejected.
-Neither carrier grants SG1 by itself; two independent reviewers and the global SG1
-gate review remain mandatory.
-'''
-          if "## Exact-head remote evidence carriers" not in docs:
-              docs_path.write_text(docs.rstrip() + section + "\n", encoding="utf-8")
-          PY
+          python3 scripts/temporary_apply_remote_evidence_patch.py
           python3 -m py_compile tools/denominator/review_lock.py
           python3 -m json.tool config/denominator-review-policy.json >/dev/null
           python3 -m json.tool contracts/denominator/review-bundle.v1.schema.json >/dev/null
           git diff --check
 
-      - name: Execute fail-closed denominator review tests
-        shell: bash
+      - name: Execute fail-closed review and full Python tests
         run: |
           set -euo pipefail
           bash scripts/check-denominator-review-lock.sh
           python3 -m unittest discover -s tests -p 'test_*.py' -v
 
-      - name: Commit only verified non-workflow changes
-        shell: bash
+      - name: Commit only verified contract changes
         run: |
           set -euo pipefail
           git config user.name "trillionnium-gap-closure-bot"
