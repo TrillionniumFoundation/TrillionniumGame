@@ -2,7 +2,7 @@
   "schema": "trillionnium.evidence-index.v1",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "generated_at": "2026-08-29",
+  "generated_at": "2026-08-31",
   "evidence_schema": "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
   "policy": {
     "exact_target_commit_and_tree_required": true,
@@ -51,6 +51,39 @@
         "no independent review decision is recorded",
         "the evidence proves only the listed single-node foundation assertions"
       ]
+    },
+    {
+      "evidence_id": "TG-EV-PR55-EXACT-HEAD-CI-20260831",
+      "path": "docs/evidence/2026-08-31-pr55-exact-head-workflow-observation.json",
+      "evidence_type": "manifest",
+      "status": "exact-head-executed-unreviewed",
+      "target": {
+        "repository": "TrillionniumFoundation/TrillionniumGame",
+        "commit": "5fc924a11e884eef807ebf6de61d128ef92861ac",
+        "tree": "f5b9e3480feef920cb8e8c6c4b646586dec5c18b"
+      },
+      "producer": {
+        "repository": "TrillionniumFoundation/TrillionniumGame",
+        "commit": "5fc924a11e884eef807ebf6de61d128ef92861ac",
+        "workflow": ".github/workflows/trillionnium-game-merge-gate.yml",
+        "run_id": 33326546105
+      },
+      "artifacts": [],
+      "claim_ids": ["C0"],
+      "gate_ids": ["SG0"],
+      "task_ids": ["TG-V3-005", "TG-V3-006", "TG-V3-019", "TG-V3-020", "TG-V3-024"],
+      "parity_ids": [],
+      "schema_valid": true,
+      "target_identity_verified_by_current_repo": true,
+      "independent_review": null,
+      "expires_at": null,
+      "compatibility_credit": false,
+      "limitations": [
+        "workflow run identities and terminal conclusions were observed for the exact target",
+        "job non-emptiness and artifact digests were not available through the current readback path",
+        "no independent reviewer accepted this exact target",
+        "the entry is diagnostic and grants no gap, gate, compatibility or production credit"
+      ]
     }
   ],
   "pending_requirements": [
@@ -58,7 +91,7 @@
       "id": "REQ-EV-CURRENT-HEAD-MERGE-GATE",
       "blocking_gap": "GAP-P0-CI-001",
       "required_for": ["SG0", "C0"],
-      "description": "Non-empty successful native merge-gate evidence for the exact current pull-request head."
+      "description": "Exact-head terminal-success workflow runs are indexed; non-empty job/artifact digest readback and independent acceptance remain required."
     },
     {
       "id": "REQ-EV-DENOMINATOR-LOCK",
