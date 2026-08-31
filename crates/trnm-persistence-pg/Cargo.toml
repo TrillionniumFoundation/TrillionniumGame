@@ -22,7 +22,10 @@ trnm-session-core = { path = "../trnm-session-core" }
 trnm-token-jwt-adapter = { path = "../trnm-token-jwt-adapter" }
 
 [build-dependencies]
+prost-build = "=0.14.3"
+prost-types = "=0.14.3"
 protoc-bin-vendored = "=3.2.0"
+tonic-build = "=0.14.5"
 tonic-prost-build = "=0.14.5"
 
 [lints]
