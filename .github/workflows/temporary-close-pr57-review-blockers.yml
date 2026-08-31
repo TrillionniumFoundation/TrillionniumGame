@@ -15,7 +15,7 @@ concurrency:
 jobs:
   patch-validate-commit:
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: "1"
@@ -37,14 +37,16 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
 
-      - name: Apply reviewed blocker closure patch
+      - name: Apply all current exact-head review repairs
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/temporary-close-pr57-review-blockers.py
+          python3 scripts/temporary-close-pr57-outbox-evidence.py
           rm \
             .github/workflows/temporary-close-pr57-review-blockers.yml \
-            scripts/temporary-close-pr57-review-blockers.py
+            scripts/temporary-close-pr57-review-blockers.py \
+            scripts/temporary-close-pr57-outbox-evidence.py
 
       - name: Install exact Rust toolchain
         shell: bash
@@ -55,7 +57,7 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
 
-      - name: Format and validate final candidate tree
+      - name: Format and validate final source candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -72,9 +74,19 @@ jobs:
           python3 scripts/check-rust-package-inventory.py
           python3 scripts/check-rust-foundation.py
           python3 scripts/check-trnm-server.py
+          bash scripts/check-api-rtapi-denominator.sh
+          bash -n scripts/ci-outbox-final-attempt-reaper.sh
+          test -x scripts/upload-actions-artifact.py
+          python3 -m unittest tests.control_plane.test_actions_artifact_uploader -v
+          files=$(find runtime -type f -name '*.go' -print | sort)
+          test -n "$files"
+          unformatted=$(printf '%s\n' "$files" | xargs gofmt -l)
+          test -z "$unformatted" || { printf '%s\n' "$unformatted" >&2; exit 1; }
+          (cd runtime && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
           git diff --check
           test ! -e .github/workflows/temporary-close-pr57-review-blockers.yml
           test ! -e scripts/temporary-close-pr57-review-blockers.py
+          test ! -e scripts/temporary-close-pr57-outbox-evidence.py
 
       - name: Commit exact validated source
         shell: bash
@@ -86,5 +98,5 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
           test -n "$(git status --short)"
-          git commit -m 'fix(server): close canonical review blockers'
+          git commit -m 'fix(server): close exact-head review blockers'
           git push origin "HEAD:${TARGET_BRANCH}"
