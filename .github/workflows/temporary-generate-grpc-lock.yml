@@ -6,16 +6,16 @@ on:
       - codex/grpc-healthcheck-source-2026-08-31
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: temporary-generate-grpc-lock
   cancel-in-progress: true
 
 jobs:
-  generate-lock-payload:
+  generate-and-commit-lock:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Fetch exact candidate without external actions
         shell: bash
@@ -27,22 +27,31 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE"
           git init "$GITHUB_WORKSPACE"
           git -C "$GITHUB_WORKSPACE" remote add origin \
-            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${CANDIDATE_REPOSITORY}.git"
           git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
             "${CANDIDATE_SHA}"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
-      - name: Generate deterministic lock payload
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Generate, validate and commit exact lock
         shell: bash
+        env:
+          TARGET_BRANCH: codex/grpc-healthcheck-source-2026-08-31
         run: |
           set -euo pipefail
-          # This workflow is temporary and must be deleted after the lock payload is recovered.
           rustup toolchain install 1.85.1 --profile minimal
           rustup override set 1.85.1
           cargo generate-lockfile
           test -s Cargo.lock
-          echo 'TRNM_CARGO_LOCK_BASE64_BEGIN'
-          base64 -w0 Cargo.lock
-          echo
-          echo 'TRNM_CARGO_LOCK_BASE64_END'
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
           sha256sum Cargo.lock
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Cargo.lock
+          if git diff --cached --quiet; then
+            echo 'Cargo.lock already current'
+            exit 0
+          fi
+          git commit -m 'build(grpc): refresh exact workspace lockfile'
+          git push origin "HEAD:${TARGET_BRANCH}"
