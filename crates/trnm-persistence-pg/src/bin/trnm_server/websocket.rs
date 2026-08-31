@@ -99,7 +99,8 @@ pub fn serve_once<R: Repository>(
                 let (opcode, response_body) = match handshake.encoding {
                     RealtimeEncoding::Json => (Opcode::Text, response.body),
                     RealtimeEncoding::Protobuf => {
-                        let body = match encode_authority_response(response.status, &response.body) {
+                        let body = match encode_authority_response(response.status, &response.body)
+                        {
                             Ok(value) => value,
                             Err(_) => {
                                 let _ = write_close_code(stream, 1011);
@@ -122,10 +123,7 @@ pub fn serve_once<R: Repository>(
 }
 
 fn authority_request(body: Vec<u8>, authorization: Option<&str>) -> Request {
-    let mut headers = BTreeMap::from([(
-        "content-type".to_owned(),
-        "application/json".to_owned(),
-    )]);
+    let mut headers = BTreeMap::from([("content-type".to_owned(), "application/json".to_owned())]);
     if let Some(value) = authorization {
         headers.insert("authorization".to_owned(), value.to_owned());
     }
@@ -167,8 +165,8 @@ fn validate_handshake(request: &Request) -> Result<Handshake, InputError> {
     let protocols = request
         .header("sec-websocket-protocol")
         .ok_or_else(|| InputError::new("websocket_protocol_missing"))?;
-    let (protocol, encoding) =
-        select_subprotocol(protocols).ok_or_else(|| InputError::new("websocket_protocol_invalid"))?;
+    let (protocol, encoding) = select_subprotocol(protocols)
+        .ok_or_else(|| InputError::new("websocket_protocol_invalid"))?;
 
     let mut accept_source = String::with_capacity(key.len() + WEBSOCKET_GUID.len());
     accept_source.push_str(key);
@@ -245,14 +243,12 @@ fn read_client_frame_exact(
         ),
         _ => unreachable!("seven-bit frame length indicator"),
     };
-    let maximum_payload =
-        u64::try_from(maximum_payload).map_err(|_| FrameReadError::Protocol)?;
+    let maximum_payload = u64::try_from(maximum_payload).map_err(|_| FrameReadError::Protocol)?;
     if payload_length > maximum_payload || payload_length > MAX_PAYLOAD_BYTES as u64 {
         return Err(FrameReadError::Protocol);
     }
     let mask_length = if head[1] & 0x80 == 0 { 0 } else { 4 };
-    let payload_length =
-        usize::try_from(payload_length).map_err(|_| FrameReadError::Protocol)?;
+    let payload_length = usize::try_from(payload_length).map_err(|_| FrameReadError::Protocol)?;
     let mut remainder = vec![0_u8; mask_length + payload_length];
     input
         .read_exact(&mut remainder)
@@ -262,19 +258,14 @@ fn read_client_frame_exact(
     encoded.extend_from_slice(&head);
     encoded.extend_from_slice(&extended_length);
     encoded.extend_from_slice(&remainder);
-    let (frame, consumed) =
-        decode_client_frame(&encoded).map_err(|_| FrameReadError::Protocol)?;
+    let (frame, consumed) = decode_client_frame(&encoded).map_err(|_| FrameReadError::Protocol)?;
     if consumed != encoded.len() {
         return Err(FrameReadError::Protocol);
     }
     Ok(frame)
 }
 
-fn write_frame(
-    output: &mut impl Write,
-    opcode: Opcode,
-    payload: &[u8],
-) -> Result<(), ServerError> {
+fn write_frame(output: &mut impl Write, opcode: Opcode, payload: &[u8]) -> Result<(), ServerError> {
     let encoded = encode_server_frame(opcode, payload)
         .map_err(|_| InputError::new("websocket_server_frame_invalid"))?;
     output.write_all(&encoded)?;
@@ -588,8 +579,8 @@ mod tests {
         assert_eq!(
             output,
             [
-                0x81, 0x02, b'o', b'k', 0x82, 0x02, 0x0a, 0x00, 0x8a, 0x01, b'p', 0x88,
-                0x02, 0x03, 0xe8
+                0x81, 0x02, b'o', b'k', 0x82, 0x02, 0x0a, 0x00, 0x8a, 0x01, b'p', 0x88, 0x02, 0x03,
+                0xe8
             ]
         );
     }
@@ -608,8 +599,9 @@ mod tests {
 
     #[test]
     fn message_budget_is_nonzero_and_hard_bounded() {
-        assert_eq!(MAX_MESSAGES_PER_CONNECTION, 64);
-        assert!(MAX_MESSAGES_PER_CONNECTION <= 256);
+        let budget = std::hint::black_box(MAX_MESSAGES_PER_CONNECTION);
+        assert_eq!(budget, 64);
+        assert!(budget <= 256);
     }
 
     #[test]

@@ -198,7 +198,10 @@ impl fmt::Display for ProtobufError {
             Self::Incomplete => formatter.write_str("protobuf envelope is incomplete"),
             Self::InvalidFieldKey => formatter.write_str("protobuf field key is invalid"),
             Self::InvalidWireType { field, wire_type } => {
-                write!(formatter, "protobuf field {field} has wire type {wire_type}")
+                write!(
+                    formatter,
+                    "protobuf field {field} has wire type {wire_type}"
+                )
             }
             Self::UnknownField(field) => write!(formatter, "protobuf field {field} is unknown"),
             Self::DuplicateField(field) => {
@@ -348,9 +351,7 @@ pub fn encode_authority_command(json_request: &[u8]) -> Result<Vec<u8>, Protobuf
     Ok(output)
 }
 
-pub fn decode_authority_command(
-    input: &[u8],
-) -> Result<AuthorityCommandEnvelope, ProtobufError> {
+pub fn decode_authority_command(input: &[u8]) -> Result<AuthorityCommandEnvelope, ProtobufError> {
     let mut cursor = 0usize;
     let mut json_request = None;
     while cursor < input.len() {
@@ -378,10 +379,7 @@ pub fn decode_authority_command(
     })
 }
 
-pub fn encode_authority_response(
-    status: u16,
-    json_body: &[u8],
-) -> Result<Vec<u8>, ProtobufError> {
+pub fn encode_authority_response(status: u16, json_body: &[u8]) -> Result<Vec<u8>, ProtobufError> {
     if !(100..=599).contains(&status) {
         return Err(ProtobufError::InvalidStatus(u64::from(status)));
     }
@@ -398,9 +396,7 @@ pub fn encode_authority_response(
     Ok(output)
 }
 
-pub fn decode_authority_response(
-    input: &[u8],
-) -> Result<AuthorityResponseEnvelope, ProtobufError> {
+pub fn decode_authority_response(input: &[u8]) -> Result<AuthorityResponseEnvelope, ProtobufError> {
     let mut cursor = 0usize;
     let mut status = None;
     let mut json_body = None;
@@ -470,12 +466,12 @@ fn read_length_delimited<'a>(
     input: &'a [u8],
     cursor: &mut usize,
 ) -> Result<&'a [u8], ProtobufError> {
-    let length = usize::try_from(read_varint(input, cursor)?)
-        .map_err(|_| ProtobufError::LengthOverflow)?;
+    let length =
+        usize::try_from(read_varint(input, cursor)?).map_err(|_| ProtobufError::LengthOverflow)?;
     if length > MAX_ENVELOPE_BODY_BYTES {
         return Err(ProtobufError::PayloadTooLarge { actual: length });
     }
-    let end = cursor
+    let end = (*cursor)
         .checked_add(length)
         .ok_or(ProtobufError::LengthOverflow)?;
     let value = input.get(*cursor..end).ok_or(ProtobufError::Incomplete)?;
