@@ -1,0 +1,116 @@
+name: temporary-finalize-websocket-persistent
+
+on:
+  push:
+    branches:
+      - codex/websocket-persistent-lifecycle-2026-08-31
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-finalize-websocket-persistent
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Fetch exact branch without external actions
+        shell: bash
+        env:
+          BRANCH: codex/websocket-persistent-lifecycle-2026-08-31
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags origin \
+            "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$BRANCH" "origin/$BRANCH"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Synchronize lockfile and source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          checker = Path("scripts/check-trnm-server.py")
+          text = checker.read_text(encoding="utf-8")
+          replacements = [
+              (
+                  '        "trnm-contracts": {"path": "../trnm-contracts"},\n        "trnm-session-core": {"path": "../trnm-session-core"},',
+                  '        "trnm-contracts": {"path": "../trnm-contracts"},\n        "trnm-realtime-wire": {"path": "../trnm-realtime-wire"},\n        "trnm-session-core": {"path": "../trnm-session-core"},',
+              ),
+              (
+                  '    "masked_single_text_frame_is_unmasked_exactly",\n    "unmasked_fragmented_and_oversized_frames_are_rejected",',
+                  '    "masked_single_text_frame_is_unmasked_exactly",\n    "protobuf_subprotocol_selects_binary_encoding",\n    "persistent_reader_keeps_frame_boundaries_and_control_frames",\n    "protobuf_response_envelope_preserves_status_and_json_body",\n    "message_budget_is_nonzero_and_hard_bounded",\n    "shared_codec_rejects_encoding_mismatch",\n    "unmasked_fragmented_and_oversized_frames_are_rejected",',
+              ),
+              (
+                  '        "crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs": [\n            "/v1/realtime",\n            "trnm.json.v1",\n            "Sec-WebSocket-Accept",\n            "websocket_client_frame_unmasked",\n            "websocket_length_not_canonical",\n            \'"POST",\\n        "/v1/authority/commit"\',\n        ],',
+                  '        "crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs": [\n            "/v1/realtime",\n            "trnm.json.v1",\n            "trnm.protobuf.v1",\n            "Sec-WebSocket-Accept",\n            "MAX_MESSAGES_PER_CONNECTION",\n            "read_client_frame_exact",\n            "decode_authority_command",\n            "encode_authority_response",\n            "Opcode::Ping",\n            "Opcode::Pong",\n            \'"POST", "/v1/authority/commit"\',\n        ],',
+              ),
+              (
+                  '        "websocket_json_source_candidate",\n        "bounded_pool_source_candidate",',
+                  '        "websocket_json_source_candidate",\n        "websocket_persistent_source_candidate",\n        "websocket_protobuf_envelope_source_candidate",\n        "bounded_pool_source_candidate",',
+              ),
+              (
+                  '                "websocket_json_source_candidate": True,\n                "bounded_pool_source_candidate": True,',
+                  '                "websocket_json_source_candidate": True,\n                "websocket_persistent_source_candidate": True,\n                "websocket_protobuf_envelope_source_candidate": True,\n                "bounded_pool_source_candidate": True,',
+              ),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f"checker patch anchor count {text.count(old)} for {old[:80]!r}")
+              text = text.replace(old, new)
+          checker.write_text(text, encoding="utf-8")
+
+          wire = Path("crates/trnm-realtime-wire/src/lib.rs")
+          wire_text = wire.read_text(encoding="utf-8")
+          old = "    let end = cursor\n        .checked_add(length)"
+          new = "    let end = (*cursor)\n        .checked_add(length)"
+          if wire_text.count(old) != 1:
+              raise SystemExit("wire cursor patch anchor missing")
+          wire.write_text(wire_text.replace(old, new), encoding="utf-8")
+          PY
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          cargo check --package trnm-persistence-pg --all-targets
+          cargo fmt --all
+          cargo fmt --manifest-path crates/trnm-realtime-wire/Cargo.toml
+      - name: Remove temporary execution surface before validation
+        shell: bash
+        run: git rm .github/workflows/temporary-finalize-websocket-persistent.yml
+      - name: Validate final clean tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/check-trnm-server.py
+          python3 scripts/check-workflow-actions.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-source-candidate-boundaries.py
+          python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo fmt --manifest-path crates/trnm-realtime-wire/Cargo.toml -- --check
+          cargo test --manifest-path crates/trnm-realtime-wire/Cargo.toml --all-targets --locked
+          cargo clippy --manifest-path crates/trnm-realtime-wire/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Commit verified final tree
+        shell: bash
+        env:
+          BRANCH: codex/websocket-persistent-lifecycle-2026-08-31
+        run: |
+          set -euo pipefail
+          git config user.name "trillionnium-realtime-finalizer"
+          git config user.email "realtime-finalizer@users.noreply.github.com"
+          git add Cargo.lock scripts/check-trnm-server.py \
+            crates/trnm-realtime-wire/src/lib.rs \
+            crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs \
+            .github/workflows/temporary-finalize-websocket-persistent.yml
+          git diff --cached --check
+          git commit -m "ci(realtime): seal persistent websocket candidate"
+          git push origin "HEAD:refs/heads/${BRANCH}"
