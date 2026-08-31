@@ -25,16 +25,14 @@ jobs:
           RUST_TEST_THREADS: "1"
           RUST_TOOLCHAIN: "1.98.0"
           WORLD_HEAD: "5605cfb8861aa923f69ff032ddbff7d035bccb0c"
-          CONTROL_HEAD: "7adb924bd5990726d845846834c379d8e3d58db0"
-          BUNDLE_SHA256: "1dc729cb02846481c9a69db56f423aafd522db55bafc1a3ae352b9d6ea218dce"
           TRNM_REQUIRE_SETTLEMENT_DATABASE_TEST: "0"
         run: |
           set -euo pipefail
           git init control
-          git -C control remote add origin https://github.com/TrillionniumFoundation/Trillionnium-Chain.git
-          git -C control fetch --no-tags --depth=1 origin "${CONTROL_HEAD}"
+          git -C control remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C control fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
           git -C control checkout --detach FETCH_HEAD
-          test "$(git -C control rev-parse HEAD)" = "${CONTROL_HEAD}"
+          test "$(git -C control rev-parse HEAD)" = "${GITHUB_SHA}"
 
           git init world
           git -C world remote add origin https://github.com/TrillionniumFoundation/Trillionnium-World.git
@@ -42,24 +40,12 @@ jobs:
           git -C world checkout --detach FETCH_HEAD
           test "$(git -C world rev-parse HEAD)" = "${WORLD_HEAD}"
 
-          cat control/tmp/world-plan-v4-development-transfer/world-closure-bundle.part-*.b64 \
-            | tr -d '\n' \
-            | base64 -d > /tmp/world-closure-bundle.tar.gz
-          printf '%s  %s\n' "${BUNDLE_SHA256}" /tmp/world-closure-bundle.tar.gz | sha256sum -c -
-          tar -xzf /tmp/world-closure-bundle.tar.gz -C /tmp
-          bash -n /tmp/world-closure-tools/run-world-source-closure.sh
-
           rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
           rustup default "${RUST_TOOLCHAIN}"
           rustc --version --verbose
           cargo --version --verbose
 
-          export WORLD_CHECKOUT="$GITHUB_WORKSPACE/world"
-          /tmp/world-closure-tools/run-world-source-closure.sh \
+          bash control/tmp/world-plan-v4-v8-patch/qualify-v8.sh \
             "$GITHUB_WORKSPACE/world" \
             "$GITHUB_WORKSPACE/control" \
             "$GITHUB_WORKSPACE/export"
-
-          test -s "$GITHUB_WORKSPACE/export/world/manifest.json"
-          sha256sum "$GITHUB_WORKSPACE/export/world/manifest.json"
-          cat "$GITHUB_WORKSPACE/export/world/manifest.json"
