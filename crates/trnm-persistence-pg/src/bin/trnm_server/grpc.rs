@@ -166,6 +166,10 @@ mod tests {
             assert_eq!(response.into_inner(), Empty {});
         });
 
+        // The tonic client connection is driven by tasks owned by this runtime.
+        // Drop it before requesting graceful server shutdown; otherwise the test
+        // waits for the server to close a connection whose driver is still alive.
+        drop(runtime);
         draining.store(true, Ordering::Release);
         join(Some(worker)).unwrap();
         assert!(!worker_failed.load(Ordering::Acquire));
