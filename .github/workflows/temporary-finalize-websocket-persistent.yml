@@ -81,6 +81,14 @@ jobs:
           if wire_text.count(old) != 1:
               raise SystemExit("wire cursor patch anchor missing")
           wire.write_text(wire_text.replace(old, new), encoding="utf-8")
+
+          server = Path("crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs")
+          server_text = server.read_text(encoding="utf-8")
+          old = "        assert_eq!(MAX_MESSAGES_PER_CONNECTION, 64);\n        assert!(MAX_MESSAGES_PER_CONNECTION <= 256);"
+          new = "        let budget = std::hint::black_box(MAX_MESSAGES_PER_CONNECTION);\n        assert_eq!(budget, 64);\n        assert!(budget <= 256);"
+          if server_text.count(old) != 1:
+              raise SystemExit("message-budget assertion patch anchor missing")
+          server.write_text(server_text.replace(old, new), encoding="utf-8")
           PY
           rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
           rustup override set 1.85.1
