@@ -1,4 +1,4 @@
-name: exact-source-snapshot
+name: exact-repair-export
 
 on:
   push:
@@ -12,14 +12,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: exact-source-snapshot-${{ github.sha }}
+  group: exact-repair-export-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  retain-source:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+  patch-validate-export:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
     env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: '1'
       CANDIDATE_REPOSITORY: ${{ github.repository }}
       CANDIDATE_SHA: ${{ github.sha }}
     steps:
@@ -34,24 +36,91 @@ jobs:
           git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
 
-      - name: Seal and retain exact source archive
+      - name: Apply all exact-head repairs and remove publishers
         shell: bash
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/TrillionniumGame-${CANDIDATE_SHA}.tar.gz"
-          git archive --format=tar.gz --prefix="TrillionniumGame-${CANDIDATE_SHA}/" \
-            --output="$archive" "$CANDIDATE_SHA"
-          archive_sha="$(sha256sum "$archive" | awk '{print $1}')"
-          artifact_name="exact-source-${CANDIDATE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          python3 scripts/upload-actions-artifact.py \
-            "$artifact_name" "$archive" --mime-type application/gzip \
-            | tee "$RUNNER_TEMP/exact-source-artifact.json"
-          {
-            printf '### Exact source snapshot\n\n'
-            printf -- '- repository: `%s`\n' "$CANDIDATE_REPOSITORY"
-            printf -- '- commit: `%s`\n' "$CANDIDATE_SHA"
-            printf -- '- archive SHA-256: `%s`\n' "$archive_sha"
-            printf -- '- diagnostic only: `true`\n'
-            printf -- '- compatibility credit: `false`\n'
-          } >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/temporary-prepatch-app-drain.py
+          python3 scripts/temporary-close-pr57-review-blockers.py
+          python3 scripts/temporary-close-pr57-outbox-evidence.py
+          rm \
+            .github/workflows/temporary-close-pr57-review-blockers.yml \
+            .github/workflows/exact-source-snapshot.yml \
+            scripts/temporary-prepatch-app-drain.py \
+            scripts/temporary-close-pr57-review-blockers.py \
+            scripts/temporary-close-pr57-outbox-evidence.py
+
+      - name: Install exact Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Format and validate clean source candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 scripts/check-gap-register.py
+          python3 scripts/check-evidence-index.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/check-schema-authority.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-rust-foundation.py
+          python3 scripts/check-trnm-server.py
+          python3 scripts/check-source-candidate-boundaries.py
+          bash scripts/check-api-rtapi-denominator.sh
+          bash -n scripts/ci-outbox-final-attempt-reaper.sh
+          test -x scripts/upload-actions-artifact.py
+          python3 -m unittest tests.control_plane.test_actions_artifact_uploader -v
+          files=$(find runtime -type f -name '*.go' -print | sort)
+          test -n "$files"
+          unformatted=$(printf '%s\n' "$files" | xargs gofmt -l)
+          test -z "$unformatted" || { printf '%s\n' "$unformatted" >&2; exit 1; }
+          (cd runtime && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
+          git diff --check
+          test ! -e .github/workflows/temporary-close-pr57-review-blockers.yml
+          test ! -e .github/workflows/exact-source-snapshot.yml
+          test ! -e scripts/temporary-prepatch-app-drain.py
+          test ! -e scripts/temporary-close-pr57-review-blockers.py
+          test ! -e scripts/temporary-close-pr57-outbox-evidence.py
+
+      - name: Export validated file set through bounded logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          export_root="$RUNNER_TEMP/pr57-export"
+          archive="$RUNNER_TEMP/pr57-export.tar.gz"
+          rm -rf "$export_root"
+          mkdir -p "$export_root/files"
+
+          git diff --name-only --diff-filter=ACMRTUXB -z | \
+            while IFS= read -r -d '' path; do
+              mkdir -p "$export_root/files/$(dirname "$path")"
+              cp "$path" "$export_root/files/$path"
+            done
+          git diff --name-only --diff-filter=D | sort > "$export_root/deleted-paths.txt"
+          git diff --name-status | sort > "$export_root/name-status.txt"
+          printf '%s\n' "$CANDIDATE_SHA" > "$export_root/base-commit.txt"
+          git write-tree > "$export_root/base-tree-before-index.txt"
+
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$archive" -C "$export_root" .
+          archive_sha=$(sha256sum "$archive" | awk '{print $1}')
+          archive_size=$(stat -c '%s' "$archive")
+          printf 'TRNM_EXPORT_BEGIN sha256=%s size=%s\n' "$archive_sha" "$archive_size"
+          base64 "$archive" | sed 's/^/TRNM_EXPORT_B64 /'
+          printf 'TRNM_EXPORT_END sha256=%s size=%s\n' "$archive_sha" "$archive_size"
