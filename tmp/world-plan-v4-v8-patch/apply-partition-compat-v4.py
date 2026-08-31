@@ -46,4 +46,22 @@ fn direct_sources_never_restore_generated_authority() {
 }
 '''
 boundary.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+
+runtime_contract = root / "trillionnium/crates/trnm-game-server/tests/settlement_runtime_v2_contract.rs"
+runtime_text = runtime_contract.read_text(encoding="utf-8")
+legacy_marker = '        "run_legacy_disabled",\n'
+if runtime_text.count(legacy_marker) != 1:
+    raise SystemExit(f"retired legacy marker source drifted: {runtime_text.count(legacy_marker)}")
+runtime_text = runtime_text.replace(legacy_marker, "", 1)
+export_assertion = '    assert!(WORKER_WRAPPER.contains("settlement_worker_runtime_v2.rs"));\n'
+if runtime_text.count(export_assertion) != 1:
+    raise SystemExit(f"runtime export assertion source drifted: {runtime_text.count(export_assertion)}")
+runtime_text = runtime_text.replace(
+    export_assertion,
+    export_assertion
+    + '    assert!(WORKER_WRAPPER.contains("pub use implementation::{run_v2 as run, WorkerConfig};"));\n'
+    + '    assert!(!WORKER_WRAPPER.contains("run_legacy as run"));\n',
+    1,
+)
+runtime_contract.write_text(runtime_text, encoding="utf-8")
 print("partition compatibility v4: PASS")
