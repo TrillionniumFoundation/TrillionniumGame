@@ -1,0 +1,63 @@
+{
+  "schema": "trillionnium.grpc-healthcheck.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-candidate",
+  "upstream": {
+    "repository": "heroiclabs/nakama",
+    "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "path": "apigrpc/apigrpc.proto",
+    "blob": "1cc63aae1aaa5dc56ede9c9d0b6f9a95ff91361c",
+    "package": "nakama.api",
+    "service": "Nakama",
+    "method": "Healthcheck",
+    "request": "google.protobuf.Empty",
+    "response": "google.protobuf.Empty",
+    "http_binding": "GET /healthcheck"
+  },
+  "candidate": {
+    "proto": "crates/trnm-persistence-pg/proto/nakama-healthcheck.proto",
+    "build_script": "crates/trnm-persistence-pg/build.rs",
+    "server_module": "crates/trnm-persistence-pg/src/bin/trnm_server/grpc.rs",
+    "method_path": "/nakama.api.Nakama/Healthcheck",
+    "configuration": "TRNM_SERVER_GRPC_BIND",
+    "default_enabled": false,
+    "same_process_as_http_server": true,
+    "shutdown_signal_shared": true
+  },
+  "toolchain": {
+    "tonic": "0.14.5",
+    "tonic_prost": "0.14.5",
+    "tonic_prost_build": "0.14.5",
+    "prost": "0.14.3",
+    "protoc_bin_vendored": "3.2.0",
+    "rust": "1.85.1"
+  },
+  "assertions": [
+    "generated Rust client and server bindings compile from the checked-in proto subset",
+    "a generated client reaches the generated server over HTTP/2",
+    "the response is google.protobuf.Empty",
+    "the listener is disabled unless an explicit bind address is configured",
+    "non-loopback binding uses the same explicit opt-in as the HTTP listener",
+    "HTTP and gRPC listeners cannot use the same address",
+    "drain and gRPC failure use the shared process lifecycle fence"
+  ],
+  "gap_ids": ["GAP-P0-SERVER-001"],
+  "task_ids": ["TG-V3-023"],
+  "claims": {
+    "official_method_signature_pinned": true,
+    "generated_rust_bindings_source_candidate": true,
+    "grpc_healthcheck_source_candidate": true,
+    "full_nakama_grpc_implemented": false,
+    "grpc_gateway_implemented": false,
+    "wire_differential_accepted": false,
+    "compatibility_credit": false,
+    "production_ready": false
+  },
+  "limitations": [
+    "Only Nakama Healthcheck is represented; every other RPC remains outside this subset.",
+    "The google.api HTTP annotation is recorded but grpc-gateway is not generated or served.",
+    "No immutable Nakama differential or official SDK black-box result is accepted.",
+    "No TLS, reflection, load, HA, cross-node or production evidence is claimed for the gRPC listener.",
+    "Independent protocol and security review remain mandatory."
+  ]
+}
