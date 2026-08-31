@@ -1,0 +1,238 @@
+name: pr57-final-qualification-monitor-v2
+
+on:
+  push:
+    branches:
+      - codex/pr57-batch-staging-2026-08-31-a
+    paths:
+      - '.github/workflows/z-pr57-final-qualification-monitor-v2.yml'
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr57-final-qualification-monitor-v2
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Synchronize identity, qualify exact-head workflows and request review
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: '57'
+          EXPECTED_HEAD_BRANCH: codex/grpc-healthcheck-source-2026-08-31
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ['GITHUB_TOKEN']
+          repository = os.environ['REPOSITORY']
+          pr_number = os.environ['PR_NUMBER']
+          expected_branch = os.environ['EXPECTED_HEAD_BRANCH']
+          api = f'https://api.github.com/repos/{repository}'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'trillionnium-pr57-final-qualification-monitor-v2',
+          }
+
+          def request(method, url, payload=None, allow_404=False):
+              data = None if payload is None else json.dumps(payload).encode('utf-8')
+              current = dict(headers)
+              if data is not None:
+                  current['Content-Type'] = 'application/json'
+              req = urllib.request.Request(url, data=data, method=method, headers=current)
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      raw = response.read()
+              except urllib.error.HTTPError as error:
+                  if allow_404 and error.code == 404:
+                      return None
+                  detail = error.read().decode('utf-8', 'replace')
+                  raise RuntimeError(f'{method} {url}: HTTP {error.code}: {detail}') from error
+              return json.loads(raw) if raw else {}
+
+          def get_pr():
+              return request('GET', f'{api}/pulls/{pr_number}')
+
+          pr = get_pr()
+          if pr.get('state') != 'open' or pr.get('merged') is True:
+              raise SystemExit(f'PR is not open/unmerged: state={pr.get("state")} merged={pr.get("merged")}')
+          if pr.get('head', {}).get('ref') != expected_branch:
+              raise SystemExit(f'head branch mismatch: {pr.get("head", {}).get("ref")}')
+          head = pr['head']['sha']
+          if not re.fullmatch(r'[0-9a-f]{40}', head):
+              raise SystemExit('head SHA is not 40-hex')
+          commit = request('GET', f'{api}/git/commits/{head}')
+          tree = commit['tree']['sha']
+          if not re.fullmatch(r'[0-9a-f]{40}', tree):
+              raise SystemExit('tree SHA is not 40-hex')
+
+          temporary_paths = [
+              '.github/workflows/temporary-close-pr57-review-blockers.yml',
+              '.github/workflows/temporary-fix-outbox-evidence.yml',
+              'scripts/temporary-prepatch-app-drain.py',
+              'scripts/temporary-close-pr57-review-blockers.py',
+              'scripts/temporary-close-pr57-outbox-evidence.py',
+              'scripts/temporary-fix-outbox-evidence.py',
+          ]
+          present = []
+          for path in temporary_paths:
+              encoded = urllib.parse.quote(path, safe='/')
+              value = request('GET', f'{api}/contents/{encoded}?ref={head}', allow_404=True)
+              if value is not None:
+                  present.append(path)
+          if present:
+              raise SystemExit('temporary publisher residue remains: ' + ', '.join(present))
+
+          body = pr.get('body') or ''
+          substitutions = [
+              (r'(?m)^- head commit: `[0-9a-f]{40}`$', f'- head commit: `{head}`'),
+              (r'(?m)^- head tree: `[0-9a-f]{40}`$', f'- head tree: `{tree}`'),
+              (r'Fresh independent review must bind exactly `[0-9a-f]{40}` / `[0-9a-f]{40}`', f'Fresh independent review must bind exactly `{head}` / `{tree}`'),
+              (r'This exact head `[0-9a-f]{7}…` must obtain its own', f'This exact head `{head[:7]}…` must obtain its own'),
+          ]
+          for pattern, replacement in substitutions:
+              body, count = re.subn(pattern, replacement, body, count=1)
+              if count != 1:
+                  raise SystemExit(f'PR body exact field missing or duplicated: {pattern}')
+          marker = '## Machine-synchronized exact identity'
+          section = (
+              f'{marker}\n\n'
+              f'- synchronized head commit: `{head}`\n'
+              f'- synchronized head tree: `{tree}`\n'
+              '- synchronization source: GitHub pull-request and Git-commit APIs\n'
+              '- temporary publisher/mutator count: `0`\n'
+              '- any later source commit invalidates this section and all current-head evidence\n'
+          )
+          body = (body[:body.index(marker)].rstrip() if marker in body else body.rstrip()) + '\n\n' + section
+          updated = request('PATCH', f'{api}/pulls/{pr_number}', {'body': body})
+          if updated.get('head', {}).get('sha') != head:
+              raise SystemExit('head moved while synchronizing PR body')
+
+          required = {
+              'pg-server-vertical-slice',
+              'outbox-spool-worker',
+              'websocket-wire-source',
+              'trillionnium-game-persistence-outbox-core',
+              'trillionnium-game-storage-core',
+              'source-candidate-boundaries',
+              'outbox-final-attempt-reaper',
+              'grpc-health-source',
+              'pull-request-contract',
+              'trnm-server-live',
+              'trillionnium-game-transport-error-core',
+              'trillionnium-game-query-core',
+              'trillionnium-game-plan-contract',
+              'trillionnium-game-actions-unblock-smoke',
+              'database-backup-restore',
+              'trillionnium-game-canonical-framing-core',
+              'candidate-identity-manifest',
+              'pg-server-response-loss',
+              'trillionnium-game-token-policy-core',
+              'trillionnium-game-rust-foundation',
+              'pgwire-vertical-slice',
+              'trillionnium-game-presence-router-core',
+              'trillionnium-game-merge-gate',
+          }
+
+          latest = {}
+          deadline = time.monotonic() + 78 * 60
+          while time.monotonic() < deadline:
+              current_pr = get_pr()
+              if current_pr['head']['sha'] != head:
+                  raise SystemExit(f'head moved during qualification: {head} -> {current_pr["head"]["sha"]}')
+              query = urllib.parse.urlencode({'head_sha': head, 'event': 'pull_request', 'per_page': 100})
+              payload = request('GET', f'{api}/actions/runs?{query}')
+              runs = payload.get('workflow_runs', [])
+              latest = {}
+              for run in sorted(runs, key=lambda row: row['id']):
+                  if run.get('head_sha') == head:
+                      latest[run['name']] = run
+              missing = sorted(required - set(latest))
+              pending = sorted(name for name in required if name in latest and latest[name].get('status') != 'completed')
+              if not missing and not pending:
+                  break
+              print(json.dumps({'head': head, 'missing': missing, 'pending': pending}, sort_keys=True), flush=True)
+              time.sleep(20)
+          else:
+              raise SystemExit('timed out waiting for a non-empty terminal exact-head workflow collection')
+
+          failures = []
+          run_summary = []
+          for name in sorted(required):
+              run = latest[name]
+              row = {'name': name, 'id': run['id'], 'status': run['status'], 'conclusion': run.get('conclusion')}
+              run_summary.append(row)
+              if run.get('conclusion') != 'success':
+                  jobs = request('GET', f'{api}/actions/runs/{run["id"]}/jobs?per_page=100').get('jobs', [])
+                  failed_jobs = []
+                  for job in jobs:
+                      if job.get('conclusion') != 'success':
+                          failed_steps = [step.get('name') for step in (job.get('steps') or []) if step.get('conclusion') not in {None, 'success'}]
+                          failed_jobs.append({'job': job.get('name'), 'status': job.get('status'), 'conclusion': job.get('conclusion'), 'failed_steps': failed_steps})
+                  failures.append({'workflow': name, 'run_id': run['id'], 'conclusion': run.get('conclusion'), 'jobs': failed_jobs})
+
+          required_jobs = {
+              'outbox-final-attempt-reaper': {
+                  'source-contract',
+                  'live-profile (postgresql)',
+                  'live-profile (cockroachdb)',
+                  'verify-retained-logs',
+              },
+              'trnm-server-live': {
+                  'trnm-server-source-contract',
+                  'trnm-server-live-postgresql',
+                  'trnm-server-live-cockroachdb',
+                  'trnm-server-live',
+              },
+          }
+          for workflow_name, names in required_jobs.items():
+              run = latest[workflow_name]
+              jobs = request('GET', f'{api}/actions/runs/{run["id"]}/jobs?per_page=100').get('jobs', [])
+              by_name = {job.get('name'): job for job in jobs}
+              for name in sorted(names):
+                  job = by_name.get(name)
+                  if job is None or job.get('status') != 'completed' or job.get('conclusion') != 'success':
+                      failures.append({'workflow': workflow_name, 'run_id': run['id'], 'required_job': name, 'observed': None if job is None else {'status': job.get('status'), 'conclusion': job.get('conclusion')}})
+
+          if failures:
+              comment = (
+                  '## Exact-head qualification failed\n\n'
+                  f'- head: `{head}`\n- tree: `{tree}`\n\n'
+                  '```json\n' + json.dumps({'failures': failures, 'runs': run_summary}, indent=2, sort_keys=True) + '\n```\n\n'
+                  'No workflow, evidence, approval, readiness or merge credit is granted.'
+              )
+              request('POST', f'{api}/issues/{pr_number}/comments', {'body': comment})
+              raise SystemExit('one or more exact-head workflows or required jobs failed')
+
+          requested = request('POST', f'{api}/pulls/{pr_number}/requested_reviewers', {'reviewers': ['Franksudoman', 'ProfHepta']})
+          comment = (
+              '## Exact-head native qualification complete; independent review requested\n\n'
+              f'- head: `{head}`\n- tree: `{tree}`\n'
+              f'- terminal successful workflows: `{len(run_summary)}`\n'
+              '- outbox retained-log reconstruction: `success`\n'
+              '- PostgreSQL/CockroachDB server-live aggregate: `success`\n'
+              f'- requested reviewers: `{", ".join(row["login"] for row in requested.get("requested_reviewers", []))}`\n\n'
+              'The PR remains Draft. Compatibility, production, public-online, replacement and retirement claims remain false until independently accepted evidence and subsequent Plan v3 gates exist.\n\n'
+              '```json\n' + json.dumps({'head': head, 'tree': tree, 'runs': run_summary}, indent=2, sort_keys=True) + '\n```'
+          )
+          request('POST', f'{api}/issues/{pr_number}/comments', {'body': comment})
+          print(json.dumps({'head': head, 'tree': tree, 'workflow_count': len(run_summary), 'qualification': 'success'}, sort_keys=True))
+          PY
