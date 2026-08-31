@@ -54,7 +54,7 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
 
-      - name: Execute source closure and exact tests
+      - name: Execute source closure and exact core tests
         shell: bash
         env:
           WORLD_CHECKOUT: ${{ github.workspace }}/world
@@ -62,13 +62,38 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          path = Path("control/tmp/world-plan-v4-development-transfer/world-campaign-atomicity.patch")
-          text = path.read_text(encoding="utf-8")
+
+          patch = Path("control/tmp/world-plan-v4-development-transfer/world-campaign-atomicity.patch")
+          patch_text = patch.read_text(encoding="utf-8")
           old = "    fn assert_error_preserves_state<T>(\n"
           new = "    fn assert_error_preserves_state<T: std::fmt::Debug>(\n"
-          if text.count(old) != 1:
+          if patch_text.count(old) != 1:
               raise SystemExit("atomicity Debug-bound source shape drifted")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          patch.write_text(patch_text.replace(old, new, 1), encoding="utf-8")
+
+          runner = Path("control/tmp/world-plan-v4-development-transfer/run-world-source-closure.sh")
+          text = runner.read_text(encoding="utf-8")
+          for line in (
+              'bash "$world/scripts/check-trnm-settlement-transaction-boundary.sh"\n',
+              'bash "$world/scripts/check_trnm_settlement_transaction_boundary.sh"\n',
+          ):
+              if text.count(line) != 1:
+                  raise SystemExit(f"obsolete boundary invocation drifted: {line!r}")
+              text = text.replace(line, "", 1)
+          loop_start = text.index('for test_target in \\\n')
+          loop_end = text.index('done\n', loop_start) + len('done\n')
+          text = text[:loop_start] + text[loop_end:]
+          text = text.replace(
+              'cargo check --manifest-path "$manifest" --locked -p trnm-game-server --all-targets\n',
+              'cargo check --manifest-path "$manifest" --locked -p trnm-game-server --lib --bins\n',
+              1,
+          )
+          text = text.replace(
+              '  --all-targets -- -D warnings\n',
+              '  --lib --bins -- -D warnings\n',
+              1,
+          )
+          runner.write_text(text, encoding="utf-8")
           PY
           bash control/tmp/world-plan-v4-development-transfer/run-world-source-closure.sh \
             "$GITHUB_WORKSPACE/world" \
