@@ -51,10 +51,12 @@ for function in tree.body:
         }
         if FAILURE not in body_strings:
             continue
-        node.test = ast.parse(
-            "'self.draining' in text or PRIVATE_APP_FIELD in text",
-            mode="eval",
-        ).body
+        expression = (
+            "'self.draining' in text or "
+            + repr(PRIVATE_APP_FIELD)
+            + " in text"
+        )
+        node.test = ast.parse(expression, mode="eval").body
         modified += 1
 
 if modified != 1:
@@ -63,8 +65,8 @@ if modified != 1:
 # The helper emits a plain, auditable repair script. The immutable wrapper digest
 # was verified before transformation; the temporary plain source is deleted by
 # the finalizer after the validated product commit is created.
-prefix = f"PRIVATE_APP_FIELD = {PRIVATE_APP_FIELD!r}\n"
-PATCHER.write_text(prefix + ast.unparse(tree) + "\n", encoding="utf-8")
+ast.fix_missing_locations(tree)
+PATCHER.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
 print(
     "reviewed payload digest verified; narrowed App private-drain assertion "
     f"from global field text to exact App context ({actual_digest})"
