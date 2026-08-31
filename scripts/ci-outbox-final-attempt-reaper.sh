@@ -179,6 +179,7 @@ export TRNM_OUTBOX_POLL_INTERVAL_MS=10
 export TRNM_OUTBOX_MAX_BACKOFF_MS=1000
 command_bin=target/debug/trnm-pg-command
 worker_bin=target/debug/trnm-outbox-worker
+dead_reason_hex=c57f69b9f67ddf67d5d6a49b4527af2e17ad313bfbc2f8397b5f9120541be25a
 
 run_scenario() {
   local boundary=$1 entity_byte=$2 command_byte=$3 fingerprint_byte=$4
@@ -186,6 +187,7 @@ run_scenario() {
   local expected_exit=$8 expected_dead_letter_count=$9
   local scenario="$evidence/$boundary" spool="$evidence/$boundary/spool"
   local intent_byte=$((command_byte + 2)) intent_hex spool_path crash_status
+  local outbox_row_count terminal_dead_letter_count
   intent_hex=$(python3 - "$intent_byte" <<'PY'
 import sys
 print(f"{int(sys.argv[1]):02x}" * 16)
@@ -232,21 +234,33 @@ PY
   unset TRNM_OUTBOX_TEST_FAIL_BEFORE_DELIVERY TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY || true
   "$worker_bin" run-once >"$scenario/reaper.stdout" 2>"$scenario/reaper.stderr"
   grep -q "dead_lettered=${expected_dead_letter_count}" "$scenario/reaper.stdout"
-  test "$(sql_exec "SELECT COUNT(*) FROM trnm_outbox WHERE intent_id = decode('$intent_hex','hex');")" = 0
-  test "$(sql_exec "SELECT COUNT(*) FROM trnm_outbox_dead_letters WHERE intent_id = decode('$intent_hex','hex');")" = "$expected_dead_letter_count"
+
+  # Dead-lettering is an in-place terminal transition on trnm_outbox. Assert
+  # the one canonical row, complete fencing metadata and exact stable reason;
+  # no shadow/dead-letter side table exists in the authoritative schema.
+  outbox_row_count=$(sql_exec \
+    "SELECT COUNT(*) FROM trnm_outbox WHERE intent_id = decode('$intent_hex','hex');")
+  terminal_dead_letter_count=$(sql_exec \
+    "SELECT COUNT(*) FROM trnm_outbox WHERE intent_id = decode('$intent_hex','hex') \
+     AND state = 3 AND attempt = 1 AND lease_generation = 1 \
+     AND owner_node IS NULL AND receipt_digest IS NULL \
+     AND dead_reason_digest = decode('$dead_reason_hex','hex');")
+  test "$outbox_row_count" = "$expected_dead_letter_count"
+  test "$terminal_dead_letter_count" = "$expected_dead_letter_count"
+
   case "$boundary" in
     crash-before-publish)
       test ! -e "$spool_path"
-      printf 'possible_lost_effect_declared=true\nspool_effect_count=0\ndead_letter_count=%s\n' \
-        "$expected_dead_letter_count" >"$scenario/result.env"
+      printf 'possible_lost_effect_declared=true\nspool_effect_count=0\noutbox_row_count=%s\ndead_letter_count=%s\n' \
+        "$outbox_row_count" "$terminal_dead_letter_count" >"$scenario/result.env"
       ;;
     crash-after-publish)
       test -f "$spool_path"
       sha256sum -c "$scenario/spool-before.sha256"
       spool_count=$(find "$spool" -maxdepth 1 -type f -name '*.json' | wc -l)
       test "$spool_count" -eq 1
-      printf 'possible_lost_effect_declared=false\nspool_effect_count=1\ndead_letter_count=%s\n' \
-        "$expected_dead_letter_count" >"$scenario/result.env"
+      printf 'possible_lost_effect_declared=false\nspool_effect_count=1\noutbox_row_count=%s\ndead_letter_count=%s\n' \
+        "$outbox_row_count" "$terminal_dead_letter_count" >"$scenario/result.env"
       ;;
   esac
 }
