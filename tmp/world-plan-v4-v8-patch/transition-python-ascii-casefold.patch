@@ -1,0 +1,23 @@
+--- a/scripts/check-trnm-world-transition-conformance.py
++++ b/scripts/check-trnm-world-transition-conformance.py
+@@ -77,13 +77,20 @@ def object_pairs(pairs: list[tuple[str, Any]]) -> CanonicalObject:
+     return CanonicalObject(tuple(pairs))
+ 
+ 
++def ascii_lower(value: str) -> str:
++    """Match Rust `to_ascii_lowercase` without Unicode case folding."""
++    return value.translate(
++        str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
++    )
++
++
+ def check_value(value: Any, depth: int = 0) -> None:
+     if depth > MAX_DEPTH:
+         raise CanonicalFailure("nesting exceeds 128")
+     if isinstance(value, CanonicalObject):
+         for key, child in value.pairs:
+-            if key in FORBIDDEN_KEYS:
++            if ascii_lower(key) in FORBIDDEN_KEYS:
+                 raise CanonicalFailure(f"forbidden authority key: {key}")
+             check_string(key)
+             check_value(child, depth + 1)
