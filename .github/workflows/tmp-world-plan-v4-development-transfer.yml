@@ -55,44 +55,21 @@ jobs:
 
           script = Path('/tmp/qualify-v8-fixed.sh')
           text = script.read_text(encoding='utf-8')
-          needle = '''git -C "$world" apply "$online_patch"
-          cargo fmt --manifest-path "$manifest" --all
-          '''
-          replacement = r'''git -C "$world" apply "$online_patch"
-          python3 - "$world" <<'PYFIX'
-          from pathlib import Path
-          import sys
-
-          world = Path(sys.argv[1])
-          campaign = world / "trillionnium/crates/trnm-campaign-core/src/lib.rs"
-          campaign_text = campaign.read_text(encoding="utf-8")
-          if "__atomic_inner" not in campaign_text:
-              raise SystemExit("campaign atomic-inner naming source shape drifted")
-          campaign.write_text(
-              campaign_text.replace("__atomic_inner", "_atomic_inner"),
-              encoding="utf-8",
+          needle = 'git -C "$world" apply "$online_patch"\ncargo fmt --manifest-path "$manifest" --all\n'
+          repair = (
+              'git -C "$world" apply "$online_patch"\n'
+              "python3 -c 'from pathlib import Path; import sys; w=Path(sys.argv[1]); "
+              "p=w/\"trillionnium/crates/trnm-campaign-core/src/lib.rs\"; t=p.read_text(encoding=\"utf-8\"); "
+              "assert \"__atomic_inner\" in t; p.write_text(t.replace(\"__atomic_inner\", \"_atomic_inner\"), encoding=\"utf-8\"); "
+              "r=w/\"trillionnium/crates/trnm-rts-sim/src/lib.rs\"; s=r.read_text(encoding=\"utf-8\"); "
+              "old=\"        let error = assert_sim_error_preserves_state(&mut sim, |candidate| {\\n            candidate.issue_order(build)\\n        });\\n        assert!(error.to_string().contains(\\\"field resources\\\"));\\n\"; "
+              "new=\"        let _error = assert_sim_error_preserves_state(&mut sim, |candidate| {\\n            candidate.issue_order(build)\\n        });\\n\"; "
+              "assert s.count(old)==1; r.write_text(s.replace(old, new, 1), encoding=\"utf-8\")' \"$world\"\n"
+              'cargo fmt --manifest-path "$manifest" --all\n'
           )
-
-          rts = world / "trillionnium/crates/trnm-rts-sim/src/lib.rs"
-          rts_text = rts.read_text(encoding="utf-8")
-          old = '''        let error = assert_sim_error_preserves_state(&mut sim, |candidate| {
-                      candidate.issue_order(build)
-                  });
-                  assert!(error.to_string().contains("field resources"));
-          '''
-          new = '''        let _error = assert_sim_error_preserves_state(&mut sim, |candidate| {
-                      candidate.issue_order(build)
-                  });
-          '''
-          if rts_text.count(old) != 1:
-              raise SystemExit("RTS state-preservation assertion source shape drifted")
-          rts.write_text(rts_text.replace(old, new, 1), encoding="utf-8")
-          PYFIX
-          cargo fmt --manifest-path "$manifest" --all
-          '''
           if text.count(needle) != 1:
               raise SystemExit('qualification insertion point drifted')
-          script.write_text(text.replace(needle, replacement, 1), encoding='utf-8')
+          script.write_text(text.replace(needle, repair, 1), encoding='utf-8')
           PY
           chmod +x /tmp/qualify-v8-fixed.sh
           bash -n /tmp/qualify-v8-fixed.sh
