@@ -1,0 +1,115 @@
+name: pr57-exact-identity-sync
+
+on:
+  push:
+    branches:
+      - codex/pr57-batch-staging-2026-08-31-a
+    paths:
+      - '.github/workflows/z-pr57-sync-body.yml'
+      - '.pr57-sync-body-trigger'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr57-exact-identity-sync
+  cancel-in-progress: true
+
+jobs:
+  synchronize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Bind PR body to the live head commit and tree
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: '57'
+          EXPECTED_HEAD_BRANCH: codex/grpc-healthcheck-source-2026-08-31
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          token = os.environ['GITHUB_TOKEN']
+          repository = os.environ['REPOSITORY']
+          pr_number = os.environ['PR_NUMBER']
+          expected_branch = os.environ['EXPECTED_HEAD_BRANCH']
+          api = f'https://api.github.com/repos/{repository}'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'trillionnium-pr57-exact-identity-sync',
+          }
+
+          def request(method, url, payload=None):
+              data = None if payload is None else json.dumps(payload).encode('utf-8')
+              current = dict(headers)
+              if data is not None:
+                  current['Content-Type'] = 'application/json'
+              req = urllib.request.Request(url, data=data, method=method, headers=current)
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  raw = response.read()
+              return json.loads(raw) if raw else {}
+
+          pr = request('GET', f'{api}/pulls/{pr_number}')
+          if pr.get('state') != 'open' or pr.get('merged') is True:
+              raise SystemExit(f'PR is not an open unmerged candidate: state={pr.get("state")} merged={pr.get("merged")}')
+          if pr.get('head', {}).get('ref') != expected_branch:
+              raise SystemExit(f'head branch mismatch: {pr.get("head", {}).get("ref")}')
+          head = pr['head']['sha']
+          if not re.fullmatch(r'[0-9a-f]{40}', head):
+              raise SystemExit('head SHA is not 40-hex')
+          commit = request('GET', f'{api}/git/commits/{head}')
+          tree = commit.get('tree', {}).get('sha')
+          if not isinstance(tree, str) or not re.fullmatch(r'[0-9a-f]{40}', tree):
+              raise SystemExit('tree SHA is not 40-hex')
+
+          body = pr.get('body') or ''
+          replacements = [
+              (r'(?m)^- head commit: `[0-9a-f]{40}`$', f'- head commit: `{head}`'),
+              (r'(?m)^- head tree: `[0-9a-f]{40}`$', f'- head tree: `{tree}`'),
+              (
+                  r'Fresh independent review must bind exactly `[0-9a-f]{40}` / `[0-9a-f]{40}`',
+                  f'Fresh independent review must bind exactly `{head}` / `{tree}`',
+              ),
+          ]
+          for pattern, replacement in replacements:
+              body, count = re.subn(pattern, replacement, body, count=1)
+              if count != 1:
+                  raise SystemExit(f'PR body exact field missing or duplicated: {pattern}')
+
+          short = head[:7]
+          body, count = re.subn(
+              r'This exact head `[0-9a-f]{7}…` must obtain its own',
+              f'This exact head `{short}…` must obtain its own',
+              body,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit('PR body current-head rule is missing or duplicated')
+
+          marker = '## Machine-synchronized exact identity'
+          section = (
+              f'{marker}\n\n'
+              f'- synchronized head commit: `{head}`\n'
+              f'- synchronized head tree: `{tree}`\n'
+              '- synchronization source: GitHub pull-request and Git-commit APIs\n'
+              '- any later source commit invalidates this section and all current-head evidence\n'
+          )
+          if marker in body:
+              body = body[: body.index(marker)].rstrip() + '\n\n' + section
+          else:
+              body = body.rstrip() + '\n\n' + section
+
+          updated = request('PATCH', f'{api}/pulls/{pr_number}', {'body': body})
+          if updated.get('head', {}).get('sha') != head:
+              raise SystemExit('PR head moved during metadata synchronization')
+          print(json.dumps({'pull_request': int(pr_number), 'head': head, 'tree': tree}, sort_keys=True))
+          PY
