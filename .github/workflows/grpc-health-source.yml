@@ -100,6 +100,9 @@ jobs:
           grep -Fq 'pub const HEALTHCHECK_METHOD_PATH: &str = "/nakama.api.Nakama/Healthcheck";' \
             crates/trnm-persistence-pg/src/bin/trnm_server/grpc.rs
           grep -Fq 'tonic_prost_build::configure()' crates/trnm-persistence-pg/build.rs
+          grep -Fq 'TRNM_SERVER_GRPC_BIND' crates/trnm-persistence-pg/src/bin/trnm_server/config.rs
+          grep -Fq 'grpc::spawn' crates/trnm-persistence-pg/src/bin/trnm_server/server.rs
+          grep -Fq 'grpc::join' crates/trnm-persistence-pg/src/bin/trnm_server/server.rs
       - name: Install exact Rust
         shell: bash
         run: |
