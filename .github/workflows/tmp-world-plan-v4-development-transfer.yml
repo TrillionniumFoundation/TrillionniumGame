@@ -83,6 +83,8 @@ jobs:
             "$GITHUB_WORKSPACE/control/.github/actions/trnm-upload-artifact" \
             "$GITHUB_WORKSPACE/.github/actions/trnm-upload-artifact"
 
+      # The pinned local artifact runtime passed an isolated smoke run before this
+      # qualification rerun; the candidate source and qualification script are unchanged.
       - name: Upload immutable World v13k candidate evidence
         uses: ./.github/actions/trnm-upload-artifact
         with:
