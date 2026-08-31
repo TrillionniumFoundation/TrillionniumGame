@@ -68,6 +68,8 @@ expired exhausted lease becomes a dead letter and the worker reports
 publication no effect exists, so final-attempt dead-lettering can lose the
 external effect. This is not an exactly-once claim.
 
-The deterministic raw archive is retained through the native Actions Results
-artifact service and finalized with its SHA-256 digest. Logs or summaries
-without that retained archive receive no evidence credit.
+The deterministic raw `.tar.gz` archive is hashed before upload and retained by
+GitHub's first-party `actions/upload-artifact` action pinned to immutable commit
+`043fb460e6257d1ca154e89a5e86196c74e480f8`. The summary binds the raw archive
+SHA-256 separately from the service artifact ID, URL and digest. Logs or summaries
+without the retained archive and those identities receive no evidence credit.
