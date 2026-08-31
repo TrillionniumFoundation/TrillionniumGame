@@ -41,7 +41,6 @@ impl Nakama for HealthcheckService {
 
 #[derive(Debug)]
 pub struct GrpcWorker {
-    bind: SocketAddr,
     worker: JoinHandle<Result<(), ServerError>>,
 }
 
@@ -56,6 +55,9 @@ pub fn spawn(
     let worker = thread::Builder::new()
         .name("trnm-grpc-healthcheck".to_owned())
         .spawn(move || {
+            eprintln!(
+                "trnm-server gRPC source candidate listening on {bind} method={HEALTHCHECK_METHOD_PATH}"
+            );
             let result = serve(bind, Arc::clone(&draining));
             if result.is_err() {
                 worker_failed.store(true, Ordering::Release);
@@ -63,7 +65,7 @@ pub fn spawn(
             }
             result
         })?;
-    Ok(Some(GrpcWorker { bind, worker }))
+    Ok(Some(GrpcWorker { worker }))
 }
 
 pub fn join(worker: Option<GrpcWorker>) -> Result<(), ServerError> {
@@ -91,13 +93,6 @@ fn serve(bind: SocketAddr, draining: Arc<AtomicBool>) -> Result<(), ServerError>
             .await
             .map_err(|_| ServerError::Configuration("grpc_server_failed"))
     })
-}
-
-impl GrpcWorker {
-    #[must_use]
-    pub const fn bind(&self) -> SocketAddr {
-        self.bind
-    }
 }
 
 #[cfg(test)]
@@ -140,7 +135,6 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(worker.bind(), bind);
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
