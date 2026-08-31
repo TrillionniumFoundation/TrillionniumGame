@@ -11,15 +11,67 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: tmp-world-plan-v4-development-transfer-20260831
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  RUST_TEST_THREADS: "1"
+  RUST_TOOLCHAIN: "1.98.0"
+  WORLD_HEAD: "5605cfb8861aa923f69ff032ddbff7d035bccb0c"
+  CONTROL_HEAD: "57e00ee8103791fd9a177cf1895344710c598262"
+
 jobs:
-  probe:
+  verify-and-export:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 120
     steps:
-      - name: Prove runner startup
+      - name: Fetch immutable control and World trees
         shell: bash
         run: |
           set -euo pipefail
-          uname -a
-          git --version
-          python3 --version
+          git init control
+          git -C control remote add origin https://github.com/TrillionniumFoundation/Trillionnium-Chain.git
+          git -C control fetch --no-tags --depth=1 origin "${CONTROL_HEAD}"
+          git -C control checkout --detach FETCH_HEAD
+          test "$(git -C control rev-parse HEAD)" = "${CONTROL_HEAD}"
+
+          git init world
+          git -C world remote add origin https://github.com/TrillionniumFoundation/Trillionnium-World.git
+          git -C world fetch --no-tags --depth=1 origin "${WORLD_HEAD}"
+          git -C world checkout --detach FETCH_HEAD
+          test "$(git -C world rev-parse HEAD)" = "${WORLD_HEAD}"
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${RUST_TOOLCHAIN}"
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Execute source closure and exact tests
+        shell: bash
+        env:
+          WORLD_CHECKOUT: ${{ github.workspace }}/world
+        run: |
+          set -euo pipefail
+          bash control/tmp/world-plan-v4-development-transfer/run-world-source-closure.sh \
+            "$GITHUB_WORKSPACE/world" \
+            "$GITHUB_WORKSPACE/control" \
+            "$GITHUB_WORKSPACE/export"
+
+      - name: Emit exact tested source transfer in bounded log records
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C export -czf /tmp/trnm-world-plan-v4-development-transfer.tar.gz .
+          digest="$(sha256sum /tmp/trnm-world-plan-v4-development-transfer.tar.gz | awk '{print $1}')"
+          bytes="$(wc -c </tmp/trnm-world-plan-v4-development-transfer.tar.gz | tr -d ' ')"
+          printf '__TRNM_WORLD_TRANSFER_BEGIN__ sha256=%s bytes=%s\n' "$digest" "$bytes"
+          base64 -w 48000 /tmp/trnm-world-plan-v4-development-transfer.tar.gz
+          printf '\n__TRNM_WORLD_TRANSFER_END__ sha256=%s bytes=%s\n' "$digest" "$bytes"
