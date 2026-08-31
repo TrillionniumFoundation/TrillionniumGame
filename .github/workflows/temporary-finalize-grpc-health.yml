@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - codex/grpc-healthcheck-source-2026-08-31
-  pull_request:
-    branches:
-      - codex/websocket-persistent-lifecycle-2026-08-31
 
 permissions:
   contents: write
@@ -15,10 +12,6 @@ concurrency:
   group: temporary-finalize-grpc-health
   cancel-in-progress: false
 
-env:
-  TARGET_BRANCH: ${{ github.event.pull_request.head.ref || 'codex/grpc-healthcheck-source-2026-08-31' }}
-  TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-
 jobs:
   integrate-validate-and-remove:
     runs-on: ubuntu-24.04
@@ -26,430 +19,24 @@ jobs:
     steps:
       - name: Fetch exact branch without external actions
         shell: bash
+        env:
+          BRANCH: codex/grpc-healthcheck-source-2026-08-31
         run: |
           set -euo pipefail
-          test "$TARGET_BRANCH" = codex/grpc-healthcheck-source-2026-08-31
           rm -rf "$GITHUB_WORKSPACE"
           git init "$GITHUB_WORKSPACE"
           git -C "$GITHUB_WORKSPACE" remote add origin \
             "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git"
           git -C "$GITHUB_WORKSPACE" fetch --no-tags origin \
-            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
-          git -C "$GITHUB_WORKSPACE" checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
-          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$TARGET_SHA"
-      - name: Integrate typed config, lifecycle and source contracts
+            "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$BRANCH" "origin/$BRANCH"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Apply reviewed integration patch
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          def replace_once(path: str, old: str, new: str) -> None:
-              file = Path(path)
-              text = file.read_text(encoding="utf-8")
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{path}: patch anchor count={count} for {old[:100]!r}")
-              file.write_text(text.replace(old, new), encoding="utf-8")
-
-          config = "crates/trnm-persistence-pg/src/bin/trnm_server/config.rs"
-          replace_once(
-              config,
-              "pub struct ServerConfig {\n    pub bind: SocketAddr,\n    pub database_url: String,",
-              "pub struct ServerConfig {\n    pub bind: SocketAddr,\n    pub grpc_bind: Option<SocketAddr>,\n    pub database_url: String,",
-          )
-          replace_once(
-              config,
-              '.field("bind", &self.bind)\n            .field("database_url", &"<redacted>")',
-              '.field("bind", &self.bind)\n            .field("grpc_bind", &self.grpc_bind)\n            .field("database_url", &"<redacted>")',
-          )
-          bind_anchor = '''        if !bind.ip().is_loopback() && !allow_non_loopback {
-            return Err(ServerError::Configuration(
-                "non_loopback_bind_requires_explicit_opt_in",
-            ));
-        }
-
-'''
-          grpc_parse = bind_anchor + '''        let grpc_bind = lookup("TRNM_SERVER_GRPC_BIND")
-            .map(|value| {
-                value
-                    .parse::<SocketAddr>()
-                    .map_err(|_| ServerError::Configuration("grpc_bind_address_invalid"))
-            })
-            .transpose()?;
-        if let Some(grpc_bind) = grpc_bind {
-            if grpc_bind.port() == 0 {
-                return Err(ServerError::Configuration("grpc_bind_address_invalid"));
-            }
-            if !grpc_bind.ip().is_loopback() && !allow_non_loopback {
-                return Err(ServerError::Configuration(
-                    "grpc_non_loopback_bind_requires_explicit_opt_in",
-                ));
-            }
-            if grpc_bind == bind {
-                return Err(ServerError::Configuration(
-                    "grpc_bind_must_differ_from_http_bind",
-                ));
-            }
-        }
-
-'''
-          replace_once(config, bind_anchor, grpc_parse)
-          replace_once(
-              config,
-              "            Self {\n                bind,\n                database_url,",
-              "            Self {\n                bind,\n                grpc_bind,\n                database_url,",
-          )
-          replace_once(
-              config,
-              "        assert!(config.bind.ip().is_loopback());\n        assert_eq!(config.max_request_bytes, 128 * 1024);",
-              "        assert!(config.bind.ip().is_loopback());\n        assert_eq!(config.grpc_bind, None);\n        assert_eq!(config.max_request_bytes, 128 * 1024);",
-          )
-          grpc_test = '''    #[test]
-    fn grpc_bind_is_explicit_distinct_and_uses_public_opt_in() {
-        let mut values = base();
-        values.insert(
-            "TRNM_SERVER_GRPC_BIND".to_owned(),
-            "127.0.0.1:7351".to_owned(),
-        );
-        let (_, config) = load(&values).unwrap();
-        assert_eq!(
-            config.grpc_bind,
-            Some("127.0.0.1:7351".parse::<SocketAddr>().unwrap())
-        );
-
-        values.insert(
-            "TRNM_SERVER_GRPC_BIND".to_owned(),
-            "127.0.0.1:7350".to_owned(),
-        );
-        assert!(matches!(
-            load(&values),
-            Err(ServerError::Configuration(
-                "grpc_bind_must_differ_from_http_bind"
-            ))
-        ));
-
-        values.insert(
-            "TRNM_SERVER_GRPC_BIND".to_owned(),
-            "0.0.0.0:7351".to_owned(),
-        );
-        assert!(matches!(
-            load(&values),
-            Err(ServerError::Configuration(
-                "grpc_non_loopback_bind_requires_explicit_opt_in"
-            ))
-        ));
-        values.insert(
-            "TRNM_SERVER_ALLOW_NON_LOOPBACK".to_owned(),
-            "1".to_owned(),
-        );
-        assert!(!load(&values).unwrap().1.grpc_bind.unwrap().ip().is_loopback());
-
-        values.insert(
-            "TRNM_SERVER_GRPC_BIND".to_owned(),
-            "127.0.0.1:0".to_owned(),
-        );
-        assert!(matches!(
-            load(&values),
-            Err(ServerError::Configuration("grpc_bind_address_invalid"))
-        ));
-    }
-
-'''
-          replace_once(
-              config,
-              "    #[test]\n    fn verify_full_tls_is_secure_by_default_and_material_is_paired() {",
-              grpc_test + "    #[test]\n    fn verify_full_tls_is_secure_by_default_and_material_is_paired() {",
-          )
-
-          server = "crates/trnm-persistence-pg/src/bin/trnm_server/server.rs"
-          replace_once(
-              server,
-              "use super::error::ServerError;\nuse super::http::{read_request, Request, Response};",
-              "use super::error::ServerError;\nuse super::grpc;\nuse super::http::{read_request, Request, Response};",
-          )
-          replace_once(
-              server,
-              '''    eprintln!(
-        "trnm-server source candidate listening on {} profile={} workers={} queue_capacity={}",
-        config.bind,
-        config.database_profile.metadata_value(),
-        worker_count,
-        queue_capacity,
-    );
-''',
-              '''    let grpc_worker = grpc::spawn(
-        config.grpc_bind,
-        Arc::clone(&draining),
-        Arc::clone(&worker_failed),
-    )?;
-    let grpc_bind = config
-        .grpc_bind
-        .map_or_else(|| "disabled".to_owned(), |value| value.to_string());
-    eprintln!(
-        "trnm-server source candidate listening on {} profile={} workers={} queue_capacity={} grpc_bind={}",
-        config.bind,
-        config.database_profile.metadata_value(),
-        worker_count,
-        queue_capacity,
-        grpc_bind,
-    );
-''',
-          )
-          replace_once(
-              server,
-              '''    let accept_result = accept_loop(&listener, &sender, config, &draining, &worker_failed);
-    drop(sender);
-    let join_result = join_workers(workers);
-    accept_result?;
-    join_result?;
-''',
-              '''    let accept_result = accept_loop(&listener, &sender, config, &draining, &worker_failed);
-    draining.store(true, Ordering::Release);
-    drop(sender);
-    let join_result = join_workers(workers);
-    let grpc_join_result = grpc::join(grpc_worker);
-    accept_result?;
-    join_result?;
-    grpc_join_result?;
-''',
-          )
-
-          foundation = "scripts/check-rust-foundation.py"
-          replace_once(
-              foundation,
-              '''        "postgres-native-tls": "=0.5.3",
-        "r2d2": "=0.8.10",''',
-              '''        "postgres-native-tls": "=0.5.3",
-        "prost": "=0.14.3",
-        "r2d2": "=0.8.10",''',
-          )
-          replace_once(
-              foundation,
-              '''        "r2d2_postgres": "=0.18.2",
-        "trnm-contracts": {"path": "../trnm-contracts"},''',
-              '''        "r2d2_postgres": "=0.18.2",
-        "tokio": {"version": "=1.53.1", "features": ["rt", "time"]},
-        "tonic": {"version": "=0.14.5", "features": ["transport"]},
-        "tonic-prost": "=0.14.5",
-        "trnm-contracts": {"path": "../trnm-contracts"},''',
-          )
-          replace_once(
-              foundation,
-              '''    dependencies = manifest.get("dependencies", {})
-    if dependencies != EXPECTED_DEPENDENCIES[member]:
-        fail(
-            f"{member}: dependency allowlist mismatch: "
-            f"expected {EXPECTED_DEPENDENCIES[member]!r}, got {dependencies!r}"
-        )
-    source_files = sorted((root / "src").rglob("*.rs"))
-''',
-              '''    dependencies = manifest.get("dependencies", {})
-    if dependencies != EXPECTED_DEPENDENCIES[member]:
-        fail(
-            f"{member}: dependency allowlist mismatch: "
-            f"expected {EXPECTED_DEPENDENCIES[member]!r}, got {dependencies!r}"
-        )
-    expected_build_dependencies = (
-        {
-            "prost-build": "=0.14.3",
-            "prost-types": "=0.14.3",
-            "protoc-bin-vendored": "=3.2.0",
-            "tonic-build": "=0.14.5",
-            "tonic-prost-build": "=0.14.5",
-        }
-        if member == "crates/trnm-persistence-pg"
-        else {}
-    )
-    build_dependencies = manifest.get("build-dependencies", {})
-    if build_dependencies != expected_build_dependencies:
-        fail(
-            f"{member}: build dependency allowlist mismatch: "
-            f"expected {expected_build_dependencies!r}, got {build_dependencies!r}"
-        )
-    source_files = sorted((root / "src").rglob("*.rs"))
-''',
-          )
-
-          checker = "scripts/check-trnm-server.py"
-          replace_once(
-              checker,
-              '''REQUIRED_FILES = {
-    PERSISTENCE_ROOT / "pool.rs",''',
-              '''REQUIRED_FILES = {
-    ROOT / "crates/trnm-persistence-pg/build.rs",
-    ROOT / "crates/trnm-persistence-pg/proto/nakama-healthcheck.proto",
-    PERSISTENCE_ROOT / "pool.rs",''',
-          )
-          replace_once(
-              checker,
-              '''    MODULE_ROOT / "error.rs",
-    MODULE_ROOT / "http.rs",''',
-              '''    MODULE_ROOT / "error.rs",
-    MODULE_ROOT / "grpc.rs",
-    MODULE_ROOT / "http.rs",''',
-          )
-          replace_once(
-              checker,
-              '''    "default_candidate_config_is_loopback_bounded_and_redacted",
-    "accidental_public_bind_and_implicit_plaintext_database_fail_closed",''',
-              '''    "default_candidate_config_is_loopback_bounded_and_redacted",
-    "grpc_bind_is_explicit_distinct_and_uses_public_opt_in",
-    "accidental_public_bind_and_implicit_plaintext_database_fail_closed",''',
-          )
-          replace_once(
-              checker,
-              '''    "wrapper_is_cloneable_without_exposing_database_url",
-    "rfc6455_handshake_accept_matches_the_published_vector",''',
-              '''    "wrapper_is_cloneable_without_exposing_database_url",
-    "official_healthcheck_method_path_is_exact",
-    "generated_service_returns_an_empty_response",
-    "generated_client_reaches_the_http2_healthcheck_path",
-    "rfc6455_handshake_accept_matches_the_published_vector",''',
-          )
-          replace_once(
-              checker,
-              '''        "postgres-native-tls": "=0.5.3",
-        "r2d2": "=0.8.10",''',
-              '''        "postgres-native-tls": "=0.5.3",
-        "prost": "=0.14.3",
-        "r2d2": "=0.8.10",''',
-          )
-          replace_once(
-              checker,
-              '''        "r2d2_postgres": "=0.18.2",
-        "trnm-contracts": {"path": "../trnm-contracts"},''',
-              '''        "r2d2_postgres": "=0.18.2",
-        "tokio": {"version": "=1.53.1", "features": ["rt", "time"]},
-        "tonic": {"version": "=0.14.5", "features": ["transport"]},
-        "tonic-prost": "=0.14.5",
-        "trnm-contracts": {"path": "../trnm-contracts"},''',
-          )
-          replace_once(
-              checker,
-              '''    if manifest.get("dependencies") != expected_dependencies:
-        fail("server candidate changed the reviewed persistence dependency boundary")
-
-    sources = {''',
-              '''    if manifest.get("dependencies") != expected_dependencies:
-        fail("server candidate changed the reviewed persistence dependency boundary")
-    expected_build_dependencies = {
-        "prost-build": "=0.14.3",
-        "prost-types": "=0.14.3",
-        "protoc-bin-vendored": "=3.2.0",
-        "tonic-build": "=0.14.5",
-        "tonic-prost-build": "=0.14.5",
-    }
-    if manifest.get("build-dependencies") != expected_build_dependencies:
-        fail("server candidate changed the reviewed protobuf build dependency boundary")
-
-    sources = {''',
-          )
-          replace_once(
-              checker,
-              '''    required_markers = {
-        "crates/trnm-persistence-pg/src/pool.rs": [''',
-              '''    required_markers = {
-        "crates/trnm-persistence-pg/build.rs": [
-            "protoc_bin_vendored::protoc_bin_path",
-            "compile_well_known_types(true)",
-            "compile_protos",
-        ],
-        "crates/trnm-persistence-pg/proto/nakama-healthcheck.proto": [
-            "package nakama.api;",
-            "rpc Healthcheck (google.protobuf.Empty) returns (google.protobuf.Empty);",
-        ],
-        "crates/trnm-persistence-pg/src/pool.rs": [''',
-          )
-          replace_once(
-              checker,
-              '''            "pub(crate) mod auth;",
-            "pub(crate) mod pool;",''',
-              '''            "pub(crate) mod auth;",
-            "pub(crate) mod grpc;",
-            "pub(crate) mod pool;",''',
-          )
-          replace_once(
-              checker,
-              '''            "TRNM_SERVER_ALLOW_NON_LOOPBACK",
-            "TRNM_SERVER_ALLOW_PLAINTEXT_DATABASE",''',
-              '''            "TRNM_SERVER_ALLOW_NON_LOOPBACK",
-            "TRNM_SERVER_GRPC_BIND",
-            "grpc_bind_must_differ_from_http_bind",
-            "TRNM_SERVER_ALLOW_PLAINTEXT_DATABASE",''',
-          )
-          replace_once(
-              checker,
-              '''        "crates/trnm-persistence-pg/src/bin/trnm_server/http.rs": [''',
-              '''        "crates/trnm-persistence-pg/src/bin/trnm_server/grpc.rs": [
-            "/nakama.api.Nakama/Healthcheck",
-            "NakamaServer::new",
-            "serve_with_shutdown",
-            "worker_failed.store(true",
-            "generated_client_reaches_the_http2_healthcheck_path",
-        ],
-        "crates/trnm-persistence-pg/src/bin/trnm_server/http.rs": [''',
-          )
-          replace_once(
-              checker,
-              '''            "websocket::is_route",
-            "websocket::serve_once",''',
-              '''            "grpc::spawn",
-            "grpc::join",
-            "websocket::is_route",
-            "websocket::serve_once",''',
-          )
-          replace_once(
-              checker,
-              '''        "websocket_protobuf_envelope_source_candidate",
-        "bounded_pool_source_candidate",''',
-              '''        "websocket_protobuf_envelope_source_candidate",
-        "grpc_healthcheck_source_candidate",
-        "bounded_pool_source_candidate",''',
-          )
-          replace_once(
-              checker,
-              '''                "websocket_protobuf_envelope_source_candidate": True,
-                "bounded_pool_source_candidate": True,''',
-              '''                "websocket_protobuf_envelope_source_candidate": True,
-                "grpc_healthcheck_source_candidate": True,
-                "bounded_pool_source_candidate": True,''',
-          )
-
-          status_path = Path("docs/status/TRNM_SERVER_STATUS.json")
-          status = json.loads(status_path.read_text(encoding="utf-8"))
-          for value in [
-              "crates/trnm-persistence-pg/build.rs",
-              "crates/trnm-persistence-pg/proto/nakama-healthcheck.proto",
-              "crates/trnm-persistence-pg/src/bin/trnm_server/grpc.rs",
-              "contracts/grpc/nakama-healthcheck-v1.json",
-          ]:
-              if value not in status["source_paths"]:
-                  status["source_paths"].append(value)
-          for value in [
-              "generated Rust client and server bindings for the pinned official nakama.api.Nakama Healthcheck signature",
-              "optional same-process HTTP/2 gRPC listener configured by TRNM_SERVER_GRPC_BIND",
-              "shared drain and worker-failure fencing between HTTP and gRPC listeners",
-              "generated client-to-server Healthcheck transport test",
-          ]:
-              if value not in status["implemented_source"]:
-                  status["implemented_source"].append(value)
-          status["not_implemented_or_verified"] = [
-              (
-                  "remaining Nakama gRPC methods and grpc-gateway behavior beyond the generated Healthcheck subset"
-                  if value == "gRPC server and grpc-gateway behavior"
-                  else value
-              )
-              for value in status["not_implemented_or_verified"]
-          ]
-          status["claims"]["grpc_healthcheck_source_candidate"] = True
-          status["claims"]["grpc_implemented"] = False
-          status_path.write_text(
-              json.dumps(status, indent=2, ensure_ascii=False) + "\n",
-              encoding="utf-8",
-          )
-          PY
+          python3 -m py_compile scripts/temporary-finalize-grpc-health.py
+          python3 scripts/temporary-finalize-grpc-health.py
       - name: Generate lockfile and format source
         shell: bash
         run: |
@@ -460,7 +47,10 @@ jobs:
           cargo fmt --all
       - name: Remove temporary execution surface before validation
         shell: bash
-        run: git rm .github/workflows/temporary-finalize-grpc-health.yml
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/temporary-finalize-grpc-health.yml
+          git rm scripts/temporary-finalize-grpc-health.py
       - name: Validate exact clean tree
         shell: bash
         run: |
@@ -482,27 +72,42 @@ jobs:
           cargo fmt --all -- --check
           cargo test --workspace --all-targets --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Commit only the verified integration outputs
+      - name: Commit only verified integration outputs
         shell: bash
+        env:
+          BRANCH: codex/grpc-healthcheck-source-2026-08-31
         run: |
           set -euo pipefail
           git config user.name "trillionnium-grpc-finalizer"
           git config user.email "grpc-finalizer@users.noreply.github.com"
-          git status --porcelain=v1 | sed 's/^...//' | sort > /tmp/actual-paths
-          cat > /tmp/expected-paths <<'EOF'
-          .github/workflows/temporary-finalize-grpc-health.yml
-          Cargo.lock
-          crates/trnm-persistence-pg/build.rs
-          crates/trnm-persistence-pg/src/bin/trnm_server/config.rs
-          crates/trnm-persistence-pg/src/bin/trnm_server/grpc.rs
-          crates/trnm-persistence-pg/src/bin/trnm_server/server.rs
-          docs/status/TRNM_SERVER_STATUS.json
-          scripts/check-rust-foundation.py
-          scripts/check-trnm-server.py
-          EOF
-          sort -o /tmp/expected-paths /tmp/expected-paths
-          diff -u /tmp/expected-paths /tmp/actual-paths
+          git status --porcelain=v1 | sed 's/^...//' > /tmp/actual-paths
+          while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/temporary-finalize-grpc-health.yml|\
+              scripts/temporary-finalize-grpc-health.py|\
+              Cargo.lock|\
+              crates/trnm-persistence-pg/build.rs|\
+              crates/trnm-persistence-pg/src/bin/trnm_server/config.rs|\
+              crates/trnm-persistence-pg/src/bin/trnm_server/grpc.rs|\
+              crates/trnm-persistence-pg/src/bin/trnm_server/server.rs|\
+              docs/status/TRNM_SERVER_STATUS.json|\
+              scripts/check-rust-foundation.py|\
+              scripts/check-trnm-server.py) ;;
+              *) echo "unexpected finalizer output: $path" >&2; exit 1 ;;
+            esac
+          done < /tmp/actual-paths
+          for required in \
+            .github/workflows/temporary-finalize-grpc-health.yml \
+            scripts/temporary-finalize-grpc-health.py \
+            Cargo.lock \
+            crates/trnm-persistence-pg/src/bin/trnm_server/config.rs \
+            crates/trnm-persistence-pg/src/bin/trnm_server/server.rs \
+            docs/status/TRNM_SERVER_STATUS.json \
+            scripts/check-rust-foundation.py \
+            scripts/check-trnm-server.py; do
+            grep -Fxq "$required" /tmp/actual-paths
+          done
           git add -A
           git diff --cached --check
           git commit -m "ci(grpc): seal generated Healthcheck source candidate"
-          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          git push origin "HEAD:refs/heads/${BRANCH}"
