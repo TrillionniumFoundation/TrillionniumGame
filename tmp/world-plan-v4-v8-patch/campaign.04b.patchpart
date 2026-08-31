@@ -1,0 +1,116 @@
+     backend: &B,
+         max_intents: usize,
++    ) -> Result<EconomyReconciliationReport, CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.reconcile_economy__atomic_inner(backend, max_intents)
++        })
++    }
++
++    fn reconcile_economy__atomic_inner<B: EconomyBackend>(
++        &mut self,
++        backend: &B,
++        max_intents: usize,
+     ) -> Result<EconomyReconciliationReport, CampaignError> {
+         let mut report = EconomyReconciliationReport::default();
+         while (report.attempted as usize) < max_intents {
+@@ -10194,4 +10702,184 @@ mod tests {
+         assert_eq!(settings.master_volume_percent, 80);
+         assert_eq!(settings.control_scheme, ControlScheme::Classic);
+     }
++
++    fn economic_draft(
++        campaign: &CampaignSaveV1,
++        intent_id: impl Into<String>,
++        compensation: bool,
++    ) -> EconomicIntentDraft {
++        EconomicIntentDraft {
++            kind: EconomicIntentKind::CompleteContract,
++            term_id: "command_atomicity_regression".to_string(),
++            intent_id: intent_id.into(),
++            binding: campaign.effective_economy_binding(),
++            asset_id: "trnm-soft-credit".to_string(),
++            quantity: 1,
++            amount_credits: 0,
++            metadata: json!({"test": "command_atomicity"}),
++            compensation,
++        }
++    }
++
++    fn fill_economic_lane(
++        campaign: &mut CampaignSaveV1,
++        compensation: bool,
++        capacity: usize,
++    ) {
++        for index in 0..capacity {
++            let request = economic_draft(
++                campaign,
++                format!("atomicity-fill-{compensation}-{index}"),
++                compensation,
++            );
++            assert!(campaign
++                .queue_economic_intent(request)
++                .expect("lane fill remains valid"));
++        }
++    }
++
++    fn assert_campaign_error_preserves_bytes<T: std::fmt::Debug>(
++        campaign: &mut CampaignSaveV1,
++        operation: impl FnOnce(&mut CampaignSaveV1) -> Result<T, CampaignError>,
++    ) -> CampaignError {
++        let before = serde_json::to_vec(campaign).expect("campaign state serializes");
++        let error = operation(campaign).expect_err("operation must fail");
++        assert_eq!(
++            before,
++            serde_json::to_vec(campaign).expect("campaign state still serializes"),
++            "campaign command returned Err after changing persistent state"
++        );
++        error
++    }
++
++    #[test]
++    fn full_economic_lanes_leave_idempotency_identity_retryable() {
++        for (compensation, capacity, expected) in [
++            (false, 128_usize, "economic outbox"),
++            (true, 64_usize, "compensation lane"),
++        ] {
++            let mut campaign = CampaignSaveV1::default();
++            fill_economic_lane(&mut campaign, compensation, capacity);
++            let retry_id = format!("atomicity-retry-{compensation}");
++            let error = assert_campaign_error_preserves_bytes(&mut campaign, |candidate| {
++                candidate.queue_economic_intent(economic_draft(
++                    candidate,
++                    retry_id.clone(),
++                    compensation,
++                ))
++            });
++            assert!(error.to_string().contains(expected));
++            if compensation {
++                campaign.pending_economic_compensations.pop();
++            } else {
++                campaign.pending_economic_intents.pop();
++            }
++            assert!(campaign
++                .queue_economic_intent(economic_draft(&campaign, retry_id, compensation))
++                .expect("same identity remains retryable after capacity is released"));
++        }
++    }
++
++    #[test]
++    fn settlement_queue_failure_rolls_back_result_progression_and_daily_budget() {
++        let mut campaign = ready_campaign();
++        let seed = campaign.start_first_contact_battle(map()).unwrap();
++        let result = terminal_result(&seed, BattleOutcome::Victory);
++        fill_economic_lane(&mut campaign, false, 128);
++        let error = assert_campaign_error_preserves_bytes(&mut campaign, |candidate| {
++            candidate.submit_battle_result(result)
++        });
++        assert!(error.to_string().contains("economic outbox"));
++        assert_eq!(campaign.phase, CampaignPhase::BattlePending);
++        assert!(!campaign.wallet_reward_issued_by_day.contains_key(&campaign.world_clock.day));
++    }
++
++    #[test]
++    fn reserve_failure_leaves_no_orphan_tradeable_purchase() {
++        let selected_shop_item_index = ECONOMY_ITEM_CATALOG
++            .iter()
++            .position(|item| item.material)
