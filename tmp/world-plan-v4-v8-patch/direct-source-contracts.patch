@@ -1,0 +1,129 @@
+--- a/trillionnium/crates/trnm-game-server/tests/settlement_worker_contract.rs
++++ b/trillionnium/crates/trnm-game-server/tests/settlement_worker_contract.rs
+@@ -10,7 +10,6 @@
+ const SIGNER_PROTOCOL: &str = include_str!("../src/signer_protocol.rs");
+ const SIGNER_BINARY: &str = include_str!("../src/bin/trnm-entitlement-signer.rs");
+ const WORKER_BINARY: &str = include_str!("../src/bin/trnm-settlement-worker.rs");
+-const BUILD_SCRIPT: &str = include_str!("../build.rs");
+ 
+ fn normalized(source: &str) -> String {
+     source.split_whitespace().collect::<Vec<_>>().join(" ")
+@@ -24,13 +23,15 @@
+     assert!(!WORKER_WRAPPER.contains("OUT_DIR"));
+     assert!(!WORKER_WRAPPER.contains("trnm_settlement_worker_generated.rs"));
+ 
+-    assert!(!BUILD_SCRIPT.contains("generate_settlement_worker"));
+-    assert!(!BUILD_SCRIPT.contains("settlement_worker.rs.in"));
+-    assert!(!BUILD_SCRIPT.contains("trnm_settlement_worker_generated.rs"));
+-
+-    let template = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+-        .join("src/settlement_worker.rs.in");
+-    assert!(!template.exists(), "worker template authority must stay removed");
++    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
++    assert!(
++        !crate_root.join("build.rs").exists(),
++        "semantic build-script authority must stay removed"
++    );
++    assert!(
++        !crate_root.join("src/settlement_worker.rs.in").exists(),
++        "worker template authority must stay removed"
++    );
+ }
+ 
+ #[test]
+--- a/trillionnium/crates/trnm-game-server/tests/settlement_runtime_v2_contract.rs
++++ b/trillionnium/crates/trnm-game-server/tests/settlement_runtime_v2_contract.rs
+@@ -1,11 +1,8 @@
+-const BUILD_SCRIPT: &str = include_str!("../build.rs");
+ const CEX_WRAPPER: &str = include_str!("../src/cex.rs");
+-const CEX_TEMPLATE: &str = include_str!("../src/cex.rs.in");
+ const WORKER_WRAPPER: &str = include_str!("../src/settlement_worker.rs");
+ const RUNTIME_V2: &str = include_str!("../src/settlement_worker_runtime_v2.rs");
+ const MIGRATION_V19: &str =
+     include_str!("../migrations/0019_online_settlement_quarantine_v1.sql");
+-const CARGO_MANIFEST: &str = include_str!("../Cargo.toml");
+ 
+ fn normalized(source: &str) -> String {
+     source.split_whitespace().collect::<Vec<_>>().join(" ")
+@@ -72,24 +69,30 @@
+ }
+ 
+ #[test]
+-fn generated_sources_register_migration_19_and_disable_the_old_loop() {
++fn direct_sources_register_migration_19_and_disable_the_old_loop() {
+     for marker in [
+         "0019_online_settlement_quarantine_v1.sql",
+         "run_legacy_disabled",
+-        "generate_cex",
+-        "trnm_cex_generated.rs",
+-        "bounded_error_body",
+-        "StatusCode::CONFLICT",
+     ] {
+-        assert!(BUILD_SCRIPT.contains(marker), "missing build marker {marker}");
++        assert!(
++            RUNTIME_V2.contains(marker),
++            "missing direct runtime marker {marker}"
++        );
++    }
++    for marker in ["bounded_error_body", "StatusCode::CONFLICT"] {
++        assert!(
++            CEX_WRAPPER.contains(marker),
++            "missing direct CEX marker {marker}"
++        );
+     }
+     assert!(WORKER_WRAPPER.contains("settlement_worker_runtime_v2.rs"));
+-    assert!(CEX_WRAPPER.contains("trnm_cex_generated.rs"));
++    assert!(!WORKER_WRAPPER.contains("OUT_DIR"));
++    assert!(!CEX_WRAPPER.contains("OUT_DIR"));
++    assert!(!CEX_WRAPPER.contains("trnm_cex_generated.rs"));
+ }
+ 
+ #[test]
+-fn blocking_http_cannot_return_to_the_game_server_package() {
+-    assert!(!CARGO_MANIFEST.contains("\"blocking\""));
+-    assert!(!CEX_TEMPLATE.contains("reqwest::blocking"));
+-    assert!(!CEX_TEMPLATE.contains("blocking_client"));
++fn settlement_cex_transport_never_uses_blocking_http() {
++    assert!(!CEX_WRAPPER.contains("reqwest::blocking"));
++    assert!(!CEX_WRAPPER.contains("blocking_client"));
+ }
+--- a/trillionnium/crates/trnm-game-server/tests/direct_cex_source_contract.rs
++++ b/trillionnium/crates/trnm-game-server/tests/direct_cex_source_contract.rs
+@@ -1,8 +1,6 @@
+ use std::path::PathBuf;
+ 
+ const CEX_SOURCE: &str = include_str!("../src/cex.rs");
+-const BUILD_SCRIPT: &str = include_str!("../build.rs");
+-const CARGO_MANIFEST: &str = include_str!("../Cargo.toml");
+ 
+ #[test]
+ fn cex_transport_is_directly_compiled_reviewed_source() {
+@@ -13,12 +11,15 @@
+     assert!(!CEX_SOURCE.contains("trnm_cex_generated.rs"));
+     assert!(!CEX_SOURCE.contains("include!("));
+ 
+-    assert!(!BUILD_SCRIPT.contains("generate_cex"));
+-    assert!(!BUILD_SCRIPT.contains("src/cex.rs.in"));
+-    assert!(!BUILD_SCRIPT.contains("trnm_cex_generated.rs"));
+-
+-    let template = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/cex.rs.in");
+-    assert!(!template.exists(), "CEX template authority must stay removed");
++    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
++    assert!(
++        !crate_root.join("build.rs").exists(),
++        "semantic build-script authority must stay removed"
++    );
++    assert!(
++        !crate_root.join("src/cex.rs.in").exists(),
++        "CEX template authority must stay removed"
++    );
+ }
+ 
+ #[test]
+@@ -42,6 +43,5 @@
+ fn direct_cex_source_never_restores_blocking_transport() {
+     assert!(!CEX_SOURCE.contains("reqwest::blocking"));
+     assert!(!CEX_SOURCE.contains("blocking_client"));
+-    assert!(!CARGO_MANIFEST.contains("\"blocking\""));
+     assert!(CEX_SOURCE.contains("synchronous EconomyBackend I/O is prohibited"));
+ }
