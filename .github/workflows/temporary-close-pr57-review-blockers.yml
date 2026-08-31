@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   patch-validate-commit:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           candidates="$({
-            for name in python3.13 python3.12 python3.11; do
+            for name in python3 python3.13 python3.12 python3.11; do
               command -v "$name" 2>/dev/null || true
             done
             find /opt/hostedtoolcache/Python -type f -path '*/x64/bin/python' -perm -111 \
