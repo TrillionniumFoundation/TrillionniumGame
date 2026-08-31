@@ -42,11 +42,14 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/temporary-prepatch-app-drain.py
+          python3 scripts/temporary-dedupe-server-shared-state.py
           python3 scripts/temporary-close-pr57-review-blockers.py
           python3 scripts/temporary-close-pr57-outbox-evidence.py
           rm \
             .github/workflows/temporary-close-pr57-review-blockers.yml \
+            .github/workflows/exact-source-snapshot.yml \
             scripts/temporary-prepatch-app-drain.py \
+            scripts/temporary-dedupe-server-shared-state.py \
             scripts/temporary-close-pr57-review-blockers.py \
             scripts/temporary-close-pr57-outbox-evidence.py
 
@@ -70,12 +73,16 @@ jobs:
           python3 -m compileall -q scripts tools tests
           python3 -m unittest discover -s tests -p 'test_*.py' -v
           python3 scripts/check-gap-register.py
+          python3 scripts/check-evidence-index.py
           python3 scripts/check-plan.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/check-schema-authority.py
           python3 scripts/check-workflow-action-policy.py
           python3 scripts/check-repository-hygiene.py
           python3 scripts/check-rust-package-inventory.py
           python3 scripts/check-rust-foundation.py
           python3 scripts/check-trnm-server.py
+          python3 scripts/check-source-candidate-boundaries.py
           bash scripts/check-api-rtapi-denominator.sh
           bash -n scripts/ci-outbox-final-attempt-reaper.sh
           test -x scripts/upload-actions-artifact.py
@@ -87,7 +94,9 @@ jobs:
           (cd runtime && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
           git diff --check
           test ! -e .github/workflows/temporary-close-pr57-review-blockers.yml
+          test ! -e .github/workflows/exact-source-snapshot.yml
           test ! -e scripts/temporary-prepatch-app-drain.py
+          test ! -e scripts/temporary-dedupe-server-shared-state.py
           test ! -e scripts/temporary-close-pr57-review-blockers.py
           test ! -e scripts/temporary-close-pr57-outbox-evidence.py
 
