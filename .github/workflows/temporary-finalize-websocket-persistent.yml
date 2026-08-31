@@ -119,10 +119,17 @@ jobs:
           set -euo pipefail
           git config user.name "trillionnium-realtime-finalizer"
           git config user.email "realtime-finalizer@users.noreply.github.com"
-          git add Cargo.lock scripts/check-trnm-server.py \
-            crates/trnm-realtime-wire/src/lib.rs \
-            crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs \
-            .github/workflows/temporary-finalize-websocket-persistent.yml
+          git status --porcelain=v1 | sed 's/^...//' | sort > /tmp/actual-paths
+          cat > /tmp/expected-paths <<'EOF'
+          .github/workflows/temporary-finalize-websocket-persistent.yml
+          Cargo.lock
+          crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs
+          crates/trnm-realtime-wire/src/lib.rs
+          scripts/check-trnm-server.py
+          EOF
+          sort -o /tmp/expected-paths /tmp/expected-paths
+          diff -u /tmp/expected-paths /tmp/actual-paths
+          git add -A
           git diff --cached --check
           git commit -m "ci(realtime): seal persistent websocket candidate"
           git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
