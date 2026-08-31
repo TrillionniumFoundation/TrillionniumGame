@@ -1,0 +1,100 @@
+name: temporary-repair-persistent-websocket-regressions
+
+on:
+  push:
+    branches:
+      - codex/websocket-persistent-lifecycle-2026-08-31
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-repair-persistent-websocket-regressions
+  cancel-in-progress: false
+
+jobs:
+  repair-validate-and-remove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Fetch exact branch without external actions
+        shell: bash
+        env:
+          BRANCH: codex/websocket-persistent-lifecycle-2026-08-31
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags origin \
+            "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$BRANCH" "origin/$BRANCH"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Update reviewed dependency and WebSocket close contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          foundation = Path("scripts/check-rust-foundation.py")
+          text = foundation.read_text(encoding="utf-8")
+          old = '        "trnm-contracts": {"path": "../trnm-contracts"},\n        "trnm-session-core": {"path": "../trnm-session-core"},'
+          new = '        "trnm-contracts": {"path": "../trnm-contracts"},\n        "trnm-realtime-wire": {"path": "../trnm-realtime-wire"},\n        "trnm-session-core": {"path": "../trnm-session-core"},'
+          if text.count(old) != 1:
+              raise SystemExit(f"foundation dependency anchor count={text.count(old)}")
+          foundation.write_text(text.replace(old, new), encoding="utf-8")
+
+          client = Path("scripts/trnm-server-live-client.py")
+          text = client.read_text(encoding="utf-8")
+          old = '''def encode_client_frame(payload: bytes) -> bytes:\n    mask = b"\\x11\\x22\\x33\\x44"\n    length = len(payload)\n    header = bytearray([0x81])'''
+          new = '''def encode_client_frame(payload: bytes, opcode: int = 0x1) -> bytes:\n    if opcode not in (0x1, 0x2, 0x8, 0x9, 0xA):\n        raise AssertionError(f"unsupported client opcode {opcode}")\n    if opcode >= 0x8 and len(payload) > 125:\n        raise AssertionError("client control frame exceeds 125 bytes")\n    mask = b"\\x11\\x22\\x33\\x44"\n    length = len(payload)\n    header = bytearray([0x80 | opcode])'''
+          if text.count(old) != 1:
+              raise SystemExit(f"client encoder anchor count={text.count(old)}")
+          text = text.replace(old, new)
+
+          old = '''        close_opcode, close_body = read_server_frame(stream)\n        if close_opcode != 0x8 or close_body != b"\\x03\\xe8":\n            raise AssertionError("expected normal WebSocket close frame")\n        return document'''
+          new = '''        # The server now preserves the upgraded connection after each data\n        # response. Complete the RFC 6455 close handshake explicitly instead\n        # of treating an immediate server EOF/close as the success condition.\n        normal_close = b"\\x03\\xe8"\n        stream.sendall(encode_client_frame(normal_close, opcode=0x8))\n        close_opcode, close_body = read_server_frame(stream)\n        if close_opcode != 0x8 or close_body != normal_close:\n            raise AssertionError("expected echoed normal WebSocket close frame")\n        return document'''
+          if text.count(old) != 1:
+              raise SystemExit(f"client close anchor count={text.count(old)}")
+          client.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+      - name: Remove temporary execution surface before validation
+        shell: bash
+        run: git rm .github/workflows/temporary-repair-persistent-websocket-regressions.yml
+      - name: Validate clean tree without weakening gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          python3 scripts/check-rust-foundation.py
+          python3 scripts/check-trnm-server.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-plan.py
+          python3 -m py_compile scripts/trnm-server-live-client.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Commit only verified repairs
+        shell: bash
+        env:
+          BRANCH: codex/websocket-persistent-lifecycle-2026-08-31
+        run: |
+          set -euo pipefail
+          git config user.name "trillionnium-regression-finalizer"
+          git config user.email "regression-finalizer@users.noreply.github.com"
+          git status --porcelain=v1 | sed 's/^...//' | sort > /tmp/actual-paths
+          cat > /tmp/expected-paths <<'EOF'
+          .github/workflows/temporary-repair-persistent-websocket-regressions.yml
+          scripts/check-rust-foundation.py
+          scripts/trnm-server-live-client.py
+          EOF
+          sort -o /tmp/expected-paths /tmp/expected-paths
+          diff -u /tmp/expected-paths /tmp/actual-paths
+          git add -A
+          git diff --cached --check
+          git commit -m "fix(realtime): align foundation and live close contracts"
+          git push origin "HEAD:refs/heads/${BRANCH}"
