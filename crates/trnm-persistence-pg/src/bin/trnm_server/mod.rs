@@ -4,6 +4,7 @@ pub(crate) mod auth;
 pub(crate) mod codec;
 pub(crate) mod config;
 pub(crate) mod error;
+pub(crate) mod grpc;
 pub(crate) mod http;
 pub(crate) mod json;
 pub(crate) mod pool;
