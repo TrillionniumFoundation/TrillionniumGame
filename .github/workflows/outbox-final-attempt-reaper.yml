@@ -8,7 +8,9 @@ on:
       - 'crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs'
       - 'scripts/ci-outbox-final-attempt-reaper.sh'
       - 'scripts/upload-actions-artifact.py'
+      - 'scripts/emit-actions-log-artifact.py'
       - 'tests/control_plane/test_actions_artifact_uploader.py'
+      - 'tests/control_plane/test_actions_log_artifact.py'
       - 'scripts/check-workflow-action-policy.py'
       - 'tests/control_plane/test_workflow_action_policy.py'
       - 'docs/development/OUTBOX_FINAL_ATTEMPT_REAPER.md'
@@ -23,7 +25,9 @@ on:
       - 'crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs'
       - 'scripts/ci-outbox-final-attempt-reaper.sh'
       - 'scripts/upload-actions-artifact.py'
+      - 'scripts/emit-actions-log-artifact.py'
       - 'tests/control_plane/test_actions_artifact_uploader.py'
+      - 'tests/control_plane/test_actions_log_artifact.py'
       - 'scripts/check-workflow-action-policy.py'
       - 'tests/control_plane/test_workflow_action_policy.py'
       - 'docs/development/OUTBOX_FINAL_ATTEMPT_REAPER.md'
@@ -63,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           test -x scripts/ci-outbox-final-attempt-reaper.sh
-          test -x scripts/upload-actions-artifact.py
+          test -f scripts/emit-actions-log-artifact.py
           grep -q 'pub struct OutboxClaimBatch' crates/trnm-persistence-pg/src/outbox.rs
           grep -q 'claim_outbox_batch' crates/trnm-persistence-pg/src/outbox.rs
           grep -q 'reaped_dead_letters' crates/trnm-persistence-pg/src/outbox.rs
@@ -74,9 +78,13 @@ jobs:
           grep -q 'crash-after-publish' scripts/ci-outbox-final-attempt-reaper.sh
           grep -q 'possible_lost_effect_declared' scripts/ci-outbox-final-attempt-reaper.sh
           grep -Fq 'if "$worker_bin" run-once >"$scenario/worker-crash.stdout"' scripts/ci-outbox-final-attempt-reaper.sh
-          grep -Fq 'actions/upload-artifact@043fb460e6257d1ca154e89a5e86196c74e480f8' .github/workflows/outbox-final-attempt-reaper.yml
-          python3 -m py_compile scripts/upload-actions-artifact.py
-          python3 -m unittest tests.control_plane.test_actions_artifact_uploader tests.control_plane.test_workflow_action_policy -v
+          grep -q 'TRNM_LOG_ARTIFACT_BEGIN' scripts/emit-actions-log-artifact.py
+          grep -q 'TRNM_LOG_ARTIFACT_END' scripts/emit-actions-log-artifact.py
+          python3 -m py_compile scripts/upload-actions-artifact.py scripts/emit-actions-log-artifact.py
+          python3 -m unittest \
+            tests.control_plane.test_actions_artifact_uploader \
+            tests.control_plane.test_actions_log_artifact \
+            tests.control_plane.test_workflow_action_policy -v
 
   live-profile:
     needs: source-contract
@@ -128,9 +136,8 @@ jobs:
           TRNM_EVIDENCE_ROOT: run/outbox-final-attempt-reaper
           TRNM_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}
         run: bash scripts/ci-outbox-final-attempt-reaper.sh "$PROFILE"
-      - name: Prepare raw diagnostic archive
+      - name: Seal and retain complete raw archive in bounded job log
         if: always()
-        id: archive
         shell: bash
         env:
           PROFILE: ${{ matrix.profile }}
@@ -139,56 +146,43 @@ jobs:
           root="run/outbox-final-attempt-reaper/${PROFILE}"
           mkdir -p "$root"
           archive="run/outbox-final-attempt-reaper-${PROFILE}-${CANDIDATE_SHA}.tar.gz"
+          metadata="run/outbox-final-attempt-reaper-${PROFILE}-${CANDIDATE_SHA}.metadata.json"
           tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
             -czf "$archive" -C "$root" .
-          archive_sha=$(sha256sum "$archive" | awk '{print $1}')
           artifact_name="outbox-final-attempt-reaper-${PROFILE}-${CANDIDATE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          printf 'archive_sha256=%s\n' "$archive_sha"
-          find "$root" -type f -print0 | sort -z | xargs -0 -r sha256sum
-          {
-            printf 'archive_path=%s\n' "$archive"
-            printf 'archive_sha256=%s\n' "$archive_sha"
-            printf 'artifact_name=%s\n' "$artifact_name"
-          } >> "$GITHUB_OUTPUT"
-          {
-            printf '### Outbox final-attempt boundaries %s\n\n' "$PROFILE"
-            printf -- '- candidate: `%s@%s`\n' "$CANDIDATE_REPOSITORY" "$CANDIDATE_SHA"
-            printf -- '- run: `%s`\n' "$GITHUB_RUN_ID"
-            printf -- '- raw archive SHA-256: `%s`\n' "$archive_sha"
-            printf -- '- crash before publish may lose the external effect: `true`\n'
-            printf -- '- compatibility credit: `false`\n'
-            printf -- '- production ready: `false`\n'
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Retain raw diagnostic archive
-        if: always() && steps.archive.outcome == 'success'
-        id: retain
-        uses: actions/upload-artifact@043fb460e6257d1ca154e89a5e86196c74e480f8
-        with:
-          name: ${{ steps.archive.outputs.artifact_name }}
-          path: ${{ steps.archive.outputs.archive_path }}
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 30
-          overwrite: false
-          include-hidden-files: false
-      - name: Record retained artifact identity
-        if: always() && steps.archive.outcome == 'success' && steps.retain.outcome == 'success'
-        shell: bash
-        env:
-          PROFILE: ${{ matrix.profile }}
-          RAW_ARCHIVE_SHA256: ${{ steps.archive.outputs.archive_sha256 }}
-          ARTIFACT_ID: ${{ steps.retain.outputs.artifact-id }}
-          ARTIFACT_URL: ${{ steps.retain.outputs.artifact-url }}
-          ARTIFACT_DIGEST: ${{ steps.retain.outputs.artifact-digest }}
-        run: |
-          set -euo pipefail
-          [[ "$RAW_ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
-          test -n "$ARTIFACT_URL"
-          test -n "$ARTIFACT_DIGEST"
-          {
-            printf -- '- retained artifact ID: `%s`\n' "$ARTIFACT_ID"
-            printf -- '- retained artifact URL: `%s`\n' "$ARTIFACT_URL"
-            printf -- '- service artifact digest: `%s`\n' "$ARTIFACT_DIGEST"
-            printf -- '- raw archive digest remains separately bound: `%s`\n' "$RAW_ARCHIVE_SHA256"
-          } >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/emit-actions-log-artifact.py \
+            "$archive" \
+            --name "$artifact_name" \
+            --max-bytes 2097152 \
+            --metadata-json "$metadata"
+          python3 - "$metadata" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          metadata = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          assert metadata['schema'] == 'trillionnium.actions-log-artifact.v1'
+          assert metadata['transport'] == 'github-actions-job-log-base64-v1'
+          assert re.fullmatch(r'[0-9a-f]{64}', metadata['sha256'])
+          assert 0 < metadata['size'] <= metadata['max_bytes'] == 2097152
+          assert metadata['repository'] == os.environ['GITHUB_REPOSITORY']
+          assert metadata['commit'] == os.environ['CANDIDATE_SHA']
+          assert metadata['run_id'] == os.environ['GITHUB_RUN_ID']
+          assert metadata['run_attempt'] == os.environ['GITHUB_RUN_ATTEMPT']
+          assert metadata['claims']['compatibility_credit'] is False
+          assert metadata['claims']['production_ready'] is False
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
+              output.write(f"### Outbox final-attempt boundaries {os.environ['PROFILE']}\n\n")
+              output.write(f"- candidate: `{metadata['repository']}@{metadata['commit']}`\n")
+              output.write(f"- run/job: `{metadata['run_id']}/{metadata['job']}`\n")
+              output.write(f"- transport: `{metadata['transport']}`\n")
+              output.write(f"- envelope name: `{metadata['name']}`\n")
+              output.write(f"- raw archive size: `{metadata['size']}`\n")
+              output.write(f"- raw archive SHA-256: `{metadata['sha256']}`\n")
+              output.write("- reconstruction: decode every `TRNM_LOG_ARTIFACT_B64` line between the unique begin/end markers in the downloadable job log\n")
+              output.write("- crash before publish may lose the external effect: `true`\n")
+              output.write("- compatibility credit: `false`\n")
+              output.write("- production ready: `false`\n")
+          PY
