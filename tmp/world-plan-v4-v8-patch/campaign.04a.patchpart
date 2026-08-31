@@ -1,0 +1,116 @@
++    ) -> Result<SettlementReceiptV1, CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.submit_battle_result__atomic_inner(result)
++        })
++    }
++
++    fn submit_battle_result__atomic_inner(
++        &mut self,
++        result: BattleResultV1,
+     ) -> Result<SettlementReceiptV1, CampaignError> {
+         if let Some(existing) = self.receipt_for(&result.battle_id) {
+             if existing.seed_hash != result.seed_hash
+@@ -6583,6 +7041,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn apply_pending_settlement(&mut self) -> Result<SettlementReceiptV1, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.apply_pending_settlement__atomic_inner()
++        })
++    }
++
++    fn apply_pending_settlement__atomic_inner(&mut self) -> Result<SettlementReceiptV1, CampaignError> {
+         if self.phase != CampaignPhase::PostBattlePending {
+             return Err(CampaignError::InvalidState(
+                 "no staged battle result is ready for settlement".to_string(),
+@@ -7691,6 +8155,16 @@ impl CampaignSaveV1 {
+         &mut self,
+         actor_id: impl Into<String>,
+         account_id: impl Into<String>,
++    ) -> Result<(), CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.bind_cex_economy_account__atomic_inner(actor_id, account_id)
++        })
++    }
++
++    fn bind_cex_economy_account__atomic_inner(
++        &mut self,
++        actor_id: impl Into<String>,
++        account_id: impl Into<String>,
+     ) -> Result<(), CampaignError> {
+         let actor_id = actor_id.into();
+         let account_id = account_id.into();
+@@ -7824,20 +8298,23 @@ impl CampaignSaveV1 {
+                 + i64::from(self.world_clock.minute_of_day) * 60,
+         };
+         intent.validate().map_err(CampaignError::InvalidState)?;
+-        self.economic_idempotency_keys.insert(idempotency_key);
++        // The queue slot and its idempotency tombstone form one admission unit.
++        // A capacity error must leave the identity retryable.
+         if compensation {
+             if self.pending_economic_compensations.len() >= 64 {
+                 return Err(CampaignError::InvalidState(
+                     "economic compensation lane reached its bounded capacity".to_string(),
+                 ));
+             }
++        } else if self.pending_economic_intents.len() >= 128 {
++            return Err(CampaignError::InvalidState(
++                "economic outbox reached its bounded capacity".to_string(),
++            ));
++        }
++        self.economic_idempotency_keys.insert(idempotency_key);
++        if compensation {
+             self.pending_economic_compensations.push(intent);
+         } else {
+-            if self.pending_economic_intents.len() >= 128 {
+-                return Err(CampaignError::InvalidState(
+-                    "economic outbox reached its bounded capacity".to_string(),
+-                ));
+-            }
+             self.pending_economic_intents.push(intent);
+         }
+         Ok(true)
+@@ -7947,12 +8424,27 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn begin_selected_tradeable_purchase(&mut self) -> Result<String, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.begin_selected_tradeable_purchase__atomic_inner()
++        })
++    }
++
++    fn begin_selected_tradeable_purchase__atomic_inner(&mut self) -> Result<String, CampaignError> {
+         self.begin_selected_tradeable_purchase_with_seller_account(None)
+     }
+ 
+     pub fn begin_selected_tradeable_purchase_with_seller_account(
+         &mut self,
+         connected_seller_account_id: Option<&str>,
++    ) -> Result<String, CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.begin_selected_tradeable_purchase_with_seller_account__atomic_inner(connected_seller_account_id)
++        })
++    }
++
++    fn begin_selected_tradeable_purchase_with_seller_account__atomic_inner(
++        &mut self,
++        connected_seller_account_id: Option<&str>,
+     ) -> Result<String, CampaignError> {
+         let region_id = self.require_regional_market()?;
+         let item = ECONOMY_ITEM_CATALOG
+@@ -8034,6 +8526,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cancel_tradeable_purchase(&mut self, purchase_id: &str) -> Result<(), CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.cancel_tradeable_purchase__atomic_inner(purchase_id)
++        })
++    }
++
++    fn cancel_tradeable_purchase__atomic_inner(&mut self, purchase_id: &str) -> Result<(), CampaignError> {
+         let index = self
+             .pending_tradeable_purchases
+             .iter()
+@@ -8280,6 +8778,16 @@ impl CampaignSaveV1 {
+         &mut self,
+    
