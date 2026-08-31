@@ -1,0 +1,11 @@
+--- a/trillionnium/crates/trnm-game-server/tests/settlement_database_contract.rs
++++ b/trillionnium/crates/trnm-game-server/tests/settlement_database_contract.rs
+@@ -199,7 +199,7 @@
+         &"a".repeat(64),
+     )
+     .await;
+-    let (_, changed_payload_job) = insert_capture_and_job(
++    let (_, _changed_payload_job) = insert_capture_and_job(
+         &pool,
+         match_id,
+         campaign_id,
