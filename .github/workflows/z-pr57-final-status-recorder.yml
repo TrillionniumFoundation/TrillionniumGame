@@ -1,0 +1,226 @@
+name: pr57-final-status-recorder
+
+on:
+  push:
+    branches:
+      - codex/pr57-batch-staging-2026-08-31-a
+    paths:
+      - '.github/workflows/z-pr57-final-status-recorder.yml'
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr57-final-status-recorder
+  cancel-in-progress: true
+
+jobs:
+  record:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Record exact-head native qualification
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: '57'
+          STAGING_BRANCH: codex/pr57-batch-staging-2026-08-31-a
+          EXPECTED_HEAD_BRANCH: codex/grpc-healthcheck-source-2026-08-31
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import re
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ['GITHUB_TOKEN']
+          repository = os.environ['REPOSITORY']
+          pr_number = os.environ['PR_NUMBER']
+          staging_branch = os.environ['STAGING_BRANCH']
+          expected_branch = os.environ['EXPECTED_HEAD_BRANCH']
+          api = f'https://api.github.com/repos/{repository}'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'trillionnium-pr57-final-status-recorder',
+          }
+
+          def request(method, url, payload=None, allow_404=False):
+              data = None if payload is None else json.dumps(payload).encode('utf-8')
+              current = dict(headers)
+              if data is not None:
+                  current['Content-Type'] = 'application/json'
+              req = urllib.request.Request(url, data=data, method=method, headers=current)
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      raw = response.read()
+              except urllib.error.HTTPError as error:
+                  if allow_404 and error.code == 404:
+                      return None
+                  detail = error.read().decode('utf-8', 'replace')
+                  raise RuntimeError(f'{method} {url}: HTTP {error.code}: {detail}') from error
+              return json.loads(raw) if raw else {}
+
+          def write_status(path, document):
+              encoded = urllib.parse.quote(path, safe='/')
+              existing = request('GET', f'{api}/contents/{encoded}?ref={urllib.parse.quote(staging_branch, safe="")}', allow_404=True)
+              payload = {
+                  'message': 'ci(staging): record PR57 final exact-head qualification',
+                  'content': base64.b64encode((json.dumps(document, indent=2, sort_keys=True) + '\n').encode('utf-8')).decode('ascii'),
+                  'branch': staging_branch,
+              }
+              if existing is not None:
+                  payload['sha'] = existing['sha']
+              request('PUT', f'{api}/contents/{encoded}', payload)
+
+          pr = request('GET', f'{api}/pulls/{pr_number}')
+          if pr.get('state') != 'open' or pr.get('merged') is True:
+              raise SystemExit('PR is not open and unmerged')
+          if pr.get('head', {}).get('ref') != expected_branch:
+              raise SystemExit('unexpected PR head branch')
+          head = pr['head']['sha']
+          if not re.fullmatch(r'[0-9a-f]{40}', head):
+              raise SystemExit('invalid PR head SHA')
+          tree = request('GET', f'{api}/git/commits/{head}')['tree']['sha']
+
+          required = {
+              'pg-server-vertical-slice',
+              'outbox-spool-worker',
+              'websocket-wire-source',
+              'trillionnium-game-persistence-outbox-core',
+              'trillionnium-game-storage-core',
+              'source-candidate-boundaries',
+              'outbox-final-attempt-reaper',
+              'grpc-health-source',
+              'pull-request-contract',
+              'trnm-server-live',
+              'trillionnium-game-transport-error-core',
+              'trillionnium-game-query-core',
+              'trillionnium-game-plan-contract',
+              'trillionnium-game-actions-unblock-smoke',
+              'database-backup-restore',
+              'trillionnium-game-canonical-framing-core',
+              'candidate-identity-manifest',
+              'pg-server-response-loss',
+              'trillionnium-game-token-policy-core',
+              'trillionnium-game-rust-foundation',
+              'pgwire-vertical-slice',
+              'trillionnium-game-presence-router-core',
+              'trillionnium-game-merge-gate',
+          }
+
+          latest = {}
+          deadline = time.monotonic() + 78 * 60
+          while time.monotonic() < deadline:
+              current = request('GET', f'{api}/pulls/{pr_number}')
+              if current['head']['sha'] != head:
+                  record = {
+                      'schema': 'trillionnium.pr57-final-qualification.v1',
+                      'result': 'head_moved',
+                      'expected_head': head,
+                      'observed_head': current['head']['sha'],
+                  }
+                  write_status('diagnostics/pr57-final-qualification.json', record)
+                  raise SystemExit('PR head moved')
+              query = urllib.parse.urlencode({'head_sha': head, 'event': 'pull_request', 'per_page': 100})
+              rows = request('GET', f'{api}/actions/runs?{query}').get('workflow_runs', [])
+              latest = {}
+              for row in sorted(rows, key=lambda value: value['id']):
+                  if row.get('head_sha') == head:
+                      latest[row['name']] = row
+              missing = sorted(required - set(latest))
+              pending = sorted(name for name in required if name in latest and latest[name].get('status') != 'completed')
+              if not missing and not pending:
+                  break
+              print(json.dumps({'head': head, 'missing': missing, 'pending': pending}, sort_keys=True), flush=True)
+              time.sleep(20)
+          else:
+              record = {
+                  'schema': 'trillionnium.pr57-final-qualification.v1',
+                  'result': 'timeout',
+                  'head': head,
+                  'tree': tree,
+                  'missing': missing,
+                  'pending': pending,
+              }
+              write_status('diagnostics/pr57-final-qualification.json', record)
+              raise SystemExit('qualification timeout')
+
+          failures = []
+          runs = []
+          jobs_by_workflow = {}
+          for name in sorted(required):
+              run = latest[name]
+              runs.append({'name': name, 'id': run['id'], 'status': run['status'], 'conclusion': run.get('conclusion')})
+              jobs = request('GET', f'{api}/actions/runs/{run["id"]}/jobs?per_page=100').get('jobs', [])
+              jobs_by_workflow[name] = [
+                  {
+                      'id': job.get('id'),
+                      'name': job.get('name'),
+                      'status': job.get('status'),
+                      'conclusion': job.get('conclusion'),
+                      'failed_steps': [step.get('name') for step in (job.get('steps') or []) if step.get('conclusion') not in {None, 'success'}],
+                  }
+                  for job in jobs
+              ]
+              if run.get('conclusion') != 'success':
+                  failures.append({'workflow': name, 'run_id': run['id'], 'conclusion': run.get('conclusion'), 'jobs': jobs_by_workflow[name]})
+
+          required_jobs = {
+              'outbox-final-attempt-reaper': {'source-contract', 'live-profile (postgresql)', 'live-profile (cockroachdb)', 'verify-retained-logs'},
+              'trnm-server-live': {'trnm-server-source-contract', 'trnm-server-live-postgresql', 'trnm-server-live-cockroachdb', 'trnm-server-live'},
+          }
+          for workflow, names in required_jobs.items():
+              observed = {row['name']: row for row in jobs_by_workflow[workflow]}
+              for name in sorted(names):
+                  row = observed.get(name)
+                  if row is None or row['status'] != 'completed' or row['conclusion'] != 'success':
+                      failures.append({'workflow': workflow, 'required_job': name, 'observed': row})
+
+          record = {
+              'schema': 'trillionnium.pr57-final-qualification.v1',
+              'repository': repository,
+              'pull_request': int(pr_number),
+              'head': head,
+              'tree': tree,
+              'draft': pr.get('draft'),
+              'merged': pr.get('merged'),
+              'workflow_count': len(runs),
+              'runs': runs,
+              'critical_jobs': {key: jobs_by_workflow[key] for key in required_jobs},
+              'failures': failures,
+              'result': 'success' if not failures else 'failure',
+              'claims': {
+                  'complete_compatibility': False,
+                  'production_ready': False,
+                  'public_online': False,
+                  'drop_in_replacement': False,
+                  'nakama_retired': False,
+              },
+          }
+          write_status('diagnostics/pr57-final-qualification.json', record)
+          write_status(
+              'diagnostics/pr57-final-success.json' if not failures else 'diagnostics/pr57-final-failure.json',
+              {'head': head, 'tree': tree, 'failures': failures},
+          )
+
+          if failures:
+              request('POST', f'{api}/issues/{pr_number}/comments', {'body': '## Exact-head qualification failed\n\n```json\n' + json.dumps(record, indent=2, sort_keys=True) + '\n```\n\nNo closure, readiness, approval or merge credit is granted.'})
+              raise SystemExit('exact-head qualification failed')
+
+          requested = request('POST', f'{api}/pulls/{pr_number}/requested_reviewers', {'reviewers': ['Franksudoman', 'ProfHepta']})
+          record['requested_reviewers'] = [row['login'] for row in requested.get('requested_reviewers', [])]
+          write_status('diagnostics/pr57-final-qualification.json', record)
+          request('POST', f'{api}/issues/{pr_number}/comments', {'body': '## Exact-head native qualification complete; independent review requested\n\n```json\n' + json.dumps(record, indent=2, sort_keys=True) + '\n```\n\nThe PR remains Draft and all compatibility/production/replacement/retirement claims remain false.'})
+          print(json.dumps(record, sort_keys=True))
+          PY
