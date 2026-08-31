@@ -1,0 +1,47 @@
+name: temporary-generate-grpc-lock
+
+on:
+  push:
+    branches:
+      - codex/grpc-healthcheck-source-2026-08-31
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporary-generate-grpc-lock
+  cancel-in-progress: true
+
+jobs:
+  generate-lock-payload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch exact candidate without external actions
+        shell: bash
+        env:
+          CANDIDATE_REPOSITORY: ${{ github.repository }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
+            "${CANDIDATE_SHA}"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+      - name: Generate deterministic lock payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          test -s Cargo.lock
+          echo 'TRNM_CARGO_LOCK_BASE64_BEGIN'
+          base64 -w0 Cargo.lock
+          echo
+          echo 'TRNM_CARGO_LOCK_BASE64_END'
+          sha256sum Cargo.lock
