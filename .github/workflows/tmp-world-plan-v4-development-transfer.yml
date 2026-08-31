@@ -49,6 +49,94 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
 
+          cat > /tmp/repair-world-v8.py <<'PYREPAIR'
+          from pathlib import Path
+          import re
+          import sys
+
+          world = Path(sys.argv[1])
+
+          campaign = world / "trillionnium/crates/trnm-campaign-core/src/lib.rs"
+          campaign_source = campaign.read_text(encoding="utf-8")
+          if "__atomic_inner" not in campaign_source:
+              raise SystemExit("campaign atomicity helper drifted")
+          campaign.write_text(
+              campaign_source.replace("__atomic_inner", "_atomic_inner"),
+              encoding="utf-8",
+          )
+
+          rts = world / "trillionnium/crates/trnm-rts-sim/src/lib.rs"
+          rts_source = rts.read_text(encoding="utf-8")
+          old_rts = (
+              "        let error = assert_sim_error_preserves_state(&mut sim, |candidate| {\n"
+              "            candidate.issue_order(build)\n"
+              "        });\n"
+              "        assert!(error.to_string().contains(\"field resources\"));\n"
+          )
+          new_rts = (
+              "        let _error = assert_sim_error_preserves_state(&mut sim, |candidate| {\n"
+              "            candidate.issue_order(build)\n"
+              "        });\n"
+          )
+          if rts_source.count(old_rts) != 1:
+              raise SystemExit("RTS state-preservation assertion drifted")
+          rts.write_text(rts_source.replace(old_rts, new_rts, 1), encoding="utf-8")
+
+          moderation = (
+              world
+              / "trillionnium/crates/trnm-game-server/src/bin/trnm-moderation-console.rs"
+          )
+          moderation_source = moderation.read_text(encoding="utf-8")
+          exact_counts = {
+              "use reqwest::blocking::Client;": 1,
+              "fn run() -> Result<(), String> {": 1,
+              ".send()\n": 10,
+              "response.text().map_err": 10,
+              "fn main() -> ExitCode {": 1,
+              "match run() {": 1,
+          }
+          for token, expected in exact_counts.items():
+              actual = moderation_source.count(token)
+              if actual != expected:
+                  raise SystemExit(
+                      f"moderation async conversion drifted for {token!r}: "
+                      f"expected {expected}, observed {actual}"
+                  )
+          moderation_source = moderation_source.replace(
+              "use reqwest::blocking::Client;", "use reqwest::Client;", 1
+          )
+          moderation_source = moderation_source.replace(
+              "fn run() -> Result<(), String> {",
+              "async fn run() -> Result<(), String> {",
+              1,
+          )
+          moderation_source, send_count = re.subn(
+              r"(?m)^(\s*)\.send\(\)\n",
+              lambda match: (
+                  f"{match.group(1)}.send()\n{match.group(1)}.await\n"
+              ),
+              moderation_source,
+          )
+          if send_count != 10:
+              raise SystemExit(
+                  f"moderation send conversion expected 10, observed {send_count}"
+              )
+          moderation_source = moderation_source.replace(
+              "response.text().map_err", "response.text().await.map_err"
+          )
+          moderation_source = moderation_source.replace(
+              "fn main() -> ExitCode {",
+              "#[tokio::main]\nasync fn main() -> ExitCode {",
+              1,
+          )
+          moderation_source = moderation_source.replace(
+              "match run() {", "match run().await {", 1
+          )
+          if "reqwest::blocking" in moderation_source:
+              raise SystemExit("moderation console retained blocking reqwest authority")
+          moderation.write_text(moderation_source, encoding="utf-8")
+          PYREPAIR
+
           cp control/tmp/world-plan-v4-v8-patch/qualify-v8.sh /tmp/qualify-v8-fixed.sh
           python3 - <<'PY'
           from pathlib import Path
@@ -58,13 +146,7 @@ jobs:
           needle = 'git -C "$world" apply "$online_patch"\ncargo fmt --manifest-path "$manifest" --all\n'
           repair = (
               'git -C "$world" apply "$online_patch"\n'
-              "python3 -c 'from pathlib import Path; import sys; w=Path(sys.argv[1]); "
-              "p=w/\"trillionnium/crates/trnm-campaign-core/src/lib.rs\"; t=p.read_text(encoding=\"utf-8\"); "
-              "assert \"__atomic_inner\" in t; p.write_text(t.replace(\"__atomic_inner\", \"_atomic_inner\"), encoding=\"utf-8\"); "
-              "r=w/\"trillionnium/crates/trnm-rts-sim/src/lib.rs\"; s=r.read_text(encoding=\"utf-8\"); "
-              "old=\"        let error = assert_sim_error_preserves_state(&mut sim, |candidate| {\\n            candidate.issue_order(build)\\n        });\\n        assert!(error.to_string().contains(\\\"field resources\\\"));\\n\"; "
-              "new=\"        let _error = assert_sim_error_preserves_state(&mut sim, |candidate| {\\n            candidate.issue_order(build)\\n        });\\n\"; "
-              "assert s.count(old)==1; r.write_text(s.replace(old, new, 1), encoding=\"utf-8\")' \"$world\"\n"
+              'python3 /tmp/repair-world-v8.py "$world"\n'
               'cargo fmt --manifest-path "$manifest" --all\n'
           )
           if text.count(needle) != 1:
