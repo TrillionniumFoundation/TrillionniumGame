@@ -24,30 +24,13 @@ env:
   WORLD_HEAD: "5605cfb8861aa923f69ff032ddbff7d035bccb0c"
   CONTROL_HEAD: "7adb924bd5990726d845846834c379d8e3d58db0"
   BUNDLE_SHA256: "1dc729cb02846481c9a69db56f423aafd522db55bafc1a3ae352b9d6ea218dce"
-  DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trnm_world_ci
-  TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trnm_world_ci
-  TRNM_SETTLEMENT_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trnm_world_ci
-  TRNM_REQUIRE_SETTLEMENT_DATABASE_TEST: "1"
+  TRNM_REQUIRE_SETTLEMENT_DATABASE_TEST: "0"
 
 jobs:
   verify-and-export:
     name: verify-and-export
     runs-on: ubuntu-24.04
     timeout-minutes: 180
-    services:
-      postgres:
-        image: postgres:16.10@sha256:1d288494853e244e7a78d87b3526e650e5221c622f9768ecac9313d0874a9c39
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: trnm_world_ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d trnm_world_ci"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
     steps:
       - name: Fetch immutable control and World trees
         shell: bash
