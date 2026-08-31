@@ -1,0 +1,203 @@
+diff --git a/trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs b/trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs
+index 59afd39..2bac061 100644
+--- a/trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs
++++ b/trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs
+@@ -1,6 +1,6 @@
+ #![recursion_limit = "256"]
+ 
+-use reqwest::blocking::Client;
++use reqwest::Client;
+ use serde::{de::DeserializeOwned, Serialize};
+ use serde_json::{json, Value};
+ use std::{
+@@ -10,6 +10,7 @@ use std::{
+     thread,
+     time::{Duration, Instant},
+ };
++use tokio::runtime::Runtime;
+ use trnm_online_protocol::{
+     apply_snapshot_delta, OnlineCampaignConnectRequest, OnlineCampaignView, OnlineCommandReceipt,
+     OnlineCommandSubmitRequest, OnlineMatchAccessRequest, OnlineMatchCreateRequest,
+@@ -39,6 +40,7 @@ struct Identity {
+ 
+ struct OnlineClient {
+     base_url: String,
++    runtime: Arc<Runtime>,
+     http: Client,
+     non_idempotent_http: Client,
+     command_ack_ms: Mutex<Vec<u64>>,
+@@ -304,8 +306,10 @@ fn summarize_milliseconds(mut samples: Vec<u64>) -> (Vec<u64>, u64, u64) {
+ 
+ impl OnlineClient {
+     fn new(base_url: String) -> Result<Self, String> {
++        let runtime = Arc::new(Runtime::new().map_err(|error| error.to_string())?);
+         Ok(Self {
+             base_url: base_url.trim_end_matches('/').to_string(),
++            runtime,
+             http: Client::builder()
+                 .connect_timeout(Duration::from_secs(2))
+                 .timeout(Duration::from_secs(4))
+@@ -330,14 +334,20 @@ impl OnlineClient {
+         // without risking a second mutation. Keep them on a long, one-shot
+         // request path until the protocol exposes an idempotency key.
+         let response = self
+-            .non_idempotent_http
+-            .post(format!("{}{}", self.base_url, path))
+-            .header("x-trnm-player-session", &identity.session)
+-            .json(body)
+-            .send()
++            .runtime
++            .block_on(
++                self.non_idempotent_http
++                    .post(format!("{}{}", self.base_url, path))
++                    .header("x-trnm-player-session", &identity.session)
++                    .json(body)
++                    .send(),
++            )
+             .map_err(|error| error.to_string())?;
+         let status = response.status();
+-        let bytes = response.bytes().map_err(|error| error.to_string())?;
++        let bytes = self
++            .runtime
++            .block_on(response.bytes())
++            .map_err(|error| error.to_string())?;
+         if !status.is_success() {
+             return Err(format!(
+                 "POST {path} returned {status}: {}",
+@@ -359,9 +369,12 @@ impl OnlineClient {
+             .post(format!("{}{}", self.base_url, path))
+             .header("x-trnm-player-session", &identity.session)
+             .json(body);
+-        let response = send_with_lost_response_retry(request)?;
++        let response = send_with_lost_response_retry(&self.runtime, request)?;
+         let status = response.status();
+-        let bytes = response.bytes().map_err(|error| error.to_string())?;
++        let bytes = self
++            .runtime
++            .block_on(response.bytes())
++            .map_err(|error| error.to_string())?;
+         if !status.is_success() {
+             return Err(format!(
+                 "POST {path} returned {status}: {}",
+@@ -383,9 +396,12 @@ impl OnlineClient {
+             .header("x-trnm-player-session", &identity.session)
+             .json(body);
+         let started = Instant::now();
+-        let response = send_with_retry(request)?;
++        let response = send_with_retry(&self.runtime, request)?;
+         let status = response.status();
+-        let bytes = response.bytes().map_err(|error| error.to_string())?;
++        let bytes = self
++            .runtime
++            .block_on(response.bytes())
++            .map_err(|error| error.to_string())?;
+         if !status.is_success() {
+             return Err(format!(
+                 "POST {path} returned {status}: {}",
+@@ -403,12 +419,14 @@ impl OnlineClient {
+ 
+     fn tick_interval_ms(&self) -> Result<f64, String> {
+         let response = send_with_retry(
++            &self.runtime,
+             self.http
+                 .get(format!("{}/v1/online/readiness", self.base_url)),
+         )?;
+         let status = response.status();
+-        let value = response
+-            .json::<Value>()
++        let value = self
++            .runtime
++            .block_on(response.json::<Value>())
+             .map_err(|error| error.to_string())?;
+         if !status.is_success() {
+             return Err(format!("readiness returned {status}: {value}"));
+@@ -439,10 +457,11 @@ impl OnlineClient {
+             .post(format!("{}{}", self.base_url, path))
+             .header("x-trnm-player-session", &identity.session)
+             .json(body);
+-        let response = send_with_retry(request)?;
++        let response = send_with_retry(&self.runtime, request)?;
+         let status = response.status().as_u16();
+-        let value = response
+-            .json::<Value>()
++        let value = self
++            .runtime
++            .block_on(response.json::<Value>())
+             .map_err(|error| error.to_string())?;
+         Ok((status, value))
+     }
+@@ -608,33 +627,36 @@ fn publication_transition_is_recoverable(status: u16, body: &Value) -> bool {
+ }
+ 
+ fn send_with_retry(
+-    request: reqwest::blocking::RequestBuilder,
+-) -> Result<reqwest::blocking::Response, String> {
+-    send_with_retry_inner(request, false)
++    runtime: &Runtime,
++    request: reqwest::RequestBuilder,
++) -> Result<reqwest::Response, String> {
++    send_with_retry_inner(runtime, request, false)
+ }
+ 
+ fn send_with_lost_response_retry(
+-    request: reqwest::blocking::RequestBuilder,
+-) -> Result<reqwest::blocking::Response, String> {
+-    send_with_retry_inner(request, true)
++    runtime: &Runtime,
++    request: reqwest::RequestBuilder,
++) -> Result<reqwest::Response, String> {
++    send_with_retry_inner(runtime, request, true)
+ }
+ 
+ fn send_with_retry_inner(
+-    request: reqwest::blocking::RequestBuilder,
++    runtime: &Runtime,
++    request: reqwest::RequestBuilder,
+     mut lose_first_successful_response: bool,
+-) -> Result<reqwest::blocking::Response, String> {
++) -> Result<reqwest::Response, String> {
+     let mut transport_failures = 0_u64;
+     let last_error = loop {
+         let retry = request
+             .try_clone()
+             .ok_or_else(|| "request cannot be safely retried".to_string())?;
+-        match retry.send() {
++        match runtime.block_on(retry.send()) {
+             Ok(response) if lose_first_successful_response && response.status().is_success() => {
+                 // The server has committed the mutation, but the simulated
+                 // client never observes the response. Draining then discarding
+                 // it keeps the connection healthy before resending the exact
+                 // cloned request and exercising the server's idempotent branch.
+-                let _ = response.bytes();
++                let _ = runtime.block_on(response.bytes());
+                 lose_first_successful_response = false;
+             }
+             Ok(response) => return Ok(response),
+@@ -1043,18 +1065,21 @@ fn restart_server(base_url: &str) -> Result<(), String> {
+     if !status.success() {
+         return Err("systemd rejected game-server restart".to_string());
+     }
++    let runtime = Runtime::new().map_err(|error| error.to_string())?;
+     let http = Client::builder()
+         .timeout(Duration::from_secs(2))
+         .build()
+         .map_err(|error| error.to_string())?;
+     let started = Instant::now();
+     while started.elapsed() < Duration::from_secs(30) {
+-        if http
+-            .get(format!(
+-                "{}/v1/online/readiness",
+-                base_url.trim_end_matches('/')
+-            ))
+-            .send()
++        if runtime
++            .block_on(
++                http.get(format!(
++                    "{}/v1/online/readiness",
++                    base_url.trim_end_matches('/')
++                ))
++                .send(),
++            )
+             .is_ok_and(|response| response.status().is_success())
+         {
+             return Ok(());
