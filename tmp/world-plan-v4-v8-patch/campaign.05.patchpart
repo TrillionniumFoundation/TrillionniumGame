@@ -1,0 +1,84 @@
++            .expect("catalog has one tradeable item");
++        let mut campaign = CampaignSaveV1 {
++            room: CampaignRoom::MarketWindPavilion,
++            selected_shop_item_index,
++            ..CampaignSaveV1::default()
++        };
++        fill_economic_lane(&mut campaign, false, 128);
++        let error = assert_campaign_error_preserves_bytes(&mut campaign, |candidate| {
++            candidate.begin_selected_tradeable_purchase()
++        });
++        assert!(error.to_string().contains("economic outbox"));
++        assert!(campaign.pending_tradeable_purchases.is_empty());
++    }
++
++    #[test]
++    fn compensation_capacity_failure_restores_inventory_and_purchase_stage() {
++        let selected_shop_item_index = ECONOMY_ITEM_CATALOG
++            .iter()
++            .position(|item| item.material)
++            .expect("catalog has one tradeable item");
++        let mut campaign = CampaignSaveV1 {
++            room: CampaignRoom::MarketWindPavilion,
++            selected_shop_item_index,
++            ..CampaignSaveV1::default()
++        };
++        let purchase_id = campaign.begin_selected_tradeable_purchase().unwrap();
++        campaign
++            .reconcile_economy(&OfflineLocalEconomyBackend, 8)
++            .unwrap();
++        assert_eq!(
++            campaign.pending_tradeable_purchases[0].stage,
++            TradeablePurchaseStage::Consumed
++        );
++        fill_economic_lane(&mut campaign, true, 64);
++        let error = assert_campaign_error_preserves_bytes(&mut campaign, |candidate| {
++            candidate.cancel_tradeable_purchase(&purchase_id)
++        });
++        assert!(error.to_string().contains("compensation lane"));
++        assert_eq!(
++            campaign.pending_tradeable_purchases[0].stage,
++            TradeablePurchaseStage::Consumed
++        );
++    }
++
++    struct InvalidWalletSnapshotBackend;
++
++    impl EconomyBackend for InvalidWalletSnapshotBackend {
++        fn backend_id(&self) -> &str {
++            "invalid-wallet-snapshot-test"
++        }
++
++        fn execute(&self, intent: &EconomicIntent) -> Result<EconomicReceipt, String> {
++            OfflineLocalEconomyBackend.execute(intent)
++        }
++
++        fn wallet_snapshot(
++            &self,
++            binding: &EconomyAccountBinding,
++            cursor: u64,
++        ) -> Result<Option<WalletSnapshot>, String> {
++            Ok(Some(WalletSnapshot {
++                account_id: binding.account_id.clone(),
++                available_credits: -1,
++                reserved_credits: 0,
++                observed_at_cursor: cursor,
++            }))
++        }
++    }
++
++    #[test]
++    fn invalid_reconciliation_snapshot_rolls_back_queue_receipts_wallet_and_cursor() {
++        let mut campaign = CampaignSaveV1::default();
++        campaign
++            .bind_cex_economy_account("atomicity-player", "atomicity-account")
++            .unwrap();
++        let request = economic_draft(&campaign, "atomicity-invalid-wallet", false);
++        campaign.queue_economic_intent(request).unwrap();
++        let error = assert_campaign_error_preserves_bytes(&mut campaign, |candidate| {
++            candidate.reconcile_economy(&InvalidWalletSnapshotBackend, 1)
++        });
++        assert!(error.to_string().contains("economy outbox"));
++    }
++
+ }
