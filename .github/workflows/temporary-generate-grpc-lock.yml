@@ -36,6 +36,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # This workflow is temporary and must be deleted after the lock payload is recovered.
           rustup toolchain install 1.85.1 --profile minimal
           rustup override set 1.85.1
           cargo generate-lockfile
