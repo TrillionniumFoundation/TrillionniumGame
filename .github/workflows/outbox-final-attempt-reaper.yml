@@ -78,9 +78,9 @@ jobs:
           grep -q 'crash-before-publish' scripts/ci-outbox-final-attempt-reaper.sh
           grep -q 'crash-after-publish' scripts/ci-outbox-final-attempt-reaper.sh
           grep -q 'possible_lost_effect_declared' scripts/ci-outbox-final-attempt-reaper.sh
-          grep -q 'PostgreSQL init process complete; ready for start up.' scripts/ci-outbox-final-attempt-reaper.sh
-          grep -q 'stable_sql_successes' scripts/ci-outbox-final-attempt-reaper.sh
+          grep -q 'migration_for' scripts/ci-outbox-final-attempt-reaper.sh
           grep -q 'migration_blob_sha1' scripts/ci-outbox-final-attempt-reaper.sh
+          grep -q 'terminal_dead_letter_count' scripts/ci-outbox-final-attempt-reaper.sh
           grep -q 'github-actions-timestamped-v1' scripts/emit-actions-log-artifact.py
           grep -q 'closed-world job count mismatch' scripts/verify-actions-log-artifact.py
           grep -q 'discover-completed-run' scripts/verify-actions-log-artifact.py
