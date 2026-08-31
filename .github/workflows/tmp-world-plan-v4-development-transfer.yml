@@ -11,29 +11,23 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: tmp-world-plan-v4-development-transfer-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  CARGO_TERM_COLOR: never
-  CARGO_INCREMENTAL: "0"
-  RUST_BACKTRACE: "1"
-  RUST_TEST_THREADS: "1"
-  RUST_TOOLCHAIN: "1.98.0"
-  WORLD_HEAD: "5605cfb8861aa923f69ff032ddbff7d035bccb0c"
-  CONTROL_HEAD: "7adb924bd5990726d845846834c379d8e3d58db0"
-  BUNDLE_SHA256: "1dc729cb02846481c9a69db56f423aafd522db55bafc1a3ae352b9d6ea218dce"
-  TRNM_REQUIRE_SETTLEMENT_DATABASE_TEST: "0"
-
 jobs:
-  verify-and-export:
-    name: verify-and-export
-    runs-on: ubuntu-24.04
+  qualify:
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - name: Fetch immutable control and World trees
+      - name: Qualify immutable World Plan v4 source
         shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+          CARGO_INCREMENTAL: "0"
+          RUST_BACKTRACE: "1"
+          RUST_TEST_THREADS: "1"
+          RUST_TOOLCHAIN: "1.98.0"
+          WORLD_HEAD: "5605cfb8861aa923f69ff032ddbff7d035bccb0c"
+          CONTROL_HEAD: "7adb924bd5990726d845846834c379d8e3d58db0"
+          BUNDLE_SHA256: "1dc729cb02846481c9a69db56f423aafd522db55bafc1a3ae352b9d6ea218dce"
+          TRNM_REQUIRE_SETTLEMENT_DATABASE_TEST: "0"
         run: |
           set -euo pipefail
           git init control
@@ -48,42 +42,24 @@ jobs:
           git -C world checkout --detach FETCH_HEAD
           test "$(git -C world rev-parse HEAD)" = "${WORLD_HEAD}"
 
-      - name: Reconstruct and verify closure tools
-        shell: bash
-        run: |
-          set -euo pipefail
           cat control/tmp/world-plan-v4-development-transfer/world-closure-bundle.part-*.b64 \
             | tr -d '\n' \
             | base64 -d > /tmp/world-closure-bundle.tar.gz
           printf '%s  %s\n' "${BUNDLE_SHA256}" /tmp/world-closure-bundle.tar.gz | sha256sum -c -
           tar -xzf /tmp/world-closure-bundle.tar.gz -C /tmp
-          test -x /tmp/world-closure-tools/run-world-source-closure.sh
           bash -n /tmp/world-closure-tools/run-world-source-closure.sh
 
-      - name: Install pinned Rust toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
           rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
           rustup default "${RUST_TOOLCHAIN}"
           rustc --version --verbose
           cargo --version --verbose
 
-      - name: Execute complete source closure and exact tests
-        shell: bash
-        env:
-          WORLD_CHECKOUT: ${{ github.workspace }}/world
-        run: |
-          set -euo pipefail
+          export WORLD_CHECKOUT="$GITHUB_WORKSPACE/world"
           /tmp/world-closure-tools/run-world-source-closure.sh \
             "$GITHUB_WORKSPACE/world" \
             "$GITHUB_WORKSPACE/control" \
             "$GITHUB_WORKSPACE/export"
 
-      - name: Upload exact tested source transfer
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: trnm-world-plan-v4-development-transfer-${{ github.run_id }}
-          path: export/**
-          if-no-files-found: error
-          retention-days: 7
+          test -s "$GITHUB_WORKSPACE/export/world/manifest.json"
+          sha256sum "$GITHUB_WORKSPACE/export/world/manifest.json"
+          cat "$GITHUB_WORKSPACE/export/world/manifest.json"
