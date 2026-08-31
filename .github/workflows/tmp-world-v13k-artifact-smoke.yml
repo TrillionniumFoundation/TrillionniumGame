@@ -1,0 +1,41 @@
+name: tmp-world-v13k-artifact-smoke
+
+on:
+  push:
+    branches:
+      - tmp/world-plan-v4-development-transfer-20260831
+    paths:
+      - .github/workflows/tmp-world-v13k-artifact-smoke.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tmp-world-v13k-artifact-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Create immutable smoke evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/smoke"
+          printf 'artifact_runtime_smoke=%s\n' "$GITHUB_SHA" \
+            > "$GITHUB_WORKSPACE/smoke/identity.txt"
+          sha256sum "$GITHUB_WORKSPACE/smoke/identity.txt"
+
+      - name: Upload smoke evidence
+        uses: TrillionniumFoundation/TrillionniumGame/.github/actions/trnm-upload-artifact@54c272732d367d083efbd56ff3003c0d1d7d12df
+        with:
+          name: world-v13k-artifact-smoke-${{ github.sha }}
+          path: ${{ github.workspace }}/smoke
+          if-no-files-found: error
+          retention-days: "1"
+          compression-level: "9"
+          overwrite: "false"
+          include-hidden-files: "false"
