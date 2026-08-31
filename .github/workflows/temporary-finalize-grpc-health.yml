@@ -31,12 +31,15 @@ jobs:
             "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
           git -C "$GITHUB_WORKSPACE" checkout -B "$BRANCH" "origin/$BRANCH"
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
-      - name: Apply reviewed integration patch
+      - name: Apply reviewed integration patches
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m py_compile scripts/temporary-finalize-grpc-health.py
+          python3 -m py_compile \
+            scripts/temporary-finalize-grpc-health.py \
+            scripts/temporary-fix-grpc-production-uses.py
           python3 scripts/temporary-finalize-grpc-health.py
+          python3 scripts/temporary-fix-grpc-production-uses.py
       - name: Generate lockfile and format source
         shell: bash
         run: |
@@ -51,6 +54,7 @@ jobs:
           set -euo pipefail
           git rm .github/workflows/temporary-finalize-grpc-health.yml
           git rm scripts/temporary-finalize-grpc-health.py
+          git rm scripts/temporary-fix-grpc-production-uses.py
       - name: Validate exact clean tree
         shell: bash
         run: |
@@ -85,6 +89,7 @@ jobs:
             case "$path" in
               .github/workflows/temporary-finalize-grpc-health.yml|\
               scripts/temporary-finalize-grpc-health.py|\
+              scripts/temporary-fix-grpc-production-uses.py|\
               Cargo.lock|\
               crates/trnm-persistence-pg/build.rs|\
               crates/trnm-persistence-pg/src/bin/trnm_server/config.rs|\
@@ -99,6 +104,7 @@ jobs:
           for required in \
             .github/workflows/temporary-finalize-grpc-health.yml \
             scripts/temporary-finalize-grpc-health.py \
+            scripts/temporary-fix-grpc-production-uses.py \
             Cargo.lock \
             crates/trnm-persistence-pg/src/bin/trnm_server/config.rs \
             crates/trnm-persistence-pg/src/bin/trnm_server/server.rs \
