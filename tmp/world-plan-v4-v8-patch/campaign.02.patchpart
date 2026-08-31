@@ -1,0 +1,242 @@
+         let quest_id = self.active_regional_quest_id.clone().ok_or_else(|| {
+             CampaignError::InvalidState("no regional quest is active".to_string())
+         })?;
+@@ -4803,6 +5026,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn complete_regional_quest(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.complete_regional_quest__atomic_inner()
++        })
++    }
++
++    fn complete_regional_quest__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_town()?;
+         let quest_id = self.active_regional_quest_id.clone().ok_or_else(|| {
+             CampaignError::InvalidState("no regional quest is active".to_string())
+@@ -5038,6 +5267,14 @@ impl CampaignSaveV1 {
+ 
+     pub fn advance_pending_main_story_scene(
+         &mut self,
++    ) -> Result<MainStorySceneAdvance, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.advance_pending_main_story_scene__atomic_inner()
++        })
++    }
++
++    fn advance_pending_main_story_scene__atomic_inner(
++        &mut self,
+     ) -> Result<MainStorySceneAdvance, CampaignError> {
+         self.require_town()?;
+         let pending = self.pending_main_story_chapter.ok_or_else(|| {
+@@ -5224,6 +5461,14 @@ impl CampaignSaveV1 {
+ 
+     pub fn resolve_pending_main_story_chapter(
+         &mut self,
++    ) -> Result<MainStoryDecisionRecord, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.resolve_pending_main_story_chapter__atomic_inner()
++        })
++    }
++
++    fn resolve_pending_main_story_chapter__atomic_inner(
++        &mut self,
+     ) -> Result<MainStoryDecisionRecord, CampaignError> {
+         loop {
+             match self.advance_pending_main_story_scene()? {
+@@ -5234,6 +5479,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn advance_ending_epilogue(&mut self) -> Result<String, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.advance_ending_epilogue__atomic_inner()
++        })
++    }
++
++    fn advance_ending_epilogue__atomic_inner(&mut self) -> Result<String, CampaignError> {
+         self.require_town()?;
+         let ending = self.main_story_ending.ok_or_else(|| {
+             CampaignError::InvalidState("no resolved ending has an epilogue".to_string())
+@@ -5331,6 +5582,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_regional_quest_approach(&mut self) -> Result<QuestApproach, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_regional_quest_approach__atomic_inner()
++        })
++    }
++
++    fn cycle_regional_quest_approach__atomic_inner(&mut self) -> Result<QuestApproach, CampaignError> {
+         self.require_town()?;
+         let runtime = self.active_regional_quest_runtime.as_mut().ok_or_else(|| {
+             CampaignError::InvalidState("no regional quest is active".to_string())
+@@ -5341,6 +5598,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn fail_active_regional_quest(&mut self, reason: &str) -> Result<(), CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.fail_active_regional_quest__atomic_inner(reason)
++        })
++    }
++
++    fn fail_active_regional_quest__atomic_inner(&mut self, reason: &str) -> Result<(), CampaignError> {
+         let quest_id = self.active_regional_quest_id.clone().ok_or_else(|| {
+             CampaignError::InvalidState("no regional quest is active".to_string())
+         })?;
+@@ -5479,6 +5742,15 @@ impl CampaignSaveV1 {
+     pub fn interact_with_visible_caravan(
+         &mut self,
+         protect: bool,
++    ) -> Result<String, CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.interact_with_visible_caravan__atomic_inner(protect)
++        })
++    }
++
++    fn interact_with_visible_caravan__atomic_inner(
++        &mut self,
++        protect: bool,
+     ) -> Result<String, CampaignError> {
+         self.require_town()?;
+         let room_id = self.room.id().to_string();
+@@ -5634,6 +5906,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn buy_regional_item(&mut self, item_id: &str) -> Result<(), CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.buy_regional_item__atomic_inner(item_id)
++        })
++    }
++
++    fn buy_regional_item__atomic_inner(&mut self, item_id: &str) -> Result<(), CampaignError> {
+         let region_id = self.require_regional_market()?;
+         let definition = ECONOMY_ITEM_CATALOG
+             .iter()
+@@ -5714,6 +5992,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_shop_item(&mut self) -> Result<String, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_shop_item__atomic_inner()
++        })
++    }
++
++    fn cycle_shop_item__atomic_inner(&mut self) -> Result<String, CampaignError> {
+         self.require_regional_market()?;
+         self.selected_shop_item_index =
+             (self.selected_shop_item_index + 1) % ECONOMY_ITEM_CATALOG.len();
+@@ -5722,12 +6006,24 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn buy_selected_shop_item(&mut self) -> Result<String, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.buy_selected_shop_item__atomic_inner()
++        })
++    }
++
++    fn buy_selected_shop_item__atomic_inner(&mut self) -> Result<String, CampaignError> {
+         let item_id = self.selected_shop_item().id.to_string();
+         self.buy_regional_item(&item_id)?;
+         Ok(item_id)
+     }
+ 
+     pub fn sell_selected_shop_item(&mut self) -> Result<String, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.sell_selected_shop_item__atomic_inner()
++        })
++    }
++
++    fn sell_selected_shop_item__atomic_inner(&mut self) -> Result<String, CampaignError> {
+         let region_id = self.require_regional_market()?;
+         let item = self.selected_shop_item();
+         if item.material {
+@@ -5761,6 +6057,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn craft_regional_item(&mut self, recipe_id: &str) -> Result<(), CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.craft_regional_item__atomic_inner(recipe_id)
++        })
++    }
++
++    fn craft_regional_item__atomic_inner(&mut self, recipe_id: &str) -> Result<(), CampaignError> {
+         self.require_room(CampaignRoom::WorkshopGate)?;
+         let recipe = CRAFTING_RECIPES
+             .iter()
+@@ -5842,6 +6144,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_recipe(&mut self) -> Result<String, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_recipe__atomic_inner()
++        })
++    }
++
++    fn cycle_recipe__atomic_inner(&mut self) -> Result<String, CampaignError> {
+         self.require_room(CampaignRoom::WorkshopGate)?;
+         self.selected_recipe_index = (self.selected_recipe_index + 1) % CRAFTING_RECIPES.len();
+         self.revision += 1;
+@@ -5849,12 +6157,24 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn craft_selected_recipe(&mut self) -> Result<String, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.craft_selected_recipe__atomic_inner()
++        })
++    }
++
++    fn craft_selected_recipe__atomic_inner(&mut self) -> Result<String, CampaignError> {
+         let recipe_id = self.selected_recipe().id.to_string();
+         self.craft_regional_item(&recipe_id)?;
+         Ok(recipe_id)
+     }
+ 
+     pub fn cycle_and_equip_owned_item(&mut self) -> Result<String, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_and_equip_owned_item__atomic_inner()
++        })
++    }
++
++    fn cycle_and_equip_owned_item__atomic_inner(&mut self) -> Result<String, CampaignError> {
+         self.require_town()?;
+         if self.character.inventory_items.is_empty() {
+             return Err(CampaignError::InvalidState(
+@@ -5887,6 +6207,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn repair_all_equipment(&mut self) -> Result<i64, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.repair_all_equipment__atomic_inner()
++        })
++    }
++
++    fn repair_all_equipment__atomic_inner(&mut self) -> Result<i64, CampaignError> {
+         self.require_room(CampaignRoom::WorkshopGate)?;
+         let cost = self
+             .item_conditions
+@@ -5910,6 +6236,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn equip_starter_weapon(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.equip_starter_weapon__atomic_inner()
++        })
++    }
++
++    fn equip_starter_weapon__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_town()?;
+         self.selected_loadout = LoadoutPreset::Guard;
+         self.apply_selected_loadout()?;
+@@ -5918,6 +6250,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_loadout(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_loadout__atomic_inner()
++        })
++    }
++
++    fn cycle_loadout__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_town()?;
+         if self.character.equipment_slots.contains_key("weapon") {
+             self.selected_loadout = self.selected_loadout.next();
