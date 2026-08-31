@@ -49,11 +49,5 @@ jobs:
             "$GITHUB_WORKSPACE/world" \
             "$GITHUB_WORKSPACE/control" \
             "$GITHUB_WORKSPACE/export"
-
-      - name: Upload exact v13 source candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: trnm-world-plan-v4-v13-${{ github.sha }}
-          path: export/**
-          if-no-files-found: error
-          retention-days: 7
+          sha256sum "$GITHUB_WORKSPACE/export/world-v13-source.patch"
+          cat "$GITHUB_WORKSPACE/export/identity.txt"
