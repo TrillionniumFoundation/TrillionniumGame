@@ -49,15 +49,17 @@ jobs:
             "$GITHUB_WORKSPACE/world" \
             "$GITHUB_WORKSPACE/control" \
             "$GITHUB_WORKSPACE/export"
-          sha256sum "$GITHUB_WORKSPACE/export/world-v13-source.patch"
+
+          patch_sha="$(sha256sum "$GITHUB_WORKSPACE/export/world-v13-source.patch" | awk '{print $1}')"
+          test "$patch_sha" = ba49dba1e7fbf842f146ac399647e188faafcfbd5ce3ad17425ef88850e0199f
+          printf 'qualified_patch_sha256=%s\n' "$patch_sha"
           cat "$GITHUB_WORKSPACE/export/identity.txt"
 
-      - name: Upload immutable World v13k source candidate
-        if: success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: world-v13k-source-candidate-${{ github.sha }}
-          path: export
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
+          printf 'TRNM_WORLD_V13K_MANIFEST_BEGIN\n'
+          cat "$GITHUB_WORKSPACE/export/manifest.json"
+          printf 'TRNM_WORLD_V13K_MANIFEST_END\n'
+
+          git -C "$GITHUB_WORKSPACE/world" add -A
+          candidate_tree="$(git -C "$GITHUB_WORKSPACE/world" write-tree)"
+          printf 'qualified_candidate_tree=%s\n' "$candidate_tree"
+          printf 'TRNM_WORLD_V13K_HASH_MANIFEST=PASS\n'
