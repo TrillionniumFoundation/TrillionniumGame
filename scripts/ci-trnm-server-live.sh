@@ -42,6 +42,10 @@ trap cleanup EXIT INT TERM
 
 docker rm -f "$container" >/dev/null 2>&1 || true
 
+container_running() {
+  [[ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true)" == true ]]
+}
+
 if [[ "$profile" == postgresql ]]; then
   db_port=${TRNM_POSTGRES_PORT:-55435}
   database_url="postgresql://trnm:trnm_live_password@127.0.0.1:${db_port}/trnm"
@@ -53,13 +57,48 @@ if [[ "$profile" == postgresql ]]; then
     -e POSTGRES_PASSWORD=trnm_live_password \
     -p "127.0.0.1:${db_port}:5432" \
     "$postgres_image" > "$evidence/container-id.txt"
-  for _ in $(seq 1 120); do
-    if docker exec "$container" pg_isready -U trnm -d trnm >/dev/null 2>&1; then
-      break
+
+  stable_required=${TRNM_POSTGRES_STABLE_PROBES:-20}
+  test "$stable_required" -ge 4
+  stable_count=0
+  stable_start_epoch=''
+  ready=false
+  for _ in $(seq 1 240); do
+    container_running || break
+    probe=$(docker exec "$container" psql -X -U trnm -d trnm -At \
+      -v ON_ERROR_STOP=1 \
+      -c "SELECT extract(epoch FROM pg_postmaster_start_time())::bigint || '|' || current_database() || '|' || pg_is_in_recovery()::text" \
+      2>/dev/null || true)
+    if [[ "$probe" =~ ^([0-9]+)\|trnm\|false$ ]]; then
+      current_start_epoch=${BASH_REMATCH[1]}
+      if [[ "$current_start_epoch" == "$stable_start_epoch" ]]; then
+        stable_count=$((stable_count + 1))
+      else
+        stable_start_epoch=$current_start_epoch
+        stable_count=1
+      fi
+      if (( stable_count >= stable_required )); then
+        ready=true
+        break
+      fi
+    else
+      stable_start_epoch=''
+      stable_count=0
     fi
     sleep 0.25
   done
+  if [[ "$ready" != true ]]; then
+    docker logs "$container" > "$evidence/postgres-readiness-failure.log" 2>&1 || true
+    echo 'PostgreSQL did not reach stable final readiness' >&2
+    exit 1
+  fi
   docker exec "$container" pg_isready -U trnm -d trnm
+  final_probe=$(docker exec "$container" psql -X -U trnm -d trnm -At \
+    -v ON_ERROR_STOP=1 \
+    -c "SELECT extract(epoch FROM pg_postmaster_start_time())::bigint || '|' || current_database() || '|' || pg_is_in_recovery()::text")
+  test "$final_probe" = "${stable_start_epoch}|trnm|false"
+  printf 'stable_database_readiness=true\npostmaster_start_epoch=%s\nstable_probe_count=%s\n' \
+    "$stable_start_epoch" "$stable_count" > "$evidence/database-readiness.env"
   db_scalar() {
     docker exec "$container" psql -X -U trnm -d trnm -At -v ON_ERROR_STOP=1 -c "$1"
   }
@@ -75,16 +114,36 @@ else
     --listen-addr=127.0.0.1:26257 \
     --http-addr=127.0.0.1:18081 \
     --store=/cockroach/cockroach-data > "$evidence/container-id.txt"
-  for _ in $(seq 1 160); do
+  stable_required=${TRNM_COCKROACH_STABLE_PROBES:-8}
+  test "$stable_required" -ge 4
+  stable_count=0
+  ready=false
+  for _ in $(seq 1 240); do
+    container_running || break
     if docker exec "$container" /cockroach/cockroach sql \
-      --insecure --host=127.0.0.1:26257 --execute='SELECT 1' >/dev/null 2>&1; then
-      break
+      --insecure --host=127.0.0.1:26257 --format=tsv \
+      --execute="SELECT current_database(), crdb_internal.node_id()" \
+      2>/dev/null | tail -n 1 | grep -Eq '^defaultdb[[:space:]][0-9]+$'; then
+      stable_count=$((stable_count + 1))
+      if (( stable_count >= stable_required )); then
+        ready=true
+        break
+      fi
+    else
+      stable_count=0
     fi
     sleep 0.25
   done
+  if [[ "$ready" != true ]]; then
+    docker logs "$container" > "$evidence/cockroach-readiness-failure.log" 2>&1 || true
+    echo 'CockroachDB did not reach stable readiness' >&2
+    exit 1
+  fi
   docker exec "$container" /cockroach/cockroach sql \
     --insecure --host=127.0.0.1:26257 \
     --execute='CREATE DATABASE IF NOT EXISTS trnm'
+  printf 'stable_database_readiness=true\nstable_probe_count=%s\n' \
+    "$stable_count" > "$evidence/database-readiness.env"
   db_scalar() {
     docker exec "$container" /cockroach/cockroach sql \
       --insecure --host=127.0.0.1:26257 --database=trnm \
@@ -200,11 +259,12 @@ test "$source_commit" = "$candidate_sha"
 printf 'schema_source_commit=%s\n' "$source_commit" >> "$evidence/database-assertions.txt"
 
 cat > "$evidence/summary.json" <<EOF
-{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
+{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","stable_database_readiness":true,"check_config":true,"fresh_migration":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
 EOF
 python3 -m json.tool "$evidence/summary.json" >/dev/null
 find "$evidence" -type f ! -name SHA256SUMS -print0 \
   | sort -z | xargs -0 sha256sum > "$evidence/SHA256SUMS"
 cat "$evidence/summary.json"
+cat "$evidence/database-readiness.env"
 cat "$evidence/database-assertions.txt"
 echo "trnm-server live contract passed: profile=${profile} evidence=${evidence}"
