@@ -1,0 +1,76 @@
+name: tmp-world-plan-v4-development-export-readonly
+
+on:
+  push:
+    branches:
+      - tmp/world-plan-v4-development-transfer-20260831
+    paths:
+      - .github/workflows/tmp-world-plan-v4-development-export-readonly.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tmp-world-plan-v4-development-export-readonly
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  RUST_TEST_THREADS: "1"
+  RUST_TOOLCHAIN: "1.98.0"
+  WORLD_HEAD: "5605cfb8861aa923f69ff032ddbff7d035bccb0c"
+  CONTROL_HEAD: "57e00ee8103791fd9a177cf1895344710c598262"
+
+jobs:
+  verify-and-export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Fetch immutable control and World trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pair in \
+            "control https://github.com/TrillionniumFoundation/Trillionnium-Chain.git ${CONTROL_HEAD}" \
+            "world https://github.com/TrillionniumFoundation/Trillionnium-World.git ${WORLD_HEAD}"; do
+            set -- $pair
+            directory="$1"
+            remote="$2"
+            revision="$3"
+            git init "$directory"
+            git -C "$directory" remote add origin "$remote"
+            git -C "$directory" fetch --no-tags --depth=1 origin "$revision"
+            git -C "$directory" checkout --detach FETCH_HEAD
+            test "$(git -C "$directory" rev-parse HEAD)" = "$revision"
+          done
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${RUST_TOOLCHAIN}"
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Execute source closure and exact tests
+        shell: bash
+        env:
+          WORLD_CHECKOUT: ${{ github.workspace }}/world
+        run: |
+          set -euo pipefail
+          bash control/tmp/world-plan-v4-development-transfer/run-world-source-closure.sh \
+            "$GITHUB_WORKSPACE/world" \
+            "$GITHUB_WORKSPACE/control" \
+            "$GITHUB_WORKSPACE/export"
+
+      - name: Upload exact tested source transfer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trnm-world-plan-v4-development-transfer-${{ github.run_id }}
+          path: export/**
+          if-no-files-found: error
+          retention-days: 7
