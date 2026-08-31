@@ -60,6 +60,16 @@ jobs:
           WORLD_CHECKOUT: ${{ github.workspace }}/world
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("control/tmp/world-plan-v4-development-transfer/world-campaign-atomicity.patch")
+          text = path.read_text(encoding="utf-8")
+          old = "    fn assert_error_preserves_state<T>(\n"
+          new = "    fn assert_error_preserves_state<T: std::fmt::Debug>(\n"
+          if text.count(old) != 1:
+              raise SystemExit("atomicity Debug-bound source shape drifted")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
           bash control/tmp/world-plan-v4-development-transfer/run-world-source-closure.sh \
             "$GITHUB_WORKSPACE/world" \
             "$GITHUB_WORKSPACE/control" \
