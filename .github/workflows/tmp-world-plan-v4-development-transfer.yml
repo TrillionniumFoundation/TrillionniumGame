@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: tmp-world-plan-v4-v8-arm-${{ github.ref }}
@@ -160,3 +160,49 @@ jobs:
             "$GITHUB_WORKSPACE/world" \
             "$GITHUB_WORKSPACE/control" \
             "$GITHUB_WORKSPACE/export"
+
+      - name: Persist exact qualified export
+        shell: bash
+        env:
+          CONTROL_BRANCH: tmp/world-plan-v4-v8-arm-20260831
+          WORLD_SOURCE_HEAD: 5605cfb8861aa923f69ff032ddbff7d035bccb0c
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "${CONTROL_BRANCH}"
+          test -d export
+          test -s export/world-v8-core.patch
+          test -s export/identity.txt
+          grep -Fxq "world_source_head=${WORLD_SOURCE_HEAD}" export/identity.txt
+
+          destination="tmp/world-plan-v4-v8-qualified/${GITHUB_SHA}"
+          test ! -e "control/${destination}"
+          mkdir -p "control/${destination}"
+          cp -a export/. "control/${destination}/"
+          cat > "control/${destination}/relay-run.txt" <<EOF
+          qualification_commit=${GITHUB_SHA}
+          qualification_run_id=${GITHUB_RUN_ID}
+          qualification_run_attempt=${GITHUB_RUN_ATTEMPT}
+          qualification_job=${GITHUB_JOB}
+          world_source_head=${WORLD_SOURCE_HEAD}
+          runner_os=${RUNNER_OS}
+          runner_arch=${RUNNER_ARCH}
+          EOF
+
+          rm -f "control/${destination}/SHA256SUMS"
+          (
+            cd "control/${destination}"
+            find . -type f ! -name SHA256SUMS -print0 \
+              | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+          git -C control config user.name "github-actions[bot]"
+          git -C control config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C control add "${destination}"
+          git -C control diff --cached --check
+          git -C control commit -m "ci(game): persist qualified World v8 export ${GITHUB_SHA}"
+          git -C control remote set-url origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C control push origin "HEAD:${CONTROL_BRANCH}"
