@@ -11,64 +11,15 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: tmp-world-plan-v4-development-transfer-20260831
-  cancel-in-progress: true
-
-env:
-  CARGO_TERM_COLOR: never
-  CARGO_INCREMENTAL: "0"
-  RUST_BACKTRACE: "1"
-  RUST_TEST_THREADS: "1"
-  RUST_TOOLCHAIN: "1.98.0"
-  WORLD_HEAD: "5605cfb8861aa923f69ff032ddbff7d035bccb0c"
-  CONTROL_HEAD: "57e00ee8103791fd9a177cf1895344710c598262"
-
 jobs:
-  verify-and-export:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Fetch immutable control and World trees
+      - name: Prove runner startup
         shell: bash
         run: |
           set -euo pipefail
-          git init control
-          git -C control remote add origin https://github.com/TrillionniumFoundation/Trillionnium-Chain.git
-          git -C control fetch --no-tags --depth=1 origin "${CONTROL_HEAD}"
-          git -C control checkout --detach FETCH_HEAD
-          test "$(git -C control rev-parse HEAD)" = "${CONTROL_HEAD}"
-
-          git init world
-          git -C world remote add origin https://github.com/TrillionniumFoundation/Trillionnium-World.git
-          git -C world fetch --no-tags --depth=1 origin "${WORLD_HEAD}"
-          git -C world checkout --detach FETCH_HEAD
-          test "$(git -C world rev-parse HEAD)" = "${WORLD_HEAD}"
-
-      - name: Install pinned Rust toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
-          rustup default "${RUST_TOOLCHAIN}"
-          rustc --version --verbose
-          cargo --version --verbose
-
-      - name: Execute source closure and exact tests
-        shell: bash
-        env:
-          WORLD_CHECKOUT: ${{ github.workspace }}/world
-        run: |
-          set -euo pipefail
-          bash control/tmp/world-plan-v4-development-transfer/run-world-source-closure.sh \
-            "$GITHUB_WORKSPACE/world" \
-            "$GITHUB_WORKSPACE/control" \
-            "$GITHUB_WORKSPACE/export"
-
-      - name: Upload exact tested source transfer
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: trnm-world-plan-v4-development-transfer-${{ github.run_id }}
-          path: export/**
-          if-no-files-found: error
-          retention-days: 7
+          uname -a
+          git --version
+          python3 --version
