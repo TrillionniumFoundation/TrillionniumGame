@@ -1,0 +1,181 @@
+diff --git a/trillionnium/crates/trnm-rts-sim/src/lib.rs b/trillionnium/crates/trnm-rts-sim/src/lib.rs
+index abd77e8..617a5b5 100644
+--- a/trillionnium/crates/trnm-rts-sim/src/lib.rs
++++ b/trillionnium/crates/trnm-rts-sim/src/lib.rs
+@@ -1994,6 +1994,17 @@ impl MissionSimV1 {
+                 "human enemy control set must contain seeded living party units".to_string(),
+             ));
+         }
++        // Validate both sides before draining the authoritative party. A rejected
++        // partition must not move even one unit out of the player roster.
++        if !self
++            .party
++            .iter()
++            .any(|unit| unit.alive() && !enemy_unit_ids.contains(&unit.unit_id))
++        {
++            return Err(SimError::Order(
++                "ranked PvP requires at least one unit on each side".to_string(),
++            ));
++        }
+         let mut retained = Vec::new();
+         let mut human_enemies = Vec::new();
+         for unit in self.party.drain(..) {
+@@ -2003,11 +2014,6 @@ impl MissionSimV1 {
+                 retained.push(unit);
+             }
+         }
+-        if retained.is_empty() {
+-            return Err(SimError::Order(
+-                "ranked PvP requires at least one unit on each side".to_string(),
+-            ));
+-        }
+         for (index, unit) in human_enemies.iter_mut().enumerate() {
+             let requested = self
+                 .seed
+@@ -3343,11 +3349,6 @@ impl MissionSimV1 {
+             .ok_or_else(|| {
+                 SimError::Order("construction requires a living selected builder".to_string())
+             })?;
+-        for unit in &mut self.party {
+-            if unit.alive() && selected.contains(unit.unit_id.as_str()) {
+-                unit.guard_ticks = unit.guard_ticks.max(240);
+-            }
+-        }
+         let duration = 45 + definition.hp / 100;
+         self.submit_authority_job(
+             AuthorityCommandSource::PlayerOrder,
+@@ -3363,7 +3364,16 @@ impl MissionSimV1 {
+                 side: AuthoritySide::Player,
+             },
+             "structure construction",
+-        )
++        )?;
++        // Builder guard is part of the accepted construction command. Publish
++        // it only after the authority job has passed validation and resource
++        // admission, so a rejected build leaves cooldown/guard state untouched.
++        for unit in &mut self.party {
++            if unit.alive() && selected.contains(unit.unit_id.as_str()) {
++                unit.guard_ticks = unit.guard_ticks.max(240);
++            }
++        }
++        Ok(())
+     }
+ 
+     fn resolve_recon(&mut self, order: &RtsFrameOrder) -> Result<(), SimError> {
+@@ -7677,4 +7687,116 @@ mod tests {
+         assert!(sim.distinct_order_kinds.contains("enemy:attack"));
+         assert!(sim.validate().is_ok());
+     }
++    fn assert_sim_error_preserves_state<T: std::fmt::Debug>(
++        sim: &mut MissionSimV1,
++        operation: impl FnOnce(&mut MissionSimV1) -> Result<T, SimError>,
++    ) -> SimError {
++        let before_bytes = serde_json::to_vec(sim).expect("simulation state serializes");
++        let before_hash = sim.snapshot_hash().expect("simulation state hashes");
++        let error = operation(sim).expect_err("operation must fail");
++        assert_eq!(
++            before_bytes,
++            serde_json::to_vec(sim).expect("rejected state still serializes"),
++            "RTS command returned Err after changing authoritative state"
++        );
++        assert_eq!(
++            before_hash,
++            sim.snapshot_hash().expect("rejected state still hashes"),
++            "RTS command returned Err after changing the snapshot hash"
++        );
++        error
++    }
++
++    #[test]
++    fn rejected_all_party_pvp_partition_preserves_rosters_and_snapshot() {
++        let mut sim = MissionSimV1::from_seed(seed()).unwrap();
++        let all_living_party = sim
++            .party
++            .iter()
++            .filter(|unit| unit.alive())
++            .map(|unit| unit.unit_id.clone())
++            .collect::<BTreeSet<_>>();
++        let original_party_ids = sim
++            .party
++            .iter()
++            .map(|unit| unit.unit_id.clone())
++            .collect::<Vec<_>>();
++        let original_enemy_ids = sim
++            .enemies
++            .iter()
++            .map(|unit| unit.unit_id.clone())
++            .collect::<Vec<_>>();
++
++        let error = assert_sim_error_preserves_state(&mut sim, |candidate| {
++            candidate.enable_human_enemy_authority(&all_living_party)
++        });
++        assert!(error.to_string().contains("at least one unit on each side"));
++        assert_eq!(
++            original_party_ids,
++            sim.party
++                .iter()
++                .map(|unit| unit.unit_id.clone())
++                .collect::<Vec<_>>()
++        );
++        assert_eq!(
++            original_enemy_ids,
++            sim.enemies
++                .iter()
++                .map(|unit| unit.unit_id.clone())
++                .collect::<Vec<_>>()
++        );
++        assert!(!sim.human_enemy_authority);
++    }
++
++    #[test]
++    fn insufficient_resources_build_preserves_guard_resources_replay_and_cursor() {
++        let mut sim = MissionSimV1::from_seed(seed()).unwrap();
++        sim.resources_available = 0;
++        let target = sim.party[0].position;
++        let build = order(&sim, RtsOrderKind::Build, target);
++        let guards_before = sim
++            .party
++            .iter()
++            .map(|unit| (unit.unit_id.clone(), unit.guard_ticks, unit.ability_cooldown_ticks))
++            .collect::<Vec<_>>();
++        let resources_before = (
++            sim.resources_available,
++            sim.resources_spent,
++            sim.resources_generated,
++        );
++        let replay_before = sim.replay_orders.len();
++        let jobs_before = sim.jobs.len();
++        let command_records_before = sim.authority_job_commands.len();
++        let order_count_before = sim.order_count;
++        let event_count_before = sim.event_count;
++        let deterministic_cursor_before = sim.enemy_ai_decision_index;
++
++        let error = assert_sim_error_preserves_state(&mut sim, |candidate| {
++            candidate.issue_order(build)
++        });
++        assert!(error.to_string().contains("field resources"));
++        assert_eq!(
++            guards_before,
++            sim.party
++                .iter()
++                .map(|unit| (unit.unit_id.clone(), unit.guard_ticks, unit.ability_cooldown_ticks))
++                .collect::<Vec<_>>()
++        );
++        assert_eq!(
++            resources_before,
++            (
++                sim.resources_available,
++                sim.resources_spent,
++                sim.resources_generated,
++            )
++        );
++        assert_eq!(replay_before, sim.replay_orders.len());
++        assert_eq!(jobs_before, sim.jobs.len());
++        assert_eq!(command_records_before, sim.authority_job_commands.len());
++        assert_eq!(order_count_before, sim.order_count);
++        assert_eq!(event_count_before, sim.event_count);
++        assert_eq!(deterministic_cursor_before, sim.enemy_ai_decision_index);
++    }
++
++
+ }
