@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - codex/websocket-persistent-lifecycle-2026-08-31
+  pull_request:
+    branches:
+      - codex/plan-v3-post-merge-reconcile-ready-2026-08-31
 
 permissions:
   contents: write
@@ -12,6 +15,10 @@ concurrency:
   group: temporary-finalize-websocket-persistent
   cancel-in-progress: false
 
+env:
+  TARGET_BRANCH: ${{ github.event.pull_request.head.ref || 'codex/websocket-persistent-lifecycle-2026-08-31' }}
+  TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   finalize:
     runs-on: ubuntu-24.04
@@ -19,18 +26,17 @@ jobs:
     steps:
       - name: Fetch exact branch without external actions
         shell: bash
-        env:
-          BRANCH: codex/websocket-persistent-lifecycle-2026-08-31
         run: |
           set -euo pipefail
+          test "$TARGET_BRANCH" = codex/websocket-persistent-lifecycle-2026-08-31
           rm -rf "$GITHUB_WORKSPACE"
           git init "$GITHUB_WORKSPACE"
           git -C "$GITHUB_WORKSPACE" remote add origin \
             "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git"
           git -C "$GITHUB_WORKSPACE" fetch --no-tags origin \
-            "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
-          git -C "$GITHUB_WORKSPACE" checkout -B "$BRANCH" "origin/$BRANCH"
-          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$TARGET_SHA"
       - name: Synchronize lockfile and source contracts
         shell: bash
         run: |
@@ -51,7 +57,7 @@ jobs:
               ),
               (
                   '        "crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs": [\n            "/v1/realtime",\n            "trnm.json.v1",\n            "Sec-WebSocket-Accept",\n            "websocket_client_frame_unmasked",\n            "websocket_length_not_canonical",\n            \'"POST",\\n        "/v1/authority/commit"\',\n        ],',
-                  '        "crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs": [\n            "/v1/realtime",\n            "trnm.json.v1",\n            "trnm.protobuf.v1",\n            "Sec-WebSocket-Accept",\n            "MAX_MESSAGES_PER_CONNECTION",\n            "read_client_frame_exact",\n            "decode_authority_command",\n            "encode_authority_response",\n            "Opcode::Ping",\n            "Opcode::Pong",\n            \'"POST", "/v1/authority/commit"\',\n        ],',
+                  '        "crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs": [\n            "/v1/realtime",\n            "trnm.json.v1",\n            "trnm.protobuf.v1",\n            "Sec-WebSocket-Accept",\n            "MAX_MESSAGES_PER_CONNECTION",\n            "read_client_frame_exact",\n            "decode_authority_command",\n            "encode_authority_response",\n            "Opcode::Ping",\n            "Opcode::Pong",\n            \'Request::new("POST", "/v1/authority/commit"\',\n        ],',
               ),
               (
                   '        "websocket_json_source_candidate",\n        "bounded_pool_source_candidate",',
@@ -101,8 +107,6 @@ jobs:
           cargo clippy --manifest-path crates/trnm-realtime-wire/Cargo.toml --all-targets --locked -- -D warnings
       - name: Commit verified final tree
         shell: bash
-        env:
-          BRANCH: codex/websocket-persistent-lifecycle-2026-08-31
         run: |
           set -euo pipefail
           git config user.name "trillionnium-realtime-finalizer"
@@ -113,4 +117,4 @@ jobs:
             .github/workflows/temporary-finalize-websocket-persistent.yml
           git diff --cached --check
           git commit -m "ci(realtime): seal persistent websocket candidate"
-          git push origin "HEAD:refs/heads/${BRANCH}"
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
