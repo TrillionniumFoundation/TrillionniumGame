@@ -7,11 +7,18 @@ export_root="${3:-$PWD/export}"
 manifest="$world/trillionnium/Cargo.toml"
 partitioner="$control/tmp/world-plan-v4-v8-patch/partition-semantic-rust.py"
 compat="$control/tmp/world-plan-v4-v8-patch/apply-partition-compat.py"
+transition_patch="$control/tmp/world-plan-v4-v8-patch/transition-python-ascii-casefold.patch"
 
 # First reproduce the exact green v12 source candidate. This leaves the tested
 # unpartitioned candidate in the World working tree.
 bash "$control/tmp/world-plan-v4-v8-patch/qualify-v12.sh" \
   "$world" "$control" "$export_root"
+
+# Keep the independent Python checker semantically aligned with Rust's
+# ASCII-only forbidden-authority-key normalization. The patch is blob-bound.
+test "$(git -C "$control" hash-object "$transition_patch")" = bc70a73f55796d17251e395bca04ab44d0da308d
+git -C "$world" apply --check "$transition_patch"
+git -C "$world" apply "$transition_patch"
 
 # Decompose only at parsed item boundaries and by named ownership domains.
 python3 "$partitioner" "$world" game-server
