@@ -1,0 +1,57 @@
+name: exact-source-snapshot
+
+on:
+  push:
+    branches:
+      - codex/grpc-healthcheck-source-2026-08-31
+    paths:
+      - '.github/workflows/exact-source-snapshot.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: exact-source-snapshot-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  retain-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CANDIDATE_REPOSITORY: ${{ github.repository }}
+      CANDIDATE_SHA: ${{ github.sha }}
+    steps:
+      - name: Fetch exact candidate without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$CANDIDATE_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+
+      - name: Seal and retain exact source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/TrillionniumGame-${CANDIDATE_SHA}.tar.gz"
+          git archive --format=tar.gz --prefix="TrillionniumGame-${CANDIDATE_SHA}/" \
+            --output="$archive" "$CANDIDATE_SHA"
+          archive_sha="$(sha256sum "$archive" | awk '{print $1}')"
+          artifact_name="exact-source-${CANDIDATE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python3 scripts/upload-actions-artifact.py \
+            "$artifact_name" "$archive" --mime-type application/gzip \
+            | tee "$RUNNER_TEMP/exact-source-artifact.json"
+          {
+            printf '### Exact source snapshot\n\n'
+            printf -- '- repository: `%s`\n' "$CANDIDATE_REPOSITORY"
+            printf -- '- commit: `%s`\n' "$CANDIDATE_SHA"
+            printf -- '- archive SHA-256: `%s`\n' "$archive_sha"
+            printf -- '- diagnostic only: `true`\n'
+            printf -- '- compatibility credit: `false`\n'
+          } >> "$GITHUB_STEP_SUMMARY"
