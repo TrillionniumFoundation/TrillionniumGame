@@ -91,6 +91,10 @@ jobs:
           grep -Fq 'if "$worker_bin" run-once >"$scenario/worker-crash.stdout"' scripts/ci-outbox-final-attempt-reaper.sh
           grep -q 'MIGRATION_CHAIN.lock.json' scripts/ci-outbox-final-attempt-reaper.sh
           grep -q 'git.*hash-object' scripts/ci-outbox-final-attempt-reaper.sh
+          grep -Fq 'AND state = 3 AND attempt = 1 AND lease_generation = 1' scripts/ci-outbox-final-attempt-reaper.sh
+          grep -Fq 'owner_node IS NULL AND receipt_digest IS NULL' scripts/ci-outbox-final-attempt-reaper.sh
+          grep -Fq 'c57f69b9f67ddf67d5d6a49b4527af2e17ad313bfbc2f8397b5f9120541be25a' scripts/ci-outbox-final-attempt-reaper.sh
+          ! grep -q 'trnm_outbox_dead_letters' scripts/ci-outbox-final-attempt-reaper.sh
           grep -q 'TRNM_LOG_ARTIFACT_BEGIN' scripts/emit-actions-log-artifact.py
           grep -q 'TRNM_LOG_ARTIFACT_END' scripts/emit-actions-log-artifact.py
           python3 scripts/check-migration-lock.py
