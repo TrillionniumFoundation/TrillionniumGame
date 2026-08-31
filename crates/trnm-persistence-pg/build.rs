@@ -11,11 +11,12 @@ fn main() {
         .expect("the reviewed vendored protoc package must provide well-known types");
     std::env::set_var("PROTOC", protoc);
 
+    let protos = [PathBuf::from("proto/nakama-healthcheck.proto")];
     let includes = [PathBuf::from("proto"), protobuf_include];
     tonic_prost_build::configure()
         .build_client(true)
         .build_server(true)
         .compile_well_known_types(true)
-        .compile_protos(&["proto/nakama-healthcheck.proto"], &includes)
+        .compile_protos(&protos, &includes)
         .expect("the pinned Nakama Healthcheck protobuf subset must compile");
 }
