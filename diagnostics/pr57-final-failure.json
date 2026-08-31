@@ -1,0 +1,11 @@
+{
+  "failures": [
+    {
+      "observed": null,
+      "required_job": "verify-retained-logs",
+      "workflow": "outbox-final-attempt-reaper"
+    }
+  ],
+  "head": "8bc41fc87c2e39686c87292db2c58693a844356c",
+  "tree": "e921d6e60996eedbcbab9cf967c416396b93dcba"
+}
