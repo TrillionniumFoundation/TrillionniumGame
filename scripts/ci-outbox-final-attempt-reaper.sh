@@ -39,9 +39,64 @@ if '@sha256:' not in value:
 print(value)
 PY
 }
+
+migration_for() {
+  python3 - "$profile" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+profile = sys.argv[1]
+lock_path = Path('migrations/MIGRATION_CHAIN.lock.json')
+lock = json.loads(lock_path.read_text(encoding='utf-8'))
+if lock.get('schema') != 'trillionnium.migration-chain-lock.v1':
+    raise SystemExit('migration lock schema mismatch')
+profiles = lock.get('profiles')
+if not isinstance(profiles, dict) or profile not in profiles:
+    raise SystemExit(f'migration lock profile missing: {profile}')
+row = profiles[profile]
+ordered = row.get('ordered_files')
+if not isinstance(ordered, list) or len(ordered) != 1:
+    raise SystemExit(
+        f'final-attempt lane requires exactly one locked migration for {profile}'
+    )
+entry = ordered[0]
+path_value = entry.get('path')
+expected_blob = entry.get('git_blob_sha1')
+if not isinstance(path_value, str) or not path_value:
+    raise SystemExit(f'locked migration path is invalid for {profile}')
+if not isinstance(expected_blob, str) or len(expected_blob) != 40:
+    raise SystemExit(f'locked migration blob is invalid for {profile}')
+path = Path(path_value)
+if not path.is_file():
+    raise SystemExit(f'locked migration file is absent: {path_value}')
+expected_directory = row.get('directory')
+if expected_directory != path.parent.as_posix():
+    raise SystemExit(
+        f'locked migration directory mismatch: {expected_directory!r} != {path.parent.as_posix()!r}'
+    )
+actual_blob = subprocess.check_output(
+    ['git', 'hash-object', path_value], text=True
+).strip()
+if actual_blob != expected_blob:
+    raise SystemExit(
+        f'locked migration blob mismatch for {path_value}: '
+        f'expected={expected_blob} actual={actual_blob}'
+    )
+print(path_value)
+print(expected_blob)
+PY
+}
+
 image=$(image_for)
-printf 'repository=TrillionniumFoundation/TrillionniumGame\ncommit=%s\nprofile=%s\nimage=%s\nrun_id=%s\n' \
-  "$commit" "$profile" "$image" "$run_id" >"$evidence/identity.env"
+mapfile -t migration_identity < <(migration_for)
+test "${#migration_identity[@]}" -eq 2
+migration=${migration_identity[0]}
+migration_blob=${migration_identity[1]}
+printf 'repository=TrillionniumFoundation/TrillionniumGame\ncommit=%s\nprofile=%s\nimage=%s\nrun_id=%s\nmigration=%s\nmigration_blob_sha1=%s\n' \
+  "$commit" "$profile" "$image" "$run_id" "$migration" "$migration_blob" \
+  >"$evidence/identity.env"
 docker pull "$image" 2>&1 | tee "$evidence/logs/docker-pull.log"
 
 container_running() {
@@ -49,7 +104,6 @@ container_running() {
 }
 
 if [[ "$profile" == postgresql ]]; then
-  migration=migrations/postgresql/0001_foundation.sql
   expected="${TRNM_POSTGRES_IMAGE:-$image}"
   [[ "$expected" == "$image" ]]
   docker run -d --name "$container" --network host \
@@ -76,7 +130,6 @@ if [[ "$profile" == postgresql ]]; then
       -h 127.0.0.1 -U postgres -d trnm -v ON_ERROR_STOP=1 -c "$1"
   }
 else
-  migration=migrations/cockroachdb/0001_foundation.sql
   expected="${TRNM_COCKROACH_IMAGE:-$image}"
   [[ "$expected" == "$image" ]]
   docker run -d --name "$container" --network host "$image" start-single-node \
