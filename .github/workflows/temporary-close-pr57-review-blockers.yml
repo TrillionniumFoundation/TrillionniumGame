@@ -37,13 +37,48 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
 
+      - name: Select a repository-supported Python runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidates="$({
+            for name in python3.13 python3.12 python3.11; do
+              command -v "$name" 2>/dev/null || true
+            done
+            find /opt/hostedtoolcache/Python -type f -path '*/x64/bin/python' -perm -111 \
+              -print 2>/dev/null | sort -Vr || true
+          } | awk 'NF && !seen[$0]++')"
+          test -n "$candidates" || {
+            echo 'Python >= 3.11 is required; no candidate interpreter was found.' >&2
+            exit 1
+          }
+          selected=''
+          while IFS= read -r candidate; do
+            test -x "$candidate" || continue
+            version="$($candidate -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+            major="${version%%.*}"
+            minor="${version#*.}"
+            if (( major > 3 || (major == 3 && minor >= 11) )); then
+              selected="$(realpath "$candidate")"
+              break
+            fi
+          done <<< "$candidates"
+          test -n "$selected" || {
+            echo 'Python >= 3.11 is required; discovered interpreters were too old.' >&2
+            printf '%s\n' "$candidates" >&2
+            exit 1
+          }
+          "$selected" --version
+          "$selected" -c 'import tomllib; print("tomllib=available")'
+          printf 'PYTHON_BIN=%s\n' "$selected" >> "$GITHUB_ENV"
+
       - name: Apply all current exact-head review repairs
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/temporary-dedupe-server-shared-state.py
-          python3 scripts/temporary-close-pr57-review-blockers.py
-          python3 - <<'PY'
+          "$PYTHON_BIN" scripts/temporary-dedupe-server-shared-state.py
+          "$PYTHON_BIN" scripts/temporary-close-pr57-review-blockers.py
+          "$PYTHON_BIN" - <<'PY'
           from pathlib import Path
 
           path = Path('crates/trnm-persistence-pg/src/bin/trnm_server/app.rs')
@@ -56,7 +91,7 @@ jobs:
               )
           path.write_text(text.replace(old, new, 1), encoding='utf-8')
           PY
-          python3 scripts/temporary-close-pr57-outbox-evidence.py
+          "$PYTHON_BIN" scripts/temporary-close-pr57-outbox-evidence.py
           rm \
             .github/workflows/temporary-close-pr57-review-blockers.yml \
             .github/workflows/exact-source-snapshot.yml \
@@ -82,23 +117,23 @@ jobs:
           cargo fmt --all -- --check
           cargo test --workspace --all-targets --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
-          python3 -m compileall -q scripts tools tests
-          python3 -m unittest discover -s tests -p 'test_*.py' -v
-          python3 scripts/check-gap-register.py
-          python3 scripts/check-evidence-index.py
-          python3 scripts/check-plan.py
-          python3 scripts/check-status-transitions.py
-          python3 scripts/check-schema-authority.py
-          python3 scripts/check-workflow-action-policy.py
-          python3 scripts/check-repository-hygiene.py
-          python3 scripts/check-rust-package-inventory.py
-          python3 scripts/check-rust-foundation.py
-          python3 scripts/check-trnm-server.py
-          python3 scripts/check-source-candidate-boundaries.py
+          "$PYTHON_BIN" -m compileall -q scripts tools tests
+          "$PYTHON_BIN" -m unittest discover -s tests -p 'test_*.py' -v
+          "$PYTHON_BIN" scripts/check-gap-register.py
+          "$PYTHON_BIN" scripts/check-evidence-index.py
+          "$PYTHON_BIN" scripts/check-plan.py
+          "$PYTHON_BIN" scripts/check-status-transitions.py
+          "$PYTHON_BIN" scripts/check-schema-authority.py
+          "$PYTHON_BIN" scripts/check-workflow-action-policy.py
+          "$PYTHON_BIN" scripts/check-repository-hygiene.py
+          "$PYTHON_BIN" scripts/check-rust-package-inventory.py
+          "$PYTHON_BIN" scripts/check-rust-foundation.py
+          "$PYTHON_BIN" scripts/check-trnm-server.py
+          "$PYTHON_BIN" scripts/check-source-candidate-boundaries.py
           bash scripts/check-api-rtapi-denominator.sh
           bash -n scripts/ci-outbox-final-attempt-reaper.sh
           test -x scripts/upload-actions-artifact.py
-          python3 -m unittest tests.control_plane.test_actions_artifact_uploader -v
+          "$PYTHON_BIN" -m unittest tests.control_plane.test_actions_artifact_uploader -v
           files=$(find runtime -type f -name '*.go' -print | sort)
           test -n "$files"
           unformatted=$(printf '%s\n' "$files" | xargs gofmt -l)
