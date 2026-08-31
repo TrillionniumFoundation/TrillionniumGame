@@ -6,7 +6,11 @@ on:
       - 'crates/trnm-persistence-pg/src/lib.rs'
       - 'crates/trnm-persistence-pg/src/outbox.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs'
+      - 'migrations/MIGRATION_CHAIN.lock.json'
+      - 'migrations/postgresql/0001_foundation_up.sql'
+      - 'migrations/cockroachdb/0001_foundation_up.sql'
       - 'scripts/ci-outbox-final-attempt-reaper.sh'
+      - 'scripts/check-migration-lock.py'
       - 'scripts/upload-actions-artifact.py'
       - 'scripts/emit-actions-log-artifact.py'
       - 'tests/control_plane/test_actions_artifact_uploader.py'
@@ -23,7 +27,11 @@ on:
       - 'crates/trnm-persistence-pg/src/lib.rs'
       - 'crates/trnm-persistence-pg/src/outbox.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs'
+      - 'migrations/MIGRATION_CHAIN.lock.json'
+      - 'migrations/postgresql/0001_foundation_up.sql'
+      - 'migrations/cockroachdb/0001_foundation_up.sql'
       - 'scripts/ci-outbox-final-attempt-reaper.sh'
+      - 'scripts/check-migration-lock.py'
       - 'scripts/upload-actions-artifact.py'
       - 'scripts/emit-actions-log-artifact.py'
       - 'tests/control_plane/test_actions_artifact_uploader.py'
@@ -68,6 +76,9 @@ jobs:
           set -euo pipefail
           test -x scripts/ci-outbox-final-attempt-reaper.sh
           test -f scripts/emit-actions-log-artifact.py
+          test -f migrations/MIGRATION_CHAIN.lock.json
+          test -f migrations/postgresql/0001_foundation_up.sql
+          test -f migrations/cockroachdb/0001_foundation_up.sql
           grep -q 'pub struct OutboxClaimBatch' crates/trnm-persistence-pg/src/outbox.rs
           grep -q 'claim_outbox_batch' crates/trnm-persistence-pg/src/outbox.rs
           grep -q 'reaped_dead_letters' crates/trnm-persistence-pg/src/outbox.rs
@@ -78,8 +89,11 @@ jobs:
           grep -q 'crash-after-publish' scripts/ci-outbox-final-attempt-reaper.sh
           grep -q 'possible_lost_effect_declared' scripts/ci-outbox-final-attempt-reaper.sh
           grep -Fq 'if "$worker_bin" run-once >"$scenario/worker-crash.stdout"' scripts/ci-outbox-final-attempt-reaper.sh
+          grep -q 'MIGRATION_CHAIN.lock.json' scripts/ci-outbox-final-attempt-reaper.sh
+          grep -q 'git.*hash-object' scripts/ci-outbox-final-attempt-reaper.sh
           grep -q 'TRNM_LOG_ARTIFACT_BEGIN' scripts/emit-actions-log-artifact.py
           grep -q 'TRNM_LOG_ARTIFACT_END' scripts/emit-actions-log-artifact.py
+          python3 scripts/check-migration-lock.py
           python3 -m py_compile scripts/upload-actions-artifact.py scripts/emit-actions-log-artifact.py
           python3 -m unittest \
             tests.control_plane.test_actions_artifact_uploader \
