@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repair the reviewed payload's over-broad App drain postcondition fail-closed."""
+"""Repair two reviewed payload post-patch invariants fail-closed."""
 from __future__ import annotations
 
 import ast
@@ -16,6 +16,15 @@ OLD_APP_DRAIN_FIELD = (
     "    sessions: SessionApi,\n"
     "    draining: bool,\n"
     "    metrics: SharedAppMetrics,\n"
+)
+SHARED_METRICS_MARKER = (
+    "    #[must_use]\n"
+    "    pub(crate) fn with_shared_metrics(\n"
+)
+TEST_ONLY_SHARED_METRICS_MARKER = (
+    "    #[cfg(test)]\n"
+    "    #[must_use]\n"
+    "    pub(crate) fn with_shared_metrics(\n"
 )
 
 wrapper = PATCHER.read_text(encoding="utf-8")
@@ -92,9 +101,48 @@ guard.test = ast.BoolOp(
         ),
     ],
 )
+
+constructor_calls: list[ast.Call] = []
+for node in ast.walk(patch_app):
+    if not isinstance(node, ast.Call):
+        continue
+    if not isinstance(node.func, ast.Name) or node.func.id != "replace_once":
+        continue
+    labels = {
+        child.value
+        for child in ast.walk(node)
+        if isinstance(child, ast.Constant) and isinstance(child.value, str)
+    }
+    if "app shared constructor" in labels:
+        constructor_calls.append(node)
+if len(constructor_calls) != 1:
+    raise SystemExit(
+        f"expected one reviewed App constructor replacement, found {len(constructor_calls)}"
+    )
+constructor_call = constructor_calls[0]
+if len(constructor_call.args) < 4 or not isinstance(constructor_call.args[2], ast.Constant):
+    raise SystemExit("reviewed App constructor replacement has unexpected argument shape")
+new_constructor = constructor_call.args[2].value
+if not isinstance(new_constructor, str):
+    raise SystemExit("reviewed App constructor replacement is not a literal string")
+if TEST_ONLY_SHARED_METRICS_MARKER in new_constructor:
+    raise SystemExit("reviewed App shared-metrics constructor is already test-only")
+if new_constructor.count(SHARED_METRICS_MARKER) != 1:
+    raise SystemExit(
+        "expected one shared-metrics constructor marker in reviewed replacement, found "
+        f"{new_constructor.count(SHARED_METRICS_MARKER)}"
+    )
+constructor_call.args[2] = ast.Constant(
+    value=new_constructor.replace(
+        SHARED_METRICS_MARKER,
+        TEST_ONLY_SHARED_METRICS_MARKER,
+        1,
+    )
+)
+
 ast.fix_missing_locations(tree)
 PATCHER.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
 print(
-    "reviewed App drain residual-state guard narrowed from generic DrainState field "
-    "to the obsolete App-private field"
+    "reviewed App drain guard narrowed and test-only shared-metrics constructor "
+    "annotated before exact-head validation"
 )
