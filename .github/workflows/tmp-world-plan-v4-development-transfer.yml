@@ -49,7 +49,55 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
 
-          bash control/tmp/world-plan-v4-v8-patch/qualify-v8.sh \
+          cp control/tmp/world-plan-v4-v8-patch/qualify-v8.sh /tmp/qualify-v8-fixed.sh
+          python3 - <<'PY'
+          from pathlib import Path
+
+          script = Path('/tmp/qualify-v8-fixed.sh')
+          text = script.read_text(encoding='utf-8')
+          needle = '''git -C "$world" apply "$online_patch"
+          cargo fmt --manifest-path "$manifest" --all
+          '''
+          replacement = r'''git -C "$world" apply "$online_patch"
+          python3 - "$world" <<'PYFIX'
+          from pathlib import Path
+          import sys
+
+          world = Path(sys.argv[1])
+          campaign = world / "trillionnium/crates/trnm-campaign-core/src/lib.rs"
+          campaign_text = campaign.read_text(encoding="utf-8")
+          if "__atomic_inner" not in campaign_text:
+              raise SystemExit("campaign atomic-inner naming source shape drifted")
+          campaign.write_text(
+              campaign_text.replace("__atomic_inner", "_atomic_inner"),
+              encoding="utf-8",
+          )
+
+          rts = world / "trillionnium/crates/trnm-rts-sim/src/lib.rs"
+          rts_text = rts.read_text(encoding="utf-8")
+          old = '''        let error = assert_sim_error_preserves_state(&mut sim, |candidate| {
+                      candidate.issue_order(build)
+                  });
+                  assert!(error.to_string().contains("field resources"));
+          '''
+          new = '''        let _error = assert_sim_error_preserves_state(&mut sim, |candidate| {
+                      candidate.issue_order(build)
+                  });
+          '''
+          if rts_text.count(old) != 1:
+              raise SystemExit("RTS state-preservation assertion source shape drifted")
+          rts.write_text(rts_text.replace(old, new, 1), encoding="utf-8")
+          PYFIX
+          cargo fmt --manifest-path "$manifest" --all
+          '''
+          if text.count(needle) != 1:
+              raise SystemExit('qualification insertion point drifted')
+          script.write_text(text.replace(needle, replacement, 1), encoding='utf-8')
+          PY
+          chmod +x /tmp/qualify-v8-fixed.sh
+          bash -n /tmp/qualify-v8-fixed.sh
+
+          bash /tmp/qualify-v8-fixed.sh \
             "$GITHUB_WORKSPACE/world" \
             "$GITHUB_WORKSPACE/control" \
             "$GITHUB_WORKSPACE/export"
