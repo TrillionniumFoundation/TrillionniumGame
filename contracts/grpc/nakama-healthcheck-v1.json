@@ -22,7 +22,10 @@
     "configuration": "TRNM_SERVER_GRPC_BIND",
     "default_enabled": false,
     "same_process_as_http_server": true,
-    "shutdown_signal_shared": true
+    "shutdown_signal_shared": true,
+    "runtime_config": "ServerConfig.grpc_bind",
+    "runtime_spawn": "server::serve -> grpc::spawn",
+    "runtime_join": "server::serve -> grpc::join"
   },
   "toolchain": {
     "tonic": "0.14.5",
@@ -41,8 +44,12 @@
     "HTTP and gRPC listeners cannot use the same address",
     "drain and gRPC failure use the shared process lifecycle fence"
   ],
-  "gap_ids": ["GAP-P0-SERVER-001"],
-  "task_ids": ["TG-V3-023"],
+  "gap_ids": [
+    "GAP-P0-SERVER-001"
+  ],
+  "task_ids": [
+    "TG-V3-023"
+  ],
   "claims": {
     "official_method_signature_pinned": true,
     "generated_rust_bindings_source_candidate": true,

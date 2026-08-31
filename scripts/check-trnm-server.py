@@ -22,6 +22,7 @@ REQUIRED_FILES = {
     MODULE_ROOT / "codec.rs",
     MODULE_ROOT / "config.rs",
     MODULE_ROOT / "error.rs",
+    MODULE_ROOT / "grpc.rs",
     MODULE_ROOT / "http.rs",
     MODULE_ROOT / "json.rs",
     MODULE_ROOT / "pool.rs",
@@ -77,6 +78,11 @@ REQUIRED_TESTS = {
     "protobuf_response_envelope_preserves_status_and_json_body",
     "message_budget_is_nonzero_and_hard_bounded",
     "shared_codec_rejects_encoding_mismatch",
+    "websocket_subprotocols_are_case_sensitive_and_echo_exact_offer",
+    "grpc_bind_is_optional_distinct_and_public_bind_requires_opt_in",
+    "official_healthcheck_method_path_is_exact",
+    "generated_service_returns_an_empty_response",
+    "generated_client_reaches_the_http2_healthcheck_path",
     "unmasked_fragmented_and_oversized_frames_are_rejected",
     "server_text_and_close_frames_are_unmasked_and_canonical",
     "sha1_and_base64_helpers_match_known_vectors",
@@ -105,8 +111,12 @@ def main() -> int:
         "native-tls": "=0.2.18",
         "postgres": "=0.19.14",
         "postgres-native-tls": "=0.5.3",
+        "prost": "=0.14.3",
         "r2d2": "=0.8.10",
         "r2d2_postgres": "=0.18.2",
+        "tokio": {"version": "=1.53.1", "features": ["rt", "time"]},
+        "tonic": {"version": "=0.14.5", "features": ["transport"]},
+        "tonic-prost": "=0.14.5",
         "trnm-contracts": {"path": "../trnm-contracts"},
         "trnm-realtime-wire": {"path": "../trnm-realtime-wire"},
         "trnm-session-core": {"path": "../trnm-session-core"},
@@ -114,6 +124,15 @@ def main() -> int:
     }
     if manifest.get("dependencies") != expected_dependencies:
         fail("server candidate changed the reviewed persistence dependency boundary")
+    expected_build_dependencies = {
+        "prost-build": "=0.14.3",
+        "prost-types": "=0.14.3",
+        "protoc-bin-vendored": "=3.2.0",
+        "tonic-build": "=0.14.5",
+        "tonic-prost-build": "=0.14.5",
+    }
+    if manifest.get("build-dependencies") != expected_build_dependencies:
+        fail("server candidate changed the reviewed protobuf build dependency boundary")
 
     sources = {
         path.relative_to(ROOT): path.read_text(encoding="utf-8")
@@ -174,6 +193,7 @@ def main() -> int:
         "crates/trnm-persistence-pg/src/bin/trnm_server/config.rs": [
             "127.0.0.1:7350",
             "TRNM_SERVER_ALLOW_NON_LOOPBACK",
+            "TRNM_SERVER_GRPC_BIND",
             "TRNM_SERVER_ALLOW_PLAINTEXT_DATABASE",
             "TRNM_SERVER_DATABASE_TLS_MODE",
             'Some("verify-full")',
@@ -199,6 +219,12 @@ def main() -> int:
             "PgPool::connect_plain",
             "PgPool::connect_tls",
             "PgTlsConfig::new",
+        ],
+        "crates/trnm-persistence-pg/src/bin/trnm_server/grpc.rs": [
+            "/nakama.api.Nakama/Healthcheck",
+            "NakamaServer::new",
+            "serve_with_shutdown",
+            "worker_failed.store(true",
         ],
         "crates/trnm-persistence-pg/src/bin/trnm_server/http.rs": [
             "http_transfer_encoding_not_supported",
@@ -261,6 +287,8 @@ def main() -> int:
             "with_access_token_verifier",
             "websocket::is_route",
             "websocket::serve_once",
+            "grpc::spawn",
+            "grpc::join",
         ],
     }
     for relative, markers in required_markers.items():
@@ -274,8 +302,8 @@ def main() -> int:
     if missing_tests:
         fail(f"missing tests: {missing_tests}")
     test_count = combined.count("#[test]")
-    if test_count < 53:
-        fail(f"expected at least 53 server/session/pool source tests, got {test_count}")
+    if test_count < 58:
+        fail(f"expected at least 58 server/session/pool/websocket/grpc source tests, got {test_count}")
 
     workflow = (
         ROOT / ".github/workflows/trillionnium-game-merge-gate.yml"
@@ -335,6 +363,7 @@ def main() -> int:
         "access_token_verifier_source_candidate",
         "refresh_family_repository_source_candidate",
         "session_http_source_candidate",
+        "grpc_healthcheck_source_candidate",
     ]
     if any(claims.get(field) is not True for field in required_source_claims):
         fail("server operational source-candidate claim missing")

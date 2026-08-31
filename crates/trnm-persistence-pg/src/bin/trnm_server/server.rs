@@ -9,6 +9,7 @@ use std::time::Duration;
 use super::app::{App, Repository, SharedAppMetrics};
 use super::config::ServerConfig;
 use super::error::ServerError;
+use super::grpc;
 use super::http::{read_request, Request, Response};
 use super::retry::{RetryPolicy, RetryingRepository};
 use super::websocket;
@@ -29,6 +30,11 @@ where
     let draining = Arc::new(AtomicBool::new(false));
     let worker_failed = Arc::new(AtomicBool::new(false));
     let metrics = SharedAppMetrics::default();
+    let grpc_worker = grpc::spawn(
+        config.grpc_bind,
+        Arc::clone(&draining),
+        Arc::clone(&worker_failed),
+    )?;
     let mut workers = Vec::with_capacity(worker_count);
 
     for worker_index in 0..worker_count {
@@ -60,18 +66,22 @@ where
     }
 
     eprintln!(
-        "trnm-server source candidate listening on {} profile={} workers={} queue_capacity={}",
+        "trnm-server source candidate listening on {} grpc_bind={:?} profile={} workers={} queue_capacity={}",
         config.bind,
+        config.grpc_bind,
         config.database_profile.metadata_value(),
         worker_count,
         queue_capacity,
     );
 
     let accept_result = accept_loop(&listener, &sender, config, &draining, &worker_failed);
+    draining.store(true, Ordering::Release);
     drop(sender);
     let join_result = join_workers(workers);
+    let grpc_join_result = grpc::join(grpc_worker);
     accept_result?;
     join_result?;
+    grpc_join_result?;
     eprintln!("trnm-server source candidate drained");
     Ok(())
 }

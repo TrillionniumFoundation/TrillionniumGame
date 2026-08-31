@@ -181,13 +181,13 @@ fn validate_handshake(request: &Request) -> Result<Handshake, InputError> {
     })
 }
 
-fn select_subprotocol(value: &str) -> Option<(&'static str, RealtimeEncoding)> {
+fn select_subprotocol(value: &str) -> Option<(&str, RealtimeEncoding)> {
     value.split(',').find_map(|raw| {
         let protocol = raw.trim();
-        if protocol.eq_ignore_ascii_case(JSON_SUBPROTOCOL) {
-            Some((JSON_SUBPROTOCOL, RealtimeEncoding::Json))
-        } else if protocol.eq_ignore_ascii_case(PROTOBUF_SUBPROTOCOL) {
-            Some((PROTOBUF_SUBPROTOCOL, RealtimeEncoding::Protobuf))
+        if protocol == JSON_SUBPROTOCOL {
+            Some((protocol, RealtimeEncoding::Json))
+        } else if protocol == PROTOBUF_SUBPROTOCOL {
+            Some((protocol, RealtimeEncoding::Protobuf))
         } else {
             None
         }
@@ -503,6 +503,33 @@ mod tests {
             .response
             .contains("Sec-WebSocket-Protocol: trnm.protobuf.v1\r\n"));
         assert_eq!(handshake.encoding, RealtimeEncoding::Protobuf);
+    }
+
+    #[test]
+    fn websocket_subprotocols_are_case_sensitive_and_echo_exact_offer() {
+        assert_eq!(select_subprotocol("TRNM.JSON.V1"), None);
+        assert_eq!(select_subprotocol("TrNm.Protobuf.V1"), None);
+        assert_eq!(
+            select_subprotocol("unsupported,  trnm.protobuf.v1 , trnm.json.v1"),
+            Some((PROTOBUF_SUBPROTOCOL, RealtimeEncoding::Protobuf))
+        );
+        assert_eq!(
+            select_subprotocol("trnm.json.v1, trnm.json.v1"),
+            Some((JSON_SUBPROTOCOL, RealtimeEncoding::Json))
+        );
+
+        let handshake = validate_handshake(&request(
+            "dGhlIHNhbXBsZSBub25jZQ==",
+            "unsupported,  trnm.protobuf.v1  , trnm.json.v1",
+            "13",
+        ))
+        .unwrap();
+        let selected = handshake
+            .response
+            .lines()
+            .find(|line| line.starts_with("Sec-WebSocket-Protocol:"))
+            .unwrap();
+        assert_eq!(selected, "Sec-WebSocket-Protocol: trnm.protobuf.v1");
     }
 
     #[test]
