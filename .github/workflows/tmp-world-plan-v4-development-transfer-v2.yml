@@ -1,0 +1,103 @@
+name: tmp-world-plan-v4-development-transfer-v2
+
+on:
+  push:
+    branches:
+      - tmp/world-plan-v4-development-transfer-20260831
+    paths:
+      - .github/workflows/tmp-world-plan-v4-development-transfer-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tmp-world-plan-v4-development-transfer-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  RUST_TEST_THREADS: "1"
+  RUST_TOOLCHAIN: "1.98.0"
+  WORLD_HEAD: "5605cfb8861aa923f69ff032ddbff7d035bccb0c"
+  CONTROL_REF: "tmp/world-plan-v4-development-transfer-20260831"
+
+jobs:
+  verify-and-export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    services:
+      postgres:
+        image: postgres:16.10@sha256:1d288494853e244e7a78d87b3526e650e5221c622f9768ecac9313d0874a9c39
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: trnm_world_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d trnm_world_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trnm_world_ci
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trnm_world_ci
+      TRNM_SETTLEMENT_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trnm_world_ci
+      TRNM_REQUIRE_SETTLEMENT_DATABASE_TEST: "1"
+    steps:
+      - name: Fetch exact inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init control
+          git -C control remote add origin https://github.com/TrillionniumFoundation/Trillionnium-Chain.git
+          git -C control fetch --no-tags --depth=1 origin "${CONTROL_REF}"
+          git -C control checkout --detach FETCH_HEAD
+          printf 'CONTROL_HEAD=%s\n' "$(git -C control rev-parse HEAD)" >> "$GITHUB_ENV"
+          git init world
+          git -C world remote add origin https://github.com/TrillionniumFoundation/Trillionnium-World.git
+          git -C world fetch --no-tags --depth=1 origin "${WORLD_HEAD}"
+          git -C world checkout --detach FETCH_HEAD
+          test "$(git -C world rev-parse HEAD)" = "${WORLD_HEAD}"
+          git -C control show -s --format='control_commit=%H%ncontrol_tree=%T'
+          git -C world show -s --format='world_commit=%H%nworld_tree=%T'
+
+      - name: Install exact Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${RUST_TOOLCHAIN}"
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Execute closure
+        shell: bash
+        env:
+          WORLD_CHECKOUT: ${{ github.workspace }}/world
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("control/tmp/world-plan-v4-development-transfer/world-campaign-atomicity.patch")
+          text = path.read_text(encoding="utf-8")
+          old = "    fn assert_error_preserves_state<T>(\n"
+          new = "    fn assert_error_preserves_state<T: std::fmt::Debug>(\n"
+          if old in text:
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          elif new not in text:
+              raise SystemExit("atomicity Debug-bound source shape drifted")
+          PY
+          bash control/tmp/world-plan-v4-development-transfer/run-world-source-closure.sh \
+            "$GITHUB_WORKSPACE/world" "$GITHUB_WORKSPACE/control" "$GITHUB_WORKSPACE/export"
+
+      - name: Upload exact tested output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trnm-world-plan-v4-development-transfer-v2-${{ github.run_id }}
+          path: export/**
+          if-no-files-found: error
+          retention-days: 7
