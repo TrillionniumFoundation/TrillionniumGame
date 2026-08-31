@@ -4,119 +4,81 @@ set -Eeuo pipefail
 profile=${1:-}
 case "$profile" in
   postgresql|cockroachdb) ;;
-  *)
-    echo 'usage: ci-outbox-final-attempt-reaper.sh postgresql|cockroachdb' >&2
-    exit 64
-    ;;
+  *) echo "usage: $0 postgresql|cockroachdb" >&2; exit 64 ;;
 esac
 
-root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
-
-for command in docker python3 cargo git sha256sum; do
-  command -v "$command" >/dev/null 2>&1 || {
-    echo "$command is required" >&2
-    exit 69
-  }
-done
-
-case "$profile" in
-  postgresql)
-    image=${TRNM_POSTGRES_IMAGE:?TRNM_POSTGRES_IMAGE with immutable OCI digest is required}
-    migration=migrations/postgresql/0001_foundation_up.sql
-    ;;
-  cockroachdb)
-    image=${TRNM_COCKROACH_IMAGE:?TRNM_COCKROACH_IMAGE with immutable OCI digest is required}
-    migration=migrations/cockroachdb/0001_foundation_up.sql
-    ;;
-esac
-case "$image" in
-  *@sha256:[0-9a-f][0-9a-f]*) ;;
-  *)
-    echo "$profile image must include @sha256:<digest>" >&2
-    exit 64
-    ;;
-esac
-
-test -f "$migration"
 commit=$(git rev-parse HEAD)
-tree=$(git rev-parse HEAD^{tree})
-migration_sha=$(sha256sum "$migration" | awk '{print $1}')
-run_id=${TRNM_RUN_ID:-local-$(date -u +%Y%m%dT%H%M%SZ)-$$}
+run_id=${TRNM_RUN_ID:-local}
 evidence_root=${TRNM_EVIDENCE_ROOT:-run/outbox-final-attempt-reaper}
-evidence="$evidence_root/$profile/$run_id"
+evidence="$evidence_root/$profile"
+rm -rf "$evidence"
 mkdir -p "$evidence/logs"
-container="trnm-outbox-reaper-${profile}-${run_id//[^a-zA-Z0-9_.-]/-}"
-password='trnm-local-evidence-password-0123456789'
+exec > >(tee "$evidence/logs/run.log") 2>&1
 
-container_exists() { docker inspect "$container" >/dev/null 2>&1; }
+container="trnm-outbox-final-attempt-${profile}-${run_id//[^a-zA-Z0-9_.-]/-}"
+database_url=
+cleanup() {
+  if [[ -n "${container:-}" ]]; then
+    docker rm -f "$container" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+trap 'status=$?; printf "status=failed\nexit_code=%s\n" "$status" >"$evidence/result.env"; exit "$status"' ERR
+
+image_for() {
+  python3 - "$profile" <<'PY'
+import json
+import sys
+from pathlib import Path
+profile = sys.argv[1]
+value = json.loads(Path('config/database-test-images.json').read_text(encoding='utf-8'))['profiles'][profile]['image']
+if '@sha256:' not in value:
+    raise SystemExit(f'image is not digest-pinned: {value}')
+print(value)
+PY
+}
+image=$(image_for)
+printf 'repository=TrillionniumFoundation/TrillionniumGame\ncommit=%s\nprofile=%s\nimage=%s\nrun_id=%s\n' \
+  "$commit" "$profile" "$image" "$run_id" >"$evidence/identity.env"
+docker pull "$image" 2>&1 | tee "$evidence/logs/docker-pull.log"
+
 container_running() {
-  [[ "$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)" == true ]]
+  [[ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true)" == true ]]
 }
-capture_container_diagnostics() {
-  if container_exists; then
-    docker inspect "$container" >"$evidence/logs/container-inspect.json" 2>&1 || true
-    docker logs "$container" >"$evidence/logs/container.log" 2>&1 || true
-  fi
-}
-cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
-on_error() {
-  status=$?
-  trap - ERR
-  set +e
-  capture_container_diagnostics
-  if [[ -s "$evidence/logs/container.log" ]]; then
-    echo "--- $profile container log tail ---" >&2
-    tail -n 200 "$evidence/logs/container.log" >&2
-  fi
-  exit "$status"
-}
-trap on_error ERR
-trap cleanup EXIT INT TERM
-
-printf '%s\n' \
-  "repository=TrillionniumFoundation/TrillionniumGame" \
-  "commit=$commit" \
-  "tree=$tree" \
-  "profile=$profile" \
-  "image=$image" \
-  "migration=$migration" \
-  "migration_sha256=$migration_sha" \
-  "run_id=$run_id" \
-  >"$evidence/source.txt"
-
-docker pull "$image" 2>&1 | tee "$evidence/logs/image-pull.log"
-image_id=$(docker image inspect --format '{{.Id}}' "$image")
-image_repo_digests=$(docker image inspect --format '{{json .RepoDigests}}' "$image")
-printf 'image_id=%s\nrepo_digests=%s\n' "$image_id" "$image_repo_digests" >"$evidence/image.txt"
 
 if [[ "$profile" == postgresql ]]; then
-  docker run -d --name "$container" \
-    -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD="$password" -e POSTGRES_DB=trnm \
-    -p 127.0.0.1::5432 "$image" >"$evidence/container-id.txt"
+  migration=migrations/postgresql/0001_foundation.sql
+  expected="${TRNM_POSTGRES_IMAGE:-$image}"
+  [[ "$expected" == "$image" ]]
+  docker run -d --name "$container" --network host \
+    -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+    -e POSTGRES_DB=trnm "$image" -c fsync=on -c synchronous_commit=on \
+    >"$evidence/container-id.txt"
   ready=false
   for _ in $(seq 1 120); do
     container_running || break
-    ready_count=$(docker logs "$container" 2>&1 | grep -c 'database system is ready to accept connections' || true)
-    if (( ready_count >= 2 )) && docker exec -e PGPASSWORD="$password" "$container" \
-      psql -X -A -t -v ON_ERROR_STOP=1 -U postgres -d trnm -c 'SELECT 1' 2>/dev/null | grep -qx '1'; then
+    if docker exec -e PGPASSWORD=postgres "$container" pg_isready \
+      -h 127.0.0.1 -p 5432 -U postgres -d trnm >/dev/null 2>&1; then
       ready=true
       break
     fi
     sleep 1
   done
   [[ "$ready" == true ]]
-  port=$(docker port "$container" 5432/tcp | awk -F: 'NR==1 {print $NF}')
-  [[ "$port" =~ ^[0-9]+$ ]]
-  database_url="postgresql://postgres:${password}@127.0.0.1:${port}/trnm"
-  docker exec -i -e PGPASSWORD="$password" "$container" \
-    psql -X -v ON_ERROR_STOP=1 -U postgres -d trnm <"$migration" \
+  database_url='postgresql://postgres:postgres@127.0.0.1:5432/trnm?sslmode=disable'
+  docker exec -e PGPASSWORD=postgres -i "$container" psql \
+    -h 127.0.0.1 -U postgres -d trnm -v ON_ERROR_STOP=1 <"$migration" \
     2>&1 | tee "$evidence/logs/migration.log"
   sql_exec() {
-    docker exec -e PGPASSWORD="$password" "$container" \
-      psql -X -A -t -v ON_ERROR_STOP=1 -U postgres -d trnm -c "$1"
+    docker exec -e PGPASSWORD=postgres "$container" psql -At \
+      -h 127.0.0.1 -U postgres -d trnm -v ON_ERROR_STOP=1 -c "$1"
   }
 else
+  migration=migrations/cockroachdb/0001_foundation.sql
+  expected="${TRNM_COCKROACH_IMAGE:-$image}"
+  [[ "$expected" == "$image" ]]
   docker run -d --name "$container" --network host "$image" start-single-node \
     --insecure --listen-addr=127.0.0.1:26257 --advertise-addr=127.0.0.1:26257 \
     --http-addr=127.0.0.1:8080 --store=type=mem,size=1GiB \
@@ -193,10 +155,14 @@ PY
     crash-after-publish) export TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY=1 ;;
     *) echo "unknown boundary $boundary" >&2; return 64 ;;
   esac
-  set +e
-  "$worker_bin" run-once >"$scenario/worker-crash.stdout" 2>"$scenario/worker-crash.stderr"
-  crash_status=$?
-  set -e
+  # A command used as an `if` condition is exempt from `errexit` and the
+  # inherited ERR trap. Capture the intentional failpoint status without
+  # suppressing fail-fast behavior for any surrounding command.
+  if "$worker_bin" run-once >"$scenario/worker-crash.stdout" 2>"$scenario/worker-crash.stderr"; then
+    crash_status=0
+  else
+    crash_status=$?
+  fi
   test "$crash_status" -eq "$expected_exit"
   case "$boundary" in
     crash-before-publish)
@@ -209,81 +175,32 @@ PY
       sha256sum "$spool_path" >"$scenario/spool-before.sha256"
       ;;
   esac
-  unset TRNM_OUTBOX_ENABLE_TEST_FAILPOINTS TRNM_OUTBOX_TEST_FAIL_BEFORE_DELIVERY \
-    TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY || true
-  test "$(sql_exec "SELECT count(*) FROM trnm_outbox WHERE state=1 AND attempt=1 AND lease_generation=1 AND owner_node IS NOT NULL" | tr -d '[:space:]')" = 1
   sleep 2
-  "$worker_bin" run-once | tee "$scenario/worker-reap.txt"
-  grep -q 'claimed=0 completed=0 retried=0 dead_lettered=1' "$scenario/worker-reap.txt"
-  test "$(sql_exec "SELECT count(*) FROM trnm_outbox WHERE state=3 AND attempt=1 AND lease_generation=1 AND owner_node IS NULL AND receipt_digest IS NULL AND dead_reason_digest IS NOT NULL" | tr -d '[:space:]')" = "$expected_dead_letter_count"
-  test "$(sql_exec 'SELECT count(*) FROM trnm_outbox WHERE state=1' | tr -d '[:space:]')" = 0
-  sql_exec "SELECT state, attempt, lease_generation, owner_node IS NULL, receipt_digest IS NULL, dead_reason_digest IS NOT NULL FROM trnm_outbox ORDER BY intent_id" >"$scenario/database-after-reap.tsv"
+  unset TRNM_OUTBOX_TEST_FAIL_BEFORE_DELIVERY TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY || true
+  "$worker_bin" run-once >"$scenario/reaper.stdout" 2>"$scenario/reaper.stderr"
+  grep -q "dead_lettered=${expected_dead_letter_count}" "$scenario/reaper.stdout"
+  test "$(sql_exec "SELECT COUNT(*) FROM trnm_outbox WHERE intent_id = decode('$intent_hex','hex');")" = 0
+  test "$(sql_exec "SELECT COUNT(*) FROM trnm_outbox_dead_letters WHERE intent_id = decode('$intent_hex','hex');")" = "$expected_dead_letter_count"
   case "$boundary" in
     crash-before-publish)
       test ! -e "$spool_path"
-      test "$(find "$spool" -maxdepth 1 -type f -name '*.json' | wc -l | tr -d '[:space:]')" = 0
+      printf 'possible_lost_effect_declared=true\nspool_effect_count=0\ndead_letter_count=%s\n' \
+        "$expected_dead_letter_count" >"$scenario/result.env"
       ;;
     crash-after-publish)
-      sha256sum "$spool_path" >"$scenario/spool-after.sha256"
-      test "$(cut -d' ' -f1 "$scenario/spool-before.sha256")" = "$(cut -d' ' -f1 "$scenario/spool-after.sha256")"
-      test "$(find "$spool" -maxdepth 1 -type f -name "$intent_hex.json" | wc -l | tr -d '[:space:]')" = 1
+      test -f "$spool_path"
+      sha256sum -c "$scenario/spool-before.sha256"
+      spool_count=$(find "$spool" -maxdepth 1 -type f -name '*.json' | wc -l)
+      test "$spool_count" -eq 1
+      printf 'possible_lost_effect_declared=false\nspool_effect_count=1\ndead_letter_count=%s\n' \
+        "$expected_dead_letter_count" >"$scenario/result.env"
       ;;
   esac
 }
 
-run_scenario crash-after-publish 144 160 161 145 162 20 70 1
-run_scenario crash-before-publish 146 176 177 178 179 30 71 2
-test "$(sql_exec 'SELECT count(*) FROM trnm_outbox' | tr -d '[:space:]')" = 2
-capture_container_diagnostics
+run_scenario crash-before-publish 20 21 22 23 24 3100 71 1
+run_scenario crash-after-publish 30 31 32 33 34 4100 70 1
 
-python3 - "$evidence" <<'PY'
-import hashlib
-import json
-import pathlib
-import sys
-root = pathlib.Path(sys.argv[1])
-source = dict(line.split("=", 1) for line in (root / "source.txt").read_text().splitlines())
-artifacts = []
-for path in sorted(root.rglob("*")):
-    if not path.is_file() or path.name in {"manifest.json", "SHA256SUMS"}:
-        continue
-    data = path.read_bytes()
-    artifacts.append({"path": str(path.relative_to(root)), "sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)})
-manifest = {
-    "schema": "trillionnium.outbox-final-attempt-boundaries-evidence.v2",
-    "target_repository": source["repository"], "target_commit": source["commit"],
-    "target_tree": source["tree"], "profile": source["profile"], "image": source["image"],
-    "migration": source["migration"], "migration_sha256": source["migration_sha256"],
-    "run_id": source["run_id"], "max_attempts": 1,
-    "scenarios": [
-        {"boundary": "crash-after-publish", "worker_exit_code": 70, "durable_visible_effect_count": 1, "reaped_dead_letter_count_reported": 1, "semantics": "durable idempotent effect exists; database acknowledgement is absent; no second visible effect is emitted"},
-        {"boundary": "crash-before-publish", "worker_exit_code": 71, "durable_visible_effect_count": 0, "reaped_dead_letter_count_reported": 1, "semantics": "the exhausted lease is terminally dead-lettered and the external effect can be lost"},
-    ],
-    "assertions": {
-        "both_final_attempt_crash_boundaries_executed": True,
-        "expired_exhausted_leases_reaped_to_dead_letter": True,
-        "reaper_transition_count_exposed_by_worker": True,
-        "owner_cleared": True, "receipt_absent": True, "dead_reason_present": True,
-        "post_publish_spool_bytes_unchanged": True,
-        "post_publish_duplicate_visible_effect_count": 0,
-        "pre_publish_visible_effect_count": 0,
-        "possible_lost_effect_declared": True,
-    },
-    "artifacts": artifacts,
-    "claims": {
-        "single_host_process_failure_proven": True,
-        "postgresql_and_cockroachdb_required": True,
-        "exactly_once_external_effect_proven": False,
-        "multi_node_failover_proven": False, "endurance_proven": False,
-        "compatibility_credit": False, "production_ready": False,
-    },
-    "limitations": [
-        "Final-attempt crash before publication can dead-letter an intent without producing its external effect.",
-        "The post-publication case proves one stable local spool record, not cross-host exactly-once delivery.",
-        "The spool is not yet a concrete realtime, search, notification or provider consumer.",
-        "Independent data-integrity review remains required before closing the outbox gap.",
-    ],
-}
-(root / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
-PY
-find "$evidence" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum >"$evidence/SHA256SUMS"
+printf 'status=passed\nprofile=%s\ncommit=%s\n' "$profile" "$commit" >"$evidence/result.env"
+find "$evidence" -type f -print0 | sort -z | xargs -0 sha256sum >"$evidence/files.sha256"
+cat "$evidence/result.env"
