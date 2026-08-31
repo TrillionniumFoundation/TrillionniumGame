@@ -1,0 +1,241 @@
+@@ -5945,6 +6283,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn select_party(&mut self, party_ids: Vec<String>) -> Result<(), CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.select_party__atomic_inner(party_ids)
++        })
++    }
++
++    fn select_party__atomic_inner(&mut self, party_ids: Vec<String>) -> Result<(), CampaignError> {
+         self.require_town()?;
+         if party_ids.len() != 4 || party_ids.first().map(String::as_str) != Some("hero") {
+             return Err(CampaignError::InvalidState(
+@@ -5972,6 +6316,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_party_preset(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_party_preset__atomic_inner()
++        })
++    }
++
++    fn cycle_party_preset__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         let presets = [
+             ["hero", "aya", "mako", "tess"],
+             ["hero", "aya", "nia", "sol"],
+@@ -6002,6 +6352,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_party_member(&mut self, companion_slot: usize) -> Result<(), CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.cycle_party_member__atomic_inner(companion_slot)
++        })
++    }
++
++    fn cycle_party_member__atomic_inner(&mut self, companion_slot: usize) -> Result<(), CampaignError> {
+         self.require_town()?;
+         if !(1..=3).contains(&companion_slot) {
+             return Err(CampaignError::InvalidState(
+@@ -6037,6 +6393,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn spar_with_mentor(&mut self) -> Result<SparringReport, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.spar_with_mentor__atomic_inner()
++        })
++    }
++
++    fn spar_with_mentor__atomic_inner(&mut self) -> Result<SparringReport, CampaignError> {
+         self.require_room(CampaignRoom::MentorHall)?;
+         if !self.trained_with_mentor {
+             return Err(CampaignError::InvalidState(
+@@ -6077,6 +6439,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn talk_to_relay_smith(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.talk_to_relay_smith__atomic_inner()
++        })
++    }
++
++    fn talk_to_relay_smith__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_room(CampaignRoom::RelayQuarter)?;
+         let relation = self
+             .npc_relationships
+@@ -6097,6 +6465,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn recruit_relay_smith(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.recruit_relay_smith__atomic_inner()
++        })
++    }
++
++    fn recruit_relay_smith__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_room(CampaignRoom::RelayQuarter)?;
+         let relation = self
+             .npc_relationships
+@@ -6121,6 +6495,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn heal_party(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.heal_party__atomic_inner()
++        })
++    }
++
++    fn heal_party__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_town()?;
+         if self.party.iter().all(|member| member.injury_level == 0) {
+             return Err(CampaignError::InvalidState(
+@@ -6165,6 +6545,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn equip_relay_core(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.equip_relay_core__atomic_inner()
++        })
++    }
++
++    fn equip_relay_core__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_town()?;
+         const ITEM_ID: &str = "relay-core-fragment";
+         if !self
+@@ -6209,6 +6595,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn accept_first_contact_quest(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.accept_first_contact_quest__atomic_inner()
++        })
++    }
++
++    fn accept_first_contact_quest__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_room(CampaignRoom::ExpeditionGate)?;
+         if !self.mentor_met || !self.trained_with_mentor {
+             return Err(CampaignError::InvalidState(
+@@ -6266,6 +6658,12 @@ impl CampaignSaveV1 {
+     /// completion flags. The battle still uses the current character, normal
+     /// BattleSeed hashing and the same one-time RPG settlement path.
+     pub fn prepare_standalone_skirmish(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.prepare_standalone_skirmish__atomic_inner()
++        })
++    }
++
++    fn prepare_standalone_skirmish__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_town()?;
+         if self.pending_battle.is_some() {
+             return Err(CampaignError::InvalidState(
+@@ -6287,6 +6685,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_endgame_mission(&mut self) -> Result<CampaignMission, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_endgame_mission__atomic_inner()
++        })
++    }
++
++    fn cycle_endgame_mission__atomic_inner(&mut self) -> Result<CampaignMission, CampaignError> {
+         self.require_room(CampaignRoom::ExpeditionGate)?;
+         if !self
+             .progression
+@@ -6320,6 +6724,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_standalone_skirmish_map(&mut self) -> Result<CampaignMission, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_standalone_skirmish_map__atomic_inner()
++        })
++    }
++
++    fn cycle_standalone_skirmish_map__atomic_inner(&mut self) -> Result<CampaignMission, CampaignError> {
+         self.require_room(CampaignRoom::ExpeditionGate)?;
+         if !self.skirmish_setup.enabled
+             || !self
+@@ -6344,6 +6754,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_skirmish_faction(&mut self) -> Result<CampaignFaction, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_skirmish_faction__atomic_inner()
++        })
++    }
++
++    fn cycle_skirmish_faction__atomic_inner(&mut self) -> Result<CampaignFaction, CampaignError> {
+         self.require_room(CampaignRoom::ExpeditionGate)?;
+         if !self.skirmish_setup.enabled {
+             return Err(CampaignError::InvalidState(
+@@ -6357,6 +6773,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_skirmish_resources(&mut self) -> Result<u32, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_skirmish_resources__atomic_inner()
++        })
++    }
++
++    fn cycle_skirmish_resources__atomic_inner(&mut self) -> Result<u32, CampaignError> {
+         self.require_room(CampaignRoom::ExpeditionGate)?;
+         if !self.skirmish_setup.enabled {
+             return Err(CampaignError::InvalidState(
+@@ -6373,6 +6795,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_skirmish_victory_mode(&mut self) -> Result<SkirmishVictoryMode, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_skirmish_victory_mode__atomic_inner()
++        })
++    }
++
++    fn cycle_skirmish_victory_mode__atomic_inner(&mut self) -> Result<SkirmishVictoryMode, CampaignError> {
+         self.require_room(CampaignRoom::ExpeditionGate)?;
+         if !self.skirmish_setup.enabled {
+             return Err(CampaignError::InvalidState(
+@@ -6385,6 +6813,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_skirmish_simulation_seed(&mut self) -> Result<u64, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_skirmish_simulation_seed__atomic_inner()
++        })
++    }
++
++    fn cycle_skirmish_simulation_seed__atomic_inner(&mut self) -> Result<u64, CampaignError> {
+         self.require_room(CampaignRoom::ExpeditionGate)?;
+         if !self.skirmish_setup.enabled {
+             return Err(CampaignError::InvalidState(
+@@ -6403,6 +6837,15 @@ impl CampaignSaveV1 {
+     pub fn start_first_contact_battle(
+         &mut self,
+         map: BattleMapSeedV1,
++    ) -> Result<BattleSeedV1, CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.start_first_contact_battle__atomic_inner(map)
++        })
++    }
++
++    fn start_first_contact_battle__atomic_inner(
++        &mut self,
++        map: BattleMapSeedV1,
+     ) -> Result<BattleSeedV1, CampaignError> {
+         self.require_room(CampaignRoom::ExpeditionGate)?;
+         if self.quest_state != QuestState::Accepted {
+@@ -6546,6 +6989,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn stage_battle_result(&mut self, result: BattleResultV1) -> Result<(), CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.stage_battle_result__atomic_inner(result)
++        })
++    }
++
++    fn stage_battle_result__atomic_inner(&mut self, result: BattleResultV1) -> Result<(), CampaignError> {
+         if self.settled_battle_ids.contains(&result.battle_id) {
+             return Ok(());
+         }
+@@ -6567,6 +7016,15 @@ impl CampaignSaveV1 {
+     pub fn submit_battle_result(
+         &mut self,
+         result: BattleResultV1,
