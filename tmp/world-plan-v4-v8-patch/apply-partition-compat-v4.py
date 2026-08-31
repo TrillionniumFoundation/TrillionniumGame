@@ -53,7 +53,9 @@ legacy_marker = '        "run_legacy_disabled",\n'
 if runtime_text.count(legacy_marker) != 1:
     raise SystemExit(f"retired legacy marker source drifted: {runtime_text.count(legacy_marker)}")
 runtime_text = runtime_text.replace(legacy_marker, "", 1)
-loop = '''    for marker in ["0019_online_settlement_quarantine_v1.sql"] {
+loop = '''    for marker in [
+        "0019_online_settlement_quarantine_v1.sql",
+    ] {
         assert!(
             RUNTIME_V2.contains(marker),
             "missing direct runtime marker {marker}"
