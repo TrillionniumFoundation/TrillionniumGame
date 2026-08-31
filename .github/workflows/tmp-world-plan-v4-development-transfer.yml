@@ -1,9 +1,9 @@
-name: tmp-world-plan-v4-development-transfer
+name: tmp-world-plan-v4-v8-arm
 
 on:
   push:
     branches:
-      - tmp/world-plan-v4-development-transfer-20260831
+      - tmp/world-plan-v4-v8-arm-20260831
     paths:
       - .github/workflows/tmp-world-plan-v4-development-transfer.yml
   workflow_dispatch:
@@ -11,9 +11,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: tmp-world-plan-v4-v8-arm-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   qualify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     steps:
       - name: Qualify immutable World Plan v4 source
