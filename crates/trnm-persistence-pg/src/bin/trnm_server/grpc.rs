@@ -110,10 +110,7 @@ mod tests {
 
     #[test]
     fn official_healthcheck_method_path_is_exact() {
-        assert_eq!(
-            HEALTHCHECK_METHOD_PATH,
-            "/nakama.api.Nakama/Healthcheck"
-        );
+        assert_eq!(HEALTHCHECK_METHOD_PATH, "/nakama.api.Nakama/Healthcheck");
     }
 
     #[test]
