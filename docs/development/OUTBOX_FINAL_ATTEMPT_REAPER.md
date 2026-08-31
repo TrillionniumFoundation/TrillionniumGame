@@ -68,8 +68,20 @@ expired exhausted lease becomes a dead letter and the worker reports
 publication no effect exists, so final-attempt dead-lettering can lose the
 external effect. This is not an exactly-once claim.
 
-The deterministic raw `.tar.gz` archive is hashed before upload and retained by
-GitHub's first-party `actions/upload-artifact` action pinned to immutable commit
-`043fb460e6257d1ca154e89a5e86196c74e480f8`. The summary binds the raw archive
-SHA-256 separately from the service artifact ID, URL and digest. Logs or summaries
-without the retained archive and those identities receive no evidence credit.
+The deterministic raw `.tar.gz` archive is limited to 2 MiB, hashed before transport,
+and emitted in the downloadable GitHub Actions job log as one unique bounded envelope:
+
+```text
+TRNM_LOG_ARTIFACT_BEGIN name=<safe-name> sha256=<64-hex> size=<bytes> encoding=base64
+TRNM_LOG_ARTIFACT_B64 <bounded-base64-chunk>
+...
+TRNM_LOG_ARTIFACT_END name=<same-name> sha256=<same-64-hex> size=<same-bytes> lines=<count>
+```
+
+`emit-actions-log-artifact.py` rejects empty or oversized archives, unsafe names,
+missing or duplicate markers, malformed base64, size drift and digest drift. The
+archive is reconstructed by concatenating and decoding the payload lines between the
+unique markers in the retained job log. The summary separately binds repository,
+exact commit, run ID, attempt, job name, archive size and SHA-256. A summary without
+the complete log-carried archive, or a log envelope that fails reconstruction, receives
+no evidence credit. This transport uses no external action and no write permission.
