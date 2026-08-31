@@ -1,0 +1,233 @@
+diff --git a/trillionnium/crates/trnm-campaign-core/src/lib.rs b/trillionnium/crates/trnm-campaign-core/src/lib.rs
+index 8af7a96..9d1cc65 100644
+--- a/trillionnium/crates/trnm-campaign-core/src/lib.rs
++++ b/trillionnium/crates/trnm-campaign-core/src/lib.rs
+@@ -2629,6 +2629,20 @@ impl Default for CampaignSaveV1 {
+ }
+ 
+ impl CampaignSaveV1 {
++    /// Executes one public campaign command against a private candidate and
++    /// publishes it only after both the command and aggregate validation pass.
++    /// Thus every `Err` return preserves the exact caller-visible state.
++    fn apply_command_atomically<T>(
++        &mut self,
++        command: impl FnOnce(&mut Self) -> Result<T, CampaignError>,
++    ) -> Result<T, CampaignError> {
++        let mut candidate = self.clone();
++        let output = command(&mut candidate)?;
++        candidate.validate()?;
++        *self = candidate;
++        Ok(output)
++    }
++
+     fn cex_scoped_campaign_id(account_id: &str, campaign_id: &str) -> String {
+         let digest = Sha256::digest(
+             format!("trnm-cex-campaign-scope-v1\0{account_id}\0{campaign_id}").as_bytes(),
+@@ -3072,7 +3086,12 @@ impl CampaignSaveV1 {
+                     })
+             })
+             || self.economy_mode == EconomyMode::CexConnected
+-                && self.economy_account_binding.is_none()
++                && (self.economy_account_binding.is_none()
++                    || self.wallet_snapshot.available_credits < 0
++                    || self.wallet_snapshot.reserved_credits < 0
++                    || self.economy_account_binding.as_ref().is_some_and(|binding| {
++                        self.wallet_snapshot.account_id != binding.account_id
++                    }))
+         {
+             return Err(CampaignError::InvalidState(
+                 "economy outbox, account binding or receipt state is invalid".to_string(),
+@@ -3218,6 +3237,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_character_identity(&mut self) -> Result<CharacterNamePreset, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_character_identity__atomic_inner()
++        })
++    }
++
++    fn cycle_character_identity__atomic_inner(&mut self) -> Result<CharacterNamePreset, CampaignError> {
+         self.require_town()?;
+         if self.character_identity.confirmed {
+             return Err(CampaignError::InvalidState(
+@@ -3231,6 +3256,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn confirm_character_identity(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.confirm_character_identity__atomic_inner()
++        })
++    }
++
++    fn confirm_character_identity__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_town()?;
+         if self.character_identity.confirmed {
+             return Err(CampaignError::InvalidState(
+@@ -3244,6 +3275,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_difficulty(&mut self) -> Result<CampaignDifficulty, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_difficulty__atomic_inner()
++        })
++    }
++
++    fn cycle_difficulty__atomic_inner(&mut self) -> Result<CampaignDifficulty, CampaignError> {
+         self.require_town()?;
+         if self.quest_state == QuestState::Accepted {
+             return Err(CampaignError::InvalidState(
+@@ -3398,6 +3435,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn move_to(&mut self, room: CampaignRoom) -> Result<(), CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.move_to__atomic_inner(room)
++        })
++    }
++
++    fn move_to__atomic_inner(&mut self, room: CampaignRoom) -> Result<(), CampaignError> {
+         self.require_town()?;
+         let mut effective_flags = self.progression.world_flags.clone();
+         if self.active_title == Some(BuildTitle::RelayRunner) {
+@@ -3491,6 +3534,12 @@ impl CampaignSaveV1 {
+     /// node. This is the same authority used by manual room movement and is
+     /// exposed to the client as an accessible route-follow command.
+     pub fn advance_toward_current_task(&mut self) -> Result<CampaignRoom, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.advance_toward_current_task__atomic_inner()
++        })
++    }
++
++    fn advance_toward_current_task__atomic_inner(&mut self) -> Result<CampaignRoom, CampaignError> {
+         let route = self.current_task_route_plan();
+         let next = route.path.get(1).ok_or_else(|| {
+             CampaignError::InvalidState(
+@@ -3508,6 +3557,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn start_cistern_relief(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.start_cistern_relief__atomic_inner()
++        })
++    }
++
++    fn start_cistern_relief__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_room(CampaignRoom::RelayQuarter)?;
+         if !self
+             .progression
+@@ -3539,6 +3594,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn advance_cistern_relief(&mut self) -> Result<QuestChainNodeId, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.advance_cistern_relief__atomic_inner()
++        })
++    }
++
++    fn advance_cistern_relief__atomic_inner(&mut self) -> Result<QuestChainNodeId, CampaignError> {
+         self.require_town()?;
+         let current = self
+             .quest_chain
+@@ -3593,6 +3654,15 @@ impl CampaignSaveV1 {
+     pub fn choose_cistern_relief_branch(
+         &mut self,
+         branch: QuestBranch,
++    ) -> Result<(), CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.choose_cistern_relief_branch__atomic_inner(branch)
++        })
++    }
++
++    fn choose_cistern_relief_branch__atomic_inner(
++        &mut self,
++        branch: QuestBranch,
+     ) -> Result<(), CampaignError> {
+         self.require_room(CampaignRoom::RelayQuarter)?;
+         let chain = self
+@@ -3663,6 +3733,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_expedition_preparation(&mut self) -> Result<ExpeditionPreparation, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_expedition_preparation__atomic_inner()
++        })
++    }
++
++    fn cycle_expedition_preparation__atomic_inner(&mut self) -> Result<ExpeditionPreparation, CampaignError> {
+         self.require_room(CampaignRoom::ExpeditionGate)?;
+         self.selected_expedition_preparation = self.selected_expedition_preparation.next();
+         self.revision += 1;
+@@ -3739,6 +3815,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_character_origin(&mut self) -> Result<CharacterOrigin, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_character_origin__atomic_inner()
++        })
++    }
++
++    fn cycle_character_origin__atomic_inner(&mut self) -> Result<CharacterOrigin, CampaignError> {
+         self.require_town()?;
+         if self.mentor_met
+             || self.progression.mentor_training_sessions > 0
+@@ -3772,6 +3854,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn talk_to_mentor(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.talk_to_mentor__atomic_inner()
++        })
++    }
++
++    fn talk_to_mentor__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_room(CampaignRoom::MentorHall)?;
+         self.mentor_met = true;
+         self.faction_rank = self.faction_rank.max(FactionRank::Initiate);
+@@ -3788,6 +3876,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn train_with_mentor(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.train_with_mentor__atomic_inner()
++        })
++    }
++
++    fn train_with_mentor__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_room(CampaignRoom::MentorHall)?;
+         if !self.mentor_met {
+             return Err(CampaignError::InvalidState(
+@@ -3832,6 +3926,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_training_path(&mut self) -> Result<(), CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_training_path__atomic_inner()
++        })
++    }
++
++    fn cycle_training_path__atomic_inner(&mut self) -> Result<(), CampaignError> {
+         self.require_room(CampaignRoom::MentorHall)?;
+         self.selected_training_path = self.selected_training_path.next();
+         self.revision += 1;
+@@ -3839,6 +3939,12 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn preview_growth_allocation(&mut self, stat: GrowthStat) -> Result<(), CampaignError> {
++        self.apply_command_atomically(move |candidate| {
++            candidate.preview_growth_allocation__atomic_inner(stat)
++        })
++    }
++
++    fn preview_growth_allocation__atomic_inner(&mut self, stat: GrowthStat) -> Result<(), CampaignError> {
+         self.require_town()?;
+         if self.progression.growth_points_available == 0 {
+             return Err(CampaignError::InvalidState(
+@@ -3851,12 +3957,24 @@ impl CampaignSaveV1 {
+     }
+ 
+     pub fn cycle_growth_preview(&mut self) -> Result<GrowthStat, CampaignError> {
++        self.apply_command_atomically(|candidate| {
++            candidate.cycle_growth_preview__atomic_inner()
++        })
++    }
++
