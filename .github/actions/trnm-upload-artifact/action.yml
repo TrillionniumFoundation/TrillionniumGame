@@ -1,0 +1,35 @@
+name: trnm-upload-artifact
+
+description: Download, verify, and execute the pinned GitHub upload-artifact v4 bundle in an action runtime.
+
+inputs:
+  name:
+    description: Artifact name
+    required: true
+  path:
+    description: File, directory, or wildcard pattern to upload
+    required: true
+  if-no-files-found:
+    description: Behavior when no files match
+    required: false
+    default: warn
+  retention-days:
+    description: Artifact retention in days
+    required: false
+    default: "0"
+  compression-level:
+    description: Zlib compression level
+    required: false
+    default: "6"
+  overwrite:
+    description: Delete a same-name artifact before upload
+    required: false
+    default: "false"
+  include-hidden-files:
+    description: Include hidden files
+    required: false
+    default: "false"
+
+runs:
+  using: node20
+  main: bootstrap.js
