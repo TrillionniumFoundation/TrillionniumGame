@@ -3,7 +3,7 @@ name: temporary-close-pr57-review-blockers
 on:
   push:
     branches:
-      - codex/grpc-healthcheck-source-2026-08-31
+      - tmp/pr57-finalizer-20260831
 
 permissions:
   contents: write
