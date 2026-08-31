@@ -51,3 +51,13 @@ jobs:
             "$GITHUB_WORKSPACE/export"
           sha256sum "$GITHUB_WORKSPACE/export/world-v13-source.patch"
           cat "$GITHUB_WORKSPACE/export/identity.txt"
+
+      - name: Upload immutable World v13k source candidate
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: world-v13k-source-candidate-${{ github.sha }}
+          path: export
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
