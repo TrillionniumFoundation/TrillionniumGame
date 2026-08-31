@@ -1,0 +1,220 @@
+{
+  "claims": {
+    "complete_compatibility": false,
+    "drop_in_replacement": false,
+    "nakama_retired": false,
+    "production_ready": false,
+    "public_online": false
+  },
+  "critical_jobs": {
+    "outbox-final-attempt-reaper": [
+      {
+        "conclusion": "success",
+        "failed_steps": [],
+        "id": 99546747349,
+        "name": "source-contract",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "failed_steps": [],
+        "id": 99547216940,
+        "name": "live-profile (postgresql)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "failed_steps": [],
+        "id": 99547217051,
+        "name": "live-profile (cockroachdb)",
+        "status": "completed"
+      }
+    ],
+    "trnm-server-live": [
+      {
+        "conclusion": "success",
+        "failed_steps": [],
+        "id": 99546748084,
+        "name": "trnm-server-source-contract",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "failed_steps": [],
+        "id": 99546748188,
+        "name": "trnm-server-live-cockroachdb",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "failed_steps": [],
+        "id": 99546748234,
+        "name": "trnm-server-live-postgresql",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "failed_steps": [],
+        "id": 99547693089,
+        "name": "trnm-server-live",
+        "status": "completed"
+      }
+    ]
+  },
+  "draft": true,
+  "failures": [
+    {
+      "observed": null,
+      "required_job": "verify-retained-logs",
+      "workflow": "outbox-final-attempt-reaper"
+    }
+  ],
+  "head": "8bc41fc87c2e39686c87292db2c58693a844356c",
+  "merged": false,
+  "pull_request": 57,
+  "repository": "TrillionniumFoundation/TrillionniumGame",
+  "result": "failure",
+  "runs": [
+    {
+      "conclusion": "success",
+      "id": 33409957016,
+      "name": "candidate-identity-manifest",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409956965,
+      "name": "database-backup-restore",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409957035,
+      "name": "grpc-health-source",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409956939,
+      "name": "outbox-final-attempt-reaper",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409956918,
+      "name": "outbox-spool-worker",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409956973,
+      "name": "pg-server-response-loss",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409957003,
+      "name": "pg-server-vertical-slice",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409957036,
+      "name": "pgwire-vertical-slice",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409956972,
+      "name": "pull-request-contract",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409956932,
+      "name": "source-candidate-boundaries",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409956977,
+      "name": "trillionnium-game-actions-unblock-smoke",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409957048,
+      "name": "trillionnium-game-canonical-framing-core",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409956994,
+      "name": "trillionnium-game-merge-gate",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409957056,
+      "name": "trillionnium-game-persistence-outbox-core",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409957008,
+      "name": "trillionnium-game-plan-contract",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409956974,
+      "name": "trillionnium-game-presence-router-core",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409957074,
+      "name": "trillionnium-game-query-core",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409957058,
+      "name": "trillionnium-game-rust-foundation",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409957021,
+      "name": "trillionnium-game-storage-core",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409957022,
+      "name": "trillionnium-game-token-policy-core",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409957061,
+      "name": "trillionnium-game-transport-error-core",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409957082,
+      "name": "trnm-server-live",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 33409956999,
+      "name": "websocket-wire-source",
+      "status": "completed"
+    }
+  ],
+  "schema": "trillionnium.pr57-final-qualification.v1",
+  "tree": "e921d6e60996eedbcbab9cf967c416396b93dcba",
+  "workflow_count": 23
+}
