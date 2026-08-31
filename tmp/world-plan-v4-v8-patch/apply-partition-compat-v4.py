@@ -53,6 +53,22 @@ legacy_marker = '        "run_legacy_disabled",\n'
 if runtime_text.count(legacy_marker) != 1:
     raise SystemExit(f"retired legacy marker source drifted: {runtime_text.count(legacy_marker)}")
 runtime_text = runtime_text.replace(legacy_marker, "", 1)
+loop = '''    for marker in ["0019_online_settlement_quarantine_v1.sql"] {
+        assert!(
+            RUNTIME_V2.contains(marker),
+            "missing direct runtime marker {marker}"
+        );
+    }
+'''
+direct = '''    let migration_marker = "0019_online_settlement_quarantine_v1.sql";
+    assert!(
+        RUNTIME_V2.contains(migration_marker),
+        "missing direct runtime marker {migration_marker}"
+    );
+'''
+if runtime_text.count(loop) != 1:
+    raise SystemExit(f"single migration marker loop drifted: {runtime_text.count(loop)}")
+runtime_text = runtime_text.replace(loop, direct, 1)
 export_assertion = '    assert!(WORKER_WRAPPER.contains("settlement_worker_runtime_v2.rs"));\n'
 if runtime_text.count(export_assertion) != 1:
     raise SystemExit(f"runtime export assertion source drifted: {runtime_text.count(export_assertion)}")
