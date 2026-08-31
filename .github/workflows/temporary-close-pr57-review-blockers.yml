@@ -41,8 +41,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/temporary-prepatch-app-drain.py
-          python3 scripts/temporary-dedupe-server-shared-state.py
           python3 scripts/temporary-close-pr57-review-blockers.py
           python3 scripts/temporary-close-pr57-outbox-evidence.py
           rm \
