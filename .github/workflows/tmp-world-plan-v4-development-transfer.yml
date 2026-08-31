@@ -11,37 +11,96 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: tmp-world-plan-v4-development-transfer-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  RUST_TEST_THREADS: "1"
+  RUST_TOOLCHAIN: "1.98.0"
+  WORLD_HEAD: "5605cfb8861aa923f69ff032ddbff7d035bccb0c"
+  CONTROL_HEAD: "7adb924bd5990726d845846834c379d8e3d58db0"
+  BUNDLE_SHA256: "1dc729cb02846481c9a69db56f423aafd522db55bafc1a3ae352b9d6ea218dce"
+  DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trnm_world_ci
+  TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trnm_world_ci
+  TRNM_SETTLEMENT_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trnm_world_ci
+  TRNM_REQUIRE_SETTLEMENT_DATABASE_TEST: "1"
+
 jobs:
-  qualify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - name: Qualify immutable World v8 source
-        shell: bash
+  verify-and-export:
+    name: verify-and-export
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    services:
+      postgres:
+        image: postgres:16.10@sha256:1d288494853e244e7a78d87b3526e650e5221c622f9768ecac9313d0874a9c39
         env:
-          RUST_TOOLCHAIN: "1.98.0"
-          WORLD_HEAD: "5605cfb8861aa923f69ff032ddbff7d035bccb0c"
-          CARGO_TERM_COLOR: never
-          CARGO_INCREMENTAL: "0"
-          RUST_BACKTRACE: "1"
-          RUST_TEST_THREADS: "1"
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: trnm_world_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d trnm_world_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Fetch immutable control and World trees
+        shell: bash
         run: |
           set -euo pipefail
           git init control
-          git -C control remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C control fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git -C control remote add origin https://github.com/TrillionniumFoundation/Trillionnium-Chain.git
+          git -C control fetch --no-tags --depth=1 origin "${CONTROL_HEAD}"
           git -C control checkout --detach FETCH_HEAD
+          test "$(git -C control rev-parse HEAD)" = "${CONTROL_HEAD}"
+
           git init world
           git -C world remote add origin https://github.com/TrillionniumFoundation/Trillionnium-World.git
           git -C world fetch --no-tags --depth=1 origin "${WORLD_HEAD}"
           git -C world checkout --detach FETCH_HEAD
-          test "$(git -C control rev-parse HEAD)" = "${GITHUB_SHA}"
           test "$(git -C world rev-parse HEAD)" = "${WORLD_HEAD}"
+
+      - name: Reconstruct and verify closure tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat control/tmp/world-plan-v4-development-transfer/world-closure-bundle.part-*.b64 \
+            | tr -d '\n' \
+            | base64 -d > /tmp/world-closure-bundle.tar.gz
+          printf '%s  %s\n' "${BUNDLE_SHA256}" /tmp/world-closure-bundle.tar.gz | sha256sum -c -
+          tar -xzf /tmp/world-closure-bundle.tar.gz -C /tmp
+          test -x /tmp/world-closure-tools/run-world-source-closure.sh
+          bash -n /tmp/world-closure-tools/run-world-source-closure.sh
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
           rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
           rustup default "${RUST_TOOLCHAIN}"
           rustc --version --verbose
           cargo --version --verbose
-          bash control/tmp/world-plan-v4-v8-patch/qualify-v8.sh \
+
+      - name: Execute complete source closure and exact tests
+        shell: bash
+        env:
+          WORLD_CHECKOUT: ${{ github.workspace }}/world
+        run: |
+          set -euo pipefail
+          /tmp/world-closure-tools/run-world-source-closure.sh \
             "$GITHUB_WORKSPACE/world" \
             "$GITHUB_WORKSPACE/control" \
             "$GITHUB_WORKSPACE/export"
+
+      - name: Upload exact tested source transfer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trnm-world-plan-v4-development-transfer-${{ github.run_id }}
+          path: export/**
+          if-no-files-found: error
+          retention-days: 7
