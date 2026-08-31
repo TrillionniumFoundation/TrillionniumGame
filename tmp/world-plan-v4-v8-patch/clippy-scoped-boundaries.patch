@@ -1,6 +1,7 @@
 --- a/trillionnium/crates/trnm-game-server/src/settlement_worker.rs
 +++ b/trillionnium/crates/trnm-game-server/src/settlement_worker.rs
 @@ -5,7 +5,7 @@
+ // `settlement_worker_runtime_v2.rs` owns the exported runtime, bounded shutdown,
  // poison isolation, and migrations 18-19. Neither file is rewritten at build
  // time; the only public entrypoint is runtime v2.
 -#[allow(dead_code)]
@@ -10,7 +11,7 @@
      include!("settlement_worker_runtime_v2.rs");
 --- a/trillionnium/crates/trnm-game-server/tests/settlement_operator_controls_database.rs
 +++ b/trillionnium/crates/trnm-game-server/tests/settlement_operator_controls_database.rs
-@@ -189,6 +189,7 @@
+@@ -8,6 +8,7 @@
      )
  }
  
