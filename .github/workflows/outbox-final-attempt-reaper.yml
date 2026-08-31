@@ -9,6 +9,8 @@ on:
       - 'scripts/ci-outbox-final-attempt-reaper.sh'
       - 'scripts/upload-actions-artifact.py'
       - 'tests/control_plane/test_actions_artifact_uploader.py'
+      - 'scripts/check-workflow-action-policy.py'
+      - 'tests/control_plane/test_workflow_action_policy.py'
       - 'docs/development/OUTBOX_FINAL_ATTEMPT_REAPER.md'
       - 'docs/development/OUTBOX_SPOOL_WORKER.md'
       - 'docs/development/PERSISTENCE_OUTBOX_CORE.md'
@@ -22,6 +24,8 @@ on:
       - 'scripts/ci-outbox-final-attempt-reaper.sh'
       - 'scripts/upload-actions-artifact.py'
       - 'tests/control_plane/test_actions_artifact_uploader.py'
+      - 'scripts/check-workflow-action-policy.py'
+      - 'tests/control_plane/test_workflow_action_policy.py'
       - 'docs/development/OUTBOX_FINAL_ATTEMPT_REAPER.md'
       - 'docs/development/OUTBOX_SPOOL_WORKER.md'
       - 'docs/development/PERSISTENCE_OUTBOX_CORE.md'
@@ -69,8 +73,10 @@ jobs:
           grep -q 'crash-before-publish' scripts/ci-outbox-final-attempt-reaper.sh
           grep -q 'crash-after-publish' scripts/ci-outbox-final-attempt-reaper.sh
           grep -q 'possible_lost_effect_declared' scripts/ci-outbox-final-attempt-reaper.sh
+          grep -Fq 'if "$worker_bin" run-once >"$scenario/worker-crash.stdout"' scripts/ci-outbox-final-attempt-reaper.sh
+          grep -Fq 'actions/upload-artifact@043fb460e6257d1ca154e89a5e86196c74e480f8' .github/workflows/outbox-final-attempt-reaper.yml
           python3 -m py_compile scripts/upload-actions-artifact.py
-          python3 -m unittest tests.control_plane.test_actions_artifact_uploader -v
+          python3 -m unittest tests.control_plane.test_actions_artifact_uploader tests.control_plane.test_workflow_action_policy -v
 
   live-profile:
     needs: source-contract
@@ -122,9 +128,9 @@ jobs:
           TRNM_EVIDENCE_ROOT: run/outbox-final-attempt-reaper
           TRNM_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}
         run: bash scripts/ci-outbox-final-attempt-reaper.sh "$PROFILE"
-      - name: Seal and retain raw diagnostic archive
+      - name: Prepare raw diagnostic archive
         if: always()
-        id: artifact
+        id: archive
         shell: bash
         env:
           PROFILE: ${{ matrix.profile }}
@@ -133,18 +139,56 @@ jobs:
           root="run/outbox-final-attempt-reaper/${PROFILE}"
           mkdir -p "$root"
           archive="run/outbox-final-attempt-reaper-${PROFILE}-${CANDIDATE_SHA}.tar.gz"
-          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -czf "$archive" -C "$root" .
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$archive" -C "$root" .
           archive_sha=$(sha256sum "$archive" | awk '{print $1}')
+          artifact_name="outbox-final-attempt-reaper-${PROFILE}-${CANDIDATE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           printf 'archive_sha256=%s\n' "$archive_sha"
           find "$root" -type f -print0 | sort -z | xargs -0 -r sha256sum
-          artifact_name="outbox-final-attempt-reaper-${PROFILE}-${CANDIDATE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          python3 scripts/upload-actions-artifact.py "$artifact_name" "$archive" --mime-type application/gzip | tee "run/outbox-final-attempt-reaper-${PROFILE}-artifact.json"
+          {
+            printf 'archive_path=%s\n' "$archive"
+            printf 'archive_sha256=%s\n' "$archive_sha"
+            printf 'artifact_name=%s\n' "$artifact_name"
+          } >> "$GITHUB_OUTPUT"
           {
             printf '### Outbox final-attempt boundaries %s\n\n' "$PROFILE"
             printf -- '- candidate: `%s@%s`\n' "$CANDIDATE_REPOSITORY" "$CANDIDATE_SHA"
             printf -- '- run: `%s`\n' "$GITHUB_RUN_ID"
-            printf -- '- archive SHA-256: `%s`\n' "$archive_sha"
+            printf -- '- raw archive SHA-256: `%s`\n' "$archive_sha"
             printf -- '- crash before publish may lose the external effect: `true`\n'
             printf -- '- compatibility credit: `false`\n'
             printf -- '- production ready: `false`\n'
-          } >>"$GITHUB_STEP_SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain raw diagnostic archive
+        if: always() && steps.archive.outcome == 'success'
+        id: retain
+        uses: actions/upload-artifact@043fb460e6257d1ca154e89a5e86196c74e480f8
+        with:
+          name: ${{ steps.archive.outputs.artifact_name }}
+          path: ${{ steps.archive.outputs.archive_path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+          overwrite: false
+          include-hidden-files: false
+      - name: Record retained artifact identity
+        if: always() && steps.archive.outcome == 'success' && steps.retain.outcome == 'success'
+        shell: bash
+        env:
+          PROFILE: ${{ matrix.profile }}
+          RAW_ARCHIVE_SHA256: ${{ steps.archive.outputs.archive_sha256 }}
+          ARTIFACT_ID: ${{ steps.retain.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.retain.outputs.artifact-url }}
+          ARTIFACT_DIGEST: ${{ steps.retain.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          [[ "$RAW_ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          test -n "$ARTIFACT_URL"
+          test -n "$ARTIFACT_DIGEST"
+          {
+            printf -- '- retained artifact ID: `%s`\n' "$ARTIFACT_ID"
+            printf -- '- retained artifact URL: `%s`\n' "$ARTIFACT_URL"
+            printf -- '- service artifact digest: `%s`\n' "$ARTIFACT_DIGEST"
+            printf -- '- raw archive digest remains separately bound: `%s`\n' "$RAW_ARCHIVE_SHA256"
+          } >> "$GITHUB_STEP_SUMMARY"
