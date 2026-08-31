@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - name: Qualify immutable World Plan v4 source v13i
+      - name: Qualify immutable World Plan v4 source v13j
         shell: bash
         env:
           CARGO_TERM_COLOR: never
@@ -45,7 +45,7 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
 
-          bash control/tmp/world-plan-v4-v8-patch/qualify-v13c.sh \
+          bash control/tmp/world-plan-v4-v8-patch/qualify-v13j.sh \
             "$GITHUB_WORKSPACE/world" \
             "$GITHUB_WORKSPACE/control" \
             "$GITHUB_WORKSPACE/export"
