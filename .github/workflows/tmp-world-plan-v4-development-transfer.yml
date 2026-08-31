@@ -63,6 +63,15 @@ jobs:
           candidate_tree="$(git -C "$GITHUB_WORKSPACE/world" write-tree)"
           test "$candidate_tree" = 5e613185f5a2abda42df371f3755e73667717309
           printf 'qualified_candidate_tree=%s\n' "$candidate_tree"
+
+          tree_archive="$GITHUB_WORKSPACE/export/world-v13k-candidate-tree.tar.gz"
+          git -C "$GITHUB_WORKSPACE/world" archive --format=tar "$candidate_tree" \
+            | gzip -n -9 > "$tree_archive"
+          test -s "$tree_archive"
+          archive_sha="$(sha256sum "$tree_archive" | awk '{print $1}')"
+          printf 'qualified_candidate_tree_archive_sha256=%s\n' "$archive_sha"
+          printf '%s  %s\n' "$archive_sha" "$(basename "$tree_archive")" \
+            >> "$GITHUB_WORKSPACE/export/SHA256SUMS"
           printf 'TRNM_WORLD_V13K_HASH_MANIFEST=PASS\n'
 
       # The organization policy rejects reusable-action invocation before job
