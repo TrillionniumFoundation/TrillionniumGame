@@ -41,10 +41,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 scripts/temporary-prepatch-app-drain.py
           python3 scripts/temporary-close-pr57-review-blockers.py
           python3 scripts/temporary-close-pr57-outbox-evidence.py
           rm \
             .github/workflows/temporary-close-pr57-review-blockers.yml \
+            scripts/temporary-prepatch-app-drain.py \
             scripts/temporary-close-pr57-review-blockers.py \
             scripts/temporary-close-pr57-outbox-evidence.py
 
@@ -85,6 +87,7 @@ jobs:
           (cd runtime && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
           git diff --check
           test ! -e .github/workflows/temporary-close-pr57-review-blockers.yml
+          test ! -e scripts/temporary-prepatch-app-drain.py
           test ! -e scripts/temporary-close-pr57-review-blockers.py
           test ! -e scripts/temporary-close-pr57-outbox-evidence.py
 
