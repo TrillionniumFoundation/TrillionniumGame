@@ -28,3 +28,11 @@ A database adapter must prove:
 - PostgreSQL and CockroachDB remain separate profiles.
 
 This implementation does not claim database durability, Nakama behavior compatibility, SG4 completion, production readiness, or public-online eligibility.
+
+## Claim-batch terminal-transition observability
+
+`claim_outbox_batch` returns newly claimed leases and the count of expired
+final-attempt leases reaped in the same serializable transaction. The original
+`claim_outbox` API remains a compatibility wrapper. The worker reports the
+reaper count in `dead_lettered`, including reaper-only batches with
+`claimed=0`.

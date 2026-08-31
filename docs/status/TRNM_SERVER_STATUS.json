@@ -53,7 +53,11 @@
     "POST /v1/session/logout revokes the persisted family using the verified access principal",
     "session access, rejection, refresh, replay-revocation and logout process metrics",
     "generic retry supervisor deliberately does not repeat refresh rotation or logout mutation",
-    "optional same-process generated Nakama Healthcheck gRPC listener with shared drain and worker-failure lifecycle"
+    "optional same-process generated Nakama Healthcheck gRPC listener with shared drain and worker-failure lifecycle",
+    "one shared process drain and mutation-admission barrier across HTTP and persistent WebSocket workers",
+    "post-drain upgraded WebSockets close with going-away semantics before new data or control dispatch",
+    "gRPC worker returned errors and panics signal the shared failure and drain fences",
+    "duplicate and empty WebSocket subprotocol offer tokens fail closed"
   ],
   "not_implemented_or_verified": [
     "final exact-head Rust formatting, compile, tests and strict Clippy after this source synchronization",

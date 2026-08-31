@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use super::app::{App, Repository, SharedAppMetrics};
+use super::app::{App, Repository, SharedAppMetrics, SharedDrain};
 use super::config::ServerConfig;
 use super::error::ServerError;
 use super::grpc;
@@ -27,12 +27,12 @@ where
     let (worker_count, queue_capacity) = connection_policy(config.database_pool.max_size);
     let (sender, receiver) = sync_channel(queue_capacity);
     let receiver = Arc::new(Mutex::new(receiver));
-    let draining = Arc::new(AtomicBool::new(false));
+    let draining = SharedDrain::default();
     let worker_failed = Arc::new(AtomicBool::new(false));
     let metrics = SharedAppMetrics::default();
     let grpc_worker = grpc::spawn(
         config.grpc_bind,
-        Arc::clone(&draining),
+        draining.clone(),
         Arc::clone(&worker_failed),
     )?;
     let mut workers = Vec::with_capacity(worker_count);
@@ -42,24 +42,26 @@ where
             RetryingRepository::new(repository.clone(), RetryPolicy::candidate_default())?;
         let worker_config = config.clone();
         let worker_receiver = Arc::clone(&receiver);
-        let worker_draining = Arc::clone(&draining);
+        let worker_draining = draining.clone();
         let worker_failed = Arc::clone(&worker_failed);
         let worker_metrics = metrics.clone();
         workers.push(
             thread::Builder::new()
                 .name(format!("trnm-connection-{worker_index}"))
                 .spawn(move || {
+                    let worker_drain_for_loop = worker_draining.clone();
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         worker_loop(
                             worker_config,
                             worker_repository,
                             worker_receiver,
-                            worker_draining,
+                            worker_drain_for_loop,
                             worker_metrics,
                         );
                     }));
                     if result.is_err() {
                         worker_failed.store(true, Ordering::Release);
+                        worker_draining.begin();
                     }
                 })?,
         );
@@ -75,7 +77,7 @@ where
     );
 
     let accept_result = accept_loop(&listener, &sender, config, &draining, &worker_failed);
-    draining.store(true, Ordering::Release);
+    draining.begin();
     drop(sender);
     let join_result = join_workers(workers);
     let grpc_join_result = grpc::join(grpc_worker);
@@ -90,15 +92,15 @@ fn accept_loop(
     listener: &TcpListener,
     sender: &SyncSender<TcpStream>,
     config: &ServerConfig,
-    draining: &AtomicBool,
+    draining: &SharedDrain,
     worker_failed: &AtomicBool,
 ) -> Result<(), ServerError> {
     loop {
         if worker_failed.load(Ordering::Acquire) {
-            draining.store(true, Ordering::Release);
+            draining.begin();
             return Err(ServerError::Configuration("connection_worker_panicked"));
         }
-        if draining.load(Ordering::Acquire) {
+        if draining.is_draining() {
             return Ok(());
         }
         match listener.accept() {
@@ -112,7 +114,7 @@ fn accept_loop(
                 Err(TrySendError::Disconnected(mut stream)) => {
                     write_response(&mut stream, &unavailable());
                     let _ = stream.shutdown(Shutdown::Both);
-                    draining.store(true, Ordering::Release);
+                    draining.begin();
                     return Err(ServerError::Configuration(
                         "connection_worker_queue_disconnected",
                     ));
@@ -131,12 +133,17 @@ fn worker_loop<R>(
     config: ServerConfig,
     repository: RetryingRepository<R>,
     receiver: Arc<Mutex<Receiver<TcpStream>>>,
-    draining: Arc<AtomicBool>,
+    draining: SharedDrain,
     metrics: SharedAppMetrics,
 ) where
     R: Repository,
 {
-    let mut app = App::with_shared_metrics(repository, config.admin_token.clone(), metrics);
+    let mut app = App::with_shared_state(
+        repository,
+        config.admin_token.clone(),
+        metrics,
+        draining.clone(),
+    );
     if let Some(session_auth) = &config.session_auth {
         match session_auth.verifier() {
             Ok(verifier) => app = app.with_access_token_verifier(verifier),
@@ -145,7 +152,7 @@ fn worker_loop<R>(
                     "trnm-server connection worker session verifier failed: {}",
                     error.code().as_str()
                 );
-                draining.store(true, Ordering::Release);
+                draining.begin();
                 return;
             }
         }
@@ -170,7 +177,7 @@ fn handle_connection<R: Repository>(
     stream: &mut TcpStream,
     app: &mut App<R>,
     config: &ServerConfig,
-    draining: &AtomicBool,
+    draining: &SharedDrain,
 ) -> Result<(), ServerError> {
     configure_connection(stream, config)?;
     let request = match read_request(stream, config.max_request_bytes) {
@@ -188,7 +195,7 @@ fn handle_connection<R: Repository>(
         Err(error) => return Err(error),
     };
 
-    if draining.load(Ordering::Acquire)
+    if draining.is_draining()
         && (is_readiness(&request) || request_rejected_while_draining(&request))
     {
         write_response(stream, &draining_response());
@@ -207,7 +214,7 @@ fn handle_connection<R: Repository>(
 
     let response = app.handle(&request);
     if app.should_stop() {
-        draining.store(true, Ordering::Release);
+        draining.begin();
     }
     write_response(stream, &response);
     Ok(())

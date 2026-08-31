@@ -13,6 +13,26 @@ REGISTER = ROOT / "docs/status/GAP_REGISTER.json"
 EVIDENCE_INDEX = ROOT / "docs/evidence/index.json"
 
 ALLOWED_SEVERITIES = {"P0", "P1", "P2", "informational"}
+ALLOWED_EVIDENCE_TYPES = {
+    "manifest",
+    "unit",
+    "property",
+    "fuzz",
+    "wire-differential",
+    "database-differential",
+    "runtime-differential",
+    "sdk-blackbox",
+    "migration-rehearsal",
+    "fault-injection",
+    "performance",
+    "endurance",
+    "security-review",
+    "penetration-test",
+    "backup-restore",
+    "canary",
+    "cutover",
+    "retirement",
+}
 TERMINAL_STATUSES = {"closed", "rejected", "superseded"}
 VERIFIED_STATUSES = {"remote-verified", "independently-reviewed", "closed"}
 SOURCE_ONLY_STATUSES = {"source-candidate", "locally-verified"}
@@ -71,11 +91,41 @@ def accepted_review(row: dict[str, Any]) -> dict[str, Any] | None:
         return None
     if review.get("decision") != "accepted":
         return None
-    if not review.get("reviewer_identity"):
+    reviewer_identity = review.get("reviewer_identity")
+    if not isinstance(reviewer_identity, str) or not reviewer_identity.strip():
         return None
-    if review.get("independent") is not True and review.get("self_review") is not False:
+    if review.get("independent") is not True:
+        return None
+    if review.get("self_review") is not False:
         return None
     return review
+
+
+def validate_required_evidence_types(gap_id: str, values: Any) -> list[str]:
+    require(
+        isinstance(values, list) and values,
+        f"{gap_id}: evidence types required",
+    )
+    result: list[str] = []
+    for index, value in enumerate(values):
+        require(
+            isinstance(value, str),
+            f"{gap_id}: required_evidence_types[{index}] must be a string",
+        )
+        require(
+            bool(value) and value.strip() == value,
+            f"{gap_id}: required_evidence_types[{index}] must be non-empty canonical text",
+        )
+        require(
+            value in ALLOWED_EVIDENCE_TYPES,
+            f"{gap_id}: unsupported evidence type {value!r}",
+        )
+        result.append(value)
+    require(
+        len(result) == len(set(result)),
+        f"{gap_id}: duplicate required evidence types",
+    )
+    return result
 
 
 def validate_closed_evidence(
@@ -112,9 +162,7 @@ def validate_closed_evidence(
                 accepted_review(row) is not None,
                 f"{gap_id}: {evidence_id} lacks independent accepted review",
             )
-    missing_types = {
-        value for value in required_types if isinstance(value, str)
-    } - present_types
+    missing_types = set(required_types) - present_types
     require(
         not missing_types,
         f"{gap_id}: missing required evidence types: {sorted(missing_types)}",
@@ -219,10 +267,9 @@ def validate() -> dict[str, Any]:
             isinstance(row.get("close_criteria"), list) and row["close_criteria"],
             f"{gap_id}: close criteria required",
         )
-        required_types = row.get("required_evidence_types")
-        require(
-            isinstance(required_types, list) and required_types,
-            f"{gap_id}: evidence types required",
+        required_types = validate_required_evidence_types(
+            gap_id,
+            row.get("required_evidence_types"),
         )
         evidence_ids = row.get("evidence_ids")
         require(isinstance(evidence_ids, list), f"{gap_id}: evidence_ids must be a list")

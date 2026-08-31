@@ -118,3 +118,11 @@ process/node loss reclaim, pool saturation, TLS expiry/rotation, long-running
 endurance, independent data-integrity/security review, and real Rust handlers that
 consume the spool records for broadcast, search, notification, completion, and
 external provider effects.
+
+## Final-attempt test failpoints
+
+`TRNM_OUTBOX_TEST_FAIL_BEFORE_DELIVERY=1` exits with code `71` after claim and
+before publication. `TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY=1` exits with code
+`70` after durable publication and before acknowledgement. Both require
+`TRNM_OUTBOX_ENABLE_TEST_FAILPOINTS=1`, are mutually exclusive and are valid
+only for `run-once`.

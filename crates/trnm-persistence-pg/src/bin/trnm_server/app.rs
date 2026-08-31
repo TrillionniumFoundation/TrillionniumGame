@@ -164,12 +164,66 @@ impl SharedAppMetrics {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SharedDrain(Arc<Mutex<DrainState>>);
+
+#[derive(Debug, Default)]
+struct DrainState {
+    draining: bool,
+    admitted_operations: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct AdmissionPermit {
+    drain: SharedDrain,
+}
+
+impl SharedDrain {
+    fn state(&self) -> std::sync::MutexGuard<'_, DrainState> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn begin(&self) {
+        self.state().draining = true;
+    }
+
+    pub(crate) fn is_draining(&self) -> bool {
+        self.state().draining
+    }
+
+    fn try_admit(&self) -> Option<AdmissionPermit> {
+        let mut state = self.state();
+        if state.draining {
+            return None;
+        }
+        state.admitted_operations = state.admitted_operations.checked_add(1)?;
+        Some(AdmissionPermit {
+            drain: self.clone(),
+        })
+    }
+
+    #[cfg(test)]
+    fn admitted_operations(&self) -> usize {
+        self.state().admitted_operations
+    }
+}
+
+impl Drop for AdmissionPermit {
+    fn drop(&mut self) {
+        let mut state = self.drain.state();
+        debug_assert!(state.admitted_operations > 0);
+        state.admitted_operations = state.admitted_operations.saturating_sub(1);
+    }
+}
+
 #[derive(Debug)]
 pub struct App<R> {
     repository: R,
     admin_token: String,
     sessions: SessionApi,
-    draining: bool,
+    drain: SharedDrain,
     metrics: SharedAppMetrics,
 }
 
@@ -180,17 +234,28 @@ impl<R: Repository> App<R> {
         Self::with_shared_metrics(repository, admin_token, SharedAppMetrics::default())
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn with_shared_metrics(
         repository: R,
         admin_token: String,
         metrics: SharedAppMetrics,
     ) -> Self {
+        Self::with_shared_state(repository, admin_token, metrics, SharedDrain::default())
+    }
+
+    #[must_use]
+    pub(crate) fn with_shared_state(
+        repository: R,
+        admin_token: String,
+        metrics: SharedAppMetrics,
+        drain: SharedDrain,
+    ) -> Self {
         Self {
             repository,
             admin_token,
             sessions: SessionApi::default(),
-            draining: false,
+            drain,
             metrics,
         }
     }
@@ -202,12 +267,39 @@ impl<R: Repository> App<R> {
     }
 
     #[must_use]
-    pub const fn should_stop(&self) -> bool {
-        self.draining
+    pub fn should_stop(&self) -> bool {
+        self.drain.is_draining()
     }
 
     pub fn handle(&mut self, request: &Request) -> Response {
         self.metrics.increment(|metrics| &mut metrics.requests);
+        let _admission = if is_mutating_request(request) {
+            match self.drain.try_admit() {
+                Some(permit) => Some(permit),
+                None => {
+                    return error_response(503, "unavailable", "Service is draining.", "backoff");
+                }
+            }
+        } else {
+            None
+        };
+        self.handle_inner(request)
+    }
+
+    pub(crate) fn admit_realtime_dispatch(&self) -> Option<AdmissionPermit> {
+        self.drain.try_admit()
+    }
+
+    pub(crate) fn handle_admitted(
+        &mut self,
+        request: &Request,
+        _admission: &AdmissionPermit,
+    ) -> Response {
+        self.metrics.increment(|metrics| &mut metrics.requests);
+        self.handle_inner(request)
+    }
+
+    fn handle_inner(&mut self, request: &Request) -> Response {
         let response = match (request.method.as_str(), request.target.as_str()) {
             ("GET", "/healthz") => Response::json(200, br#"{"status":"ok"}"#.to_vec()),
             ("GET", "/readyz") => self.readiness(),
@@ -235,7 +327,7 @@ impl<R: Repository> App<R> {
     }
 
     fn readiness(&self) -> Response {
-        if self.draining {
+        if self.drain.is_draining() {
             error_response(503, "unavailable", "Service is draining.", "backoff")
         } else {
             Response::json(200, br#"{"status":"ready"}"#.to_vec())
@@ -243,7 +335,7 @@ impl<R: Repository> App<R> {
     }
 
     fn metrics_response(&self) -> Response {
-        let ready = u8::from(!self.draining);
+        let ready = u8::from(!self.drain.is_draining());
         let metrics = self.metrics.snapshot();
         let repository = self.repository.operational_metrics();
         let session = self.sessions.metrics();
@@ -348,16 +440,13 @@ trnm_server_session_logout_revoked_total {}\n",
         if !self.authorized(request) {
             return unauthenticated();
         }
-        self.draining = true;
+        self.drain.begin();
         self.metrics
             .increment(|metrics| &mut metrics.drain_requests);
         Response::json(200, br#"{"status":"draining"}"#.to_vec())
     }
 
     fn bootstrap(&mut self, request: &Request) -> Response {
-        if self.draining {
-            return error_response(503, "unavailable", "Service is draining.", "backoff");
-        }
         if !self.authorized(request) {
             return unauthenticated();
         }
@@ -391,9 +480,6 @@ trnm_server_session_logout_revoked_total {}\n",
     }
 
     fn commit(&mut self, request: &Request) -> Response {
-        if self.draining {
-            return error_response(503, "unavailable", "Service is draining.", "backoff");
-        }
         if !self.authorized(request) {
             return unauthenticated();
         }
@@ -446,6 +532,16 @@ trnm_server_session_logout_revoked_total {}\n",
             retry_name(error.retry()),
         )
     }
+}
+
+fn is_mutating_request(request: &Request) -> bool {
+    matches!(
+        (request.method.as_str(), request.target.as_str()),
+        ("POST", "/v1/authority/bootstrap")
+            | ("POST", "/v1/authority/commit")
+            | ("POST", "/v1/session/refresh")
+            | ("POST", "/v1/session/logout")
+    )
 }
 
 fn known_path(path: &str) -> bool {
@@ -916,6 +1012,52 @@ mod tests {
         ));
         let body = String::from_utf8(response.body).unwrap();
         assert!(body.contains("trnm_server_commands_applied_total 1"));
+    }
+
+    #[test]
+    fn shared_drain_fences_new_mutations_across_app_instances() {
+        let token = token();
+        let metrics = SharedAppMetrics::default();
+        let drain = SharedDrain::default();
+        let mut websocket_worker = App::with_shared_state(
+            FakeRepository::default(),
+            token.clone(),
+            metrics.clone(),
+            drain.clone(),
+        );
+        let mut control_worker =
+            App::with_shared_state(FakeRepository::default(), token.clone(), metrics, drain);
+        let drain_headers =
+            BTreeMap::from([("authorization".to_owned(), format!("Bearer {token}"))]);
+        let response =
+            control_worker.handle(&Request::new("POST", "/-/drain", drain_headers, Vec::new()));
+        assert_eq!(response.status, 200);
+        assert!(websocket_worker.should_stop());
+
+        let response = websocket_worker.handle(&Request::new(
+            "POST",
+            "/v1/authority/commit",
+            headers(&token),
+            commit_body(),
+        ));
+        assert_eq!(response.status, 503);
+    }
+
+    #[test]
+    fn admitted_mutation_can_complete_after_drain_begins() {
+        let drain = SharedDrain::default();
+        let permit = drain
+            .try_admit()
+            .expect("mutation must be admitted before drain");
+        assert_eq!(drain.admitted_operations(), 1);
+
+        drain.begin();
+        assert!(drain.is_draining());
+        assert!(drain.try_admit().is_none());
+        assert_eq!(drain.admitted_operations(), 1);
+
+        drop(permit);
+        assert_eq!(drain.admitted_operations(), 0);
     }
 
     #[test]

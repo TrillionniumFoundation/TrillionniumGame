@@ -43,7 +43,11 @@
     "close is echoed and terminates the connection",
     "read timeout terminates with going-away close when delivery remains possible",
     "the connection closes after at most 64 received messages",
-    "all data frames reach the same post-commit authority application path"
+    "all data frames reach the same post-commit authority application path",
+    "empty or duplicate subprotocol offer tokens are rejected before upgrade",
+    "all worker applications share one process drain and mutation-admission barrier",
+    "an upgraded connection admits no new data or control dispatch after another connection acknowledges drain",
+    "a mutation admitted before the drain boundary may finish, while later mutations fail closed"
   ],
   "not_implemented": [
     "official Nakama realtime protobuf messages or envelopes",
@@ -58,7 +62,9 @@
     "distributed route registry and cross-node fanout",
     "official Nakama realtime differential"
   ],
-  "gap_ids": ["GAP-P0-SERVER-001"],
+  "gap_ids": [
+    "GAP-P0-SERVER-001"
+  ],
   "claims": {
     "source_candidate": true,
     "frame_boundary_defined": true,

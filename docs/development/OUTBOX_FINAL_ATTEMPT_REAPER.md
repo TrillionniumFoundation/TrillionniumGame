@@ -58,3 +58,16 @@ This closes the source-level stranded-final-attempt defect only after the exact-
 workflow and independent data-integrity review are accepted. It does not prove
 cross-host storage semantics, multi-node HA, a concrete broadcast/search/notification
 consumer, long-running endurance or production delivery.
+
+## Final-attempt crash boundary semantics
+
+The exact-head live lane executes `max_attempts = 1` crash-after-publish and
+crash-before-publish cases against PostgreSQL and CockroachDB. In both cases the
+expired exhausted lease becomes a dead letter and the worker reports
+`dead_lettered=1`. After publication one stable spool effect remains; before
+publication no effect exists, so final-attempt dead-lettering can lose the
+external effect. This is not an exactly-once claim.
+
+The deterministic raw archive is retained through the native Actions Results
+artifact service and finalized with its SHA-256 digest. Logs or summaries
+without that retained archive receive no evidence credit.

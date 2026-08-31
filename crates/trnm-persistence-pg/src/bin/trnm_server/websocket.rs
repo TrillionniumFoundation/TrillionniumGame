@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::str;
@@ -45,6 +45,10 @@ pub fn serve_once<R: Repository>(
 
     let maximum_payload = maximum_payload.min(MAX_PAYLOAD_BYTES);
     for _ in 0..MAX_MESSAGES_PER_CONNECTION {
+        if app.should_stop() {
+            write_close_code(stream, 1001)?;
+            return Ok(());
+        }
         let frame = match read_client_frame_exact(stream, maximum_payload) {
             Ok(value) => value,
             Err(FrameReadError::Protocol) => {
@@ -66,6 +70,14 @@ pub fn serve_once<R: Repository>(
                 return Ok(());
             }
             Err(FrameReadError::Io(error)) => return Err(error.into()),
+        };
+
+        let dispatch_admission = match app.admit_realtime_dispatch() {
+            Some(permit) => permit,
+            None => {
+                write_close_code(stream, 1001)?;
+                return Ok(());
+            }
         };
 
         match frame.opcode {
@@ -92,10 +104,10 @@ pub fn serve_once<R: Repository>(
                         }
                     },
                 };
-                let response = app.handle(&authority_request(
-                    request_body,
-                    handshake.authorization.as_deref(),
-                ));
+                let response = app.handle_admitted(
+                    &authority_request(request_body, handshake.authorization.as_deref()),
+                    &dispatch_admission,
+                );
                 let (opcode, response_body) = match handshake.encoding {
                     RealtimeEncoding::Json => (Opcode::Text, response.body),
                     RealtimeEncoding::Protobuf => {
@@ -182,16 +194,25 @@ fn validate_handshake(request: &Request) -> Result<Handshake, InputError> {
 }
 
 fn select_subprotocol(value: &str) -> Option<(&str, RealtimeEncoding)> {
-    value.split(',').find_map(|raw| {
+    let mut offered = BTreeSet::new();
+    let mut selected = None;
+    for raw in value.split(',') {
         let protocol = raw.trim();
-        if protocol == JSON_SUBPROTOCOL {
+        if protocol.is_empty() || !offered.insert(protocol) {
+            return None;
+        }
+        let candidate = if protocol == JSON_SUBPROTOCOL {
             Some((protocol, RealtimeEncoding::Json))
         } else if protocol == PROTOBUF_SUBPROTOCOL {
             Some((protocol, RealtimeEncoding::Protobuf))
         } else {
             None
+        };
+        if selected.is_none() {
+            selected = candidate;
         }
-    })
+    }
+    selected
 }
 
 fn header_has_token(value: &str, expected: &str) -> bool {
@@ -422,12 +443,62 @@ fn decode_base64_byte(byte: u8) -> Result<u8, InputError> {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::net::{TcpListener, TcpStream as TestTcpStream};
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
 
+    use trnm_contracts::{Digest32, DomainError};
+    use trnm_persistence_pg::{CommitOutcome, CommitReceipt, CommitRequest, EntityHead, EntityId};
     use trnm_realtime_wire::{
         decode_authority_response, encode_authority_command, FrameError, ProtobufError,
     };
 
+    use super::super::app::{SharedAppMetrics, SharedDrain};
     use super::*;
+
+    #[derive(Clone, Debug, Default)]
+    struct CountingRepository {
+        commits: Arc<AtomicUsize>,
+    }
+
+    impl Repository for CountingRepository {
+        fn bootstrap_entity(
+            &mut self,
+            entity: EntityId,
+            authority_generation: u64,
+            state: Digest32,
+            updated_at_ms: u64,
+        ) -> Result<EntityHead, DomainError> {
+            Ok(EntityHead {
+                entity,
+                revision: 0,
+                last_event_sequence: 0,
+                authority_generation,
+                state,
+                updated_at_ms,
+            })
+        }
+
+        fn commit_command(
+            &mut self,
+            request: &CommitRequest,
+        ) -> Result<CommitOutcome, DomainError> {
+            self.commits.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(CommitOutcome::Applied(CommitReceipt {
+                entity: request.entity,
+                command: request.command,
+                fingerprint: request.fingerprint,
+                revision: request.expected_revision + 1,
+                state: request.next_state,
+                first_event_sequence: Some(1),
+                last_event_sequence: 1,
+                event_count: request.events.len(),
+                outbox: request.outbox.iter().map(|intent| intent.id).collect(),
+            }))
+        }
+    }
 
     fn request(key: &str, protocol: &str, version: &str) -> Request {
         Request::new(
@@ -473,6 +544,84 @@ mod tests {
         masked(Opcode::Text, payload)
     }
 
+    fn commit_body() -> String {
+        format!(
+            "{{\"entity_id\":\"{}\",\"command_id\":\"{}\",\"fingerprint\":\"{}\",\"expected_revision\":0,\"authority_generation\":1,\"next_state_digest\":\"{}\",\"committed_at_ms\":11,\"event_id\":\"{}\",\"event_payload_digest\":\"{}\",\"intent_id\":\"{}\",\"intent_kind\":\"broadcast\",\"intent_payload_digest\":\"{}\",\"available_at_ms\":11}}",
+            "01".repeat(16),
+            "03".repeat(16),
+            "04".repeat(32),
+            "05".repeat(32),
+            "06".repeat(16),
+            "07".repeat(32),
+            "08".repeat(16),
+            "09".repeat(32),
+        )
+    }
+
+    fn socket_pair(server_read_timeout: Duration) -> (TestTcpStream, TestTcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TestTcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        server.set_read_timeout(Some(server_read_timeout)).unwrap();
+        server
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        (client, server)
+    }
+
+    fn read_handshake(client: &mut TestTcpStream) {
+        let mut response = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !response.ends_with(b"\r\n\r\n") {
+            std::io::Read::read_exact(client, &mut byte).unwrap();
+            response.push(byte[0]);
+            assert!(response.len() < 4096);
+        }
+        assert!(response.starts_with(b"HTTP/1.1 101 Switching Protocols\r\n"));
+    }
+
+    fn assert_going_away_close(client: &mut TestTcpStream) {
+        let mut close = [0_u8; 4];
+        std::io::Read::read_exact(client, &mut close).unwrap();
+        assert_eq!(close, [0x88, 0x02, 0x03, 0xe9]);
+    }
+
+    fn shared_connection_apps() -> (
+        App<CountingRepository>,
+        App<CountingRepository>,
+        Arc<AtomicUsize>,
+    ) {
+        let repository = CountingRepository::default();
+        let commits = Arc::clone(&repository.commits);
+        let metrics = SharedAppMetrics::default();
+        let drain = SharedDrain::default();
+        let websocket_app = App::with_shared_state(
+            repository.clone(),
+            "candidate".to_owned(),
+            metrics.clone(),
+            drain.clone(),
+        );
+        let control_app =
+            App::with_shared_state(repository, "candidate".to_owned(), metrics, drain);
+        (websocket_app, control_app, commits)
+    }
+
+    fn acknowledge_drain(control_app: &mut App<CountingRepository>) {
+        let response = control_app.handle(&Request::new(
+            "POST",
+            "/-/drain",
+            BTreeMap::from([("authorization".to_owned(), "Bearer candidate".to_owned())]),
+            Vec::new(),
+        ));
+        assert_eq!(response.status, 200);
+    }
+
     #[test]
     fn rfc6455_handshake_accept_matches_the_published_vector() {
         let handshake = validate_handshake(&request(
@@ -513,10 +662,7 @@ mod tests {
             select_subprotocol("unsupported,  trnm.protobuf.v1 , trnm.json.v1"),
             Some((PROTOBUF_SUBPROTOCOL, RealtimeEncoding::Protobuf))
         );
-        assert_eq!(
-            select_subprotocol("trnm.json.v1, trnm.json.v1"),
-            Some((JSON_SUBPROTOCOL, RealtimeEncoding::Json))
-        );
+        assert_eq!(select_subprotocol("trnm.json.v1, trnm.json.v1"), None);
 
         let handshake = validate_handshake(&request(
             "dGhlIHNhbXBsZSBub25jZQ==",
@@ -530,6 +676,20 @@ mod tests {
             .find(|line| line.starts_with("Sec-WebSocket-Protocol:"))
             .unwrap();
         assert_eq!(selected, "Sec-WebSocket-Protocol: trnm.protobuf.v1");
+    }
+
+    #[test]
+    fn duplicate_websocket_subprotocol_offers_fail_closed() {
+        for protocols in [
+            "trnm.json.v1, trnm.json.v1",
+            "trnm.protobuf.v1, trnm.protobuf.v1",
+            "other, other, trnm.json.v1",
+            "trnm.json.v1, , other",
+        ] {
+            assert!(
+                validate_handshake(&request("dGhlIHNhbXBsZSBub25jZQ==", protocols, "13",)).is_err()
+            );
+        }
     }
 
     #[test]
@@ -643,6 +803,53 @@ mod tests {
                 .unwrap_err(),
             FrameError::EncodingOpcodeMismatch
         );
+    }
+
+    #[test]
+    fn drain_ack_on_second_worker_fences_existing_websocket_mutation() {
+        let (mut websocket_app, mut control_app, commits) = shared_connection_apps();
+        let (mut client, mut server) = socket_pair(Duration::from_secs(2));
+        let handshake = request("dGhlIHNhbXBsZSBub25jZQ==", JSON_SUBPROTOCOL, "13");
+        let worker =
+            thread::spawn(move || serve_once(&mut server, &handshake, &mut websocket_app, 4096));
+
+        read_handshake(&mut client);
+        acknowledge_drain(&mut control_app);
+        std::io::Write::write_all(&mut client, &masked_text(commit_body().as_bytes())).unwrap();
+        assert_going_away_close(&mut client);
+        worker.join().unwrap().unwrap();
+        assert_eq!(commits.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn drain_ack_closes_control_only_websocket() {
+        let (mut websocket_app, mut control_app, commits) = shared_connection_apps();
+        let (mut client, mut server) = socket_pair(Duration::from_secs(2));
+        let handshake = request("dGhlIHNhbXBsZSBub25jZQ==", JSON_SUBPROTOCOL, "13");
+        let worker =
+            thread::spawn(move || serve_once(&mut server, &handshake, &mut websocket_app, 4096));
+
+        read_handshake(&mut client);
+        acknowledge_drain(&mut control_app);
+        std::io::Write::write_all(&mut client, &masked(Opcode::Ping, b"control")).unwrap();
+        assert_going_away_close(&mut client);
+        worker.join().unwrap().unwrap();
+        assert_eq!(commits.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn drain_ack_closes_idle_websocket_at_read_deadline() {
+        let (mut websocket_app, mut control_app, commits) = shared_connection_apps();
+        let (mut client, mut server) = socket_pair(Duration::from_secs(1));
+        let handshake = request("dGhlIHNhbXBsZSBub25jZQ==", JSON_SUBPROTOCOL, "13");
+        let worker =
+            thread::spawn(move || serve_once(&mut server, &handshake, &mut websocket_app, 4096));
+
+        read_handshake(&mut client);
+        acknowledge_drain(&mut control_app);
+        assert_going_away_close(&mut client);
+        worker.join().unwrap().unwrap();
+        assert_eq!(commits.load(AtomicOrdering::SeqCst), 0);
     }
 
     #[test]

@@ -26,6 +26,12 @@ pub struct OutboxLease {
     pub lease_expires_at_ms: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutboxClaimBatch {
+    pub leases: Vec<OutboxLease>,
+    pub reaped_dead_letters: usize,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutboxRetryOutcome {
     Pending {
@@ -47,6 +53,18 @@ impl PgRepository {
         max_attempts: u32,
         limit: usize,
     ) -> Result<Vec<OutboxLease>, DomainError> {
+        self.claim_outbox_batch(owner, now_ms, lease_duration_ms, max_attempts, limit)
+            .map(|batch| batch.leases)
+    }
+
+    pub fn claim_outbox_batch(
+        &mut self,
+        owner: NodeId,
+        now_ms: u64,
+        lease_duration_ms: u64,
+        max_attempts: u32,
+        limit: usize,
+    ) -> Result<OutboxClaimBatch, DomainError> {
         validate_claim(owner, lease_duration_ms, max_attempts, limit)?;
         let lease_expires_at_ms = now_ms
             .checked_add(lease_duration_ms)
@@ -65,7 +83,8 @@ impl PgRepository {
         // acknowledging or retrying it. Such a row is no longer claimable
         // because attempt == max_attempts. Reap only expired, exhausted leases
         // in this same bounded serializable unit before selecting fresh work.
-        reap_expired_exhausted(&mut transaction, now_ms_i64, max_attempts_i64, limit)?;
+        let reaped_dead_letters =
+            reap_expired_exhausted(&mut transaction, now_ms_i64, max_attempts_i64, limit)?;
 
         let mut leases = Vec::with_capacity(limit);
         for _ in 0..limit {
@@ -146,7 +165,10 @@ impl PgRepository {
             });
         }
         transaction.commit().map_err(map_postgres_error)?;
-        Ok(leases)
+        Ok(OutboxClaimBatch {
+            leases,
+            reaped_dead_letters,
+        })
     }
 
     pub fn complete_outbox(
@@ -455,6 +477,17 @@ mod tests {
                 0x54, 0x1b, 0xe2, 0x5a,
             ]
         );
+    }
+
+    #[test]
+    fn claim_batch_preserves_reaper_count_and_leases() {
+        let value = lease();
+        let batch = OutboxClaimBatch {
+            leases: vec![value],
+            reaped_dead_letters: 2,
+        };
+        assert_eq!(batch.leases, vec![value]);
+        assert_eq!(batch.reaped_dead_letters, 2);
     }
 
     #[test]

@@ -44,6 +44,8 @@ REQUIRED_TESTS = {
     "health_ready_bootstrap_and_commit_form_one_in_process_vertical_slice",
     "internal_domain_reason_is_never_exposed",
     "authenticated_drain_stops_new_mutations",
+    "shared_drain_fences_new_mutations_across_app_instances",
+    "admitted_mutation_can_complete_after_drain_begins",
     "unauthenticated_mutations_fail_closed",
     "admin_token_comparison_rejects_a_256_byte_length_delta",
     "safe_immediate_failure_is_retried_within_attempt_budget",
@@ -79,10 +81,16 @@ REQUIRED_TESTS = {
     "message_budget_is_nonzero_and_hard_bounded",
     "shared_codec_rejects_encoding_mismatch",
     "websocket_subprotocols_are_case_sensitive_and_echo_exact_offer",
+    "duplicate_websocket_subprotocol_offers_fail_closed",
+    "drain_ack_on_second_worker_fences_existing_websocket_mutation",
+    "drain_ack_closes_control_only_websocket",
+    "drain_ack_closes_idle_websocket_at_read_deadline",
     "grpc_bind_is_optional_distinct_and_public_bind_requires_opt_in",
     "official_healthcheck_method_path_is_exact",
     "generated_service_returns_an_empty_response",
     "generated_client_reaches_the_http2_healthcheck_path",
+    "grpc_worker_returned_error_signals_shared_failure_fence",
+    "grpc_worker_panic_signals_shared_failure_fence",
     "unmasked_fragmented_and_oversized_frames_are_rejected",
     "server_text_and_close_frames_are_unmasked_and_canonical",
     "sha1_and_base64_helpers_match_known_vectors",
@@ -225,6 +233,8 @@ def main() -> int:
             "NakamaServer::new",
             "serve_with_shutdown",
             "worker_failed.store(true",
+            "catch_unwind",
+            "draining.begin()",
         ],
         "crates/trnm-persistence-pg/src/bin/trnm_server/http.rs": [
             "http_transfer_encoding_not_supported",
@@ -248,6 +258,11 @@ def main() -> int:
             "if !self.authorized(request)",
             "trnm_server_database_pool_acquire_failures_total",
             "trnm_server_database_retry_exhausted_total",
+            "pub(crate) struct SharedDrain",
+            "try_admit",
+            "admit_realtime_dispatch",
+            "handle_admitted",
+            "is_mutating_request",
         ],
         "crates/trnm-persistence-pg/src/bin/trnm_server/session_api.rs": [
             "pub struct SessionApi",
@@ -279,6 +294,8 @@ def main() -> int:
             "Opcode::Ping",
             "Opcode::Pong",
             'Request::new("POST", "/v1/authority/commit"',
+            "BTreeSet",
+            "app.should_stop()",
         ],
         "crates/trnm-persistence-pg/src/bin/trnm_server/server.rs": [
             "RetryingRepository::new",
@@ -289,6 +306,7 @@ def main() -> int:
             "websocket::serve_once",
             "grpc::spawn",
             "grpc::join",
+            "with_shared_state",
         ],
     }
     for relative, markers in required_markers.items():
@@ -302,8 +320,8 @@ def main() -> int:
     if missing_tests:
         fail(f"missing tests: {missing_tests}")
     test_count = combined.count("#[test]")
-    if test_count < 58:
-        fail(f"expected at least 58 server/session/pool/websocket/grpc source tests, got {test_count}")
+    if test_count < 66:
+        fail(f"expected at least 66 server/session/pool/websocket/grpc source tests, got {test_count}")
 
     workflow = (
         ROOT / ".github/workflows/trillionnium-game-merge-gate.yml"
