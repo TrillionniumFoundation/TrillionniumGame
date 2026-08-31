@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch the shared App drain fence and de-duplicate the reviewed payload call."""
+"""Patch the shared App drain fence and de-duplicate the reviewed payload calls."""
 from __future__ import annotations
 
 import ast
@@ -117,10 +117,10 @@ replace_once(
     "server app shared drain wiring",
 )
 
-# The reviewed source payload also contains the same App-drain transformation.
-# Verify its immutable digest, find the unique function containing the fail-closed
-# App markers, and remove only the call to that function. The function definition
-# remains in the temporary source for auditability; every other repair is unchanged.
+# The reviewed source payload also contains the same App-drain transformation
+# and the same one-line server constructor wiring. Verify its immutable digest,
+# then remove only those two duplicate calls through its Python AST. Every other
+# ordinary-source repair remains byte-for-byte represented by the payload logic.
 patcher = ROOT / "scripts/temporary-close-pr57-review-blockers.py"
 wrapper = patcher.read_text(encoding="utf-8")
 match = re.search(
@@ -139,10 +139,7 @@ if actual_digest != expected_digest:
     )
 source = payload.decode("utf-8")
 tree = ast.parse(source, filename=str(patcher))
-markers = (
-    "app shared drain field",
-    "app private drain state remains after shared-state patch",
-)
+app_marker = "app shared drain field"
 app_patch_functions: set[str] = set()
 for node in tree.body:
     if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -152,7 +149,7 @@ for node in tree.body:
         for child in ast.walk(node)
         if isinstance(child, ast.Constant) and isinstance(child.value, str)
     }
-    if any(any(marker in value for value in constants) for marker in markers):
+    if any(app_marker in value for value in constants):
         app_patch_functions.add(node.name)
 if len(app_patch_functions) != 1:
     raise SystemExit(
@@ -161,42 +158,70 @@ if len(app_patch_functions) != 1:
     )
 
 
-class RemoveDuplicateAppPatchCall(ast.NodeTransformer):
-    def __init__(self, names: set[str]) -> None:
-        self.names = names
-        self.removed = 0
+class RemoveDuplicateDrainCalls(ast.NodeTransformer):
+    def __init__(self, app_names: set[str]) -> None:
+        self.app_names = app_names
+        self.removed_app_call = 0
+        self.removed_server_state_call = 0
 
     def visit_Expr(self, node: ast.Expr) -> ast.AST | None:
         node = self.generic_visit(node)
-        if (
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, ast.Name)
-            and node.value.func.id in self.names
-        ):
-            self.removed += 1
+        if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+            return node
+        call = node.value
+        if isinstance(call.func, ast.Name) and call.func.id in self.app_names:
+            self.removed_app_call += 1
             return None
+        if isinstance(call.func, ast.Name) and call.func.id == "replace_once":
+            labels = {
+                child.value
+                for child in ast.walk(call)
+                if isinstance(child, ast.Constant) and isinstance(child.value, str)
+            }
+            if "server app shared state" in labels:
+                self.removed_server_state_call += 1
+                return None
         return node
 
 
-transformer = RemoveDuplicateAppPatchCall(app_patch_functions)
+transformer = RemoveDuplicateDrainCalls(app_patch_functions)
 transformed = transformer.visit(tree)
 ast.fix_missing_locations(transformed)
-if transformer.removed != 1:
+if transformer.removed_app_call != 1:
     raise SystemExit(
-        f"expected one reviewed App patch call, removed {transformer.removed}"
+        f"expected one reviewed App patch call, removed {transformer.removed_app_call}"
     )
-remaining_calls = [
+if transformer.removed_server_state_call != 1:
+    raise SystemExit(
+        "expected one reviewed server App-state replacement, removed "
+        f"{transformer.removed_server_state_call}"
+    )
+remaining_app_calls = [
     node
     for node in ast.walk(transformed)
     if isinstance(node, ast.Call)
     and isinstance(node.func, ast.Name)
     and node.func.id in app_patch_functions
 ]
-if remaining_calls:
+if remaining_app_calls:
     raise SystemExit("reviewed App patch call remains after AST de-duplication")
+remaining_server_state_calls = [
+    node
+    for node in ast.walk(transformed)
+    if isinstance(node, ast.Call)
+    and isinstance(node.func, ast.Name)
+    and node.func.id == "replace_once"
+    and any(
+        isinstance(child, ast.Constant)
+        and child.value == "server app shared state"
+        for child in ast.walk(node)
+    )
+]
+if remaining_server_state_calls:
+    raise SystemExit("reviewed server App-state replacement remains after AST de-duplication")
 patcher.write_text(ast.unparse(transformed) + "\n", encoding="utf-8")
 print(
-    "process-shared App drain fence patched; de-duplicated reviewed payload call "
+    "process-shared App drain fence patched; de-duplicated reviewed payload calls "
     + next(iter(app_patch_functions))
+    + " and server app shared state"
 )
