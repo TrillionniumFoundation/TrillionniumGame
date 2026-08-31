@@ -1,0 +1,289 @@
+name: tmp-world-plan-v4-development-transfer
+
+on:
+  push:
+    branches:
+      - tmp/world-plan-v4-development-transfer-20260831
+    paths:
+      - .github/workflows/tmp-world-plan-v4-development-transfer.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-world-plan-v4-development-transfer-20260831
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  RUST_TEST_THREADS: "1"
+  RUST_TOOLCHAIN: "1.98.0"
+  WORLD_HEAD: "5605cfb8861aa923f69ff032ddbff7d035bccb0c"
+  CONTROL_HEAD: "3246b87b0ea349e691f38355f86567cb8c793ba2"
+
+jobs:
+  materialize-test-export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: postgres:16.10@sha256:1d288494853e244e7a78d87b3526e650e5221c622f9768ecac9313d0874a9c39
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: trnm_world_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d trnm_world_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trnm_world_ci
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trnm_world_ci
+      TRNM_SETTLEMENT_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trnm_world_ci
+      TRNM_REQUIRE_SETTLEMENT_DATABASE_TEST: "1"
+    steps:
+      - name: Checkout transfer branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Checkout immutable transfer controls
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: TrillionniumFoundation/Trillionnium-Chain
+          ref: ${{ env.CONTROL_HEAD }}
+          path: control
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout immutable World candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: TrillionniumFoundation/Trillionnium-World
+          ref: ${{ env.WORLD_HEAD }}
+          path: world
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${RUST_TOOLCHAIN}"
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Bind reviewed source and control identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C control rev-parse HEAD)" = "${CONTROL_HEAD}"
+          test "$(git -C world rev-parse HEAD)" = "${WORLD_HEAD}"
+          test "$(git -C world hash-object trillionnium/crates/trnm-game-server/build.rs)" = "abc8d4228123e13a3dc5e3e154467a7d2b67e2ee"
+          test "$(git -C world hash-object trillionnium/crates/trnm-game-server/src/lib.rs)" = "f5b2d91ae359d86fd259dc1b170982b8a0960d13"
+          test "$(git -C world hash-object trillionnium/crates/trnm-game-server/src/lib.rs.in)" = "8882f47db55ca5993329594901c828c6faf325a8"
+          test "$(git -C world hash-object trillionnium/crates/trnm-game-server/Cargo.toml)" = "d27f7eb6a06bc3b8ceb13e31edacc72d3f58262f"
+          git -C world apply --check "$GITHUB_WORKSPACE/control/tmp/world-plan-v4-development-transfer/world-campaign-atomicity.patch"
+          git -C world apply --check "$GITHUB_WORKSPACE/control/tmp/world-plan-v4-development-transfer/world-rts-atomicity.patch"
+
+      - name: Materialize ordinary game-server source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --manifest-path world/trillionnium/Cargo.toml --locked -p trnm-game-server --lib
+          generated="$(find world/trillionnium/target -type f -path '*/out/trnm_game_server_lib_generated.rs' -print | head -n 1)"
+          test -n "${generated}"
+          test -s "${generated}"
+          cp "${generated}" /tmp/trnm_game_server_lib_generated.rs
+          python3 - <<'PY'
+          from pathlib import Path
+
+          crate = Path("world/trillionnium/crates/trnm-game-server")
+          wrapper_path = crate / "src/lib.rs"
+          wrapper = wrapper_path.read_text(encoding="utf-8")
+          marker = "// The full reviewed server body is generated from src/lib.rs.in by build.rs."
+          if wrapper.count(marker) != 1:
+              raise SystemExit("reviewed wrapper marker drifted")
+          header = wrapper.split(marker, 1)[0].rstrip()
+          generated = Path("/tmp/trnm_game_server_lib_generated.rs").read_text(encoding="utf-8")
+          if "trnm_game_server_lib_generated.rs" in generated or "include!(concat!(" in generated:
+              raise SystemExit("generated body retained recursive generated-source authority")
+          wrapper_path.write_text(f"{header}\n\n{generated.lstrip()}", encoding="utf-8")
+
+          manifest = crate / "Cargo.toml"
+          cargo = manifest.read_text(encoding="utf-8")
+          build_line = 'build = "build.rs"\n'
+          if cargo.count(build_line) != 1:
+              raise SystemExit("build declaration drifted")
+          manifest.write_text(cargo.replace(build_line, "", 1), encoding="utf-8")
+
+          cex_path = crate / "src/cex.rs"
+          cex = cex_path.read_text(encoding="utf-8")
+          old = (
+              '            let host = url.host_str().unwrap_or_default();\n'
+              '            let loopback = host.eq_ignore_ascii_case("localhost")\n'
+              '                || host\n'
+              '                    .parse::<IpAddr>()\n'
+              '                    .is_ok_and(|address| address.is_loopback());\n'
+          )
+          new = (
+              '            let host = url.host_str().unwrap_or_default();\n'
+              "            let canonical_host = host.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.');\n"
+              '            let loopback = canonical_host.eq_ignore_ascii_case("localhost")\n'
+              '                || canonical_host\n'
+              '                    .parse::<IpAddr>()\n'
+              '                    .is_ok_and(|address| address.is_loopback());\n'
+          )
+          if cex.count(old) == 1:
+              cex_path.write_text(cex.replace(old, new, 1), encoding="utf-8")
+          elif new not in cex:
+              raise SystemExit("localhost normalization source shape drifted")
+
+          toolchain = Path("world/rust-toolchain.toml")
+          toolchain_text = toolchain.read_text(encoding="utf-8")
+          if 'channel = "stable"' in toolchain_text:
+              toolchain.write_text(toolchain_text.replace('channel = "stable"', 'channel = "1.98.0"', 1), encoding="utf-8")
+          elif 'channel = "1.98.0"' not in toolchain_text:
+              raise SystemExit("Rust toolchain source shape drifted")
+
+          for obsolete in (crate / "build.rs", crate / "src/lib.rs.in"):
+              if not obsolete.is_file():
+                  raise SystemExit(f"missing obsolete source: {obsolete}")
+              obsolete.unlink()
+          PY
+          test ! -e world/trillionnium/crates/trnm-game-server/build.rs
+          test ! -e world/trillionnium/crates/trnm-game-server/src/lib.rs.in
+          ! grep -q '^build = "build.rs"$' world/trillionnium/crates/trnm-game-server/Cargo.toml
+          ! grep -q 'trnm_game_server_lib_generated.rs' world/trillionnium/crates/trnm-game-server/src/lib.rs
+          ! grep -q 'reconcile_economy(&state.cex' world/trillionnium/crates/trnm-game-server/src/lib.rs
+          ! grep -q 'settle_pending_matches(&settlement_state' world/trillionnium/crates/trnm-game-server/src/lib.rs
+          grep -q 'terminal settlement is owned by trnm-settlement-worker' world/trillionnium/crates/trnm-game-server/src/lib.rs
+          grep -q 'channel = "1.98.0"' world/rust-toolchain.toml
+
+      - name: Apply state-preservation patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C world apply "$GITHUB_WORKSPACE/control/tmp/world-plan-v4-development-transfer/world-campaign-atomicity.patch"
+          git -C world apply "$GITHUB_WORKSPACE/control/tmp/world-plan-v4-development-transfer/world-rts-atomicity.patch"
+          cargo fmt --manifest-path world/trillionnium/Cargo.toml --all
+
+      - name: Validate unpartitioned behavioral boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash world/scripts/check-trnm-settlement-transaction-boundary.sh
+          bash world/scripts/check_trnm_settlement_transaction_boundary.sh
+          cargo test --manifest-path world/trillionnium/Cargo.toml --locked -p trnm-campaign-core --lib
+          cargo test --manifest-path world/trillionnium/Cargo.toml --locked -p trnm-rts-sim --lib
+
+      - name: Partition directly reviewed Rust sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          partition="$GITHUB_WORKSPACE/control/tmp/world-plan-v4-development-transfer/partition-large-rust.py"
+          python3 "$partition" world game-server
+          python3 "$partition" world campaign
+          python3 "$partition" world rts
+          for crate in trnm-game-server trnm-campaign-core trnm-rts-sim; do
+            test -f "world/trillionnium/crates/${crate}/src/lib_parts/manifest.json"
+          done
+          ! grep -R -q 'trnm_game_server_lib_generated.rs' \
+            world/trillionnium/crates/trnm-game-server/src/lib.rs \
+            world/trillionnium/crates/trnm-game-server/src/lib_parts
+          git -C world diff --check
+
+      - name: Run post-partition exact source gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path world/trillionnium/Cargo.toml --all -- --check
+          cargo test --manifest-path world/trillionnium/Cargo.toml --locked -p trnm-campaign-core --lib
+          cargo test --manifest-path world/trillionnium/Cargo.toml --locked -p trnm-rts-sim --lib
+          cargo check --manifest-path world/trillionnium/Cargo.toml --locked -p trnm-game-server --all-targets
+          cargo clippy --manifest-path world/trillionnium/Cargo.toml --locked -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server --all-targets -- -D warnings
+          if test -f world/trillionnium/crates/trnm-game-server/tests/settlement_postgres.rs; then
+            cargo test --manifest-path world/trillionnium/Cargo.toml --locked -p trnm-game-server --test settlement_postgres -- --nocapture
+          fi
+          git -C world diff --check
+
+      - name: Export tested source and transfer encoding
+        shell: bash
+        run: |
+          set -euo pipefail
+          export_root="transfer/world"
+          encoded_root="transfer/world-base64"
+          rm -rf "$export_root" "$encoded_root"
+          mkdir -p "$export_root" "$encoded_root"
+          copy_path() {
+            local relative="$1"
+            mkdir -p "$export_root/$(dirname "$relative")"
+            cp -a "world/$relative" "$export_root/$relative"
+          }
+          copy_path rust-toolchain.toml
+          copy_path trillionnium/crates/trnm-game-server/Cargo.toml
+          copy_path trillionnium/crates/trnm-game-server/src/lib.rs
+          copy_path trillionnium/crates/trnm-game-server/src/cex.rs
+          copy_path trillionnium/crates/trnm-game-server/src/lib_parts
+          copy_path trillionnium/crates/trnm-campaign-core/src/lib.rs
+          copy_path trillionnium/crates/trnm-campaign-core/src/lib_parts
+          copy_path trillionnium/crates/trnm-rts-sim/src/lib.rs
+          copy_path trillionnium/crates/trnm-rts-sim/src/lib_parts
+          python3 - <<'PY'
+          import base64, hashlib, json, pathlib, subprocess
+          root = pathlib.Path("transfer/world")
+          encoded_root = pathlib.Path("transfer/world-base64")
+          files = []
+          for path in sorted(root.rglob("*")):
+              if not path.is_file():
+                  continue
+              data = path.read_bytes()
+              relative = path.relative_to(root)
+              encoded = encoded_root / (str(relative) + ".b64")
+              encoded.parent.mkdir(parents=True, exist_ok=True)
+              encoded.write_text(base64.b64encode(data).decode("ascii") + "\n", encoding="ascii")
+              files.append({
+                  "path": str(relative),
+                  "bytes": len(data),
+                  "git_blob_sha1": subprocess.check_output(["git", "hash-object", str(path)], text=True).strip(),
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "base64_path": str(encoded.relative_to(encoded_root)),
+              })
+          manifest = {
+              "schema": "trnm_world_plan_v4_development_transfer_v2",
+              "source_world_head": "5605cfb8861aa923f69ff032ddbff7d035bccb0c",
+              "source_world_tree": subprocess.check_output(["git", "-C", "world", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+              "control_head": "3246b87b0ea349e691f38355f86567cb8c793ba2",
+              "rust_toolchain": "1.98.0",
+              "gates": [
+                  "direct-source-materialization",
+                  "campaign-error-state-preservation",
+                  "rts-rejected-command-state-preservation",
+                  "direct-source-partition",
+                  "campaign-core-lib-tests",
+                  "rts-sim-lib-tests",
+                  "game-server-all-target-check",
+                  "strict-clippy",
+                  "settlement-transaction-boundary"
+              ],
+              "files": files,
+          }
+          (root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          manifest_data = (root / "manifest.json").read_bytes()
+          encoded_manifest = encoded_root / "manifest.json.b64"
+          encoded_manifest.write_text(base64.b64encode(manifest_data).decode("ascii") + "\n", encoding="ascii")
+          PY
+          git add transfer/world transfer/world-base64
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "test(world): export exact tested Plan V4 source blobs"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
