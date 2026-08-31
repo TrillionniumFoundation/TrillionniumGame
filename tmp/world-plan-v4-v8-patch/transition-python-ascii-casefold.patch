@@ -1,6 +1,6 @@
 --- a/scripts/check-trnm-world-transition-conformance.py
 +++ b/scripts/check-trnm-world-transition-conformance.py
-@@ -77,13 +77,20 @@ def object_pairs(pairs: list[tuple[str, Any]]) -> CanonicalObject:
+@@ -77,12 +77,19 @@ def object_pairs(pairs: list[tuple[str, Any]]) -> CanonicalObject:
      return CanonicalObject(tuple(pairs))
  
  
