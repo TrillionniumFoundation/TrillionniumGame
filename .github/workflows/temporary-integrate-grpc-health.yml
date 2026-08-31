@@ -69,17 +69,24 @@ jobs:
           python3 scripts/check-trnm-server.py
           git diff --check
 
-      - name: Commit stable self-cleaned source
+      - name: Commit stable source without workflow mutation
         shell: bash
         env:
           TARGET_BRANCH: codex/grpc-healthcheck-source-2026-08-31
         run: |
           set -euo pipefail
+          # The default Actions token cannot update workflow files. Restore both
+          # workflow paths into the source-only commit; the connected GitHub App
+          # performs the reviewed atomic workflow update/deletion immediately after.
+          git checkout HEAD -- \
+            .github/workflows/grpc-health-source.yml \
+            .github/workflows/temporary-integrate-grpc-health.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
           git diff --cached --check
           test -n "$(git diff --cached --name-only)"
-          test -z "$(git ls-files | grep -E '(^|/)(temporary-|temp-)' || true)"
+          test ! -e scripts/temporary-integrate-grpc-health.py
+          test -z "$(git ls-files | grep -E '^scripts/(temporary-|\.temporary-|temp-)' || true)"
           git commit -m 'feat(server): integrate gRPC health and harden WebSocket negotiation'
           git push origin "HEAD:${TARGET_BRANCH}"
