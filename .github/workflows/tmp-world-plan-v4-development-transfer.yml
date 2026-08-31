@@ -61,5 +61,30 @@ jobs:
 
           git -C "$GITHUB_WORKSPACE/world" add -A
           candidate_tree="$(git -C "$GITHUB_WORKSPACE/world" write-tree)"
+          test "$candidate_tree" = 5e613185f5a2abda42df371f3755e73667717309
           printf 'qualified_candidate_tree=%s\n' "$candidate_tree"
           printf 'TRNM_WORLD_V13K_HASH_MANIFEST=PASS\n'
+
+      # The organization policy rejects reusable-action invocation before job
+      # scheduling. Execute GitHub's own upload-artifact v4.6.2 bundle directly,
+      # pinned by both repository commit and Git blob identity. This step only
+      # exports immutable evidence; it has no World source write credentials.
+      - name: Upload immutable World v13k candidate evidence
+        shell: bash
+        env:
+          INPUT_NAME: world-v13k-source-candidate-${{ github.sha }}
+          INPUT_PATH: ${{ github.workspace }}/export
+          'INPUT_IF-NO-FILES-FOUND': error
+          INPUT_OVERWRITE: "false"
+          'INPUT_INCLUDE-HIDDEN-FILES': "false"
+          'INPUT_RETENTION-DAYS': "30"
+          'INPUT_COMPRESSION-LEVEL': "9"
+        run: |
+          set -euo pipefail
+          uploader="$RUNNER_TEMP/trnm-upload-artifact-v4.6.2.js"
+          curl --proto '=https' --tlsv1.2 --fail --location --retry 5 \
+            "https://raw.githubusercontent.com/actions/upload-artifact/ea165f8d65b6e75b540449e92b4886f43607fa02/dist/upload/index.js" \
+            --output "$uploader"
+          test "$(git hash-object "$uploader")" = 89238fa3eb49937ea82c5d82006ee1fc6c6abaae
+          node "$uploader"
+          printf 'TRNM_WORLD_V13K_IMMUTABLE_ARTIFACT=PASS\n'
