@@ -43,6 +43,19 @@ jobs:
           set -euo pipefail
           python3 scripts/temporary-dedupe-server-shared-state.py
           python3 scripts/temporary-close-pr57-review-blockers.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/trnm-persistence-pg/src/bin/trnm_server/app.rs')
+          text = path.read_text(encoding='utf-8')
+          old = "    #[must_use]\n    pub(crate) fn with_shared_metrics(\n"
+          new = "    #[cfg(test)]\n    #[must_use]\n    pub(crate) fn with_shared_metrics(\n"
+          if text.count(old) != 1:
+              raise SystemExit(
+                  f'test-only shared metrics constructor: expected one match, got {text.count(old)}'
+              )
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
           python3 scripts/temporary-close-pr57-outbox-evidence.py
           rm \
             .github/workflows/temporary-close-pr57-review-blockers.yml \
