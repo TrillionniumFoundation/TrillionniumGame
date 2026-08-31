@@ -59,6 +59,7 @@ EXPECTED_DEPENDENCIES: dict[str, dict[str, Any]] = {
         "r2d2": "=0.8.10",
         "r2d2_postgres": "=0.18.2",
         "trnm-contracts": {"path": "../trnm-contracts"},
+        "trnm-realtime-wire": {"path": "../trnm-realtime-wire"},
         "trnm-session-core": {"path": "../trnm-session-core"},
         "trnm-token-jwt-adapter": {"path": "../trnm-token-jwt-adapter"},
     },
