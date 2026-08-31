@@ -95,10 +95,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/check-trnm-server.py
-          python3 scripts/check-workflow-actions.py
+          python3 scripts/check-workflow-action-policy.py
           python3 scripts/check-plan.py
           python3 scripts/check-source-candidate-boundaries.py
-          python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
           cargo fmt --all -- --check
           cargo test --workspace --all-targets --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
