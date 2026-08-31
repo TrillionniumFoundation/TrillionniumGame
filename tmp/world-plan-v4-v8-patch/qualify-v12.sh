@@ -25,7 +25,7 @@ replacements = [
     (
         'test "$(sha256sum "$database_warning_patch" | awk \'{print $1}\')" = 04a0e13df8aec6d96d1693352a64ff095c0e5e0fab8e13afedcfaf2b9503873a\n',
         'test "$(sha256sum "$database_warning_patch" | awk \'{print $1}\')" = 04a0e13df8aec6d96d1693352a64ff095c0e5e0fab8e13afedcfaf2b9503873a\n'
-        'test "$(git hash-object "$clippy_boundaries_patch")" = d18c90e7d0fab6ce8a3e182abe6974fe09d277c2\n',
+        'test "$(git hash-object "$clippy_boundaries_patch")" = 5e81d8a91b61e7118c9756bcf012c0091afe1621\n',
     ),
     (
         'git -C "$world" apply --check "$database_warning_patch"\n',
@@ -44,7 +44,7 @@ replacements = [
     (
         "  'database_warning_patch_sha256=04a0e13df8aec6d96d1693352a64ff095c0e5e0fab8e13afedcfaf2b9503873a' \\\n",
         "  'database_warning_patch_sha256=04a0e13df8aec6d96d1693352a64ff095c0e5e0fab8e13afedcfaf2b9503873a' \\\n"
-        "  'clippy_boundaries_blob_sha1=d18c90e7d0fab6ce8a3e182abe6974fe09d277c2' \\\n",
+        "  'clippy_boundaries_blob_sha1=5e81d8a91b61e7118c9756bcf012c0091afe1621' \\\n",
     ),
     (
         'TRNM_WORLD_V11_CORE_QUALIFICATION=PASS',
