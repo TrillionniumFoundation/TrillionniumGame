@@ -9,13 +9,19 @@ crate="$world/trillionnium/crates/trnm-game-server"
 campaign_patch=/tmp/campaign-effective.patch
 rts_patch=/tmp/rts-effective.patch
 direct_contract_patch=/tmp/direct-source-contracts.patch
+direct_boundary_patch=/tmp/direct-source-boundary.patch
+database_warning_patch=/tmp/settlement-database-warning.patch
 
 cat "$control"/tmp/world-plan-v4-v8-patch/campaign.*.patchpart > /tmp/campaign-raw.patch
 cat "$control"/tmp/world-plan-v4-v8-patch/rts.*.patchpart > /tmp/rts-raw.patch
 cp "$control"/tmp/world-plan-v4-v8-patch/direct-source-contracts.patch "$direct_contract_patch"
+cp "$control"/tmp/world-plan-v4-v8-patch/direct-source-boundary.patch "$direct_boundary_patch"
+cp "$control"/tmp/world-plan-v4-v8-patch/settlement-database-warning.patch "$database_warning_patch"
 test "$(sha256sum /tmp/campaign-raw.patch | awk '{print $1}')" = e936d2b440ae4e76ef800b9a007a11bcda683942d1cdd0431ac25de92197a809
 test "$(sha256sum /tmp/rts-raw.patch | awk '{print $1}')" = ef6ffc3b163a0258aa64791059a16c8b386184f7ef7beddfdd4e2511233e9935
 test "$(sha256sum "$direct_contract_patch" | awk '{print $1}')" = 42b35779435806502fc1c4ce7922f5674ea4d8a9526e625c2f64f962162e8d16
+test "$(sha256sum "$direct_boundary_patch" | awk '{print $1}')" = 461b8305dfd25af595d9d994f25c3ae23e642c2a9f25c9443b47a6b130028ccf
+test "$(sha256sum "$database_warning_patch" | awk '{print $1}')" = 04a0e13df8aec6d96d1693352a64ff095c0e5e0fab8e13afedcfaf2b9503873a
 
 python3 - <<'PY'
 from pathlib import Path
@@ -40,6 +46,8 @@ test "$(git -C "$world" rev-parse HEAD)" = 5605cfb8861aa923f69ff032ddbff7d035bcc
 git -C "$world" apply --check "$campaign_patch"
 git -C "$world" apply --check "$rts_patch"
 git -C "$world" apply --check "$direct_contract_patch"
+git -C "$world" apply --check "$direct_boundary_patch"
+git -C "$world" apply --check "$database_warning_patch"
 
 # Execute the reviewed build transform once, then materialize its output as
 # ordinary source and permanently remove the semantic template authority.
@@ -117,6 +125,8 @@ PY
 git -C "$world" apply "$campaign_patch"
 git -C "$world" apply "$rts_patch"
 git -C "$world" apply "$direct_contract_patch"
+git -C "$world" apply "$direct_boundary_patch"
+git -C "$world" apply "$database_warning_patch"
 cargo fmt --manifest-path "$manifest" --all
 cargo fmt --manifest-path "$manifest" --all -- --check
 
@@ -137,7 +147,7 @@ cargo clippy --manifest-path "$manifest" --locked -p trnm-campaign-core -p trnm-
 
 rm -rf "$export_root"
 mkdir -p "$export_root"
-git -C "$world" diff --binary > "$export_root/world-v10-source.patch"
+git -C "$world" diff --binary > "$export_root/world-v11-source.patch"
 printf '%s\n' \
   'world_source_head=5605cfb8861aa923f69ff032ddbff7d035bccb0c' \
   "qualification_head=${GITHUB_SHA:-local}" \
@@ -145,6 +155,8 @@ printf '%s\n' \
   'campaign_effective_sha256=703b7bc59b9df7eb4a2fae4ac55b0fa3513d511a3b995a1272ddbb253697e77e' \
   'rts_effective_sha256=7c70a2cdc8e417d04d3b80100fbc219fddbb6a06a65f295aabf6f2be91a5cfeb' \
   'direct_contract_patch_sha256=42b35779435806502fc1c4ce7922f5674ea4d8a9526e625c2f64f962162e8d16' \
+  'direct_boundary_patch_sha256=461b8305dfd25af595d9d994f25c3ae23e642c2a9f25c9443b47a6b130028ccf' \
+  'database_warning_patch_sha256=04a0e13df8aec6d96d1693352a64ff095c0e5e0fab8e13afedcfaf2b9503873a' \
   > "$export_root/identity.txt"
 find "$export_root" -type f -print0 | sort -z | xargs -0 sha256sum > "$export_root/SHA256SUMS"
-printf 'TRNM_WORLD_V10_CORE_QUALIFICATION=PASS\n'
+printf 'TRNM_WORLD_V11_CORE_QUALIFICATION=PASS\n'
