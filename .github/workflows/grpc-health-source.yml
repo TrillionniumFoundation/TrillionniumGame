@@ -58,15 +58,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$CANDIDATE_REPOSITORY"
-          test -n "$CANDIDATE_SHA"
-          rm -rf "$GITHUB_WORKSPACE"
-          git init "$GITHUB_WORKSPACE"
-          git -C "$GITHUB_WORKSPACE" remote add origin \
+          test -n "${CANDIDATE_REPOSITORY}"
+          test -n "${CANDIDATE_SHA}"
+          rm -rf "${GITHUB_WORKSPACE}"
+          git init "${GITHUB_WORKSPACE}"
+          git -C "${GITHUB_WORKSPACE}" remote add origin \
             "https://github.com/${CANDIDATE_REPOSITORY}.git"
-          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$CANDIDATE_SHA"
-          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git -C "${GITHUB_WORKSPACE}" fetch --no-tags --depth=1 origin \
+            "${CANDIDATE_SHA}"
+          git -C "${GITHUB_WORKSPACE}" checkout --detach FETCH_HEAD
+          test "$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)" = "${CANDIDATE_SHA}"
       - name: Validate pinned upstream and claim boundary
         shell: bash
         run: |
