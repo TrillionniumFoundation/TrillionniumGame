@@ -8,13 +8,17 @@ export_root="${3:-$PWD/export}"
 
 campaign_patch=/tmp/campaign-v8.patch
 rts_patch=/tmp/rts-v8.patch
+online_patch=/tmp/online-e2e-async.patch
 cat "$control"/tmp/world-plan-v4-v8-patch/campaign.*.patchpart > "$campaign_patch"
 cat "$control"/tmp/world-plan-v4-v8-patch/rts.*.patchpart > "$rts_patch"
+cp "$control"/tmp/world-plan-v4-v8-patch/online-e2e-async.patch "$online_patch"
 test "$(sha256sum "$campaign_patch" | awk '{print $1}')" = e936d2b440ae4e76ef800b9a007a11bcda683942d1cdd0431ac25de92197a809
 test "$(sha256sum "$rts_patch" | awk '{print $1}')" = ef6ffc3b163a0258aa64791059a16c8b386184f7ef7beddfdd4e2511233e9935
+test "$(sha256sum "$online_patch" | awk '{print $1}')" = 92836776d386b893ae0bc220f9b8ae27db1166f510a37b98a33be1bc46a9210d
 test "$(git -C "$world" rev-parse HEAD)" = 5605cfb8861aa923f69ff032ddbff7d035bccb0c
 git -C "$world" apply --check "$campaign_patch"
 git -C "$world" apply --check "$rts_patch"
+git -C "$world" apply --check "$online_patch"
 
 cargo check --manifest-path "$manifest" --locked -p trnm-game-server --lib
 generated="$(find "$world/trillionnium/target" -type f -path '*/out/trnm_game_server_lib_generated.rs' -print | head -n 1)"
@@ -84,6 +88,7 @@ PY
 
 git -C "$world" apply "$campaign_patch"
 git -C "$world" apply "$rts_patch"
+git -C "$world" apply "$online_patch"
 cargo fmt --manifest-path "$manifest" --all
 cargo fmt --manifest-path "$manifest" --all -- --check
 
@@ -93,6 +98,7 @@ test ! -e "$world/trillionnium/crates/trnm-game-server/src/lib.rs.in"
 ! grep -q 'trnm_game_server_lib_generated.rs' "$world/trillionnium/crates/trnm-game-server/src/lib.rs"
 ! grep -q 'settle_pending_matches(&settlement_state' "$world/trillionnium/crates/trnm-game-server/src/lib.rs"
 ! grep -q 'reconcile_economy(&state.cex' "$world/trillionnium/crates/trnm-game-server/src/lib.rs"
+! grep -R -q 'reqwest::blocking' "$world/trillionnium/crates/trnm-game-server/src"
 grep -q 'terminal settlement is owned by trnm-settlement-worker' "$world/trillionnium/crates/trnm-game-server/src/lib.rs"
 git -C "$world" diff --check
 
@@ -103,13 +109,14 @@ cargo clippy --manifest-path "$manifest" --locked -p trnm-campaign-core -p trnm-
 cargo clippy --manifest-path "$manifest" --locked -p trnm-game-server --lib --bins -- -D warnings
 
 rm -rf "$export_root"
-mkdir -p "$export_root/world/trillionnium/crates/trnm-game-server/src"
+mkdir -p "$export_root/world/trillionnium/crates/trnm-game-server/src/bin"
 mkdir -p "$export_root/world/trillionnium/crates/trnm-campaign-core/src"
 mkdir -p "$export_root/world/trillionnium/crates/trnm-rts-sim/src"
 cp "$world/rust-toolchain.toml" "$export_root/world/rust-toolchain.toml"
 cp "$world/trillionnium/crates/trnm-game-server/Cargo.toml" "$export_root/world/trillionnium/crates/trnm-game-server/Cargo.toml"
 cp "$world/trillionnium/crates/trnm-game-server/src/lib.rs" "$export_root/world/trillionnium/crates/trnm-game-server/src/lib.rs"
 cp "$world/trillionnium/crates/trnm-game-server/src/cex.rs" "$export_root/world/trillionnium/crates/trnm-game-server/src/cex.rs"
+cp "$world/trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs" "$export_root/world/trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs"
 cp "$world/trillionnium/crates/trnm-campaign-core/src/lib.rs" "$export_root/world/trillionnium/crates/trnm-campaign-core/src/lib.rs"
 cp "$world/trillionnium/crates/trnm-rts-sim/src/lib.rs" "$export_root/world/trillionnium/crates/trnm-rts-sim/src/lib.rs"
 git -C "$world" diff --binary > "$export_root/world-v8-core.patch"
@@ -119,6 +126,7 @@ printf '%s\n' \
   'rust_toolchain=1.98.0' \
   'campaign_patch_sha256=e936d2b440ae4e76ef800b9a007a11bcda683942d1cdd0431ac25de92197a809' \
   'rts_patch_sha256=ef6ffc3b163a0258aa64791059a16c8b386184f7ef7beddfdd4e2511233e9935' \
+  'online_e2e_patch_sha256=92836776d386b893ae0bc220f9b8ae27db1166f510a37b98a33be1bc46a9210d' \
   > "$export_root/identity.txt"
 find "$export_root" -type f -print0 | sort -z | xargs -0 sha256sum > "$export_root/SHA256SUMS"
 printf 'TRNM_WORLD_V8_CORE_QUALIFICATION=PASS\n'
