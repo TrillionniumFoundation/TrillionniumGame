@@ -45,7 +45,7 @@ compatibility_credit=false
 production_ready=false
 ```
 
-A successful process smoke therefore proves only that this standalone foundation executable starts and serves its narrow source contract. It does not prove a signal-driven graceful shutdown or durable database behavior.
+The fail-closed result therefore keeps `graceful_shutdown_verified=false` explicit. A successful process smoke proves only that this standalone foundation executable starts and serves its narrow source contract; it does not prove a signal-driven graceful shutdown or durable database behavior.
 
 ## Required next integration steps
 
