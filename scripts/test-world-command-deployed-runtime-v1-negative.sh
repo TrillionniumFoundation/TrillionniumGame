@@ -118,8 +118,25 @@ needle = 'envWorldChallengeHash    = "TRNM_WORLD_CHALLENGE_SNAPSHOT_HASH"'
 replacement = 'envWorldChallengeHash    = "TRNM_WORLD_INITIAL_STATE_HASH"'
 if text.count(needle) != 1:
     raise SystemExit("challenge commitment environment binding is no longer canonical")
-path.write_text(text.replace(needle, replacement, 1))
+text = text.replace(needle, replacement, 1)
+text += '\n// Decoy retained deliberately: token presence must not validate the live binding.\n'
+text += 'const decoyWorldChallengeHash = "TRNM_WORLD_CHALLENGE_SNAPSHOT_HASH"\n'
+path.write_text(text)
 PY
-expect_rejected 'challenge snapshot conflated with initial state'
+if ! "$checker" "$work" >/dev/null 2>&1; then
+  printf '%s\n' \
+    'challenge fixture was rejected before the compiled live-binding test; decoy token no longer exercises the intended semantic guard' >&2
+  exit 1
+fi
+if (
+  cd "$work/runtime"
+  go test . \
+    -run '^TestWorldCommandTargetBindingUsesImmutableAuthorizationHashes$' \
+    -count=1 >/dev/null 2>&1
+); then
+  printf '%s\n' \
+    'negative fixture unexpectedly passed: challenge snapshot live binding aliases initial state despite a preserved decoy token' >&2
+  exit 1
+fi
 
 printf '%s\n' 'World command deployed runtime negative fixtures: rejected as expected'

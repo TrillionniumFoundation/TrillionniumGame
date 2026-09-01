@@ -161,7 +161,10 @@ class DocumentationAuthorityTests(unittest.TestCase):
             script = root / "scripts/check.py"
             script.parent.mkdir(parents=True)
             script.write_text('PATH = "docs/legacy.md"\n', encoding="utf-8")
-            with self.assertRaisesRegex(module.ValidationError, "references removed documentation"):
+            with self.assertRaisesRegex(
+                module.ValidationError,
+                "active files reference removed documentation",
+            ):
                 module.validate(root, authority)
 
     def test_active_source_reference_to_removed_doc_is_rejected(self) -> None:
@@ -172,7 +175,10 @@ class DocumentationAuthorityTests(unittest.TestCase):
             source = root / "runtime/current.go"
             source.parent.mkdir(parents=True)
             source.write_text('const guide = "docs/architecture/OLD.md"\n', encoding="utf-8")
-            with self.assertRaisesRegex(module.ValidationError, "references removed documentation"):
+            with self.assertRaisesRegex(
+                module.ValidationError,
+                "active files reference removed documentation",
+            ):
                 module.validate(root, authority)
 
     def test_machine_control_reference_to_removed_doc_is_rejected(self) -> None:
@@ -185,7 +191,10 @@ class DocumentationAuthorityTests(unittest.TestCase):
                 '{"current_guide":"docs/architecture/OLD.md"}\n',
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(module.ValidationError, "references removed documentation"):
+            with self.assertRaisesRegex(
+                module.ValidationError,
+                "active files reference removed documentation",
+            ):
                 module.validate(root, authority)
 
     def test_test_fixture_reference_is_not_an_active_authority(self) -> None:
