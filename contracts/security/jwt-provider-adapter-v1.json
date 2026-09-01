@@ -4,7 +4,7 @@
   "status": "source-candidate",
   "crate": "crates/trnm-token-jwt-provider-adapter",
   "provider_contract": "contracts/security/jwt-crypto-provider-v1.json",
-  "adr": "docs/adr/ADR-0002-JWT-CRYPTO-PROVIDER.md",
+  "adr": "docs/SECURITY_AND_PRIVACY.md",
   "pre_authentication_parsing": [
     "bounded token segmentation",
     "bounded base64url JOSE header",
@@ -35,7 +35,9 @@
     "rotation, revoke, refresh replay and socket disconnect",
     "independent security review"
   ],
-  "gap_ids": ["GAP-P0-CRYPTO-001"],
+  "gap_ids": [
+    "GAP-P0-CRYPTO-001"
+  ],
   "claims": {
     "source_candidate": true,
     "provider_authentication_boundary_exists": true,
