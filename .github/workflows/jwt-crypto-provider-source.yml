@@ -5,14 +5,16 @@ on:
     paths:
       - 'crates/trnm-token-crypto-provider/**'
       - 'contracts/security/jwt-crypto-provider-v1.json'
-      - 'docs/adr/ADR-0002-JWT-CRYPTO-PROVIDER.md'
+      - 'docs/SECURITY_AND_PRIVACY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/jwt-crypto-provider-source.yml'
   push:
     branches: [main]
     paths:
       - 'crates/trnm-token-crypto-provider/**'
       - 'contracts/security/jwt-crypto-provider-v1.json'
-      - 'docs/adr/ADR-0002-JWT-CRYPTO-PROVIDER.md'
+      - 'docs/SECURITY_AND_PRIVACY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/jwt-crypto-provider-source.yml'
   workflow_dispatch:
 
@@ -49,6 +51,8 @@ jobs:
       - name: Validate fail-closed claims
         run: |
           set -euo pipefail
+          grep -q 'Production and compatibility code uses reviewed ecosystem cryptographic libraries' docs/SECURITY_AND_PRIVACY.md
+          grep -q 'The provider-facing adapter and compatibility format adapter remain separate boundaries' docs/SECURITY_AND_PRIVACY.md
           jq -e '
             .status == "interface-source-candidate" and
             .claims.provider_interface_exists == true and

@@ -8,7 +8,9 @@ on:
       - 'scripts/generate-config-cli-denominator.py'
       - 'scripts/check-config-cli-denominator.sh'
       - 'tests/denominator/test_config_cli_denominator.py'
-      - 'docs/development/CONFIG_CLI_DENOMINATOR_IMPLEMENTATION.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/sg1-config-cli-denominator.yml'
   push:
     branches: [main]
@@ -17,7 +19,9 @@ on:
       - 'scripts/generate-config-cli-denominator.py'
       - 'scripts/check-config-cli-denominator.sh'
       - 'tests/denominator/test_config_cli_denominator.py'
-      - 'docs/development/CONFIG_CLI_DENOMINATOR_IMPLEMENTATION.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/sg1-config-cli-denominator.yml'
 
 permissions:
@@ -50,6 +54,11 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+      - name: Validate current denominator contract
+        run: |
+          set -euo pipefail
+          grep -q '`DEN-CONFIG`, `DEN-CLI`' docs/COMPATIBILITY.md
+          grep -q 'Generated bundles, author approval, automation comments and old-head reviews do not satisfy either gate' docs/COMPATIBILITY.md
       - name: Validate extractors and negative fixtures
         run: bash scripts/check-config-cli-denominator.sh
       - name: Fetch and verify exact Nakama source tree

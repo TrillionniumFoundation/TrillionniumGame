@@ -6,7 +6,9 @@ on:
     paths:
       - 'crates/trnm-server/**'
       - 'contracts/server/**'
-      - 'docs/development/RUST_SERVER_VERTICAL_SLICE.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/RUST_SERVER_VERTICAL_SLICE_STATUS.json'
       - 'scripts/check-rust-server-vertical-slice.py'
       - 'tests/server/**'
@@ -17,7 +19,9 @@ on:
     paths:
       - 'crates/trnm-server/**'
       - 'contracts/server/**'
-      - 'docs/development/RUST_SERVER_VERTICAL_SLICE.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/RUST_SERVER_VERTICAL_SLICE_STATUS.json'
       - 'scripts/check-rust-server-vertical-slice.py'
       - 'tests/server/**'

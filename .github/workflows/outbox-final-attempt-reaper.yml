@@ -13,9 +13,10 @@ on:
       - 'tests/control_plane/test_actions_log_artifact.py'
       - 'tests/control_plane/test_actions_log_verifier.py'
       - 'tests/control_plane/test_actions_log_github_adapter.py'
-      - 'docs/development/OUTBOX_FINAL_ATTEMPT_REAPER.md'
-      - 'docs/development/OUTBOX_SPOOL_WORKER.md'
-      - 'docs/development/PERSISTENCE_OUTBOX_CORE.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/OPERATIONS_AND_RELEASE.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/outbox-final-attempt-reaper.yml'
       - '.github/workflows/trillionnium-game-merge-gate.yml'
   push:
@@ -31,9 +32,10 @@ on:
       - 'tests/control_plane/test_actions_log_artifact.py'
       - 'tests/control_plane/test_actions_log_verifier.py'
       - 'tests/control_plane/test_actions_log_github_adapter.py'
-      - 'docs/development/OUTBOX_FINAL_ATTEMPT_REAPER.md'
-      - 'docs/development/OUTBOX_SPOOL_WORKER.md'
-      - 'docs/development/PERSISTENCE_OUTBOX_CORE.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/OPERATIONS_AND_RELEASE.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/outbox-final-attempt-reaper.yml'
       - '.github/workflows/trillionnium-game-merge-gate.yml'
   workflow_dispatch:
@@ -70,6 +72,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          grep -q 'Outbox state is explicit' docs/ARCHITECTURE.md
+          grep -q 'Crash-before-publish and crash-after-publish are separate failure boundaries' docs/OPERATIONS_AND_RELEASE.md
+          grep -q 'Where repository policy disallows external upload actions' docs/TESTING_AND_EVIDENCE.md
           test -x scripts/ci-outbox-final-attempt-reaper.sh
           test -x scripts/emit-actions-log-artifact.py
           test -x scripts/verify-actions-log-artifact.py

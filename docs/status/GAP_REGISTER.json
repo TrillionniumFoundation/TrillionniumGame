@@ -2,7 +2,7 @@
   "schema": "trillionnium.gap-register.v1",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "generated_at": "2026-08-29",
+  "generated_at": "2026-09-01",
   "status_values": [
     "open",
     "ready",
@@ -29,81 +29,145 @@
       "id": "GAP-P0-CI-001",
       "severity": "P0",
       "category": "ci",
-      "title": "Target repository has no non-empty exact-head native Actions evidence",
+      "title": "Exact-head and prospective-merge native Actions evidence must remain complete and accepted",
       "owner_role": "program-governance",
-      "status": "blocked-external-admin",
-      "external_dependency": "GitHub organization/repository Actions enablement, billing/runner and allowed-actions policy",
-      "blocking_claims": ["C0", "C1", "C2", "C3", "C4", "C5", "SG0", "SG1", "SG2", "SG3", "SG4"],
-      "affected_paths": [".github/workflows/**"],
-      "close_criteria": [
-        "a workflow run exists for the exact current pull-request head",
-        "the required aggregate job is non-empty, terminal and successful",
-        "run, job and artifact identities are recorded in evidence",
-        "a skipped, cancelled, absent or older-head collection is rejected"
+      "status": "source-candidate",
+      "external_dependency": null,
+      "blocking_claims": [
+        "C0",
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "SG0",
+        "SG1",
+        "SG2",
+        "SG3",
+        "SG4"
       ],
-      "required_evidence_types": ["manifest", "unit"],
+      "affected_paths": [
+        ".github/workflows/**",
+        "scripts/check-required-workflow-runs.py",
+        "scripts/check-prospective-merge-identity.py"
+      ],
+      "close_criteria": [
+        "one unchanged pull-request source head has a complete non-empty terminal-success native workflow collection",
+        "the exact GitHub prospective merge object has a separate non-empty terminal-success qualification packet",
+        "run, job, merge-parent, tree and retained artifact identities are indexed in evidence",
+        "skipped, cancelled, absent, older-head, zero-job and stale-base collections are rejected",
+        "independent program-governance review accepts the exact evidence packet"
+      ],
+      "required_evidence_types": [
+        "manifest",
+        "unit"
+      ],
       "evidence_ids": [],
-      "issue_refs": ["#7"]
+      "issue_refs": [
+        "#7"
+      ]
     },
     {
       "id": "GAP-P0-GOV-001",
       "severity": "P0",
       "category": "governance",
-      "title": "main is unprotected and required checks/reviews are not enforced",
+      "title": "Main protection is partially active but review, freshness and no-bypass enforcement are not fully accepted",
       "owner_role": "program-governance",
       "status": "blocked-external-admin",
-      "external_dependency": "GitHub ruleset or branch-protection write access",
-      "blocking_claims": ["C0", "C1", "C2", "C3", "C4", "C5", "SG0"],
-      "affected_paths": ["docs/governance/BRANCH_AND_MERGE_POLICY.md", ".github/CODEOWNERS"],
-      "close_criteria": [
-        "direct pushes to main are blocked",
-        "trillionnium-game-merge-gate is required",
-        "latest-head approval invalidation is enabled",
-        "at least one independent review is required",
-        "the repository API is read back and confirms the active policy"
+      "external_dependency": "GitHub branch-protection or ruleset administration plus independently reviewable API/UI read-back",
+      "blocking_claims": [
+        "C0",
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "SG0"
       ],
-      "required_evidence_types": ["manifest"],
+      "affected_paths": [
+        "docs/GOVERNANCE.md",
+        "docs/governance/MAIN_RULESET_DESIRED.json",
+        "docs/governance/REQUIRED_CHECKS.json",
+        ".github/CODEOWNERS"
+      ],
+      "close_criteria": [
+        "direct and force pushes to main are blocked and branch deletion is forbidden",
+        "trillionnium-game-merge-gate is required with strict latest-base freshness",
+        "stale approvals are dismissed and approval of the latest push is required",
+        "at least one independent CODEOWNER review and conversation resolution are enforced",
+        "bypass actors and administrator enforcement are explicitly read back",
+        "a negative pull request cannot merge when a required check or review is absent"
+      ],
+      "required_evidence_types": [
+        "manifest"
+      ],
       "evidence_ids": [],
-      "issue_refs": ["#7"]
+      "issue_refs": [
+        "#7"
+      ]
     },
     {
       "id": "GAP-P0-PR-001",
       "severity": "P0",
       "category": "integration",
-      "title": "Integration PR candidate identity must remain exact and singular",
+      "title": "The foundation and documentation candidates must remain exact, linear and singular for their scopes",
       "owner_role": "program-governance",
       "status": "source-candidate",
       "external_dependency": null,
-      "blocking_claims": ["SG0"],
+      "blocking_claims": [
+        "SG0"
+      ],
       "affected_paths": [],
       "close_criteria": [
-        "the stale PR is updated to its exact head or closed as superseded",
-        "there is exactly one active integration line for the same scope",
-        "the replacement PR body records exact head/tree and limitations",
-        "the final candidate identity receives accepted exact-head evidence"
+        "superseded or conflicting pull requests are closed without deleting Git history",
+        "PR #57 is the single foundation integration line against main",
+        "PR #60 is a single linear documentation commit over the exact PR #57 head",
+        "both pull request bodies record exact base, head, tree, prospective merge and limitations",
+        "the final unchanged candidates receive accepted exact-head and prospective-merge evidence"
       ],
-      "required_evidence_types": ["manifest"],
+      "required_evidence_types": [
+        "manifest"
+      ],
       "evidence_ids": [],
-      "issue_refs": ["#41", "#42"]
+      "issue_refs": [
+        "#57",
+        "#58",
+        "#60"
+      ]
     },
     {
       "id": "GAP-P0-PLAN-001",
       "severity": "P0",
       "category": "control-plane",
-      "title": "Plan, mutable execution state and evidence-derived gates require machine separation",
+      "title": "Plan, mutable execution state, documentation authority and evidence-derived gates require machine separation",
       "owner_role": "program-governance",
       "status": "source-candidate",
       "external_dependency": null,
-      "blocking_claims": ["SG0", "SG1"],
-      "affected_paths": ["scripts/check-plan.py", "scripts/check-status-transitions.py", "scripts/derive-gates.py"],
-      "close_criteria": [
-        "scope validation is separated from execution-state validation",
-        "legal task state transitions are machine checked",
-        "gate status is derived from evidence and dependencies",
-        "real progress no longer causes the plan contract to fail",
-        "exact-head control-plane execution succeeds"
+      "blocking_claims": [
+        "SG0",
+        "SG1"
       ],
-      "required_evidence_types": ["unit"],
+      "affected_paths": [
+        "CURRENT_PLAN.md",
+        "docs/DOCUMENTATION_AUTHORITY.json",
+        "scripts/check-plan.py",
+        "scripts/check-documentation-authority.py",
+        "scripts/check-status-transitions.py",
+        "scripts/derive-gates.py"
+      ],
+      "close_criteria": [
+        "scope validation is separated from mutable execution-state validation",
+        "legal task and gap state transitions are machine checked",
+        "gate status is derived from accepted evidence and dependencies",
+        "all mutable machine controls reject references to removed human documents",
+        "real progress no longer causes the plan contract to fail",
+        "exact-head and prospective-merge control-plane execution succeeds",
+        "independent governance review accepts the control implementation"
+      ],
+      "required_evidence_types": [
+        "unit",
+        "manifest"
+      ],
       "evidence_ids": [],
       "issue_refs": []
     },
@@ -115,16 +179,30 @@
       "owner_role": "compatibility-qa",
       "status": "source-candidate",
       "external_dependency": null,
-      "blocking_claims": ["C1", "C2", "C3", "C4", "C5", "SG1", "SG2"],
-      "affected_paths": ["docs/evidence/index.json", "docs/evidence/schemas/trillionnium-evidence-v1.schema.json"],
+      "blocking_claims": [
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "SG1",
+        "SG2"
+      ],
+      "affected_paths": [
+        "docs/evidence/index.json",
+        "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
+        "docs/TESTING_AND_EVIDENCE.md"
+      ],
       "close_criteria": [
-        "every evidence item is indexed exactly once",
-        "target commit/tree and artifact digest are present",
-        "review and expiry policy are validated",
+        "every current evidence item is indexed exactly once",
+        "target repository, source head, tree, prospective merge and artifact digest are present where applicable",
+        "review, expiry and limitation policy are validated",
         "relay evidence is rejected when target identity does not match",
         "independent review accepts the evidence control implementation"
       ],
-      "required_evidence_types": ["manifest"],
+      "required_evidence_types": [
+        "manifest"
+      ],
       "evidence_ids": [],
       "issue_refs": []
     },
@@ -136,18 +214,38 @@
       "owner_role": "database-migration",
       "status": "source-candidate",
       "external_dependency": null,
-      "blocking_claims": ["C2", "C3", "C4", "C5", "SG4", "SG5", "SG8"],
-      "affected_paths": ["migrations/**", "database/schema/v2/**", "crates/trnm-persistence-pg/**"],
+      "blocking_claims": [
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "SG4",
+        "SG5",
+        "SG8"
+      ],
+      "affected_paths": [
+        "migrations/**",
+        "database/schema/v2/**",
+        "crates/trnm-persistence-pg/**",
+        "docs/ARCHITECTURE.md",
+        "docs/OPERATIONS_AND_RELEASE.md"
+      ],
       "close_criteria": [
         "migrations/ is declared and checked as the only production DDL authority",
-        "database/schema/v2 is marked non-authoritative and not consumed by runtime, CI, backup or release tooling",
+        "database/schema/v2 is marked non-authoritative and is not consumed by runtime, CI, backup or release tooling",
         "adapter SQL ABI and backup evidence bind the same migration digest",
         "PostgreSQL and CockroachDB catalog evidence are separate",
-        "current-head live profile and restore evidence are independently accepted"
+        "current-head and prospective-merge live profile, restore and fault evidence are independently accepted"
       ],
-      "required_evidence_types": ["manifest", "database-differential", "backup-restore"],
+      "required_evidence_types": [
+        "manifest",
+        "database-differential",
+        "backup-restore"
+      ],
       "evidence_ids": [],
-      "issue_refs": ["#36"]
+      "issue_refs": [
+        "#36"
+      ]
     },
     {
       "id": "GAP-P0-SERVER-001",
@@ -157,39 +255,79 @@
       "owner_role": "foundation-runtime",
       "status": "source-candidate",
       "external_dependency": null,
-      "blocking_claims": ["C1", "C2", "C3", "C4", "C5", "SG4"],
-      "affected_paths": ["crates/trnm-persistence-pg/src/bin/trnm-server.rs", "crates/trnm-persistence-pg/src/bin/trnm_server/**", "docs/development/TRNM_SERVER_VERTICAL_SLICE.md"],
+      "blocking_claims": [
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "SG4"
+      ],
+      "affected_paths": [
+        "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
+        "crates/trnm-persistence-pg/src/bin/trnm_server/**",
+        "crates/trnm-server/**",
+        "docs/ARCHITECTURE.md",
+        "docs/DEVELOPMENT.md",
+        "docs/TESTING_AND_EVIDENCE.md"
+      ],
       "close_criteria": [
         "a Rust binary boots from typed config",
         "migrate, health, readiness and graceful shutdown execute",
-        "one HTTP/gRPC and one WebSocket path reach an authority transition",
+        "one HTTP or gRPC and one WebSocket path reach an authority transition",
         "the transition commits through the authoritative schema and creates a transactional outbox intent",
         "retry, response loss, restart and exact oracle differential evidence pass",
-        "both database profiles and independent protocol/database/security review are accepted"
+        "both database profiles and independent protocol, database, security and SRE review are accepted"
       ],
-      "required_evidence_types": ["unit", "wire-differential", "database-differential", "fault-injection"],
+      "required_evidence_types": [
+        "unit",
+        "wire-differential",
+        "database-differential",
+        "fault-injection"
+      ],
       "evidence_ids": [],
-      "issue_refs": ["#35"]
+      "issue_refs": [
+        "#35"
+      ]
     },
     {
       "id": "GAP-P0-CRYPTO-001",
       "severity": "P0",
       "category": "security",
-      "title": "Security-critical JWT adapter uses private crypto primitives outside the unified workspace gate",
+      "title": "Security-critical JWT adapter requires unified gate coverage and independent cryptographic acceptance",
       "owner_role": "security",
       "status": "in-progress",
-      "external_dependency": "independent security review",
-      "blocking_claims": ["C2", "C4", "C5", "SG5", "SG8"],
-      "affected_paths": ["crates/trnm-token-jwt-adapter/**", "Cargo.toml", ".github/workflows/trillionnium-game-merge-gate.yml"],
-      "close_criteria": [
-        "the adapter is always compiled, tested and linted by the aggregate merge gate",
-        "constant-time comparison and malformed-token corpus pass",
-        "crypto implementation choice is recorded in an ADR",
-        "an independent security reviewer accepts the adapter or a reviewed library replacement"
+      "external_dependency": "independent security and cryptography review",
+      "blocking_claims": [
+        "C2",
+        "C4",
+        "C5",
+        "SG5",
+        "SG8"
       ],
-      "required_evidence_types": ["unit", "fuzz", "security-review"],
+      "affected_paths": [
+        "crates/trnm-token-jwt-adapter/**",
+        "crates/trnm-token-crypto-provider/**",
+        "Cargo.toml",
+        ".github/workflows/trillionnium-game-merge-gate.yml",
+        "docs/SECURITY_AND_PRIVACY.md",
+        "SECURITY.md"
+      ],
+      "close_criteria": [
+        "the adapter and provider are always compiled, tested and strictly linted by the aggregate merge gate",
+        "constant-time comparison, malformed-token, algorithm-confusion and key-domain corpora pass",
+        "the implementation choice, compatibility boundary and replacement criteria are recorded in the current security authority",
+        "an independent security and cryptography reviewer accepts the exact candidate"
+      ],
+      "required_evidence_types": [
+        "unit",
+        "fuzz",
+        "security-review"
+      ],
       "evidence_ids": [],
-      "issue_refs": ["#35"]
+      "issue_refs": [
+        "#35"
+      ]
     },
     {
       "id": "GAP-P1-CRYPTO-002",
@@ -199,15 +337,24 @@
       "owner_role": "security",
       "status": "source-candidate",
       "external_dependency": null,
-      "blocking_claims": ["C2", "C4", "C5"],
-      "affected_paths": ["crates/trnm-token-jwt-adapter/src/sha256.rs"],
+      "blocking_claims": [
+        "C2",
+        "C4",
+        "C5"
+      ],
+      "affected_paths": [
+        "crates/trnm-token-jwt-adapter/src/sha256.rs"
+      ],
       "close_criteria": [
         "different lengths are rejected without integer truncation",
-        "regression vectors include a 256-byte length delta",
+        "regression vectors include a 256-byte length delta in both argument orders",
         "JWT signature verification still requires exactly 32 bytes",
-        "exact-head tests and independent security review are accepted"
+        "exact-head and prospective-merge tests plus independent security review are accepted"
       ],
-      "required_evidence_types": ["unit", "security-review"],
+      "required_evidence_types": [
+        "unit",
+        "security-review"
+      ],
       "evidence_ids": [],
       "issue_refs": []
     },
@@ -219,15 +366,29 @@
       "owner_role": "database-migration",
       "status": "source-candidate",
       "external_dependency": null,
-      "blocking_claims": ["C2", "C4", "C5", "SG4"],
-      "affected_paths": ["crates/trnm-persistence-core/src/lib.rs"],
+      "blocking_claims": [
+        "C2",
+        "C4",
+        "C5",
+        "SG4"
+      ],
+      "affected_paths": [
+        "crates/trnm-persistence-core/src/lib.rs",
+        "crates/trnm-persistence-pg/**"
+      ],
       "close_criteria": [
         "retry at the limit performs a defined atomic terminal transition",
         "no leased record remains stranded by an error return",
-        "property/regression tests cover max-attempt and stale-owner behavior",
-        "exact-head tests and independent data-integrity review are accepted"
+        "property and regression tests cover max-attempt and stale-owner behavior",
+        "PostgreSQL and CockroachDB execute crash-before-publish and crash-after-publish packets",
+        "exact-head and prospective-merge evidence plus independent data-integrity review are accepted"
       ],
-      "required_evidence_types": ["unit", "property"],
+      "required_evidence_types": [
+        "unit",
+        "property",
+        "database-differential",
+        "fault-injection"
+      ],
       "evidence_ids": [],
       "issue_refs": []
     },
@@ -239,16 +400,29 @@
       "owner_role": "runtime-migration",
       "status": "source-candidate",
       "external_dependency": null,
-      "blocking_claims": ["SG0"],
-      "affected_paths": ["runtime/go.mod", "CURRENT_PLAN.md"],
-      "close_criteria": [
-        "all active module/document references use TrillionniumGame",
-        "historical previous-name references are explicitly labelled as historical",
-        "Go tests and module resolution pass on the exact candidate"
+      "blocking_claims": [
+        "SG0"
       ],
-      "required_evidence_types": ["unit"],
+      "affected_paths": [
+        "runtime/go.mod",
+        "CURRENT_PLAN.md",
+        "README.md",
+        "PROJECT_BOUNDARY.json"
+      ],
+      "close_criteria": [
+        "all active module, source and document references use TrillionniumGame",
+        "historical previous-name references are confined to immutable history or explicitly labelled evidence",
+        "Go tests, module resolution and documentation authority pass on the exact candidate",
+        "independent governance review accepts the identity boundary"
+      ],
+      "required_evidence_types": [
+        "unit",
+        "manifest"
+      ],
       "evidence_ids": [],
-      "issue_refs": ["#5"]
+      "issue_refs": [
+        "#5"
+      ]
     },
     {
       "id": "GAP-P1-TEST-001",
@@ -258,17 +432,32 @@
       "owner_role": "compatibility-qa",
       "status": "source-candidate",
       "external_dependency": null,
-      "blocking_claims": ["C2", "C3", "C4", "C5"],
-      "affected_paths": ["crates/trnm-persistence-pg/tests/**", ".github/workflows/**"],
-      "close_criteria": [
-        "required CI lanes set an explicit live-test-required flag",
-        "the test process fails when a required database URL/profile is absent",
-        "developer opt-out remains explicit and cannot produce remote verification credit",
-        "both profile lanes execute on the exact candidate"
+      "blocking_claims": [
+        "C2",
+        "C3",
+        "C4",
+        "C5"
       ],
-      "required_evidence_types": ["unit", "database-differential"],
+      "affected_paths": [
+        "crates/trnm-persistence-pg/tests/**",
+        ".github/workflows/**",
+        "docs/TESTING_AND_EVIDENCE.md"
+      ],
+      "close_criteria": [
+        "required CI lanes set an explicit live-test-required flag or run an equivalent mandatory harness",
+        "the test process fails when a required database URL, image or profile is absent",
+        "developer opt-out remains explicit and cannot produce remote-verification credit",
+        "both profiles execute on the exact source head and prospective merge object",
+        "independent compatibility QA accepts the retained evidence"
+      ],
+      "required_evidence_types": [
+        "unit",
+        "database-differential"
+      ],
       "evidence_ids": [],
-      "issue_refs": ["#36"]
+      "issue_refs": [
+        "#36"
+      ]
     },
     {
       "id": "GAP-P1-STORAGE-001",
@@ -278,16 +467,30 @@
       "owner_role": "storage",
       "status": "source-candidate",
       "external_dependency": null,
-      "blocking_claims": ["C2", "C3", "C5", "SG5"],
-      "affected_paths": ["crates/trnm-storage-core/**", "contracts/storage/storage-vectors.json"],
+      "blocking_claims": [
+        "C2",
+        "C3",
+        "C5",
+        "SG5"
+      ],
+      "affected_paths": [
+        "crates/trnm-storage-core/**",
+        "crates/trnm-storage-nakama-version/**",
+        "contracts/storage/**",
+        "docs/COMPATIBILITY.md"
+      ],
       "close_criteria": [
         "public ContentVersion exactly matches the pinned Nakama behavior",
         "internal IntegrityDigest is a separate type",
         "empty, star and exact expected-version behavior pass differential tests",
-        "batch atomicity and ACL effects match the oracle",
-        "exact-head Rust and independent storage review are accepted"
+        "batch atomicity and ACL effects match the immutable oracle",
+        "exact-head and prospective-merge Rust evidence plus independent storage review are accepted"
       ],
-      "required_evidence_types": ["unit", "wire-differential", "database-differential"],
+      "required_evidence_types": [
+        "unit",
+        "wire-differential",
+        "database-differential"
+      ],
       "evidence_ids": [],
       "issue_refs": []
     },
@@ -295,60 +498,114 @@
       "id": "GAP-P1-PG-001",
       "severity": "P1",
       "category": "database-runtime",
-      "title": "PG-wire runtime requires pool, TLS, deadline, cancellation and proven retry integration",
+      "title": "PG-wire runtime requires complete pool, TLS, deadline, cancellation and retry evidence",
       "owner_role": "database-migration",
       "status": "source-candidate",
       "external_dependency": null,
-      "blocking_claims": ["C2", "C4", "C5", "SG4", "SG8"],
-      "affected_paths": ["crates/trnm-persistence-pg/**"],
+      "blocking_claims": [
+        "C2",
+        "C4",
+        "C5",
+        "SG4",
+        "SG8"
+      ],
+      "affected_paths": [
+        "crates/trnm-persistence-pg/**",
+        "crates/trnm-persistence-runtime-policy/**",
+        "docs/OPERATIONS_AND_RELEASE.md",
+        "docs/SECURITY_AND_PRIVACY.md"
+      ],
       "close_criteria": [
         "connection pooling and acquire timeout are bounded",
-        "TLS and certificate rotation profiles exist",
+        "TLS and certificate-rotation profiles exist and reject invalid trust roots",
         "serializable retry obeys total request deadline and jitter budget",
-        "cancellation, statement timeout and metrics are wired",
+        "cancellation, statement timeout, lock timeout and metrics are wired",
         "Cockroach transaction restart behavior is separately proven",
-        "the current bounded retry source candidate receives exact-head fault evidence"
+        "the bounded runtime receives exact-head, prospective-merge, fault, security and performance evidence"
       ],
-      "required_evidence_types": ["database-differential", "fault-injection", "performance", "security-review"],
+      "required_evidence_types": [
+        "database-differential",
+        "fault-injection",
+        "performance",
+        "security-review"
+      ],
       "evidence_ids": [],
-      "issue_refs": ["#35", "#36"]
+      "issue_refs": [
+        "#35",
+        "#36"
+      ]
     },
     {
       "id": "GAP-P0-SCOPE-001",
       "severity": "P0",
       "category": "denominator",
-      "title": "D0-D8 final leaves remain unclassified and unlocked",
+      "title": "D0-D8 final leaves remain unclassified and independently unlocked",
       "owner_role": "compatibility-architecture",
       "status": "open",
-      "external_dependency": "exact-source workflow execution and independent classification review",
-      "blocking_claims": ["C1", "C2", "C3", "C4", "C5", "SG1"],
-      "affected_paths": ["manifests/upstream/**", "docs/development/PARITY_DENOMINATORS.json"],
-      "close_criteria": [
-        "all fourteen denominator manifests are non-empty and locked",
-        "every leaf has owner, task, test, profile and evidence mapping",
-        "unclassified_count is zero",
-        "manifest digests are reproduced from the pinned source"
+      "external_dependency": "independent classification decisions for all families and a separate global SG1 acceptance",
+      "blocking_claims": [
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "SG1"
       ],
-      "required_evidence_types": ["manifest"],
+      "affected_paths": [
+        "manifests/upstream/**",
+        "docs/development/PARITY_DENOMINATORS.json",
+        "docs/COMPATIBILITY.md",
+        "docs/TESTING_AND_EVIDENCE.md"
+      ],
+      "close_criteria": [
+        "all fourteen denominator manifests are non-empty and reproducible from the pinned source",
+        "every leaf has owner, task, test, profile, classification and evidence mapping",
+        "unclassified_count is zero and no family denominator decreases without an approved delta",
+        "every family receives the prescribed distinct independent decisions",
+        "the global denominator bundle receives a separate independent SG1 acceptance"
+      ],
+      "required_evidence_types": [
+        "manifest"
+      ],
       "evidence_ids": [],
-      "issue_refs": ["#7"]
+      "issue_refs": [
+        "#7"
+      ]
     },
     {
       "id": "GAP-P1-DOCS-001",
       "severity": "P1",
       "category": "documentation",
-      "title": "Current control, architecture, server, security and evidence documents require authoritative indexes",
+      "title": "One current human documentation authority must cover every active development topic",
       "owner_role": "program-governance",
       "status": "source-candidate",
       "external_dependency": null,
       "blocking_claims": [],
-      "affected_paths": ["docs/development/README.md", "docs/architecture/README.md", "docs/audit/README.md", "docs/status/README.md", "README.md"],
-      "close_criteria": [
-        "indexes link the current plan, state, gaps, server, architecture, testing, security and evidence controls",
-        "historical tranche documents remain discoverable but are not presented as current authority",
-        "exact-head documentation checks and independent governance review are accepted"
+      "affected_paths": [
+        "README.md",
+        "CURRENT_PLAN.md",
+        "docs/README.md",
+        "docs/DOCUMENTATION_AUTHORITY.json",
+        "docs/ARCHITECTURE.md",
+        "docs/DEVELOPMENT.md",
+        "docs/COMPATIBILITY.md",
+        "docs/TESTING_AND_EVIDENCE.md",
+        "docs/SECURITY_AND_PRIVACY.md",
+        "docs/OPERATIONS_AND_RELEASE.md",
+        "docs/GOVERNANCE.md",
+        "docs/ROADMAP.md"
       ],
-      "required_evidence_types": ["unit"],
+      "close_criteria": [
+        "the root entry points and nine current topic documents are the only active human development authority",
+        "historical human Markdown is absent from the active documentation tree and retained only in Git, PRs, issues or immutable evidence",
+        "all mutable machine controls, workflows, scripts, source and contracts reject references to removed documents",
+        "negative fixtures prove aliases, broken links and stale machine-control references fail closed",
+        "exact-head and prospective-merge documentation checks plus independent governance review are accepted"
+      ],
+      "required_evidence_types": [
+        "unit",
+        "manifest"
+      ],
       "evidence_ids": [],
       "issue_refs": []
     },
@@ -356,19 +613,27 @@
       "id": "GAP-P1-BRANCH-001",
       "severity": "P1",
       "category": "repository-hygiene",
-      "title": "Many duplicated historical feature refs remain unclassified",
+      "title": "Duplicated historical feature refs require reviewed classification and disposition",
       "owner_role": "program-governance",
       "status": "open",
       "external_dependency": "branch disposition approval",
-      "blocking_claims": ["SG0"],
-      "affected_paths": ["docs/governance/BRANCH_CONSOLIDATION_2026-08-29.md"],
-      "close_criteria": [
-        "every non-main ref is classified keep/archive/delete",
-        "active PR heads are retained",
-        "deletion is executed only after immutable ref evidence",
-        "post-operation branch inventory matches the approved manifest"
+      "blocking_claims": [
+        "SG0"
       ],
-      "required_evidence_types": ["manifest"],
+      "affected_paths": [
+        "docs/GOVERNANCE.md",
+        ".github/workflows/branch-inventory.yml"
+      ],
+      "close_criteria": [
+        "every non-main ref is classified keep, archive or delete with tip and tree identity",
+        "active pull-request heads and the only refs for unmerged work are retained",
+        "deletion is executed only after immutable before-state evidence and explicit approval",
+        "post-operation branch inventory matches the approved manifest",
+        "independent governance review accepts the final inventory"
+      ],
+      "required_evidence_types": [
+        "manifest"
+      ],
       "evidence_ids": [],
       "issue_refs": []
     },
@@ -376,19 +641,33 @@
       "id": "GAP-P1-REVIEW-001",
       "severity": "P1",
       "category": "independent-review",
-      "title": "Database, security, protocol and realtime evidence lacks enforced independent reviewers",
+      "title": "Database, security, protocol, realtime, governance and SRE evidence lacks complete enforced reviewer assignment",
       "owner_role": "program-director",
       "status": "open",
-      "external_dependency": "named reviewer availability and repository review policy",
-      "blocking_claims": ["C2", "C3", "C4", "C5"],
-      "affected_paths": [".github/CODEOWNERS", "docs/evidence/index.json"],
-      "close_criteria": [
-        "review roles resolve to named GitHub users or teams",
-        "self-approval is rejected",
-        "required evidence contains accepted independent review decisions",
-        "review expiry and head-change invalidation are enforced"
+      "external_dependency": "named conflict-free reviewer availability plus repository review enforcement",
+      "blocking_claims": [
+        "C2",
+        "C3",
+        "C4",
+        "C5"
       ],
-      "required_evidence_types": ["security-review", "manifest"],
+      "affected_paths": [
+        ".github/CODEOWNERS",
+        "docs/review/INDEPENDENT_REVIEW_MATRIX.json",
+        "docs/evidence/index.json",
+        "docs/GOVERNANCE.md"
+      ],
+      "close_criteria": [
+        "every required review role resolves to a named GitHub user, team or approved external provider",
+        "author, administrator-mutator and other conflicts are declared and rejected",
+        "required evidence contains accepted independent decisions bound to the exact candidate",
+        "review expiry, head-change invalidation and latest-push approval are enforced",
+        "CODEOWNERS and branch policy prevent self-approval from satisfying the gate"
+      ],
+      "required_evidence_types": [
+        "security-review",
+        "manifest"
+      ],
       "evidence_ids": [],
       "issue_refs": []
     }

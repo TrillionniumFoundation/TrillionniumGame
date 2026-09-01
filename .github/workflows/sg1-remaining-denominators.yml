@@ -8,7 +8,9 @@ on:
       - 'scripts/generate-remaining-denominators.py'
       - 'scripts/check-remaining-denominators.sh'
       - 'tests/denominator/test_remaining_denominators.py'
-      - 'docs/development/REMAINING_DENOMINATOR_CANDIDATES.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/sg1-remaining-denominators.yml'
 
 permissions:
@@ -41,6 +43,12 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+      - name: Validate current denominator contract
+        run: |
+          set -euo pipefail
+          grep -q '`DEN-CONSOLE`' docs/COMPATIBILITY.md
+          grep -q '`DEN-METRICS`, `DEN-OPS`, `DEN-SDK`' docs/COMPATIBILITY.md
+          grep -q '`DEN-PROVIDERS`, `DEN-IAP`' docs/COMPATIBILITY.md
       - name: Run parser and fail-closed tests
         run: bash scripts/check-remaining-denominators.sh
       - name: Fetch and independently verify complete Nakama source tree

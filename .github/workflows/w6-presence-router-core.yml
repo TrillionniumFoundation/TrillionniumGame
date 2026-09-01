@@ -10,7 +10,9 @@ on:
       - 'contracts/realtime/presence-*.json'
       - 'scripts/check-presence-core.py'
       - 'tests/realtime/test_presence_vectors.py'
-      - 'docs/development/PRESENCE_ROUTER_CORE.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/PRESENCE_ROUTER_STATUS.json'
       - '.github/workflows/w6-presence-router-core.yml'
   push:
@@ -22,7 +24,9 @@ on:
       - 'contracts/realtime/presence-*.json'
       - 'scripts/check-presence-core.py'
       - 'tests/realtime/test_presence_vectors.py'
-      - 'docs/development/PRESENCE_ROUTER_CORE.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/PRESENCE_ROUTER_STATUS.json'
       - '.github/workflows/w6-presence-router-core.yml'
 

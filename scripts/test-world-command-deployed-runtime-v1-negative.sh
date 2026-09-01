@@ -64,8 +64,22 @@ reset_fixture
 python3 - "$work/runtime/world_command_storage.go" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
-text = path.read_text().replace("worldCommandStorageCollection", "matchStorageCollection", 1)
-path.write_text(text)
+text = path.read_text()
+start_marker = "acks, err := nk.StorageWrite(ctx, []*runtime.StorageWrite{"
+end_marker = "\n\tif err != nil {"
+if text.count(start_marker) != 1:
+    raise SystemExit("atomic World/core batch no longer has one canonical StorageWrite call")
+start = text.index(start_marker)
+try:
+    end = text.index(end_marker, start)
+except ValueError as error:
+    raise SystemExit("atomic World/core batch error boundary is missing") from error
+batch = text[start:end]
+needle = "Collection:      worldCommandStorageCollection,"
+if batch.count(needle) != 1:
+    raise SystemExit("atomic World sidecar fixture no longer has one canonical batch entry")
+mutated = batch.replace(needle, "Collection:      matchStorageCollection,", 1)
+path.write_text(text[:start] + mutated + text[end:])
 PY
 expect_rejected 'atomic World sidecar removal'
 
@@ -99,8 +113,12 @@ reset_fixture
 python3 - "$work/runtime/world_command_config.go" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
-text = path.read_text().replace("envWorldChallengeHash", "envWorldInitialStateHash", 1)
-path.write_text(text)
+text = path.read_text()
+needle = 'envWorldChallengeHash    = "TRNM_WORLD_CHALLENGE_SNAPSHOT_HASH"'
+replacement = 'envWorldChallengeHash    = "TRNM_WORLD_INITIAL_STATE_HASH"'
+if text.count(needle) != 1:
+    raise SystemExit("challenge commitment environment binding is no longer canonical")
+path.write_text(text.replace(needle, replacement, 1))
 PY
 expect_rejected 'challenge snapshot conflated with initial state'
 

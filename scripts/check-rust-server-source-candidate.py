@@ -65,7 +65,8 @@ def main() -> int:
         lib_path = ROOT / "crates/trnm-server/src/lib.rs"
         main_path = ROOT / "crates/trnm-server/src/main.rs"
         contract_path = ROOT / "contracts/server/vertical-slice-v1.json"
-        documentation_path = ROOT / "docs/development/RUST_SERVER_VERTICAL_SLICE_V1.md"
+        documentation_path = ROOT / "docs/DEVELOPMENT.md"
+        architecture_path = ROOT / "docs/ARCHITECTURE.md"
         process_smoke_path = ROOT / "scripts/check-rust-server-process.sh"
         for path in (
             manifest_path,
@@ -74,6 +75,7 @@ def main() -> int:
             main_path,
             contract_path,
             documentation_path,
+            architecture_path,
             process_smoke_path,
         ):
             require(
@@ -130,7 +132,10 @@ def main() -> int:
             "wrong server contract schema",
         )
         require(contract.get("project_id") == "trillionnium-game", "wrong project ID")
-        require(contract.get("status") == "source-candidate", "server status must remain source-candidate")
+        require(
+            contract.get("status") == "source-candidate",
+            "server status must remain source-candidate",
+        )
         require(contract.get("crate") == "crates/trnm-server", "wrong server crate path")
         require(
             contract.get("binary") == "trnm-server-foundation",
@@ -145,10 +150,7 @@ def main() -> int:
             f"contract omits implemented boundaries: {sorted(missing_implemented)}",
         )
         not_implemented = set(
-            require_string_list(
-                contract.get("not_implemented"),
-                "contract.not_implemented",
-            )
+            require_string_list(contract.get("not_implemented"), "contract.not_implemented")
         )
         missing_limitations = EXPECTED_NOT_IMPLEMENTED - not_implemented
         require(
@@ -216,12 +218,15 @@ def main() -> int:
 
         documentation = documentation_path.read_text(encoding="utf-8")
         documentation_markers = (
-            "`serve`, `check-config`, `version` and help command parsing",
+            "# Development guide",
+            "Status: **authoritative current documentation**",
+            "`serve`, `check-config`, `version`",
             "`POST /v1/bootstrap`",
             "`POST /v1/command`",
             "`TRNM_SERVER_MAX_REQUEST_BYTES`",
-            "`graceful_shutdown_verified=false`",
-            "no compatibility or production credit",
+            "graceful_shutdown_verified=false",
+            "database_durability_verified=false",
+            "Do not claim remote verification from local commands.",
         )
         for marker in documentation_markers:
             require(marker in documentation, f"server documentation missing marker: {marker}")
@@ -234,6 +239,15 @@ def main() -> int:
                 obsolete not in documentation,
                 f"server documentation retains obsolete contract: {obsolete}",
             )
+
+        architecture = architecture_path.read_text(encoding="utf-8")
+        for marker in (
+            "`crates/trnm-persistence-pg/src/bin/trnm-server.rs`",
+            "`crates/trnm-server`",
+            "temporary split is not the target architecture",
+            "one `trnm-server` composition root",
+        ):
+            require(marker in architecture, f"architecture missing server boundary: {marker}")
 
         process_smoke = process_smoke_path.read_text(encoding="utf-8")
         for marker in (
@@ -254,6 +268,7 @@ def main() -> int:
                     "package": package.get("name"),
                     "binary": binary_target.get("name"),
                     "source_marker_count": len(source_markers),
+                    "documentation": "docs/DEVELOPMENT.md",
                     "claims": {
                         "source_contract_passed": True,
                         "compiled": False,

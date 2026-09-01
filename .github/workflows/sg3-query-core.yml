@@ -13,7 +13,9 @@ on:
       - 'scripts/check-rust-foundation.py'
       - 'scripts/fetch-query-upstream.py'
       - 'tests/query/**'
-      - 'docs/development/QUERY_CORE_FEASIBILITY.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/QUERY_CORE_STATUS.json'
       - '.github/workflows/sg3-query-core.yml'
   push:
@@ -28,7 +30,9 @@ on:
       - 'scripts/check-rust-foundation.py'
       - 'scripts/fetch-query-upstream.py'
       - 'tests/query/**'
-      - 'docs/development/QUERY_CORE_FEASIBILITY.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/QUERY_CORE_STATUS.json'
       - '.github/workflows/sg3-query-core.yml'
 

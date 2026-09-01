@@ -6,7 +6,9 @@ on:
       - 'crates/trnm-server/**'
       - 'scripts/check-rust-server-process.sh'
       - 'contracts/server/vertical-slice-v1.json'
-      - 'docs/development/RUST_SERVER_VERTICAL_SLICE_V1.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/rust-server-process-smoke.yml'
   push:
     branches: [main]
@@ -14,7 +16,9 @@ on:
       - 'crates/trnm-server/**'
       - 'scripts/check-rust-server-process.sh'
       - 'contracts/server/vertical-slice-v1.json'
-      - 'docs/development/RUST_SERVER_VERTICAL_SLICE_V1.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/rust-server-process-smoke.yml'
   workflow_dispatch:
 
@@ -48,6 +52,12 @@ jobs:
             "${CANDIDATE_SHA}"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+      - name: Validate current foundation process boundary
+        run: |
+          set -euo pipefail
+          grep -q 'Standalone foundation source and process' docs/DEVELOPMENT.md
+          grep -q 'temporary split is not the target architecture' docs/ARCHITECTURE.md
+          python3 scripts/check-rust-server-source-candidate.py
       - name: Install exact Rust
         run: |
           set -euo pipefail

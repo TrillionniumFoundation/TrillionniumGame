@@ -12,7 +12,9 @@ on:
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/mod.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/server.rs'
       - 'contracts/grpc/nakama-healthcheck-v1.json'
-      - 'docs/development/GRPC_HEALTHCHECK_SOURCE_V1.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/TRNM_SERVER_STATUS.json'
       - 'scripts/check-rust-foundation.py'
       - 'scripts/check-trnm-server.py'
@@ -30,7 +32,9 @@ on:
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/mod.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/server.rs'
       - 'contracts/grpc/nakama-healthcheck-v1.json'
-      - 'docs/development/GRPC_HEALTHCHECK_SOURCE_V1.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/TRNM_SERVER_STATUS.json'
       - 'scripts/check-rust-foundation.py'
       - 'scripts/check-trnm-server.py'
@@ -72,6 +76,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          grep -q 'The current gRPC implementation represents only the pinned Nakama `Healthcheck' docs/ARCHITECTURE.md
+          grep -q 'A Healthcheck source implementation' docs/COMPATIBILITY.md
           jq -e '
             .status == "source-candidate" and
             .upstream.repository == "heroiclabs/nakama" and

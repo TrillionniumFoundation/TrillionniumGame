@@ -11,7 +11,9 @@ on:
       - 'contracts/foundation/**'
       - 'scripts/check-rust-foundation.py'
       - 'tests/foundation/**'
-      - 'docs/development/RUST_FOUNDATION_ALPHA.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/RUST_FOUNDATION_STATUS.json'
       - '.github/workflows/w1-rust-foundation.yml'
   push:
@@ -24,7 +26,9 @@ on:
       - 'contracts/foundation/**'
       - 'scripts/check-rust-foundation.py'
       - 'tests/foundation/**'
-      - 'docs/development/RUST_FOUNDATION_ALPHA.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/RUST_FOUNDATION_STATUS.json'
       - '.github/workflows/w1-rust-foundation.yml'
 

@@ -10,7 +10,9 @@ on:
       - 'contracts/persistence/**'
       - 'scripts/check-persistence-core.py'
       - 'tests/persistence/**'
-      - 'docs/development/PERSISTENCE_OUTBOX_CORE.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/OPERATIONS_AND_RELEASE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/PERSISTENCE_FOUNDATION_STATUS.json'
       - '.github/workflows/w1-persistence-outbox-core.yml'
   push:
@@ -22,7 +24,9 @@ on:
       - 'contracts/persistence/**'
       - 'scripts/check-persistence-core.py'
       - 'tests/persistence/**'
-      - 'docs/development/PERSISTENCE_OUTBOX_CORE.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/OPERATIONS_AND_RELEASE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/PERSISTENCE_FOUNDATION_STATUS.json'
       - '.github/workflows/w1-persistence-outbox-core.yml'
 

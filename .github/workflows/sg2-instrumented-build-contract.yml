@@ -10,7 +10,9 @@ on:
       - 'scripts/oracle/verify-instrumented-build.py'
       - 'scripts/oracle/check-instrumented-build-contract.sh'
       - 'tests/oracle/test_instrumented_build_provenance.py'
-      - 'docs/development/INSTRUMENTED_ORACLE_BUILD_PROVENANCE.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/sg2-instrumented-build-contract.yml'
 
 permissions:

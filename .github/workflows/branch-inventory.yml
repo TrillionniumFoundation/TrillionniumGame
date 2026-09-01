@@ -4,10 +4,16 @@ on:
   pull_request:
     paths:
       - 'scripts/generate-branch-inventory.py'
-      - 'docs/governance/BRANCH_DISPOSITION_CONTRACT.md'
+      - 'docs/GOVERNANCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/branch-inventory.yml'
   push:
     branches: [main]
+    paths:
+      - 'scripts/generate-branch-inventory.py'
+      - 'docs/GOVERNANCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
+      - '.github/workflows/branch-inventory.yml'
   workflow_dispatch:
 
 permissions:

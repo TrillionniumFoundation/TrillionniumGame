@@ -10,7 +10,9 @@ on:
       - 'contracts/protocol/transport-error-*.json'
       - 'scripts/check-transport-core.py'
       - 'tests/protocol/test_transport_error_vectors.py'
-      - 'docs/development/TRANSPORT_ERROR_CORE.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/TRANSPORT_ERROR_STATUS.json'
       - '.github/workflows/w2-transport-error-core.yml'
   push:
@@ -22,7 +24,9 @@ on:
       - 'contracts/protocol/transport-error-*.json'
       - 'scripts/check-transport-core.py'
       - 'tests/protocol/test_transport_error_vectors.py'
-      - 'docs/development/TRANSPORT_ERROR_CORE.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/TRANSPORT_ERROR_STATUS.json'
       - '.github/workflows/w2-transport-error-core.yml'
 

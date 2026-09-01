@@ -9,7 +9,9 @@ on:
       - 'crates/trnm-canonical-core/**'
       - 'contracts/canonical/**'
       - 'scripts/test-canonical-framing.py'
-      - 'docs/development/CANONICAL_FRAMING_CORE.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/w2-canonical-framing-core.yml'
   push:
     branches: [main]
@@ -19,7 +21,9 @@ on:
       - 'crates/trnm-canonical-core/**'
       - 'contracts/canonical/**'
       - 'scripts/test-canonical-framing.py'
-      - 'docs/development/CANONICAL_FRAMING_CORE.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/w2-canonical-framing-core.yml'
 
 permissions:

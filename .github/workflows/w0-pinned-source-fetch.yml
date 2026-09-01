@@ -8,7 +8,8 @@ on:
       - 'scripts/fetch-pinned-upstream.py'
       - 'scripts/check-pinned-upstream-fetch.sh'
       - 'tests/upstream/**'
-      - 'docs/development/PINNED_UPSTREAM_SOURCE_FETCH.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/w0-pinned-source-fetch.yml'
   push:
     branches: [main]
@@ -17,7 +18,8 @@ on:
       - 'scripts/fetch-pinned-upstream.py'
       - 'scripts/check-pinned-upstream-fetch.sh'
       - 'tests/upstream/**'
-      - 'docs/development/PINNED_UPSTREAM_SOURCE_FETCH.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/w0-pinned-source-fetch.yml'
 
 permissions:

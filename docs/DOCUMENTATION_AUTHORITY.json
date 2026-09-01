@@ -1,0 +1,99 @@
+{
+  "schema": "trillionnium.documentation-authority.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "revision": "2026-09-01",
+  "policy": {
+    "single_current_human_document_per_topic": true,
+    "historical_markdown_allowed_in_active_tree": false,
+    "git_history_is_the_human_document_archive": true,
+    "machine_evidence_may_be_immutable_and_dated": true,
+    "broken_repository_document_references_allowed": false,
+    "legacy_document_names_allowed": false,
+    "repository_wide_markdown_allowlist": true
+  },
+  "root_human_documents": [
+    "README.md",
+    "CURRENT_PLAN.md",
+    "PROJECT_BOUNDARY.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "AGENTS.md"
+  ],
+  "current_human_documents": [
+    "docs/README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/DEVELOPMENT.md",
+    "docs/COMPATIBILITY.md",
+    "docs/TESTING_AND_EVIDENCE.md",
+    "docs/SECURITY_AND_PRIVACY.md",
+    "docs/OPERATIONS_AND_RELEASE.md",
+    "docs/GOVERNANCE.md",
+    "docs/ROADMAP.md"
+  ],
+  "generated_human_rollups": [
+    "docs/development/FEATURE_PARITY_MATRIX.md"
+  ],
+  "permitted_non_development_markdown": [
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    "database/schema/v2/README.md"
+  ],
+  "machine_control_documents": [
+    "docs/development/COMPATIBILITY_DIVERGENCES.json",
+    "docs/development/COMPATIBILITY_PROFILES.json",
+    "docs/development/DENOMINATOR_CLASSIFICATION_RULES.json",
+    "docs/development/EXECUTION_BACKLOG.json",
+    "docs/development/PARITY_DENOMINATORS.json",
+    "docs/development/RUST_PACKAGE_AUTHORITY.json",
+    "docs/development/SCHEMA_AUTHORITY.json",
+    "docs/development/UPSTREAM_BASELINE.json",
+    "docs/development/backlog/EXECUTION_BACKLOG.v2.json.gz",
+    "docs/status/CURRENT_STATE.json",
+    "docs/status/EXECUTION_STATUS.json",
+    "docs/status/GAP_REGISTER.json",
+    "docs/status/IMPLEMENTATION_INVENTORY.json",
+    "docs/status/PRODUCT_GATES.json",
+    "docs/status/RISK_REGISTER.json",
+    "docs/status/SOURCE_CANDIDATES.json",
+    "docs/roadmap/NEXT_MILESTONE.json",
+    "docs/evidence/index.json",
+    "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
+    "docs/review/INDEPENDENT_REVIEW_MATRIX.json",
+    "docs/governance/GITHUB_ADMIN_ACCEPTANCE.json",
+    "docs/governance/MAIN_RULESET_DESIRED.json",
+    "docs/governance/REQUIRED_CHECKS.json",
+    "docs/governance/RULESET_DESIRED_ACTIVE_REQUEST.json"
+  ],
+  "machine_record_roots": [
+    "docs/evidence",
+    "docs/status",
+    "docs/development",
+    "docs/governance",
+    "docs/review",
+    "docs/roadmap"
+  ],
+  "removed_human_document_roots": [
+    "docs/adr",
+    "docs/architecture",
+    "docs/audit",
+    "docs/operations",
+    "docs/release",
+    "docs/security",
+    "docs/testing"
+  ],
+  "forbidden_human_filename_patterns": [
+    "(?:^|/)[0-9]{4}-[0-9]{2}-[0-9]{2}[^/]*\\.md$",
+    "(?:^|/)[^/]*(?:_V[0-9]+|_ALPHA|_CANDIDATE|_FINAL|_SUPERSEDED)[^/]*\\.md$",
+    "(?:^|/)README_[^/]+\\.md$"
+  ],
+  "claims": {
+    "documentation_consolidated": true,
+    "historical_human_docs_removed_from_active_tree": true,
+    "repository_markdown_allowlist_enforced": true,
+    "machine_evidence_deleted": false,
+    "compatibility_credit": false,
+    "production_ready": false,
+    "public_online": false,
+    "nakama_retired": false
+  }
+}

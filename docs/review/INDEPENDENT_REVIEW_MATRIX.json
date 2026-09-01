@@ -2,7 +2,7 @@
   "schema": "trillionnium.independent-review-matrix.v1",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "generated_at": "2026-08-30",
+  "generated_at": "2026-09-01",
   "policy": {
     "implementation_author_may_accept_own_evidence": false,
     "administrator_mutator_may_accept_own_governance_evidence": false,
@@ -16,15 +16,26 @@
       "id": "governance",
       "protected_paths": [
         ".github/**",
+        "CURRENT_PLAN.md",
+        "docs/DOCUMENTATION_AUTHORITY.json",
+        "docs/GOVERNANCE.md",
+        "docs/TESTING_AND_EVIDENCE.md",
         "docs/governance/**",
         "docs/status/PRODUCT_GATES.json",
         "docs/status/GAP_REGISTER.json",
         "docs/evidence/index.json"
       ],
-      "required_roles": ["repository-administrator", "independent-program-governance-reviewer"],
+      "required_roles": [
+        "repository-administrator",
+        "independent-program-governance-reviewer"
+      ],
       "assigned_reviewers": [],
       "status": "unassigned",
-      "blocking_gaps": ["GAP-P0-CI-001", "GAP-P0-GOV-001", "GAP-P0-PLAN-001"]
+      "blocking_gaps": [
+        "GAP-P0-CI-001",
+        "GAP-P0-GOV-001",
+        "GAP-P0-PLAN-001"
+      ]
     },
     {
       "id": "database-data-integrity",
@@ -33,26 +44,43 @@
         "database/**",
         "crates/trnm-persistence-core/**",
         "crates/trnm-persistence-pg/**",
-        "docs/development/SCHEMA_AUTHORITY.json"
+        "docs/development/SCHEMA_AUTHORITY.json",
+        "docs/ARCHITECTURE.md",
+        "docs/OPERATIONS_AND_RELEASE.md"
       ],
-      "required_roles": ["independent-database-reviewer", "independent-data-integrity-reviewer"],
+      "required_roles": [
+        "independent-database-reviewer",
+        "independent-data-integrity-reviewer"
+      ],
       "assigned_reviewers": [],
       "status": "unassigned",
-      "blocking_gaps": ["GAP-P0-DATA-001", "GAP-P1-OUTBOX-001", "GAP-P1-PG-001"]
+      "blocking_gaps": [
+        "GAP-P0-DATA-001",
+        "GAP-P1-OUTBOX-001",
+        "GAP-P1-PG-001"
+      ]
     },
     {
       "id": "security-cryptography",
       "protected_paths": [
         "SECURITY.md",
-        "docs/security/**",
+        "docs/SECURITY_AND_PRIVACY.md",
         "crates/trnm-token-core/**",
         "crates/trnm-token-jwt-adapter/**",
+        "crates/trnm-token-crypto-provider/**",
+        "crates/trnm-token-jwt-provider-adapter/**",
         "crates/trnm-session-core/**"
       ],
-      "required_roles": ["independent-security-reviewer", "independent-cryptography-reviewer"],
+      "required_roles": [
+        "independent-security-reviewer",
+        "independent-cryptography-reviewer"
+      ],
       "assigned_reviewers": [],
       "status": "unassigned",
-      "blocking_gaps": ["GAP-P0-CRYPTO-001", "GAP-P1-CRYPTO-002"]
+      "blocking_gaps": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P1-CRYPTO-002"
+      ]
     },
     {
       "id": "protocol-compatibility",
@@ -60,25 +88,44 @@
         "contracts/**",
         "crates/trnm-canonical-core/**",
         "crates/trnm-transport-core/**",
-        "crates/trnm-persistence-core/src/bin/trnm-server.rs",
-        "docs/development/API_RTAPI_DENOMINATOR_IMPLEMENTATION.md"
+        "crates/trnm-realtime-wire/**",
+        "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
+        "crates/trnm-persistence-pg/src/bin/trnm_server/**",
+        "docs/ARCHITECTURE.md",
+        "docs/COMPATIBILITY.md",
+        "docs/TESTING_AND_EVIDENCE.md"
       ],
-      "required_roles": ["independent-protocol-reviewer", "independent-compatibility-qa-reviewer"],
+      "required_roles": [
+        "independent-protocol-reviewer",
+        "independent-compatibility-qa-reviewer"
+      ],
       "assigned_reviewers": [],
       "status": "unassigned",
-      "blocking_gaps": ["GAP-P0-SERVER-001", "GAP-P0-SCOPE-001"]
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-SCOPE-001"
+      ]
     },
     {
       "id": "realtime-distributed-systems",
       "protected_paths": [
         "crates/trnm-presence-core/**",
         "crates/trnm-presence-router-v2/**",
-        "runtime/internal/worldcommand/**"
+        "crates/trnm-realtime-wire/**",
+        "runtime/internal/worldcommand/**",
+        "runtime/internal/worldtransition/**",
+        "docs/ARCHITECTURE.md",
+        "docs/COMPATIBILITY.md"
       ],
-      "required_roles": ["independent-realtime-reviewer", "independent-distributed-systems-reviewer"],
+      "required_roles": [
+        "independent-realtime-reviewer",
+        "independent-distributed-systems-reviewer"
+      ],
       "assigned_reviewers": [],
       "status": "unassigned",
-      "blocking_gaps": ["GAP-P0-SERVER-001"]
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001"
+      ]
     },
     {
       "id": "operations-sre",
@@ -86,25 +133,51 @@
         "deploy/**",
         "compose.yaml",
         ".github/workflows/database-backup-restore.yml",
+        ".github/workflows/prospective-merge-gate.yml",
         "scripts/ci-pgwire-backup-restore.sh",
-        "docs/operations/**"
+        "scripts/ci-trnm-server-live.sh",
+        "docs/OPERATIONS_AND_RELEASE.md",
+        "docs/TESTING_AND_EVIDENCE.md"
       ],
-      "required_roles": ["independent-sre-reviewer", "independent-recovery-reviewer"],
+      "required_roles": [
+        "independent-sre-reviewer",
+        "independent-recovery-reviewer"
+      ],
       "assigned_reviewers": [],
       "status": "unassigned",
-      "blocking_gaps": ["GAP-P1-PG-001"]
+      "blocking_gaps": [
+        "GAP-P1-PG-001"
+      ]
     }
   ],
   "assignment_contract": {
-    "required_fields": ["identity", "kind", "organization", "domain", "conflicts", "effective_at", "expires_at"],
-    "allowed_kinds": ["github-user", "github-team", "external-review-provider"],
+    "required_fields": [
+      "identity",
+      "kind",
+      "organization",
+      "domain",
+      "roles",
+      "conflicts",
+      "effective_at",
+      "expires_at"
+    ],
+    "allowed_kinds": [
+      "github-user",
+      "github-team",
+      "external-review-provider"
+    ],
     "conflict_examples": [
       "authored the candidate implementation",
       "performed the administrator mutation under review",
       "reports solely to the implementation owner without independent escalation",
       "has a direct financial or delivery incentive to accept the disputed evidence"
     ],
-    "removal_requires": ["reason", "replacement or reopened gap", "effective timestamp", "governance review"]
+    "removal_requires": [
+      "reason",
+      "replacement or reopened gap",
+      "effective timestamp",
+      "governance review"
+    ]
   },
   "summary": {
     "domain_count": 6,
@@ -113,6 +186,7 @@
   },
   "claim_boundary": {
     "matrix_presence_is_review": false,
+    "review_request_is_acceptance": false,
     "unassigned_domain_may_close_gap": false,
     "production_review_complete": false
   }

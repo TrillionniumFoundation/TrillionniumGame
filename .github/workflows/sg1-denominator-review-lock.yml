@@ -10,7 +10,9 @@ on:
       - 'config/denominator-review-policy.json'
       - 'contracts/denominator/review-bundle.v1.schema.json'
       - 'tests/denominator/test_review_lock.py'
-      - 'docs/development/DENOMINATOR_REVIEW_AND_LOCK.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/sg1-denominator-review-lock.yml'
 
 permissions:
@@ -43,6 +45,11 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+      - name: Validate current review authority
+        run: |
+          set -euo pipefail
+          grep -q 'SG1 remains incomplete until every family and the global bundle are independently accepted and locked' docs/COMPATIBILITY.md
+          grep -q 'Automation, implementation authors, generated summaries and PR prose cannot provide independent acceptance' docs/TESTING_AND_EVIDENCE.md
       - name: Run fail-closed review lock tests
         run: bash scripts/check-denominator-review-lock.sh
       - name: Assert policy cannot self-close SG1

@@ -10,7 +10,10 @@ on:
       - 'tools/runtime/conformance.py'
       - 'scripts/runtime/**'
       - 'tests/runtime/test_conformance.py'
-      - 'docs/development/RUNTIME_ENGINE_CONFORMANCE_GATE.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/sg3-runtime-engine-conformance.yml'
 
 permissions:

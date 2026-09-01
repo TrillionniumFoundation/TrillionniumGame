@@ -10,7 +10,9 @@ on:
       - 'scripts/oracle/check-differential-engine.sh'
       - 'tests/oracle/test_differential.py'
       - 'docs/evidence/schemas/oracle-observation-v1.schema.json'
-      - 'docs/development/ORACLE_DIFFERENTIAL_ENGINE.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/sg2-oracle-differential.yml'
   push:
     branches: [main]
@@ -21,7 +23,9 @@ on:
       - 'scripts/oracle/check-differential-engine.sh'
       - 'tests/oracle/test_differential.py'
       - 'docs/evidence/schemas/oracle-observation-v1.schema.json'
-      - 'docs/development/ORACLE_DIFFERENTIAL_ENGINE.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/sg2-oracle-differential.yml'
 
 permissions:

@@ -3,14 +3,31 @@
   "project_id": "trillionnium-game",
   "current_repository": "TrillionniumFoundation/TrillionniumGame",
   "target_repository": "TrillionniumFoundation/TrillionniumGame",
-  "previous_repository_names": ["TrillionniumFoundation/Trillionnium-Nakama"],
+  "previous_repository_names": [
+    "TrillionniumFoundation/Trillionnium-Nakama"
+  ],
   "repository_id": 1323087470,
   "lane": "game-backend-platform",
-  "lifecycle": "planning-v2-renamed",
+  "lifecycle": "plan-v3.1-current",
+  "documentation_authority": "docs/DOCUMENTATION_AUTHORITY.json",
   "language_boundary": {
-    "first_party_production_services": ["rust"],
-    "generated_or_declarative": ["protobuf", "openapi", "sql", "html", "css", "yaml", "json"],
-    "forbidden_final_runtime_dependencies": ["go-service", "go-sidecar", "compiled-go-plugin-loader"]
+    "first_party_production_services": [
+      "rust"
+    ],
+    "generated_or_declarative": [
+      "protobuf",
+      "openapi",
+      "sql",
+      "html",
+      "css",
+      "yaml",
+      "json"
+    ],
+    "forbidden_final_runtime_dependencies": [
+      "go-service",
+      "go-sidecar",
+      "compiled-go-plugin-loader"
+    ]
   },
   "owns": [
     "nakama-oss-functional-parity",

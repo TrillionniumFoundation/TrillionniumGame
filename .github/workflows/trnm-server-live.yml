@@ -13,7 +13,12 @@ on:
       - 'scripts/check-trnm-server.py'
       - 'scripts/ci-trnm-server-live.sh'
       - 'scripts/trnm-server-live-client.py'
-      - 'docs/development/TRNM_SERVER_VERTICAL_SLICE.md'
+      - 'scripts/wait-postgres-final-ready.py'
+      - 'tests/control_plane/test_postgres_final_ready.py'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/OPERATIONS_AND_RELEASE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/TRNM_SERVER_STATUS.json'
       - '.github/workflows/trnm-server-live.yml'
   push:
@@ -28,7 +33,12 @@ on:
       - 'scripts/check-trnm-server.py'
       - 'scripts/ci-trnm-server-live.sh'
       - 'scripts/trnm-server-live-client.py'
-      - 'docs/development/TRNM_SERVER_VERTICAL_SLICE.md'
+      - 'scripts/wait-postgres-final-ready.py'
+      - 'tests/control_plane/test_postgres_final_ready.py'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/OPERATIONS_AND_RELEASE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/TRNM_SERVER_STATUS.json'
       - '.github/workflows/trnm-server-live.yml'
 
@@ -69,7 +79,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/check-trnm-server.py
-          python3 -m py_compile scripts/check-trnm-server.py scripts/trnm-server-live-client.py
+          python3 -m py_compile \
+            scripts/check-trnm-server.py \
+            scripts/trnm-server-live-client.py \
+            scripts/wait-postgres-final-ready.py
+          python3 -m unittest tests.control_plane.test_postgres_final_ready -v
           bash -n scripts/ci-trnm-server-live.sh
 
   live-profile:

@@ -7,7 +7,9 @@ on:
       - 'runtime/internal/worldcommand/**'
       - 'contracts/world-command-runtime-v1-status.json'
       - 'contracts/world-command-fault-evidence-v1.schema.json'
-      - 'docs/WORLD_COMMAND_RUNTIME_V1.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/OPERATIONS_AND_RELEASE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'scripts/check-world-command-runtime-v1.sh'
       - 'scripts/test-world-command-runtime-v1-negative.sh'
       - 'tools/summarize_world_command_faults.py'
@@ -20,7 +22,9 @@ on:
       - 'runtime/internal/worldcommand/**'
       - 'contracts/world-command-runtime-v1-status.json'
       - 'contracts/world-command-fault-evidence-v1.schema.json'
-      - 'docs/WORLD_COMMAND_RUNTIME_V1.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/OPERATIONS_AND_RELEASE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'scripts/check-world-command-runtime-v1.sh'
       - 'scripts/test-world-command-runtime-v1-negative.sh'
       - 'tools/summarize_world_command_faults.py'
@@ -121,7 +125,9 @@ jobs:
           sha256sum \
             contracts/world-command-runtime-v1-status.json \
             contracts/world-command-fault-evidence-v1.schema.json \
-            docs/WORLD_COMMAND_RUNTIME_V1.md \
+            docs/ARCHITECTURE.md \
+            docs/OPERATIONS_AND_RELEASE.md \
+            docs/DOCUMENTATION_AUTHORITY.json \
             tools/summarize_world_command_faults.py \
             runtime/internal/worldcommand/*.go \
             run/world-command-runtime-v1/go-test.jsonl \

@@ -12,7 +12,9 @@ on:
       - 'crates/trnm-token-jwt-adapter/**'
       - 'migrations/**'
       - 'scripts/ci-outbox-spool-worker.sh'
-      - 'docs/development/OUTBOX_SPOOL_WORKER.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/OPERATIONS_AND_RELEASE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/outbox-spool-worker.yml'
   push:
     branches: [main]
@@ -25,7 +27,9 @@ on:
       - 'crates/trnm-token-jwt-adapter/**'
       - 'migrations/**'
       - 'scripts/ci-outbox-spool-worker.sh'
-      - 'docs/development/OUTBOX_SPOOL_WORKER.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/OPERATIONS_AND_RELEASE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/outbox-spool-worker.yml'
 
 permissions:
@@ -61,6 +65,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          grep -q 'Outbox state is explicit' docs/ARCHITECTURE.md
+          grep -q 'Crash-before-publish and crash-after-publish are separate failure boundaries' docs/OPERATIONS_AND_RELEASE.md
           bash -n scripts/ci-outbox-spool-worker.sh
           test -s crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs
           grep -q 'create_new(true)' crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs

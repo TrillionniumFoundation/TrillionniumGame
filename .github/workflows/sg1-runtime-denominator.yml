@@ -8,7 +8,9 @@ on:
       - 'scripts/generate-runtime-denominator.py'
       - 'scripts/check-runtime-denominator.sh'
       - 'tests/denominator/test_runtime*.py'
-      - 'docs/development/RUNTIME_DENOMINATOR_IMPLEMENTATION.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/sg1-runtime-denominator.yml'
   push:
     branches: [main]
@@ -17,7 +19,9 @@ on:
       - 'scripts/generate-runtime-denominator.py'
       - 'scripts/check-runtime-denominator.sh'
       - 'tests/denominator/test_runtime*.py'
-      - 'docs/development/RUNTIME_DENOMINATOR_IMPLEMENTATION.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/sg1-runtime-denominator.yml'
 
 permissions:
@@ -50,6 +54,11 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+      - name: Validate current Runtime denominator contract
+        run: |
+          set -euo pipefail
+          grep -q '`DEN-RUNTIME`' docs/COMPATIBILITY.md
+          grep -q 'Runtime modules receive explicit capabilities' docs/ARCHITECTURE.md
       - name: Validate extractors and negative fixtures
         run: bash scripts/check-runtime-denominator.sh
       - name: Fetch and verify exact upstream trees
