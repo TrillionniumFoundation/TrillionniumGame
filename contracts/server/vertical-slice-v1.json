@@ -3,18 +3,18 @@
   "project_id": "trillionnium-game",
   "status": "source-candidate",
   "crate": "crates/trnm-server",
-  "binary": "trnm-server",
+  "binary": "trnm-server-foundation",
   "implemented": [
-    "typed serve/migrate/help command parsing",
-    "bounded HTTP/1.1 request parser",
+    "typed serve/check-config/version/help command parsing",
+    "bounded configurable HTTP/1.1 request parser",
+    "duplicate content-length rejection",
     "transfer-encoding rejection",
     "health and readiness endpoints",
-    "explicit development bearer-token boundary",
-    "one authority command reaching prepare/commit",
+    "one bootstrap and one authority command reaching prepare/commit",
     "event and transactional-outbox intent creation in the pure core",
     "exact duplicate receipt replay",
     "stale revision rejection",
-    "deterministic bounded-request drain mode"
+    "bounded synchronous worker queue and socket I/O timeouts"
   ],
   "not_implemented": [
     "production configuration loader",
@@ -33,9 +33,12 @@
   "required_local_commands": [
     "cargo fmt --manifest-path crates/trnm-server/Cargo.toml -- --check",
     "cargo test --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked",
-    "cargo clippy --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked -- -D warnings"
+    "cargo clippy --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked -- -D warnings",
+    "bash scripts/check-rust-server-process.sh"
   ],
-  "gap_ids": ["GAP-P0-SERVER-001"],
+  "gap_ids": [
+    "GAP-P0-SERVER-001"
+  ],
   "claims": {
     "rust_binary_exists": true,
     "source_candidate": true,
