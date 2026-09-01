@@ -151,7 +151,7 @@ jobs:
           TRNM_EVIDENCE_ROOT: run/outbox-final-attempt-reaper
           TRNM_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}
         run: bash scripts/ci-outbox-final-attempt-reaper.sh "$PROFILE"
-      - name: Seal raw archive into retained job log
+      - name: Seal populated profile evidence into the retained job log
         if: always()
         id: retained_log
         shell: bash
@@ -159,8 +159,110 @@ jobs:
           PROFILE: ${{ matrix.profile }}
         run: |
           set -euo pipefail
-          root="run/outbox-final-attempt-reaper/${PROFILE}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PROFILE}"
-          mkdir -p "$root"
+          root="run/outbox-final-attempt-reaper/${PROFILE}"
+          test -d "$root"
+          python3 - "$root" "$PROFILE" <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          profile = sys.argv[2]
+          commit = subprocess.check_output(
+              ['git', 'rev-parse', 'HEAD'], text=True
+          ).strip()
+          tree = subprocess.check_output(
+              ['git', 'rev-parse', 'HEAD^{tree}'], text=True
+          ).strip()
+          if commit != os.environ['CANDIDATE_SHA']:
+              raise SystemExit('candidate commit mismatch while sealing evidence')
+
+          images = json.loads(
+              Path('config/database-test-images.json').read_text(encoding='utf-8')
+          )['profiles']
+          image = images[profile]['image']
+          lock = json.loads(
+              Path('migrations/MIGRATION_CHAIN.lock.json').read_text(encoding='utf-8')
+          )
+          row = lock['profiles'][profile]
+          ordered = row['ordered_files']
+          if len(ordered) != 1:
+              raise SystemExit('profile migration lock is not singular')
+          migration = ordered[0]['path']
+          migration_blob = subprocess.check_output(
+              ['git', 'hash-object', migration], text=True
+          ).strip()
+          if migration_blob != ordered[0]['git_blob_sha1']:
+              raise SystemExit('migration blob changed while sealing evidence')
+
+          result = {}
+          for line in (root / 'result.env').read_text(encoding='utf-8').splitlines():
+              key, value = line.split('=', 1)
+              result[key] = value
+          expected_result = {
+              'status': 'passed',
+              'profile': profile,
+              'commit': commit,
+          }
+          if result != expected_result:
+              raise SystemExit(f'profile result is not exact passed evidence: {result!r}')
+
+          run_id = os.environ['GITHUB_RUN_ID']
+          run_attempt = os.environ['GITHUB_RUN_ATTEMPT']
+          identity = {
+              'repository': os.environ['CANDIDATE_REPOSITORY'],
+              'commit': commit,
+              'tree': tree,
+              'profile': profile,
+              'image': image,
+              'run_id': run_id,
+              'run_attempt': run_attempt,
+              'evidence_run_id': f'{run_id}-{run_attempt}-{profile}',
+              'workflow': 'outbox-final-attempt-reaper',
+              'workflow_path': '.github/workflows/outbox-final-attempt-reaper.yml',
+              'job_key': 'live-profile',
+              'job_name': f'live-profile ({profile})',
+              'migration': migration,
+              'migration_blob_sha1': migration_blob,
+          }
+          (root / 'identity.env').write_text(
+              ''.join(f'{key}={value}\n' for key, value in identity.items()),
+              encoding='utf-8',
+          )
+
+          manifest = root / 'files.sha256'
+          manifest.unlink(missing_ok=True)
+          files = []
+          for path in root.rglob('*'):
+              if path.is_symlink():
+                  raise SystemExit(f'symlink is forbidden in evidence: {path}')
+              if path.is_file():
+                  files.append(path)
+          if not files:
+              raise SystemExit('profile evidence directory has no files')
+          lines = []
+          for path in sorted(files, key=lambda item: item.relative_to(root).as_posix()):
+              relative = path.relative_to(root).as_posix()
+              if '\n' in relative or '\r' in relative:
+                  raise SystemExit('newline is forbidden in evidence path')
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              lines.append(f'{digest}  ./{relative}')
+          manifest.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          print(
+              json.dumps(
+                  {
+                      'profile': profile,
+                      'commit': commit,
+                      'tree': tree,
+                      'file_count': len(files),
+                  },
+                  sort_keys=True,
+              )
+          )
+          PY
           archive="run/outbox-final-attempt-reaper-${PROFILE}-${CANDIDATE_SHA}.tar.gz"
           tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
             -czf "$archive" -C "$root" .
