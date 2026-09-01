@@ -120,7 +120,12 @@ class ActionsLogVerifierTests(unittest.TestCase):
         return "".join(f"{key}={value}\n" for key, value in values.items()).encode()
 
     @staticmethod
-    def step(number: int, *, status: str = "completed", conclusion: Any = "success") -> dict[str, Any]:
+    def step(
+        number: int,
+        *,
+        status: str = "completed",
+        conclusion: Any = "success",
+    ) -> dict[str, Any]:
         return {
             "name": f"step-{number}",
             "number": number,
@@ -174,7 +179,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
         return jobs
 
     @classmethod
-    def run(cls, workflow_id: int, *, current: bool) -> dict[str, Any]:
+    def workflow_run(cls, workflow_id: int, *, current: bool) -> dict[str, Any]:
         return {
             "id": 123456,
             "workflow_id": workflow_id,
@@ -270,7 +275,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
 
     def test_run_identity_rejects_wrong_workflow_attempt_tree_and_partial_run(self) -> None:
         workflow_id = 42
-        exact = self.run(workflow_id, current=False)
+        exact = self.workflow_run(workflow_id, current=False)
         self.module.validate_run(
             exact,
             repository=REPOSITORY,
