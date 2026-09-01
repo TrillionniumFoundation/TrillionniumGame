@@ -209,6 +209,10 @@ jobs:
           }
           if result != expected_result:
               raise SystemExit(f'profile result is not exact passed evidence: {result!r}')
+          (root / 'result.env').write_text(
+              f'status=passed\nprofile={profile}\ncommit={commit}\ntree={tree}\n',
+              encoding='utf-8',
+          )
 
           run_id = os.environ['GITHUB_RUN_ID']
           run_attempt = os.environ['GITHUB_RUN_ATTEMPT']
