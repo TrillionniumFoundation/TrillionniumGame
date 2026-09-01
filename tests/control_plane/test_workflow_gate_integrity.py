@@ -85,6 +85,35 @@ jobs:
         failures = WORKFLOW_POLICY.workflow_structure_failures(source)
         self.assertTrue(any("duplicate mapping key 'env'" in item for item in failures))
 
+    def test_every_prospective_checkout_enters_recreated_workspace(self) -> None:
+        source = (ROOT / ".github/workflows/prospective-merge-gate.yml").read_text(
+            encoding="utf-8"
+        )
+        step_header = "      - name: Fetch the exact GitHub prospective merge object\n"
+        blocks = source.split(step_header)[1:]
+        self.assertEqual(
+            len(blocks),
+            6,
+            "every prospective job must use the one reviewed checkout step",
+        )
+        for index, remainder in enumerate(blocks, 1):
+            block = remainder.split("\n      - name:", 1)[0]
+            checkout = block.find("git -C \"$GITHUB_WORKSPACE\" checkout --detach")
+            enter = block.find('cd "$GITHUB_WORKSPACE"')
+            relative_use = block.find("python3 scripts/")
+            self.assertGreaterEqual(checkout, 0, f"checkout {index} is missing")
+            self.assertGreater(
+                enter,
+                checkout,
+                f"checkout {index} does not enter the recreated workspace",
+            )
+            if relative_use >= 0:
+                self.assertLess(
+                    enter,
+                    relative_use,
+                    f"checkout {index} uses a relative path before entering workspace",
+                )
+
 
 def raw_run(
     *,
