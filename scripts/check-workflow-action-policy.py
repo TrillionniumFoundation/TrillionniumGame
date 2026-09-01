@@ -21,6 +21,10 @@ MAPPING_KEY = re.compile(
 BLOCK_SCALAR = re.compile(r"^[>|][1-9]?[+-]?(?:\s+#.*)?$")
 MOVABLE_CANDIDATE_FETCH = "refs/heads/${CANDIDATE_REF}"
 IMMUTABLE_CANDIDATE_FETCH = '"${CANDIDATE_SHA}"'
+PROSPECTIVE_WORKFLOW = ".github/workflows/prospective-merge-gate.yml"
+PROSPECTIVE_MERGE_REF = (
+    "+refs/pull/${PR_NUMBER}/merge:refs/remotes/origin/prospective-merge"
+)
 ALLOWED_USES_PREFIXES = ("./",)
 ALLOWED_WRITE_WORKFLOWS: set[str] = set()
 REQUIRED_ROOT_KEYS = ("name", "on", "jobs")
@@ -36,6 +40,59 @@ def _unquote_key(value: str) -> str:
     return value
 
 
+def _join_shell_continuations(text: str) -> str:
+    """Normalize reviewed backslash-newline shell continuations for matching."""
+
+    return re.sub(r"\\\n[ \t]*", "", text)
+
+
+def prospective_merge_fetch_failures(relative: str, text: str) -> list[str]:
+    """Validate the one approved exact prospective-merge fetch profile.
+
+    The pull-request merge ref is movable, so the workflow must bind the
+    checked-out object to the immutable event ``github.sha`` and independently
+    validate ordered base/head parents. Merely mentioning the merge ref is not
+    sufficient.
+    """
+
+    if relative != PROSPECTIVE_WORKFLOW:
+        return [
+            f"{relative}: prospective merge fetch is allowed only in "
+            f"{PROSPECTIVE_WORKFLOW}"
+        ]
+
+    failures: list[str] = []
+    normalized = _join_shell_continuations(text)
+    required = {
+        "event merge SHA": "PROSPECTIVE_MERGE_SHA: ${{ github.sha }}",
+        "base SHA": "SOURCE_BASE_SHA: ${{ github.event.pull_request.base.sha }}",
+        "head SHA": "SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}",
+        "pull request number": "PR_NUMBER: ${{ github.event.pull_request.number }}",
+        "exact merge ref": PROSPECTIVE_MERGE_REF,
+        "checked-out merge assertion": (
+            'rev-parse HEAD)" = "$PROSPECTIVE_MERGE_SHA"'
+        ),
+        "ordered-parent verifier": "scripts/check-prospective-merge-identity.py",
+    }
+    for label, marker in required.items():
+        if marker not in normalized:
+            failures.append(f"{relative}: prospective merge fetch lacks {label}")
+
+    checkout_count = text.count(
+        'git -C "$GITHUB_WORKSPACE" checkout --detach'
+    )
+    workspace_enter_count = text.count('cd "$GITHUB_WORKSPACE"')
+    if checkout_count < 1:
+        failures.append(f"{relative}: prospective merge workflow has no checkout")
+    if workspace_enter_count < checkout_count:
+        failures.append(
+            f"{relative}: every recreated prospective checkout must enter "
+            f"GITHUB_WORKSPACE (checkouts={checkout_count}, "
+            f"enters={workspace_enter_count})"
+        )
+    return failures
+
+
 def workflow_structure_failures(text: str) -> list[str]:
     """Return duplicate-key and minimal root-shape failures.
 
@@ -47,9 +104,6 @@ def workflow_structure_failures(text: str) -> list[str]:
     """
 
     failures: list[str] = []
-    # Stack entries are (indent, token). A sequence token gives each list item
-    # a distinct scope so repeated keys such as ``name`` in separate steps are
-    # not reported as duplicates.
     stack: list[tuple[int, str]] = []
     sequence_indexes: defaultdict[int, int] = defaultdict(int)
     first_seen: dict[tuple[tuple[str, ...], int, str], int] = {}
@@ -109,7 +163,6 @@ def workflow_structure_failures(text: str) -> list[str]:
             stack.append((indent, f"@{indent}:{sequence_indexes[indent]}"))
 
         if not value:
-            # Any subsequent mapping nested more deeply belongs to this key.
             stack.append((key_indent, key))
         elif BLOCK_SCALAR.match(value):
             block_parent_indent = indent
@@ -117,7 +170,9 @@ def workflow_structure_failures(text: str) -> list[str]:
     for key in REQUIRED_ROOT_KEYS:
         count = root_counts[key]
         if count != 1:
-            failures.append(f"root key {key!r} must appear exactly once (found {count})")
+            failures.append(
+                f"root key {key!r} must appear exactly once (found {count})"
+            )
     return failures
 
 
@@ -131,6 +186,7 @@ def main() -> int:
         return 1
 
     immutable_fetch_workflows = 0
+    prospective_merge_workflows = 0
     local_use_count = 0
     workflow_names: dict[str, str] = {}
     for path in files:
@@ -174,12 +230,24 @@ def main() -> int:
         if "pull_request_target:" in text:
             failures.append(f"{relative}: pull_request_target is forbidden")
         if "persist-credentials: true" in text:
-            failures.append(f"{relative}: persistent checkout credentials are forbidden")
+            failures.append(
+                f"{relative}: persistent checkout credentials are forbidden"
+            )
         if MOVABLE_CANDIDATE_FETCH in text:
             failures.append(
                 f"{relative}: movable branch fetch is forbidden; "
                 "fetch CANDIDATE_SHA directly"
             )
+
+        is_prospective = (
+            relative == PROSPECTIVE_WORKFLOW
+            or "PROSPECTIVE_MERGE_SHA:" in text
+            or PROSPECTIVE_MERGE_REF in text
+        )
+        if is_prospective:
+            prospective_merge_workflows += 1
+            failures.extend(prospective_merge_fetch_failures(relative, text))
+            continue
 
         has_candidate_fetch = (
             "CANDIDATE_SHA:" in text
@@ -204,7 +272,8 @@ def main() -> int:
     print(
         "workflow action policy: OK "
         f"({len(files)} workflows; {immutable_fetch_workflows} immutable "
-        f"candidate fetchers; {local_use_count} local action/reusable-workflow "
+        f"candidate fetchers; {prospective_merge_workflows} exact prospective "
+        f"merge fetcher(s); {local_use_count} local action/reusable-workflow "
         "use(s); unique workflow names and mapping keys; no external actions, "
         "movable candidate fetches or write permissions)"
     )

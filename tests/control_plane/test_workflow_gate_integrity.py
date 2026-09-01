@@ -89,16 +89,16 @@ jobs:
         source = (ROOT / ".github/workflows/prospective-merge-gate.yml").read_text(
             encoding="utf-8"
         )
-        step_header = "      - name: Fetch the exact GitHub prospective merge object\n"
-        blocks = source.split(step_header)[1:]
+        recreate = '          rm -rf "$GITHUB_WORKSPACE"\n'
+        blocks = source.split(recreate)[1:]
         self.assertEqual(
             len(blocks),
             6,
-            "every prospective job must use the one reviewed checkout step",
+            "every prospective job must recreate and enter one reviewed checkout",
         )
         for index, remainder in enumerate(blocks, 1):
             block = remainder.split("\n      - name:", 1)[0]
-            checkout = block.find("git -C \"$GITHUB_WORKSPACE\" checkout --detach")
+            checkout = block.find('git -C "$GITHUB_WORKSPACE" checkout --detach')
             enter = block.find('cd "$GITHUB_WORKSPACE"')
             relative_use = block.find("python3 scripts/")
             self.assertGreaterEqual(checkout, 0, f"checkout {index} is missing")

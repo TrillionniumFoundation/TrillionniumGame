@@ -35,6 +35,89 @@ class WorkflowActionPolicyTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertFalse(self.module.allowed_use(value))
 
+    def test_exact_prospective_merge_profile_is_accepted(self) -> None:
+        source = """name: prospective-merge-gate
+on:
+  pull_request:
+env:
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  SOURCE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+  SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  PROSPECTIVE_MERGE_SHA: ${{ github.sha }}
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: fetch
+        run: |
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" fetch origin "+refs/pull/${PR_NUMBER}/merge:refs/remotes/origin/prospective-merge"
+          git -C "$GITHUB_WORKSPACE" checkout --detach refs/remotes/origin/prospective-merge
+          cd "$GITHUB_WORKSPACE"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$PROSPECTIVE_MERGE_SHA"
+          python3 scripts/check-prospective-merge-identity.py
+"""
+        self.assertEqual(
+            self.module.prospective_merge_fetch_failures(
+                ".github/workflows/prospective-merge-gate.yml", source
+            ),
+            [],
+        )
+
+    def test_prospective_merge_profile_rejects_wrong_path_ref_and_sha(self) -> None:
+        valid = """name: prospective-merge-gate
+on:
+  pull_request:
+env:
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  SOURCE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+  SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  PROSPECTIVE_MERGE_SHA: ${{ github.sha }}
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: fetch
+        run: |
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" fetch origin "+refs/pull/${PR_NUMBER}/merge:refs/remotes/origin/prospective-merge"
+          git -C "$GITHUB_WORKSPACE" checkout --detach refs/remotes/origin/prospective-merge
+          cd "$GITHUB_WORKSPACE"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$PROSPECTIVE_MERGE_SHA"
+          python3 scripts/check-prospective-merge-identity.py
+"""
+        wrong_path = self.module.prospective_merge_fetch_failures(
+            ".github/workflows/not-the-authority.yml", valid
+        )
+        self.assertTrue(any("allowed only" in failure for failure in wrong_path))
+
+        wrong_ref = valid.replace(
+            "+refs/pull/${PR_NUMBER}/merge:refs/remotes/origin/prospective-merge",
+            "refs/heads/main",
+        )
+        self.assertTrue(
+            any(
+                "exact merge ref" in failure
+                for failure in self.module.prospective_merge_fetch_failures(
+                    ".github/workflows/prospective-merge-gate.yml", wrong_ref
+                )
+            )
+        )
+
+        wrong_sha = valid.replace(
+            '"$PROSPECTIVE_MERGE_SHA"', '"$SOURCE_HEAD_SHA"'
+        )
+        self.assertTrue(
+            any(
+                "checked-out merge assertion" in failure
+                for failure in self.module.prospective_merge_fetch_failures(
+                    ".github/workflows/prospective-merge-gate.yml", wrong_sha
+                )
+            )
+        )
+
     def test_repository_policy_passes(self) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
