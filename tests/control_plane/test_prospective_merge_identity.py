@@ -105,12 +105,18 @@ class ProspectiveMergeIdentityTests(unittest.TestCase):
 
     def test_another_merge_identity_is_rejected(self) -> None:
         with self.assertRaisesRegex(MODULE.IdentityError, "HEAD mismatch"):
-            self.validate(expected_merge=self.fixture.base_commit)
+            self.validate(expected_merge=self.fixture.root_commit)
 
     def test_non_merge_head_is_rejected(self) -> None:
         self.fixture.git("checkout", "--detach", self.fixture.head_commit)
         with self.assertRaisesRegex(MODULE.IdentityError, "exactly two parents"):
-            self.validate(expected_merge=self.fixture.head_commit)
+            MODULE.validate_identity(
+                self.fixture.root,
+                repository="TrillionniumFoundation/TrillionniumGame",
+                expected_base=self.fixture.base_commit,
+                expected_head=self.fixture.root_commit,
+                expected_merge=self.fixture.head_commit,
+            )
 
     def test_invalid_sha_is_rejected_before_git_use(self) -> None:
         with self.assertRaisesRegex(MODULE.IdentityError, "40 lowercase"):
