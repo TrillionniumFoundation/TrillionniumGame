@@ -44,6 +44,7 @@ jobs:
             "+refs/pull/${PR_NUMBER}/merge:refs/remotes/origin/prospective-merge"
           git -C "$GITHUB_WORKSPACE" checkout --detach \
             refs/remotes/origin/prospective-merge
+          cd "$GITHUB_WORKSPACE"
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = \
             "$PROSPECTIVE_MERGE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s \
@@ -102,6 +103,7 @@ jobs:
             "+refs/pull/${PR_NUMBER}/merge:refs/remotes/origin/prospective-merge"
           git -C "$GITHUB_WORKSPACE" checkout --detach \
             refs/remotes/origin/prospective-merge
+          cd "$GITHUB_WORKSPACE"
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = \
             "$PROSPECTIVE_MERGE_SHA"
           python3 scripts/check-prospective-merge-identity.py \
@@ -168,6 +170,7 @@ jobs:
             "+refs/pull/${PR_NUMBER}/merge:refs/remotes/origin/prospective-merge"
           git -C "$GITHUB_WORKSPACE" checkout --detach \
             refs/remotes/origin/prospective-merge
+          cd "$GITHUB_WORKSPACE"
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = \
             "$PROSPECTIVE_MERGE_SHA"
           python3 scripts/check-prospective-merge-identity.py \
@@ -206,6 +209,7 @@ jobs:
             "+refs/pull/${PR_NUMBER}/merge:refs/remotes/origin/prospective-merge"
           git -C "$GITHUB_WORKSPACE" checkout --detach \
             refs/remotes/origin/prospective-merge
+          cd "$GITHUB_WORKSPACE"
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = \
             "$PROSPECTIVE_MERGE_SHA"
           python3 scripts/check-prospective-merge-identity.py \
@@ -265,6 +269,7 @@ jobs:
             "+refs/pull/${PR_NUMBER}/merge:refs/remotes/origin/prospective-merge"
           git -C "$GITHUB_WORKSPACE" checkout --detach \
             refs/remotes/origin/prospective-merge
+          cd "$GITHUB_WORKSPACE"
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = \
             "$PROSPECTIVE_MERGE_SHA"
           python3 scripts/check-prospective-merge-identity.py \
@@ -414,6 +419,7 @@ jobs:
             "+refs/pull/${PR_NUMBER}/merge:refs/remotes/origin/prospective-merge"
           git -C "$GITHUB_WORKSPACE" checkout --detach \
             refs/remotes/origin/prospective-merge
+          cd "$GITHUB_WORKSPACE"
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = \
             "$PROSPECTIVE_MERGE_SHA"
           python3 scripts/check-prospective-merge-identity.py \
