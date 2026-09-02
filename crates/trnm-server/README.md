@@ -12,6 +12,15 @@ This document is the current module-level engineering contract for `trnm-server`
 
 The module's current maturity is `standalone-source-candidate`. Promotion requires exact-candidate execution, retained evidence, and the independent reviews required by the linked gaps.
 
+The exact no-credit source boundary consumed by the server vertical-slice gate is:
+
+```text
+compatibility_credit=false
+database_durability_credit=false
+sg4_credit=false
+production_ready=false
+```
+
 ## Responsibilities
 
 Typed configuration, bounded ingress, worker supervision, health/readiness, drain, and composition-root process contracts.
