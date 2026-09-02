@@ -2,7 +2,7 @@
   "schema": "trillionnium.active-branches.v1",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "generated_at": "2026-09-02T04:26:00Z",
+  "generated_at": "2026-09-02T04:27:30Z",
   "active_branches": [
     {
       "name": "main",
@@ -37,7 +37,7 @@
     {
       "name": "integration/plan-v3-closure-2026-09-02",
       "role": "singular-main-integration-candidate",
-      "pull_request": null
+      "pull_request": 64
     }
   ],
   "policy": {
