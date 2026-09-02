@@ -89,7 +89,9 @@ impl AuthenticatedJwt {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthenticationError {
     InvalidProfile,
-    TokenTooLarge { actual: usize },
+    TokenTooLarge {
+        actual: usize,
+    },
     SegmentCount,
     EmptySegment,
     HeaderDecode,
@@ -102,13 +104,18 @@ pub enum AuthenticationError {
     LegacyRouteForbidden,
     InvalidKeyId,
     UnknownKey,
-    ResolvedKeyDomainMismatch { expected: KeyDomain, actual: KeyDomain },
+    ResolvedKeyDomainMismatch {
+        expected: KeyDomain,
+        actual: KeyDomain,
+    },
     ResolvedKeyEpochMismatch {
         expected: Option<u32>,
         actual: Option<u32>,
     },
     SignatureDecode,
-    SignatureLength { actual: usize },
+    SignatureLength {
+        actual: usize,
+    },
     Provider(ProviderError),
     SignatureRejected,
     PayloadDecode,
@@ -377,7 +384,10 @@ mod tests {
         }
     }
 
-    fn key_reference(domain: KeyDomain, epoch: Option<u32>) -> Result<KeyReference, AuthenticationError> {
+    fn key_reference(
+        domain: KeyDomain,
+        epoch: Option<u32>,
+    ) -> Result<KeyReference, AuthenticationError> {
         KeyReference::new(domain, KeyHandle::new("kms://jwt/access").unwrap(), epoch)
             .map_err(|_| AuthenticationError::UnknownKey)
     }
