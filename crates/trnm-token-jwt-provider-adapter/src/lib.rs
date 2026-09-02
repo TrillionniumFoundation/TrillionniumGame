@@ -5,7 +5,9 @@
 //!
 //! Only the bounded JOSE header required for algorithm and key routing is
 //! parsed before authentication. The payload is decoded only after the opaque
-//! provider accepts the exact encoded `header.payload` signing input.
+//! provider accepts the exact encoded `header.payload` signing input. Resolver
+//! output is treated as untrusted routing data: its key domain and epoch must
+//! exactly match the requested token domain and JOSE route before provider use.
 
 use core::fmt;
 
@@ -100,6 +102,14 @@ pub enum AuthenticationError {
     LegacyRouteForbidden,
     InvalidKeyId,
     UnknownKey,
+    ResolvedKeyDomainMismatch {
+        expected: KeyDomain,
+        actual: KeyDomain,
+    },
+    ResolvedKeyEpochMismatch {
+        expected: Option<u32>,
+        actual: Option<u32>,
+    },
     SignatureDecode,
     SignatureLength { actual: usize },
     Provider(ProviderError),
@@ -127,6 +137,14 @@ impl fmt::Display for AuthenticationError {
             Self::LegacyRouteForbidden => formatter.write_str("legacy JWT route is disabled"),
             Self::InvalidKeyId => formatter.write_str("JWT kid header is invalid"),
             Self::UnknownKey => formatter.write_str("JWT key route is unavailable"),
+            Self::ResolvedKeyDomainMismatch { expected, actual } => write!(
+                formatter,
+                "resolved JWT key domain {actual:?} does not match requested domain {expected:?}"
+            ),
+            Self::ResolvedKeyEpochMismatch { expected, actual } => write!(
+                formatter,
+                "resolved JWT key epoch {actual:?} does not match token route epoch {expected:?}"
+            ),
             Self::SignatureDecode => formatter.write_str("JWT signature base64url decode failed"),
             Self::SignatureLength { actual } => {
                 write!(
@@ -178,6 +196,7 @@ pub fn authenticate(
     validate_header(header, profile)?;
     let route = route(header, profile)?;
     let key = resolver.resolve(profile.domain, route)?;
+    validate_resolved_key(&key, profile.domain, route)?;
 
     let signature = base64url::decode(signature_segment, SIGNATURE_BYTES)
         .map_err(|_| AuthenticationError::SignatureDecode)?;
@@ -200,6 +219,30 @@ pub fn authenticate(
         key,
         payload_bytes,
     })
+}
+
+fn validate_resolved_key(
+    key: &KeyReference,
+    expected_domain: KeyDomain,
+    route: TokenRoute,
+) -> Result<(), AuthenticationError> {
+    if key.domain != expected_domain {
+        return Err(AuthenticationError::ResolvedKeyDomainMismatch {
+            expected: expected_domain,
+            actual: key.domain,
+        });
+    }
+    let expected_epoch = match route {
+        TokenRoute::Legacy => None,
+        TokenRoute::Epoch(epoch) => Some(epoch),
+    };
+    if key.epoch != expected_epoch {
+        return Err(AuthenticationError::ResolvedKeyEpochMismatch {
+            expected: expected_epoch,
+            actual: key.epoch,
+        });
+    }
+    Ok(())
 }
 
 fn validate_header(
@@ -276,8 +319,22 @@ mod tests {
                 TokenRoute::Legacy => None,
                 TokenRoute::Epoch(value) => Some(value),
             };
-            KeyReference::new(domain, KeyHandle::new("kms://jwt/access").unwrap(), epoch)
-                .map_err(|_| AuthenticationError::UnknownKey)
+            key_reference(domain, epoch)
+        }
+    }
+
+    #[derive(Debug)]
+    struct FixedResolver {
+        key: KeyReference,
+    }
+
+    impl KeyResolver for FixedResolver {
+        fn resolve(
+            &self,
+            _domain: KeyDomain,
+            _route: TokenRoute,
+        ) -> Result<KeyReference, AuthenticationError> {
+            Ok(self.key.clone())
         }
     }
 
@@ -321,6 +378,14 @@ mod tests {
                 VerificationDecision::Rejected
             })
         }
+    }
+
+    fn key_reference(
+        domain: KeyDomain,
+        epoch: Option<u32>,
+    ) -> Result<KeyReference, AuthenticationError> {
+        KeyReference::new(domain, KeyHandle::new("kms://jwt/access").unwrap(), epoch)
+            .map_err(|_| AuthenticationError::UnknownKey)
     }
 
     fn token(header: &[u8], payload_segment: &str, signature: &[u8]) -> String {
@@ -464,6 +529,67 @@ mod tests {
                 AuthenticationError::InvalidKeyId
             );
         }
+    }
+
+    #[test]
+    fn resolver_domain_mismatch_fails_before_provider() {
+        let provider = Provider::new(true);
+        let mut profile = AuthenticationProfile::default();
+        profile.domain = KeyDomain::RefreshToken;
+        let resolver = FixedResolver {
+            key: key_reference(KeyDomain::AccessToken, None).unwrap(),
+        };
+        let value = token(
+            br#"{"alg":"HS256","typ":"JWT"}"#,
+            &valid_payload(),
+            &[0x5a; SIGNATURE_BYTES],
+        );
+        assert_eq!(
+            authenticate(&value, &profile, &resolver, &provider).unwrap_err(),
+            AuthenticationError::ResolvedKeyDomainMismatch {
+                expected: KeyDomain::RefreshToken,
+                actual: KeyDomain::AccessToken,
+            }
+        );
+        assert!(provider.inputs.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolver_epoch_mismatch_fails_before_provider() {
+        let provider = Provider::new(true);
+        let profile = AuthenticationProfile::default();
+        let epoch_value = token(
+            br#"{"alg":"HS256","typ":"JWT","kid":"trnm-kep-v1:7"}"#,
+            &valid_payload(),
+            &[0x5a; SIGNATURE_BYTES],
+        );
+        let wrong_epoch = FixedResolver {
+            key: key_reference(KeyDomain::AccessToken, Some(8)).unwrap(),
+        };
+        assert_eq!(
+            authenticate(&epoch_value, &profile, &wrong_epoch, &provider).unwrap_err(),
+            AuthenticationError::ResolvedKeyEpochMismatch {
+                expected: Some(7),
+                actual: Some(8),
+            }
+        );
+
+        let legacy_value = token(
+            br#"{"alg":"HS256","typ":"JWT"}"#,
+            &valid_payload(),
+            &[0x5a; SIGNATURE_BYTES],
+        );
+        let epoch_for_legacy = FixedResolver {
+            key: key_reference(KeyDomain::AccessToken, Some(7)).unwrap(),
+        };
+        assert_eq!(
+            authenticate(&legacy_value, &profile, &epoch_for_legacy, &provider).unwrap_err(),
+            AuthenticationError::ResolvedKeyEpochMismatch {
+                expected: None,
+                actual: Some(7),
+            }
+        );
+        assert!(provider.inputs.lock().unwrap().is_empty());
     }
 
     #[test]
