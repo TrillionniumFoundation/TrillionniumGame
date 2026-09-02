@@ -218,7 +218,6 @@ def self_test(source: SourceSet) -> None:
         replace(source, app=source.app.replace(
             "trnm_server_database_cancellation_failures_total",
             "trnm_server_database_hidden_cancellation_failures_total",
-            1,
         )),
     )
     assert_rejected(
