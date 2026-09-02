@@ -1,12 +1,15 @@
 name: Self-hosted desktop runner availability
 
 on:
-  workflow_dispatch:
+  issue_comment:
+    types: [created]
 
-# This workflow is deliberately manual-only, checks out no source, receives no
-# token permission, accepts no user-controlled input, and targets one reviewed
-# runner group plus one dedicated label. If either boundary is absent, the job
-# remains queued rather than executing on a broader self-hosted fleet.
+# `issue_comment` is evaluated from the repository default branch. The exact
+# job-level predicate below is evaluated before runner allocation, so a topic
+# ref, pull-request comment, unprotected ref, different issue, different actor,
+# or non-exact command cannot acquire the persistent runner. The job checks out
+# no source, receives no token permission, accepts no input, and emits no host
+# inventory.
 permissions: {}
 
 concurrency:
@@ -16,6 +19,16 @@ concurrency:
 jobs:
   runner-probe:
     name: Desktop runner probe
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.repository == 'TrillionniumFoundation/TrillionniumGame' &&
+      github.event.repository.default_branch == 'main' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected == true &&
+      github.event.issue.number == 7 &&
+      github.event.issue.pull_request == null &&
+      github.event.comment.body == '/desktop-runner-probe' &&
+      github.actor == 'Tomasrgbsf'
     runs-on:
       group: desktop
       labels: desktop
@@ -25,9 +38,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_EVENT_NAME" = issue_comment
+          test "$GITHUB_REPOSITORY" = TrillionniumFoundation/TrillionniumGame
           test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_ACTOR" = Tomasrgbsf
           test "$RUNNER_NAME" = desktop
           test "$RUNNER_OS" = Linux
           test "$RUNNER_ARCH" = X64
-          printf 'status=desktop-runner-acquired\nref=refs/heads/main\n'
+          printf 'status=desktop-runner-acquired\ntrigger=issue_comment\nref=refs/heads/main\nissue=7\n'
