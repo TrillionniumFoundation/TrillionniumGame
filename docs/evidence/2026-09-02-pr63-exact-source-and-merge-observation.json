@@ -3,7 +3,7 @@
   "evidence_id": "TG-EV-PR63-EXACT-SOURCE-MERGE-20260902",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "recorded_at": "2026-09-02T05:46:00Z",
+  "recorded_at": "2026-09-02T07:36:00Z",
   "status": "exact-source-and-merge-executed-unreviewed",
   "candidate": {
     "repository": "TrillionniumFoundation/TrillionniumGame",
@@ -12,33 +12,40 @@
     "base_branch": "main",
     "base_commit": "d66c1b5b614a2a7b682c233fe2e7a19939b6976b",
     "head_branch": "codex/branch-evidence-closure-2026-09-02",
-    "commit": "44d0a4274d3c665aa58d17fbde9f9dc0ded08281",
-    "tree": "89b0407efa6d786d6ec6ba7aa84e76671280f6c2"
+    "commit": "447fac4d0364aa4dee16bbc13df6459d5d7d3bbf",
+    "tree": "51617a0ab01a63a07cc3cc82e66e93c225646d97"
   },
   "prospective_merge": {
-    "commit": "e25bc8b50270e230cd3cb60f51623858c95be068",
-    "tree": "89b0407efa6d786d6ec6ba7aa84e76671280f6c2",
+    "commit": "19061ba1ea898becc32d756cb5a7b0911f2686af",
+    "tree": "51617a0ab01a63a07cc3cc82e66e93c225646d97",
     "parent_order": [
       "d66c1b5b614a2a7b682c233fe2e7a19939b6976b",
-      "44d0a4274d3c665aa58d17fbde9f9dc0ded08281"
+      "447fac4d0364aa4dee16bbc13df6459d5d7d3bbf"
     ],
     "source_and_merge_trees_equal": true
   },
   "workflow_receipts": {
+    "source_collection": {
+      "head_commit": "447fac4d0364aa4dee16bbc13df6459d5d7d3bbf",
+      "latest_scheduled_family_results_terminal_success": true,
+      "older_event_results_excluded": true,
+      "empty_skipped_cancelled_absent_zero_job_or_stale_results_accepted": false
+    },
     "stable_aggregate": {
       "workflow": "trillionnium-game-merge-gate",
-      "run_id": 33595198386,
-      "external_workflow_collection_job_id": 100139266222,
-      "final_gate_job_id": 100139372229,
+      "run_id": 33603358839,
+      "external_workflow_collection_job_id": 100161772584,
+      "final_gate_job_id": 100164898491,
       "status": "completed",
       "conclusion": "success",
       "non_empty_jobs_verified": true
     },
     "prospective_merge": {
       "workflow": "prospective-merge-gate",
-      "run_id": 33595198067,
+      "run_id": 33603358691,
       "status": "completed",
       "conclusion": "success",
+      "merge_commit": "19061ba1ea898becc32d756cb5a7b0911f2686af",
       "control_plane_executed": true,
       "root_and_isolated_rust_executed": true,
       "python_and_go_executed": true,
@@ -47,57 +54,72 @@
     },
     "pull_request_contract": {
       "workflow": "pull-request-contract",
-      "run_id": 33595412238,
+      "run_id": 33603413087,
+      "job_id": 100161940538,
       "status": "completed",
       "conclusion": "success"
     },
     "deployed_world_fault_lab": {
       "workflow": "world-command-deployed-runtime-v1",
-      "run_id": 33595198561,
-      "source_contract_job_id": 100137129562,
-      "fault_lab_job_id": 100137614600,
+      "run_id": 33603359013,
+      "source_contract_job_id": 100161840949,
+      "fault_lab_job_id": 100162696539,
       "status": "completed",
       "conclusion": "success",
+      "environment": "isolated_single_host_postgresql_nakama_https_world_fixture",
       "scenario_count": 5,
       "all_scenarios_passed": true,
-      "atomicity_verified": true
+      "atomicity_verified": true,
+      "cutover_authorized": false,
+      "public_online_enabled": false
     },
     "branch_before_state": {
       "workflow": "branch-inventory",
-      "run_id": 33595198450,
-      "producer_job_id": 100137129322,
-      "verifier_job_id": 100137455304,
+      "run_id": 33603358885,
+      "producer_job_id": 100161772429,
+      "verifier_job_id": 100161831551,
       "status": "completed",
       "conclusion": "success",
-      "branch_count": 49,
+      "branch_count": 52,
       "active_branch_count": 2,
-      "unique_tip_count": 36,
       "complete_before_state_retained": true,
       "live_remote_ref_set_reverified": true,
-      "deletion_executed": false
+      "deletion_executed": false,
+      "disposition_reviewed": false,
+      "cleanup_complete": false,
+      "sg0_complete": false
     }
   },
   "artifacts": [
     {
-      "name": "branch-inventory-44d0a4274d3c665aa58d17fbde9f9dc0ded08281-33595198450-1",
+      "name": "branch-inventory-447fac4d0364aa4dee16bbc13df6459d5d7d3bbf-33603358885-1",
       "transport": "github-actions-job-log-base64-v1",
-      "sha256": "b3c4852849679be70bbfc810401e435216fe17a71da0378dfa9e22d129190a27",
-      "size_bytes": 4714
+      "sha256": "a2e2ce8bb2c54864b6f7bba193019411344cfc8ec3cb1156afb2f23ac8a2af1d"
     },
     {
       "name": "verified-branch-inventory.json",
       "transport": "github-actions-job-log-derived-summary",
-      "sha256": "3e5d46ad53c86be619cb7c945e1582ca7fc3368d3204cc44543bc649b0b23125"
+      "sha256": "1667708f082416cfa2d53f081752d588b04a87e0c1ff76dabed9070885fed2b8"
     },
     {
-      "name": "world-command-deployed-runtime-v1-44d0a4274d3c665aa58d17fbde9f9dc0ded08281.tar.gz",
+      "name": "branch-inventory.json",
+      "transport": "github-actions-job-log-digest",
+      "sha256": "6d428c7a8017b95fae4675063a39049ac08f2edb7038d8844ec903fb2433f071"
+    },
+    {
+      "name": "branch-inventory-rows.jsonl",
+      "transport": "github-actions-job-log-digest",
+      "sha256": "5c60c388ff0025039e443543dfcf2112bfc598d3b4ef60f5ca26913b626357b2"
+    },
+    {
+      "name": "world-command-deployed-runtime-v1-447fac4d0364aa4dee16bbc13df6459d5d7d3bbf.tar.gz",
       "transport": "github-actions-job-log-sha256",
-      "sha256": "79d0ad95b94293891b2a70efc26320834dc25488315d1c6e549baa135eba7dd9"
+      "sha256": "5a0b16da73bd73662e89725a0c5f12db99cc47163c55923ac62c39a7d6fb4b61"
     },
     {
       "name": "world-command-deployed-runtime-v1-report.json",
       "transport": "github-actions-job-log-sha256",
-      "sha256": "56afd45da12432247edd179ce11b905c996e6c0e9a0e47bc6753a1b0c78cc532"
+      "sha256": "4c01210724ca4decdf6b9c2442da21fcbd97e3d374a93fd01dc6d779a9556982"
     }
   ],
   "assertions": {
@@ -115,7 +137,8 @@
     "independent_review_accepted": false,
     "merged_to_main": false,
     "post_merge_main_packet_complete": false,
-    "governance_readback_complete": false
+    "governance_readback_complete": false,
+    "branch_disposition_accepted": false
   },
   "review": null,
   "claims": {
@@ -131,9 +154,12 @@
   },
   "limitations": [
     "fresh conflict-free independent approval of the exact PR 63 tuple has not yet been recorded",
-    "the candidate has not yet merged to main and no post-merge main packet exists",
-    "full branch-protection and ruleset readback is inaccessible through the current integration token",
-    "the World fault packet is a short single-host fixture matrix rather than multi-node or endurance evidence",
-    "this diagnostic record does not close a gap or grant compatibility, production, cutover or retirement credit"
+    "the candidate has not merged to main and no post-merge main packet exists",
+    "the custom observation remains outside trillionnium.evidence.v1 until a legitimate independent review object exists",
+    "full classic branch-protection readback is inaccessible through the current GitHub App and the ruleset collection is empty",
+    "the branch inventory is a retained before-state; disposition review and cleanup are incomplete",
+    "the World fault packet is a short single-host deterministic fixture matrix rather than a production World, multi-node or endurance packet",
+    "all D0-D8 family locks, specialist acceptance, full Nakama parity, migration, HA, canary, cutover and retirement remain open",
+    "this diagnostic record does not close a gap or grant compatibility, production, public-online, cutover or retirement credit"
   ]
 }
