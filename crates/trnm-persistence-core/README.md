@@ -1,44 +1,44 @@
-# trnm-persistence-pg
+# trnm-persistence-core
 
-Status: **module documentation; http-grpc-websocket-database-source-candidate; no automatic compatibility or production credit**  
-Path: `crates/trnm-persistence-pg`  
+Status: **module documentation; outbox-terminal-source-candidate; no automatic compatibility or production credit**  
+Path: `crates/trnm-persistence-core`  
 Workspace class: `root`  
-Lifecycle: `product-adapter-and-temporary-composition`  
+Lifecycle: `product-library`  
 Owner role: `database-migration`
 
 ## Status and authority
 
-This document is the current module-level engineering contract for `trnm-persistence-pg`. Its authority is limited to the module boundary described here: **authoritative PostgreSQL/CockroachDB adapter and temporary database-backed server binary**. Source presence, a passing unit suite, or this document alone does not establish compatibility, durability, security, operational, or production acceptance.
+This document is the current module-level engineering contract for `trnm-persistence-core`. Its authority is limited to the module boundary described here: **database-independent transaction and outbox state model**. Source presence, a passing unit suite, or this document alone does not establish compatibility, durability, security, operational, or production acceptance.
 
-The module's current maturity is `http-grpc-websocket-database-source-candidate`. Promotion requires exact-candidate execution, retained evidence, and the independent reviews required by the linked gaps.
+The module's current maturity is `outbox-terminal-source-candidate`. Promotion requires exact-candidate execution, retained evidence, and the independent reviews required by the linked gaps.
 
 ## Responsibilities
 
-Serializable persistence, CAS, receipts, outbox rows, database profiles, pool policy, migrations, and the current database-backed vertical slice.
+Atomic command/event/outbox semantics, exact duplicate receipts, authority and lease generations, retry and terminal dead-letter transitions.
 
-Non-goals: Its embedded server location is temporary and must not become a permanent coupling between process supervision and persistence.
+Non-goals: It does not open database connections, execute SQL, publish provider effects, or supervise worker processes.
 
 ## Architecture and dependencies
 
-It implements core repository contracts and composes selected token, session, realtime-wire, HTTP, gRPC, WebSocket, and migration components.
+The crate defines repository contracts consumed by services and implemented by profile-specific persistence adapters.
 
 Dependency direction is reviewed as part of package authority. This module must not introduce hidden global state, untracked background work, unbounded queues, or transport/database coupling outside the declared lifecycle.
 
 ## Public contracts
 
-The only production DDL authority is migrations/. PostgreSQL and CockroachDB are separate profiles with separate evidence and retry behavior.
+Acknowledgement follows durable commit or exact receipt replay. Command, event, receipt, and outbox intent form one transaction boundary.
 
 Public Rust types, serialized fields, configuration keys, database predicates, and externally observable error classes are change-controlled. A breaking change requires an explicit migration or compatibility decision and updated tests in the same candidate.
 
 ## Correctness and failure model
 
-Commit/replay acknowledgement, revision and generation fencing, bounded serializable retry, response-loss recovery, and outbox terminal behavior are mandatory.
+No partial commit, stale lease apply, stranded terminal lease, duplicate visible value effect, or acknowledged-command loss is permitted.
 
 All inputs, loops, retries, batches, queues, allocations, and shutdown paths are bounded. Unexpected states fail closed. Duplicate, stale, timeout, cancellation, restart, and partial-failure behavior must be represented in deterministic tests where applicable.
 
 ## Security and privacy
 
-Production database transport requires verify-full TLS and reviewed credential providers. Plaintext is limited to explicit loopback development evidence.
+Receipts and fingerprints are bounded, non-secret identities. Persistence implementations must avoid leaking SQL, URLs, or payloads through public errors.
 
 Secrets, raw tokens, user payloads, receipts, and provider credentials are not logged or used as metric labels. Any new cryptographic, parser, unsafe, native, or externally reachable boundary requires the appropriate threat, fuzz, and independent review.
 
@@ -46,8 +46,8 @@ Secrets, raw tokens, user payloads, receipts, and provider credentials are not l
 
 ```bash
 cargo fmt --all -- --check
-cargo test --package trnm-persistence-pg --all-targets --locked
-cargo clippy --package trnm-persistence-pg --all-targets --locked -- -D warnings
+cargo test --package trnm-persistence-core --all-targets --locked
+cargo clippy --package trnm-persistence-core --all-targets --locked -- -D warnings
 ```
 
 The root workspace and the stable aggregate merge gate must execute these targets. Empty discovery, skipped mandatory tests, warnings, older-head results, and local-only execution do not earn remote verification or claim credit.
@@ -56,13 +56,13 @@ Focused vectors and live/fault/differential suites are required when this module
 
 ## Operations
 
-Pools, acquisition, statements, locks, transactions, retries, readiness, drain, outbox, and profile identity require bounded metrics and failure reasons.
+Adapters expose attempt, lease, reclaim, applied, dead-letter, and reconciliation metrics. All batches, leases, and retry loops are bounded.
 
 The owning adapter or process must define readiness impact, drain behavior, metrics, alerts, capacity limits, and failure recovery before the module can be part of a production profile.
 
 ## Compatibility and evidence
 
-Pool/TLS cancellation, persistent realtime, complete gRPC/gateway, session integration, outbox delivery, HA/PITR, load, SDK, and oracle evidence remain open.
+Lease expiry/reclaim clock, property/model evidence, provider reconciliation, and independent data-integrity review remain open.
 
 Evidence must bind the exact repository, source commit, tree, workflow/run/job/attempt, environment, commands, assertions, retained artifact digests, limitations, expiry, and independent review decision.
 
@@ -70,10 +70,8 @@ Evidence must bind the exact repository, source commit, tree, workflow/run/job/a
 
 Blocking gaps:
 
-- `GAP-P0-SERVER-001`
+- `GAP-P1-OUTBOX-001`
 - `GAP-P0-DATA-001`
-- `GAP-P1-PG-001`
-- `GAP-P1-TEST-001`
 - `GAP-P0-CI-001`
 
 Exit requires every applicable close criterion in `docs/status/GAP_REGISTER.json`, exact-head and prospective-merge execution, and conflict-free independent review. Temporary prototypes and gates also require an explicit convergence or removal decision.

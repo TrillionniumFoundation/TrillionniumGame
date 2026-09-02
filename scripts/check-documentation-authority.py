@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce one current human documentation system and reject legacy drift."""
+"""Enforce one current documentation system and complete module documentation."""
 from __future__ import annotations
 
 import json
@@ -12,6 +12,7 @@ from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 STATUS_MARKER = "Status: **authoritative current documentation**"
+MODULE_STATUS_PREFIX = "Status: **module documentation;"
 DOC_REFERENCE = re.compile(r"(?<![A-Za-z0-9_.-])(docs/[A-Za-z0-9_./-]+\.md)")
 MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 TEXT_SUFFIXES = {
@@ -26,6 +27,29 @@ TEXT_SUFFIXES = {
     ".go",
     ".txt",
 }
+EXPECTED_CURRENT = {
+    "docs/README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/DEVELOPMENT.md",
+    "docs/COMPATIBILITY.md",
+    "docs/TESTING_AND_EVIDENCE.md",
+    "docs/SECURITY_AND_PRIVACY.md",
+    "docs/OPERATIONS_AND_RELEASE.md",
+    "docs/GOVERNANCE.md",
+    "docs/ROADMAP.md",
+}
+EXPECTED_MODULE_SECTIONS = (
+    "## Status and authority",
+    "## Responsibilities",
+    "## Architecture and dependencies",
+    "## Public contracts",
+    "## Correctness and failure model",
+    "## Security and privacy",
+    "## Build and test",
+    "## Operations",
+    "## Compatibility and evidence",
+    "## Known gaps and exit criteria",
+)
 
 
 class ValidationError(RuntimeError):
@@ -54,8 +78,11 @@ def canonical_path(root: Path, value: Any, label: str) -> Path:
     return root / candidate
 
 
-def path_list(root: Path, value: Any, label: str) -> list[Path]:
-    require(isinstance(value, list) and value, f"{label}: non-empty list required")
+def path_list(root: Path, value: Any, label: str, *, allow_empty: bool = False) -> list[Path]:
+    require(
+        isinstance(value, list) and (allow_empty or bool(value)),
+        f"{label}: {'list' if allow_empty else 'non-empty list'} required",
+    )
     result = [
         canonical_path(root, item, f"{label}[{index}]")
         for index, item in enumerate(value)
@@ -126,6 +153,137 @@ def validate_markdown_links(root: Path, documents: Iterable[Path]) -> int:
     return checked
 
 
+def validate_module_registry(
+    root: Path,
+    registry_path: Path,
+) -> tuple[list[Path], dict[str, int]]:
+    registry = load_object(registry_path)
+    require(
+        registry.get("schema") == "trillionnium.module-documentation.v1",
+        "unexpected module documentation schema",
+    )
+    require(registry.get("project_id") == "trillionnium-game", "unexpected module project_id")
+    require(registry.get("plan_version") == 3, "module registry must target plan v3")
+    required_sections = registry.get("required_sections")
+    require(
+        isinstance(required_sections, list)
+        and tuple(required_sections) == EXPECTED_MODULE_SECTIONS,
+        "module registry required_sections changed",
+    )
+
+    rows = registry.get("modules")
+    require(isinstance(rows, list) and rows, "module registry must contain modules")
+    documented: list[Path] = []
+    manifests: set[str] = set()
+    module_ids: set[str] = set()
+    root_count = 0
+    isolated_count = 0
+
+    for index, row in enumerate(rows):
+        require(isinstance(row, dict), f"modules[{index}] must be an object")
+        module_id = row.get("id")
+        require(
+            isinstance(module_id, str)
+            and re.fullmatch(r"trnm-[a-z0-9-]+", module_id) is not None,
+            f"modules[{index}].id is invalid",
+        )
+        require(module_id not in module_ids, f"duplicate module id: {module_id}")
+        module_ids.add(module_id)
+
+        expected_path = f"crates/{module_id}"
+        require(row.get("path") == expected_path, f"{module_id}: path must be {expected_path}")
+        manifest_value = row.get("manifest")
+        documentation_value = row.get("documentation")
+        expected_manifest = f"{expected_path}/Cargo.toml"
+        expected_documentation = f"{expected_path}/README.md"
+        require(
+            manifest_value == expected_manifest,
+            f"{module_id}: manifest must be {expected_manifest}",
+        )
+        require(
+            documentation_value == expected_documentation,
+            f"{module_id}: documentation must be {expected_documentation}",
+        )
+        manifest = canonical_path(root, manifest_value, f"{module_id}.manifest")
+        documentation = canonical_path(
+            root, documentation_value, f"{module_id}.documentation"
+        )
+        require(manifest.is_file(), f"{module_id}: manifest is missing")
+        require(documentation.is_file(), f"{module_id}: README is missing")
+        manifests.add(manifest.relative_to(root).as_posix())
+        documented.append(documentation)
+
+        workspace = row.get("workspace")
+        require(workspace in {"root", "isolated"}, f"{module_id}: invalid workspace")
+        if workspace == "root":
+            root_count += 1
+        else:
+            isolated_count += 1
+        for field in ("lifecycle", "maturity", "owner_role", "authority"):
+            value = row.get(field)
+            require(
+                isinstance(value, str) and value.strip() == value and bool(value),
+                f"{module_id}: {field} must be canonical non-empty text",
+            )
+        gaps = row.get("blocking_gaps")
+        require(
+            isinstance(gaps, list)
+            and gaps
+            and all(isinstance(value, str) and value.startswith("GAP-") for value in gaps),
+            f"{module_id}: blocking_gaps are required",
+        )
+        require(len(gaps) == len(set(gaps)), f"{module_id}: duplicate blocking gaps")
+        require(row.get("claim_credit") is False, f"{module_id}: claim credit must remain false")
+
+        text = documentation.read_text(encoding="utf-8")
+        failures: list[str] = []
+        if not text.startswith(f"# {module_id}\n"):
+            failures.append("canonical title required")
+        if MODULE_STATUS_PREFIX not in text:
+            failures.append("module status marker required")
+        if len(text.splitlines()) < 45:
+            failures.append("module document is unexpectedly small")
+        for section in EXPECTED_MODULE_SECTIONS:
+            if text.count(section) != 1:
+                failures.append(f"exactly one section required: {section}")
+        require(
+            not failures,
+            f"{module_id}: module documentation contract failures:\n- "
+            + "\n- ".join(failures),
+        )
+
+    discovered = {
+        path.relative_to(root).as_posix()
+        for path in (root / "crates").glob("*/Cargo.toml")
+        if path.is_file()
+    }
+    require(
+        manifests == discovered,
+        "module registry does not match crate manifests: "
+        f"unregistered={sorted(discovered - manifests)}, "
+        f"missing={sorted(manifests - discovered)}",
+    )
+
+    summary = registry.get("summary")
+    require(isinstance(summary, dict), "module registry summary is required")
+    require(summary.get("module_count") == len(rows), "module summary.module_count is stale")
+    require(
+        summary.get("documented_count") == len(documented),
+        "module summary.documented_count is stale",
+    )
+    require(summary.get("root_workspace_count") == root_count, "root workspace count is stale")
+    require(
+        summary.get("isolated_workspace_count") == isolated_count,
+        "isolated workspace count is stale",
+    )
+    require(summary.get("undocumented_count") == 0, "undocumented modules must be zero")
+    return documented, {
+        "module_count": len(rows),
+        "root_workspace_count": root_count,
+        "isolated_workspace_count": isolated_count,
+    }
+
+
 def is_active_reference_surface(
     root: Path,
     path: Path,
@@ -134,16 +292,7 @@ def is_active_reference_surface(
     generated_rollups: set[Path],
     machine_docs: set[Path],
 ) -> bool:
-    """Return whether a tracked text file may influence current development.
-
-    Immutable evidence records under ``docs/evidence`` may truthfully retain a
-    historical path.  Current evidence indexes/schemas are listed explicitly in
-    ``machine_docs`` and remain active.  Test fixtures are excluded because
-    their purpose is often to contain deliberately invalid legacy references.
-    Every other supported tracked source/control surface is active, so a Rust,
-    Go, contract, config, tool, workflow or root policy cannot silently retain
-    a reference to a deleted development document.
-    """
+    """Return whether a tracked text file may influence current development."""
 
     relative = path.relative_to(root)
     if path in root_docs or path in current_docs:
@@ -196,6 +345,23 @@ def validate_repository_doc_references(
     return checked, surface_count
 
 
+def validate_repository_markdown_allowlist(
+    root: Path,
+    files: Iterable[Path],
+    allowed: set[Path],
+) -> int:
+    actual = {
+        path
+        for path in files
+        if path.suffix.lower() == ".md"
+    }
+    extra = sorted(path.relative_to(root).as_posix() for path in actual - allowed)
+    missing = sorted(path.relative_to(root).as_posix() for path in allowed - actual)
+    require(not extra, f"undeclared Markdown remains in repository: {extra}")
+    require(not missing, f"declared Markdown is not tracked: {missing}")
+    return len(actual)
+
+
 def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str, Any]:
     authority_path = authority_path or root / "docs/DOCUMENTATION_AUTHORITY.json"
     authority = load_object(authority_path)
@@ -221,6 +387,8 @@ def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str,
         "machine_evidence_may_be_immutable_and_dated": True,
         "broken_repository_document_references_allowed": False,
         "legacy_document_names_allowed": False,
+        "repository_wide_markdown_allowlist": True,
+        "every_rust_package_has_module_documentation": True,
     }
     for key, expected in required_policy.items():
         require(
@@ -229,32 +397,38 @@ def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str,
         )
 
     root_documents = path_list(
-        root,
-        authority.get("root_human_documents"),
-        "root_human_documents",
+        root, authority.get("root_human_documents"), "root_human_documents"
     )
     current_documents = path_list(
-        root,
-        authority.get("current_human_documents"),
-        "current_human_documents",
+        root, authority.get("current_human_documents"), "current_human_documents"
     )
     generated_rollups = path_list(
+        root, authority.get("generated_human_rollups"), "generated_human_rollups"
+    )
+    permitted_markdown = path_list(
         root,
-        authority.get("generated_human_rollups"),
-        "generated_human_rollups",
+        authority.get("permitted_non_development_markdown"),
+        "permitted_non_development_markdown",
+        allow_empty=True,
     )
     machine_documents = path_list(
-        root,
-        authority.get("machine_control_documents"),
-        "machine_control_documents",
+        root, authority.get("machine_control_documents"), "machine_control_documents"
     )
     removed_roots = path_list(
-        root,
-        authority.get("removed_human_document_roots"),
-        "removed_human_document_roots",
+        root, authority.get("removed_human_document_roots"), "removed_human_document_roots"
+    )
+    registry_path = canonical_path(
+        root, authority.get("module_document_registry"), "module_document_registry"
     )
 
-    for path in root_documents + current_documents + generated_rollups + machine_documents:
+    for path in (
+        root_documents
+        + current_documents
+        + generated_rollups
+        + permitted_markdown
+        + machine_documents
+        + [registry_path]
+    ):
         require(
             path.is_file(),
             f"declared documentation/control file is missing: {path.relative_to(root)}",
@@ -267,21 +441,8 @@ def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str,
         f"removed human documentation roots still exist: {remaining_removed_roots}",
     )
 
-    expected_current = {
-        "docs/README.md",
-        "docs/ARCHITECTURE.md",
-        "docs/DEVELOPMENT.md",
-        "docs/COMPATIBILITY.md",
-        "docs/TESTING_AND_EVIDENCE.md",
-        "docs/SECURITY_AND_PRIVACY.md",
-        "docs/OPERATIONS_AND_RELEASE.md",
-        "docs/GOVERNANCE.md",
-        "docs/ROADMAP.md",
-    }
-    actual_current = {
-        path.relative_to(root).as_posix() for path in current_documents
-    }
-    require(actual_current == expected_current, "current human documentation set changed")
+    actual_current = {path.relative_to(root).as_posix() for path in current_documents}
+    require(actual_current == EXPECTED_CURRENT, "current human documentation set changed")
 
     files = tracked_files(root)
     actual_docs_markdown = {
@@ -293,19 +454,17 @@ def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str,
     allowed_docs_markdown = actual_current | {
         path.relative_to(root).as_posix() for path in generated_rollups
     }
-    extra = sorted(actual_docs_markdown - allowed_docs_markdown)
-    missing = sorted(allowed_docs_markdown - actual_docs_markdown)
-    require(not extra, f"undeclared or historical Markdown remains under docs/: {extra}")
-    require(not missing, f"declared Markdown is not tracked: {missing}")
+    extra_docs = sorted(actual_docs_markdown - allowed_docs_markdown)
+    missing_docs = sorted(allowed_docs_markdown - actual_docs_markdown)
+    require(not extra_docs, f"undeclared or historical Markdown remains under docs/: {extra_docs}")
+    require(not missing_docs, f"declared Markdown is not tracked: {missing_docs}")
 
     root_markdown = {
         path.relative_to(root).as_posix()
         for path in files
         if path.parent == root and path.suffix.lower() == ".md"
     }
-    allowed_root = {
-        path.relative_to(root).as_posix() for path in root_documents
-    }
+    allowed_root = {path.relative_to(root).as_posix() for path in root_documents}
     require(
         root_markdown == allowed_root,
         "root Markdown set differs from authority: "
@@ -343,7 +502,7 @@ def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str,
             document_failures.append(f"{relative}: title required")
         if STATUS_MARKER not in text:
             document_failures.append(f"{relative}: authority status marker required")
-        if "Revision: 2026-09-01" not in text:
+        if f"Revision: {revision}" not in text:
             document_failures.append(f"{relative}: revision marker required")
         if len(text.splitlines()) < 20:
             document_failures.append(f"{relative}: document is unexpectedly small")
@@ -351,6 +510,19 @@ def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str,
         not document_failures,
         "current documentation contract failures:\n- "
         + "\n- ".join(sorted(document_failures)),
+    )
+
+    module_documents, module_counts = validate_module_registry(root, registry_path)
+
+    allowed_repository_markdown = set(
+        root_documents
+        + current_documents
+        + generated_rollups
+        + permitted_markdown
+        + module_documents
+    )
+    markdown_count = validate_repository_markdown_allowlist(
+        root, files, allowed_repository_markdown
     )
 
     plan = (root / "CURRENT_PLAN.md").read_text(encoding="utf-8")
@@ -375,6 +547,14 @@ def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str,
         "historical human docs removal claim missing",
     )
     require(
+        claims.get("repository_markdown_allowlist_enforced") is True,
+        "repository Markdown allowlist claim missing",
+    )
+    require(
+        claims.get("module_documentation_registry_enforced") is True,
+        "module documentation registry claim missing",
+    )
+    require(
         claims.get("machine_evidence_deleted") is False,
         "machine evidence must remain retained",
     )
@@ -389,7 +569,9 @@ def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str,
             f"premature documentation claim: {forbidden_claim}",
         )
 
-    link_count = validate_markdown_links(root, root_documents + current_documents)
+    link_count = validate_markdown_links(
+        root, root_documents + current_documents + permitted_markdown + module_documents
+    )
     reference_count, surface_count = validate_repository_doc_references(
         root,
         files,
@@ -406,7 +588,13 @@ def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str,
         "root_human_document_count": len(root_documents),
         "current_human_document_count": len(current_documents),
         "generated_rollup_count": len(generated_rollups),
+        "permitted_non_development_markdown_count": len(permitted_markdown),
         "machine_control_document_count": len(machine_documents),
+        "repository_markdown_count": markdown_count,
+        "module_document_count": module_counts["module_count"],
+        "root_workspace_module_count": module_counts["root_workspace_count"],
+        "isolated_workspace_module_count": module_counts["isolated_workspace_count"],
+        "undocumented_module_count": 0,
         "active_reference_surface_count": surface_count,
         "local_link_count": link_count,
         "active_repository_reference_count": reference_count,

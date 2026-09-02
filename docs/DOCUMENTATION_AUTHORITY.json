@@ -10,7 +10,8 @@
     "machine_evidence_may_be_immutable_and_dated": true,
     "broken_repository_document_references_allowed": false,
     "legacy_document_names_allowed": false,
-    "repository_wide_markdown_allowlist": true
+    "repository_wide_markdown_allowlist": true,
+    "every_rust_package_has_module_documentation": true
   },
   "root_human_documents": [
     "README.md",
@@ -36,8 +37,15 @@
   ],
   "permitted_non_development_markdown": [
     ".github/PULL_REQUEST_TEMPLATE.md",
-    "database/schema/v2/README.md"
+    "contracts/AUTHORITATIVE_MATCH_V1.md",
+    "contracts/README.md",
+    "database/schema/v2/README.md",
+    "manifests/upstream/README.md",
+    "oracle/immutable/README.md",
+    "runtime/README.md",
+    "runtime/internal/worldtransition/README.md"
   ],
+  "module_document_registry": "docs/status/MODULE_DOCUMENTATION.json",
   "machine_control_documents": [
     "docs/development/COMPATIBILITY_DIVERGENCES.json",
     "docs/development/COMPATIBILITY_PROFILES.json",
@@ -52,6 +60,7 @@
     "docs/status/EXECUTION_STATUS.json",
     "docs/status/GAP_REGISTER.json",
     "docs/status/IMPLEMENTATION_INVENTORY.json",
+    "docs/status/MODULE_DOCUMENTATION.json",
     "docs/status/PRODUCT_GATES.json",
     "docs/status/RISK_REGISTER.json",
     "docs/status/SOURCE_CANDIDATES.json",
@@ -90,6 +99,7 @@
     "documentation_consolidated": true,
     "historical_human_docs_removed_from_active_tree": true,
     "repository_markdown_allowlist_enforced": true,
+    "module_documentation_registry_enforced": true,
     "machine_evidence_deleted": false,
     "compatibility_credit": false,
     "production_ready": false,

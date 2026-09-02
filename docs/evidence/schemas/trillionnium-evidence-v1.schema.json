@@ -4,33 +4,444 @@
   "title": "TrillionniumGame Evidence Manifest v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema","evidence_id","evidence_type","claim_ids","gate_ids","task_ids","parity_ids","status","generated_by_automation","upstream","candidate","environment","fixtures","commands","started_at","completed_at","result","artifacts","limitations","review"],
+  "required": [
+    "schema",
+    "evidence_id",
+    "evidence_type",
+    "claim_ids",
+    "gate_ids",
+    "task_ids",
+    "parity_ids",
+    "status",
+    "generated_by_automation",
+    "upstream",
+    "candidate",
+    "environment",
+    "fixtures",
+    "commands",
+    "started_at",
+    "completed_at",
+    "result",
+    "artifacts",
+    "limitations",
+    "review"
+  ],
   "properties": {
-    "schema": {"const":"trillionnium.evidence.v1"},
-    "evidence_id": {"type":"string","pattern":"^TG-EV-[A-Z0-9][A-Z0-9._-]{5,127}$"},
-    "evidence_type": {"enum":["manifest","unit","property","fuzz","wire-differential","database-differential","runtime-differential","sdk-blackbox","migration-rehearsal","fault-injection","performance","endurance","security-review","penetration-test","backup-restore","canary","cutover","retirement"]},
-    "claim_ids": {"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string"}},
-    "gate_ids": {"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string","pattern":"^GATE-[A-Z0-9-]+$"}},
-    "task_ids": {"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string","pattern":"^TG-W[0-9]+-[0-9]{3}$"}},
-    "parity_ids": {"type":"array","uniqueItems":true,"items":{"type":"string","pattern":"^TG-PAR-[0-9]{3}(?:[A-Z0-9.-]+)?$"}},
-    "status": {"enum":["passed","failed","invalid","interrupted","expired","revoked"]},
-    "generated_by_automation": {"type":"boolean"},
-    "upstream": {"$ref":"#/$defs/sourceIdentity"},
-    "candidate": {"$ref":"#/$defs/sourceIdentity"},
-    "environment": {"type":"object","additionalProperties":false,"required":["environment_id","os","arch","database","toolchain","timezone","locale","configuration_sha256"],"properties":{"environment_id":{"type":"string"},"os":{"type":"string"},"arch":{"type":"string"},"kernel":{"type":"string"},"cpu":{"type":"string"},"memory_bytes":{"type":"integer","minimum":0},"database":{"type":"string"},"cache_or_index":{"type":"array","items":{"type":"string"}},"toolchain":{"type":"array","minItems":1,"items":{"type":"string"}},"sdk_versions":{"type":"array","items":{"type":"string"}},"timezone":{"type":"string"},"locale":{"type":"string"},"configuration_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}},
-    "fixtures": {"type":"array","items":{"$ref":"#/$defs/artifact"}},
-    "commands": {"type":"array","minItems":1,"items":{"type":"string"}},
-    "started_at": {"type":"string","format":"date-time"},
-    "completed_at": {"type":"string","format":"date-time"},
-    "result": {"type":"object","additionalProperties":false,"required":["summary","assertions_total","assertions_passed","divergences"],"properties":{"summary":{"type":"string"},"assertions_total":{"type":"integer","minimum":0},"assertions_passed":{"type":"integer","minimum":0},"metrics":{"type":"object"},"normalization_rules":{"type":"array","items":{"type":"string"}},"divergences":{"type":"array","items":{"$ref":"#/$defs/divergence"}}}},
-    "artifacts": {"type":"array","minItems":1,"items":{"$ref":"#/$defs/artifact"}},
-    "limitations": {"type":"array","items":{"type":"string"}},
-    "expires_at": {"type":["string","null"],"format":"date-time"},
-    "review": {"type":"object","additionalProperties":false,"required":["decision","reviewer_role","reviewer_identity","reviewed_at"],"properties":{"decision":{"enum":["accepted","rejected","needs-work"]},"reviewer_role":{"type":"string"},"reviewer_identity":{"type":"string"},"reviewed_at":{"type":"string","format":"date-time"},"notes":{"type":"string"}}}
+    "schema": {
+      "const": "trillionnium.evidence.v1"
+    },
+    "evidence_id": {
+      "type": "string",
+      "pattern": "^TG-EV-[A-Z0-9][A-Z0-9._-]{5,127}$"
+    },
+    "evidence_type": {
+      "enum": [
+        "manifest",
+        "unit",
+        "property",
+        "fuzz",
+        "wire-differential",
+        "database-differential",
+        "runtime-differential",
+        "sdk-blackbox",
+        "migration-rehearsal",
+        "fault-injection",
+        "performance",
+        "endurance",
+        "security-review",
+        "penetration-test",
+        "backup-restore",
+        "canary",
+        "cutover",
+        "retirement"
+      ]
+    },
+    "claim_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "gate_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^GATE-[A-Z0-9-]+$"
+      }
+    },
+    "task_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^TG-W[0-9]+-[0-9]{3}$"
+      }
+    },
+    "parity_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^TG-PAR-[0-9]{3}(?:[A-Z0-9.-]+)?$"
+      }
+    },
+    "status": {
+      "enum": [
+        "passed",
+        "failed",
+        "invalid",
+        "interrupted",
+        "expired",
+        "revoked"
+      ]
+    },
+    "generated_by_automation": {
+      "type": "boolean"
+    },
+    "upstream": {
+      "$ref": "#/$defs/sourceIdentity"
+    },
+    "candidate": {
+      "$ref": "#/$defs/sourceIdentity"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "environment_id",
+        "os",
+        "arch",
+        "database",
+        "toolchain",
+        "timezone",
+        "locale",
+        "configuration_sha256"
+      ],
+      "properties": {
+        "environment_id": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string"
+        },
+        "arch": {
+          "type": "string"
+        },
+        "kernel": {
+          "type": "string"
+        },
+        "cpu": {
+          "type": "string"
+        },
+        "memory_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "database": {
+          "type": "string"
+        },
+        "cache_or_index": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "toolchain": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "sdk_versions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "locale": {
+          "type": "string"
+        },
+        "configuration_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "fixtures": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "assertions_total",
+        "assertions_passed",
+        "divergences"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "assertions_total": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "assertions_passed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "metrics": {
+          "type": "object"
+        },
+        "normalization_rules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "divergences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/divergence"
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "expires_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "reviewer_role",
+        "reviewer_identity",
+        "independent",
+        "self_review",
+        "reviewed_at",
+        "reviewed_commit",
+        "reviewed_tree"
+      ],
+      "properties": {
+        "decision": {
+          "enum": [
+            "accepted",
+            "rejected",
+            "needs-work"
+          ]
+        },
+        "reviewer_role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "independent": {
+          "const": true
+        },
+        "self_review": {
+          "const": false
+        },
+        "reviewed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reviewed_commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "reviewed_tree": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    }
   },
   "$defs": {
-    "sourceIdentity": {"type":"object","additionalProperties":false,"required":["repository","commit","tree","artifact_sha256"],"properties":{"repository":{"type":"string"},"tag":{"type":["string","null"]},"commit":{"type":"string","pattern":"^[a-f0-9]{40}$"},"tree":{"type":"string","pattern":"^[a-f0-9]{40}$"},"artifact_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"image_digest":{"type":["string","null"]}}},
-    "artifact": {"type":"object","additionalProperties":false,"required":["name","media_type","sha256","size_bytes"],"properties":{"name":{"type":"string"},"path":{"type":["string","null"]},"media_type":{"type":"string"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"size_bytes":{"type":"integer","minimum":0}}},
-    "divergence": {"type":"object","additionalProperties":false,"required":["id","severity","category","expected","observed","owner","status"],"properties":{"id":{"type":"string"},"severity":{"enum":["P0","P1","P2","informational"]},"category":{"type":"string"},"expected":{},"observed":{},"normalization_rule":{"type":["string","null"]},"owner":{"type":"string"},"status":{"enum":["open","explained","fixed","waived"]},"waiver_id":{"type":["string","null"]},"waiver_expiry":{"type":["string","null"],"format":"date-time"}}}
+    "sourceIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "commit",
+        "tree",
+        "artifact_sha256"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "tag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "tree": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "artifact_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "image_digest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "media_type",
+        "sha256",
+        "size_bytes"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "divergence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "severity",
+        "category",
+        "expected",
+        "observed",
+        "owner",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "informational"
+          ]
+        },
+        "category": {
+          "type": "string"
+        },
+        "expected": {},
+        "observed": {},
+        "normalization_rule": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "open",
+            "explained",
+            "fixed",
+            "waived"
+          ]
+        },
+        "waiver_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "waiver_expiry": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      }
+    }
   }
 }
