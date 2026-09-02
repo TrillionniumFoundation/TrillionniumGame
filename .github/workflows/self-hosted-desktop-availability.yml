@@ -2,40 +2,32 @@ name: Self-hosted desktop runner availability
 
 on:
   workflow_dispatch:
-    inputs:
-      reason:
-        description: Why this bounded runner probe is being requested
-        required: false
-        default: operator-check
-        type: string
 
-# This probe intentionally does not check out repository code. It only proves
-# that the selected, trusted main/manual lane can acquire the desktop runner.
+# This workflow is deliberately manual-only, checks out no source, receives no
+# token permission, accepts no user-controlled input, and targets one reviewed
+# runner group plus one dedicated label. If either boundary is absent, the job
+# remains queued rather than executing on a broader self-hosted fleet.
 permissions: {}
+
+concurrency:
+  group: self-hosted-desktop-availability
+  cancel-in-progress: false
 
 jobs:
   runner-probe:
     name: Desktop runner probe
     runs-on:
-      - self-hosted
-      - linux
-      - x64
-    timeout-minutes: 10
+      group: desktop
+      labels: desktop
+    timeout-minutes: 5
     steps:
-      - name: Verify trusted manual main invocation
+      - name: Emit bounded acquisition receipt
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           test "$GITHUB_REF" = refs/heads/main
           test "$RUNNER_NAME" = desktop
-          printf 'runner=%s\nos=%s\narch=%s\nref=%s\nreason=%s\n' \
-            "$RUNNER_NAME" "$RUNNER_OS" "$RUNNER_ARCH" "$GITHUB_REF" \
-            '${{ inputs.reason }}'
-      - name: Read-only capability snapshot
-        shell: bash
-        run: |
-          set -euo pipefail
-          uname -a
-          if command -v adb >/dev/null 2>&1; then adb devices -l || true; fi
-          if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=name --format=csv,noheader || true; fi
+          test "$RUNNER_OS" = Linux
+          test "$RUNNER_ARCH" = X64
+          printf 'status=desktop-runner-acquired\nref=refs/heads/main\n'
