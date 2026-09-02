@@ -20,12 +20,12 @@ JOB_PREDICATE = """    if: >-
       github.event.comment.body == '/desktop-runner-probe' &&
       github.actor == 'Tomasrgbsf'
 """
+JOB_PREDICATE_LINES = tuple(JOB_PREDICATE.rstrip("\n").splitlines())
 
 REQUIRED_FRAGMENTS = (
     "on:\n  issue_comment:\n    types: [created]\n",
     "permissions: {}",
     "concurrency:\n  group: self-hosted-desktop-availability\n  cancel-in-progress: false",
-    JOB_PREDICATE,
     "runs-on:\n      group: desktop\n      labels: desktop",
     "timeout-minutes: 5",
     'test "$GITHUB_EVENT_NAME" = issue_comment',
@@ -77,16 +77,30 @@ FORBIDDEN_FRAGMENTS = (
 def validate(text: str) -> list[str]:
     """Return all contract violations without executing workflow content."""
     failures: list[str] = []
+    lines = text.splitlines()
+
     if text.count("issue_comment:") != 1:
         failures.append("workflow must contain exactly one issue_comment trigger")
     if text.count("types: [created]") != 1:
         failures.append("only newly created comments may trigger the probe")
     if text.count("runs-on:") != 1:
         failures.append("workflow must contain exactly one runs-on boundary")
-    if text.count("    if: >-") != 1:
-        failures.append("workflow must contain exactly one job-level allocation predicate")
     if text.count("run: |") != 1:
         failures.append("workflow must contain exactly one bounded shell step")
+
+    if_indexes = [index for index, line in enumerate(lines) if line.strip() == "if: >-"]
+    if len(if_indexes) != 1:
+        failures.append("workflow must contain exactly one allocation predicate")
+        predicate_index = -1
+    else:
+        predicate_index = if_indexes[0]
+        if lines[predicate_index] != "    if: >-":
+            failures.append("allocation predicate must be a job-level key with exact indentation")
+        actual_block = tuple(
+            lines[predicate_index : predicate_index + len(JOB_PREDICATE_LINES)]
+        )
+        if actual_block != JOB_PREDICATE_LINES:
+            failures.append("job-level allocation predicate block must match exactly")
 
     for fragment in REQUIRED_FRAGMENTS:
         if fragment not in text:
@@ -100,10 +114,13 @@ def validate(text: str) -> list[str]:
     if "group: desktop" not in text or "labels: desktop" not in text:
         failures.append("runner scheduling must require both desktop group and desktop label")
 
-    predicate_position = text.find(JOB_PREDICATE)
-    allocation_position = text.find("    runs-on:")
-    shell_position = text.find("        run: |")
-    if not (0 <= predicate_position < allocation_position < shell_position):
+    try:
+        allocation_index = lines.index("    runs-on:")
+        shell_index = lines.index("        run: |")
+    except ValueError:
+        allocation_index = -1
+        shell_index = -1
+    if not (0 <= predicate_index < allocation_index < shell_index):
         failures.append("authorization predicate must precede runner allocation and shell execution")
 
     expected_receipt = (
