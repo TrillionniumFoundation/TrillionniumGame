@@ -30,24 +30,6 @@ impl PooledRepository {
         }
     }
 
-    pub fn with_operation_budget(
-        pool: PgPool,
-        operation_budget: Duration,
-    ) -> Result<Self, DomainError> {
-        if operation_budget.is_zero() {
-            return Err(DomainError::new(
-                trnm_contracts::StableCode::InvalidArgument,
-                "database_operation_budget_invalid",
-                trnm_contracts::RetryClass::Never,
-            ));
-        }
-        let operation_budget = operation_budget.min(pool.policy().statement_timeout);
-        Ok(Self {
-            pool,
-            operation_budget,
-        })
-    }
-
     fn run<T>(
         &self,
         operation: impl FnOnce(&mut trnm_persistence_pg::PgRepository) -> Result<T, DomainError>,
