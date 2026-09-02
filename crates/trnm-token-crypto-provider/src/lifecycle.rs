@@ -38,7 +38,7 @@ impl EpochWindow {
         sign_until_unix: u64,
         verify_until_unix: u64,
     ) -> Result<Self, LifecycleError> {
-        if key.epoch.is_none() {
+        if !key.epoch.is_some_and(|epoch| epoch > 0) {
             return Err(LifecycleError::EpochRequired);
         }
         if !(not_before_unix < sign_until_unix && sign_until_unix < verify_until_unix) {
@@ -310,12 +310,13 @@ impl KeyEpochRegistry {
                 });
             }
             if schedule.epochs.values().any(|existing| {
-                intervals_overlap(
-                    window.not_before_unix,
-                    window.sign_until_unix,
-                    existing.window.not_before_unix,
-                    existing.window.sign_until_unix,
-                )
+                !existing.is_revoked()
+                    && intervals_overlap(
+                        window.not_before_unix,
+                        window.sign_until_unix,
+                        existing.window.not_before_unix,
+                        existing.window.sign_until_unix,
+                    )
             }) {
                 return Err(LifecycleError::SigningWindowOverlap { domain });
             }
@@ -804,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn emergency_revoke_is_monotonic_idempotent_and_immediate() {
+    fn emergency_revoke_allows_immediate_overlapping_replacement() {
         let mut registry = KeyEpochRegistry::default();
         registry
             .install(0, window(KeyDomain::Socket, 1, 10, 20, 30), 1)
@@ -813,17 +814,21 @@ mod tests {
         assert!(applied.applied);
         assert_eq!(applied.revision, 2);
         assert!(matches!(
-            registry.signing_key(KeyDomain::Socket, 15),
-            Err(LifecycleError::NoSigningEpoch { .. })
-        ));
-        assert!(matches!(
             registry.verification_key(KeyDomain::Socket, 1, 15),
             Err(LifecycleError::EpochRevoked { .. })
         ));
-        let replay = registry.revoke(2, KeyDomain::Socket, 1, 16).unwrap();
+
+        registry
+            .install(2, window(KeyDomain::Socket, 2, 15, 25, 35), 15)
+            .unwrap();
+        assert_eq!(
+            registry.signing_key(KeyDomain::Socket, 15).unwrap().epoch,
+            Some(2)
+        );
+        let replay = registry.revoke(3, KeyDomain::Socket, 1, 16).unwrap();
         assert!(!replay.applied);
-        assert_eq!(replay.revision, 2);
-        assert_eq!(registry.audit_events().len(), 2);
+        assert_eq!(replay.revision, 3);
+        assert_eq!(registry.audit_events().len(), 3);
     }
 
     #[test]
@@ -925,7 +930,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_windows_and_legacy_references_fail_closed() {
+    fn invalid_windows_and_forged_zero_or_legacy_epochs_fail_closed() {
         let legacy = KeyReference::new(
             KeyDomain::AccessToken,
             KeyHandle::new("kms://legacy").unwrap(),
@@ -934,6 +939,15 @@ mod tests {
         .unwrap();
         assert_eq!(
             EpochWindow::new(legacy, 10, 20, 30),
+            Err(LifecycleError::EpochRequired)
+        );
+        let forged_zero = KeyReference {
+            domain: KeyDomain::AccessToken,
+            handle: KeyHandle::new("kms://forged-zero").unwrap(),
+            epoch: Some(0),
+        };
+        assert_eq!(
+            EpochWindow::new(forged_zero, 10, 20, 30),
             Err(LifecycleError::EpochRequired)
         );
         assert_eq!(
