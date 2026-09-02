@@ -106,9 +106,7 @@ impl Repository for PooledRepository {
         reason: RevocationReason,
         revoked_at_ms: u64,
     ) -> Result<SessionFamilyRecord, DomainError> {
-        self.run(|repository| {
-            repository.revoke_session_family(family, user, reason, revoked_at_ms)
-        })
+        self.run(|repository| repository.revoke_session_family(family, user, reason, revoked_at_ms))
     }
 
     fn operational_metrics(&self) -> RepositoryOperationalMetrics {
