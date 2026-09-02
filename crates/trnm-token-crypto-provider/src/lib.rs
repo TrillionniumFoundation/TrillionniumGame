@@ -7,7 +7,15 @@
 //! implementation. Production providers must be supplied by separately
 //! reviewed software or remote-key adapters.
 
+mod lifecycle;
+
 use core::fmt;
+
+pub use lifecycle::{
+    DomainLifecycleStatus, EpochWindow, KeyEpochRegistry, LifecycleAction,
+    LifecycleAuditEvent, LifecycleError, LifecycleHealth, LifecycleMutation, ALL_KEY_DOMAINS,
+    MAX_EPOCHS_PER_DOMAIN, MAX_LIFECYCLE_AUDIT_EVENTS, MAX_VERIFICATION_EPOCHS_AT_ONCE,
+};
 
 pub const MAX_SIGNING_INPUT_BYTES: usize = 32 * 1024;
 pub const SIGNATURE_BYTES: usize = 32;
@@ -22,7 +30,7 @@ pub enum KeyDomain {
     Authority,
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct KeyHandle(String);
 
 impl KeyHandle {
@@ -42,6 +50,12 @@ impl KeyHandle {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl fmt::Debug for KeyHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyHandle(<redacted-key-handle>)")
     }
 }
 
@@ -252,6 +266,16 @@ mod tests {
             Some(0)
         )
         .is_err());
+    }
+
+    #[test]
+    fn key_handle_debug_is_always_redacted() {
+        let handle = KeyHandle::new("kms://tenant/production-signing-key").unwrap();
+        let key = KeyReference::new(KeyDomain::Authority, handle, Some(9)).unwrap();
+        let rendered = format!("{key:?}");
+        assert!(rendered.contains("<redacted-key-handle>"));
+        assert!(!rendered.contains("tenant"));
+        assert!(!rendered.contains("production-signing-key"));
     }
 
     #[test]
