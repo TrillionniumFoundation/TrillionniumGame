@@ -1,0 +1,55 @@
+{
+  "schema": "trillionnium.active-branches.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "generated_at": "2026-09-02T04:12:00Z",
+  "active_branches": [
+    {
+      "name": "main",
+      "role": "protected-integration-authority",
+      "pull_request": null
+    },
+    {
+      "name": "codex/grpc-healthcheck-source-2026-08-31",
+      "role": "foundation-integration-candidate",
+      "pull_request": 57
+    },
+    {
+      "name": "codex/documentation-authority-2026-09-01",
+      "role": "documentation-authority-candidate",
+      "pull_request": 60
+    },
+    {
+      "name": "codex/gap-closure-wave-2026-09-02",
+      "role": "module-documentation-and-evidence-candidate",
+      "pull_request": 61
+    },
+    {
+      "name": "codex/review-governance-closure-2026-09-02",
+      "role": "review-governance-candidate",
+      "pull_request": 62
+    },
+    {
+      "name": "codex/branch-evidence-closure-2026-09-02",
+      "role": "branch-evidence-candidate",
+      "pull_request": null
+    }
+  ],
+  "policy": {
+    "exact_name_required": true,
+    "active_branch_may_be_nonancestor": true,
+    "active_branch_never_auto_deleted": true,
+    "main_must_be_active": true,
+    "maximum_active_branch_count": 8,
+    "cleanup_requires_independent_review": true,
+    "cleanup_requires_before_and_after_manifests": true,
+    "nonancestor_branch_deletion_allowed": false
+  },
+  "claims": {
+    "active_line_declared": true,
+    "branch_cleanup_reviewed": false,
+    "branch_cleanup_executed": false,
+    "cleanup_complete": false,
+    "sg0_complete": false
+  }
+}

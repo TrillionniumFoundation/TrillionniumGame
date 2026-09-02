@@ -68,6 +68,7 @@
     "docs/evidence/index.json",
     "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
     "docs/review/INDEPENDENT_REVIEW_MATRIX.json",
+    "docs/governance/ACTIVE_BRANCHES.json",
     "docs/governance/GITHUB_ADMIN_ACCEPTANCE.json",
     "docs/governance/MAIN_RULESET_DESIRED.json",
     "docs/governance/REQUIRED_CHECKS.json",
