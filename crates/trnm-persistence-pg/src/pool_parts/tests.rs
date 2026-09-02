@@ -109,12 +109,36 @@ mod tests {
         assert_eq!(metrics.cancellation_deliveries.load(Ordering::Relaxed), 1);
 
         let reason = Arc::new(AtomicU8::new(CANCEL_NONE));
-        let id = state.register(action(Arc::clone(&calls), true), reason);
+        let id = state
+            .register(action(Arc::clone(&calls), true), reason)
+            .unwrap();
         assert_eq!(state.cancel_all_for_shutdown(), 1);
         assert_eq!(state.cancel_all_for_shutdown(), 0);
         state.complete(id);
         assert_eq!(metrics.shutdown_cancellations.load(Ordering::Relaxed), 1);
         assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn cancellation_id_exhaustion_is_atomic_and_fail_closed() {
+        let metrics = Arc::new(PgPoolMetrics::default());
+        let state = CancelState::new(Arc::clone(&metrics));
+        state.next_id.store(u64::MAX, Ordering::Release);
+        let returned = state
+            .register(
+                action(Arc::new(AtomicU64::new(0)), true),
+                Arc::new(AtomicU8::new(CANCEL_NONE)),
+            )
+            .unwrap_err();
+        assert_eq!(returned.reason(), "database_cancellation_id_exhausted");
+        assert!(
+            state
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+        assert_eq!(metrics.inflight_operations.load(Ordering::Relaxed), 0);
     }
 
     #[test]

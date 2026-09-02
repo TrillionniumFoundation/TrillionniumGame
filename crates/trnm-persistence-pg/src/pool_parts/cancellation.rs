@@ -55,22 +55,41 @@ impl CancelState {
         }
     }
 
-    fn register(&self, action: CancelAction, reason: Arc<AtomicU8>) -> u64 {
-        let id = self
+    fn register(
+        &self,
+        action: CancelAction,
+        reason: Arc<AtomicU8>,
+    ) -> Result<u64, DomainError> {
+        let previous = self
             .next_id
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        self.entries
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_| operational_error("database_cancellation_id_exhausted"))?;
+        let id = previous + 1;
+        let mut entries = self
+            .entries
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, CancelEntry { action, reason });
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match entries.entry(id) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(CancelEntry { action, reason });
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {
+                return Err(operational_error("database_cancellation_registry_collision"));
+            }
+        }
+        drop(entries);
         self.metrics
             .inflight_operations
             .fetch_add(1, Ordering::Relaxed);
-        id
+        Ok(id)
     }
 
     fn request(&self, id: u64, reason: u8) -> Option<bool> {
+        if !matches!(reason, CANCEL_DEADLINE | CANCEL_SHUTDOWN) {
+            return None;
+        }
         let entry = self
             .entries
             .lock()
@@ -95,7 +114,7 @@ impl CancelState {
                     .shutdown_cancellations
                     .fetch_add(1, Ordering::Relaxed);
             }
-            _ => return None,
+            _ => unreachable!("reason validated before registry lookup"),
         }
         let delivered = (entry.action)();
         let metric = if delivered {
@@ -178,7 +197,7 @@ impl DeadlineGuard {
             return Err(operation_deadline_exceeded());
         }
         let reason = Arc::new(AtomicU8::new(CANCEL_NONE));
-        let id = state.register(action, Arc::clone(&reason));
+        let id = state.register(action, Arc::clone(&reason))?;
         let (done, receiver) = mpsc::channel();
         let watcher_state = Arc::clone(&state);
         let watcher = match thread::Builder::new()

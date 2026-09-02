@@ -118,6 +118,11 @@ impl Repository for PooledRepository {
             pool_acquire_attempts: snapshot.acquire_attempts,
             pool_acquire_failures: snapshot.acquire_failures,
             pool_session_policy_failures: snapshot.session_policy_failures,
+            database_inflight_operations: snapshot.inflight_operations,
+            database_deadline_cancellations: snapshot.deadline_cancellations,
+            database_shutdown_cancellations: snapshot.shutdown_cancellations,
+            database_cancellation_deliveries: snapshot.cancellation_deliveries,
+            database_cancellation_failures: snapshot.cancellation_failures,
             ..RepositoryOperationalMetrics::default()
         }
     }

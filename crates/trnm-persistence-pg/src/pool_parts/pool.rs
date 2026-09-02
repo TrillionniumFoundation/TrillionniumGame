@@ -115,8 +115,9 @@ impl PgPool {
                 Err(error)
             }
         };
+        let cancellation_reason = deadline.finish();
         let elapsed = started.elapsed();
-        match deadline.finish() {
+        match cancellation_reason {
             CANCEL_DEADLINE => Err(operation_deadline_exceeded()),
             CANCEL_SHUTDOWN => Err(operation_shutdown_cancelled()),
             _ if elapsed >= total_budget => Err(operation_deadline_exceeded()),

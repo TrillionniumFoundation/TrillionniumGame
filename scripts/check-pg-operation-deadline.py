@@ -13,6 +13,7 @@ POOL_PARTS = tuple(
     Path("crates/trnm-persistence-pg/src/pool_parts") / name
     for name in ("base.rs", "cancellation.rs", "pool.rs", "tests.rs")
 )
+APP = Path("crates/trnm-persistence-pg/src/bin/trnm_server/app.rs")
 SERVER_POOL = Path("crates/trnm-persistence-pg/src/bin/trnm_server/pool.rs")
 RETRY = Path("crates/trnm-persistence-pg/src/bin/trnm_server/retry.rs")
 SERVER = Path("crates/trnm-persistence-pg/src/bin/trnm_server/server.rs")
@@ -23,6 +24,7 @@ WORKFLOW = Path(".github/workflows/pg-operation-deadline.yml")
 class SourceSet:
     pool_root: str
     pool: str
+    app: str
     server_pool: str
     retry: str
     server: str
@@ -39,6 +41,7 @@ def load(root: Path) -> SourceSet:
     return SourceSet(
         pool_root=pool_root,
         pool=pool,
+        app=read(root, APP),
         server_pool=read(root, SERVER_POOL),
         retry=read(root, RETRY),
         server=read(root, SERVER),
@@ -71,18 +74,28 @@ def validate(source: SourceSet) -> list[str]:
         "cancel_all_for_shutdown",
         "database_operation_deadline_exceeded",
         "database_operation_shutdown_cancelled",
+        "database_cancellation_id_exhausted",
+        "fetch_update(Ordering::AcqRel",
+        "cancellation_id_exhaustion_is_atomic_and_fail_closed",
         "repository.client.cancel_token()",
         "token.cancel_query(NoTls)",
         "token.cancel_query(connector.clone())",
         "statement_timeout",
         "lock_timeout",
         "idle_in_transaction_session_timeout",
+        "let cancellation_reason = deadline.finish();",
+        "let elapsed = started.elapsed();",
         "live_deadline_cancels_blocking_query_and_keeps_pool_usable",
         "live_shutdown_cancels_inflight_query_and_preserves_connection_pool",
         'batch_execute("SELECT pg_sleep(10)")',
         'batch_execute("SELECT 1")',
     ):
         require(source.pool, fragment, failures, "pool source set")
+
+    finish_position = source.pool.find("let cancellation_reason = deadline.finish();")
+    elapsed_position = source.pool.find("let elapsed = started.elapsed();", finish_position)
+    if not (0 <= finish_position < elapsed_position):
+        failures.append("pool source set: watchdog cleanup must remain inside total elapsed budget")
 
     for fragment in (
         "pub trait BudgetedRepository",
@@ -101,8 +114,28 @@ def validate(source: SourceSet) -> list[str]:
         "impl BudgetedRepository for PooledRepository",
         "impl InflightCancellation for PooledRepository",
         "self.pool.cancel_inflight()",
+        "database_inflight_operations: snapshot.inflight_operations",
+        "database_deadline_cancellations: snapshot.deadline_cancellations",
+        "database_shutdown_cancellations: snapshot.shutdown_cancellations",
+        "database_cancellation_deliveries: snapshot.cancellation_deliveries",
+        "database_cancellation_failures: snapshot.cancellation_failures",
     ):
         require(source.server_pool, fragment, failures, str(SERVER_POOL))
+
+    for fragment in (
+        "pub database_inflight_operations: u64",
+        "pub database_deadline_cancellations: u64",
+        "pub database_shutdown_cancellations: u64",
+        "pub database_cancellation_deliveries: u64",
+        "pub database_cancellation_failures: u64",
+        "trnm_server_database_inflight_operations",
+        "trnm_server_database_deadline_cancellations_total",
+        "trnm_server_database_shutdown_cancellations_total",
+        "trnm_server_database_cancellation_deliveries_total",
+        "trnm_server_database_cancellation_failures_total",
+        "cancellation_metrics_are_exported_without_query_or_credential_labels",
+    ):
+        require(source.app, fragment, failures, str(APP))
 
     for fragment in (
         "BudgetedRepository + InflightCancellation",
@@ -177,6 +210,28 @@ def self_test(source: SourceSet) -> None:
         replace(source, server=source.server.replace(
             "let cancelled_operations = repository.cancel_inflight();",
             "let cancelled_operations = 0;",
+            1,
+        )),
+    )
+    assert_rejected(
+        "metrics-not-exported",
+        replace(source, app=source.app.replace(
+            "trnm_server_database_cancellation_failures_total",
+            "trnm_server_database_hidden_cancellation_failures_total",
+            1,
+        )),
+    )
+    assert_rejected(
+        "wrapping-cancellation-id",
+        replace(source, pool=source.pool.replace(
+            "fetch_update(Ordering::AcqRel", "fetch_add(Ordering::AcqRel", 1
+        )),
+    )
+    assert_rejected(
+        "elapsed-before-cleanup",
+        replace(source, pool=source.pool.replace(
+            "let cancellation_reason = deadline.finish();\n        let elapsed = started.elapsed();",
+            "let elapsed = started.elapsed();\n        let cancellation_reason = deadline.finish();",
             1,
         )),
     )
