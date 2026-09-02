@@ -2,7 +2,7 @@
   "schema": "trillionnium.evidence-index.v1",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "generated_at": "2026-08-31",
+  "generated_at": "2026-09-02",
   "evidence_schema": "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
   "policy": {
     "exact_target_commit_and_tree_required": true,
@@ -84,6 +84,49 @@
         "no independent reviewer accepted this exact target",
         "the entry is diagnostic and grants no gap, gate, compatibility or production credit"
       ]
+    },
+    {
+      "evidence_id": "TG-EV-PR63-EXACT-SOURCE-MERGE-20260902",
+      "path": "docs/evidence/2026-09-02-pr63-exact-source-and-merge-observation.json",
+      "evidence_type": "manifest",
+      "status": "exact-source-and-merge-executed-unreviewed",
+      "target": {
+        "repository": "TrillionniumFoundation/TrillionniumGame",
+        "commit": "44d0a4274d3c665aa58d17fbde9f9dc0ded08281",
+        "tree": "89b0407efa6d786d6ec6ba7aa84e76671280f6c2",
+        "prospective_merge_commit": "e25bc8b50270e230cd3cb60f51623858c95be068",
+        "prospective_merge_tree": "89b0407efa6d786d6ec6ba7aa84e76671280f6c2"
+      },
+      "producer": {
+        "repository": "TrillionniumFoundation/TrillionniumGame",
+        "commit": "44d0a4274d3c665aa58d17fbde9f9dc0ded08281",
+        "workflow": ".github/workflows/trillionnium-game-merge-gate.yml",
+        "run_id": 33595198386,
+        "final_job_id": 100139372229,
+        "prospective_merge_run_id": 33595198067
+      },
+      "artifacts": [
+        {"profile":"branch-before-state","transport":"job-log-envelope","sha256":"b3c4852849679be70bbfc810401e435216fe17a71da0378dfa9e22d129190a27"},
+        {"profile":"branch-verification-summary","transport":"job-log-derived","sha256":"3e5d46ad53c86be619cb7c945e1582ca7fc3368d3204cc44543bc649b0b23125"},
+        {"profile":"world-deployed-fault-lab","transport":"job-log-digest","sha256":"79d0ad95b94293891b2a70efc26320834dc25488315d1c6e549baa135eba7dd9"},
+        {"profile":"world-deployed-fault-report","transport":"job-log-digest","sha256":"56afd45da12432247edd179ce11b905c996e6c0e9a0e47bc6753a1b0c78cc532"}
+      ],
+      "claim_ids": ["C0"],
+      "gate_ids": ["SG0", "SG4"],
+      "task_ids": [],
+      "parity_ids": [],
+      "schema_valid": false,
+      "target_identity_verified_by_current_repo": true,
+      "independent_review": null,
+      "expires_at": null,
+      "compatibility_credit": false,
+      "limitations": [
+        "the exact source and prospective merge packets are terminal-success but fresh conflict-free independent acceptance is still pending",
+        "the candidate has not merged to main and no post-merge main packet exists",
+        "full effective branch-protection and ruleset readback is inaccessible through the current integration token",
+        "the World packet is a short single-host fixture matrix rather than multi-node or endurance evidence",
+        "the entry is diagnostic and grants no gap, gate, compatibility, production, cutover or retirement credit"
+      ]
     }
   ],
   "pending_requirements": [
@@ -91,7 +134,7 @@
       "id": "REQ-EV-CURRENT-HEAD-MERGE-GATE",
       "blocking_gap": "GAP-P0-CI-001",
       "required_for": ["SG0", "C0"],
-      "description": "Exact-head terminal-success workflow runs are indexed; non-empty job/artifact digest readback and independent acceptance remain required."
+      "description": "PR #63 exact-source and actual prospective-merge terminal-success execution is indexed; fresh independent acceptance, ordinary merge admission and post-merge main evidence remain required."
     },
     {
       "id": "REQ-EV-DENOMINATOR-LOCK",
