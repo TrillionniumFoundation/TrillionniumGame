@@ -92,24 +92,30 @@
       "status": "exact-source-and-merge-executed-unreviewed",
       "target": {
         "repository": "TrillionniumFoundation/TrillionniumGame",
-        "commit": "44d0a4274d3c665aa58d17fbde9f9dc0ded08281",
-        "tree": "89b0407efa6d786d6ec6ba7aa84e76671280f6c2",
-        "prospective_merge_commit": "e25bc8b50270e230cd3cb60f51623858c95be068",
-        "prospective_merge_tree": "89b0407efa6d786d6ec6ba7aa84e76671280f6c2"
+        "commit": "447fac4d0364aa4dee16bbc13df6459d5d7d3bbf",
+        "tree": "51617a0ab01a63a07cc3cc82e66e93c225646d97",
+        "prospective_merge_commit": "19061ba1ea898becc32d756cb5a7b0911f2686af",
+        "prospective_merge_tree": "51617a0ab01a63a07cc3cc82e66e93c225646d97"
       },
       "producer": {
         "repository": "TrillionniumFoundation/TrillionniumGame",
-        "commit": "44d0a4274d3c665aa58d17fbde9f9dc0ded08281",
+        "commit": "447fac4d0364aa4dee16bbc13df6459d5d7d3bbf",
         "workflow": ".github/workflows/trillionnium-game-merge-gate.yml",
-        "run_id": 33595198386,
-        "final_job_id": 100139372229,
-        "prospective_merge_run_id": 33595198067
+        "run_id": 33603358839,
+        "external_workflow_collection_job_id": 100161772584,
+        "final_job_id": 100164898491,
+        "prospective_merge_run_id": 33603358691,
+        "pull_request_contract_run_id": 33603413087,
+        "branch_inventory_run_id": 33603358885,
+        "world_fault_run_id": 33603359013
       },
       "artifacts": [
-        {"profile":"branch-before-state","transport":"job-log-envelope","sha256":"b3c4852849679be70bbfc810401e435216fe17a71da0378dfa9e22d129190a27"},
-        {"profile":"branch-verification-summary","transport":"job-log-derived","sha256":"3e5d46ad53c86be619cb7c945e1582ca7fc3368d3204cc44543bc649b0b23125"},
-        {"profile":"world-deployed-fault-lab","transport":"job-log-digest","sha256":"79d0ad95b94293891b2a70efc26320834dc25488315d1c6e549baa135eba7dd9"},
-        {"profile":"world-deployed-fault-report","transport":"job-log-digest","sha256":"56afd45da12432247edd179ce11b905c996e6c0e9a0e47bc6753a1b0c78cc532"}
+        {"profile":"branch-before-state","transport":"job-log-envelope","sha256":"a2e2ce8bb2c54864b6f7bba193019411344cfc8ec3cb1156afb2f23ac8a2af1d"},
+        {"profile":"branch-verification-summary","transport":"job-log-derived","sha256":"1667708f082416cfa2d53f081752d588b04a87e0c1ff76dabed9070885fed2b8"},
+        {"profile":"branch-inventory","transport":"job-log-digest","sha256":"6d428c7a8017b95fae4675063a39049ac08f2edb7038d8844ec903fb2433f071"},
+        {"profile":"branch-rows","transport":"job-log-digest","sha256":"5c60c388ff0025039e443543dfcf2112bfc598d3b4ef60f5ca26913b626357b2"},
+        {"profile":"world-deployed-fault-lab","transport":"job-log-digest","sha256":"5a0b16da73bd73662e89725a0c5f12db99cc47163c55923ac62c39a7d6fb4b61"},
+        {"profile":"world-deployed-fault-report","transport":"job-log-digest","sha256":"4c01210724ca4decdf6b9c2442da21fcbd97e3d374a93fd01dc6d779a9556982"}
       ],
       "claim_ids": ["C0"],
       "gate_ids": ["SG0", "SG4"],
@@ -121,11 +127,14 @@
       "expires_at": null,
       "compatibility_credit": false,
       "limitations": [
-        "the exact source and prospective merge packets are terminal-success but fresh conflict-free independent acceptance is still pending",
+        "the final exact source collection, prospective merge packet and stable aggregate are terminal-success",
+        "fresh conflict-free independent acceptance is still pending",
         "the candidate has not merged to main and no post-merge main packet exists",
-        "full effective branch-protection and ruleset readback is inaccessible through the current integration token",
-        "the World packet is a short single-host fixture matrix rather than multi-node or endurance evidence",
-        "the entry is diagnostic and grants no gap, gate, compatibility, production, cutover or retirement credit"
+        "the custom observation cannot become trillionnium.evidence.v1 until a legitimate independent review object exists",
+        "full classic branch-protection readback is inaccessible through the current GitHub App and the ruleset collection is empty",
+        "branch disposition review and cleanup remain incomplete",
+        "the World packet is a short single-host deterministic fixture matrix rather than production, multi-node or endurance evidence",
+        "the entry is diagnostic and grants no gap, gate, compatibility, production, public-online, cutover or retirement credit"
       ]
     }
   ],
@@ -134,7 +143,7 @@
       "id": "REQ-EV-CURRENT-HEAD-MERGE-GATE",
       "blocking_gap": "GAP-P0-CI-001",
       "required_for": ["SG0", "C0"],
-      "description": "PR #63 exact-source and actual prospective-merge terminal-success execution is indexed; fresh independent acceptance, ordinary merge admission and post-merge main evidence remain required."
+      "description": "PR #63 final exact-source collection, actual prospective-merge packet and stable aggregate are indexed as executed-unreviewed; fresh independent acceptance, ordinary protected admission and post-merge main evidence remain required."
     },
     {
       "id": "REQ-EV-DENOMINATOR-LOCK",
