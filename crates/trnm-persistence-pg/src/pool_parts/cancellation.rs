@@ -139,7 +139,8 @@ impl CancelState {
                 .collect::<Vec<_>>();
             handles
                 .into_iter()
-                .filter(|handle| handle.join().unwrap_or(false))
+                .map(|handle| handle.join().unwrap_or(false))
+                .filter(|requested| *requested)
                 .count()
         });
         u64::try_from(requested).unwrap_or(u64::MAX)
