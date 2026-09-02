@@ -14,6 +14,16 @@ use super::app::{Repository, RepositoryOperationalMetrics};
 
 static JITTER_SEQUENCE: AtomicU64 = AtomicU64::new(0x9e37_79b9_7f4a_7c15);
 
+pub const DATABASE_OPERATION_BUDGET: Duration = Duration::from_secs(2);
+
+pub trait BudgetedRepository: Repository {
+    fn commit_command_with_budget(
+        &mut self,
+        request: &CommitRequest,
+        operation_budget: Duration,
+    ) -> Result<CommitOutcome, DomainError>;
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RetryPolicy {
     pub max_attempts: u8,
@@ -27,7 +37,7 @@ impl RetryPolicy {
     pub const fn candidate_default() -> Self {
         Self {
             max_attempts: 3,
-            total_budget: Duration::from_secs(2),
+            total_budget: DATABASE_OPERATION_BUDGET,
             initial_backoff: Duration::from_millis(5),
             maximum_backoff: Duration::from_millis(100),
         }
@@ -74,7 +84,7 @@ impl<R> RetryingRepository<R> {
     }
 }
 
-impl<R: Repository> Repository for RetryingRepository<R> {
+impl<R: BudgetedRepository> Repository for RetryingRepository<R> {
     fn bootstrap_entity(
         &mut self,
         entity: EntityId,
@@ -87,8 +97,10 @@ impl<R: Repository> Repository for RetryingRepository<R> {
     }
 
     fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError> {
-        execute_with_metrics(self.policy, &self.metrics, || {
-            self.inner.commit_command(request)
+        let policy = self.policy;
+        let metrics = Arc::clone(&self.metrics);
+        execute_with_metrics(policy, metrics.as_ref(), |remaining| {
+            self.inner.commit_command_with_budget(request, remaining)
         })
     }
 
@@ -140,29 +152,37 @@ impl<R: Repository> Repository for RetryingRepository<R> {
 #[cfg(test)]
 pub fn execute<T>(
     policy: RetryPolicy,
-    operation: impl FnMut() -> Result<T, DomainError>,
+    mut operation: impl FnMut() -> Result<T, DomainError>,
 ) -> Result<T, DomainError> {
     let metrics = RetryMetrics::default();
-    execute_with_metrics(policy, &metrics, operation)
+    execute_with_metrics(policy, &metrics, |_| operation())
 }
 
 fn execute_with_metrics<T>(
     policy: RetryPolicy,
     metrics: &RetryMetrics,
-    mut operation: impl FnMut() -> Result<T, DomainError>,
+    mut operation: impl FnMut(Duration) -> Result<T, DomainError>,
 ) -> Result<T, DomainError> {
     let policy = policy.validate()?;
     let started = Instant::now();
     let mut attempt = 0_u8;
     let mut backoff = policy.initial_backoff;
     loop {
-        if attempt > 0 && started.elapsed() >= policy.total_budget {
+        let remaining = policy.total_budget.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
             metrics.exhausted.fetch_add(1, Ordering::Relaxed);
             return Err(retry_budget_exhausted());
         }
+
         attempt = attempt.saturating_add(1);
         metrics.attempts.fetch_add(1, Ordering::Relaxed);
-        match operation() {
+        let result = operation(remaining);
+        if started.elapsed() >= policy.total_budget {
+            metrics.exhausted.fetch_add(1, Ordering::Relaxed);
+            return Err(retry_budget_exhausted());
+        }
+
+        match result {
             Ok(value) => return Ok(value),
             Err(error) => {
                 if !matches!(
@@ -171,10 +191,11 @@ fn execute_with_metrics<T>(
                 ) {
                     return Err(error);
                 }
-                if attempt >= policy.max_attempts || started.elapsed() >= policy.total_budget {
+                if attempt >= policy.max_attempts {
                     metrics.exhausted.fetch_add(1, Ordering::Relaxed);
                     return Err(retry_budget_exhausted());
                 }
+
                 metrics.retries.fetch_add(1, Ordering::Relaxed);
                 if error.retry() == RetryClass::SafeBackoff {
                     let remaining = policy.total_budget.saturating_sub(started.elapsed());
@@ -296,6 +317,49 @@ mod tests {
         .unwrap_err();
         assert_eq!(calls, 1);
         assert_eq!(returned.reason(), "database_retry_budget_exhausted");
+    }
+
+    #[test]
+    fn successful_result_after_budget_is_rejected() {
+        let returned = execute(
+            RetryPolicy {
+                max_attempts: 1,
+                total_budget: Duration::from_millis(1),
+                initial_backoff: Duration::ZERO,
+                maximum_backoff: Duration::ZERO,
+            },
+            || {
+                thread::sleep(Duration::from_millis(2));
+                Ok::<_, DomainError>("too-late")
+            },
+        )
+        .unwrap_err();
+        assert_eq!(returned.reason(), "database_retry_budget_exhausted");
+    }
+
+    #[test]
+    fn each_attempt_receives_only_the_remaining_total_budget() {
+        let policy = RetryPolicy {
+            max_attempts: 2,
+            total_budget: Duration::from_millis(100),
+            initial_backoff: Duration::ZERO,
+            maximum_backoff: Duration::ZERO,
+        };
+        let metrics = RetryMetrics::default();
+        let mut observed = Vec::new();
+        let result = execute_with_metrics(policy, &metrics, |remaining| {
+            observed.push(remaining);
+            if observed.len() == 1 {
+                thread::sleep(Duration::from_millis(5));
+                Err(error(RetryClass::SafeImmediate))
+            } else {
+                Ok("committed")
+            }
+        })
+        .unwrap();
+        assert_eq!(result, "committed");
+        assert_eq!(observed.len(), 2);
+        assert!(observed[1] < observed[0]);
     }
 
     #[test]

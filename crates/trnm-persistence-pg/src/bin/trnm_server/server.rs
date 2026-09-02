@@ -11,7 +11,8 @@ use super::config::ServerConfig;
 use super::error::ServerError;
 use super::grpc;
 use super::http::{read_request, Request, Response};
-use super::retry::{RetryPolicy, RetryingRepository};
+use super::pool::InflightCancellation;
+use super::retry::{BudgetedRepository, RetryPolicy, RetryingRepository};
 use super::websocket;
 
 const MAX_CONNECTION_WORKERS: usize = 32;
@@ -20,7 +21,7 @@ const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 pub fn serve<R>(config: &ServerConfig, repository: R) -> Result<(), ServerError>
 where
-    R: Repository + Clone + Send + 'static,
+    R: Repository + BudgetedRepository + InflightCancellation + Clone + Send + 'static,
 {
     let listener = TcpListener::bind(config.bind)?;
     listener.set_nonblocking(true)?;
@@ -78,6 +79,12 @@ where
 
     let accept_result = accept_loop(&listener, &sender, config, &draining, &worker_failed);
     draining.begin();
+    let cancelled_operations = repository.cancel_inflight();
+    if cancelled_operations > 0 {
+        eprintln!(
+            "trnm-server requested cancellation for {cancelled_operations} in-flight database operations"
+        );
+    }
     drop(sender);
     let join_result = join_workers(workers);
     let grpc_join_result = grpc::join(grpc_worker);
@@ -136,7 +143,7 @@ fn worker_loop<R>(
     draining: SharedDrain,
     metrics: SharedAppMetrics,
 ) where
-    R: Repository,
+    R: BudgetedRepository,
 {
     let mut app = App::with_shared_state(
         repository,
@@ -273,7 +280,8 @@ fn bad_request() -> Response {
 fn overloaded() -> Response {
     Response::json(
         503,
-        br#"{"code":"unavailable","message":"Connection capacity is exhausted.","retry":"backoff"}"#.to_vec(),
+        br#"{"code":"unavailable","message":"Connection capacity is exhausted.","retry":"backoff"}"#
+            .to_vec(),
     )
 }
 
