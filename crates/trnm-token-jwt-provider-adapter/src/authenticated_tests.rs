@@ -76,7 +76,10 @@ fn debug_redacts_derived_diagnostic_wrapper_and_format_args() {
         authenticated: &right,
     };
     assert_eq!(left_diagnostic.authenticated.route(), TokenRoute::Legacy);
-    assert_eq!(right_diagnostic.authenticated.route(), TokenRoute::Epoch(31));
+    assert_eq!(
+        right_diagnostic.authenticated.route(),
+        TokenRoute::Epoch(31)
+    );
     assert_eq!(
         format!("{left_diagnostic:?}"),
         format!("{right_diagnostic:?}")
