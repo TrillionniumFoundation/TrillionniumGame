@@ -8,8 +8,10 @@ on:
       - 'docs/GOVERNANCE.md'
       - 'scripts/generate-branch-inventory.py'
       - 'scripts/verify-branch-inventory-log.py'
+      - 'scripts/verify-branch-inventory-stable.py'
       - 'scripts/emit-actions-log-artifact.py'
       - 'tests/control_plane/test_branch_inventory.py'
+      - 'tests/control_plane/test_branch_inventory_stable.py'
       - '.github/workflows/branch-inventory.yml'
   push:
     branches: [main]
@@ -19,8 +21,10 @@ on:
       - 'docs/GOVERNANCE.md'
       - 'scripts/generate-branch-inventory.py'
       - 'scripts/verify-branch-inventory-log.py'
+      - 'scripts/verify-branch-inventory-stable.py'
       - 'scripts/emit-actions-log-artifact.py'
       - 'tests/control_plane/test_branch_inventory.py'
+      - 'tests/control_plane/test_branch_inventory_stable.py'
       - '.github/workflows/branch-inventory.yml'
   workflow_dispatch:
 
@@ -73,9 +77,11 @@ jobs:
           python3 -m py_compile \
             scripts/generate-branch-inventory.py \
             scripts/verify-branch-inventory-log.py \
+            scripts/verify-branch-inventory-stable.py \
             scripts/emit-actions-log-artifact.py
           python3 -m unittest \
-            tests.control_plane.test_branch_inventory -v
+            tests.control_plane.test_branch_inventory \
+            tests.control_plane.test_branch_inventory_stable -v
           python3 scripts/generate-branch-inventory.py \
             --output run/governance/branch-inventory.json
           jq -e '
@@ -171,7 +177,7 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           output='run/governance/verified-branch-inventory.json'
-          python3 scripts/verify-branch-inventory-log.py \
+          python3 scripts/verify-branch-inventory-stable.py \
             --repository "$CANDIDATE_REPOSITORY" \
             --head-sha "$CANDIDATE_SHA" \
             --run-id "$GITHUB_RUN_ID" \
@@ -182,6 +188,13 @@ jobs:
             .repository == env.CANDIDATE_REPOSITORY and
             .head_sha == env.CANDIDATE_SHA and
             .branch_count > 0 and
+            .captured_branch_count == .branch_count and
+            .live_branch_count >= .captured_branch_count and
+            .concurrent_addition_count >= 0 and
+            .concurrent_addition_count <= 128 and
+            .concurrent_removed_branch_count == 0 and
+            .concurrent_moved_branch_count == 0 and
+            .captured_remote_refs_reverified == true and
             .active_branch_count > 0 and
             .complete_before_state_retained == true and
             .live_remote_ref_set_reverified == true and
@@ -194,7 +207,7 @@ jobs:
           sha256sum "$output" | tee "$RUNNER_TEMP/verified-branch-inventory.sha256"
           {
             printf '### Verified branch before-state\n\n'
-            printf 'This exact retained inventory is verified but no branch deletion, disposition acceptance, SG0, compatibility or production credit is granted.\n\n'
+            printf 'Every captured ref was re-read unchanged. Bounded branches created after the immutable producer snapshot are recorded as concurrent additions; deletion or movement of a captured ref fails verification. No disposition acceptance, SG0, compatibility or production credit is granted.\n\n'
             printf '```json\n'
             jq -c '{
               schema,
@@ -207,6 +220,13 @@ jobs:
               archive_sha256,
               inventory_sha256,
               branch_count,
+              captured_branch_count,
+              live_branch_count,
+              concurrent_addition_count,
+              concurrent_additions,
+              concurrent_removed_branch_count,
+              concurrent_moved_branch_count,
+              captured_remote_refs_reverified,
               active_branch_count,
               unique_tip_count,
               unique_tree_count,
