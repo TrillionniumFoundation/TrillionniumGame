@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import unquote
@@ -61,10 +62,62 @@ def require(condition: bool, message: str) -> None:
         raise ValidationError(message)
 
 
+def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous JSON keys instead of silently accepting the last value."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        require(key not in result, f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
 def load_object(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
     require(isinstance(value, dict), f"{path}: top-level value must be an object")
     return value
+
+
+def valid_revision(value: Any, label: str) -> str:
+    """Validate a canonical real calendar date without consulting wall-clock time."""
+    require(
+        isinstance(value, str)
+        and re.fullmatch(r"20[0-9]{2}-[0-9]{2}-[0-9]{2}", value) is not None,
+        f"{label}: revision must be YYYY-MM-DD",
+    )
+    try:
+        date.fromisoformat(value)
+    except ValueError as error:
+        raise ValidationError(f"{label}: revision is not a valid calendar date") from error
+    return value
+
+
+def expected_document_revisions(
+    authority: dict[str, Any], current_documents: set[str]
+) -> dict[str, str]:
+    """Retain the v1 baseline and bind registered topic updates individually."""
+    baseline = valid_revision(authority.get("revision"), "documentation")
+    overrides = authority.get("document_revisions", {})
+    require(isinstance(overrides, dict), "document_revisions must be an object")
+    result = dict.fromkeys(sorted(current_documents), baseline)
+    for path, value in overrides.items():
+        require(
+            isinstance(path, str) and path in current_documents,
+            f"document_revisions: unregistered current document: {path!r}",
+        )
+        revision = valid_revision(value, path)
+        require(revision >= baseline, f"{path}: revision predates documentation baseline")
+        result[path] = revision
+    return result
+
+
+def has_exact_revision_marker(text: str, expected: str) -> bool:
+    """Require one whole-line marker; reject duplicate and substring matches."""
+    markers = [
+        line.rstrip(" \t")
+        for line in text.splitlines()
+        if re.match(r"^[ \t]*Revision[ \t]*:", line)
+    ]
+    return markers == [f"Revision: {expected}"]
 
 
 def canonical_path(root: Path, value: Any, label: str) -> Path:
@@ -371,12 +424,7 @@ def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str,
     )
     require(authority.get("project_id") == "trillionnium-game", "unexpected project_id")
     require(authority.get("plan_version") == 3, "documentation authority must target plan v3")
-    revision = authority.get("revision")
-    require(
-        isinstance(revision, str)
-        and re.fullmatch(r"20\d{2}-\d{2}-\d{2}", revision) is not None,
-        "documentation revision must be YYYY-MM-DD",
-    )
+    revision = valid_revision(authority.get("revision"), "documentation")
 
     policy = authority.get("policy")
     require(isinstance(policy, dict), "documentation policy must be an object")
@@ -443,6 +491,7 @@ def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str,
 
     actual_current = {path.relative_to(root).as_posix() for path in current_documents}
     require(actual_current == EXPECTED_CURRENT, "current human documentation set changed")
+    document_revisions = expected_document_revisions(authority, actual_current)
 
     files = tracked_files(root)
     actual_docs_markdown = {
@@ -502,8 +551,11 @@ def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str,
             document_failures.append(f"{relative}: title required")
         if STATUS_MARKER not in text:
             document_failures.append(f"{relative}: authority status marker required")
-        if f"Revision: {revision}" not in text:
-            document_failures.append(f"{relative}: revision marker required")
+        expected_revision = document_revisions[relative.as_posix()]
+        if not has_exact_revision_marker(text, expected_revision):
+            document_failures.append(
+                f"{relative}: exactly one Revision: {expected_revision} marker required"
+            )
         if len(text.splitlines()) < 20:
             document_failures.append(f"{relative}: document is unexpectedly small")
     require(
@@ -585,6 +637,7 @@ def validate(root: Path = ROOT, authority_path: Path | None = None) -> dict[str,
         "schema": "trillionnium.documentation-authority-validation.v1",
         "status": "passed",
         "revision": revision,
+        "document_revisions": document_revisions,
         "root_human_document_count": len(root_documents),
         "current_human_document_count": len(current_documents),
         "generated_rollup_count": len(generated_rollups),

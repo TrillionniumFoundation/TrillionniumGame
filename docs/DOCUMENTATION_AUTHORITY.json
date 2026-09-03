@@ -3,6 +3,11 @@
   "project_id": "trillionnium-game",
   "plan_version": 3,
   "revision": "2026-09-01",
+  "document_revisions": {
+    "docs/README.md": "2026-09-03",
+    "docs/ARCHITECTURE.md": "2026-09-03",
+    "docs/DEVELOPMENT.md": "2026-09-03"
+  },
   "policy": {
     "single_current_human_document_per_topic": true,
     "historical_markdown_allowed_in_active_tree": false,

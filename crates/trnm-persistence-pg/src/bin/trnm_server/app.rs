@@ -25,6 +25,11 @@ pub struct RepositoryOperationalMetrics {
     pub pool_acquire_attempts: u64,
     pub pool_acquire_failures: u64,
     pub pool_session_policy_failures: u64,
+    pub database_inflight_operations: u64,
+    pub database_deadline_cancellations: u64,
+    pub database_shutdown_cancellations: u64,
+    pub database_cancellation_deliveries: u64,
+    pub database_cancellation_failures: u64,
     pub retry_attempts: u64,
     pub retries: u64,
     pub retry_exhausted: u64,
@@ -381,6 +386,16 @@ trnm_server_database_pool_acquire_attempts_total {}\n\
 trnm_server_database_pool_acquire_failures_total {}\n\
 # TYPE trnm_server_database_session_policy_failures_total counter\n\
 trnm_server_database_session_policy_failures_total {}\n\
+# TYPE trnm_server_database_inflight_operations gauge\n\
+trnm_server_database_inflight_operations {}\n\
+# TYPE trnm_server_database_deadline_cancellations_total counter\n\
+trnm_server_database_deadline_cancellations_total {}\n\
+# TYPE trnm_server_database_shutdown_cancellations_total counter\n\
+trnm_server_database_shutdown_cancellations_total {}\n\
+# TYPE trnm_server_database_cancellation_deliveries_total counter\n\
+trnm_server_database_cancellation_deliveries_total {}\n\
+# TYPE trnm_server_database_cancellation_failures_total counter\n\
+trnm_server_database_cancellation_failures_total {}\n\
 # TYPE trnm_server_database_retry_attempts_total counter\n\
 trnm_server_database_retry_attempts_total {}\n\
 # TYPE trnm_server_database_retries_total counter\n\
@@ -395,6 +410,11 @@ trnm_server_database_retry_sleep_milliseconds_total {}\n",
             repository.pool_acquire_attempts,
             repository.pool_acquire_failures,
             repository.pool_session_policy_failures,
+            repository.database_inflight_operations,
+            repository.database_deadline_cancellations,
+            repository.database_shutdown_cancellations,
+            repository.database_cancellation_deliveries,
+            repository.database_cancellation_failures,
             repository.retry_attempts,
             repository.retries,
             repository.retry_exhausted,
@@ -716,7 +736,7 @@ fn escape_json(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     for character in value.chars() {
         match character {
-            '\"' => output.push_str("\\\""),
+            '"' => output.push_str("\\\""),
             '\\' => output.push_str("\\\\"),
             '\n' => output.push_str("\\n"),
             '\r' => output.push_str("\\r"),
@@ -790,6 +810,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct FakeRepository {
         failure: Option<DomainError>,
+        operational_metrics: RepositoryOperationalMetrics,
     }
 
     impl Repository for FakeRepository {
@@ -831,6 +852,10 @@ mod tests {
                 event_count: request.events.len(),
                 outbox: request.outbox.iter().map(|intent| intent.id).collect(),
             }))
+        }
+
+        fn operational_metrics(&self) -> RepositoryOperationalMetrics {
+            self.operational_metrics
         }
     }
 
@@ -914,6 +939,7 @@ mod tests {
                 "private_database_reason",
                 RetryClass::Never,
             )),
+            ..FakeRepository::default()
         };
         let mut app = App::new(repository, token.clone());
         let response = app.handle(&Request::new(
@@ -1012,6 +1038,40 @@ mod tests {
         ));
         let body = String::from_utf8(response.body).unwrap();
         assert!(body.contains("trnm_server_commands_applied_total 1"));
+    }
+
+    #[test]
+    fn cancellation_metrics_are_exported_without_query_or_credential_labels() {
+        let repository = FakeRepository {
+            operational_metrics: RepositoryOperationalMetrics {
+                database_inflight_operations: 1,
+                database_deadline_cancellations: 2,
+                database_shutdown_cancellations: 3,
+                database_cancellation_deliveries: 4,
+                database_cancellation_failures: 5,
+                ..RepositoryOperationalMetrics::default()
+            },
+            ..FakeRepository::default()
+        };
+        let mut app = App::new(repository, token());
+        let response = app.handle(&Request::new(
+            "GET",
+            "/metrics",
+            BTreeMap::new(),
+            Vec::new(),
+        ));
+        let body = String::from_utf8(response.body).unwrap();
+        for expected in [
+            "trnm_server_database_inflight_operations 1",
+            "trnm_server_database_deadline_cancellations_total 2",
+            "trnm_server_database_shutdown_cancellations_total 3",
+            "trnm_server_database_cancellation_deliveries_total 4",
+            "trnm_server_database_cancellation_failures_total 5",
+        ] {
+            assert!(body.contains(expected), "missing metric {expected}");
+        }
+        assert!(!body.contains("query="));
+        assert!(!body.contains("credential"));
     }
 
     #[test]

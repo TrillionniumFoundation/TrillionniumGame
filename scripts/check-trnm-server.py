@@ -10,15 +10,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PERSISTENCE_ROOT = ROOT / "crates/trnm-persistence-pg/src"
+POOL_ROOT = PERSISTENCE_ROOT / "pool.rs"
+POOL_PARTS = tuple(
+    PERSISTENCE_ROOT / "pool_parts" / name
+    for name in ("base.rs", "cancellation.rs", "pool.rs", "tests.rs")
+)
 SERVER_ROOT = PERSISTENCE_ROOT / "bin"
 MODULE_ROOT = SERVER_ROOT / "trnm_server"
 REQUIRED_FILES = {
-    PERSISTENCE_ROOT / "pool.rs",
+    POOL_ROOT,
+    *POOL_PARTS,
     PERSISTENCE_ROOT / "session.rs",
+    PERSISTENCE_ROOT / "auth.rs",
     SERVER_ROOT / "trnm-server.rs",
     MODULE_ROOT / "mod.rs",
     MODULE_ROOT / "app.rs",
-    PERSISTENCE_ROOT / "auth.rs",
     MODULE_ROOT / "codec.rs",
     MODULE_ROOT / "config.rs",
     MODULE_ROOT / "error.rs",
@@ -48,10 +54,13 @@ REQUIRED_TESTS = {
     "admitted_mutation_can_complete_after_drain_begins",
     "unauthenticated_mutations_fail_closed",
     "admin_token_comparison_rejects_a_256_byte_length_delta",
+    "cancellation_metrics_are_exported_without_query_or_credential_labels",
     "safe_immediate_failure_is_retried_within_attempt_budget",
     "never_and_resync_errors_are_not_retried",
     "exhausted_retry_returns_stable_unavailable_error",
     "elapsed_budget_prevents_an_additional_attempt",
+    "successful_result_after_budget_is_rejected",
+    "each_attempt_receives_only_the_remaining_total_budget",
     "jitter_remains_inside_half_to_full_backoff",
     "create_and_rotation_validation_fail_closed",
     "persisted_revocation_reason_mapping_is_exact",
@@ -71,7 +80,11 @@ REQUIRED_TESTS = {
     "invalid_pool_policy_fails_closed",
     "tls_identity_requires_cert_and_key_pair",
     "tls_debug_never_exposes_private_key_material",
-    "wrapper_is_cloneable_without_exposing_database_url",
+    "completed_deadline_guard_does_not_cancel",
+    "deadline_and_shutdown_requests_are_single_delivery",
+    "cancellation_id_exhaustion_is_atomic_and_fail_closed",
+    "sub_millisecond_budget_fails_closed",
+    "wrapper_is_cloneable_and_supports_budget_and_shutdown_contracts",
     "rfc6455_handshake_accept_matches_the_published_vector",
     "malformed_key_version_and_subprotocol_fail_closed",
     "masked_single_text_frame_is_unmasked_exactly",
@@ -105,6 +118,12 @@ FORBIDDEN_SOURCE = (
 
 def fail(message: str) -> None:
     raise SystemExit(f"trnm-server contract failed: {message}")
+
+
+def require_markers(label: str, text: str, markers: tuple[str, ...]) -> None:
+    for marker in markers:
+        if marker not in text:
+            fail(f"{label}: missing marker {marker!r}")
 
 
 def main() -> int:
@@ -146,20 +165,33 @@ def main() -> int:
         path.relative_to(ROOT): path.read_text(encoding="utf-8")
         for path in sorted(REQUIRED_FILES)
     }
+    pool_root_key = POOL_ROOT.relative_to(ROOT)
+    expected_pool_root = "\n".join(
+        f'include!("pool_parts/{part.name}");' for part in POOL_PARTS
+    ) + "\n"
+    if sources[pool_root_key] != expected_pool_root:
+        fail("pool.rs must remain the exact four-part include authority")
+    pool_source = "\n".join(
+        [sources[pool_root_key], *(sources[part.relative_to(ROOT)] for part in POOL_PARTS)]
+    )
     combined = "\n".join(sources.values())
-    if "#![forbid(unsafe_code)]" not in sources[Path("crates/trnm-persistence-pg/src/bin/trnm-server.rs")]:
+
+    binary_key = Path("crates/trnm-persistence-pg/src/bin/trnm-server.rs")
+    if "#![forbid(unsafe_code)]" not in sources[binary_key]:
         fail("binary root does not forbid unsafe code")
     for marker in FORBIDDEN_SOURCE:
         if marker in combined:
             fail(f"forbidden source marker: {marker}")
 
-    required_markers = {
-        "crates/trnm-persistence-pg/src/pool.rs": [
+    require_markers(
+        "closed pool source set",
+        pool_source,
+        (
             "pub struct PgPoolConfig",
             "pub struct PgTlsConfig",
             "pub struct PgPoolSnapshot",
             "pub struct PgPool",
-            "get_timeout(self.policy.acquire_timeout)",
+            "get_timeout(timeout)",
             ".test_on_check_out(true)",
             "Certificate::from_pem",
             "Identity::from_pkcs8",
@@ -167,8 +199,21 @@ def main() -> int:
             "SET statement_timeout",
             "SET lock_timeout",
             '"<redacted>"',
-        ],
-        "crates/trnm-persistence-pg/src/session.rs": [
+            "pub fn run_with_deadline<T>",
+            "CancelState",
+            "DeadlineGuard",
+            "cancel_all_for_shutdown",
+            "token.cancel_query(NoTls)",
+            "token.cancel_query(connector.clone())",
+            "database_operation_deadline_exceeded",
+            "database_operation_shutdown_cancelled",
+            "database_cancellation_id_exhausted",
+            "fetch_update(Ordering::AcqRel",
+        ),
+    )
+
+    marker_groups = {
+        "crates/trnm-persistence-pg/src/session.rs": (
             "pub struct CreateSessionFamily",
             "pub enum RefreshRotationOutcome",
             "IsolationLevel::Serializable",
@@ -176,14 +221,14 @@ def main() -> int:
             "refresh_compare_and_swap_failed",
             "revoked_reason = 2",
             "RevocationReason::RefreshReplay",
-        ],
-        "crates/trnm-persistence-pg/src/bin/trnm-server.rs": [
+        ),
+        "crates/trnm-persistence-pg/src/bin/trnm-server.rs": (
             "Command::CheckConfig",
             "Command::Migrate",
             "Command::Serve",
             "open_verified_repository",
-        ],
-        "crates/trnm-persistence-pg/src/auth.rs": [
+        ),
+        "crates/trnm-persistence-pg/src/auth.rs": (
             "pub struct AccessTokenVerifier",
             "allow_legacy_without_key_id: false",
             "max_lifetime_seconds: Some(15 * 60)",
@@ -191,14 +236,14 @@ def main() -> int:
             "claim_unsigned(claims, \"sgn\")",
             "sha256_digest(value.as_bytes())",
             "\"session_authentication_failed\"",
-        ],
-        "crates/trnm-persistence-pg/src/bin/trnm_server/mod.rs": [
+        ),
+        "crates/trnm-persistence-pg/src/bin/trnm_server/mod.rs": (
             "pub(crate) mod auth;",
             "pub(crate) mod pool;",
             "pub(crate) mod session_api;",
             "pub(crate) mod websocket;",
-        ],
-        "crates/trnm-persistence-pg/src/bin/trnm_server/config.rs": [
+        ),
+        "crates/trnm-persistence-pg/src/bin/trnm_server/config.rs": (
             "127.0.0.1:7350",
             "TRNM_SERVER_ALLOW_NON_LOOPBACK",
             "TRNM_SERVER_GRPC_BIND",
@@ -213,13 +258,17 @@ def main() -> int:
             "TRNM_SERVER_SESSION_AUTH_ENABLED",
             "TRNM_SERVER_SESSION_AUTH_KEY_HEX",
             '"<redacted>"',
-        ],
-        "crates/trnm-persistence-pg/src/bin/trnm_server/pool.rs": [
+        ),
+        "crates/trnm-persistence-pg/src/bin/trnm_server/pool.rs": (
             "pub struct PooledRepository",
-            "self.pool.acquire()?",
-            "pool_acquire_failures",
-        ],
-        "crates/trnm-persistence-pg/src/bin/trnm_server/schema.rs": [
+            "run_with_deadline",
+            "impl BudgetedRepository for PooledRepository",
+            "impl InflightCancellation for PooledRepository",
+            "self.pool.cancel_inflight()",
+            "database_inflight_operations: snapshot.inflight_operations",
+            "database_cancellation_failures: snapshot.cancellation_failures",
+        ),
+        "crates/trnm-persistence-pg/src/bin/trnm_server/schema.rs": (
             "migrations/postgresql/0001_foundation_up.sql",
             "migrations/cockroachdb/0001_foundation_up.sql",
             "trnm_schema_metadata",
@@ -227,22 +276,22 @@ def main() -> int:
             "PgPool::connect_plain",
             "PgPool::connect_tls",
             "PgTlsConfig::new",
-        ],
-        "crates/trnm-persistence-pg/src/bin/trnm_server/grpc.rs": [
+        ),
+        "crates/trnm-persistence-pg/src/bin/trnm_server/grpc.rs": (
             "/nakama.api.Nakama/Healthcheck",
             "NakamaServer::new",
             "serve_with_shutdown",
             "worker_failed.store(true",
             "catch_unwind",
             "draining.begin()",
-        ],
-        "crates/trnm-persistence-pg/src/bin/trnm_server/http.rs": [
+        ),
+        "crates/trnm-persistence-pg/src/bin/trnm_server/http.rs": (
             "http_transfer_encoding_not_supported",
             "http_pipelining_not_supported",
             "http_duplicate_header",
             "Connection: close",
-        ],
-        "crates/trnm-persistence-pg/src/bin/trnm_server/app.rs": [
+        ),
+        "crates/trnm-persistence-pg/src/bin/trnm_server/app.rs": (
             "/healthz",
             "/readyz",
             "/metrics",
@@ -258,31 +307,38 @@ def main() -> int:
             "if !self.authorized(request)",
             "trnm_server_database_pool_acquire_failures_total",
             "trnm_server_database_retry_exhausted_total",
+            "trnm_server_database_inflight_operations",
+            "trnm_server_database_deadline_cancellations_total",
+            "trnm_server_database_shutdown_cancellations_total",
+            "trnm_server_database_cancellation_deliveries_total",
+            "trnm_server_database_cancellation_failures_total",
             "pub(crate) struct SharedDrain",
             "try_admit",
             "admit_realtime_dispatch",
             "handle_admitted",
             "is_mutating_request",
-        ],
-        "crates/trnm-persistence-pg/src/bin/trnm_server/session_api.rs": [
+        ),
+        "crates/trnm-persistence-pg/src/bin/trnm_server/session_api.rs": (
             "pub struct SessionApi",
             "verify_access_session",
             "rotate_refresh_token",
             "revoke_session_family",
             "RefreshRotationOutcome::ReplayRevoked",
             "session_authentication_not_configured",
-        ],
-        "crates/trnm-persistence-pg/src/bin/trnm_server/retry.rs": [
+        ),
+        "crates/trnm-persistence-pg/src/bin/trnm_server/retry.rs": (
             "max_attempts: 3",
-            "total_budget: Duration::from_secs(2)",
+            "total_budget: DATABASE_OPERATION_BUDGET",
             "RetryClass::SafeImmediate",
             "RetryClass::SafeBackoff",
             "database_retry_budget_exhausted",
-            "if attempt > 0 && started.elapsed() >= policy.total_budget",
+            "let remaining = policy.total_budget.saturating_sub(started.elapsed());",
+            "operation(remaining)",
+            "if started.elapsed() >= policy.total_budget",
             "jittered_backoff(backoff)",
             "base_nanos / 2",
-        ],
-        "crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs": [
+        ),
+        "crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs": (
             "/v1/realtime",
             "trnm.json.v1",
             "trnm.protobuf.v1",
@@ -296,8 +352,8 @@ def main() -> int:
             'Request::new("POST", "/v1/authority/commit"',
             "BTreeSet",
             "app.should_stop()",
-        ],
-        "crates/trnm-persistence-pg/src/bin/trnm_server/server.rs": [
+        ),
+        "crates/trnm-persistence-pg/src/bin/trnm_server/server.rs": (
             "RetryingRepository::new",
             "RetryPolicy::candidate_default",
             "config.session_auth",
@@ -307,21 +363,28 @@ def main() -> int:
             "grpc::spawn",
             "grpc::join",
             "with_shared_state",
-        ],
+            "let cancelled_operations = repository.cancel_inflight();",
+            "drop(sender);",
+            "join_workers(workers)",
+        ),
     }
-    for relative, markers in required_markers.items():
-        text = sources[Path(relative)]
-        for marker in markers:
-            if marker not in text:
-                fail(f"{relative}: missing marker {marker!r}")
+    for relative, markers in marker_groups.items():
+        require_markers(relative, sources[Path(relative)], markers)
+
+    server_source = sources[Path("crates/trnm-persistence-pg/src/bin/trnm_server/server.rs")]
+    cancel_position = server_source.find("let cancelled_operations = repository.cancel_inflight();")
+    drop_position = server_source.find("drop(sender);")
+    join_position = server_source.find("join_workers(workers)")
+    if not (0 <= cancel_position < drop_position < join_position):
+        fail("shutdown cancellation must precede queue close and worker join")
 
     test_names = set(re.findall(r"fn\s+([a-z0-9_]+)\s*\(\)\s*\{", combined))
     missing_tests = sorted(REQUIRED_TESTS - test_names)
     if missing_tests:
         fail(f"missing tests: {missing_tests}")
     test_count = combined.count("#[test]")
-    if test_count < 66:
-        fail(f"expected at least 66 server/session/pool/websocket/grpc source tests, got {test_count}")
+    if test_count < 72:
+        fail(f"expected at least 72 server/session/pool/websocket/grpc source tests, got {test_count}")
 
     workflow = (
         ROOT / ".github/workflows/trillionnium-game-merge-gate.yml"
@@ -392,8 +455,10 @@ def main() -> int:
                 "status": "trnm-server-source-contract-passed",
                 "source_files": len(sources),
                 "source_tests": test_count,
+                "pool_parts": [part.name for part in POOL_PARTS],
                 "source_candidate": True,
                 "bounded_retry_source_candidate": True,
+                "request_cancellation_source_candidate": True,
                 "websocket_json_source_candidate": True,
                 "websocket_persistent_source_candidate": True,
                 "websocket_protobuf_envelope_source_candidate": True,
