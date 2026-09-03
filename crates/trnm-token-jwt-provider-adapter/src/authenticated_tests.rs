@@ -111,6 +111,32 @@ fn read_only_accessors_preserve_exact_authenticated_data() {
 }
 
 #[test]
+fn key_routing_display_is_generic_and_non_oracular() {
+    let errors = [
+        AuthenticationError::UnknownKey,
+        AuthenticationError::ResolvedKeyDomainMismatch {
+            expected: KeyDomain::RefreshToken,
+            actual: KeyDomain::AccessToken,
+        },
+        AuthenticationError::ResolvedKeyEpochMismatch {
+            expected: Some(7),
+            actual: Some(8),
+        },
+        AuthenticationError::ResolvedKeyEpochMismatch {
+            expected: None,
+            actual: Some(u32::MAX),
+        },
+    ];
+    for error in errors {
+        let rendered = format!("{error}");
+        assert_eq!(rendered, "JWT key route is unavailable");
+        for forbidden in ["AccessToken", "RefreshToken", "Some", "None", "7", "8"] {
+            assert!(!rendered.contains(forbidden));
+        }
+    }
+}
+
+#[test]
 fn parse_failure_has_no_payload_in_error_formatting() {
     let jwt = fixture(b"not-json-do-not-log".to_vec(), None);
     let error = jwt.parse_claims(JsonLimits::default()).unwrap_err();
