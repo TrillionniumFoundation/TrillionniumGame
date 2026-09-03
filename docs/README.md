@@ -1,7 +1,7 @@
 # TrillionniumGame documentation
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-01
+Revision: 2026-09-03
 
 This is the only human documentation index for the active repository tree. Earlier design notes, dated progress snapshots, alpha documents, version-suffixed drafts and duplicate topic READMEs have been removed from the active tree. Their history remains available through Git, pull requests and issues; immutable machine evidence remains under `docs/evidence/`.
 
@@ -39,14 +39,19 @@ The dated JSON files under evidence or status directories are records, not alter
 
 A development change must update the smallest applicable current topic document and any affected machine state in the same pull request. Do not add a second document for the same topic. Do not create `V2`, `FINAL`, `NEW`, `ALPHA`, `CANDIDATE` or date-stamped Markdown files. Replace the current topic document and rely on Git history for prior versions.
 
+The authority's `revision` is the common baseline for current topic documents. Its optional `document_revisions` object binds later revisions to exact paths already registered in `current_human_documents`. An omitted override uses the exact common baseline; arbitrary dates do not pass. Updating one topic requires updating its marker and its registry entry together, not rewriting unrelated topics or backdating the changed document.
+
+Each current topic has exactly one whole-line `Revision:` marker matching its effective registered date. Dates must be canonical real calendar dates, and an override cannot predate the common baseline. Trailing Markdown whitespace and CRLF are accepted; duplicate markers, substring matches, undeclared paths, malformed maps/dates and duplicate JSON keys are rejected. Validation does not consult the current clock, so the same checkout is reproducible. The change does not expand the nine-topic allowlist or weaken module, link, reference, history or claim checks.
+
 Run:
 
 ```bash
 python3 scripts/check-documentation-authority.py
 python3 scripts/check-plan.py
+python3 -m unittest discover -s tests/control_plane -p 'test_document_revision_binding.py' -v
 ```
 
-The documentation authority check rejects undeclared Markdown under `docs/`, removed legacy directories, broken local links, stale repository-path references and reintroduced legacy naming patterns.
+The documentation authority check rejects undeclared Markdown under `docs/`, removed legacy directories, broken local links, stale repository-path references and reintroduced legacy naming patterns. Revision regression tests run the real validator against temporary repository fixtures, including negative allowlist, missing-module, broken-link and premature-production-claim cases. These fixture results do not substitute for checking the complete exact source and prospective-merge trees in CI.
 
 ## Claim boundary
 
