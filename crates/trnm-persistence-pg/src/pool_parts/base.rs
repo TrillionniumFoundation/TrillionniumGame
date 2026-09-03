@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -18,14 +18,67 @@ use trnm_contracts::{DomainError, RetryClass, StableCode};
 
 use super::{DatabaseProfile, PgRepository};
 
-type PlainManager = PostgresConnectionManager<NoTls>;
-type TlsManager = PostgresConnectionManager<MakeTlsConnector>;
+type PlainManager = RetirementManager<PostgresConnectionManager<NoTls>>;
+type TlsManager = RetirementManager<PostgresConnectionManager<MakeTlsConnector>>;
 type CancelAction = Arc<dyn Fn() -> bool + Send + Sync + 'static>;
 
 const MINIMUM_OPERATION_BUDGET: Duration = Duration::from_millis(1);
 const CANCEL_NONE: u8 = 0;
 const CANCEL_DEADLINE: u8 = 1;
 const CANCEL_SHUTDOWN: u8 = 2;
+
+// CancelRequest identifies a backend connection, not an individual query.
+// Transport success is not server acknowledgement. Retire any lease that
+// dispatched cancellation, even when the original operation won the race.
+pub(crate) struct RetirementManager<M> {
+    inner: M,
+}
+
+pub(crate) struct RetirableConnection<C> {
+    client: C,
+    retired: Arc<AtomicBool>,
+}
+
+impl<M> fmt::Debug for RetirementManager<M> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("RetirementManager").finish_non_exhaustive()
+    }
+}
+
+impl<C> fmt::Debug for RetirableConnection<C> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RetirableConnection")
+            .field("retired", &self.retired.load(Ordering::Acquire))
+            .finish_non_exhaustive()
+    }
+}
+
+impl<M> RetirementManager<M> {
+    fn new(inner: M) -> Self {
+        Self { inner }
+    }
+}
+
+impl<M: r2d2::ManageConnection> r2d2::ManageConnection for RetirementManager<M> {
+    type Connection = RetirableConnection<M::Connection>;
+    type Error = M::Error;
+
+    fn connect(&self) -> Result<Self::Connection, Self::Error> {
+        self.inner.connect().map(|client| RetirableConnection {
+            client,
+            retired: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    fn is_valid(&self, connection: &mut Self::Connection) -> Result<(), Self::Error> {
+        self.inner.is_valid(&mut connection.client)
+    }
+
+    fn has_broken(&self, connection: &mut Self::Connection) -> bool {
+        connection.retired.load(Ordering::Acquire) || self.inner.has_broken(&mut connection.client)
+    }
+}
 
 pub(crate) enum ClientHandle {
     Direct(Client),
@@ -36,6 +89,20 @@ pub(crate) enum ClientHandle {
 impl ClientHandle {
     pub(crate) fn direct(client: Client) -> Self {
         Self::Direct(client)
+    }
+
+    fn retirement_flag(&self) -> Option<Arc<AtomicBool>> {
+        match self {
+            Self::Direct(_) => None,
+            Self::Plain(connection) => Some(Arc::clone(&connection.retired)),
+            Self::Tls(connection) => Some(Arc::clone(&connection.retired)),
+        }
+    }
+
+    fn retire(&self) {
+        if let Some(retired) = self.retirement_flag() {
+            retired.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -59,8 +126,8 @@ impl Deref for ClientHandle {
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Direct(client) => client,
-            Self::Plain(client) => client,
-            Self::Tls(client) => client,
+            Self::Plain(connection) => &connection.client,
+            Self::Tls(connection) => &connection.client,
         }
     }
 }
@@ -69,8 +136,8 @@ impl DerefMut for ClientHandle {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
             Self::Direct(client) => client,
-            Self::Plain(client) => client,
-            Self::Tls(client) => client,
+            Self::Plain(connection) => &mut connection.client,
+            Self::Tls(connection) => &mut connection.client,
         }
     }
 }
@@ -182,15 +249,75 @@ impl fmt::Debug for PgTlsConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PgTlsConfig")
-            .field(
-                "custom_root_certificate",
-                &self.root_certificate_pem.is_some(),
-            )
-            .field(
-                "client_identity",
-                &self.identity_certificate_chain_pem.is_some(),
-            )
+            .field("custom_root_certificate", &self.root_certificate_pem.is_some())
+            .field("client_identity", &self.identity_certificate_chain_pem.is_some())
             .field("private_key", &"<redacted>")
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+
+    struct TestManager {
+        next: Arc<AtomicU64>,
+        drops: Arc<AtomicU64>,
+    }
+
+    struct TestConnection {
+        id: u64,
+        drops: Arc<AtomicU64>,
+    }
+
+    impl Drop for TestConnection {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl r2d2::ManageConnection for TestManager {
+        type Connection = TestConnection;
+        type Error = std::io::Error;
+
+        fn connect(&self) -> Result<Self::Connection, Self::Error> {
+            Ok(TestConnection {
+                id: self.next.fetch_add(1, Ordering::Relaxed),
+                drops: Arc::clone(&self.drops),
+            })
+        }
+
+        fn is_valid(&self, _: &mut Self::Connection) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn has_broken(&self, _: &mut Self::Connection) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn retired_lease_is_dropped_not_recycled_by_r2d2() {
+        let drops = Arc::new(AtomicU64::new(0));
+        let pool = Pool::builder()
+            .max_size(1)
+            .min_idle(Some(0))
+            .build(RetirementManager::new(TestManager {
+                next: Arc::new(AtomicU64::new(0)),
+                drops: Arc::clone(&drops),
+            }))
+            .unwrap();
+        let lease = pool.get_timeout(Duration::from_secs(5)).unwrap();
+        let previous = lease.client.id;
+        lease.retired.store(true, Ordering::Release);
+        drop(lease);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        let replacement = pool.get_timeout(Duration::from_secs(5)).unwrap();
+        assert_ne!(replacement.client.id, previous);
+        let replacement_id = replacement.client.id;
+        drop(replacement);
+        let healthy = pool.get_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(healthy.client.id, replacement_id);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 }

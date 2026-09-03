@@ -17,7 +17,7 @@ impl PgPool {
         let mut database = Config::from_str(database_url).map_err(super::map_postgres_error)?;
         database.ssl_mode(SslMode::Disable);
         database.connect_timeout(policy.acquire_timeout);
-        let manager = PostgresConnectionManager::new(database, NoTls);
+        let manager = RetirementManager::new(PostgresConnectionManager::new(database, NoTls));
         let pool = pool_builder(&policy)
             .build(manager)
             .map_err(|_| operational_error("database_pool_initialization_failed"))?;
@@ -43,7 +43,8 @@ impl PgPool {
         database.ssl_mode(SslMode::Require);
         database.connect_timeout(policy.acquire_timeout);
         let connector = tls.connector()?;
-        let manager = PostgresConnectionManager::new(database, connector.clone());
+        let manager =
+            RetirementManager::new(PostgresConnectionManager::new(database, connector.clone()));
         let pool = pool_builder(&policy)
             .build(manager)
             .map_err(|_| operational_error("database_tls_pool_initialization_failed"))?;
@@ -99,7 +100,10 @@ impl PgPool {
             return Err(operation_deadline_exceeded());
         }
 
-        let action = self.cancellation_action(repository.client.cancel_token());
+        let action = self.cancellation_action(
+            repository.client.cancel_token(),
+            repository.client.retirement_flag(),
+        );
         let deadline = DeadlineGuard::start(Arc::clone(&self.cancellations), remaining, action)?;
         let result = match configure_session(
             &mut repository.client,
@@ -117,6 +121,9 @@ impl PgPool {
         };
         let cancellation_reason = deadline.finish();
         let elapsed = started.elapsed();
+        if cancellation_reason != CANCEL_NONE || elapsed >= total_budget {
+            repository.client.retire();
+        }
         match cancellation_reason {
             CANCEL_DEADLINE => Err(operation_deadline_exceeded()),
             CANCEL_SHUTDOWN => Err(operation_shutdown_cancelled()),
@@ -196,9 +203,16 @@ impl PgPool {
         })
     }
 
-    fn cancellation_action(&self, token: CancelToken) -> CancelAction {
+    fn cancellation_action(
+        &self,
+        token: CancelToken,
+        retirement: Option<Arc<AtomicBool>>,
+    ) -> CancelAction {
         match &self.inner {
             PoolInner::Plain(_) => Arc::new(move || {
+                if let Some(retired) = &retirement {
+                    retired.store(true, Ordering::Release);
+                }
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     token.cancel_query(NoTls).is_ok()
                 }))
@@ -210,6 +224,9 @@ impl PgPool {
             } => {
                 let connector = cancellation_connector.clone();
                 Arc::new(move || {
+                    if let Some(retired) = &retirement {
+                        retired.store(true, Ordering::Release);
+                    }
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         token.cancel_query(connector.clone()).is_ok()
                     }))

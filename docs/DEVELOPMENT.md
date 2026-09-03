@@ -1,7 +1,7 @@
 # Development guide
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-01
+Revision: 2026-09-03
 
 ## 1. Development contract
 
@@ -96,6 +96,26 @@ cargo test --package trnm-persistence-pg --bin trnm-server --locked
 ```
 
 Live database scripts require their documented environment and immutable images. A missing required profile must fail rather than silently skip.
+
+### Cancellation lifecycle regression
+
+The pool include root binds exactly `base.rs`, `cancellation.rs`, `pool.rs` and `tests.rs` under `crates/trnm-persistence-pg/src/pool_parts`. Changes to any part, server metrics or the regression harness must trigger the deadline workflow on both pull requests and main pushes.
+
+```bash
+python3 scripts/check-pg-operation-deadline.py --self-test
+python3 -m unittest discover -s tests/control_plane -p 'test_pg_cancellation_lifecycle.py' -v
+cargo test -p trnm-persistence-pg --locked --lib pool::cancellation_lifecycle_tests
+cargo test -p trnm-persistence-pg --locked --lib pool::retirement_tests
+cargo test -p trnm-persistence-pg --all-targets --locked
+```
+
+The Python suite checks source ordering and enumerates a finite callback/cleanup/wire-delivery model. It must find counterexamples for the old behavior, lifecycle locking alone and physical eviction alone, and reject the modeled counterexamples for the combined design. This is not compiled Rust, weak-memory verification, live SQL execution or a replacement for the native tests.
+
+Rust test sources exercise stale callback snapshots, completion waiting for a sender while the registry remains available to other operations, panic/failure accounting, duplicate retirement and actual r2d2 lease eviction. New synchronization regressions use channels and bounded waits rather than assuming a sleeping thread has run.
+
+The live lane sets `TRNM_REQUIRE_LIVE_PG_DEADLINE=1` and provides `TRNM_TEST_DATABASE_URL`. Each exact live test runs with `--lib -- --exact --nocapture`; its log must contain exactly one passing test with zero failures and zero ignored tests before an execution receipt is emitted. A renamed or missing test that produces zero matches must fail the workflow. Both scenarios use a single-connection pool, compare backend PIDs before and after cancellation, and verify a replacement connection can execute `SELECT 1`. The shutdown test waits for the target SQL in `pg_stat_activity`. The deadline test raises the independent statement timeout inside its callback only to distinguish CancelToken behavior from a server-side timeout.
+
+The change does not alter DDL, receipt identity or public error codes. Reverting it would reopen stale-callback and backend-reuse hazards; such a revert is not an approved production rollback. Cancellation transport success must never be recorded as confirmed rollback. Preserve ambiguous-commit reconciliation, distinct PostgreSQL/CockroachDB and TLS evidence, exact-head compilation, independent review and the unresolved stalled-transport deadline requirements.
 
 ## 6. Change workflow
 

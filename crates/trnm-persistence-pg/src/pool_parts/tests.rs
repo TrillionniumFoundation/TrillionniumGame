@@ -2,6 +2,8 @@
 mod tests {
     use super::*;
 
+    const BLOCKING_QUERY: &str = "SELECT pg_sleep(10)";
+
     fn action(counter: Arc<AtomicU64>, succeeds: bool) -> CancelAction {
         Arc::new(move || {
             counter.fetch_add(1, Ordering::Relaxed);
@@ -29,7 +31,6 @@ mod tests {
             policy.validate().unwrap_err().reason(),
             "database_pool_policy_invalid"
         );
-
         let default = PgPoolConfig::default();
         let policy = PgPoolConfig {
             min_idle: default.max_size + 1,
@@ -39,7 +40,6 @@ mod tests {
             policy.validate().unwrap_err().reason(),
             "database_pool_policy_invalid"
         );
-
         let policy = PgPoolConfig {
             lock_timeout: Duration::from_secs(6),
             statement_timeout: Duration::from_secs(5),
@@ -96,13 +96,19 @@ mod tests {
         let metrics = Arc::new(PgPoolMetrics::default());
         let state = Arc::new(CancelState::new(Arc::clone(&metrics)));
         let calls = Arc::new(AtomicU64::new(0));
+        let recorded = Arc::clone(&calls);
+        let (entered, receiving) = mpsc::channel();
         let deadline = DeadlineGuard::start(
             Arc::clone(&state),
             Duration::from_millis(2),
-            action(Arc::clone(&calls), true),
+            Arc::new(move || {
+                recorded.fetch_add(1, Ordering::Relaxed);
+                entered.send(()).unwrap();
+                true
+            }),
         )
         .unwrap();
-        thread::sleep(Duration::from_millis(20));
+        receiving.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(deadline.finish(), CANCEL_DEADLINE);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.deadline_cancellations.load(Ordering::Relaxed), 1);
@@ -131,13 +137,7 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(returned.reason(), "database_cancellation_id_exhausted");
-        assert!(
-            state
-                .entries
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .is_empty()
-        );
+        assert!(state.entries.lock().unwrap().is_empty());
         assert_eq!(metrics.inflight_operations.load(Ordering::Relaxed), 0);
     }
 
@@ -171,7 +171,7 @@ mod tests {
 
     fn live_policy() -> PgPoolConfig {
         PgPoolConfig {
-            max_size: 4,
+            max_size: 1,
             min_idle: 1,
             acquire_timeout: Duration::from_secs(2),
             idle_timeout: Duration::from_secs(30),
@@ -182,6 +182,17 @@ mod tests {
         }
     }
 
+    fn backend_pid(pool: &PgPool) -> i32 {
+        pool.run_with_deadline(Duration::from_secs(2), |repository| {
+            repository
+                .client
+                .query_one("SELECT pg_backend_pid()", &[])
+                .map(|row| row.get(0))
+                .map_err(super::super::map_postgres_error)
+        })
+        .unwrap()
+    }
+
     #[test]
     fn live_deadline_cancels_blocking_query_and_keeps_pool_usable() {
         let Some(database_url) = live_database_url() else {
@@ -190,24 +201,30 @@ mod tests {
         let pool =
             PgPool::connect_plain(&database_url, DatabaseProfile::PostgreSql, live_policy())
                 .unwrap();
+        let initial_backend = backend_pid(&pool);
         let started = Instant::now();
         let returned = pool
             .run_with_deadline(Duration::from_millis(150), |repository| {
+                // Isolate CancelToken from PostgreSQL's independent timeout.
+                // Production session policy remains capped by total budget.
                 repository
                     .client
-                    .batch_execute("SELECT pg_sleep(10)")
+                    .batch_execute("SET statement_timeout = '30s'")
+                    .map_err(super::super::map_postgres_error)?;
+                repository
+                    .client
+                    .batch_execute(BLOCKING_QUERY)
                     .map_err(super::super::map_postgres_error)
             })
             .unwrap_err();
         assert_eq!(returned.reason(), "database_operation_deadline_exceeded");
         assert!(started.elapsed() < Duration::from_secs(5));
-
         let snapshot = pool.snapshot();
         assert_eq!(snapshot.inflight_operations, 0);
         assert_eq!(snapshot.deadline_cancellations, 1);
         assert_eq!(snapshot.cancellation_deliveries, 1);
         assert_eq!(snapshot.cancellation_failures, 0);
-
+        assert_ne!(backend_pid(&pool), initial_backend);
         pool.run_with_deadline(Duration::from_secs(2), |repository| {
             repository
                 .client
@@ -225,40 +242,52 @@ mod tests {
         let pool =
             PgPool::connect_plain(&database_url, DatabaseProfile::PostgreSql, live_policy())
                 .unwrap();
+        let initial_backend = backend_pid(&pool);
+        let mut observer_config = Config::from_str(&database_url).unwrap();
+        observer_config.connect_timeout(Duration::from_secs(2));
+        let mut observer = observer_config.connect(NoTls).unwrap();
+        observer.batch_execute("SET statement_timeout = '1s'").unwrap();
         let worker_pool = pool.clone();
         let worker = thread::spawn(move || {
             worker_pool.run_with_deadline(Duration::from_secs(30), |repository| {
                 repository
                     .client
-                    .batch_execute("SELECT pg_sleep(10)")
+                    .batch_execute(BLOCKING_QUERY)
                     .map_err(super::super::map_postgres_error)
             })
         });
 
+        // Registry presence alone can mean session setup, not running SQL.
         let wait_started = Instant::now();
-        while pool.snapshot().inflight_operations == 0 {
+        loop {
+            let running: bool = observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                     WHERE pid = $1 AND state = 'active' AND query = $2)",
+                    &[&initial_backend, &BLOCKING_QUERY],
+                )
+                .unwrap()
+                .get(0);
+            if running {
+                break;
+            }
             assert!(
                 wait_started.elapsed() < Duration::from_secs(5),
-                "blocking query never entered the cancellation registry"
+                "blocking query never entered PostgreSQL execution"
             );
             thread::sleep(Duration::from_millis(10));
         }
-
         let cancel_started = Instant::now();
         assert_eq!(pool.cancel_inflight(), 1);
         let returned = worker.join().unwrap().unwrap_err();
-        assert_eq!(
-            returned.reason(),
-            "database_operation_shutdown_cancelled"
-        );
+        assert_eq!(returned.reason(), "database_operation_shutdown_cancelled");
         assert!(cancel_started.elapsed() < Duration::from_secs(5));
-
         let snapshot = pool.snapshot();
         assert_eq!(snapshot.inflight_operations, 0);
         assert_eq!(snapshot.shutdown_cancellations, 1);
         assert_eq!(snapshot.cancellation_deliveries, 1);
         assert_eq!(snapshot.cancellation_failures, 0);
-
+        assert_ne!(backend_pid(&pool), initial_backend);
         pool.run_with_deadline(Duration::from_secs(2), |repository| {
             repository
                 .client

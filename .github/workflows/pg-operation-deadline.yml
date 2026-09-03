@@ -4,19 +4,29 @@ on:
   pull_request:
     paths:
       - 'crates/trnm-persistence-pg/src/pool.rs'
+      - 'crates/trnm-persistence-pg/src/pool_parts/**'
+      - 'crates/trnm-persistence-pg/src/bin/trnm_server/app.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/pool.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/retry.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/server.rs'
+      - 'crates/trnm-persistence-pg/Cargo.toml'
+      - 'Cargo.lock'
       - 'scripts/check-pg-operation-deadline.py'
+      - 'tests/control_plane/test_pg_cancellation_lifecycle.py'
       - '.github/workflows/pg-operation-deadline.yml'
   push:
     branches: [main]
     paths:
       - 'crates/trnm-persistence-pg/src/pool.rs'
+      - 'crates/trnm-persistence-pg/src/pool_parts/**'
+      - 'crates/trnm-persistence-pg/src/bin/trnm_server/app.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/pool.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/retry.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/server.rs'
+      - 'crates/trnm-persistence-pg/Cargo.toml'
+      - 'Cargo.lock'
       - 'scripts/check-pg-operation-deadline.py'
+      - 'tests/control_plane/test_pg_cancellation_lifecycle.py'
       - '.github/workflows/pg-operation-deadline.yml'
   workflow_dispatch:
 
@@ -60,6 +70,7 @@ jobs:
           set -euo pipefail
           python3 -m py_compile scripts/check-pg-operation-deadline.py
           python3 scripts/check-pg-operation-deadline.py --self-test
+          python3 -m unittest discover -s tests/control_plane -p 'test_pg_cancellation_lifecycle.py' -v
       - name: Verify formatting
         run: cargo fmt --all --check
       - name: Run PostgreSQL library and server tests
@@ -107,15 +118,21 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup override set "$RUST_TOOLCHAIN"
       - name: Prove total deadline cancels blocking SQL
-        run: >-
-          cargo test -p trnm-persistence-pg --locked
-          pool::tests::live_deadline_cancels_blocking_query_and_keeps_pool_usable
-          -- --exact --nocapture
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p trnm-persistence-pg --locked --lib \
+            pool::tests::live_deadline_cancels_blocking_query_and_keeps_pool_usable \
+            -- --exact --nocapture | tee deadline-test.log
+          grep -Eq '^test result: ok[.] 1 passed; 0 failed; 0 ignored;' deadline-test.log
       - name: Prove drain cancellation terminates in-flight SQL
-        run: >-
-          cargo test -p trnm-persistence-pg --locked
-          pool::tests::live_shutdown_cancels_inflight_query_and_preserves_connection_pool
-          -- --exact --nocapture
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p trnm-persistence-pg --locked --lib \
+            pool::tests::live_shutdown_cancels_inflight_query_and_preserves_connection_pool \
+            -- --exact --nocapture | tee shutdown-test.log
+          grep -Eq '^test result: ok[.] 1 passed; 0 failed; 0 ignored;' shutdown-test.log
       - name: Seal exact execution receipt in immutable job log
         shell: bash
         run: |
@@ -126,6 +143,7 @@ jobs:
             'assertion=deadline_cancelled_blocking_sql' \
             'assertion=shutdown_cancelled_inflight_sql' \
             'assertion=connection_pool_reusable_after_cancel' \
+            'assertion=cancelled_backend_not_recycled' \
             'transport=postgresql_plaintext_candidate' \
             'tls_cancellation_runtime_evidence=false' \
             'cockroachdb_runtime_evidence=false' \
