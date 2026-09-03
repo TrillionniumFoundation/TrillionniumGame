@@ -599,8 +599,10 @@ mod tests {
     #[test]
     fn resolver_domain_mismatch_fails_before_provider() {
         let provider = Provider::new(true);
-        let mut profile = AuthenticationProfile::default();
-        profile.domain = KeyDomain::RefreshToken;
+        let profile = AuthenticationProfile {
+            domain: KeyDomain::RefreshToken,
+            ..AuthenticationProfile::default()
+        };
         let resolver = FixedResolver {
             key: key_reference(KeyDomain::AccessToken, None).unwrap(),
         };
