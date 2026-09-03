@@ -50,13 +50,13 @@ The required sequence is profile validation, token size/segment validation, boun
 
 Domain and epoch mismatch must produce zero provider calls, including epoch-for-legacy confusion. Provider rejection precedes payload decoding even for malformed payload bytes. Cancellation, duplicate delivery, transaction commit and socket lifecycle are not implemented by this stateless adapter.
 
-Errors contain bounded categories and limited internal routing metadata, not raw token/payload/key bytes. `ResolvedKeyDomainMismatch` and `ResolvedKeyEpochMismatch` are internal diagnostics: the transport must map them to its reviewed public authentication error surface rather than exposing resolver topology. Provider outage handling and retry semantics belong to the bounded caller policy.
+`AuthenticationError` retains bounded structured variants so trusted internal policy can classify failures. Its public `Display` surface deliberately collapses `UnknownKey`, domain mismatch and epoch mismatch to the identical text `JWT key route is unavailable`; expected and actual domains, epochs and legacy/epoch routing are never formatted there. Derived `Debug` still contains bounded mismatch metadata and is therefore internal-only: transports, client responses, ordinary application logs and metric labels must use a reviewed public mapping or the generic `Display` string, not `Debug`. Provider outage handling and retry semantics belong to bounded caller policy.
 
 ## Security and privacy
 
 Every `AuthenticatedJwt` debug format emits only `AuthenticatedJwt { [REDACTED] }`. This holds for normal, pretty and hex debug, nested `Result`/`Option`/collections, derived diagnostic wrappers and `format_args!`. The output does not vary with payload content or length, route, epoch or provider location. No raw-token logging or new logging dependency is introduced.
 
-The protection ends at explicit extraction: `payload_bytes()`, `parse_claims()` and a borrowed key remain sensitive values. Logging them explicitly is not made safe by this wrapper. This change is not memory zeroization, end-to-end telemetry validation, provider logging validation or proof that every application error chain is redacted. Such claims require separate integration tests and review.
+The protection ends at explicit extraction: `payload_bytes()`, `parse_claims()` and a borrowed key remain sensitive values. Logging them explicitly is not made safe by this wrapper. Likewise, `AuthenticationError` debug output may contain bounded key-routing metadata even though its public display is non-oracular. This change is not memory zeroization, end-to-end telemetry validation, provider logging validation or proof that every application error chain is redacted. Such claims require separate integration tests and review.
 
 Private fields prevent safe external Rust code from constructing or mutating an authenticated result. They do not remove the requirement to trust the provider implementation or to validate claims and session state afterwards.
 
@@ -78,6 +78,7 @@ cargo clippy --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml -
 | Nested diagnostics | `debug_redacts_nested_result_option_and_collection` |
 | Derived wrappers and formatting arguments | `debug_redacts_derived_diagnostic_wrapper_and_format_args` |
 | Immutable reads and claims parse preserved | `read_only_accessors_preserve_exact_authenticated_data` |
+| Key-routing `Display` is generic and non-oracular | `key_routing_display_is_generic_and_non_oracular` |
 | Payload parse error remains redacted | `parse_failure_has_no_payload_in_error_formatting` |
 
 The eight existing tests in `src/lib.rs` retain exact signing input, provider-before-payload ordering, algorithm/header rejection, strict epoch routing, resolver-domain mismatch, resolver-epoch mismatch and signature-length assertions. Tests use synthetic payloads and a fake provider; they are not cryptographic provider acceptance or live KMS evidence.
@@ -86,7 +87,7 @@ The eight existing tests in `src/lib.rs` retain exact signing input, provider-be
 
 This crate creates no queue, worker, background retry or socket. Memory allocation is bounded by the selected token/header/payload and JSON limits, except that injected implementations require their own contracts. Readiness, provider latency budgets, outages and backpressure are process-level obligations.
 
-Metrics must use bounded categories; do not label by token, user, payload, key handle or unbounded epoch. Rollback may revert source in an unactivated candidate, but reintroducing payload-bearing `Debug` or public mutation is not an approved production mitigation.
+Metrics must use bounded categories; do not label by token, user, payload, key handle or unbounded epoch. Rollback may revert source in an unactivated candidate, but reintroducing payload-bearing `Debug`, key-routing detail in public `Display`, or public mutation is not an approved production mitigation.
 
 ## Compatibility and evidence
 
@@ -98,4 +99,4 @@ Server integration, real KMS/HSM, malformed/fuzz corpus, rotation/revoke, offici
 
 Blocking gaps: `GAP-P0-CRYPTO-001`, `GAP-P1-CRYPTO-002`, `GAP-P1-REVIEW-001`, `GAP-P0-CI-001`, `GAP-P1-DOCS-001`.
 
-Exit for this narrow patch requires exact native formatting/tests/doctests/strict lint, downstream compilation, prospective-merge verification, reviewed API migration and conflict-free independent security acceptance. Full gap closure additionally requires every relevant criterion in `docs/status/GAP_REGISTER.json`; the narrow redaction and immutable-result tests cannot close those broader gaps by themselves.
+Exit for this narrow patch requires exact native formatting/tests/doctests/strict lint, downstream compilation, prospective-merge verification, reviewed API migration and conflict-free independent security acceptance. Full gap closure additionally requires every relevant criterion in `docs/status/GAP_REGISTER.json`; the narrow redaction, public-error and immutable-result tests cannot close those broader gaps by themselves.
