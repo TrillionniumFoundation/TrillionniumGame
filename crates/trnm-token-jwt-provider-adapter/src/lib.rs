@@ -5,7 +5,9 @@
 //!
 //! Only the bounded JOSE header required for algorithm and key routing is
 //! parsed before authentication. The payload is decoded only after the opaque
-//! provider accepts the exact encoded `header.payload` signing input.
+//! provider accepts the exact encoded `header.payload` signing input. Resolver
+//! output is treated as untrusted routing data: its key domain and epoch must
+//! exactly match the requested token domain and JOSE route before provider use.
 
 use core::fmt;
 
@@ -71,14 +73,75 @@ impl AuthenticationProfile {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Signature-authenticated bytes, not an authorization or claims-policy decision.
+///
+/// Only `authenticate` constructs this value outside this crate. Callers must
+/// separately validate issuer, audience, time, session state and authorization.
+/// `Debug` never exposes payload bytes, payload size, route or provider location.
+/// Explicitly extracted payloads and parsed claims remain sensitive.
+///
+/// External callers cannot fabricate an authenticated result:
+///
+/// ```compile_fail,E0451
+/// use trnm_token_crypto_provider::KeyReference;
+/// use trnm_token_jwt_provider_adapter::{AuthenticatedJwt, TokenRoute};
+/// fn forge(key: KeyReference) -> AuthenticatedJwt {
+///     AuthenticatedJwt { route: TokenRoute::Legacy, key, payload_bytes: b"{}".to_vec() }
+/// }
+/// ```
+///
+/// Nor can they replace any part after authentication:
+///
+/// ```compile_fail,E0616
+/// use trnm_token_jwt_provider_adapter::AuthenticatedJwt;
+/// fn replace_payload(jwt: &mut AuthenticatedJwt) {
+///     jwt.payload_bytes = b"{}".to_vec();
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use trnm_token_crypto_provider::KeyReference;
+/// use trnm_token_jwt_provider_adapter::AuthenticatedJwt;
+/// fn replace_key(jwt: &mut AuthenticatedJwt, key: KeyReference) {
+///     jwt.key = key;
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use trnm_token_jwt_provider_adapter::{AuthenticatedJwt, TokenRoute};
+/// fn replace_route(jwt: &mut AuthenticatedJwt) {
+///     jwt.route = TokenRoute::Legacy;
+/// }
+/// ```
+#[derive(Clone, Eq, PartialEq)]
 pub struct AuthenticatedJwt {
-    pub route: TokenRoute,
-    pub key: KeyReference,
-    pub payload_bytes: Vec<u8>,
+    route: TokenRoute,
+    key: KeyReference,
+    payload_bytes: Vec<u8>,
+}
+
+impl fmt::Debug for AuthenticatedJwt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthenticatedJwt { [REDACTED] }")
+    }
 }
 
 impl AuthenticatedJwt {
+    pub fn route(&self) -> TokenRoute {
+        self.route
+    }
+
+    pub fn key(&self) -> &KeyReference {
+        &self.key
+    }
+
+    /// Returns sensitive authenticated bytes without permitting mutation.
+    /// Do not log this slice or treat it as validated authorization claims.
+    pub fn payload_bytes(&self) -> &[u8] {
+        &self.payload_bytes
+    }
+
+    /// Parses sensitive JSON without validating issuer, audience or expiry.
     pub fn parse_claims(&self, limits: JsonLimits) -> Result<JsonValue, AuthenticationError> {
         json::parse(&self.payload_bytes, limits).map_err(|_| AuthenticationError::PayloadJson)
     }
@@ -87,7 +150,9 @@ impl AuthenticatedJwt {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthenticationError {
     InvalidProfile,
-    TokenTooLarge { actual: usize },
+    TokenTooLarge {
+        actual: usize,
+    },
     SegmentCount,
     EmptySegment,
     HeaderDecode,
@@ -100,8 +165,18 @@ pub enum AuthenticationError {
     LegacyRouteForbidden,
     InvalidKeyId,
     UnknownKey,
+    ResolvedKeyDomainMismatch {
+        expected: KeyDomain,
+        actual: KeyDomain,
+    },
+    ResolvedKeyEpochMismatch {
+        expected: Option<u32>,
+        actual: Option<u32>,
+    },
     SignatureDecode,
-    SignatureLength { actual: usize },
+    SignatureLength {
+        actual: usize,
+    },
     Provider(ProviderError),
     SignatureRejected,
     PayloadDecode,
@@ -126,7 +201,11 @@ impl fmt::Display for AuthenticationError {
             }
             Self::LegacyRouteForbidden => formatter.write_str("legacy JWT route is disabled"),
             Self::InvalidKeyId => formatter.write_str("JWT kid header is invalid"),
-            Self::UnknownKey => formatter.write_str("JWT key route is unavailable"),
+            Self::UnknownKey
+            | Self::ResolvedKeyDomainMismatch { .. }
+            | Self::ResolvedKeyEpochMismatch { .. } => {
+                formatter.write_str("JWT key route is unavailable")
+            }
             Self::SignatureDecode => formatter.write_str("JWT signature base64url decode failed"),
             Self::SignatureLength { actual } => {
                 write!(
@@ -178,6 +257,7 @@ pub fn authenticate(
     validate_header(header, profile)?;
     let route = route(header, profile)?;
     let key = resolver.resolve(profile.domain, route)?;
+    validate_resolved_key(&key, profile.domain, route)?;
 
     let signature = base64url::decode(signature_segment, SIGNATURE_BYTES)
         .map_err(|_| AuthenticationError::SignatureDecode)?;
@@ -200,6 +280,30 @@ pub fn authenticate(
         key,
         payload_bytes,
     })
+}
+
+fn validate_resolved_key(
+    key: &KeyReference,
+    expected_domain: KeyDomain,
+    route: TokenRoute,
+) -> Result<(), AuthenticationError> {
+    if key.domain != expected_domain {
+        return Err(AuthenticationError::ResolvedKeyDomainMismatch {
+            expected: expected_domain,
+            actual: key.domain,
+        });
+    }
+    let expected_epoch = match route {
+        TokenRoute::Legacy => None,
+        TokenRoute::Epoch(epoch) => Some(epoch),
+    };
+    if key.epoch != expected_epoch {
+        return Err(AuthenticationError::ResolvedKeyEpochMismatch {
+            expected: expected_epoch,
+            actual: key.epoch,
+        });
+    }
+    Ok(())
 }
 
 fn validate_header(
@@ -276,8 +380,22 @@ mod tests {
                 TokenRoute::Legacy => None,
                 TokenRoute::Epoch(value) => Some(value),
             };
-            KeyReference::new(domain, KeyHandle::new("kms://jwt/access").unwrap(), epoch)
-                .map_err(|_| AuthenticationError::UnknownKey)
+            key_reference(domain, epoch)
+        }
+    }
+
+    #[derive(Debug)]
+    struct FixedResolver {
+        key: KeyReference,
+    }
+
+    impl KeyResolver for FixedResolver {
+        fn resolve(
+            &self,
+            _domain: KeyDomain,
+            _route: TokenRoute,
+        ) -> Result<KeyReference, AuthenticationError> {
+            Ok(self.key.clone())
         }
     }
 
@@ -323,6 +441,14 @@ mod tests {
         }
     }
 
+    fn key_reference(
+        domain: KeyDomain,
+        epoch: Option<u32>,
+    ) -> Result<KeyReference, AuthenticationError> {
+        KeyReference::new(domain, KeyHandle::new("kms://jwt/access").unwrap(), epoch)
+            .map_err(|_| AuthenticationError::UnknownKey)
+    }
+
     fn token(header: &[u8], payload_segment: &str, signature: &[u8]) -> String {
         format!(
             "{}.{}.{}",
@@ -351,7 +477,7 @@ mod tests {
             &provider,
         )
         .unwrap();
-        assert_eq!(authenticated.route, TokenRoute::Legacy);
+        assert_eq!(authenticated.route(), TokenRoute::Legacy);
         assert_eq!(
             authenticated
                 .parse_claims(JsonLimits::default())
@@ -443,8 +569,8 @@ mod tests {
             &provider,
         )
         .unwrap();
-        assert_eq!(authenticated.route, TokenRoute::Epoch(7));
-        assert_eq!(authenticated.key.epoch, Some(7));
+        assert_eq!(authenticated.route(), TokenRoute::Epoch(7));
+        assert_eq!(authenticated.key().epoch, Some(7));
 
         for kid in ["trnm-kep-v1:0", "trnm-kep-v1:07", "unknown:7"] {
             let header = format!(r#"{{"alg":"HS256","typ":"JWT","kid":"{kid}"}}"#);
@@ -464,6 +590,69 @@ mod tests {
                 AuthenticationError::InvalidKeyId
             );
         }
+    }
+
+    #[test]
+    fn resolver_domain_mismatch_fails_before_provider() {
+        let provider = Provider::new(true);
+        let profile = AuthenticationProfile {
+            domain: KeyDomain::RefreshToken,
+            ..AuthenticationProfile::default()
+        };
+        let resolver = FixedResolver {
+            key: key_reference(KeyDomain::AccessToken, None).unwrap(),
+        };
+        let value = token(
+            br#"{"alg":"HS256","typ":"JWT"}"#,
+            &valid_payload(),
+            &[0x5a; SIGNATURE_BYTES],
+        );
+        assert_eq!(
+            authenticate(&value, &profile, &resolver, &provider).unwrap_err(),
+            AuthenticationError::ResolvedKeyDomainMismatch {
+                expected: KeyDomain::RefreshToken,
+                actual: KeyDomain::AccessToken,
+            }
+        );
+        assert!(provider.inputs.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolver_epoch_mismatch_fails_before_provider() {
+        let provider = Provider::new(true);
+        let profile = AuthenticationProfile::default();
+        let epoch_value = token(
+            br#"{"alg":"HS256","typ":"JWT","kid":"trnm-kep-v1:7"}"#,
+            &valid_payload(),
+            &[0x5a; SIGNATURE_BYTES],
+        );
+        let wrong_epoch = FixedResolver {
+            key: key_reference(KeyDomain::AccessToken, Some(8)).unwrap(),
+        };
+        assert_eq!(
+            authenticate(&epoch_value, &profile, &wrong_epoch, &provider).unwrap_err(),
+            AuthenticationError::ResolvedKeyEpochMismatch {
+                expected: Some(7),
+                actual: Some(8),
+            }
+        );
+
+        let legacy_value = token(
+            br#"{"alg":"HS256","typ":"JWT"}"#,
+            &valid_payload(),
+            &[0x5a; SIGNATURE_BYTES],
+        );
+        let epoch_for_legacy = FixedResolver {
+            key: key_reference(KeyDomain::AccessToken, Some(7)).unwrap(),
+        };
+        assert_eq!(
+            authenticate(&legacy_value, &profile, &epoch_for_legacy, &provider).unwrap_err(),
+            AuthenticationError::ResolvedKeyEpochMismatch {
+                expected: None,
+                actual: Some(7),
+            }
+        );
+        assert!(provider.inputs.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -489,3 +678,6 @@ mod tests {
         assert!(provider.inputs.lock().unwrap().is_empty());
     }
 }
+
+#[cfg(test)]
+mod authenticated_tests;
