@@ -8,70 +8,94 @@ Owner role: `security`
 
 ## Status and authority
 
-This document is the current module-level engineering contract for `trnm-token-jwt-provider-adapter`. Its authority is limited to the module boundary described here: **bridge between JWT compatibility semantics and opaque provider operations**. Source presence, a passing unit suite, or this document alone does not establish compatibility, durability, security, operational, or production acceptance.
+This is the current engineering contract for the provider-backed HS256 authentication boundary. The source-candidate is not a KMS, authorization decision, complete JWT claims verifier, production activation or accepted security review. It follows Plan v3.1 and remains dependent on the frozen integration candidate and resolver-hardening candidate.
 
-The module's current maturity is `source-candidate`. Promotion requires exact-candidate execution, retained evidence, and the independent reviews required by the linked gaps.
+Source, tests, documentation and CI are separate from independent acceptance. Every promotion binds exact repository, head, tree, base and prospective-merge identities.
 
 ## Responsibilities
 
-Adapt strict JWT issue/verify behavior to domain-separated provider handles and epoch selection.
+Authenticate the exact encoded `header.payload` bytes using an opaque provider handle, fence resolver domain/epoch output, and expose authenticated payload bytes for subsequent claims-policy validation. Reject malformed headers and routing before provider use. Decode payload only after signature acceptance.
 
-Non-goals: It is not a KMS implementation, general JWT library, authorization service, or session repository.
+Non-goals: token issuance, issuer/audience/time validation, authorization, session revocation, socket disconnect, key rotation orchestration, KMS/HSM implementation and logging extracted claims. These remain caller or integration obligations; successful `authenticate` is not permission to perform a protected action.
 
 ## Architecture and dependencies
 
-It composes token policy, strict format validation, and the crypto-provider interface while remaining an isolated mandatory gate target.
+`trnm-token-jwt-adapter` supplies bounded base64url and JSON format handling. `trnm-token-crypto-provider` supplies `KeyDomain`, `KeyReference`, `Hs256Provider` and `verify_exact`. There is no database, transport, global task or cache owned by this crate.
 
-Dependency direction is reviewed as part of package authority. This module must not introduce hidden global state, untracked background work, unbounded queues, or transport/database coupling outside the declared lifecycle.
+`KeyResolver` output is untrusted routing data. A provider is a trusted injected verification boundary, not an independently validated production implementation. The adapter performs no provider retries. It cannot enforce a hard deadline on a synchronous resolver/provider that never returns; the process integration must supply a bounded implementation and separate cancellation/timeout evidence.
 
 ## Public contracts
 
-Algorithm and domain are fixed, unknown epochs never fall back, verification epochs are bounded, and unverified payloads never authenticate.
+`authenticate(token, profile, resolver, provider)` returns `Result<AuthenticatedJwt, AuthenticationError>`. It does not return an authenticated result on any failure.
 
-Public Rust types, serialized fields, configuration keys, database predicates, and externally observable error classes are change-controlled. A breaking change requires an explicit migration or compatibility decision and updated tests in the same candidate.
+| Profile setting | Default | Validation or effect |
+| --- | --- | --- |
+| `domain` | `AccessToken` | Returned key domain must match exactly. |
+| `max_token_bytes` | 32768 | Nonzero; raw token byte length is checked before parsing. |
+| `max_header_bytes` | 1024 | Nonzero and less than token limit; passed to bounded decoding. |
+| `max_payload_bytes` | 16384 | Nonzero and less than token limit; decoded only after provider acceptance. |
+| `allow_legacy_without_key_id` | `true` | Missing `kid` requires a legacy key with `epoch=None`. |
+| `reject_unknown_header_fields` | `true` | Only `alg`, `typ`, `kid` are accepted in this profile. |
+| `json_limits` | `JsonLimits::default()` | Applied to header parsing; caller separately supplies claims parsing limits. |
+
+The accepted algorithm is exactly `HS256`; an included `typ` must be `JWT`. Epoch IDs have prefix `trnm-kep-v1:` followed by a canonical positive `u32`, without leading zeroes. Unknown/malformed IDs never fall back. The decoded signature must have exactly 32 bytes.
+
+`AuthenticatedJwt` has private route, key and payload fields, no public constructor and no mutable accessor. `route()` returns the copied route; `key()` returns a borrowed reference; `payload_bytes()` returns a sensitive immutable slice; `parse_claims(limits)` returns sensitive parsed JSON, not validated authorization claims. Clone preserves the same data and redacted diagnostic behavior.
+
+Source migration: replace `.route` with `.route()`, `.key` with `.key()`, and payload reads with `.payload_bytes()`. External struct literals and field writes intentionally stop compiling. Call `authenticate` rather than fabricating proof objects. This is a Rust API hardening change, not a wire-format, SQL, DDL or receipt-identity change. Exact downstream workspace compilation remains required before admission.
 
 ## Correctness and failure model
 
-Provider failure, malformed token, wrong epoch/domain, and signature mismatch are deterministic fail-closed results.
+The required sequence is profile validation, token size/segment validation, bounded header decode/JSON validation, header policy, route parsing, resolver, resolved domain/epoch validation, signature decode/length, provider verification over exact encoded input, then bounded payload decode. Payload JSON parsing is an explicit later operation.
 
-All inputs, loops, retries, batches, queues, allocations, and shutdown paths are bounded. Unexpected states fail closed. Duplicate, stale, timeout, cancellation, restart, and partial-failure behavior must be represented in deterministic tests where applicable.
+Domain and epoch mismatch must produce zero provider calls, including epoch-for-legacy confusion. Provider rejection precedes payload decoding even for malformed payload bytes. Cancellation, duplicate delivery, transaction commit and socket lifecycle are not implemented by this stateless adapter.
+
+Errors contain bounded categories and limited internal routing metadata, not raw token/payload/key bytes. `ResolvedKeyDomainMismatch` and `ResolvedKeyEpochMismatch` are internal diagnostics: the transport must map them to its reviewed public authentication error surface rather than exposing resolver topology. Provider outage handling and retry semantics belong to the bounded caller policy.
 
 ## Security and privacy
 
-Raw keys, tokens, claims, and provider locations are redacted. Rotation, revoke, cache invalidation, and node convergence require evidence.
+Every `AuthenticatedJwt` debug format emits only `AuthenticatedJwt { [REDACTED] }`. This holds for normal, pretty and hex debug, nested `Result`/`Option`/collections, derived diagnostic wrappers and `format_args!`. The output does not vary with payload content or length, route, epoch or provider location. No raw-token logging or new logging dependency is introduced.
 
-Secrets, raw tokens, user payloads, receipts, and provider credentials are not logged or used as metric labels. Any new cryptographic, parser, unsafe, native, or externally reachable boundary requires the appropriate threat, fuzz, and independent review.
+The protection ends at explicit extraction: `payload_bytes()`, `parse_claims()` and a borrowed key remain sensitive values. Logging them explicitly is not made safe by this wrapper. This change is not memory zeroization, end-to-end telemetry validation, provider logging validation or proof that every application error chain is redacted. Such claims require separate integration tests and review.
+
+Private fields prevent safe external Rust code from constructing or mutating an authenticated result. They do not remove the requirement to trust the provider implementation or to validate claims and session state afterwards.
 
 ## Build and test
 
 ```bash
 cargo fmt --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml -- --check
 cargo test --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml --all-targets --locked
+cargo test --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml --doc --locked
 cargo clippy --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml --all-targets --locked -- -D warnings
 ```
 
-This isolated workspace is explicitly registered in package authority and must execute in the stable aggregate merge gate. Empty discovery, skipped mandatory tests, warnings, older-head results, and local-only execution do not earn remote verification or claim credit.
+`--all-targets` is not the doctest invocation. The workflow runs the four compile-fail examples explicitly and rejects zero-test output. The examples independently prohibit external construction, payload replacement, key replacement and route replacement.
 
-Focused vectors and live/fault/differential suites are required when this module's behavior crosses protocol, database, security, realtime, or operational boundaries.
+| Invariant | Regression in `src/authenticated_tests.rs` |
+| --- | --- |
+| Normal/pretty/hex redaction | `debug_redacts_compact_pretty_and_hex_formats` |
+| No payload/length/route dependence | `debug_is_independent_of_payload_bytes_length_and_route` |
+| Nested diagnostics | `debug_redacts_nested_result_option_and_collection` |
+| Derived wrappers and formatting arguments | `debug_redacts_derived_diagnostic_wrapper_and_format_args` |
+| Immutable reads and claims parse preserved | `read_only_accessors_preserve_exact_authenticated_data` |
+| Payload parse error remains redacted | `parse_failure_has_no_payload_in_error_formatting` |
+
+The eight existing tests in `src/lib.rs` retain exact signing input, provider-before-payload ordering, algorithm/header rejection, strict epoch routing, resolver-domain mismatch, resolver-epoch mismatch and signature-length assertions. Tests use synthetic payloads and a fake provider; they are not cryptographic provider acceptance or live KMS evidence.
 
 ## Operations
 
-Expose issue/verify result, epoch, provider latency/health, fallback rejection, cache refresh, and revoke metrics at bounded cardinality.
+This crate creates no queue, worker, background retry or socket. Memory allocation is bounded by the selected token/header/payload and JSON limits, except that injected implementations require their own contracts. Readiness, provider latency budgets, outages and backpressure are process-level obligations.
 
-The owning adapter or process must define readiness impact, drain behavior, metrics, alerts, capacity limits, and failure recovery before the module can be part of a production profile.
+Metrics must use bounded categories; do not label by token, user, payload, key handle or unbounded epoch. Rollback may revert source in an unactivated candidate, but reintroducing payload-bearing `Debug` or public mutation is not an approved production mitigation.
 
 ## Compatibility and evidence
 
-Server integration, real KMS/HSM, malformed/fuzz corpus, rotation/revoke evidence, and independent cryptography review remain open.
+Retain separate exact-head and actual prospective-merge native packets, unit/doctest counts, toolchain, workflow/job/attempt identities and artifact digests. Missing, skipped, cancelled, stale or zero-test runs receive no credit. Local inspection is not remote execution; successful native tests are not independent security acceptance.
 
-Evidence must bind the exact repository, source commit, tree, workflow/run/job/attempt, environment, commands, assertions, retained artifact digests, limitations, expiry, and independent review decision.
+Server integration, real KMS/HSM, malformed/fuzz corpus, rotation/revoke, official SDK differential, session policy and independent cryptography review remain open. No product gate, acceptance counter or compatibility percentage is increased by this patch.
 
 ## Known gaps and exit criteria
 
-Blocking gaps:
+Blocking gaps: `GAP-P0-CRYPTO-001`, `GAP-P1-CRYPTO-002`, `GAP-P1-REVIEW-001`, `GAP-P0-CI-001`, `GAP-P1-DOCS-001`.
 
-- `GAP-P0-CRYPTO-001`
-- `GAP-P1-REVIEW-001`
-- `GAP-P0-CI-001`
-
-Exit requires every applicable close criterion in `docs/status/GAP_REGISTER.json`, exact-head and prospective-merge execution, and conflict-free independent review. Temporary prototypes and gates also require an explicit convergence or removal decision.
+Exit for this narrow patch requires exact native formatting/tests/doctests/strict lint, downstream compilation, prospective-merge verification, reviewed API migration and conflict-free independent security acceptance. Full gap closure additionally requires every relevant criterion in `docs/status/GAP_REGISTER.json`; the narrow redaction and immutable-result tests cannot close those broader gaps by themselves.
