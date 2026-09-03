@@ -201,15 +201,11 @@ impl fmt::Display for AuthenticationError {
             }
             Self::LegacyRouteForbidden => formatter.write_str("legacy JWT route is disabled"),
             Self::InvalidKeyId => formatter.write_str("JWT kid header is invalid"),
-            Self::UnknownKey => formatter.write_str("JWT key route is unavailable"),
-            Self::ResolvedKeyDomainMismatch { expected, actual } => write!(
-                formatter,
-                "resolved JWT key domain {actual:?} does not match requested domain {expected:?}"
-            ),
-            Self::ResolvedKeyEpochMismatch { expected, actual } => write!(
-                formatter,
-                "resolved JWT key epoch {actual:?} does not match token route epoch {expected:?}"
-            ),
+            Self::UnknownKey
+            | Self::ResolvedKeyDomainMismatch { .. }
+            | Self::ResolvedKeyEpochMismatch { .. } => {
+                formatter.write_str("JWT key route is unavailable")
+            }
             Self::SignatureDecode => formatter.write_str("JWT signature base64url decode failed"),
             Self::SignatureLength { actual } => {
                 write!(
