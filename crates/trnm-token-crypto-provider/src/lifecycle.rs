@@ -165,9 +165,8 @@ impl fmt::Display for LifecycleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EpochRequired => formatter.write_str("lifecycle key requires a nonzero epoch"),
-            Self::InvalidWindow => formatter.write_str(
-                "key window must satisfy not-before < sign-until < verify-until",
-            ),
+            Self::InvalidWindow => formatter
+                .write_str("key window must satisfy not-before < sign-until < verify-until"),
             Self::WindowAlreadySigningExpired => {
                 formatter.write_str("cannot install an epoch after its signing window")
             }
@@ -504,17 +503,13 @@ impl KeyEpochRegistry {
             schedule
                 .epochs
                 .iter()
-                .find(|(_, record)| {
-                    !record.is_revoked() && record.window.can_sign_at(at_unix)
-                })
+                .find(|(_, record)| !record.is_revoked() && record.window.can_sign_at(at_unix))
                 .map(|(epoch, _)| *epoch)
         });
         let mut verification_epochs = schedule
             .into_iter()
             .flat_map(|schedule| schedule.epochs.iter())
-            .filter(|(_, record)| {
-                !record.is_revoked() && record.window.can_verify_at(at_unix)
-            })
+            .filter(|(_, record)| !record.is_revoked() && record.window.can_verify_at(at_unix))
             .map(|(epoch, _)| *epoch)
             .collect::<Vec<_>>();
         verification_epochs.sort_unstable_by(|left, right| right.cmp(left));
@@ -619,12 +614,7 @@ impl KeyEpochRegistry {
     }
 }
 
-fn intervals_overlap(
-    left_start: u64,
-    left_end: u64,
-    right_start: u64,
-    right_end: u64,
-) -> bool {
+fn intervals_overlap(left_start: u64, left_end: u64, right_start: u64, right_end: u64) -> bool {
     left_start < right_end && right_start < left_end
 }
 
@@ -674,13 +664,7 @@ mod tests {
         sign_until: u64,
         verify_until: u64,
     ) -> EpochWindow {
-        EpochWindow::new(
-            key(domain, epoch),
-            not_before,
-            sign_until,
-            verify_until,
-        )
-        .unwrap()
+        EpochWindow::new(key(domain, epoch), not_before, sign_until, verify_until).unwrap()
     }
 
     #[test]
@@ -702,44 +686,34 @@ mod tests {
     fn epoch_and_signing_windows_are_monotonic_and_non_overlapping() {
         let mut registry = KeyEpochRegistry::default();
         registry
-            .install(
-                0,
-                window(KeyDomain::AccessToken, 7, 10, 20, 30),
-                1,
-            )
+            .install(0, window(KeyDomain::AccessToken, 7, 10, 20, 30), 1)
             .unwrap();
         let before = registry.clone();
         assert!(matches!(
-            registry.install(
-                1,
-                window(KeyDomain::AccessToken, 6, 20, 25, 35),
-                2,
-            ),
+            registry.install(1, window(KeyDomain::AccessToken, 6, 20, 25, 35), 2,),
             Err(LifecycleError::EpochNotMonotonic { .. })
         ));
         assert_eq!(registry, before);
         assert!(matches!(
-            registry.install(
-                1,
-                window(KeyDomain::AccessToken, 8, 19, 25, 35),
-                2,
-            ),
+            registry.install(1, window(KeyDomain::AccessToken, 8, 19, 25, 35), 2,),
             Err(LifecycleError::SigningWindowOverlap { .. })
         ));
         assert_eq!(registry, before);
         registry
-            .install(
-                1,
-                window(KeyDomain::AccessToken, 8, 20, 30, 40),
-                2,
-            )
+            .install(1, window(KeyDomain::AccessToken, 8, 20, 30, 40), 2)
             .unwrap();
         assert_eq!(
-            registry.signing_key(KeyDomain::AccessToken, 19).unwrap().epoch,
+            registry
+                .signing_key(KeyDomain::AccessToken, 19)
+                .unwrap()
+                .epoch,
             Some(7)
         );
         assert_eq!(
-            registry.signing_key(KeyDomain::AccessToken, 20).unwrap().epoch,
+            registry
+                .signing_key(KeyDomain::AccessToken, 20)
+                .unwrap()
+                .epoch,
             Some(8)
         );
     }
@@ -748,31 +722,21 @@ mod tests {
     fn verification_overlap_is_bounded_to_two_epochs() {
         let mut registry = KeyEpochRegistry::default();
         registry
-            .install(
-                0,
-                window(KeyDomain::AccessToken, 1, 0, 10, 30),
-                0,
-            )
+            .install(0, window(KeyDomain::AccessToken, 1, 0, 10, 30), 0)
             .unwrap();
         registry
-            .install(
-                1,
-                window(KeyDomain::AccessToken, 2, 10, 20, 40),
-                1,
-            )
+            .install(1, window(KeyDomain::AccessToken, 2, 10, 20, 40), 1)
             .unwrap();
         let before = registry.clone();
         assert!(matches!(
-            registry.install(
-                2,
-                window(KeyDomain::AccessToken, 3, 20, 25, 50),
-                2,
-            ),
+            registry.install(2, window(KeyDomain::AccessToken, 3, 20, 25, 50), 2,),
             Err(LifecycleError::VerificationWindowLimitExceeded { .. })
         ));
         assert_eq!(registry, before);
         assert_eq!(
-            registry.status(KeyDomain::AccessToken, 15).verification_epochs,
+            registry
+                .status(KeyDomain::AccessToken, 15)
+                .verification_epochs,
             vec![2, 1]
         );
     }
@@ -781,11 +745,7 @@ mod tests {
     fn verification_requires_the_exact_epoch_without_fallback() {
         let mut registry = KeyEpochRegistry::default();
         registry
-            .install(
-                0,
-                window(KeyDomain::AccessToken, 4, 10, 20, 30),
-                1,
-            )
+            .install(0, window(KeyDomain::AccessToken, 4, 10, 20, 30), 1)
             .unwrap();
         assert!(matches!(
             registry.verification_key(KeyDomain::AccessToken, 3, 15),
@@ -843,13 +803,9 @@ mod tests {
             Err(LifecycleError::EpochRetirementNotAllowed { .. })
         ));
         assert_eq!(registry, before);
-        registry
-            .retire(1, KeyDomain::Console, 5, 30)
-            .unwrap();
+        registry.retire(1, KeyDomain::Console, 5, 30).unwrap();
         assert_eq!(
-            registry
-                .status(KeyDomain::Console, 30)
-                .highest_epoch_ever,
+            registry.status(KeyDomain::Console, 30).highest_epoch_ever,
             Some(5)
         );
         assert!(matches!(
@@ -903,11 +859,7 @@ mod tests {
         ];
         let before = registry.clone();
         assert!(matches!(
-            registry.install(
-                0,
-                window(KeyDomain::AccessToken, 1, 10, 20, 30),
-                1,
-            ),
+            registry.install(0, window(KeyDomain::AccessToken, 1, 10, 20, 30), 1,),
             Err(LifecycleError::AuditCapacityExceeded { .. })
         ));
         assert_eq!(registry, before);
@@ -917,11 +869,7 @@ mod tests {
     fn status_and_health_expose_no_key_handle() {
         let mut registry = KeyEpochRegistry::default();
         registry
-            .install(
-                0,
-                window(KeyDomain::RuntimeHttp, 1, 10, 20, 30),
-                1,
-            )
+            .install(0, window(KeyDomain::RuntimeHttp, 1, 10, 20, 30), 1)
             .unwrap();
         let status = format!("{:?}", registry.status(KeyDomain::RuntimeHttp, 15));
         let health = format!("{:?}", registry.health(15));
