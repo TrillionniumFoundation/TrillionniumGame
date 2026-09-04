@@ -140,7 +140,42 @@ class JobEvidenceTests(unittest.TestCase):
              "steps": [{"name": "Set up job", "status": "completed", "conclusion": "success"},
                        {"name": "Complete job", "status": "completed", "conclusion": "success"}]}
         ])
+        # No effective steps and effective-but-skipped steps are different
+        # rejection paths. Preserve both diagnostics and zero valid-job credit.
+        self.assertTrue(any("zero non-framework execution steps" in x for x in failures))
+        self.assertTrue(any("observed=0 required>=1" in x for x in failures))
+
+    def test_effective_steps_all_skipped_are_rejected(self):
+        job = self.good()
+        job["steps"][1]["conclusion"] = "skipped"
+        failures = GATE.job_failures([job])
         self.assertTrue(any("no successful non-framework" in x for x in failures))
+        self.assertTrue(any("observed=0 required>=1" in x for x in failures))
+
+    def test_masked_failed_step_is_not_success(self):
+        job = self.good()
+        job["steps"].insert(2, {
+            "name": "Mandatory fault assertions", "status": "completed",
+            "conclusion": "failure",
+        })
+        failures = GATE.job_failures([job])
+        self.assertTrue(any("Mandatory fault assertions" in x for x in failures))
+        self.assertTrue(any("observed=0 required>=1" in x for x in failures))
+
+    def test_post_cleanup_only_is_not_execution(self):
+        job = self.good()
+        job["steps"][1]["name"] = "Post cleanup"
+        failures = GATE.job_failures([job])
+        self.assertTrue(any("zero non-framework execution steps" in x for x in failures))
+        self.assertTrue(any("observed=0 required>=1" in x for x in failures))
+
+    def test_successful_job_cannot_hide_framework_only_job(self):
+        empty = self.good()
+        empty["name"] = "empty-required-lane"
+        del empty["steps"][1]
+        failures = GATE.job_failures([self.good(), empty])
+        self.assertTrue(any("empty-required-lane" in x for x in failures))
+        self.assertTrue(any("zero non-framework execution steps" in x for x in failures))
 
     def test_failed_job(self):
         self.assertTrue(any("not terminal-success" in x for x in GATE.job_failures([
