@@ -32,10 +32,7 @@ impl LiveCockroachRepository {
         config.connect(NoTls).map_err(map_postgres_error)
     }
 
-    fn force_serialization_failure(
-        &self,
-        budget: Duration,
-    ) -> Result<DomainError, DomainError> {
+    fn force_serialization_failure(&self, budget: Duration) -> Result<DomainError, DomainError> {
         let mut left = self.connect(budget)?;
         let mut right = self.connect(budget)?;
         let mut left_transaction = left
@@ -44,10 +41,7 @@ impl LiveCockroachRepository {
             .start()
             .map_err(map_postgres_error)?;
         let left_observed: i64 = left_transaction
-            .query_one(
-                "SELECT value FROM trnm_crdb_retry_probe WHERE id = 2",
-                &[],
-            )
+            .query_one("SELECT value FROM trnm_crdb_retry_probe WHERE id = 2", &[])
             .map_err(map_postgres_error)?
             .get(0);
         if left_observed != 0 {
@@ -62,10 +56,7 @@ impl LiveCockroachRepository {
             .start()
             .map_err(map_postgres_error)?;
         let right_observed: i64 = right_transaction
-            .query_one(
-                "SELECT value FROM trnm_crdb_retry_probe WHERE id = 1",
-                &[],
-            )
+            .query_one("SELECT value FROM trnm_crdb_retry_probe WHERE id = 1", &[])
             .map_err(map_postgres_error)?
             .get(0);
         if right_observed != 0 {
@@ -202,11 +193,7 @@ const fn invalid(reason: &'static str) -> DomainError {
 }
 
 const fn failed_precondition(reason: &'static str) -> DomainError {
-    DomainError::new(
-        StableCode::FailedPrecondition,
-        reason,
-        RetryClass::Never,
-    )
+    DomainError::new(StableCode::FailedPrecondition, reason, RetryClass::Never)
 }
 
 #[cfg(test)]
