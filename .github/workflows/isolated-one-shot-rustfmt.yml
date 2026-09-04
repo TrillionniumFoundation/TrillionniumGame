@@ -1,0 +1,60 @@
+name: isolated-one-shot-rustfmt
+
+on:
+  push:
+    branches:
+      - tooling/isolated-key-lifecycle-rustfmt-2026-09-04
+
+permissions:
+  contents: write
+
+jobs:
+  format-target-and-remove-transient-workflow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      TARGET_BRANCH: codex/plan-v3-combined-source-2026-09-03
+      EXPECTED_TARGET_HEAD: f153c9ee5b6deff90cad93ee95365d3455f9d89a
+    steps:
+      - name: Fetch exact target branch without external actions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/target"
+          git init "$GITHUB_WORKSPACE/target"
+          git -C "$GITHUB_WORKSPACE/target" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/target" fetch --no-tags --depth=1 origin \
+            "refs/heads/${TARGET_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/target" checkout -B "$TARGET_BRANCH" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/target" rev-parse HEAD)" = "$EXPECTED_TARGET_HEAD"
+
+      - name: Install exact formatter
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt
+          rustup override set 1.85.1
+
+      - name: Format lifecycle, remove transient workflow and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/target"
+          cargo fmt --manifest-path crates/trnm-token-crypto-provider/Cargo.toml
+          rm -f .github/workflows/temporary-rustfmt-key-lifecycle.yml
+          actual=$(git status --short | awk '{print $2}' | LC_ALL=C sort)
+          expected=$(printf '%s\n' \
+            '.github/workflows/temporary-rustfmt-key-lifecycle.yml' \
+            'crates/trnm-token-crypto-provider/src/lifecycle.rs' | LC_ALL=C sort)
+          test "$actual" = "$expected"
+          cargo fmt --manifest-path crates/trnm-token-crypto-provider/Cargo.toml -- --check
+          git config user.name 'trillionnium-isolated-rustfmt'
+          git config user.email 'isolated-rustfmt@users.noreply.github.com'
+          git add -A -- \
+            .github/workflows/temporary-rustfmt-key-lifecycle.yml \
+            crates/trnm-token-crypto-provider/src/lifecycle.rs
+          git commit -m 'style: rustfmt key lifecycle source and remove transient tooling'
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
