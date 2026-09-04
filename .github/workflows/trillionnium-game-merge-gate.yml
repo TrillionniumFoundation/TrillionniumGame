@@ -54,6 +54,8 @@ jobs:
         run: python3 scripts/check-rust-package-inventory.py
       - name: Validate Rust server source contract
         run: python3 scripts/check-trnm-server.py
+      - name: Validate closed required-workflow manifest JSON
+        run: python3 -m json.tool docs/governance/REQUIRED_WORKFLOWS_V1.json >/dev/null
       - name: Compile control scripts
         run: |
           python3 -m py_compile \
@@ -231,7 +233,7 @@ jobs:
             "${CANDIDATE_SHA}"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
-      - name: Require every scheduled exact-head PR workflow to succeed
+      - name: Require the closed exact-head PR workflow set to execute
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -240,7 +242,7 @@ jobs:
             --repository "$CANDIDATE_REPOSITORY" \
             --head-sha "$CANDIDATE_SHA" \
             --current-run-id "$GITHUB_RUN_ID" \
-            --minimum-runs 1 \
+            --manifest docs/governance/REQUIRED_WORKFLOWS_V1.json \
             --timeout-seconds 3000 \
             --poll-seconds 10 \
             --stable-polls 3
