@@ -38,7 +38,7 @@ impl EpochWindow {
         sign_until_unix: u64,
         verify_until_unix: u64,
     ) -> Result<Self, LifecycleError> {
-        if !key.epoch.is_some_and(|epoch| epoch > 0) {
+        if key.epoch.is_none_or(|epoch| epoch == 0) {
             return Err(LifecycleError::EpochRequired);
         }
         if !(not_before_unix < sign_until_unix && sign_until_unix < verify_until_unix) {
@@ -846,17 +846,19 @@ mod tests {
 
     #[test]
     fn audit_capacity_fails_before_schedule_mutation() {
-        let mut registry = KeyEpochRegistry::default();
-        registry.audit = vec![
-            LifecycleAuditEvent {
-                revision: 1,
-                action: LifecycleAction::Installed,
-                domain: KeyDomain::AccessToken,
-                epoch: 1,
-                at_unix: 1,
-            };
-            MAX_LIFECYCLE_AUDIT_EVENTS
-        ];
+        let mut registry = KeyEpochRegistry {
+            audit: vec![
+                LifecycleAuditEvent {
+                    revision: 1,
+                    action: LifecycleAction::Installed,
+                    domain: KeyDomain::AccessToken,
+                    epoch: 1,
+                    at_unix: 1,
+                };
+                MAX_LIFECYCLE_AUDIT_EVENTS
+            ],
+            ..KeyEpochRegistry::default()
+        };
         let before = registry.clone();
         assert!(matches!(
             registry.install(0, window(KeyDomain::AccessToken, 1, 10, 20, 30), 1,),
