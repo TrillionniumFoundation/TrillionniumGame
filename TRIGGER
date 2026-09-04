@@ -1,0 +1,1 @@
+2026-09-04 isolated one-shot rustfmt trigger
