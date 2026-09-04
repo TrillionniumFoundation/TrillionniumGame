@@ -103,13 +103,12 @@ jobs:
           docker rm -f trnm-crdb-retry >/dev/null 2>&1 || true
           docker run --detach \
             --name trnm-crdb-retry \
-            --publish 26257:26257 \
-            --publish 8080:8080 \
+            --network host \
             "$COCKROACH_IMAGE" \
             start-single-node \
             --insecure \
-            --listen-addr=0.0.0.0:26257 \
-            --http-addr=0.0.0.0:8080 \
+            --listen-addr=127.0.0.1:26257 \
+            --http-addr=127.0.0.1:8080 \
             --store=/cockroach/cockroach-data
           ready=false
           for _ in $(seq 1 90); do
@@ -149,7 +148,7 @@ jobs:
           printf 'repository=%s\nhead_sha=%s\nrun_id=%s\n' \
             "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" "$GITHUB_RUN_ID"
           printf '%s\n' \
-            'database_profile=cockroachdb-v26.2.6-single-node-insecure-isolated-ci' \
+            'database_profile=cockroachdb-v26.2.6-single-node-insecure-loopback-host-network-ci' \
             'assertion=real_serializable_write_skew_returned_sqlstate_40001' \
             'assertion=sqlstate_40001_classified_safe_immediate' \
             'assertion=retrying_repository_replayed_whole_command_once' \
