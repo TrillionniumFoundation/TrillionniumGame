@@ -1,0 +1,135 @@
+name: world-v13k-route-b-publisher
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/world-v13k-route-b-publisher.yml
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: world-v13k-route-b-publisher
+  cancel-in-progress: false
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_BRANCH: fix/world-plan-v4-development-closure-20260831
+  WORLD_EXPECTED_HEAD: d8ab3164cbd573e642d98fbfb626fe551574c7e5
+  IMPORTER_COMMIT: d8ab3164cbd573e642d98fbfb626fe551574c7e5
+  IMPORTER_BLOB_SHA1: 5c21773242423b083f87ee0924474754646065d0
+  QUALIFICATION_ARTIFACT_ID: "9780499701"
+  QUALIFICATION_ARTIFACT_SHA256: 456a181bdc8f8aa248229b044db9eec4f52572ea3b20bca6492907db58d64ef5
+  QUALIFIED_TREE: 5e613185f5a2abda42df371f3755e73667717309
+
+jobs:
+  publish-qualified-world-source:
+    name: bounded Route B publication
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'ops/world-v13k-route-b-20260904' &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Verify immutable invocation identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test "${{ github.event.pull_request.head.repo.full_name }}" = "$GITHUB_REPOSITORY"
+          test "${{ github.event.pull_request.head.ref }}" = ops/world-v13k-route-b-20260904
+          test "${{ github.event.pull_request.base.ref }}" = main
+          test -n "${{ github.event.pull_request.head.sha }}"
+
+      - name: Fetch and bind the reviewed importer
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --location --retry 3 --retry-all-errors \
+            "https://raw.githubusercontent.com/${WORLD_REPOSITORY}/${IMPORTER_COMMIT}/scripts/import-qualified-world-v13k.py" \
+            --output /tmp/import-qualified-world-v13k.py
+          observed="$(git hash-object /tmp/import-qualified-world-v13k.py)"
+          test "$observed" = "$IMPORTER_BLOB_SHA1"
+          python3 -m py_compile /tmp/import-qualified-world-v13k.py
+
+      - name: Download and verify the immutable qualification artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          curl --fail-with-body --location --retry 3 --retry-all-errors \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${QUALIFICATION_ARTIFACT_ID}/zip" \
+            --output /tmp/world-v13k-source-candidate.zip
+          observed="$(sha256sum /tmp/world-v13k-source-candidate.zip | awk '{print $1}')"
+          test "$observed" = "$QUALIFICATION_ARTIFACT_SHA256"
+
+      - name: Require the repository-scoped publication credential
+        env:
+          TRNM_WORLD_IMPORT_TOKEN: ${{ secrets.TRNM_WORLD_IMPORT_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$TRNM_WORLD_IMPORT_TOKEN"
+          test "$WORLD_BRANCH" != main
+          test "$WORLD_BRANCH" != master
+
+      - name: Publish exact bytes to the review branch without force
+        env:
+          TRNM_WORLD_IMPORT_TOKEN: ${{ secrets.TRNM_WORLD_IMPORT_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 /tmp/import-qualified-world-v13k.py \
+            /tmp/world-v13k-source-candidate.zip \
+            --repository "$WORLD_REPOSITORY" \
+            --target-branch "$WORLD_BRANCH" \
+            --expected-head "$WORLD_EXPECTED_HEAD" \
+            --publish \
+            | tee /tmp/world-v13k-publication-receipt.json
+          python3 -m json.tool /tmp/world-v13k-publication-receipt.json >/dev/null
+
+      - name: Verify exact branch read-back and required deletions
+        env:
+          TRNM_WORLD_IMPORT_TOKEN: ${{ secrets.TRNM_WORLD_IMPORT_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          encoded_branch="$(python3 - <<'PY'
+          import os, urllib.parse
+          print(urllib.parse.quote(os.environ['WORLD_BRANCH'], safe=''))
+          PY
+          )"
+          branch_json="$(curl --fail-with-body --silent --show-error \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${TRNM_WORLD_IMPORT_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${WORLD_REPOSITORY}/branches/${encoded_branch}")"
+          new_head="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"]["sha"])' <<<"$branch_json")"
+          test "$new_head" != "$WORLD_EXPECTED_HEAD"
+          commit_json="$(curl --fail-with-body --silent --show-error \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${TRNM_WORLD_IMPORT_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${WORLD_REPOSITORY}/git/commits/${new_head}")"
+          parent="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["parents"][0]["sha"])' <<<"$commit_json")"
+          test "$parent" = "$WORLD_EXPECTED_HEAD"
+          for path in \
+            trillionnium/crates/trnm-game-server/build.rs \
+            trillionnium/crates/trnm-game-server/src/lib.rs.in; do
+            code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer ${TRNM_WORLD_IMPORT_TOKEN}" \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/${WORLD_REPOSITORY}/contents/${path}?ref=${new_head}")"
+            test "$code" = 404
+          done
+          printf 'WORLD_V13K_ROUTE_B_PUBLICATION=PASS\nhead=%s\nqualified_tree=%s\n' \
+            "$new_head" "$QUALIFIED_TREE"
