@@ -135,11 +135,11 @@ jobs:
               -CAcreateserial \
               -extfile "run/pg-tls/${profile}/server.ext" \
               -out "run/pg-tls/${profile}/server.crt"
+            openssl verify -CAfile "run/pg-tls/${profile}/ca.crt" \
+              "run/pg-tls/${profile}/server.crt"
             chmod 0600 "run/pg-tls/${profile}/server.key"
             sudo chown 70:70 \
               "run/pg-tls/${profile}/server.key" \
-              "run/pg-tls/${profile}/server.crt"
-            openssl verify -CAfile "run/pg-tls/${profile}/ca.crt" \
               "run/pg-tls/${profile}/server.crt"
           done
           test "$(sha256sum run/pg-tls/old/ca.crt | cut -d' ' -f1)" != \
@@ -148,10 +148,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          docker rm -f trnm-pg-old trnm-pg-new >/dev/null 2>&1 || true
           for specification in old:55432 new:55433; do
             profile=${specification%%:*}
             port=${specification##*:}
-            docker run --detach --rm \
+            docker run --detach \
               --name "trnm-pg-${profile}" \
               --publish "${port}:5432" \
               --env POSTGRES_DB=trillionnium_tls \
@@ -167,6 +168,10 @@ jobs:
           for profile in old new; do
             ready=false
             for _ in $(seq 1 60); do
+              if [[ "$(docker inspect -f '{{.State.Running}}' "trnm-pg-${profile}" 2>/dev/null || true)" != true ]]; then
+                docker logs "trnm-pg-${profile}" >&2 || true
+                exit 1
+              fi
               if docker exec "trnm-pg-${profile}" \
                 pg_isready -U postgres -d trillionnium_tls >/dev/null 2>&1; then
                 ready=true
