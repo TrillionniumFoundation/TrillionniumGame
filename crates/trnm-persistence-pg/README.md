@@ -54,6 +54,18 @@ The root workspace and the stable aggregate merge gate must execute these target
 
 Focused vectors and live/fault/differential suites are required when this module's behavior crosses protocol, database, security, realtime, or operational boundaries.
 
+## TLS test endpoint readiness
+
+The `pg-tls-rotation` live lane must not accept the initialization server's Unix socket as the final endpoint. `scripts/wait-postgresql-tls-ready.py` connects explicitly to container TCP `127.0.0.1` with `sslmode=verify-full` and the profile's read-only mounted root certificate. It executes SQL against the requested test database and requires `ssl=on`, a non-recovery server, and TLS on its own `pg_stat_ssl` session. A transient SQL failure retries inside one monotonic deadline; a stopped or unavailable container fails. Empty, extra, non-TLS or failed-query output never earns readiness, even if the process prints `ready`.
+
+The default total budget is 60 seconds per endpoint, with a validated maximum of 300 seconds. Each subprocess receives at most three seconds and never more than the remaining budget. libpq connection and SQL statement budgets are separately two seconds. A success arriving at or after the total deadline is rejected. Subprocess diagnostics, password values and connection URLs are not emitted by the helper. The ephemeral test password is forwarded by the environment variable name, not embedded in subprocess argument values. Published container ports bind only to host loopback.
+
+```bash
+python3 -m unittest tests.control_plane.test_pg_tls_endpoint_readiness -v
+```
+
+The deterministic suite exercises initialization transition, failed SQL, actual command construction, stopped containers, per-operation and total timeouts, late success, invalid input and diagnostic redaction. It is a mocked prerequisite regression, not a live database or TLS-rotation result. The separate Rust probe must still execute old/new-root success, cross-root rejection and invalid-root rejection. The workflow manifest requires both source/unit and live execution jobs; a successful unit job cannot substitute for a skipped live job. This repair changes no authoritative DDL, public API, receipt, rollback authority or production claim.
+
 ## Operations
 
 Pools, acquisition, statements, locks, transactions, retries, readiness, drain, outbox, and profile identity require bounded metrics and failure reasons.

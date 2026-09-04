@@ -7,6 +7,8 @@ on:
       - 'crates/trnm-persistence-pg/src/pool.rs'
       - 'crates/trnm-persistence-pg/src/pool_parts/**'
       - 'crates/trnm-persistence-pg/Cargo.toml'
+      - 'scripts/wait-postgresql-tls-ready.py'
+      - 'tests/control_plane/test_pg_tls_endpoint_readiness.py'
       - 'Cargo.lock'
       - '.github/workflows/pg-tls-rotation.yml'
   push:
@@ -16,6 +18,8 @@ on:
       - 'crates/trnm-persistence-pg/src/pool.rs'
       - 'crates/trnm-persistence-pg/src/pool_parts/**'
       - 'crates/trnm-persistence-pg/Cargo.toml'
+      - 'scripts/wait-postgresql-tls-ready.py'
+      - 'tests/control_plane/test_pg_tls_endpoint_readiness.py'
       - 'Cargo.lock'
       - '.github/workflows/pg-tls-rotation.yml'
   workflow_dispatch:
@@ -51,6 +55,8 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+      - name: Run endpoint readiness regression tests
+        run: python3 -m unittest tests.control_plane.test_pg_tls_endpoint_readiness -v
       - name: Install exact Rust
         shell: bash
         run: |
@@ -146,6 +152,8 @@ jobs:
             "$(sha256sum run/pg-tls/new/ca.crt | cut -d' ' -f1)"
       - name: Start two exact PostgreSQL TLS endpoints
         shell: bash
+        env:
+          PGPASSWORD: tls_rotation_test_password
         run: |
           set -euo pipefail
           docker rm -f trnm-pg-old trnm-pg-new >/dev/null 2>&1 || true
@@ -154,37 +162,23 @@ jobs:
             port=${specification##*:}
             docker run --detach \
               --name "trnm-pg-${profile}" \
-              --publish "${port}:5432" \
+              --publish "127.0.0.1:${port}:5432" \
               --env POSTGRES_DB=trillionnium_tls \
               --env POSTGRES_USER=postgres \
               --env POSTGRES_PASSWORD=tls_rotation_test_password \
               --volume "$PWD/run/pg-tls/${profile}/server.crt:/var/lib/postgresql/server.crt:ro" \
               --volume "$PWD/run/pg-tls/${profile}/server.key:/var/lib/postgresql/server.key:ro" \
+              --volume "$PWD/run/pg-tls/${profile}/ca.crt:/var/lib/postgresql/root.crt:ro" \
               "$POSTGRES_IMAGE" \
               -c ssl=on \
               -c ssl_cert_file=/var/lib/postgresql/server.crt \
               -c ssl_key_file=/var/lib/postgresql/server.key
           done
           for profile in old new; do
-            ready=false
-            for _ in $(seq 1 60); do
-              if [[ "$(docker inspect -f '{{.State.Running}}' "trnm-pg-${profile}" 2>/dev/null || true)" != true ]]; then
-                docker logs "trnm-pg-${profile}" >&2 || true
-                exit 1
-              fi
-              if docker exec "trnm-pg-${profile}" \
-                pg_isready -U postgres -d trillionnium_tls >/dev/null 2>&1; then
-                ready=true
-                break
-              fi
-              sleep 1
-            done
-            if [[ "$ready" != true ]]; then
-              docker logs "trnm-pg-${profile}" >&2 || true
-              exit 1
-            fi
-            test "$(docker exec "trnm-pg-${profile}" \
-              psql -U postgres -d trillionnium_tls -Atc 'SHOW ssl')" = on
+            python3 scripts/wait-postgresql-tls-ready.py \
+              --container "trnm-pg-${profile}" \
+              --database trillionnium_tls --timeout-seconds 60 \
+              | tee "run/pg-tls/${profile}/readiness.json"
           done
           touch run/pg-tls/endpoints-ready
       - name: Prove monotonic rolling trust rotation and fail-closed roots
