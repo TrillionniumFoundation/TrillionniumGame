@@ -1,7 +1,7 @@
 # Architecture
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-01
+Revision: 2026-09-03
 
 ## 1. Current runtime reality
 
@@ -136,7 +136,20 @@ Required invariants:
 
 The persistence API must be asynchronous or otherwise cancellation-aware at its public boundary, with total request deadlines including pool acquisition, lock wait, statements and retry sleep. PostgreSQL and CockroachDB use separate implementations or explicit profile adapters and separate evidence.
 
-The current database slice already has bounded pools, statement/lock/idle-transaction timeouts, TLS verify-full source configuration, serializable transactions and bounded jittered retries. Remaining target work includes cancellation of already-running blocking operations, certificate rotation/reload evidence, saturation/churn/failover tests, ambiguous-commit reconciliation and independently accepted performance/security review.
+The current database slice has source candidates for bounded pools, statement/lock/idle-transaction timeouts, TLS verify-full configuration, serializable transactions, jittered retries and deadline/shutdown cancellation. The four-part pool implementation remains bound by `crates/trnm-persistence-pg/src/pool.rs`; no additional server root or database schema is introduced by cancellation hardening.
+
+### Cancellation lifecycle and physical connection retirement
+
+A cancellation token identifies a backend connection rather than a query instance. A successful cancel transport call is not acknowledgement that PostgreSQL cancelled the intended statement. Two independent fences are therefore required in the source candidate:
+
+1. The registry publishes the in-flight gauge while holding its registry mutex. A cancel request snapshots an entry, then uses an entry-local mutex to serialize retirement with callback dispatch. Completion removes the entry and releases the registry mutex before waiting for an already-running sender. A stale snapshot observes retirement and cannot dispatch afterwards. Network I/O never holds the global registry mutex.
+2. A physical pooled connection has a shared retirement flag. Both plaintext and TLS cancellation paths set it before transport I/O, including failed sends. `RetirementManager::has_broken` returns true for a retired connection regardless of driver liveness, so r2d2 discards that lease on return. Late results also retire their lease. Healthy connections remain recyclable, and the pool itself remains usable with a replacement backend.
+
+Waiting for local callback completion alone is insufficient: the wire cancellation may arrive later. Eviction alone is insufficient: an already-captured callback could still execute after local completion. The lifecycle mutex plus physical retirement addresses both source-level races. Cancellation counters describe requests and transport outcomes, not database rollback or commit outcomes. Ambiguous commands still require exact receipt reconciliation; cancellation does not authorize blind retry or compensation.
+
+Compiled Rust regressions cover stale snapshots, sender/cleanup ordering without registry-lock contention, panic accounting, duplicate completion and actual r2d2 retirement. The mandatory PostgreSQL lane uses a single-connection pool, asserts a changed backend PID after each cancellation, then runs `SELECT 1`. Its shutdown scenario observes the blocking query in `pg_stat_activity` rather than inferring SQL execution from a registry count. Its deadline scenario disables the independent statement timeout inside the test callback only, isolating CancelToken behavior without changing production timeout policy.
+
+The Python lifecycle suite is a structural regression and a finite interleaving model, not a Rust memory-model proof or live database evidence. These changes do not yet prove wall-clock bounds under stalled network/TLS transport or an arbitrary non-returning synchronous operation. Exact-head Rust compilation, both database profiles, TLS cancellation/rotation/reload, saturation/churn/failover, ambiguous-commit reconciliation and independent database/performance/security/SRE acceptance remain required. No gap, gate or compatibility claim is promoted by this source change.
 
 `migrations/` is the only production DDL authority. `database/schema/v2/` is design history and cannot be consumed by runtime, CI, backup or release tooling.
 

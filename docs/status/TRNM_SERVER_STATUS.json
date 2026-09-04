@@ -8,6 +8,7 @@
     "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
     "crates/trnm-persistence-pg/src/bin/trnm_server",
     "crates/trnm-persistence-pg/src/pool.rs",
+    "crates/trnm-persistence-pg/src/pool_parts",
     "crates/trnm-persistence-pg/src/session.rs",
     "crates/trnm-persistence-pg/src/auth.rs",
     "crates/trnm-realtime-wire",
@@ -57,12 +58,21 @@
     "one shared process drain and mutation-admission barrier across HTTP and persistent WebSocket workers",
     "post-drain upgraded WebSockets close with going-away semantics before new data or control dispatch",
     "gRPC worker returned errors and panics signal the shared failure and drain fences",
-    "duplicate and empty WebSocket subprotocol offer tokens fail closed"
+    "duplicate and empty WebSocket subprotocol offer tokens fail closed",
+    "deadline and shutdown cancellation registry with monotonic IDs, single-dispatch arbitration and redacted transport-outcome metrics",
+    "entry-local dispatch and retirement serialization prevents stale callback snapshots from cancelling after local completion",
+    "in-flight gauge publication occurs before registry unlock and completion waits without holding the global registry mutex",
+    "plaintext and TLS cancellation mark physical connections retired before transport I/O; r2d2 discards retired leases rather than recycling them",
+    "Rust regression sources cover stale snapshots, sender/cleanup ordering, panic accounting, duplicate completion and actual r2d2 retirement",
+    "single-connection PostgreSQL live test sources assert changed backend PID and replacement-pool usability after deadline and shutdown cancellation",
+    "deadline workflow covers split pool parts on pull requests and main pushes and rejects zero matching live tests",
+    "Python structural regression and finite interleaving model distinguish lifecycle locking from physical backend eviction without granting runtime credit"
   ],
   "not_implemented_or_verified": [
     "final exact-head Rust formatting, compile, tests and strict Clippy after this source synchronization",
     "accepted live PostgreSQL and CockroachDB evidence on the final exact head",
-    "cancellation of an already-running blocking SQL operation on request deadline or shutdown",
+    "accepted deadline, shutdown, physical-backend-retirement and cancellation/commit-race evidence on the final source and prospective merge objects",
+    "hard wall-clock termination under stalled cancellation transport, stalled TLS or an arbitrary non-returning synchronous operation",
     "TLS certificate rotation and reload plus expiry and invalid-chain fault injection",
     "pool saturation, connection churn and database-failover evidence",
     "independent database, performance and security review of pool, timeout, TLS and retry policy",
@@ -111,6 +121,9 @@
     "access_token_verifier_source_candidate": true,
     "refresh_family_repository_source_candidate": true,
     "session_http_source_candidate": true,
-    "grpc_healthcheck_source_candidate": true
+    "grpc_healthcheck_source_candidate": true,
+    "cancellation_lifecycle_source_candidate": true,
+    "cancelled_backend_retirement_source_candidate": true,
+    "nonempty_cancellation_live_tests_source_candidate": true
   }
 }
