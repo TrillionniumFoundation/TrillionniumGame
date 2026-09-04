@@ -3,19 +3,6 @@ name: trillionnium-game-storage-core
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/trnm-contracts/**'
-      - 'crates/trnm-storage-core/**'
-      - 'contracts/storage/**'
-      - 'scripts/check-storage-core.py'
-      - 'tests/storage/**'
-      - 'docs/DEVELOPMENT.md'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'docs/status/STORAGE_CORE_STATUS.json'
-      - '.github/workflows/w4-storage-core.yml'
   push:
     branches: [main]
     paths:

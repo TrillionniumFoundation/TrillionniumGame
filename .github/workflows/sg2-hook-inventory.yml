@@ -3,18 +3,6 @@ name: trillionnium-game-sg2-hook-inventory
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'config/oracle-hook-inventory-policy.json'
-      - 'contracts/oracle/instrumentation-site-inventory.v1.schema.json'
-      - 'tools/oracle/hook_inventory.py'
-      - 'scripts/oracle/generate-hook-inventory.py'
-      - 'scripts/oracle/check-hook-inventory.sh'
-      - 'tests/oracle/test_hook_inventory.py'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/sg2-hook-inventory.yml'
-
 permissions:
   contents: read
 

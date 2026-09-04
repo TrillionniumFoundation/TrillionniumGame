@@ -3,15 +3,6 @@ name: trillionnium-game-database-data-denominator
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'tools/denominator/sql_migration_surface.py'
-      - 'scripts/generate-database-denominator.py'
-      - 'scripts/check-database-denominator.sh'
-      - 'tests/denominator/test_database_denominator.py'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/sg1-database-data-denominator.yml'
   push:
     branches: [main]
     paths:

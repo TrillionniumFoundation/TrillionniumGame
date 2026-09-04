@@ -3,15 +3,6 @@ name: trillionnium-game-runtime-denominator
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'tools/denominator/**'
-      - 'scripts/generate-runtime-denominator.py'
-      - 'scripts/check-runtime-denominator.sh'
-      - 'tests/denominator/test_runtime*.py'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/sg1-runtime-denominator.yml'
   push:
     branches: [main]
     paths:

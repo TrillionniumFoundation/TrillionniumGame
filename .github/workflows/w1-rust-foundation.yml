@@ -3,19 +3,6 @@ name: trillionnium-game-rust-foundation
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'crates/**'
-      - 'contracts/foundation/**'
-      - 'scripts/check-rust-foundation.py'
-      - 'tests/foundation/**'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/DEVELOPMENT.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'docs/status/RUST_FOUNDATION_STATUS.json'
-      - '.github/workflows/w1-rust-foundation.yml'
   push:
     branches: [main]
     paths:

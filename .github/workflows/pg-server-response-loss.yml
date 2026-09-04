@@ -2,15 +2,6 @@ name: pg-server-response-loss
 
 on:
   pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/trnm-contracts/**'
-      - 'crates/trnm-persistence-core/**'
-      - 'crates/trnm-persistence-pg/**'
-      - 'migrations/postgresql/**'
-      - 'scripts/check-pg-server-response-loss.sh'
-      - '.github/workflows/pg-server-response-loss.yml'
   push:
     branches: [main]
     paths:

@@ -6,7 +6,8 @@
   "document_revisions": {
     "docs/README.md": "2026-09-03",
     "docs/ARCHITECTURE.md": "2026-09-03",
-    "docs/DEVELOPMENT.md": "2026-09-03"
+    "docs/DEVELOPMENT.md": "2026-09-03",
+    "docs/GOVERNANCE.md": "2026-09-05"
   },
   "policy": {
     "single_current_human_document_per_topic": true,

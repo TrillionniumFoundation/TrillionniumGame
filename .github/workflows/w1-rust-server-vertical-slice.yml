@@ -3,17 +3,6 @@ name: trillionnium-game-rust-server-vertical-slice
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'crates/trnm-server/**'
-      - 'contracts/server/**'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/DEVELOPMENT.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'docs/status/RUST_SERVER_VERTICAL_SLICE_STATUS.json'
-      - 'scripts/check-rust-server-vertical-slice.py'
-      - 'tests/server/**'
-      - '.github/workflows/w1-rust-server-vertical-slice.yml'
-      - '.github/workflows/trillionnium-game-merge-gate.yml'
   push:
     branches: [main]
     paths:

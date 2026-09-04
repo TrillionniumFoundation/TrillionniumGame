@@ -3,18 +3,6 @@ name: trillionnium-game-transport-error-core
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/trnm-transport-core/**'
-      - 'contracts/protocol/transport-error-*.json'
-      - 'scripts/check-transport-core.py'
-      - 'tests/protocol/test_transport_error_vectors.py'
-      - 'docs/DEVELOPMENT.md'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'docs/status/TRANSPORT_ERROR_STATUS.json'
-      - '.github/workflows/w2-transport-error-core.yml'
   push:
     branches: [main]
     paths:

@@ -3,17 +3,6 @@ name: world-command-runtime-v1
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'runtime/internal/worldcommand/**'
-      - 'contracts/world-command-runtime-v1-status.json'
-      - 'contracts/world-command-fault-evidence-v1.schema.json'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/OPERATIONS_AND_RELEASE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'scripts/check-world-command-runtime-v1.sh'
-      - 'scripts/test-world-command-runtime-v1-negative.sh'
-      - 'tools/summarize_world_command_faults.py'
-      - '.github/workflows/world-command-runtime-v1.yml'
   push:
     branches:
       - main

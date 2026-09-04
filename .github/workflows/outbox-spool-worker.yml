@@ -3,19 +3,6 @@ name: outbox-spool-worker
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'config/database-test-images.json'
-      - 'crates/trnm-contracts/**'
-      - 'crates/trnm-persistence-pg/**'
-      - 'crates/trnm-token-jwt-adapter/**'
-      - 'migrations/**'
-      - 'scripts/ci-outbox-spool-worker.sh'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/OPERATIONS_AND_RELEASE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/outbox-spool-worker.yml'
   push:
     branches: [main]
     paths:

@@ -2,18 +2,6 @@ name: websocket-wire-source
 
 on:
   pull_request:
-    paths:
-      - 'crates/trnm-realtime-wire/**'
-      - 'crates/trnm-persistence-pg/Cargo.toml'
-      - 'crates/trnm-persistence-pg/src/bin/trnm_server/websocket.rs'
-      - 'contracts/realtime/websocket-wire-v1.json'
-      - 'contracts/realtime/trnm-authority-envelope-v1.proto'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'scripts/check-trnm-server.py'
-      - 'Cargo.lock'
-      - '.github/workflows/websocket-wire-source.yml'
   push:
     branches: [main]
     paths:

@@ -3,17 +3,6 @@ name: trillionnium-game-oracle-differential
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'tools/oracle/differential.py'
-      - 'scripts/oracle/compare-differential.py'
-      - 'scripts/oracle/emit-synthetic-differential-corpus.py'
-      - 'scripts/oracle/check-differential-engine.sh'
-      - 'tests/oracle/test_differential.py'
-      - 'docs/evidence/schemas/oracle-observation-v1.schema.json'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/sg2-oracle-differential.yml'
   push:
     branches: [main]
     paths:

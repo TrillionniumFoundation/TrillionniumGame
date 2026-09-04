@@ -2,15 +2,6 @@ name: denominator-review-bundle
 
 on:
   pull_request:
-    paths:
-      - 'docs/development/PARITY_DENOMINATORS.json'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'docs/evidence/schemas/denominator-review-bundle-v1.schema.json'
-      - 'manifests/upstream/**'
-      - 'scripts/check-denominator-review-bundle.py'
-      - '.github/workflows/denominator-review-bundle.yml'
   push:
     branches: [main]
     paths:

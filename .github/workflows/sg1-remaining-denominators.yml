@@ -3,16 +3,6 @@ name: trillionnium-game-sg1-remaining-denominators
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'tools/denominator/**'
-      - 'scripts/generate-remaining-denominators.py'
-      - 'scripts/check-remaining-denominators.sh'
-      - 'tests/denominator/test_remaining_denominators.py'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/sg1-remaining-denominators.yml'
-
 permissions:
   contents: read
 

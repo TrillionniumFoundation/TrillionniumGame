@@ -2,15 +2,6 @@ name: jwt-provider-adapter-source
 
 on:
   pull_request:
-    paths:
-      - 'crates/trnm-token-crypto-provider/**'
-      - 'crates/trnm-token-jwt-adapter/**'
-      - 'crates/trnm-token-jwt-provider-adapter/**'
-      - 'contracts/security/jwt-crypto-provider-v1.json'
-      - 'contracts/security/jwt-provider-adapter-v1.json'
-      - 'docs/SECURITY_AND_PRIVACY.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/jwt-provider-adapter-source.yml'
   push:
     branches: [main]
     paths:

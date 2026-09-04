@@ -3,15 +3,6 @@ name: trillionnium-game-config-cli-denominator
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'tools/denominator/go_config_surface.go'
-      - 'scripts/generate-config-cli-denominator.py'
-      - 'scripts/check-config-cli-denominator.sh'
-      - 'tests/denominator/test_config_cli_denominator.py'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/sg1-config-cli-denominator.yml'
   push:
     branches: [main]
     paths:

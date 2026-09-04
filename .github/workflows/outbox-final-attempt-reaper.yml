@@ -2,23 +2,6 @@ name: outbox-final-attempt-reaper
 
 on:
   pull_request:
-    paths:
-      - 'crates/trnm-persistence-pg/src/lib.rs'
-      - 'crates/trnm-persistence-pg/src/outbox.rs'
-      - 'crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs'
-      - 'scripts/ci-outbox-final-attempt-reaper.sh'
-      - 'scripts/emit-actions-log-artifact.py'
-      - 'scripts/verify-actions-log-artifact.py'
-      - 'scripts/verify-actions-log-artifact-github.py'
-      - 'tests/control_plane/test_actions_log_artifact.py'
-      - 'tests/control_plane/test_actions_log_verifier.py'
-      - 'tests/control_plane/test_actions_log_github_adapter.py'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/OPERATIONS_AND_RELEASE.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/outbox-final-attempt-reaper.yml'
-      - '.github/workflows/trillionnium-game-merge-gate.yml'
   push:
     branches: [main]
     paths:

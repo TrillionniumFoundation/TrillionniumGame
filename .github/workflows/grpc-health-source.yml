@@ -2,24 +2,6 @@ name: grpc-health-source
 
 on:
   pull_request:
-    paths:
-      - 'crates/trnm-persistence-pg/build.rs'
-      - 'crates/trnm-persistence-pg/Cargo.toml'
-      - 'crates/trnm-persistence-pg/proto/**'
-      - 'crates/trnm-persistence-pg/src/bin/trnm_server/config.rs'
-      - 'crates/trnm-persistence-pg/src/bin/trnm_server/error.rs'
-      - 'crates/trnm-persistence-pg/src/bin/trnm_server/grpc.rs'
-      - 'crates/trnm-persistence-pg/src/bin/trnm_server/mod.rs'
-      - 'crates/trnm-persistence-pg/src/bin/trnm_server/server.rs'
-      - 'contracts/grpc/nakama-healthcheck-v1.json'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'docs/status/TRNM_SERVER_STATUS.json'
-      - 'scripts/check-rust-foundation.py'
-      - 'scripts/check-trnm-server.py'
-      - 'Cargo.lock'
-      - '.github/workflows/grpc-health-source.yml'
   push:
     branches: [main]
     paths:

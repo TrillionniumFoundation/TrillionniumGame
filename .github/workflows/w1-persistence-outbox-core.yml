@@ -3,18 +3,6 @@ name: trillionnium-game-persistence-outbox-core
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/trnm-persistence-core/**'
-      - 'contracts/persistence/**'
-      - 'scripts/check-persistence-core.py'
-      - 'tests/persistence/**'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/OPERATIONS_AND_RELEASE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'docs/status/PERSISTENCE_FOUNDATION_STATUS.json'
-      - '.github/workflows/w1-persistence-outbox-core.yml'
   push:
     branches: [main]
     paths:

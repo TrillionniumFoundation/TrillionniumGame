@@ -2,13 +2,6 @@ name: repository-governance-contract
 
 on:
   pull_request:
-    paths:
-      - 'scripts/apply-repository-governance.sh'
-      - 'docs/GOVERNANCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/CODEOWNERS'
-      - '.github/workflows/trillionnium-game-merge-gate.yml'
-      - '.github/workflows/repository-governance-contract.yml'
   push:
     branches: [main]
     paths:

@@ -3,18 +3,6 @@ name: trillionnium-game-presence-router-core
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/trnm-presence-core/**'
-      - 'contracts/realtime/presence-*.json'
-      - 'scripts/check-presence-core.py'
-      - 'tests/realtime/test_presence_vectors.py'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'docs/status/PRESENCE_ROUTER_STATUS.json'
-      - '.github/workflows/w6-presence-router-core.yml'
   push:
     branches: [main]
     paths:
