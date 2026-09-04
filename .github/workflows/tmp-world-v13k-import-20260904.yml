@@ -1,0 +1,125 @@
+name: tmp-world-v13k-import-20260904
+
+on:
+  push:
+    branches:
+      - tmp/world-v13k-import-20260904
+    paths:
+      - .github/workflows/tmp-world-v13k-import-20260904.yml
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: tmp-world-v13k-import-20260904
+  cancel-in-progress: false
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_BRANCH: fix/world-plan-v4-development-closure-20260831
+  WORLD_EXPECTED_HEAD: 50925a136aaecd594ecdfaf86f9921ccc2fb7c76
+  IMPORTER_COMMIT: 50925a136aaecd594ecdfaf86f9921ccc2fb7c76
+  QUALIFICATION_ARTIFACT_ID: "9780499701"
+  QUALIFICATION_ARTIFACT_SHA256: 456a181bdc8f8aa248229b044db9eec4f52572ea3b20bca6492907db58d64ef5
+  QUALIFIED_TREE: 5e613185f5a2abda42df371f3755e73667717309
+
+jobs:
+  publish-exact-qualified-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Enforce bounded execution identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_EVENT_NAME}" = push
+          test "${GITHUB_REF_NAME}" = tmp/world-v13k-import-20260904
+          test "${GITHUB_REPOSITORY}" = TrillionniumFoundation/TrillionniumGame
+          printf 'bounded_source_import_context=PASS\n'
+
+      - name: Download immutable qualification artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN}"
+          curl --fail --location --silent --show-error \
+            --retry 5 --retry-all-errors \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/TrillionniumFoundation/TrillionniumGame/actions/artifacts/${QUALIFICATION_ARTIFACT_ID}/zip" \
+            --output world-v13k-source-candidate.zip
+          test -s world-v13k-source-candidate.zip
+          printf '%s  %s\n' "${QUALIFICATION_ARTIFACT_SHA256}" world-v13k-source-candidate.zip | sha256sum --check --strict
+          printf 'qualification_artifact_readback=PASS\n'
+
+      - name: Fetch immutable importer and contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p repository/scripts
+          base="https://raw.githubusercontent.com/TrillionniumFoundation/Trillionnium-World/${IMPORTER_COMMIT}"
+          curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
+            "${base}/scripts/import-qualified-world-v13k.py" \
+            --output repository/scripts/import-qualified-world-v13k.py
+          curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
+            "${base}/scripts/check-trnm-world-v13k-import-contract.py" \
+            --output repository/scripts/check-trnm-world-v13k-import-contract.py
+          grep -F "WRITE_COUNT = 73" repository/scripts/import-qualified-world-v13k.py
+          grep -F "DELETION_COUNT = 2" repository/scripts/import-qualified-world-v13k.py
+          grep -F "${QUALIFIED_TREE}" repository/scripts/import-qualified-world-v13k.py
+          python3 repository/scripts/check-trnm-world-v13k-import-contract.py
+
+      - name: Reproduce exact candidate without writes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 repository/scripts/import-qualified-world-v13k.py \
+            --artifact-zip world-v13k-source-candidate.zip \
+            --result dry-run.json
+          python3 - <<'PY'
+          import json
+          value = json.load(open('dry-run.json', encoding='utf-8'))
+          assert value['published'] is False
+          assert value['file_count'] == 73
+          assert value['deletion_count'] == 2
+          assert value['qualified_tree'] == '5e613185f5a2abda42df371f3755e73667717309'
+          print('qualified_source_dry_run=PASS')
+          PY
+
+      - name: Publish exact source by non-force fast-forward
+        shell: bash
+        env:
+          TRNM_WORLD_IMPORT_TOKEN: ${{ secrets.TRNM_WORLD_IMPORT_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TRNM_WORLD_IMPORT_TOKEN:-}" ]]; then
+            echo 'TRNM_WORLD_IMPORT_TOKEN is unavailable; refusing publication' >&2
+            exit 78
+          fi
+          python3 repository/scripts/import-qualified-world-v13k.py \
+            --artifact-zip world-v13k-source-candidate.zip \
+            --repository "${WORLD_REPOSITORY}" \
+            --target-branch "${WORLD_BRANCH}" \
+            --expected-head "${WORLD_EXPECTED_HEAD}" \
+            --publish \
+            --result publish-result.json
+          python3 - <<'PY'
+          import json
+          value = json.load(open('publish-result.json', encoding='utf-8'))
+          assert value['published'] is True
+          assert value['old_head'] == '50925a136aaecd594ecdfaf86f9921ccc2fb7c76'
+          assert value['qualified_tree'] == '5e613185f5a2abda42df371f3755e73667717309'
+          assert value['file_count'] == 73
+          assert value['deletion_count'] == 2
+          print('world_exact_source_publication=PASS')
+          print('new_head=' + value['new_head'])
+          print('overlay_tree=' + value['overlay_tree'])
+          with open(__import__('os').environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
+              out.write('## World v13k exact source publication\n\n')
+              for key in ('old_head', 'new_head', 'qualified_tree', 'overlay_tree', 'file_count', 'deletion_count'):
+                  out.write(f'- `{key}`: `{value[key]}`\n')
+          PY
