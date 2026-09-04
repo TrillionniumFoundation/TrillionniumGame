@@ -261,10 +261,19 @@ def validate(
             )
 
         for excluded in identities:
+            survivors = {
+                identity: role_set
+                for identity, role_set in reviewer_roles.items()
+                if identity != excluded
+            }
+            require(
+                len(survivors) >= minimum_reviewers,
+                f"{domain_id}: losing conflicted reviewer {excluded} leaves fewer than "
+                f"{minimum_reviewers} eligible reviewers",
+            )
             surviving_roles: set[str] = set()
-            for identity, role_set in reviewer_roles.items():
-                if identity != excluded:
-                    surviving_roles.update(role_set)
+            for role_set in survivors.values():
+                surviving_roles.update(role_set)
             require(
                 surviving_roles == set(roles),
                 f"{domain_id}: losing conflicted reviewer {excluded} removes required role coverage",
@@ -274,12 +283,12 @@ def validate(
     codeowners = parse_codeowners(codeowners_path)
     missing_patterns = sorted(REQUIRED_CODEOWNER_PATTERNS - set(codeowners))
     require(not missing_patterns, f"CODEOWNERS missing critical patterns {missing_patterns}")
-    required_named_owners = {"@ProfHepta", "@Franksudoman"}
+    required_named_owners = {"@ProfHepta", "@Franksudoman", "@Tomasrgbsf"}
     for pattern in REQUIRED_CODEOWNER_PATTERNS:
         owners = set(codeowners[pattern])
         require(
             required_named_owners <= owners,
-            f"CODEOWNERS pattern {pattern} lacks redundant independent routes",
+            f"CODEOWNERS pattern {pattern} lacks conflict-surviving review routes",
         )
 
     summary = matrix.get("summary")
@@ -308,6 +317,7 @@ def validate(
         "named_reviewers": sorted(global_identities),
         "all_required_reviews_available": True,
         "codeowners_redundant": True,
+        "conflict_survivable": True,
         "branch_policy_enforced": False,
         "status": "passed",
         "claim_boundary": {
