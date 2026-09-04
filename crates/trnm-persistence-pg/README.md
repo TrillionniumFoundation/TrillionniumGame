@@ -54,6 +54,20 @@ The root workspace and the stable aggregate merge gate must execute these target
 
 Focused vectors and live/fault/differential suites are required when this module's behavior crosses protocol, database, security, realtime, or operational boundaries.
 
+## Deadline lane trigger coverage
+
+The mandatory `pg-operation-deadline` pull-request trigger has no path or branch filters. An unfiltered PR trigger covers pool parts, service adapters and the regression suites without listing them twice. The separate `push` trigger remains restricted to `main` and retains explicit source paths. Counting occurrences of a path across the whole YAML document does not establish either event's coverage.
+
+`validate_required_pr_and_main_paths` in `scripts/workflow_trigger_contract.py` validates these distinct contracts. Both the deadline source checker and the cancellation lifecycle suite use it. It accepts the bounded canonical trigger mapping, requires the normal opened/synchronize/reopened PR activities, rejects PR selectors, and checks required positive patterns inside the actual main-push mapping. Duplicate events/selectors/patterns, negative exclusions, aliases, unsupported complex forms and missing main paths fail closed. Text in another event, a comment or a job cannot substitute for a trigger. General YAML syntax and exact workflow-blob checks remain independent requirements.
+
+```bash
+python3 scripts/check-pg-operation-deadline.py --self-test
+python3 -m unittest tests.control_plane.test_pg_deadline_trigger_coverage -v
+python3 -m unittest tests.control_plane.test_pg_cancellation_lifecycle -v
+```
+
+These are source and regression checks, not live cancellation evidence. The existing Rust deadline/shutdown tests must still run against PostgreSQL, prove backend retirement and subsequent pool usability, and retain non-empty exact-candidate results. This trigger-contract repair changes no runtime code, workflow job, permission, timeout, DDL, receipt identity or acceptance gate.
+
 ## Operations
 
 Pools, acquisition, statements, locks, transactions, retries, readiness, drain, outbox, and profile identity require bounded metrics and failure reasons.

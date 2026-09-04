@@ -4,10 +4,20 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
+import importlib.util
 import re
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+_TRIGGER_SPEC = importlib.util.spec_from_file_location(
+    "trnm_pg_lifecycle_trigger_contract", ROOT / "scripts/workflow_trigger_contract.py"
+)
+if _TRIGGER_SPEC is None or _TRIGGER_SPEC.loader is None:
+    raise RuntimeError("cannot load the lifecycle workflow trigger contract")
+TRIGGER = importlib.util.module_from_spec(_TRIGGER_SPEC)
+sys.modules[_TRIGGER_SPEC.name] = TRIGGER
+_TRIGGER_SPEC.loader.exec_module(TRIGGER)
 PARTS = Path("crates/trnm-persistence-pg/src/pool_parts")
 WORKFLOW = Path(".github/workflows/pg-operation-deadline.yml")
 
@@ -94,14 +104,14 @@ def validate(base: str, cancellation: str, pool: str, workflow: str) -> list[str
     need("repository.client.retirement_flag()" in run, "dispatch must share physical lease flag")
     need("ifcancellation_reason!=CANCEL_NONE||elapsed>=total_budget{repository.client.retire();}" in run,
          "late success and cancelled results must evict the lease")
-    for event in ("pull_request", "push"):
-        match = re.search(r"^  " + event + r":\n(.*?)(?=^  \w+:|^permissions:)",
-                          workflow, re.M | re.S)
-        block = match.group(1) if match else ""
-        for path in ("crates/trnm-persistence-pg/src/pool_parts/**",
-                     "crates/trnm-persistence-pg/src/bin/trnm_server/app.rs",
-                     "tests/control_plane/test_pg_cancellation_lifecycle.py"):
-            need("      - '" + path + "'" in block, event + " must cover " + path)
+    try:
+        TRIGGER.validate_required_pr_and_main_paths(workflow, (
+            "crates/trnm-persistence-pg/src/pool_parts/**",
+            "crates/trnm-persistence-pg/src/bin/trnm_server/app.rs",
+            "tests/control_plane/test_pg_cancellation_lifecycle.py",
+        ))
+    except TRIGGER.TriggerContractError as error:
+        failures.append(str(error))
     need("-p 'test_pg_cancellation_lifecycle.py' -v" in workflow,
          "workflow must execute the lifecycle regression suite")
     return failures
@@ -189,6 +199,7 @@ class LifecycleContractTests(unittest.TestCase):
         self.assertEqual(validate(*self.sources), [])
 
     def reject(self, index: int, before: str, after: str) -> None:
+        self.assertEqual(validate(*self.sources), [], "hostile fixture requires a valid baseline")
         sources = self.sources.copy()
         self.assertIn(before, sources[index], "mutation must modify its intended source")
         sources[index] = sources[index].replace(before, after, 1)
@@ -216,8 +227,9 @@ class LifecycleContractTests(unittest.TestCase):
     def test_reject_missing_late_result_eviction(self) -> None:
         self.reject(2, "repository.client.retire();", "// no retirement")
 
-    def test_reject_missing_pull_request_path(self) -> None:
-        self.reject(3, "      - 'crates/trnm-persistence-pg/src/pool_parts/**'\n", "")
+    def test_reject_filtered_pull_request(self) -> None:
+        self.reject(3, "  pull_request:\n",
+                    "  pull_request:\n    paths: ['docs/**']\n")
 
     def test_reject_missing_push_path(self) -> None:
         sources = self.sources.copy()

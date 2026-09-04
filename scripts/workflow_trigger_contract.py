@@ -132,3 +132,83 @@ def remove_required_pr_selectors(text: str) -> tuple[str, tuple[str, ...]]:
     result = "".join(line for i, line in enumerate(lines) if i not in deleted)
     validate_required_pr_trigger(result)
     return result, tuple(selectors)
+
+
+def validate_required_pr_and_main_paths(
+    text: str, required_paths: tuple[str, ...]
+) -> None:
+    """Require unfiltered PR execution and the separate canonical main-push paths.
+
+    PRs intentionally have no path selectors: that covers *all* changed paths,
+    including callers and helpers. Main pushes retain their explicit path list.
+    Inspect only the real on.push mapping, never matching strings in comments,
+    another event or a run block. This narrow source check does not parse general
+    YAML, evaluate arbitrary glob expressions or prove any workflow executed.
+    """
+    if not isinstance(required_paths, tuple) or not required_paths or any(
+        not isinstance(path, str)
+        or re.fullmatch(r"[A-Za-z0-9_./*?-]+", path) is None
+        or path.startswith("/") or ".." in path.split("/")
+        for path in required_paths
+    ) or len(set(required_paths)) != len(required_paths):
+        raise TriggerContractError("required main paths must be unique canonical patterns")
+    validate_required_pr_trigger(text)
+    if _block(text) is None:
+        raise TriggerContractError("main-push path policy requires an on mapping")
+    lines = text.splitlines(keepends=True)
+    root = next(i for i, line in enumerate(lines) if re.match(r"^on:", line))
+    end = next((i for i in range(root + 1, len(lines))
+                if _meaningful(lines[i]) and not lines[i][0].isspace()), len(lines))
+    events: list[tuple[str, int]] = []
+    for i in range(root + 1, end):
+        line = lines[i]
+        if not _meaningful(line):
+            continue
+        indent = line[:len(line) - len(line.lstrip())]
+        if "\t" in indent:
+            raise TriggerContractError("tab indentation is unsupported")
+        if len(indent) == 2:
+            match = re.match(r"^  ([a-z][a-z_]*):", line)
+            if match is None:
+                raise TriggerContractError("canonical event mapping required")
+            events.append((match.group(1), i))
+        elif len(indent) < 2 or not events:
+            raise TriggerContractError("unexpected event indentation")
+    if len({name for name, _ in events}) != len(events):
+        raise TriggerContractError("duplicate workflow event")
+    pushes = [i for name, i in events if name == "push"]
+    if len(pushes) != 1:
+        raise TriggerContractError("exactly one main push mapping is required")
+    push = pushes[0]
+    if re.fullmatch(r"  push:[ \t]*(?:#.*)?(?:\r?\n)?", lines[push]) is None:
+        raise TriggerContractError("canonical push mapping required")
+    stop = next((i for _, i in events if i > push), end)
+    entries = {name: (pos, last) for name, pos, last in _entries(lines, push + 1, stop)}
+    if set(entries) != {"branches", "paths"}:
+        raise TriggerContractError("main push must declare only branches and paths")
+    branch, branch_end = entries["branches"]
+    if re.fullmatch(
+        r"    branches:[ \t]*\[[ \t]*(?:main|'main'|\"main\")[ \t]*\][ \t]*(?:#.*)?(?:\r?\n)?",
+        lines[branch],
+    ) is None or any(_meaningful(line) for line in lines[branch + 1:branch_end]):
+        raise TriggerContractError("push branches must be exactly [main]")
+    paths, paths_end = entries["paths"]
+    if re.fullmatch(r"    paths:[ \t]*(?:#.*)?(?:\r?\n)?", lines[paths]) is None:
+        raise TriggerContractError("canonical main-push paths list required")
+    observed: set[str] = set()
+    for line in lines[paths + 1:paths_end]:
+        if not _meaningful(line):
+            continue
+        match = re.fullmatch(
+            r"      -[ \t]+(?P<quote>['\"])(?P<path>[A-Za-z0-9_./*?-]+)(?P=quote)[ \t]*(?:#.*)?(?:\r?\n)?",
+            line,
+        )
+        if match is None:
+            raise TriggerContractError("main-push paths must be canonical quoted positive patterns")
+        path = match.group("path")
+        if path.startswith("/") or ".." in path.split("/") or path in observed:
+            raise TriggerContractError("duplicate or noncanonical main-push path")
+        observed.add(path)
+    missing = set(required_paths) - observed
+    if missing:
+        raise TriggerContractError("main push is missing required paths: " + ", ".join(sorted(missing)))
