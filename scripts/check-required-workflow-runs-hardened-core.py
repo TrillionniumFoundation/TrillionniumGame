@@ -18,6 +18,14 @@ _core = importlib.util.module_from_spec(_spec)
 sys.modules[CORE_MODULE_NAME] = _core
 _spec.loader.exec_module(_core)
 
+CATALOG_PATH = Path(__file__).with_name("workflow_catalog_identity.py")
+_catalog_spec = importlib.util.spec_from_file_location("trnm_workflow_catalog_identity", CATALOG_PATH)
+if _catalog_spec is None or _catalog_spec.loader is None:
+    raise RuntimeError(f"cannot load workflow catalog identity contract: {CATALOG_PATH}")
+_catalog = importlib.util.module_from_spec(_catalog_spec)
+sys.modules[_catalog_spec.name] = _catalog
+_catalog_spec.loader.exec_module(_catalog)
+
 API = _core.API
 SCHEMA = _core.SCHEMA
 DEFAULT_MANIFEST = _core.DEFAULT_MANIFEST
@@ -139,14 +147,20 @@ def job_failures(
 
 
 def workflow_metadata_failures(
-    requirement: Requirement, value: dict[str, Any]
+    requirement: Requirement, value: dict[str, Any],
+    *, source_root: Path | None = None, run: Run | None = None,
+    expected_head: str | None = None,
 ) -> list[str]:
     failures: list[str] = []
     if int(value.get("id", 0)) != requirement.workflow_id:
         failures.append(
             f"workflow metadata ID mismatch for {requirement.path}"
         )
-    if str(value.get("name", "")) != requirement.name:
+    if (str(value.get("name", "")) != requirement.name
+            and not _catalog.verified_catalog_path_alias(
+                requirement, value, source_root=source_root,
+                run=run, expected_head=expected_head,
+            )):
         failures.append(
             f"workflow metadata name mismatch for id={requirement.workflow_id}: "
             f"observed={value.get('name')!r} expected={requirement.name!r}"
@@ -309,7 +323,8 @@ def main(argv: list[str] | None = None) -> int:
                         options.repository, requirement.workflow_id
                     )
                     errors = workflow_metadata_failures(
-                        requirement, metadata
+                        requirement, metadata, source_root=Path.cwd(),
+                        run=run, expected_head=options.head_sha,
                     )
                     jobs = api.jobs_attempt(
                         options.repository, run.id, run.attempt
@@ -332,6 +347,10 @@ def main(argv: list[str] | None = None) -> int:
                             "run_id": run.id,
                             "run_attempt": run.attempt,
                             "jobs": len(jobs),
+                            "catalog_name_observed": metadata.get("name"),
+                            "run_name": run.name,
+                            "definition_blob_sha1": requirement.git_blob_sha1,
+                            "catalog_path_alias_verified": metadata.get("name") == requirement.path,
                         }
                     )
             except (KeyError, TypeError, ValueError, RuntimeError) as error:
