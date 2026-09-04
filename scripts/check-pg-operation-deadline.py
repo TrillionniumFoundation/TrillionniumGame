@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+_TRIGGER_SPEC = importlib.util.spec_from_file_location(
+    "trnm_pg_deadline_trigger_contract", Path(__file__).with_name("workflow_trigger_contract.py")
+)
+if _TRIGGER_SPEC is None or _TRIGGER_SPEC.loader is None:
+    raise RuntimeError("cannot load the deadline workflow trigger contract")
+TRIGGER = importlib.util.module_from_spec(_TRIGGER_SPEC)
+sys.modules[_TRIGGER_SPEC.name] = TRIGGER
+_TRIGGER_SPEC.loader.exec_module(TRIGGER)
 POOL_ROOT = Path("crates/trnm-persistence-pg/src/pool.rs")
 POOL_PARTS = tuple(
     Path("crates/trnm-persistence-pg/src/pool_parts") / name
@@ -149,8 +159,14 @@ def validate(source: SourceSet) -> list[str]:
         require(source.workflow,
                 "grep -Eq '^test result: ok[.] 1 passed; 0 failed; 0 ignored;' " + log,
                 failures, "nonempty live test receipt")
-    if source.workflow.count("      - 'crates/trnm-persistence-pg/src/pool_parts/**'") != 2:
-        failures.append("workflow must cover pool parts on PR and main push")
+    try:
+        TRIGGER.validate_required_pr_and_main_paths(source.workflow, (
+            "crates/trnm-persistence-pg/src/pool_parts/**",
+            "crates/trnm-persistence-pg/src/bin/trnm_server/app.rs",
+            "tests/control_plane/test_pg_cancellation_lifecycle.py",
+        ))
+    except TRIGGER.TriggerContractError as error:
+        failures.append(f"{WORKFLOW}: {error}")
     return failures
 
 
@@ -176,6 +192,8 @@ def self_test(source: SourceSet) -> None:
         ("backend-reuse-not-checked", "pool", "assert_ne!(backend_pid(&pool), initial_backend);", "", 1),
         ("zero-tests-accepted", "workflow", "grep -Eq '^test result: ok[.] 1 passed; 0 failed; 0 ignored;' deadline-test.log", "test -f deadline-test.log", 1),
         ("pool-parts-trigger-missing", "workflow", "      - 'crates/trnm-persistence-pg/src/pool_parts/**'\n", "", 1),
+        ("filtered-pull-request", "workflow", "  pull_request:\n", "  pull_request:\n    paths: ['docs/**']\n", 1),
+        ("wrong-push-branch", "workflow", "    branches: [main]", "    branches: [other]", 1),
     )
     for name, field, before, after, count in mutations:
         original = getattr(source, field)
