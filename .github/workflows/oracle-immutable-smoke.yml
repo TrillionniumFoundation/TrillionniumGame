@@ -3,16 +3,6 @@ name: trillionnium-game-immutable-oracle
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'oracle/immutable/**'
-      - 'config/oracle-normalizers.json'
-      - 'tools/oracle/**'
-      - 'scripts/oracle/**'
-      - 'tests/oracle/**'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/oracle-immutable-smoke.yml'
   push:
     branches: [main]
     paths:

@@ -3,18 +3,6 @@ name: trillionnium-game-sg2-instrumented-build-contract
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'config/oracle-instrumentation-policy.json'
-      - 'contracts/oracle/instrumented-build-manifest.v1.schema.json'
-      - 'tools/oracle/build_provenance.py'
-      - 'scripts/oracle/verify-instrumented-build.py'
-      - 'scripts/oracle/check-instrumented-build-contract.sh'
-      - 'tests/oracle/test_instrumented_build_provenance.py'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/sg2-instrumented-build-contract.yml'
-
 permissions:
   contents: read
 

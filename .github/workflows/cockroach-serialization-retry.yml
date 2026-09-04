@@ -2,16 +2,6 @@ name: cockroach-serialization-retry
 
 on:
   pull_request:
-    paths:
-      - 'crates/trnm-persistence-pg/src/lib.rs'
-      - 'crates/trnm-persistence-pg/src/bin/trnm_server/app.rs'
-      - 'crates/trnm-persistence-pg/src/bin/trnm_server/retry.rs'
-      - 'crates/trnm-persistence-pg/src/bin/trnm_server/retry_live_tests.rs'
-      - 'crates/trnm-persistence-pg/src/bin/trnm_server/mod.rs'
-      - 'crates/trnm-persistence-pg/Cargo.toml'
-      - 'Cargo.lock'
-      - 'config/database-test-images.json'
-      - '.github/workflows/cockroach-serialization-retry.yml'
   push:
     branches: [main]
     paths:

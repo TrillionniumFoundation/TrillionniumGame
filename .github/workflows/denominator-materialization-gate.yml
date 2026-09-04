@@ -3,17 +3,6 @@ name: denominator-materialization-gate
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'scripts/check-denominator-materialization.py'
-      - 'tests/control_plane/test_denominator_materialization.py'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'manifests/upstream/candidates/**'
-      - 'manifests/upstream/review-requests/**'
-      - 'manifests/upstream/denominator-review-worklist.json'
-      - 'manifests/upstream/denominator-review-packet.draft.json'
-      - '.github/workflows/denominator-materialization-gate.yml'
   push:
     branches: [main]
     paths:

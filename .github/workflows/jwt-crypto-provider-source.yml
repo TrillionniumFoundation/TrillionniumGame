@@ -2,12 +2,6 @@ name: jwt-crypto-provider-source
 
 on:
   pull_request:
-    paths:
-      - 'crates/trnm-token-crypto-provider/**'
-      - 'contracts/security/jwt-crypto-provider-v1.json'
-      - 'docs/SECURITY_AND_PRIVACY.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/jwt-crypto-provider-source.yml'
   push:
     branches: [main]
     paths:

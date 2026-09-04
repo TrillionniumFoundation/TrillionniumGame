@@ -2,15 +2,6 @@ name: pg-tls-rotation
 
 on:
   pull_request:
-    paths:
-      - 'crates/trnm-persistence-pg/src/bin/trnm-pg-tls-rotation-probe.rs'
-      - 'crates/trnm-persistence-pg/src/pool.rs'
-      - 'crates/trnm-persistence-pg/src/pool_parts/**'
-      - 'crates/trnm-persistence-pg/Cargo.toml'
-      - 'scripts/wait-postgresql-tls-ready.py'
-      - 'tests/control_plane/test_pg_tls_endpoint_readiness.py'
-      - 'Cargo.lock'
-      - '.github/workflows/pg-tls-rotation.yml'
   push:
     branches: [main]
     paths:

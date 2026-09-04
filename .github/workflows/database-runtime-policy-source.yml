@@ -2,14 +2,6 @@ name: database-runtime-policy-source
 
 on:
   pull_request:
-    paths:
-      - 'crates/trnm-contracts/**'
-      - 'crates/trnm-persistence-runtime-policy/**'
-      - 'contracts/database/runtime-policy-v1.json'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/OPERATIONS_AND_RELEASE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/database-runtime-policy-source.yml'
   push:
     branches: [main]
     paths:

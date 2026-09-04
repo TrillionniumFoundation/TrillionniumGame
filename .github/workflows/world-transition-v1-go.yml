@@ -3,15 +3,6 @@ name: world-transition-v1-go
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'runtime/internal/worldtransition/**'
-      - 'contracts/world-transition-v1-go-adapter-status.json'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/OPERATIONS_AND_RELEASE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'scripts/check-world-transition-v1-go.sh'
-      - 'scripts/test-world-transition-v1-go-negative.sh'
-      - '.github/workflows/world-transition-v1-go.yml'
   push:
     branches:
       - feature/nakama-authority-world-transition-v1

@@ -3,18 +3,6 @@ name: trillionnium-game-sg1-denominator-review-lock
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'tools/denominator/review_lock.py'
-      - 'scripts/review-denominator-bundle.py'
-      - 'scripts/check-denominator-review-lock.sh'
-      - 'config/denominator-review-policy.json'
-      - 'contracts/denominator/review-bundle.v1.schema.json'
-      - 'tests/denominator/test_review_lock.py'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/sg1-denominator-review-lock.yml'
-
 permissions:
   contents: read
 

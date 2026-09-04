@@ -3,19 +3,6 @@ name: trillionnium-game-sg3-runtime-engine-conformance
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'config/runtime-engine-conformance-policy.json'
-      - 'contracts/runtime/**'
-      - 'corpus/runtime/runtime-engine-corpus.v1.json'
-      - 'tools/runtime/conformance.py'
-      - 'scripts/runtime/**'
-      - 'tests/runtime/test_conformance.py'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/sg3-runtime-engine-conformance.yml'
-
 permissions:
   contents: read
 

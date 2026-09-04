@@ -3,14 +3,6 @@ name: trillionnium-game-api-rtapi-denominator
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'scripts/generate-api-rtapi-denominator.py'
-      - 'scripts/check-api-rtapi-denominator.sh'
-      - 'tests/test_api_rtapi_denominator.py'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'manifests/upstream/README.md'
-      - '.github/workflows/denominator-api-rtapi.yml'
   push:
     branches: [main]
     paths:

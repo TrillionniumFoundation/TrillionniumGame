@@ -2,14 +2,6 @@ name: rust-server-process-smoke
 
 on:
   pull_request:
-    paths:
-      - 'crates/trnm-server/**'
-      - 'scripts/check-rust-server-process.sh'
-      - 'contracts/server/vertical-slice-v1.json'
-      - 'docs/DEVELOPMENT.md'
-      - 'docs/ARCHITECTURE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/rust-server-process-smoke.yml'
   push:
     branches: [main]
     paths:

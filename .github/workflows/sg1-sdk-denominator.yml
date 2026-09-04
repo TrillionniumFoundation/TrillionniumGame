@@ -3,21 +3,6 @@ name: trillionnium-game-sg1-sdk-denominator
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'config/sdk-source-snapshots.json'
-      - 'tools/sdk/**'
-      - 'tools/upstream/**'
-      - 'scripts/fetch-pinned-upstream.py'
-      - 'scripts/repair-pinned-github-archive.py'
-      - 'scripts/generate-sdk-denominator.py'
-      - 'scripts/check-sdk-denominator.sh'
-      - 'tests/sdk/**'
-      - 'tests/upstream/**'
-      - 'docs/COMPATIBILITY.md'
-      - 'docs/TESTING_AND_EVIDENCE.md'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - '.github/workflows/sg1-sdk-denominator.yml'
-
 permissions:
   contents: read
 

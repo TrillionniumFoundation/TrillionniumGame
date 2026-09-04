@@ -2,17 +2,6 @@ name: branch-inventory
 
 on:
   pull_request:
-    paths:
-      - 'docs/governance/ACTIVE_BRANCHES.json'
-      - 'docs/DOCUMENTATION_AUTHORITY.json'
-      - 'docs/GOVERNANCE.md'
-      - 'scripts/generate-branch-inventory.py'
-      - 'scripts/verify-branch-inventory-log.py'
-      - 'scripts/verify-branch-inventory-stable.py'
-      - 'scripts/emit-actions-log-artifact.py'
-      - 'tests/control_plane/test_branch_inventory.py'
-      - 'tests/control_plane/test_branch_inventory_stable.py'
-      - '.github/workflows/branch-inventory.yml'
   push:
     branches: [main]
     paths:

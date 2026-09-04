@@ -1,7 +1,7 @@
 # Governance
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-01
+Revision: 2026-09-05
 
 ## 1. Integration authority
 
@@ -20,6 +20,14 @@ trillionnium-game-merge-gate
 It runs for every pull request and rejects missing, empty, zero-job, skipped, cancelled, neutral, timed-out, startup-failure, failed or older-head lanes. Expensive workflows may be path-aware, but the aggregate observes the complete required current-head collection and cannot report green while a mandatory family is absent or red.
 
 Minimum source coverage includes documentation/control plane, workflow policy, root and isolated Rust workspaces, complete Python discovery, Go test/race/vet, schema authority and server contracts.
+
+### Required workflow trigger contract
+
+The closed required-workflow set applies to every candidate head, not only to changed paths. A mandatory `pull_request` workflow must not have `paths`, `paths-ignore`, `branches`, or `branches-ignore` selectors. Explicit activity types must include `opened`, `synchronize`, and `reopened`. Main-push selectors and all job bodies, permissions, test assertions and evidence requirements remain separate and unchanged. This intentionally trades additional CI execution for complete exact-head qualification; optimization requires an independently reviewed scope-aware evidence contract, never silently treating absent execution as success.
+
+`python3 -m unittest tests.control_plane.test_required_workflow_source_contract -v` checks the real composed manifest against current workflow bytes, verifies every required PR trigger, and requires both source/unit and live jobs for the PostgreSQL TLS and CockroachDB retry lanes. The bounded trigger helper rejects ambiguous forms rather than acting as a general YAML parser; the existing workflow syntax policy remains mandatory. The immutable base manifest is not rewritten. Definition changes are bound through the existing digest-verified overlay, without changing workflow identity, removing required workflows, or granting old-head evidence credit.
+
+GitHub's repository workflow catalog may temporarily expose the full registered path as its display name. The catalog identity helper permits only that exact form, and only when active ID/path, a successful current-head PR run, its canonical name, and the current regular source definition's Git blob all agree. Other renamed, disabled, missing, stale or substituted workflows reject. Receipts preserve the original observed catalog name. This does not relax job/assertion verification, rerun freshness, independent review or production gates.
 
 ## 3. Pull request state
 
