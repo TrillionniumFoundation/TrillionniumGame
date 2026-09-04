@@ -148,7 +148,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          trap 'docker rm -f trnm-pg-old trnm-pg-new >/dev/null 2>&1 || true' EXIT
           for specification in old:55432 new:55433; do
             profile=${specification%%:*}
             port=${specification##*:}
@@ -195,7 +194,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f run/pg-tls/endpoints-ready
-          cargo run -p trnm-persistence-pg --locked \
+          cargo run --quiet -p trnm-persistence-pg --locked \
             --bin trnm-pg-tls-rotation-probe \
             2>run/pg-tls/probe.stderr | tee run/pg-tls/probe.env
           test ! -s run/pg-tls/probe.stderr
