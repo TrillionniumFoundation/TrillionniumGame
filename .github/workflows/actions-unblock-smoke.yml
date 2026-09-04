@@ -17,7 +17,7 @@ jobs:
       - name: Fetch fixed public source and exact trusted tooling without credentials
         shell: bash
         env:
-          SOURCE_SHA: 395d80cfb5582f1e8dbf07184412a56bfa4fb680
+          SOURCE_SHA: fe86b6018414cbe50f01b5e83af72fbae02cd892
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = TrillionniumFoundation/TrillionniumGame
@@ -35,7 +35,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -I "$RUNNER_TEMP/tooling/tools/workflow-materializer/driver.py" generate \
+          python3 -I "$RUNNER_TEMP/tooling/tools/workflow-materializer/backport.py" generate \
             --source "$RUNNER_TEMP/source" --proposal "$RUNNER_TEMP/proposal.json"
       - name: Store content-addressed Git blobs only; no branch or review mutations
         shell: bash
@@ -43,5 +43,5 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python3 -I "$RUNNER_TEMP/tooling/tools/workflow-materializer/driver.py" publish \
+          python3 -I "$RUNNER_TEMP/tooling/tools/workflow-materializer/backport.py" publish \
             --proposal "$RUNNER_TEMP/proposal.json"
