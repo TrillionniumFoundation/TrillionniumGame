@@ -1,34 +1,47 @@
 name: trillionnium-game-actions-unblock-smoke
 
 on:
-  pull_request:
   push:
-    branches: [main]
-    paths:
-      - '.github/workflows/actions-unblock-smoke.yml'
-  workflow_dispatch:
+    branches: [tooling/required-workflow-materialization-2026-09-05]
 
 permissions:
   contents: read
 
-concurrency:
-  group: actions-unblock-smoke-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  repository-native-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+  bounded-source-materialization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - name: Record exact execution identity without checkout or external actions
+      - name: Fetch fixed public source and exact trusted tooling without credentials
+        shell: bash
+        env:
+          SOURCE_SHA: 395d80cfb5582f1e8dbf07184412a56bfa4fb680
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = TrillionniumFoundation/TrillionniumGame
+          test "$GITHUB_REPOSITORY_ID" = 1323087470
+          for specification in tooling:$GITHUB_SHA source:$SOURCE_SHA; do
+            directory=${specification%%:*}
+            revision=${specification##*:}
+            git init "$RUNNER_TEMP/$directory"
+            git -C "$RUNNER_TEMP/$directory" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+            git -C "$RUNNER_TEMP/$directory" fetch --no-tags --depth=1 origin "$revision"
+            git -C "$RUNNER_TEMP/$directory" checkout --detach FETCH_HEAD
+            test "$(git -C "$RUNNER_TEMP/$directory" rev-parse HEAD)" = "$revision"
+          done
+      - name: Generate bounded ordinary-source proposal and run trusted pure regressions
         shell: bash
         run: |
           set -euo pipefail
-          printf 'repository=%s\n' "$GITHUB_REPOSITORY"
-          printf 'sha=%s\n' "$GITHUB_SHA"
-          printf 'ref=%s\n' "$GITHUB_REF"
-          printf 'event=%s\n' "$GITHUB_EVENT_NAME"
-          printf 'run_id=%s\n' "$GITHUB_RUN_ID"
-          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
-          test -n "$GITHUB_SHA"
-          test -n "$GITHUB_RUN_ID"
+          python3 -I "$RUNNER_TEMP/tooling/tools/workflow-materializer/driver.py" generate \
+            --source "$RUNNER_TEMP/source" --proposal "$RUNNER_TEMP/proposal.json"
+      - name: Store content-addressed Git blobs only; no branch or review mutations
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -I "$RUNNER_TEMP/tooling/tools/workflow-materializer/driver.py" publish \
+            --proposal "$RUNNER_TEMP/proposal.json"
