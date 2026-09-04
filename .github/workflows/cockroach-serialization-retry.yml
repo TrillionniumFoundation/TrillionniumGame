@@ -100,7 +100,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --detach --rm \
+          docker rm -f trnm-crdb-retry >/dev/null 2>&1 || true
+          docker run --detach \
             --name trnm-crdb-retry \
             --publish 26257:26257 \
             --publish 8080:8080 \
@@ -109,9 +110,13 @@ jobs:
             --insecure \
             --listen-addr=0.0.0.0:26257 \
             --http-addr=0.0.0.0:8080 \
-            --store=type=mem,size=25%
+            --store=/cockroach/cockroach-data
           ready=false
           for _ in $(seq 1 90); do
+            if [[ "$(docker inspect -f '{{.State.Running}}' trnm-crdb-retry 2>/dev/null || true)" != true ]]; then
+              docker logs trnm-crdb-retry >&2 || true
+              exit 1
+            fi
             if docker exec trnm-crdb-retry cockroach sql \
               --insecure --host=127.0.0.1:26257 \
               --execute='SELECT 1' >/dev/null 2>&1; then
