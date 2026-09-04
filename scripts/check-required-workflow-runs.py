@@ -31,7 +31,7 @@ Run = _hardened.Run
 GitHubApi = _hardened.GitHubApi
 valid_repo = _hardened.valid_repo
 valid_path = _hardened.valid_path
-blob_sha = _hardened.blob_sha
+_core_blob_sha = _hardened.blob_sha
 verify_files = _hardened.verify_files
 latest_runs = _hardened.latest_runs
 select_runs = _hardened.select_runs
@@ -44,6 +44,18 @@ run_identity = _hardened.run_identity
 
 OVERLAY_SCHEMA = "trnm_required_workflow_overlay_v1"
 OVERLAY_FILENAME = "REQUIRED_WORKFLOWS_OVERLAY_V1.json"
+
+
+def blob_sha(value: bytes | bytearray | Path) -> str:
+    """Accept the core byte contract and bounded local Path inputs."""
+
+    if isinstance(value, Path):
+        value = value.read_bytes()
+    if isinstance(value, bytearray):
+        value = bytes(value)
+    if not isinstance(value, bytes):
+        raise TypeError("blob_sha requires bytes, bytearray, or Path")
+    return _core_blob_sha(value)
 
 
 def canonical_overlay_digest(value: dict[str, Any]) -> str:
