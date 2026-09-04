@@ -133,11 +133,7 @@ fn probe(assertion: &str, database_url: &str, tls: &PgTlsConfig) -> Result<(), S
     Ok(())
 }
 
-fn require_rejection(
-    assertion: &str,
-    database_url: &str,
-    tls: &PgTlsConfig,
-) -> Result<(), String> {
+fn require_rejection(assertion: &str, database_url: &str, tls: &PgTlsConfig) -> Result<(), String> {
     match probe(assertion, database_url, tls) {
         Ok(()) => Err(format!("{assertion}:unexpected_tls_acceptance")),
         Err(_) => Ok(()),
@@ -207,8 +203,8 @@ fn validate_database_url(value: &str) -> Result<(), String> {
 
 fn read_bounded_pem(path: &Path) -> Result<Vec<u8>, String> {
     let metadata = fs::metadata(path).map_err(|_| "tls_rotation_pem_unreadable".to_owned())?;
-    let size = usize::try_from(metadata.len())
-        .map_err(|_| "tls_rotation_pem_too_large".to_owned())?;
+    let size =
+        usize::try_from(metadata.len()).map_err(|_| "tls_rotation_pem_too_large".to_owned())?;
     if size == 0 || size > MAX_PEM_BYTES {
         return Err("tls_rotation_pem_size_invalid".to_owned());
     }
