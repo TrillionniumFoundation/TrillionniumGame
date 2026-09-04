@@ -26,7 +26,10 @@ env:
 
 jobs:
   publish-exact-qualified-source:
-    runs-on: ubuntu-24.04
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
     timeout-minutes: 30
     steps:
       - name: Enforce bounded execution identity
@@ -36,6 +39,7 @@ jobs:
           test "${GITHUB_EVENT_NAME}" = push
           test "${GITHUB_REF_NAME}" = tmp/world-v13k-import-20260904
           test "${GITHUB_REPOSITORY}" = TrillionniumFoundation/TrillionniumGame
+          test "${RUNNER_NAME}" = desktop
           printf 'bounded_source_import_context=PASS\n'
 
       - name: Download immutable qualification artifact
