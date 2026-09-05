@@ -10,9 +10,9 @@ permissions:
 jobs:
   test-and-store-objects:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
-      - name: Fetch exact tooling and fixed source without external actions
+      - name: Bind fixed tooling and product source
         shell: bash
         run: |
           set -euo pipefail
@@ -24,16 +24,18 @@ jobs:
           git -C "$tooling" checkout --detach FETCH_HEAD
           test "$(git -C "$tooling" rev-parse HEAD)" = "$GITHUB_SHA"
           cd "$tooling"
-          cat payload.part0 payload.part1 payload.part2 payload.part3 > payload.json.gz
-          printf '%s\n' '78b049dd3932cfecb0f9f9ae4a4334500d6fa7126d4a4bdba8cb14ff3759b25c  materialize.py.gz' 'ed5d6648c2a0a13562b75a9fad336e62b9cb24b8c32158d1ff1b1b7d5b40dce5  payload.json.gz' | sha256sum -c -
+          printf '%s\n' 'e4e50f686736d4a303bc91e79578087fbd471474007727e7c5f66eaeeb6c97bb  materialize.py.gz' 'f3ac068bd145e0ab009aec263a6a2aa4caa34f204b134fc353ce554b0f2ea29b  payload.json.gz' | sha256sum -c -
           gzip -dc materialize.py.gz > "$RUNNER_TEMP/materialize.py"
           git init "$source"
           git -C "$source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$source" fetch --no-tags --depth=1 origin 421b33ca10e92ba393d93d8b27b70cc5f84f6f4e
+          git -C "$source" fetch --no-tags --depth=1 origin b2fc8ea5ffeda4a5be2c783986b71b2892d162b6
           git -C "$source" checkout --detach FETCH_HEAD
-          test "$(git -C "$source" rev-parse HEAD)" = 421b33ca10e92ba393d93d8b27b70cc5f84f6f4e
-          test "$(git -C "$source" rev-parse HEAD^{tree})" = 3ca91b2f8809540206eeaf0a1aa4781b1bcf49d0
-      - name: Reproduce rejection gap, test full source, and store blobs only
+          test "$(git -C "$source" rev-parse HEAD)" = b2fc8ea5ffeda4a5be2c783986b71b2892d162b6
+          test "$(git -C "$source" rev-parse HEAD^{tree})" = 11b31a99f538049b06a1079848841a0f34c2693c
+          cd "$source"
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+      - name: Compile, execute database faults, and store verified blobs only
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
