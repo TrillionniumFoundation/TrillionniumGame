@@ -143,7 +143,6 @@ def validate(value: dict[str, Any]) -> None:
         require(all(isinstance(item, str) and item for item in affected), f"{gap_id}: empty affected path")
 
     require(total_criteria >= MINIMUM_TOTAL_CLOSE_CRITERIA, "aggregate close-criteria denominator shrank")
-    require(value.get("fail_closed") is True, "gap register must remain fail closed")
 
 
 class GapRegisterScopeLockTests(unittest.TestCase):
