@@ -4,23 +4,33 @@
 The source-head packet and the prospective-merge packet are distinct evidence
 objects. This checker runs from a detached checkout of ``refs/pull/N/merge``
 and proves that HEAD is the event's exact merge commit with the expected,
-ordered base-first/head-second parents. It deliberately makes no product or
-compatibility claim.
+ordered base-first/head-second parents. It also compares the exact base/head
+control snapshots through the candidate's explicit status-transition policy.
+It deliberately makes no product or compatibility claim.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+_CONTROL_PATHS = (
+    "docs/status/EXECUTION_STATUS.json",
+    "docs/status/GAP_REGISTER.json",
+    "docs/roadmap/NEXT_MILESTONE.json",
+)
+_POLICY_PATH = "scripts/status_transition_policy.py"
+_MAX_CONTROL_BYTES = 8 * 1024 * 1024
+_MAX_POLICY_BYTES = 256 * 1024
 
 
 class IdentityError(RuntimeError):
@@ -48,13 +58,13 @@ def canonical_repository(value: str) -> str:
     return value
 
 
-def run_git(root: Path, arguments: Sequence[str]) -> str:
+def _git_process(root: Path, arguments: Sequence[str], *, text: bool) -> subprocess.CompletedProcess:
     try:
-        result = subprocess.run(
+        return subprocess.run(
             ["git", "-C", str(root), *arguments],
             check=False,
             capture_output=True,
-            text=True,
+            text=text,
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
@@ -62,10 +72,25 @@ def run_git(root: Path, arguments: Sequence[str]) -> str:
             "git command failed to execute: "
             f"{' '.join(arguments)}: {type(error).__name__}"
         ) from error
+
+
+def run_git(root: Path, arguments: Sequence[str]) -> str:
+    result = _git_process(root, arguments, text=True)
     if result.returncode != 0:
         detail = " ".join((result.stderr or result.stdout).split())[:300]
         raise IdentityError(f"git {' '.join(arguments)} failed: {detail}")
     return result.stdout.strip()
+
+
+def run_git_bytes(root: Path, arguments: Sequence[str], *, limit: int) -> bytes:
+    require(type(limit) is int and limit > 0, "invalid git-object byte limit")
+    result = _git_process(root, arguments, text=False)
+    if result.returncode != 0:
+        raw = result.stderr or result.stdout
+        detail = raw.decode("utf-8", errors="replace")[:300]
+        raise IdentityError(f"git {' '.join(arguments)} failed: {' '.join(detail.split())}")
+    require(len(result.stdout) <= limit, "Git object exceeds bounded control-file limit")
+    return result.stdout
 
 
 def repository_from_remote(value: str) -> str:
@@ -90,6 +115,95 @@ def repository_from_remote(value: str) -> str:
     if value.endswith(".git"):
         value = value[:-4]
     return canonical_repository(value)
+
+
+def _materialize_control_snapshot(root: Path, commit: str, destination: Path) -> None:
+    for relative in _CONTROL_PATHS:
+        path = PurePosixPath(relative)
+        require(not path.is_absolute() and ".." not in path.parts, "unsafe control path")
+        payload = run_git_bytes(root, ["show", f"{commit}:{relative}"], limit=_MAX_CONTROL_BYTES)
+        require(bool(payload), f"{relative}: empty control object")
+        target = destination.joinpath(*path.parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+
+
+def validate_status_transitions(root: Path, *, expected_base: str, expected_head: str) -> dict[str, Any]:
+    """Compare exact parent snapshots through the policy published by the head."""
+    root = root.resolve()
+    expected_base = canonical_sha(expected_base, "transition base")
+    expected_head = canonical_sha(expected_head, "transition head")
+    policy = root / _POLICY_PATH
+    require(policy.is_file() and not policy.is_symlink(), "status transition policy missing")
+    policy_bytes = policy.read_bytes()
+    require(0 < len(policy_bytes) <= _MAX_POLICY_BYTES, "status transition policy size invalid")
+    head_policy = run_git_bytes(
+        root, ["show", f"{expected_head}:{_POLICY_PATH}"], limit=_MAX_POLICY_BYTES
+    )
+    require(policy_bytes == head_policy, "merge policy differs from exact head policy")
+
+    with tempfile.TemporaryDirectory(prefix="trnm-status-transition-") as temporary:
+        temporary_root = Path(temporary)
+        base_root = temporary_root / "base"
+        head_root = temporary_root / "head"
+        _materialize_control_snapshot(root, expected_base, base_root)
+        _materialize_control_snapshot(root, expected_head, head_root)
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(policy),
+                    "--previous-root",
+                    str(base_root),
+                    "--current-root",
+                    str(head_root),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={
+                    key: value
+                    for key, value in os.environ.items()
+                    if key not in {"PYTHONPATH", "PYTHONHOME"}
+                },
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise IdentityError(
+                f"status transition policy failed to execute: {type(error).__name__}"
+            ) from error
+        if result.returncode != 0:
+            detail = " ".join((result.stderr or result.stdout).split())[:500]
+            raise IdentityError(f"base-to-head status transition rejected: {detail}")
+        try:
+            report = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise IdentityError("status transition policy emitted invalid JSON") from error
+        require(isinstance(report, dict) and report.get("valid") is True,
+                "status transition policy did not return a valid report")
+        require(report.get("schema") == "trillionnium.status-transition-report.v1",
+                "status transition report schema mismatch")
+        require(type(report.get("transition_count")) is int
+                and report["transition_count"] >= 0,
+                "status transition count invalid")
+        boundary = report.get("claim_boundary")
+        require(isinstance(boundary, dict)
+                and boundary.get("git_history_authenticated") is False
+                and boundary.get("independent_review_established") is False
+                and boundary.get("evidence_acceptance_established") is False
+                and boundary.get("gap_closed") is False,
+                "status transition claim boundary invalid")
+        return {
+            "status": "verified",
+            "base_commit": expected_base,
+            "head_commit": expected_head,
+            "policy_path": _POLICY_PATH,
+            "policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+            "control_paths": list(_CONTROL_PATHS),
+            "transition_count": report["transition_count"],
+            "transitions": report.get("transitions", []),
+            "claim_boundary": boundary,
+        }
 
 
 def validate_identity(
@@ -175,9 +289,6 @@ def validate_identity(
         "head tree",
     )
 
-    # A checkout used for evidence must not contain staged or tracked changes.
-    # Untracked run/evidence output is intentionally allowed after this checker
-    # executes, so only tracked status is considered.
     tracked_status = run_git(
         root,
         ["status", "--porcelain=v1", "--untracked-files=no"],
@@ -247,6 +358,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_base=args.expected_base,
             expected_head=args.expected_head,
             expected_merge=args.expected_merge,
+        )
+        result["status_transition"] = validate_status_transitions(
+            args.repository_root,
+            expected_base=args.expected_base,
+            expected_head=args.expected_head,
         )
         write_json_atomic(args.output, result)
     except (IdentityError, OSError, ValueError) as error:

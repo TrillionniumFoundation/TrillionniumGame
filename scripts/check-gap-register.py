@@ -1,116 +1,75 @@
 #!/usr/bin/env python3
-"""Validate the plan-v3 gap register and its fail-closed closure contract."""
+"""Validate the Plan-v3 gap register, including immutable scope and closure proof.
+
+The existing closure/evidence validator is kept in ``gap_register_validation_core``.
+This composition root first verifies the reviewed semantic baseline and then runs
+all existing evidence, review, status and summary checks. Tests importing the
+legacy checker API continue to receive the same functions.
+"""
 from __future__ import annotations
 
-import json
 import importlib.util
+import json
 import sys
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 
-_SPEC = importlib.util.spec_from_file_location(
-    "trnm_evidence_admission_" + Path(__file__).stem.replace("-", "_"),
-    Path(__file__).with_name("evidence_admission.py"),
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path.name}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+CORE = _load(
+    "trnm_gap_register_validation_core",
+    Path(__file__).with_name("gap_register_validation_core.py"),
 )
-if _SPEC is None or _SPEC.loader is None:
-    raise RuntimeError("cannot load shared evidence admission contract")
-EVIDENCE = importlib.util.module_from_spec(_SPEC)
-sys.modules[_SPEC.name] = EVIDENCE
-_SPEC.loader.exec_module(EVIDENCE)
-REGISTER = ROOT / "docs/status/GAP_REGISTER.json"
-EVIDENCE_INDEX = ROOT / "docs/evidence/index.json"
+SCOPE = _load(
+    "trnm_gap_register_scope_policy",
+    Path(__file__).with_name("gap_register_scope_policy.py"),
+)
 
-ALLOWED_SEVERITIES = {"P0", "P1", "P2", "informational"}
-ALLOWED_EVIDENCE_TYPES = {
-    "manifest",
-    "unit",
-    "property",
-    "fuzz",
-    "wire-differential",
-    "database-differential",
-    "runtime-differential",
-    "sdk-blackbox",
-    "migration-rehearsal",
-    "fault-injection",
-    "performance",
-    "endurance",
-    "security-review",
-    "penetration-test",
-    "backup-restore",
-    "canary",
-    "cutover",
-    "retirement",
-}
-TERMINAL_STATUSES = {"closed", "rejected", "superseded"}
-VERIFIED_STATUSES = {"remote-verified", "independently-reviewed", "closed"}
-SOURCE_ONLY_STATUSES = {"source-candidate", "locally-verified"}
+EVIDENCE = CORE.EVIDENCE
+ValidationError = CORE.ValidationError
+ALLOWED_SEVERITIES = CORE.ALLOWED_SEVERITIES
+ALLOWED_EVIDENCE_TYPES = CORE.ALLOWED_EVIDENCE_TYPES
+TERMINAL_STATUSES = CORE.TERMINAL_STATUSES
+VERIFIED_STATUSES = CORE.VERIFIED_STATUSES
+SOURCE_ONLY_STATUSES = CORE.SOURCE_ONLY_STATUSES
 
 
-class ValidationError(RuntimeError):
-    """Raised when the gap control plane is internally inconsistent."""
-
-
-def require(condition: bool, message: str) -> None:
-    if not condition:
-        raise ValidationError(message)
+def _sync_root() -> None:
+    CORE.ROOT = ROOT
+    CORE.REGISTER = ROOT / "docs/status/GAP_REGISTER.json"
+    CORE.EVIDENCE_INDEX = ROOT / "docs/evidence/index.json"
 
 
 def load_object(path: Path) -> dict[str, Any]:
-    try:
-        return EVIDENCE.load_object(path)
-    except (OSError, ValueError, RecursionError) as error:
-        raise ValidationError(f"invalid control JSON: {error}") from error
+    _sync_root()
+    return CORE.load_object(path)
 
 
 def indexed_evidence_rows(index: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    try:
-        return {row["evidence_id"]: row for row in EVIDENCE.index_rows(index)}
-    except EVIDENCE.AdmissionError as error:
-        raise ValidationError(str(error)) from error
+    return CORE.indexed_evidence_rows(index)
 
 
 def indexed_evidence_ids(index: dict[str, Any]) -> set[str]:
-    """Return indexed IDs while preserving the original checker module API."""
-
-    return set(indexed_evidence_rows(index))
+    return CORE.indexed_evidence_ids(index)
 
 
 def accepted_review(row: dict[str, Any]) -> dict[str, Any] | None:
-    try:
-        _, commit, tree = EVIDENCE.target_identity(row)
-    except (ValueError, TypeError):
-        return None
-    return EVIDENCE.accepted_review(row, target_commit=commit, target_tree=tree)
+    return CORE.accepted_review(row)
 
 
 def validate_required_evidence_types(gap_id: str, values: Any) -> list[str]:
-    require(
-        isinstance(values, list) and values,
-        f"{gap_id}: evidence types required",
-    )
-    result: list[str] = []
-    for index, value in enumerate(values):
-        require(
-            isinstance(value, str),
-            f"{gap_id}: required_evidence_types[{index}] must be a string",
-        )
-        require(
-            bool(value) and value.strip() == value,
-            f"{gap_id}: required_evidence_types[{index}] must be non-empty canonical text",
-        )
-        require(
-            value in ALLOWED_EVIDENCE_TYPES,
-            f"{gap_id}: unsupported evidence type {value!r}",
-        )
-        result.append(value)
-    require(
-        len(result) == len(set(result)),
-        f"{gap_id}: duplicate required evidence types",
-    )
-    return result
+    return CORE.validate_required_evidence_types(gap_id, values)
 
 
 def validate_closed_evidence(
@@ -120,206 +79,31 @@ def validate_closed_evidence(
     evidence_ids: list[str],
     evidence: dict[str, dict[str, Any]],
 ) -> None:
-    try:
-        EVIDENCE.validate_gap_evidence({
-            "id": gap_id, "evidence_ids": evidence_ids,
-            "required_evidence_types": required_types, "external_dependency": None,
-        }, evidence, root=ROOT)
-    except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
-        raise ValidationError(f"{gap_id}: {error}") from error
-    require(evidence_ids, f"{gap_id}: closed gap requires indexed evidence")
-    present_types: set[str] = set()
-    for evidence_id in evidence_ids:
-        row = evidence[evidence_id]
-        evidence_type = row.get("evidence_type")
-        require(
-            isinstance(evidence_type, str) and evidence_type,
-            f"{gap_id}: {evidence_id} has no evidence_type",
-        )
-        present_types.add(evidence_type)
-        require(
-            row.get("status") == "accepted",
-            f"{gap_id}: {evidence_id} is not accepted",
-        )
-        require(
-            row.get("schema_valid") is True,
-            f"{gap_id}: {evidence_id} is not schema-valid",
-        )
-        require(
-            row.get("target_identity_verified_by_current_repo") is True,
-            f"{gap_id}: {evidence_id} lacks exact-target verification",
-        )
-        if severity in {"P0", "P1"}:
-            require(
-                accepted_review(row) is not None,
-                f"{gap_id}: {evidence_id} lacks independent accepted review",
-            )
-    missing_types = set(required_types) - present_types
-    require(
-        not missing_types,
-        f"{gap_id}: missing required evidence types: {sorted(missing_types)}",
+    _sync_root()
+    CORE.validate_closed_evidence(
+        gap_id,
+        severity,
+        required_types,
+        evidence_ids,
+        evidence,
     )
 
 
 def validate() -> dict[str, Any]:
-    register = load_object(REGISTER)
-    index = load_object(EVIDENCE_INDEX)
-    evidence = indexed_evidence_rows(index)
-    known_evidence = set(evidence)
+    _sync_root()
+    register = CORE.load_object(CORE.REGISTER)
+    try:
+        immutable_scope = SCOPE.validate_files(ROOT, current_document=register)
+    except (OSError, TypeError, ValueError) as error:
+        raise ValidationError(f"immutable gap scope: {error}") from error
+    result = CORE.validate()
+    result["immutable_scope"] = immutable_scope
+    return result
 
-    require(
-        register.get("schema") == "trillionnium.gap-register.v1",
-        "unexpected gap schema",
-    )
-    require(register.get("project_id") == "trillionnium-game", "unexpected project_id")
-    require(register.get("plan_version") == 3, "gap register must target plan v3")
 
-    status_values = register.get("status_values")
-    require(
-        isinstance(status_values, list) and status_values,
-        "status_values must be non-empty",
-    )
-    statuses = set(status_values)
-    require(len(statuses) == len(status_values), "duplicate status_values")
-    require(TERMINAL_STATUSES <= statuses, "terminal statuses are incomplete")
-    require(VERIFIED_STATUSES <= statuses, "verified statuses are incomplete")
-
-    policy = register.get("closure_policy")
-    require(isinstance(policy, dict), "closure_policy must be an object")
-    require(
-        policy.get("implementation_only_closes_gap") is False,
-        "implementation-only closure must be forbidden",
-    )
-    require(
-        policy.get("documentation_only_closes_gap") is False,
-        "documentation-only closure must be forbidden",
-    )
-    require(
-        policy.get("empty_or_skipped_checks_count") is False,
-        "empty/skipped checks must not count",
-    )
-    require(
-        policy.get("exact_candidate_identity_required") is True,
-        "exact candidate identity is required",
-    )
-    require(
-        policy.get("independent_review_required_for_p0_p1") is True,
-        "P0/P1 independent review is required",
-    )
-    require(
-        policy.get("external_admin_state_must_be_read_back") is True,
-        "external state must be read back",
-    )
-
-    rows = register.get("gaps")
-    require(isinstance(rows, list) and rows, "gaps must be a non-empty list")
-    seen: set[str] = set()
-    counts: Counter[str] = Counter()
-    external_blocked = 0
-    source_only = 0
-
-    for row in rows:
-        require(isinstance(row, dict), "gap row must be an object")
-        gap_id = row.get("id")
-        require(
-            isinstance(gap_id, str) and gap_id.startswith("GAP-"),
-            "invalid gap id",
-        )
-        require(gap_id not in seen, f"duplicate gap id: {gap_id}")
-        seen.add(gap_id)
-
-        severity = row.get("severity")
-        status = row.get("status")
-        require(
-            severity in ALLOWED_SEVERITIES,
-            f"{gap_id}: invalid severity {severity!r}",
-        )
-        require(status in statuses, f"{gap_id}: invalid status {status!r}")
-        require(
-            isinstance(row.get("category"), str) and row["category"],
-            f"{gap_id}: category required",
-        )
-        require(
-            isinstance(row.get("title"), str) and row["title"],
-            f"{gap_id}: title required",
-        )
-        require(
-            isinstance(row.get("owner_role"), str) and row["owner_role"],
-            f"{gap_id}: owner_role required",
-        )
-        require(
-            isinstance(row.get("blocking_claims"), list),
-            f"{gap_id}: blocking_claims must be a list",
-        )
-        require(
-            isinstance(row.get("affected_paths"), list),
-            f"{gap_id}: affected_paths must be a list",
-        )
-        require(
-            isinstance(row.get("close_criteria"), list) and row["close_criteria"],
-            f"{gap_id}: close criteria required",
-        )
-        required_types = validate_required_evidence_types(
-            gap_id,
-            row.get("required_evidence_types"),
-        )
-        evidence_ids = row.get("evidence_ids")
-        require(isinstance(evidence_ids, list), f"{gap_id}: evidence_ids must be a list")
-        require(
-            len(evidence_ids) == len(set(evidence_ids)),
-            f"{gap_id}: duplicate evidence_ids",
-        )
-        unknown = set(evidence_ids) - known_evidence
-        require(not unknown, f"{gap_id}: unknown evidence ids: {sorted(unknown)}")
-
-        external_dependency = row.get("external_dependency")
-        if status == "blocked-external-admin":
-            external_blocked += 1
-            require(
-                isinstance(external_dependency, str) and external_dependency,
-                f"{gap_id}: external dependency required",
-            )
-        if status in SOURCE_ONLY_STATUSES:
-            source_only += 1
-
-        if status == "closed":
-            require(
-                external_dependency in (None, ""),
-                f"{gap_id}: closed gap retains an external dependency",
-            )
-            validate_closed_evidence(
-                gap_id,
-                str(severity),
-                required_types,
-                evidence_ids,
-                evidence,
-            )
-
-        counts[str(status)] += 1
-
-    declared_summary = register.get("summary")
-    if declared_summary is not None:
-        require(isinstance(declared_summary, dict), "summary must be an object")
-        require(declared_summary.get("total") == len(rows), "summary.total is stale")
-        for status, count in counts.items():
-            if status in declared_summary:
-                require(
-                    declared_summary[status] == count,
-                    f"summary.{status} is stale",
-                )
-
-    return {
-        "schema": "trillionnium.gap-register-validation.v1",
-        "gap_count": len(rows),
-        "status_counts": dict(sorted(counts.items())),
-        "external_admin_blocked": external_blocked,
-        "source_only": source_only,
-        "closed": counts.get("closed", 0),
-        "claim_boundary": (
-            "Validation proves control-plane consistency only; it grants no "
-            "compatibility or production credit."
-        ),
-    }
+def __getattr__(name: str):
+    """Expose non-root-sensitive helpers retained by the prior checker module."""
+    return getattr(CORE, name)
 
 
 def main() -> int:

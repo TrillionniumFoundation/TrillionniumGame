@@ -1,7 +1,6 @@
-"""Regression tests for explicit task/gap state-transition policy."""
+"""Regression tests for explicit task/gap and roadmap-scope transitions."""
 from __future__ import annotations
 
-import copy
 import importlib.util
 import json
 import subprocess
@@ -9,13 +8,16 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "scripts/status_transition_policy.py"
 
 
 def load_module():
-    spec = importlib.util.spec_from_file_location("trnm_status_transition_policy_tests", SOURCE)
+    spec = importlib.util.spec_from_file_location(
+        "trnm_status_transition_policy_tests", SOURCE
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError("status transition policy unavailable")
     module = importlib.util.module_from_spec(spec)
@@ -27,17 +29,27 @@ def load_module():
 POLICY = load_module()
 
 
-def write_root(root: Path, *, task_override=None, workstream="in-progress",
-               stage="blocked", gap="open", roadmap="in-progress",
-               milestone="in-progress") -> None:
+def write_root(
+    root: Path,
+    *,
+    task_override=None,
+    workstream="in-progress",
+    stage="blocked",
+    gap="open",
+    roadmap="in-progress",
+    milestone="in-progress",
+    milestone_id="M0-TEST",
+    item_ids=("TG-V3-001",),
+    item_title="fixture item",
+) -> None:
     (root / "docs/status").mkdir(parents=True, exist_ok=True)
     (root / "docs/roadmap").mkdir(parents=True, exist_ok=True)
     execution = {
         "schema": "trillionnium.execution-status.v1",
         "default_task_state": "planned",
-        "task_overrides": [] if task_override is None else [
-            {"id": "TG-W0-001", "status": task_override}
-        ],
+        "task_overrides": []
+        if task_override is None
+        else [{"id": "TG-W0-001", "status": task_override}],
         "workstreams": [{"id": "W0", "status": workstream}],
         "stage_gates": [{"id": "SG0", "status": stage}],
     }
@@ -47,9 +59,31 @@ def write_root(root: Path, *, task_override=None, workstream="in-progress",
     }
     next_milestone = {
         "schema": "trillionnium.next-milestone.v1",
-        "milestone_id": "M0-TEST",
+        "project_id": "trillionnium-game",
+        "plan_version": 3,
+        "milestone_id": milestone_id,
+        "title": "fixture milestone",
         "status": milestone,
-        "items": [{"id": "TG-V3-001", "status": roadmap}],
+        "created_at": "2026-01-01",
+        "objective": "fixture objective",
+        "exit_conditions": ["fixture condition"],
+        "items": [
+            {
+                "id": identity,
+                "priority": "P0",
+                "title": item_title,
+                "status": roadmap,
+                "owner_role": "fixture",
+                "depends_on": [],
+                "gap_ids": ["GAP-P0-TEST-001"],
+                "deliverables": ["fixture"],
+                "acceptance": ["fixture"],
+                "required_evidence": ["unit"],
+            }
+            for identity in item_ids
+        ],
+        "next_item_rule": "fixture rule",
+        "claim_boundary": "fixture boundary",
     }
     (root / "docs/status/EXECUTION_STATUS.json").write_text(
         json.dumps(execution), encoding="utf-8"
@@ -62,16 +96,44 @@ def write_root(root: Path, *, task_override=None, workstream="in-progress",
     )
 
 
+def replacement_for(base: Path, head: Path) -> dict[str, object]:
+    previous = POLICY.snapshot(base)["roadmap"]
+    current = POLICY.snapshot(head)["roadmap"]
+    return {
+        "previous_plan_version": previous["plan_version"],
+        "previous_milestone_id": previous["milestone_id"],
+        "previous_item_count": previous["item_count"],
+        "previous_item_ids_sha256": previous["item_ids_sha256"],
+        "current_plan_version": current["plan_version"],
+        "current_milestone_id": current["milestone_id"],
+        "current_item_count": current["item_count"],
+        "current_item_ids_sha256": current["item_ids_sha256"],
+        "current_scope_sha256": current["scope_sha256"],
+        "credit_policy": "reset-no-verified-or-accepted-state-transfer",
+    }
+
+
 class TransitionGraphTests(unittest.TestCase):
     def test_policy_has_exact_state_coverage_and_terminal_superseded(self):
         POLICY.validate_policy()
-        self.assertEqual(set(POLICY.allowed_transitions("task")), set(POLICY.TASK_STATES))
-        self.assertEqual(set(POLICY.allowed_transitions("gap")), set(POLICY.GAP_STATES))
-        self.assertEqual(POLICY.allowed_transitions("task")["superseded"], {"superseded"})
-        self.assertEqual(POLICY.allowed_transitions("gap")["superseded"], {"superseded"})
+        self.assertEqual(
+            set(POLICY.allowed_transitions("task")), set(POLICY.TASK_STATES)
+        )
+        self.assertEqual(
+            set(POLICY.allowed_transitions("gap")), set(POLICY.GAP_STATES)
+        )
+        self.assertEqual(
+            POLICY.allowed_transitions("task")["superseded"], {"superseded"}
+        )
+        self.assertEqual(
+            POLICY.allowed_transitions("gap")["superseded"], {"superseded"}
+        )
 
     def test_adjacent_promotions_are_legal(self):
-        for kind, progress in (("task", POLICY.TASK_PROGRESS), ("gap", POLICY.GAP_PROGRESS)):
+        for kind, progress in (
+            ("task", POLICY.TASK_PROGRESS),
+            ("gap", POLICY.GAP_PROGRESS),
+        ):
             for previous, current in zip(progress, progress[1:]):
                 with self.subTest(kind=kind, previous=previous, current=current):
                     POLICY.validate_transition(kind, previous, current)
@@ -127,6 +189,7 @@ class RepositoryTransitionTests(unittest.TestCase):
         report = POLICY.compare_roots(ROOT, ROOT)
         self.assertTrue(report["valid"])
         self.assertEqual(report["transition_count"], 0)
+        self.assertEqual(report["scope_replacement_count"], 0)
         self.assertFalse(report["claim_boundary"]["gap_closed"])
 
     def roots(self):
@@ -172,7 +235,7 @@ class RepositoryTransitionTests(unittest.TestCase):
         report = POLICY.compare_roots(base, head)
         self.assertEqual(report["transition_count"], 1)
 
-    def test_scope_membership_cannot_change_as_a_status_only_transition(self):
+    def test_gap_membership_cannot_change_as_a_status_only_transition(self):
         base, head = self.roots()
         data = json.loads((head / "docs/status/GAP_REGISTER.json").read_text())
         data["gaps"] = []
@@ -180,18 +243,120 @@ class RepositoryTransitionTests(unittest.TestCase):
         with self.assertRaisesRegex(POLICY.TransitionError, "membership changed"):
             POLICY.compare_roots(base, head)
 
+    def test_unapproved_roadmap_scope_replacement_is_rejected(self):
+        base, head = self.roots()
+        write_root(
+            head,
+            milestone_id="M0-NEW",
+            item_ids=("TG-V3-101", "TG-V3-102"),
+            roadmap="source-candidate",
+        )
+        with patch.object(POLICY, "APPROVED_ROADMAP_SCOPE_REPLACEMENTS", ()):
+            with self.assertRaisesRegex(
+                POLICY.TransitionError, "not an exact approved transition"
+            ):
+                POLICY.compare_roots(base, head)
+
+    def test_exact_roadmap_scope_replacement_resets_credit(self):
+        base, head = self.roots()
+        write_root(
+            head,
+            milestone_id="M0-NEW",
+            item_ids=("TG-V3-101", "TG-V3-102"),
+            roadmap="source-candidate",
+        )
+        declaration = replacement_for(base, head)
+        with patch.object(
+            POLICY, "APPROVED_ROADMAP_SCOPE_REPLACEMENTS", (declaration,)
+        ):
+            report = POLICY.compare_roots(base, head)
+        self.assertEqual(report["scope_replacement_count"], 1)
+        event = report["scope_replacements"][0]
+        self.assertEqual(
+            event["credit_policy"],
+            "reset-no-verified-or-accepted-state-transfer",
+        )
+        self.assertFalse(
+            report["claim_boundary"]["scope_replacement_transfers_acceptance"]
+        )
+
+    def test_scope_replacement_cannot_carry_verified_or_accepted_state(self):
+        for state in (
+            "locally-verified",
+            "remote-verified",
+            "independently-reviewed",
+            "accepted",
+            "superseded",
+        ):
+            with self.subTest(state=state):
+                base, head = self.roots()
+                write_root(
+                    head,
+                    milestone_id="M0-NEW",
+                    item_ids=("TG-V3-101",),
+                    roadmap=state,
+                )
+                declaration = replacement_for(base, head)
+                with patch.object(
+                    POLICY,
+                    "APPROVED_ROADMAP_SCOPE_REPLACEMENTS",
+                    (declaration,),
+                ):
+                    with self.assertRaisesRegex(
+                        POLICY.TransitionError, "verified or accepted"
+                    ):
+                        POLICY.compare_roots(base, head)
+
+    def test_scope_replacement_digest_is_exact(self):
+        base, head = self.roots()
+        write_root(
+            head,
+            milestone_id="M0-NEW",
+            item_ids=("TG-V3-101",),
+            roadmap="source-candidate",
+        )
+        declaration = replacement_for(base, head)
+        write_root(
+            head,
+            milestone_id="M0-NEW",
+            item_ids=("TG-V3-101",),
+            roadmap="source-candidate",
+            item_title="changed immutable obligation",
+        )
+        with patch.object(
+            POLICY, "APPROVED_ROADMAP_SCOPE_REPLACEMENTS", (declaration,)
+        ):
+            with self.assertRaisesRegex(
+                POLICY.TransitionError, "not an exact approved transition"
+            ):
+                POLICY.compare_roots(base, head)
+
     def test_cli_self_check_and_root_comparison(self):
         self_check = subprocess.run(
             [sys.executable, str(SOURCE), "--self-check"],
-            cwd=ROOT, text=True, capture_output=True, timeout=20,
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=20,
         )
         self.assertEqual(self_check.returncode, 0, self_check.stderr)
-        self.assertTrue(json.loads(self_check.stdout)["valid"])
+        payload = json.loads(self_check.stdout)
+        self.assertTrue(payload["valid"])
+        self.assertGreaterEqual(payload["approved_roadmap_scope_replacements"], 1)
         base, head = self.roots()
         compared = subprocess.run(
-            [sys.executable, str(SOURCE), "--previous-root", str(base),
-             "--current-root", str(head)],
-            cwd=ROOT, text=True, capture_output=True, timeout=20,
+            [
+                sys.executable,
+                str(SOURCE),
+                "--previous-root",
+                str(base),
+                "--current-root",
+                str(head),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=20,
         )
         self.assertEqual(compared.returncode, 0, compared.stderr)
         self.assertEqual(json.loads(compared.stdout)["transition_count"], 0)
@@ -199,7 +364,10 @@ class RepositoryTransitionTests(unittest.TestCase):
     def test_cli_rejects_missing_root_pair_without_traceback(self):
         result = subprocess.run(
             [sys.executable, str(SOURCE), "--previous-root", str(ROOT)],
-            cwd=ROOT, text=True, capture_output=True, timeout=20,
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=20,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("both previous and current roots", result.stderr)
