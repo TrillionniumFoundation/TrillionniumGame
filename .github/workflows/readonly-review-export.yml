@@ -8,15 +8,12 @@ permissions:
   contents: read
   actions: read
 
-env:
-  CARGO_TERM_COLOR: never
-
 jobs:
-  published-source-and-merge-supplementary:
+  acceptance-source-and-merge-supplementary:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 50
+    timeout-minutes: 15
     steps:
-      - name: Fetch fixed tooling and published product objects without source overlays
+      - name: Fetch fixed tooling and committed product objects without overlays
         shell: bash
         run: |
           set -euo pipefail
@@ -29,105 +26,88 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object test_build_probe.py)" = d17e823f6067db961db9a0fa8c8bc4f84e4c107c
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin 620fc666f617bbdf55e64033a4151a42add2b0dd
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin c66deb47298faa19164c7060cd0efa2584210e07
           git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
           git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin refs/pull/63/merge
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse FETCH_HEAD)" = 7cb05f40f76adcda03df7029f5a5da1a7ef2c9ed
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = 61034e71e044a5a8af041ecc7220e9c745a196d4
-          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object crates/trnm-session-core/src/lib.rs)" = e4b41563d5d79f084276898954b4a20a9a3cb6f9
-      - name: Test the existing bounded command runner
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse FETCH_HEAD)" = 59d74c41d4ecd31b9e80bcea306003a5eb2df250
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = e3c7efed8d8f2be0780cfb3f0e80c1e67db1455d
+      - name: Test the unchanged bounded subprocess runner
         shell: bash
         working-directory: tooling
         run: python3 -m unittest -v test_build_probe
-      - name: Install exact Rust compiler formatter and lint
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
-          rustc +1.85.1 --version --verbose
-      - name: Execute all registered Rust packages on both published objects
+      - name: Execute exact source and actual merge controls with credential-free test environments
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import os,sys
+          import hashlib,json,os,platform,re,sys,time,zipfile
           from pathlib import Path
           sys.path.insert(0,str(Path(os.environ['GITHUB_WORKSPACE'])/'tooling'))
           import build_probe as p
-          p.HEAD='620fc666f617bbdf55e64033a4151a42add2b0dd'
+          p.HEAD='c66deb47298faa19164c7060cd0efa2584210e07'
           p.BASE='d66c1b5b614a2a7b682c233fe2e7a19939b6976b'
-          p.MERGE='7cb05f40f76adcda03df7029f5a5da1a7ef2c9ed'
-          p.TREE='61034e71e044a5a8af041ecc7220e9c745a196d4'
-          sys.argv=['build_probe.py','--source',os.environ['GITHUB_WORKSPACE']+'/source','--output',os.environ['RUNNER_TEMP']+'/rust-matrix']
-          raise SystemExit(p.main())
-          PY
-      - name: Execute complete Python controls and Go migration input on both objects
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import hashlib,json,os,re,sys,time,zipfile
-          from pathlib import Path
-          sys.path.insert(0,str(Path(os.environ['GITHUB_WORKSPACE'])/'tooling'))
-          import build_probe as p
+          p.MERGE='59d74c41d4ecd31b9e80bcea306003a5eb2df250'
+          p.TREE='e3c7efed8d8f2be0780cfb3f0e80c1e67db1455d'
           source=Path(os.environ['GITHUB_WORKSPACE'])/'source'
-          out=Path(os.environ['RUNNER_TEMP'])/'rust-matrix'
-          matrix=json.loads((out/'matrix.json').read_text())
-          rows=[]; result={'schema':'trillionnium.published-source-supplementary.v1','source':'620fc666f617bbdf55e64033a4151a42add2b0dd','merge':'7cb05f40f76adcda03df7029f5a5da1a7ef2c9ed','tree':'61034e71e044a5a8af041ecc7220e9c745a196d4','commands':rows,'complete':False,'ordinary_required_gate_credit':False,'independent_acceptance':False,'live_database_credit':False}
-          env={k:os.environ[k] for k in ('PATH','HOME','USER','TMPDIR','RUSTUP_HOME','CARGO_HOME') if k in os.environ}
-          env.update(GOTOOLCHAIN='go1.26.5',CARGO_TERM_COLOR='never')
+          out=Path(os.environ['RUNNER_TEMP'])/'acceptance-proof'
+          out.mkdir(exist_ok=False)
+          env={k:os.environ[k] for k in ('PATH','HOME','USER','TMPDIR') if k in os.environ}
+          rows=[]
+          result={'schema':'trillionnium.execution-acceptance-supplementary.v1','source':p.HEAD,'base':p.BASE,'merge':p.MERGE,'tree':p.TREE,'platform':platform.platform(),'python':sys.version,'producer':{k:os.environ[k] for k in ('GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_JOB')},'commands':rows,'complete':False,'claims':{'ordinary_required_gate_credit':False,'independent_acceptance':False,'live_database_credit':False,'gap_closed':False}}
           began=time.monotonic()
           try:
-              assert matrix['complete'] is True and len(matrix['commands'])==70
-              assert all(x['returncode']==0 and x['failure'] is None for x in matrix['commands'])
-              for label,sha in [('source',result['source']),('prospective',result['merge'])]:
+              for sha in (p.HEAD,p.MERGE):
+                  (out/(sha+'.commit')).write_bytes(p.verify_object(source,sha))
+              for label,sha in [('source',p.HEAD),('prospective',p.MERGE)]:
+                  assert not p.git(source,'status','--porcelain').strip()
                   p.git(source,'checkout','--detach',sha)
-                  assert p.git(source,'rev-parse','HEAD^{tree}').decode().strip()==result['tree']
-                  schedule=[('compileall',['python3','-m','compileall','-q','scripts','tools','tests'],source),('python',['python3','-m','unittest','discover','-s','tests','-p','test_*.py','-v'],source)]
+                  assert p.git(source,'rev-parse','HEAD').decode().strip()==sha
+                  schedule=[('compileall',['python3','-m','compileall','-q','scripts','tools','tests']),('python',['python3','-m','unittest','discover','-s','tests','-p','test_*.py','-v']),('acceptance',['python3','-m','unittest','tests.control_plane.test_execution_acceptance','-v'])]
                   checks=['check-documentation-authority.py','check-plan.py','check-evidence-index.py','check-gap-register.py','derive-gap-status.py','derive-gates.py','check-status-transitions.py','check-workflow-action-policy.py','check-repository-hygiene.py','check-trnm-server.py','check-rust-foundation.py']
-                  schedule += [(x,['python3','scripts/'+x],source) for x in checks]
-                  schedule += [('go-version',['go','version'],source/'runtime'),('go-test',['go','test','./...','-count=1'],source/'runtime'),('go-race',['go','test','-race','./...','-count=1'],source/'runtime'),('go-vet',['go','vet','./...'],source/'runtime')]
-                  for name,argv,cwd in schedule:
-                      remaining=1200-(time.monotonic()-began)
+                  schedule += [(x,['python3','scripts/'+x]) for x in checks]
+                  for name,argv in schedule:
+                      remaining=600-(time.monotonic()-began)
                       assert remaining>0
-                      log=out/f'extra-{len(rows):03d}-{label}-{name}.log'
-                      row=p.command(argv,cwd,log,env,min(600,remaining));row.update(object=sha,name=name);rows.append(row)
+                      log=out/f'{len(rows):03d}-{label}-{name}.log'
+                      row=p.command(argv,source,log,env,min(180,remaining))
+                      row.update(object=sha,name=name);rows.append(row)
                       assert row['returncode']==0 and row['failure'] is None,name
                       text=log.read_text(errors='replace')
-                      if name=='python': assert re.search(r'^Ran 477 tests in ',text,re.M) and re.search(r'^OK$',text,re.M)
-                      if name=='go-version': assert 'go1.26.5 linux/arm64' in text
-                      if name in ('go-test','go-race'): assert re.search(r'^ok\s+',text,re.M)
-                      assert sum(x['size_bytes'] for x in rows)<16*1024*1024
+                      if name in ('python','acceptance'):
+                          count=514 if name=='python' else 37
+                          assert re.search(r'^Ran '+str(count)+r' tests in ',text,re.M)
+                          assert re.search(r'^OK$',text,re.M)
+                          row['reported_tests_passed']=count
+                      assert sum(x['size_bytes'] for x in rows)<24*1024*1024
                   assert not p.git(source,'status','--porcelain').strip()
-              assert len(rows)==34
+              assert len(rows)==28
               result['complete']=True
           except Exception as exc:
               result['failure_type']=type(exc).__name__
               result['failure']=str(exc)[:500]
+          result['limitations']=['Supplementary ARM Python/control execution; not the 55 required external workflow set or independent review.','The scoped 37 tests are included in the 514-test corpus; repeated source/merge runs are not additional unique tests.','This lane performs no Rust, Go, live database, SDK, HA, capacity or endurance execution.']
           (out/'qualification.json').write_text(json.dumps(result,indent=2)+'\n')
-          data={x.name:x.read_bytes() for x in out.iterdir() if x.is_file() and x.suffix!='.zip' and x.name!='file-index.json'}
-          assert sum(map(len,data.values()))<48*1024*1024
+          data={x.name:x.read_bytes() for x in out.iterdir() if x.is_file()}
+          assert sum(map(len,data.values()))<25*1024*1024
           data['file-index.json']=(json.dumps([{'path':n,'size_bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()} for n,b in sorted(data.items())],indent=2)+'\n').encode()
-          with zipfile.ZipFile(out/'published-qualification.zip','x',zipfile.ZIP_DEFLATED) as z:
-              for n,b in sorted(data.items()): z.writestr(n,b)
+          with zipfile.ZipFile(out/'acceptance-proof.zip','x',zipfile.ZIP_DEFLATED) as z:
+              for n,b in sorted(data.items()):z.writestr(n,b)
           print(json.dumps(result))
           PY
-      - name: Retain exact producer source merge logs and raw commit identities
+      - name: Retain the complete bounded diagnostic packet
         uses: ./tooling/publish
-      - name: Reject incomplete results or changed live refs
+      - name: Reject incomplete results and changed candidate refs
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import json,os,subprocess
           from pathlib import Path
-          out=Path(os.environ['RUNNER_TEMP'])/'rust-matrix'
-          m=json.loads((out/'matrix.json').read_text());q=json.loads((out/'qualification.json').read_text())
-          assert m['complete'] is True and q['complete'] is True
-          assert len(m['commands'])==70 and len(q['commands'])==34
-          assert m['source_head']==q['source'] and m['prospective_merge']==q['merge'] and m['tree']==q['tree']
+          q=json.loads((Path(os.environ['RUNNER_TEMP'])/'acceptance-proof/qualification.json').read_text())
+          assert q['complete'] is True and len(q['commands'])==28
+          assert all(x['returncode']==0 and x['failure'] is None for x in q['commands'])
           refs=subprocess.run(['git','-C',os.environ['GITHUB_WORKSPACE']+'/source','ls-remote','origin','refs/heads/main','refs/heads/codex/branch-evidence-closure-2026-09-02','refs/pull/63/merge'],check=True,capture_output=True,text=True,timeout=30)
           observed={ref:sha for sha,ref in (line.split() for line in refs.stdout.splitlines())}
-          assert observed=={'refs/heads/main':'d66c1b5b614a2a7b682c233fe2e7a19939b6976b','refs/heads/codex/branch-evidence-closure-2026-09-02':q['source'],'refs/pull/63/merge':q['merge']}
-          print('Published source and actual merge supplementary checks passed; no required x64, live database or independent acceptance credit.')
+          assert observed=={'refs/heads/main':q['base'],'refs/heads/codex/branch-evidence-closure-2026-09-02':q['source'],'refs/pull/63/merge':q['merge']}
+          print('Exact-source/merge acceptance regressions passed; no ordinary-gate substitution or independent acceptance.')
           PY
