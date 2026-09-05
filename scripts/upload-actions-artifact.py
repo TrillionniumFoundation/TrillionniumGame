@@ -23,6 +23,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+READ_CHUNK_BYTES = 1024 * 1024
+MAX_PATH_COMPONENTS = 256
+_SECURE_FILE_IO_SUPPORTED = (
+    os.name == "posix"
+    and all(hasattr(os, name) for name in ("O_NOFOLLOW", "O_DIRECTORY", "O_CLOEXEC", "O_NONBLOCK"))
+    and os.open in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+    and os.stat in os.supports_follow_symlinks
+)
 MAX_ATTEMPTS = 5
 INITIAL_BACKOFF_SECONDS = 0.25
 ARTIFACT_VERSION = 7
@@ -70,24 +79,92 @@ def results_origin(results_url: str) -> str:
     return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
 
 
+def _file_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_nlink,
+            value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
 def validate_artifact(name: str, path: Path) -> bytes:
-    if NAME_PATTERN.fullmatch(name) is None:
+    """Read the inspected regular inode through one pinned descriptor.
+
+    The no-follow directory walk prevents ancestor symlink substitution. Leaf
+    lstat-equivalent metadata must match fstat before any bytes are read; both
+    the descriptor and anchored directory entry must still match afterwards.
+    This detects observable mutation, not an immutable filesystem snapshot or
+    a wall-clock bound on an unresponsive filesystem.
+    """
+    if not isinstance(name, str) or NAME_PATTERN.fullmatch(name) is None:
         raise ArtifactUploadError("artifact name is not canonical")
+    if not _SECURE_FILE_IO_SUPPORTED:
+        raise ArtifactUploadError("descriptor-relative no-follow artifact I/O is required")
+    absolute = path.absolute()
+    if (absolute.anchor != os.sep or not 1 < len(absolute.parts) <= MAX_PATH_COMPONENTS
+            or any(part in (".", "..") or "\0" in part for part in absolute.parts[1:])):
+        raise ArtifactUploadError("artifact path is not canonical")
+    directory = None
+    descriptor = None
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
     try:
-        metadata = path.lstat()
-    except OSError as error:
-        raise ArtifactUploadError("artifact file cannot be inspected") from error
-    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
-        raise ArtifactUploadError("artifact path must be a regular non-symlink file")
-    if metadata.st_size <= 0 or metadata.st_size > MAX_ARTIFACT_BYTES:
-        raise ArtifactUploadError("artifact size is outside the bounded non-empty range")
-    try:
-        data = path.read_bytes()
-    except OSError as error:
-        raise ArtifactUploadError("artifact file cannot be read") from error
-    if len(data) != metadata.st_size:
-        raise ArtifactUploadError("artifact file changed while being read")
-    return data
+        directory = os.open(os.sep, directory_flags)
+        for part in absolute.parts[1:-1]:
+            next_directory = os.open(part, directory_flags, dir_fd=directory)
+            previous, directory = directory, next_directory
+            os.close(previous)
+        inspected = os.stat(absolute.name, dir_fd=directory, follow_symlinks=False)
+        if not stat.S_ISREG(inspected.st_mode):
+            raise ArtifactUploadError("artifact path must be a regular non-symlink file")
+        if not 0 < inspected.st_size <= MAX_ARTIFACT_BYTES:
+            raise ArtifactUploadError("artifact size is outside the bounded non-empty range")
+        descriptor = os.open(absolute.name, file_flags, dir_fd=directory)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or _file_identity(opened) != _file_identity(inspected):
+            raise ArtifactUploadError("artifact identity changed before reading")
+        chunks = []
+        remaining = opened.st_size
+        while remaining:
+            block = os.read(descriptor, min(READ_CHUNK_BYTES, remaining))
+            if not block:
+                raise ArtifactUploadError("artifact file was truncated during reading")
+            chunks.append(block)
+            remaining -= len(block)
+        if os.read(descriptor, 1):
+            raise ArtifactUploadError("artifact file grew during reading")
+        after = os.fstat(descriptor)
+        leaf_after = os.stat(absolute.name, dir_fd=directory, follow_symlinks=False)
+        if (_file_identity(after) != _file_identity(opened)
+                or _file_identity(leaf_after) != _file_identity(opened)):
+            raise ArtifactUploadError("artifact file changed while being read")
+        return b"".join(chunks)
+    except OSError:
+        # Paths, filesystem diagnostics and retained contents are not public errors.
+        raise ArtifactUploadError("secure artifact file I/O failed") from None
+    finally:
+        try:
+            if descriptor is not None:
+                os.close(descriptor)
+        finally:
+            if directory is not None:
+                os.close(directory)
+
+
+class _RejectArtifactRedirects(urllib.request.HTTPRedirectHandler):
+    """No automatic redirect may replay credentials or signed artifact bytes."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ArtifactUploadError("artifact service redirects are forbidden")
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        # Do not consume an unbounded redirect body or log its Location/URL.
+        fp.close()
+        raise ArtifactUploadError("artifact service redirects are forbidden")
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
+def _no_redirect_opener() -> Callable[..., Any]:
+    # Private per-upload opener; do not inherit an installed global urlopen opener.
+    return urllib.request.build_opener(_RejectArtifactRedirects()).open
 
 
 def _response_status(response: Any) -> int:
@@ -147,11 +224,13 @@ def _twirp_json(
         method="POST",
         headers={
             "Accept": "application/json",
-            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "User-Agent": "trillionnium-native-artifact-uploader/1",
         },
     )
+    # Defense in depth: urllib must not copy this header onto a redirected request,
+    # even when a trusted caller supplies its own test/transport adapter.
+    request.add_unredirected_header("Authorization", f"Bearer {token}")
     _, body = _request_bytes(request, opener=opener, sleeper=sleeper)
     try:
         value = json.loads(body)
@@ -191,7 +270,7 @@ def upload_artifact(
     digest = hashlib.sha256(data).hexdigest()
     run_backend_id, job_backend_id = backend_ids_from_runtime_token(runtime_token)
     origin = results_origin(actions_results_url)
-    open_request = urllib.request.urlopen if opener is None else opener
+    open_request = _no_redirect_opener() if opener is None else opener
 
     identity = {
         "workflow_run_backend_id": run_backend_id,

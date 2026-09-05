@@ -10,7 +10,8 @@
   "source": "scripts/upload-actions-artifact.py",
   "regression_suites": [
     "tests/control_plane/test_actions_artifact_uploader.py",
-    "tests/control_plane/test_actions_artifact_protocol.py"
+    "tests/control_plane/test_actions_artifact_protocol.py",
+    "tests/control_plane/test_actions_artifact_security.py"
   ],
   "protocol": {
     "repository": "actions/toolkit",
@@ -27,6 +28,23 @@
     "Strict offline request fixtures do not prove remote upload or retention.",
     "Real producer, downloaded bytes and independent acceptance remain required.",
     "No Rust runtime, Cargo, DDL, workflow definition or permission changes.",
-    "This correction does not represent a complete uploader/redirect audit."
-  ]
+    "Observable file stability is not an immutable filesystem snapshot or a hard stalled-I/O deadline.",
+    "Prior native upload receipts qualify only their exact previous source; this revision needs new execution and independent acceptance.",
+    "No complete uploader, filesystem or network security audit is claimed."
+  ],
+  "custody_and_redirects": {
+    "review_id": 5120205543,
+    "reviewed_source": "bdfa705c751be77aff1f7e35f14c76ed4e032ea4",
+    "status": "source-candidate",
+    "file_custody": "directory-relative no-follow open, inspected inode/fstat match, bounded reads and final identity checks",
+    "redirect_policy": "refuse all automatic redirects; original Twirp Authorization uses unredirected header; signed PUT remains credential-free",
+    "new_test_cases": 30,
+    "required_native_verification": [
+      "exact-source and actual prospective merge",
+      "real artifact upload and downloaded-byte validation",
+      "fresh independent review"
+    ],
+    "independently_accepted": false,
+    "gap_closed": false
+  }
 }

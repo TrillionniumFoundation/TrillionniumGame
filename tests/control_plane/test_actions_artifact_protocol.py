@@ -69,7 +69,7 @@ class StrictService:
             assert payload["version"] == 7 and type(payload["version"]) is int
             assert payload["workflow_run_backend_id"] == "run-x"
             assert payload["workflow_job_run_backend_id"] == "job-y"
-            assert request.headers.get("Authorization") == "Bearer " + test_token()
+            assert request.get_header("Authorization") == "Bearer " + test_token()
             if self.fail_phase == "create":
                 raise urllib.error.HTTPError(request.full_url, 400, "redacted error", None, None)
             if self.transient and len(self.create_payloads) == 1:
@@ -153,7 +153,7 @@ class ProtocolTests(unittest.TestCase):
         service = StrictService("application/zip")
         self.upload(service)
         self.assertNotIn("Authorization", service.requests[1].headers)
-        self.assertIn("Authorization", service.requests[2].headers)
+        self.assertTrue(service.requests[2].has_header("Authorization"))
 
     def test_empty_artifact_prevents_every_network_call(self):
         self.path.write_bytes(b"")

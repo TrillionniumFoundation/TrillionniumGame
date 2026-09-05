@@ -370,3 +370,57 @@ qualification and diagnostic export have different source identities; neither
 can silently stand in for the other. No new product, gap or independent-review
 credit follows from this field correction. The source boundary is recorded in
 [`status/ACTIONS_ARTIFACT_UPLOAD_STATUS.json`](status/ACTIONS_ARTIFACT_UPLOAD_STATUS.json).
+
+## 18. Upload file custody and redirect boundaries
+
+The native uploader applies descriptor-relative no-follow I/O on its supported
+POSIX runner. It opens every ancestor directory with `O_DIRECTORY` and
+`O_NOFOLLOW`, captures the final entry without following links, and requires
+the opened descriptor's device, inode, mode, link count, size, mtime and ctime to
+match that inspected entry before reading any bytes. The final descriptor and
+anchored entry are checked again. Leaf symlinks, equal-sized inode substitutions,
+special files and observable changes fail closed. `O_NONBLOCK` prevents a replaced
+FIFO from waiting for a writer before the regular-file check. Missing platform
+capabilities have no path-reopening fallback.
+
+Each read is at most 1 MiB and the total bytes requested are limited to the
+inspected length plus a one-byte growth probe, always at most the existing
+64 MiB artifact bound plus one. Empty files, growth, truncation and detectable
+metadata changes are rejected. Descriptors are released on success and failure.
+This is not an immutable filesystem snapshot, protection against a privileged
+mount/kernel adversary, or a hard wall-clock deadline for stalled regular-file I/O.
+An already-opened parent remains the anchor if its directory name is replaced;
+that replacement cannot redirect reads into different contents.
+
+The production transport builds a private urllib opener that refuses every
+automatic 301/302/303/307/308 redirect for CreateArtifact, FinalizeArtifact and
+signed-blob PUT, including same-origin and HTTPS-to-HTTP redirects. Refusal is
+terminal, closes the redirect response without consuming its body, and emits no
+Location, token or signed query. It does not inherit a globally installed urlopen
+opener. Twirp Authorization is also added as an unredirected header, so Python's
+standard redirect-request construction cannot copy it to another request. The
+direct signed PUT still carries no runtime Authorization. Trusted injected test
+openers remain a local API/testing boundary, not a mechanism for accepting
+server-directed redirects. No redirect allowlist or insecure fallback is added.
+
+`test_actions_artifact_security.py` contains deterministic inode/symlink/FIFO,
+growth/truncation, descriptor-cleanup and parent-anchor regressions. Its offline
+transport replaces only network I/O; the redirect tests execute the real urllib
+OpenerDirector and HTTP error dispatch for all five redirect statuses and
+cross-origin, same-origin, relative and downgrade targets. Existing protocol
+tests still verify that authorization is present on the original Twirp requests
+and absent from the signed PUT.
+
+```bash
+python3 -m unittest discover -s tests/control_plane -p 'test_actions_artifact_*.py' -v
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+These tests use only synthetic data and credentials and never contact a remote
+service. The two source findings from review 5120205543 are addressed by this
+implementation, not independently accepted by its author. Earlier native upload
+and retention results bind the prior uploader and cannot qualify this revision.
+New exact-head/prospective execution, real upload/download validation and fresh
+conflict-free review remain required. Reverting would restore the inspected
+file/credential boundary defects; no DDL, Rust business behavior, workflow
+definition, required denominator or production claim changes with this repair.
