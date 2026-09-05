@@ -18,9 +18,11 @@ def load_module():
 
 class GapRegisterContractTests(unittest.TestCase):
     def test_repository_gap_register_is_consistent(self) -> None:
-        result = load_module().validate()
+        module = load_module()
+        result = module.validate()
         self.assertEqual(result["schema"], "trillionnium.gap-register-validation.v1")
         self.assertGreater(result["gap_count"], 0)
+        self.assertEqual(result["gap_scope_sha256"], module.EVIDENCE.GAP_SCOPE_SHA256)
         self.assertIn("closed", result)
         self.assertIn("external_admin_blocked", result)
 
@@ -42,6 +44,7 @@ class GapRegisterContractTests(unittest.TestCase):
         for row in blocked:
             self.assertIsInstance(row["external_dependency"], str)
             self.assertTrue(row["external_dependency"].strip(), row["id"])
+            self.assertEqual(row["external_dependency"], row["external_dependency_contract"])
 
 
 if __name__ == "__main__":

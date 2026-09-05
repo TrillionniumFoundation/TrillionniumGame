@@ -98,6 +98,10 @@ def topological_order(gates: dict[str, dict[str, Any]]) -> list[str]:
 
 def derive() -> dict[str, Any]:
     gaps_document = load_json("docs/status/GAP_REGISTER.json")
+    try:
+        gap_scope_sha256 = EVIDENCE.validate_gap_scope(gaps_document)
+    except (ValueError, TypeError, KeyError, RecursionError) as error:
+        raise DerivationError(str(error)) from error
     gates_document = load_json("docs/status/PRODUCT_GATES.json")
     evidence_document = load_json("docs/evidence/index.json")
 
@@ -179,6 +183,7 @@ def derive() -> dict[str, Any]:
     return {
         "schema": "trillionnium.derived-gates.v1",
         "generated_at": now.isoformat(),
+        "gap_scope_sha256": gap_scope_sha256,
         "accepted_evidence_count": len(accepted),
         "gates": detail,
         "summary": summary,

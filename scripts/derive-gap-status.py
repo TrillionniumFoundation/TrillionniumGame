@@ -117,6 +117,10 @@ def accepted_evidence(entry: dict[str, Any]) -> bool:
 
 def derive() -> dict[str, Any]:
     register = load(REGISTER_PATH)
+    try:
+        gap_scope_sha256 = EVIDENCE.validate_gap_scope(register)
+    except (ValueError, TypeError, KeyError, RecursionError) as error:
+        raise GapDerivationError(str(error)) from error
     evidence_index = load(EVIDENCE_PATH)
     evidence = evidence_by_id(evidence_index)
     probes = source_candidates()
@@ -189,6 +193,7 @@ def derive() -> dict[str, Any]:
     return {
         "schema": "trillionnium.gap-derivation.v1",
         "project_id": register.get("project_id"),
+        "gap_scope_sha256": gap_scope_sha256,
         "gaps_total": len(derived),
         "suggested_status_counts": dict(sorted(counts.items())),
         "source_candidate_probes": len(probes),

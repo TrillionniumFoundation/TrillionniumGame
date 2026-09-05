@@ -7,6 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -333,6 +334,93 @@ class AdmissionTests(unittest.TestCase):
         ADMISSION.validate_gap_evidence(other, evidence, root=self.root, now=NOW)
 
 
+class GapScopeTests(unittest.TestCase):
+    def setUp(self):
+        self.register = ADMISSION.load_object(ROOT / "docs/status/GAP_REGISTER.json")
+
+    def validate(self, value=None):
+        return ADMISSION.validate_gap_scope(
+            copy.deepcopy(self.register if value is None else value)
+        )
+
+    def test_repository_gap_scope_is_digest_bound(self):
+        self.assertEqual(self.validate(), ADMISSION.GAP_SCOPE_SHA256)
+        self.assertEqual(self.register["scope_version"], ADMISSION.GAP_SCOPE_VERSION)
+        self.assertEqual(self.register["scope_sha256"], ADMISSION.GAP_SCOPE_SHA256)
+
+    def test_gap_order_and_set_like_list_order_are_not_semantic(self):
+        value = copy.deepcopy(self.register)
+        value["gaps"].reverse()
+        for row in value["gaps"]:
+            for key in ADMISSION.GAP_SCOPE_LIST_KEYS:
+                row[key].reverse()
+        self.assertEqual(self.validate(value), ADMISSION.GAP_SCOPE_SHA256)
+
+    def test_mutable_progress_fields_do_not_repin_gap_scope(self):
+        value = copy.deepcopy(self.register)
+        row = next(item for item in value["gaps"] if item["id"] == "GAP-P0-DATA-001")
+        row["status"] = "in-progress"
+        row["evidence_ids"] = ["TG-EV-SYNTHETIC-NOT-ADMITTED"]
+        self.assertEqual(self.validate(value), ADMISSION.GAP_SCOPE_SHA256)
+        governed = next(item for item in value["gaps"] if item["id"] == "GAP-P0-GOV-001")
+        governed["status"] = "closed"
+        governed["external_dependency"] = None
+        self.assertEqual(self.validate(value), ADMISSION.GAP_SCOPE_SHA256)
+
+    def test_semantic_gap_scope_cannot_be_shrunk_or_relabelled(self):
+        mutations = {
+            "severity": lambda row: row.update(severity="P2"),
+            "owner": lambda row: row.update(owner_role="other-owner"),
+            "claims": lambda row: row.update(blocking_claims=[]),
+            "paths": lambda row: row.update(affected_paths=[]),
+            "criteria": lambda row: row.update(close_criteria=["reduced criterion"]),
+            "types": lambda row: row.update(required_evidence_types=["manifest"]),
+            "issues": lambda row: row.update(issue_refs=[]),
+            "external-contract": lambda row: row.update(
+                external_dependency_contract="different external contract"
+            ),
+        }
+        for label, mutate in mutations.items():
+            value = copy.deepcopy(self.register)
+            row = next(item for item in value["gaps"] if item["id"] == "GAP-P0-DATA-001")
+            if label == "external-contract":
+                row = next(item for item in value["gaps"] if item["id"] == "GAP-P0-GOV-001")
+            mutate(row)
+            with self.subTest(label=label), self.assertRaises(
+                ADMISSION.AdmissionError
+            ):
+                self.validate(value)
+
+    def test_gap_set_policy_and_declared_digest_are_closed_world(self):
+        values = []
+        removed = copy.deepcopy(self.register)
+        removed["gaps"].pop()
+        values.append(removed)
+        policy = copy.deepcopy(self.register)
+        policy["closure_policy"]["implementation_only_closes_gap"] = True
+        values.append(policy)
+        statuses = copy.deepcopy(self.register)
+        statuses["status_values"].append("invented")
+        values.append(statuses)
+        declared = copy.deepcopy(self.register)
+        declared["scope_sha256"] = "0" * 64
+        values.append(declared)
+        for value in values:
+            with self.subTest(value=value.get("scope_sha256")), self.assertRaises(
+                ADMISSION.AdmissionError
+            ):
+                self.validate(value)
+
+    def test_unresolved_external_dependency_cannot_be_hidden(self):
+        value = copy.deepcopy(self.register)
+        row = next(item for item in value["gaps"] if item["id"] == "GAP-P0-GOV-001")
+        row["external_dependency"] = None
+        with self.assertRaisesRegex(
+            ADMISSION.AdmissionError, "differs from immutable contract"
+        ):
+            self.validate(value)
+
+
 class ConsumerWiringTests(unittest.TestCase):
     """Exercise the real entry points, not a second acceptance implementation."""
     def setUp(self):
@@ -412,6 +500,24 @@ class ConsumerWiringTests(unittest.TestCase):
         path.write_text('{"entries":[],"entries":[]}')
         with self.assertRaises(checker.ValidationError):
             checker.validate(path, self.fixture.root, now=NOW)
+
+    def test_every_gap_consumer_invokes_shared_scope_validation(self):
+        cases = (
+            ("check-gap-register", "validate", ()),
+            ("derive-gap-status", "derive", ()),
+            ("derive-gates", "derive", ()),
+            ("check-status-transitions", "validate_gaps", ({}, set())),
+        )
+        for name, function, arguments in cases:
+            loaded = self.modules[name]
+            error = (loaded.ValidationError if name in {"check-gap-register", "check-status-transitions"}
+                     else loaded.GapDerivationError if name == "derive-gap-status"
+                     else loaded.DerivationError)
+            loaded.ROOT = ROOT
+            with self.subTest(name=name), patch.object(
+                loaded.EVIDENCE, "validate_gap_scope", side_effect=ValueError("scope sentinel")
+            ), self.assertRaisesRegex(error, "scope sentinel"):
+                getattr(loaded, function)(*arguments)
 
     def test_every_consumer_has_one_shared_admission_module(self):
         for name, loaded in self.modules.items():

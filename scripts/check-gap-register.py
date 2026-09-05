@@ -173,6 +173,10 @@ def validate() -> dict[str, Any]:
     )
     require(register.get("project_id") == "trillionnium-game", "unexpected project_id")
     require(register.get("plan_version") == 3, "gap register must target plan v3")
+    try:
+        gap_scope_sha256 = EVIDENCE.validate_gap_scope(register)
+    except (ValueError, TypeError, KeyError, RecursionError) as error:
+        raise ValidationError(str(error)) from error
 
     status_values = register.get("status_values")
     require(
@@ -310,6 +314,7 @@ def validate() -> dict[str, Any]:
 
     return {
         "schema": "trillionnium.gap-register-validation.v1",
+        "gap_scope_sha256": gap_scope_sha256,
         "gap_count": len(rows),
         "status_counts": dict(sorted(counts.items())),
         "external_admin_blocked": external_blocked,

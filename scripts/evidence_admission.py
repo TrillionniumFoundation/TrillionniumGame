@@ -41,6 +41,21 @@ EVIDENCE_TYPES = frozenset({
     "cutover", "retirement",
 })
 
+GAP_SCOPE_VERSION = 1
+GAP_SCOPE_KEYS = (
+    "id", "severity", "category", "title", "owner_role",
+    "blocking_claims", "affected_paths", "close_criteria",
+    "required_evidence_types", "issue_refs", "external_dependency_contract",
+)
+GAP_SCOPE_LIST_KEYS = frozenset({
+    "blocking_claims", "affected_paths", "close_criteria",
+    "required_evidence_types", "issue_refs",
+})
+# Updated only with an explicit reviewed semantic-scope change. Status, evidence
+# references and resolved external-dependency state are deliberately excluded.
+GAP_SCOPE_SHA256 = "324ae9de1ef9934425e01746784302dee1117b7bb5b0e1443c3f2d962454c125"
+
+
 
 class AdmissionError(ValueError):
     """A structural admission prerequisite is absent or contradictory."""
@@ -400,6 +415,87 @@ def entry_eligible(row: dict[str, Any], *, root: Path, now: datetime | None = No
         return True
     except (OSError, AdmissionError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
         return False
+
+
+def gap_scope_projection(register: dict[str, Any]) -> dict[str, Any]:
+    """Return the immutable gap contract independent of mutable progress state."""
+    need(isinstance(register, dict), "gap register must be an object")
+    need(register.get("schema") == "trillionnium.gap-register.v1",
+         "unexpected gap scope schema")
+    need(register.get("project_id") == "trillionnium-game",
+         "unexpected gap scope project")
+    need(register.get("plan_version") == 3, "gap scope must target plan v3")
+    statuses = register.get("status_values")
+    need(isinstance(statuses, list) and statuses
+         and all(canonical_text(value) for value in statuses)
+         and len(statuses) == len(set(statuses)), "invalid gap status scope")
+    policy = register.get("closure_policy")
+    need(isinstance(policy, dict) and policy, "gap closure policy required")
+    rows = register.get("gaps")
+    need(isinstance(rows, list) and rows, "gap scope rows required")
+    projected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        need(isinstance(row, dict), "gap scope row must be an object")
+        gap_id = row.get("id")
+        need(isinstance(gap_id, str)
+             and re.fullmatch(r"GAP-P[0-2]-[A-Z0-9][A-Z0-9-]{2,127}", gap_id) is not None,
+             "invalid immutable gap ID")
+        need(gap_id not in seen, "duplicate immutable gap ID")
+        seen.add(gap_id)
+        need(row.get("severity") in {"P0", "P1", "P2"},
+             f"{gap_id}: invalid immutable severity")
+        for key in ("category", "title", "owner_role"):
+            need(canonical_text(row.get(key)), f"{gap_id}: invalid immutable {key}")
+        contract = row.get("external_dependency_contract")
+        need(contract is None or canonical_text(contract),
+             f"{gap_id}: invalid external dependency contract")
+        current_dependency = row.get("external_dependency")
+        if row.get("status") == "closed":
+            need(current_dependency in (None, ""),
+                 f"{gap_id}: closed gap retains an external dependency")
+        else:
+            need(current_dependency == contract,
+                 f"{gap_id}: mutable external dependency differs from immutable contract")
+        item: dict[str, Any] = {}
+        for key in GAP_SCOPE_KEYS:
+            need(key in row, f"{gap_id}: missing immutable gap field {key}")
+            value = row[key]
+            if key in GAP_SCOPE_LIST_KEYS:
+                need(isinstance(value, list)
+                     and all(canonical_text(entry) for entry in value)
+                     and len(value) == len(set(value)),
+                     f"{gap_id}: invalid immutable list {key}")
+                if key in {"close_criteria", "required_evidence_types"}:
+                    need(bool(value), f"{gap_id}: immutable {key} is empty")
+                if key == "required_evidence_types":
+                    need(set(value) <= EVIDENCE_TYPES,
+                         f"{gap_id}: unsupported immutable evidence type")
+                value = sorted(value)
+            item[key] = value
+        projected.append(item)
+    return {
+        "schema": register["schema"],
+        "project_id": register["project_id"],
+        "plan_version": register["plan_version"],
+        "status_values": sorted(statuses),
+        "closure_policy": policy,
+        "gaps": sorted(projected, key=lambda item: item["id"]),
+    }
+
+
+def validate_gap_scope(register: dict[str, Any]) -> str:
+    """Reject status edits that silently shrink or rewrite a registered gap."""
+    need(register.get("scope_version") == GAP_SCOPE_VERSION,
+         "unexpected gap scope version")
+    need(register.get("scope_sha256") == GAP_SCOPE_SHA256,
+         "gap register scope digest declaration drift")
+    encoded = json.dumps(gap_scope_projection(register), sort_keys=True,
+                         separators=(",", ":"), ensure_ascii=False,
+                         allow_nan=False).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    need(digest == GAP_SCOPE_SHA256, "immutable gap scope digest drift")
+    return digest
 
 
 def validate_gap_evidence(gap: dict[str, Any], evidence: dict[str, dict[str, Any]],

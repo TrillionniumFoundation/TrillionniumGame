@@ -3,7 +3,7 @@
   "project_id": "trillionnium-game",
   "plan_version": 3,
   "status": "source-candidate",
-  "base_commit": "c66deb47298faa19164c7060cd0efa2584210e07",
+  "base_commit": "9f5524815422ed6e59c6a04fa3b5389a3ceef281",
   "task_ids": [
     "TG-V3-001",
     "TG-V3-002"
@@ -13,17 +13,18 @@
     "GAP-P0-EVIDENCE-001"
   ],
   "source": "scripts/check-status-transitions.py",
-  "source_blob": "18308d4d0b24c7869c13791ebc7f2942c4edfa6c",
+  "source_blob": "b02ccca04eb4b25fc7e26761bd5c7acfaf5f92b9",
   "regression_suite": "tests/control_plane/test_execution_acceptance.py",
   "test_blob": "a2ed5efb0de344ab412a4db989de81601197eee9",
   "evidence_admission_regression": "tests/control_plane/test_evidence_admission.py",
-  "evidence_admission_test_blob": "8085037bee674862e6895fd073757f4e2d66b8c1",
+  "evidence_admission_test_blob": "1ff45799675849b1c02722cf8399ee952a190dde",
   "evidence_schema": "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
   "evidence_schema_blob": "3e12e964054fa890bfbbf0622c336eecc36a878e",
   "reproduced_defects": [
     "A backlog task could replace its immutable gate, blocker and evidence scope with a smaller mutable override and pass accepted-task validation.",
     "The accepted-task validator required roadmap IDs such as TG-V3-002 in evidence, while the evidence schema rejected every TG-V3 task ID, making legitimate roadmap acceptance impossible.",
-    "Without a digest-bound milestone semantic projection, a future status-only edit could remove a roadmap dependency, gap or evidence class before acceptance."
+    "Without a digest-bound milestone semantic projection, a future status-only edit could remove a roadmap dependency, gap or evidence class before acceptance.",
+    "Gap severity, owner, blocked claims, affected paths, close criteria, evidence types, issue links and external-dependency meaning could all be rewritten in a status change; the five real control entry points accepted the reduced P0 data gap."
   ],
   "implemented": [
     "Digest-bound 120-task identity, dependency, gate membership and workstream scope; unspecified tasks remain planned.",
@@ -31,7 +32,8 @@
     "Every accepted backlog task requires all canonical gates passed for one exact target and retained evidence mapped to both task and gate with full type coverage.",
     "Digest-bound current-milestone identities, dependencies, gaps, deliverables, acceptance clauses and required evidence; only status, target and evidence references are mutable.",
     "Evidence schema supports canonical TG-W backlog and TG-V3 roadmap task IDs while rejecting malformed or unapproved version namespaces.",
-    "Existing shared retained-evidence admission and product-gate derivation remain the only credit and gate-status authorities."
+    "Existing shared retained-evidence admission and product-gate derivation remain the only credit and gate-status authorities.",
+    "Digest-bind the complete 18-gap semantic projection and route every gap, gate and execution consumer through one shared validator; mutable status cannot downgrade severity, remove a criterion/type/gap or hide an unresolved external dependency."
   ],
   "validation_rule": "Local regression results are retained separately with the exact tested tree; this record alone grants no execution, gap, gate or product acceptance credit.",
   "limitations": [
@@ -63,8 +65,85 @@
     "native_final_head_verified": false,
     "independently_accepted": false,
     "gap_closed": false,
-    "source_blob": "9446e7a99b5c17a1e73eae309d8a5ed31abdb0a0",
+    "source_blob": "01d62033b7be363c0e406162d866e89110d21ece",
     "schema_blob": "3e12e964054fa890bfbbf0622c336eecc36a878e",
-    "test_blob": "8085037bee674862e6895fd073757f4e2d66b8c1"
+    "test_blob": "1ff45799675849b1c02722cf8399ee952a190dde"
+  },
+  "gap_scope_binding": {
+    "status": "source-candidate",
+    "scope_version": 1,
+    "scope_sha256": "324ae9de1ef9934425e01746784302dee1117b7bb5b0e1443c3f2d962454c125",
+    "gap_register": "docs/status/GAP_REGISTER.json",
+    "gap_register_blob": "d6341a5c9424747650638795fa9e829db4cc9c31",
+    "shared_source": "scripts/evidence_admission.py",
+    "shared_source_blob": "01d62033b7be363c0e406162d866e89110d21ece",
+    "consumers": [
+      {
+        "path": "scripts/check-gap-register.py",
+        "blob": "ccc1e46d07efcbdbff4d5593d1daf8c63f66f3b2"
+      },
+      {
+        "path": "scripts/derive-gap-status.py",
+        "blob": "9d8820f04313a3bce7b33d72a2de371edf369673"
+      },
+      {
+        "path": "scripts/derive-gates.py",
+        "blob": "ab010e33d1dfcf0fea1b7e9eab78e06309667759"
+      },
+      {
+        "path": "scripts/check-status-transitions.py",
+        "blob": "b02ccca04eb4b25fc7e26761bd5c7acfaf5f92b9"
+      }
+    ],
+    "regressions": [
+      {
+        "path": "tests/control_plane/test_evidence_admission.py",
+        "blob": "1ff45799675849b1c02722cf8399ee952a190dde"
+      },
+      {
+        "path": "tests/control_plane/test_gap_register.py",
+        "blob": "c9953f9a00683c944e590900954be46d250e5df7"
+      }
+    ],
+    "reproduced_before_fix": {
+      "semantic_mutation": "GAP-P0-DATA-001 was downgraded to P2 and stripped to one criterion/type with empty claims, paths and issues.",
+      "unexpected_successful_entry_points": [
+        "check-gap-register.py",
+        "derive-gap-status.py",
+        "derive-gates.py",
+        "check-status-transitions.py",
+        "check-plan.py"
+      ]
+    },
+    "verified_after_fix": {
+      "same_mutation_rejected_by_all_entry_points": true,
+      "diagnostic": "immutable gap scope digest drift",
+      "focused_tests_passed": 55,
+      "control_checks_passed": 11
+    },
+    "mutable_fields": [
+      "status",
+      "evidence_ids",
+      "resolved external_dependency value on a closed gap"
+    ],
+    "immutable_fields": [
+      "id",
+      "severity",
+      "category",
+      "title",
+      "owner_role",
+      "blocking_claims",
+      "affected_paths",
+      "close_criteria",
+      "required_evidence_types",
+      "issue_refs",
+      "external_dependency_contract",
+      "gap set",
+      "status values",
+      "closure policy"
+    ],
+    "native_final_head_verified": false,
+    "independently_accepted": false,
+    "gap_closed": false
   }
 }

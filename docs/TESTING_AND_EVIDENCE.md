@@ -511,7 +511,7 @@ python3 scripts/check-status-transitions.py
 python3 scripts/check-plan.py
 ```
 
-## 20. Gap-bound evidence mappings
+## 21. Gap-bound evidence mappings
 
 Accepted retained evidence carries a nonempty canonical `gap_ids` mapping in both
 the index row and the retained manifest. The shared admission contract compares
@@ -532,3 +532,37 @@ cross-gap credit path and verifies that correcting the explicit mapping is the o
 way the same retained fixture can qualify. The real gap-register consumer has a
 separate regression, so a downstream wrapper cannot silently weaken the shared
 rule. Synthetic fixtures do not constitute real gap acceptance.
+
+
+## 22. Immutable gap closure scope
+
+A gap cannot define a smaller proof obligation in the same status edit that
+claims progress. The shared admission module canonically binds every registered
+gap's identity, severity, category, owner, blocked claims, affected paths, close
+criteria, evidence classes, issue references and external-dependency contract.
+The gap set, status vocabulary and closure policy are part of the same digest.
+Set-like list ordering does not affect the digest, but removing or changing any
+semantic value requires an explicit reviewed repin.
+
+Mutable fields remain status, `evidence_ids` and the resolved runtime value of
+`external_dependency`. Before closure the runtime value must equal the immutable
+external-dependency contract. A closed row may clear it only after the normal
+retained-evidence checks pass; the contract itself remains in the immutable
+projection. This prevents a P0/P1 severity downgrade, criterion deletion, evidence
+type reduction, gap removal or hidden external dependency from becoming a
+status-only acceptance path.
+
+`check-gap-register.py`, `derive-gap-status.py`, `derive-gates.py` and
+`check-status-transitions.py` all invoke the same validator. Regression tests
+mutate every protected field, the gap set, status vocabulary, closure policy,
+declared digest and external-dependency state. Synthetic scope tests grant no gap
+closure, execution credit, review or production authority.
+
+```bash
+python3 -m unittest tests.control_plane.test_evidence_admission.GapScopeTests -v
+python3 -m unittest tests.control_plane.test_evidence_admission.ConsumerWiringTests.test_every_gap_consumer_invokes_shared_scope_validation -v
+python3 scripts/check-gap-register.py
+python3 scripts/derive-gap-status.py
+python3 scripts/derive-gates.py
+python3 scripts/check-status-transitions.py
+```

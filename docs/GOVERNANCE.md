@@ -145,6 +145,23 @@ review, administrative read-back and protected admission remain separately
 mandatory. This contract introduces no automatic acceptance and does not change
 any existing task/gap status, product gate or compatibility claim.
 
+### Gap closure scope is immutable; progress state is not
+
+`GAP_REGISTER.json` separates the immutable definition of every gap from its
+mutable progress. Gap identity, severity, category, owner role, blocked claims,
+affected paths, close criteria, required evidence types, issue references and
+external-dependency contract are projected into one canonical digest. Status and
+`evidence_ids` remain mutable; an external dependency may be cleared only on a
+closed row while its immutable contract remains available for audit.
+
+All gap consumers call the same scope validator. A status update cannot remove a
+criterion, downgrade a P0/P1 to avoid independent review, narrow evidence types,
+remove a gap, or hide an unresolved external dependency. An approved semantic
+change requires an explicit source change and digest repin; editing the declared
+digest alone fails. The digest does not prove that a criterion has been met.
+Exact retained evidence, review, administrative read-back and every close
+criterion remain independently mandatory.
+
 ## 9. Documentation governance
 
 The exact live Markdown set under `docs/` is defined by `docs/DOCUMENTATION_AUTHORITY.json`. Each topic has one current document. New version/date/final/candidate copies are forbidden. Replace the current document and use Git history for earlier content.

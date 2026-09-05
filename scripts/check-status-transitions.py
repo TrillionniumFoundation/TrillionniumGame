@@ -164,6 +164,10 @@ def validate_gaps(
     evidence: dict[str, dict[str, Any]], accepted_evidence: set[str]
 ) -> dict[str, dict[str, Any]]:
     register = load_json("docs/status/GAP_REGISTER.json")
+    try:
+        EVIDENCE.validate_gap_scope(register)
+    except (ValueError, TypeError, KeyError, RecursionError) as error:
+        raise ValidationError(str(error)) from error
     require(register.get("schema") == "trillionnium.gap-register.v1", "gap register schema")
     gaps = unique_rows(register.get("gaps", []), "id", "gaps")
     require(len(gaps) >= 10, "gap register unexpectedly small")
