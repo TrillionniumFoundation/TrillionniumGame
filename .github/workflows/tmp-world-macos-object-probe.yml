@@ -1,0 +1,49 @@
+name: tmp-world-macos-object-probe
+
+on:
+  push:
+    branches:
+      - ops/game-world-arm-object-probe-20260906
+    paths:
+      - .github/workflows/tmp-world-macos-object-probe.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tmp-world-macos-object-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: macos-14
+    timeout-minutes: 5
+    env:
+      WORLD_TOKEN: ${{ secrets.WORLD_REPOSITORY_TOKEN }}
+    steps:
+      - name: Create one fixed unreferenced blob in World
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${WORLD_TOKEN:-}" || { echo 'WORLD_OBJECT_WRITE_PROBE=NO_CONFIGURED_TOKEN'; exit 1; }
+          python3 - <<'PY'
+          import base64, hashlib, json, os, urllib.request
+          payload = b'trnm-world-macos-object-write-probe-v1\n'
+          expected = hashlib.sha1(b'blob ' + str(len(payload)).encode() + b'\0' + payload).hexdigest()
+          request = urllib.request.Request(
+              'https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/git/blobs',
+              data=json.dumps({'content': base64.b64encode(payload).decode(), 'encoding': 'base64'}).encode(),
+              headers={
+                  'Authorization': 'Bearer ' + os.environ['WORLD_TOKEN'],
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'Content-Type': 'application/json',
+              },
+              method='POST',
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              result = json.load(response)
+          if result.get('sha') != expected:
+              raise SystemExit('WORLD_OBJECT_WRITE_PROBE=HASH_MISMATCH')
+          print('WORLD_OBJECT_WRITE_PROBE=PASS blob=' + expected)
+          PY
