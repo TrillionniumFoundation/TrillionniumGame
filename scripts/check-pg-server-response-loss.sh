@@ -93,10 +93,32 @@ if ! docker exec -i "$container" psql \
   exit 1
 fi
 
+database_url="postgresql://postgres:${password}@127.0.0.1:${port}/${database}"
+query() {
+  docker exec "$container" psql -X -At -U postgres -d "$database" -c "$1"
+}
+
 cargo build --workspace --all-targets --locked >"$run_root/build.log" 2>&1
+
+TRNM_REQUIRE_LIVE_DATABASE=1 \
+TRNM_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE=postgresql \
+  cargo test -p trnm-persistence-pg --locked --test session_response_loss \
+    -- --nocapture 2>&1 | tee "$run_root/session-response-loss.log"
+grep -Eq 'test result: ok[.] 1 passed; 0 failed; 0 ignored;' \
+  "$run_root/session-response-loss.log"
+test "$(query 'SELECT count(*) FROM trnm_session_families;')" = 1
+test "$(query 'SELECT count(*) FROM trnm_refresh_tokens;')" = 2
+test "$(query 'SELECT count(*) FROM trnm_session_families WHERE active_token_id IS NULL AND revoked_reason = 2;')" = 1
+{
+  printf 'session_families=%s\n' "$(query 'SELECT count(*) FROM trnm_session_families;')"
+  printf 'refresh_tokens=%s\n' "$(query 'SELECT count(*) FROM trnm_refresh_tokens;')"
+  printf 'refresh_replay_revoked_families=%s\n' \
+    "$(query 'SELECT count(*) FROM trnm_session_families WHERE active_token_id IS NULL AND revoked_reason = 2;')"
+} >"$run_root/session-database-assertions.txt"
+
 binary=target/debug/examples/trnm_server_pg_slice
 test -x "$binary"
-database_url="postgresql://postgres:${password}@127.0.0.1:${port}/${database}"
 
 start_server() {
   label=$1
@@ -153,9 +175,6 @@ set -e
 unset server_pid
 printf '%s\n' "$lost_process_rc" >"$run_root/lost-process-rc.txt"
 
-query() {
-  docker exec "$container" psql -X -At -U postgres -d "$database" -c "$1"
-}
 for _ in $(seq 1 100); do
   [[ $(query 'SELECT count(*) FROM trnm_command_receipts;') == 1 ]] && break
   sleep 0.05
@@ -221,11 +240,14 @@ cat >"$run_root/result.json" <<JSON
     "durable_event_after_response_loss": true,
     "durable_outbox_after_response_loss": true,
     "restart_replayed_exact_duplicate": true,
+    "refresh_response_loss_exact_successor_replayed": true,
+    "refresh_changed_successor_revoked_family": true,
     "duplicate_visible_effects": 0,
     "acknowledged_or_committed_command_loss": 0
   },
   "claims": {
     "postgresql_ambiguous_response_slice_passed": true,
+    "postgresql_refresh_response_loss_slice_passed": true,
     "socket_protocol_compatible": false,
     "cockroachdb_passed": false,
     "sg4_complete": false,
