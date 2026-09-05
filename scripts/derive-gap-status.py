@@ -50,8 +50,8 @@ def text(path: str) -> str:
 def source_candidates() -> dict[str, dict[str, object]]:
     probes: dict[str, tuple[str, tuple[str, ...]]] = {
         "GAP-P0-PLAN-001": (
-            "scripts/check-status-transitions.py",
-            ("allowed_transitions", "EXECUTION_STATUS.json"),
+            "scripts/status_transition_policy.py",
+            ("allowed_transitions", "validate_transition", "compare_roots"),
         ),
         "GAP-P0-EVIDENCE-001": (
             "docs/evidence/index.json",
@@ -71,7 +71,11 @@ def source_candidates() -> dict[str, dict[str, object]]:
         ),
         "GAP-P0-CRYPTO-001": (
             ".github/workflows/trillionnium-game-merge-gate.yml",
-            ("token-jwt-adapter", "security-critical-rust"),
+            (
+                "token-jwt-adapter",
+                "token-crypto-provider",
+                "token-jwt-provider-adapter",
+            ),
         ),
         "GAP-P1-CRYPTO-002": (
             "crates/trnm-token-jwt-adapter/src/sha256.rs",
