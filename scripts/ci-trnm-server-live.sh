@@ -84,13 +84,19 @@ else
     --listen-addr=127.0.0.1:26257 \
     --http-addr=127.0.0.1:18081 \
     --store=/cockroach/cockroach-data > "$evidence/container-id.txt"
+  ready=false
   for _ in $(seq 1 160); do
     if docker exec "$container" /cockroach/cockroach sql \
       --insecure --host=127.0.0.1:26257 --execute='SELECT 1' >/dev/null 2>&1; then
+      ready=true
       break
     fi
     sleep 0.25
   done
+  if [[ "$ready" != true ]]; then
+    docker logs "$container" >&2 || true
+    exit 1
+  fi
   docker exec "$container" /cockroach/cockroach sql \
     --insecure --host=127.0.0.1:26257 \
     --execute='CREATE DATABASE IF NOT EXISTS trnm'
@@ -138,6 +144,17 @@ if grep -F "$admin_token" "$evidence/check-config.log"; then
 fi
 "$binary" migrate > "$evidence/migrate.log" 2>&1
 grep -F "migration profile=${profile} applied=true table_count=10" "$evidence/migrate.log"
+
+TRNM_REQUIRE_LIVE_DATABASE=1 \
+TRNM_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE="$profile" \
+  cargo test -p trnm-persistence-pg --locked --test session_response_loss \
+    -- --nocapture 2>&1 | tee "$evidence/session-response-loss.log"
+grep -Eq 'test result: ok[.] 1 passed; 0 failed; 0 ignored;' \
+  "$evidence/session-response-loss.log"
+test "$(db_scalar 'SELECT count(*) FROM trnm_session_families')" = 1
+test "$(db_scalar 'SELECT count(*) FROM trnm_refresh_tokens')" = 2
+test "$(db_scalar 'SELECT count(*) FROM trnm_session_families WHERE active_token_id IS NULL AND revoked_reason = 2')" = 1
 
 start_server() {
   phase=$1
@@ -207,9 +224,18 @@ printf 'pending_outbox=%s\n' "$pending" >> "$evidence/database-assertions.txt"
 source_commit=$(db_scalar 'SELECT source_commit FROM trnm_schema_metadata WHERE singleton = 1')
 test "$source_commit" = "$candidate_sha"
 printf 'schema_source_commit=%s\n' "$source_commit" >> "$evidence/database-assertions.txt"
+printf 'session_families=%s\n' \
+  "$(db_scalar 'SELECT count(*) FROM trnm_session_families')" \
+  >> "$evidence/database-assertions.txt"
+printf 'refresh_tokens=%s\n' \
+  "$(db_scalar 'SELECT count(*) FROM trnm_refresh_tokens')" \
+  >> "$evidence/database-assertions.txt"
+printf 'refresh_replay_revoked_families=%s\n' \
+  "$(db_scalar 'SELECT count(*) FROM trnm_session_families WHERE active_token_id IS NULL AND revoked_reason = 2')" \
+  >> "$evidence/database-assertions.txt"
 
 cat > "$evidence/summary.json" <<EOF
-{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
+{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
 EOF
 python3 -m json.tool "$evidence/summary.json" >/dev/null
 find "$evidence" -type f ! -name SHA256SUMS -print0 \
