@@ -2,7 +2,7 @@ name: readonly-review-export
 
 on:
   push:
-    branches: [tooling/readonly-review-export-v7-8fde7e81]
+    branches: [tooling/readonly-review-export-arm-8fde7e81]
 
 permissions:
   contents: read
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   diagnostic-export-not-acceptance:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 18
     steps:
       - name: Fetch exact diagnostic code and unchanged product tree
