@@ -59,7 +59,8 @@ class RetainedFixture:
             "independent_review": self.review, "expires_at": "2026-09-06T00:00:00Z",
             "path": "docs/evidence/fixture.json", "artifacts": [self.artifact],
             "claim_ids": ["C0"], "gate_ids": ["GATE-FIXTURE"],
-            "task_ids": ["TG-W0-001"], "parity_ids": [],
+            "task_ids": ["TG-W0-001"], "gap_ids": ["GAP-P0-FIXTURE-001"],
+            "parity_ids": [],
         }
         self.manifest = {
             "schema": "trillionnium.evidence.v1", "evidence_id": self.entry["evidence_id"],
@@ -75,7 +76,7 @@ class RetainedFixture:
             "result": {"summary": "fixture", "assertions_total": 3, "assertions_passed": 3, "divergences": []},
             "artifacts": [self.artifact], "limitations": ["Synthetic fixture, not real acceptance."],
             "expires_at": self.entry["expires_at"], "review": self.review,
-            **{key: self.entry[key] for key in ("claim_ids", "gate_ids", "task_ids", "parity_ids")},
+            **{key: self.entry[key] for key in ("claim_ids", "gate_ids", "task_ids", "gap_ids", "parity_ids")},
         }
         self.entry = copy.deepcopy(self.entry)
         self.manifest = copy.deepcopy(self.manifest)
@@ -120,7 +121,7 @@ class AdmissionTests(unittest.TestCase):
 
     def test_missing_required_entry_metadata_rejects(self):
         for key in ("status", "compatibility_credit", "schema_valid", "target_identity_verified_by_current_repo",
-                    "target", "independent_review", "path", "artifacts", "gate_ids", "task_ids"):
+                    "target", "independent_review", "path", "artifacts", "gate_ids", "task_ids", "gap_ids"):
             with self.subTest(key=key):
                 self.reject(lambda r: r.pop(key))
 
@@ -231,7 +232,8 @@ class AdmissionTests(unittest.TestCase):
     def test_manifest_metadata_must_match_index(self):
         for key, value in (("evidence_id", "TG-EV-FIXTURE-OTHER-001"), ("evidence_type", "unit"),
                            ("status", "failed"), ("generated_by_automation", False),
-                           ("expires_at", None), ("gate_ids", ["GATE-OTHER"])):
+                           ("expires_at", None), ("gate_ids", ["GATE-OTHER"]),
+                           ("gap_ids", ["GAP-P0-OTHER-001"])):
             self.reject(lambda m: m.update({key: value}), manifest=True)
         self.reject(lambda m: m["candidate"].update(commit="c" * 40), manifest=True)
         self.reject(lambda m: m["review"].update(reviewer_identity="other-reviewer"), manifest=True)
@@ -245,6 +247,9 @@ class AdmissionTests(unittest.TestCase):
         self.reject(lambda m: m["environment"].update(secret="value"), manifest=True)
         for value in ("TG-V4-002", "TG-V3-02", "TG-WX-001", "TG-V3-002-extra"):
             self.reject(lambda m, value=value: m.update(task_ids=[value]), manifest=True)
+        for value in ("GAP-P3-FIXTURE-001", "GAP-P0-", "GAP-P0-fixture-001",
+                      "GAP-P0-FIXTURE-001-extra_unsafe"):
+            self.reject(lambda m, value=value: m.update(gap_ids=[value]), manifest=True)
 
     def test_schema_accepts_current_v3_roadmap_task_ids(self):
         row = copy.deepcopy(self.fixture.entry)
@@ -304,15 +309,28 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaises(ADMISSION.AdmissionError):
             ADMISSION.validate_schema({}, {"$defs": {"loop": {"$ref": "#/$defs/loop"}}, "$ref": "#/$defs/loop"})
 
-    def test_closed_gap_requires_types_and_no_external_dependency(self):
+    def test_closed_gap_requires_types_mapping_and_no_external_dependency(self):
         row = self.fixture.entry
         gap = {"id": "GAP-P0-FIXTURE-001", "evidence_ids": [row["evidence_id"]], "required_evidence_types": ["manifest"], "external_dependency": None}
         evidence = {row["evidence_id"]: row}
         ADMISSION.validate_gap_evidence(gap, evidence, root=self.root, now=NOW)
         for changes in ({"required_evidence_types": ["manifest", "unit"]}, {"evidence_ids": []},
-                        {"evidence_ids": ["unknown"]}, {"external_dependency": "review pending"}):
+                        {"evidence_ids": ["unknown"]}, {"external_dependency": "review pending"},
+                        {"id": "GAP-P3-FIXTURE-001"}):
             with self.subTest(changes=changes), self.assertRaises(ADMISSION.AdmissionError):
                 ADMISSION.validate_gap_evidence({**gap, **changes}, evidence, root=self.root, now=NOW)
+
+    def test_evidence_for_one_gap_cannot_close_another_gap(self):
+        row = self.fixture.entry
+        evidence = {row["evidence_id"]: row}
+        other = {"id": "GAP-P0-OTHER-001", "evidence_ids": [row["evidence_id"]],
+                 "required_evidence_types": ["manifest"], "external_dependency": None}
+        with self.assertRaisesRegex(ADMISSION.AdmissionError, "not mapped to this gap"):
+            ADMISSION.validate_gap_evidence(other, evidence, root=self.root, now=NOW)
+        row["gap_ids"] = ["GAP-P0-OTHER-001"]
+        self.fixture.manifest["gap_ids"] = ["GAP-P0-OTHER-001"]
+        self.fixture.write()
+        ADMISSION.validate_gap_evidence(other, evidence, root=self.root, now=NOW)
 
 
 class ConsumerWiringTests(unittest.TestCase):
@@ -336,6 +354,16 @@ class ConsumerWiringTests(unittest.TestCase):
             self.modules["derive-gates"].accepted_evidence([row], NOW)
         with self.assertRaises(self.modules["check-gap-register"].ValidationError):
             self.modules["check-gap-register"].validate_closed_evidence("GAP-P0-FIXTURE-001", "P0", ["manifest"], [row["evidence_id"]], {row["evidence_id"]: row})
+
+
+    def test_gap_consumer_rejects_cross_gap_evidence(self):
+        checker = self.modules["check-gap-register"]
+        row = self.fixture.entry
+        with self.assertRaisesRegex(checker.ValidationError, "not mapped to this gap"):
+            checker.validate_closed_evidence(
+                "GAP-P0-OTHER-001", "P0", ["manifest"],
+                [row["evidence_id"]], {row["evidence_id"]: row},
+            )
 
     def test_future_or_stale_reviews_never_count_in_any_consumer(self):
         for overrides in ({"self_review": True}, {"independent": False}, {"reviewed_commit": "f" * 40},

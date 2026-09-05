@@ -17,9 +17,9 @@
   "regression_suite": "tests/control_plane/test_execution_acceptance.py",
   "test_blob": "a2ed5efb0de344ab412a4db989de81601197eee9",
   "evidence_admission_regression": "tests/control_plane/test_evidence_admission.py",
-  "evidence_admission_test_blob": "9fbb99bfa519459c75901f13033dc03d41493cb8",
+  "evidence_admission_test_blob": "8085037bee674862e6895fd073757f4e2d66b8c1",
   "evidence_schema": "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
-  "evidence_schema_blob": "bc79ce5ac53f6a0aa2570ac35bf2036ac13a7aaf",
+  "evidence_schema_blob": "3e12e964054fa890bfbbf0622c336eecc36a878e",
   "reproduced_defects": [
     "A backlog task could replace its immutable gate, blocker and evidence scope with a smaller mutable override and pass accepted-task validation.",
     "The accepted-task validator required roadmap IDs such as TG-V3-002 in evidence, while the evidence schema rejected every TG-V3 task ID, making legitimate roadmap acceptance impossible.",
@@ -48,5 +48,23 @@
     "gap_closed": false,
     "compatibility_credit": false,
     "production_ready": false
+  },
+  "gap_evidence_mapping": {
+    "status": "source-candidate",
+    "source": "scripts/evidence_admission.py",
+    "schema": "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
+    "regression_suite": "tests/control_plane/test_evidence_admission.py",
+    "reproduced_defect": "Accepted evidence of the right type and candidate could close an unrelated gap because no exact gap mapping was required.",
+    "implemented": [
+      "Accepted index rows and retained manifests require identical nonempty canonical gap_ids.",
+      "Gap closure requires every cited evidence row to map explicitly to the exact gap ID.",
+      "Shared admission and the real gap-register consumer both reject cross-gap evidence reuse."
+    ],
+    "native_final_head_verified": false,
+    "independently_accepted": false,
+    "gap_closed": false,
+    "source_blob": "9446e7a99b5c17a1e73eae309d8a5ed31abdb0a0",
+    "schema_blob": "3e12e964054fa890bfbbf0622c336eecc36a878e",
+    "test_blob": "8085037bee674862e6895fd073757f4e2d66b8c1"
   }
 }

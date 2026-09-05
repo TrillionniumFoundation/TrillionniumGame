@@ -510,3 +510,25 @@ python3 -m unittest tests.control_plane.test_execution_acceptance -v
 python3 scripts/check-status-transitions.py
 python3 scripts/check-plan.py
 ```
+
+## 20. Gap-bound evidence mappings
+
+Accepted retained evidence carries a nonempty canonical `gap_ids` mapping in both
+the index row and the retained manifest. The shared admission contract compares
+those arrays byte-for-meaning with the other claim/gate/task/parity mappings. A
+closed gap may cite only evidence whose `gap_ids` explicitly contains that exact
+gap ID; sharing the same evidence type, candidate commit/tree, reviewer or artifact
+is not sufficient. This prevents unrelated accepted evidence from being replayed
+to close another gap with a compatible type requirement.
+
+The schema accepts only `GAP-P0-*`, `GAP-P1-*` and `GAP-P2-*` canonical identifiers.
+Missing, empty, duplicated, malformed or index/manifest-divergent mappings fail
+before credit. Existing diagnostic and legacy rows remain readable because they
+do not receive admission credit; any future accepted record must use the revised
+retained manifest contract.
+
+`test_evidence_for_one_gap_cannot_close_another_gap` reproduces the previous
+cross-gap credit path and verifies that correcting the explicit mapping is the only
+way the same retained fixture can qualify. The real gap-register consumer has a
+separate regression, so a downstream wrapper cannot silently weaken the shared
+rule. Synthetic fixtures do not constitute real gap acceptance.

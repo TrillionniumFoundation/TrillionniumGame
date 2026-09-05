@@ -354,7 +354,7 @@ def validate_entry(row: dict[str, Any], *, root: Path, now: datetime | None = No
     need(target_identity(manifest) == (repository, commit, tree), "retained target mismatch")
     need(manifest.get("review") == review, "retained and indexed review differ")
     need(manifest.get("expires_at") == expiry_raw, "retained and indexed expiry differ")
-    for key in ("claim_ids", "gate_ids", "task_ids", "parity_ids"):
+    for key in ("claim_ids", "gate_ids", "task_ids", "gap_ids", "parity_ids"):
         values = row.get(key)
         need(isinstance(values, list) and len(values) <= 10000
              and all(canonical_text(v) for v in values)
@@ -414,12 +414,16 @@ def validate_gap_evidence(gap: dict[str, Any], evidence: dict[str, dict[str, Any
     need(isinstance(required, list) and required
          and all(isinstance(v, str) and v in EVIDENCE_TYPES for v in required)
          and len(required) == len(set(required)), "closed gap requires valid evidence types")
+    gap_id = gap.get("id")
+    need(isinstance(gap_id, str) and re.fullmatch(r"GAP-P[0-2]-[A-Z0-9][A-Z0-9-]{2,127}", gap_id) is not None,
+         "closed gap requires a canonical gap ID")
     types = set()
     targets = set()
     for evidence_id in ids:
         need(evidence_id in evidence, "closed gap cites unknown evidence")
         row = evidence[evidence_id]
         validate_entry(row, root=root, now=now)
+        need(gap_id in row["gap_ids"], "closed gap cites evidence not mapped to this gap")
         types.add(row["evidence_type"])
         targets.add(target_identity(row))
     need(len(targets) == 1, "closed gap mixes candidate identities")
