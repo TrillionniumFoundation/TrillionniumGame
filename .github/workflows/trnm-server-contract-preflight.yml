@@ -1,0 +1,42 @@
+name: trnm-server-contract-preflight
+
+on:
+  push:
+    branches: [tooling/trnm-server-contract-preflight-2026-09-05]
+
+permissions:
+  contents: write
+
+jobs:
+  fixed-source-preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Fetch exact tooling and complete fixed product source
+        shell: bash
+        run: |
+          set -euo pipefail
+          tooling="$RUNNER_TEMP/trnm-server-tooling"
+          source="$RUNNER_TEMP/trnm-server-product"
+          git init "$tooling"
+          git -C "$tooling" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$tooling" checkout --detach FETCH_HEAD
+          test "$(git -C "$tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+          cd "$tooling"
+          printf '%s\n' '5cffa7e904a7ef44cd2c7820caaa18ae160f03500a48e3cf465b1c1bc3684b21  preflight.py.gz' | sha256sum -c -
+          gzip -dc preflight.py.gz > "$RUNNER_TEMP/trnm-server-preflight.py"
+          git init "$source"
+          git -C "$source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$source" fetch --no-tags --depth=1 origin 3fb74322d014a6d7ddc050529145583b60c7ae2d
+          git -C "$source" checkout --detach FETCH_HEAD
+          test "$(git -C "$source" rev-parse HEAD)" = 3fb74322d014a6d7ddc050529145583b60c7ae2d
+          test "$(git -C "$source" rev-parse HEAD^{tree})" = 546e604e147fea3b477a2fef5a27286ece78bca8
+      - name: Reproduce failure, validate all Python and control contracts, then store blobs only
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/trnm-server-product"
+          python3 "$RUNNER_TEMP/trnm-server-preflight.py"
