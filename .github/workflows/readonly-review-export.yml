@@ -1,4 +1,4 @@
-name: qualify-current-gap-scope-head
+name: preflight-status-transition-policy
 
 on:
   push:
@@ -14,14 +14,17 @@ env:
   PRODUCT_TREE: 521846258105f8cb4c863b4a85428f50e230e63b
   PRODUCT_MERGE: ab32c43775632be2fa2244b20fd9d8e08e66979b
   PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
-  GAP_SCOPE_TEST_BLOB: e5ecdc97ce4bf1e176c91d24d434325c724ce484
+  PROPOSED_TREE: 00ca7f813f5dcb1e46935cf6bc0121ca33888c7e
+  POLICY_BLOB: f6b64f8de887ea5a7acf525a90c5723aeab80963
+  DERIVE_BLOB: ef7276d17584f24a39e5f029a2b5c49eb36ef912
+  TEST_BLOB: b0223b0ea3722c16ee67e40d397c01d88ebb1430
 
 jobs:
-  current-source-and-merge-supplementary:
+  overlay-source-and-merge:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
-      - name: Fetch exact tooling and immutable product objects
+      - name: Fetch exact tooling and product objects
         shell: bash
         run: |
           set -euo pipefail
@@ -29,7 +32,9 @@ jobs:
           git -C "$GITHUB_WORKSPACE/tooling" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
           git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object overlay/scripts/status_transition_policy.py)" = "$POLICY_BLOB"
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object overlay/scripts/derive-gap-status.py)" = "$DERIVE_BLOB"
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object overlay/tests/control_plane/test_status_transition_policy.py)" = "$TEST_BLOB"
 
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
@@ -39,39 +44,47 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse FETCH_HEAD)" = "$PRODUCT_MERGE"
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse "$PRODUCT_HEAD^{tree}")" = "$PRODUCT_TREE"
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse "$PRODUCT_MERGE^{tree}")" = "$PRODUCT_TREE"
-          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object tests/control_plane/test_gap_register_scope_lock.py)" = "$GAP_SCOPE_TEST_BLOB"
-          mapfile -t parents < <(git -C "$GITHUB_WORKSPACE/source" cat-file -p "$PRODUCT_MERGE" | sed -n 's/^parent //p')
-          test "${#parents[@]}" -eq 2
-          test "${parents[0]}" = "$BASE_COMMIT"
-          test "${parents[1]}" = "$PRODUCT_HEAD"
-          test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$PRODUCT_HEAD"
-          test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin refs/pull/63/merge | cut -f1)" = "$PRODUCT_MERGE"
 
-      - name: Execute complete Python and control qualification on source and merge
+      - name: Execute exact proposed tree on both parent objects
         shell: bash
         working-directory: source
+        env:
+          GIT_AUTHOR_NAME: Trillionnium diagnostic
+          GIT_AUTHOR_EMAIL: diagnostic@invalid
+          GIT_COMMITTER_NAME: Trillionnium diagnostic
+          GIT_COMMITTER_EMAIL: diagnostic@invalid
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
           set -euo pipefail
-          proof="$RUNNER_TEMP/gap-scope-proof"
+          proof="$RUNNER_TEMP/status-transition-proof"
           mkdir -p "$proof"
           for pair in "source:$PRODUCT_HEAD" "merge:$PRODUCT_MERGE"; do
             label=${pair%%:*}
             object=${pair#*:}
             git checkout --detach "$object"
-            test "$(git rev-parse HEAD^{tree})" = "$PRODUCT_TREE"
-            test "$(git hash-object tests/control_plane/test_gap_register_scope_lock.py)" = "$GAP_SCOPE_TEST_BLOB"
+            install -m 755 "$GITHUB_WORKSPACE/tooling/overlay/scripts/status_transition_policy.py" scripts/status_transition_policy.py
+            install -m 755 "$GITHUB_WORKSPACE/tooling/overlay/scripts/derive-gap-status.py" scripts/derive-gap-status.py
+            install -m 644 "$GITHUB_WORKSPACE/tooling/overlay/tests/control_plane/test_status_transition_policy.py" tests/control_plane/test_status_transition_policy.py
+            git add scripts/status_transition_policy.py scripts/derive-gap-status.py tests/control_plane/test_status_transition_policy.py
+            tree=$(git write-tree)
+            test "$tree" = "$PROPOSED_TREE"
+            commit=$(printf 'diagnostic overlay for %s\n' "$object" | git commit-tree "$tree" -p "$object")
+            git checkout --detach "$commit"
+            test "$(git rev-parse HEAD^{tree})" = "$PROPOSED_TREE"
+            test -z "$(git status --porcelain)"
+
+            python3 scripts/status_transition_policy.py --self-check | tee "$proof/${label}-policy-self-check.json"
+            python3 scripts/status_transition_policy.py --previous-root . --current-root . | tee "$proof/${label}-policy-self-compare.json"
             python3 -m compileall -q scripts tools tests 2>&1 | tee "$proof/${label}-compileall.log"
             python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$proof/${label}-python.log"
             grep -Eq '^Ran [1-9][0-9]* tests in ' "$proof/${label}-python.log"
             grep -qx OK "$proof/${label}-python.log"
             for test_name in \
-              test_repository_gap_scope_is_non_shrinkable \
-              test_gap_removal_or_substitution_is_rejected \
-              test_severity_external_dependency_and_policy_cannot_be_weakened \
-              test_required_evidence_and_blocking_claims_cannot_shrink \
-              test_close_criteria_denominator_and_per_gap_minimum_cannot_shrink \
-              test_duplicate_keys_ids_criteria_and_evidence_are_rejected \
-              test_required_aggregate_still_discovers_complete_python_suite; do
+              test_current_repository_is_a_valid_self_transition \
+              test_proof_stage_jumps_are_rejected \
+              test_sparse_override_cannot_jump_directly_to_accepted \
+              test_gap_cannot_jump_from_open_to_closed \
+              test_scope_membership_cannot_change_as_a_status_only_transition; do
               grep -F "$test_name" "$proof/${label}-python.log"
             done
             {
@@ -91,6 +104,18 @@ jobs:
                 python3 "scripts/$check"
               done
             } 2>&1 | tee "$proof/${label}-controls.log"
+            python3 - <<'PY' | tee "$proof/${label}-source-probes.json"
+          import importlib.util, json, sys
+          from pathlib import Path
+          path=Path('scripts/derive-gap-status.py')
+          spec=importlib.util.spec_from_file_location('preflight_gap_derivation',path)
+          module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)
+          probes=module.source_candidates()
+          for key in ('GAP-P0-PLAN-001','GAP-P0-CRYPTO-001'):
+              assert probes[key]['source_candidate'] is True, probes[key]
+              assert probes[key]['missing_tokens'] == [], probes[key]
+          print(json.dumps({key:probes[key] for key in ('GAP-P0-PLAN-001','GAP-P0-CRYPTO-001')},sort_keys=True))
+          PY
             test -z "$(git status --porcelain)"
           done
 
@@ -99,67 +124,47 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
-          proof="$RUNNER_TEMP/gap-scope-proof"
+          proof="$RUNNER_TEMP/status-transition-proof"
           git cat-file commit "$PRODUCT_HEAD" > "$proof/source-commit.txt"
           git cat-file commit "$PRODUCT_MERGE" > "$proof/merge-commit.txt"
           git ls-remote origin refs/heads/main refs/heads/$PRODUCT_BRANCH refs/pull/63/merge > "$proof/live-refs.txt"
           python3 - <<'PY'
           import hashlib, json, os, re, zipfile
           from pathlib import Path
-          root = Path(os.environ["RUNNER_TEMP"]) / "gap-scope-proof"
-          counts = {}
-          for label in ("source", "merge"):
-              text = (root / f"{label}-python.log").read_text(errors="replace")
-              match = re.search(r"^Ran ([1-9][0-9]*) tests in ", text, re.M)
-              if not match or not re.search(r"^OK$", text, re.M):
-                  raise RuntimeError(f"{label} Python summary missing")
-              counts[label] = int(match.group(1))
-          identity = {
-              "schema": "trillionnium.gap-scope-supplementary.v1",
-              "repository": "TrillionniumFoundation/TrillionniumGame",
-              "source_commit": os.environ["PRODUCT_HEAD"],
-              "source_tree": os.environ["PRODUCT_TREE"],
-              "prospective_merge": os.environ["PRODUCT_MERGE"],
-              "prospective_merge_tree": os.environ["PRODUCT_TREE"],
-              "ordered_merge_parents": [os.environ["BASE_COMMIT"], os.environ["PRODUCT_HEAD"]],
-              "gap_scope_test_blob": os.environ["GAP_SCOPE_TEST_BLOB"],
-              "producer": {key: os.environ.get(key) for key in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")},
-              "execution": {
-                  "source_python_tests_passed": counts["source"],
-                  "merge_python_tests_passed": counts["merge"],
-                  "control_checks_per_object": 11,
-                  "objects_checked": 2
-              },
-              "claims": {
-                  "supplementary_execution_observed": True,
-                  "ordinary_required_gate_passed": False,
-                  "independently_accepted": False,
-                  "gap_closed": False,
-                  "production_ready": False
-              },
-              "limitations": [
-                  "Read-only supplementary ARM execution; it cannot replace the manifest-required ordinary workflow collection.",
-                  "No live database, Rust, Go, SDK differential, endurance, administrator read-back or independent acceptance credit is granted by this packet.",
-                  "The gap-scope tests validate source semantics and do not establish that any close criterion is factually satisfied."
-              ]
-          }
-          (root / "identity.json").write_text(json.dumps(identity, indent=2) + "\n")
-          files = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
-          index = [
-              {"path": name, "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-              for name, data in sorted(files.items())
-          ]
-          (root / "file-index.json").write_text(json.dumps(index, indent=2) + "\n")
-          files = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
-          with zipfile.ZipFile(root / "gap-scope-supplementary.zip", "x", zipfile.ZIP_DEFLATED) as archive:
-              for name, data in sorted(files.items()):
-                  archive.writestr(name, data)
+          root=Path(os.environ['RUNNER_TEMP'])/'status-transition-proof'
+          counts={}
+          for label in ('source','merge'):
+              text=(root/f'{label}-python.log').read_text(errors='replace')
+              match=re.search(r'^Ran ([1-9][0-9]*) tests in ',text,re.M)
+              if not match or not re.search(r'^OK$',text,re.M): raise RuntimeError(label+' tests incomplete')
+              counts[label]=int(match.group(1))
+          identity={
+              'schema':'trillionnium.status-transition-preflight.v1',
+              'repository':'TrillionniumFoundation/TrillionniumGame',
+              'base_source_commit':os.environ['PRODUCT_HEAD'],
+              'base_source_tree':os.environ['PRODUCT_TREE'],
+              'base_merge_commit':os.environ['PRODUCT_MERGE'],
+              'proposed_tree':os.environ['PROPOSED_TREE'],
+              'changed_blobs':{
+                  'scripts/status_transition_policy.py':os.environ['POLICY_BLOB'],
+                  'scripts/derive-gap-status.py':os.environ['DERIVE_BLOB'],
+                  'tests/control_plane/test_status_transition_policy.py':os.environ['TEST_BLOB']},
+              'execution':{'source_python_tests_passed':counts['source'],'merge_python_tests_passed':counts['merge'],'control_checks_per_object':11},
+              'producer':{k:os.environ.get(k) for k in ('GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_JOB')},
+              'claims':{'source_candidate':True,'product_branch_changed':False,'ordinary_required_gate_passed':False,'independently_accepted':False,'gap_closed':False},
+              'limitations':['Temporary local overlay commits only; product branch and PR merge object remain unchanged.','No live database, Rust, Go, history provenance, reviewer or administrator evidence is created.','The policy enables exact base-to-head checking but ordinary workflow wiring remains a separate reviewed change.']}
+          (root/'identity.json').write_text(json.dumps(identity,indent=2)+'\n')
+          files={p.name:p.read_bytes() for p in root.iterdir() if p.is_file()}
+          (root/'file-index.json').write_text(json.dumps([{'path':n,'size_bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()} for n,b in sorted(files.items())],indent=2)+'\n')
+          files={p.name:p.read_bytes() for p in root.iterdir() if p.is_file()}
+          with zipfile.ZipFile(root/'status-transition-preflight.zip','x',zipfile.ZIP_DEFLATED) as z:
+              for n,b in sorted(files.items()): z.writestr(n,b)
           PY
 
       - name: Retain exact diagnostic packet
         uses: ./tooling/publish
 
-      - name: Reject moved product identities
+      - name: Prove product refs did not move
         shell: bash
         working-directory: source
         run: |
@@ -167,4 +172,4 @@ jobs:
           test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$BASE_COMMIT"
           test "$(git ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$PRODUCT_HEAD"
           test "$(git ls-remote origin refs/pull/63/merge | cut -f1)" = "$PRODUCT_MERGE"
-          printf 'source=%s\nmerge=%s\ntree=%s\nordinary_required_gate_credit=false\n' "$PRODUCT_HEAD" "$PRODUCT_MERGE" "$PRODUCT_TREE"
+          printf 'proposed_tree=%s\nproduct_branch_changed=false\n' "$PROPOSED_TREE"
