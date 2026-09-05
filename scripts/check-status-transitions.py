@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import re
 import sys
 from collections import defaultdict, deque
@@ -10,6 +11,16 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+
+_SPEC = importlib.util.spec_from_file_location(
+    "trnm_evidence_admission_" + Path(__file__).stem.replace("-", "_"),
+    Path(__file__).with_name("evidence_admission.py"),
+)
+if _SPEC is None or _SPEC.loader is None:
+    raise RuntimeError("cannot load shared evidence admission contract")
+EVIDENCE = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = EVIDENCE
+_SPEC.loader.exec_module(EVIDENCE)
 
 TASK_STATES = {
     "planned",
@@ -60,12 +71,9 @@ def fail(message: str) -> None:
 
 def load_json(path: str) -> dict[str, Any]:
     try:
-        value = json.loads((ROOT / path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        fail(f"{path}: invalid JSON: {exc}")
-    if not isinstance(value, dict):
-        fail(f"{path}: top-level value must be an object")
-    return value
+        return EVIDENCE.load_object(ROOT / path)
+    except (OSError, ValueError, RecursionError) as error:
+        raise ValidationError(f"invalid control JSON: {error}") from error
 
 
 def require(condition: bool, message: str) -> None:
@@ -107,21 +115,16 @@ def require_dag(graph: dict[str, list[str]], label: str) -> None:
 
 
 def evidence_is_accepted(row: dict[str, Any]) -> bool:
-    review = row.get("independent_review")
-    return (
-        row.get("status") == ACCEPTED_EVIDENCE_STATUS
-        and row.get("schema_valid") is True
-        and row.get("target_identity_verified_by_current_repo") is True
-        and isinstance(review, dict)
-        and review.get("decision") == "accepted"
-        and bool(review.get("reviewer_identity"))
-    )
+    return EVIDENCE.entry_eligible(row, root=ROOT)
 
 
 def validate_evidence() -> tuple[dict[str, dict[str, Any]], set[str]]:
     index = load_json("docs/evidence/index.json")
     require(index.get("schema") == "trillionnium.evidence-index.v1", "evidence index schema")
-    entries = unique_rows(index.get("entries", []), "evidence_id", "evidence entries")
+    try:
+        entries = {row["evidence_id"]: row for row in EVIDENCE.index_rows(index)}
+    except EVIDENCE.AdmissionError as error:
+        raise ValidationError(str(error)) from error
     accepted = {evidence_id for evidence_id, row in entries.items() if evidence_is_accepted(row)}
     require(index.get("accepted_entry_count") == len(accepted), "accepted evidence count mismatch")
     for evidence_id, row in entries.items():
@@ -129,7 +132,7 @@ def validate_evidence() -> tuple[dict[str, dict[str, Any]], set[str]]:
         require(isinstance(row.get("gate_ids"), list), f"{evidence_id}: gate_ids")
         require(isinstance(row.get("task_ids"), list), f"{evidence_id}: task_ids")
         require(isinstance(row.get("parity_ids"), list), f"{evidence_id}: parity_ids")
-        if row.get("compatibility_credit") is True:
+        if row.get("status") == "accepted" or row.get("compatibility_credit") is True:
             require(evidence_id in accepted, f"{evidence_id}: credit requires accepted evidence")
     return entries, accepted
 
@@ -153,6 +156,10 @@ def validate_gaps(
         unknown_evidence = set(evidence_ids) - set(evidence)
         require(not unknown_evidence, f"{gap_id}: unknown evidence {sorted(unknown_evidence)}")
         if row.get("status") == "closed":
+            try:
+                EVIDENCE.validate_gap_evidence(row, evidence, root=ROOT)
+            except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+                raise ValidationError(f"{gap_id}: {error}") from error
             require(bool(evidence_ids), f"{gap_id}: closed gap requires evidence")
             require(set(evidence_ids) <= accepted_evidence, f"{gap_id}: evidence not accepted")
             if row.get("severity") in {"P0", "P1"}:

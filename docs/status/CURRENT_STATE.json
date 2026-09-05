@@ -94,7 +94,14 @@
     "independent_review_accepted": false,
     "post_merge_main_packet_present": false,
     "empty_skipped_cancelled_or_stale_execution_counts": false,
-    "relay_evidence_requires_exact_target_validation": true
+    "relay_evidence_requires_exact_target_validation": true,
+    "shared_retained_admission_source_candidate": {
+      "implementation": "scripts/evidence_admission.py",
+      "test": "tests/control_plane/test_evidence_admission.py",
+      "accepted": false,
+      "native_execution_required": true,
+      "scope": "Shared structural admission and retained-byte checks; not independent or administrative acceptance."
+    }
   },
   "active_priority": [
     "qualify the consolidated unchanged PR #63 final head and prospective merge object",

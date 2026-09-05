@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import importlib.util
 import sys
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -11,6 +12,16 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+
+_SPEC = importlib.util.spec_from_file_location(
+    "trnm_evidence_admission_" + Path(__file__).stem.replace("-", "_"),
+    Path(__file__).with_name("evidence_admission.py"),
+)
+if _SPEC is None or _SPEC.loader is None:
+    raise RuntimeError("cannot load shared evidence admission contract")
+EVIDENCE = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = EVIDENCE
+_SPEC.loader.exec_module(EVIDENCE)
 
 
 class DerivationError(RuntimeError):
@@ -23,12 +34,9 @@ def fail(message: str) -> None:
 
 def load_json(path: str) -> dict[str, Any]:
     try:
-        value = json.loads((ROOT / path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        fail(f"{path}: invalid JSON: {exc}")
-    if not isinstance(value, dict):
-        fail(f"{path}: top-level value must be an object")
-    return value
+        return EVIDENCE.load_object(ROOT / path)
+    except (OSError, ValueError, RecursionError) as error:
+        raise DerivationError(f"invalid control JSON: {error}") from error
 
 
 def parse_time(value: Any) -> datetime | None:
@@ -47,30 +55,17 @@ def parse_time(value: Any) -> datetime | None:
 
 
 def accepted_evidence(entries: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
-    accepted: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for row in entries:
-        evidence_id = row.get("evidence_id")
-        if not isinstance(evidence_id, str) or not evidence_id:
-            fail("evidence entry missing evidence_id")
-        if evidence_id in seen:
-            fail(f"duplicate evidence ID {evidence_id}")
-        seen.add(evidence_id)
-        review = row.get("independent_review")
-        expires_at = parse_time(row.get("expires_at"))
-        is_accepted = (
-            row.get("status") == "accepted"
-            and row.get("schema_valid") is True
-            and row.get("target_identity_verified_by_current_repo") is True
-            and isinstance(review, dict)
-            and review.get("decision") == "accepted"
-            and bool(review.get("reviewer_identity"))
-            and (expires_at is None or expires_at > now)
-        )
-        if row.get("compatibility_credit") is True and not is_accepted:
-            fail(f"{evidence_id}: compatibility credit without accepted evidence")
-        if is_accepted:
-            accepted.append(row)
+    accepted = []
+    try:
+        for row in EVIDENCE.index_rows({"entries": entries}):
+            credit = EVIDENCE.exact_alias(row, "compatibility_credit", "claim_credit", "validity.compatibility_credit", "validity.claim_credit")
+            if row.get("status") == "accepted" or credit is True:
+                EVIDENCE.validate_entry(row, root=ROOT, now=now)
+                accepted.append(row)
+        if len({EVIDENCE.target_identity(row) for row in accepted}) > 1:
+            fail("accepted gate evidence mixes candidate identities")
+    except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+        raise DerivationError(str(error)) from error
     return accepted
 
 
@@ -125,7 +120,15 @@ def derive() -> dict[str, Any]:
         gates[gate_id] = row
 
     now = datetime.now(timezone.utc)
-    accepted = accepted_evidence(evidence_document.get("entries", []), now)
+    try:
+        entries = EVIDENCE.index_rows(evidence_document)
+        evidence = {entry["evidence_id"]: entry for entry in entries}
+        for gap in gaps.values():
+            if gap.get("status") == "closed":
+                EVIDENCE.validate_gap_evidence(gap, evidence, root=ROOT, now=now)
+    except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+        raise DerivationError(str(error)) from error
+    accepted = accepted_evidence(entries, now)
     accepted_ids = {row["evidence_id"] for row in accepted}
 
     status: dict[str, str] = {}
@@ -142,6 +145,8 @@ def derive() -> dict[str, Any]:
         open_gaps = [gap_id for gap_id in gap_ids if gaps[gap_id].get("status") != "closed"]
 
         required_types = set(row.get("evidence_types", []))
+        if not required_types or not required_types <= EVIDENCE.EVIDENCE_TYPES:
+            fail(f"{gate_id}: nonempty supported evidence types required")
         matching = [
             evidence
             for evidence in accepted

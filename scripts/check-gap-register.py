@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+
+_SPEC = importlib.util.spec_from_file_location(
+    "trnm_evidence_admission_" + Path(__file__).stem.replace("-", "_"),
+    Path(__file__).with_name("evidence_admission.py"),
+)
+if _SPEC is None or _SPEC.loader is None:
+    raise RuntimeError("cannot load shared evidence admission contract")
+EVIDENCE = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = EVIDENCE
+_SPEC.loader.exec_module(EVIDENCE)
 REGISTER = ROOT / "docs/status/GAP_REGISTER.json"
 EVIDENCE_INDEX = ROOT / "docs/evidence/index.json"
 
@@ -48,35 +59,17 @@ def require(condition: bool, message: str) -> None:
 
 
 def load_object(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    require(isinstance(value, dict), f"{path}: top-level value must be an object")
-    return value
+    try:
+        return EVIDENCE.load_object(path)
+    except (OSError, ValueError, RecursionError) as error:
+        raise ValidationError(f"invalid control JSON: {error}") from error
 
 
 def indexed_evidence_rows(index: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    rows: Any = None
-    for key in ("evidence", "items", "entries"):
-        if key in index:
-            rows = index[key]
-            break
-    require(
-        isinstance(rows, list),
-        "evidence index must contain evidence, items or entries",
-    )
-    result: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        require(isinstance(row, dict), "evidence index row must be an object")
-        evidence_id = row.get("evidence_id")
-        require(
-            isinstance(evidence_id, str) and evidence_id,
-            "indexed evidence_id is required",
-        )
-        require(
-            evidence_id not in result,
-            f"duplicate indexed evidence: {evidence_id}",
-        )
-        result[evidence_id] = row
-    return result
+    try:
+        return {row["evidence_id"]: row for row in EVIDENCE.index_rows(index)}
+    except EVIDENCE.AdmissionError as error:
+        raise ValidationError(str(error)) from error
 
 
 def indexed_evidence_ids(index: dict[str, Any]) -> set[str]:
@@ -86,19 +79,11 @@ def indexed_evidence_ids(index: dict[str, Any]) -> set[str]:
 
 
 def accepted_review(row: dict[str, Any]) -> dict[str, Any] | None:
-    review = row.get("independent_review", row.get("review"))
-    if not isinstance(review, dict):
+    try:
+        _, commit, tree = EVIDENCE.target_identity(row)
+    except (ValueError, TypeError):
         return None
-    if review.get("decision") != "accepted":
-        return None
-    reviewer_identity = review.get("reviewer_identity")
-    if not isinstance(reviewer_identity, str) or not reviewer_identity.strip():
-        return None
-    if review.get("independent") is not True:
-        return None
-    if review.get("self_review") is not False:
-        return None
-    return review
+    return EVIDENCE.accepted_review(row, target_commit=commit, target_tree=tree)
 
 
 def validate_required_evidence_types(gap_id: str, values: Any) -> list[str]:
@@ -135,6 +120,13 @@ def validate_closed_evidence(
     evidence_ids: list[str],
     evidence: dict[str, dict[str, Any]],
 ) -> None:
+    try:
+        EVIDENCE.validate_gap_evidence({
+            "id": gap_id, "evidence_ids": evidence_ids,
+            "required_evidence_types": required_types, "external_dependency": None,
+        }, evidence, root=ROOT)
+    except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+        raise ValidationError(f"{gap_id}: {error}") from error
     require(evidence_ids, f"{gap_id}: closed gap requires indexed evidence")
     present_types: set[str] = set()
     for evidence_id in evidence_ids:

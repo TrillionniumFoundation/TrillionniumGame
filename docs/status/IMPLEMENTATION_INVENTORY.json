@@ -9,11 +9,24 @@
       "id": "COMP-CONTRACTS",
       "path": "crates/trnm-contracts",
       "kind": "rust-library",
-      "workstreams": ["W1", "W2"],
+      "workstreams": [
+        "W1",
+        "W2"
+      ],
       "status": "source-candidate",
-      "implemented": ["stable domain codes", "retry classes", "bounded identifiers and digests"],
-      "missing": ["full generated public protocol binding", "current-head remote evidence"],
-      "blocking_gaps": ["GAP-P0-CI-001", "GAP-P0-SCOPE-001"],
+      "implemented": [
+        "stable domain codes",
+        "retry classes",
+        "bounded identifiers and digests"
+      ],
+      "missing": [
+        "full generated public protocol binding",
+        "current-head remote evidence"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-CI-001",
+        "GAP-P0-SCOPE-001"
+      ],
       "parity_ids": [],
       "evidence_ids": [],
       "claim_credit": false
@@ -22,12 +35,30 @@
       "id": "COMP-AUTHORITY",
       "path": "crates/trnm-authority-core",
       "kind": "rust-library",
-      "workstreams": ["W1", "W10"],
+      "workstreams": [
+        "W1",
+        "W10"
+      ],
       "status": "source-candidate",
-      "implemented": ["authority generation fencing", "revision sequencing", "command identity boundaries"],
-      "missing": ["distributed lease service", "node-loss evidence", "Nakama differential"],
-      "blocking_gaps": ["GAP-P0-SERVER-001", "GAP-P0-CI-001"],
-      "parity_ids": ["TG-PAR-046", "TG-PAR-047", "TG-PAR-048"],
+      "implemented": [
+        "authority generation fencing",
+        "revision sequencing",
+        "command identity boundaries"
+      ],
+      "missing": [
+        "distributed lease service",
+        "node-loss evidence",
+        "Nakama differential"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-CI-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-046",
+        "TG-PAR-047",
+        "TG-PAR-048"
+      ],
       "evidence_ids": [],
       "claim_credit": false
     },
@@ -35,12 +66,29 @@
       "id": "COMP-SESSION",
       "path": "crates/trnm-session-core",
       "kind": "rust-library",
-      "workstreams": ["W3"],
+      "workstreams": [
+        "W3"
+      ],
       "status": "source-candidate",
-      "implemented": ["refresh-family state", "rotation/replay model", "revocation boundaries"],
-      "missing": ["server integration", "database repository", "socket revocation fanout", "oracle differential"],
-      "blocking_gaps": ["GAP-P0-CRYPTO-001", "GAP-P0-SERVER-001", "GAP-P0-DATA-001"],
-      "parity_ids": ["TG-PAR-017"],
+      "implemented": [
+        "refresh-family state",
+        "rotation/replay model",
+        "revocation boundaries"
+      ],
+      "missing": [
+        "server integration",
+        "database repository",
+        "socket revocation fanout",
+        "oracle differential"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P0-SERVER-001",
+        "GAP-P0-DATA-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-017"
+      ],
       "evidence_ids": [],
       "claim_credit": false
     },
@@ -48,7 +96,9 @@
       "id": "COMP-STORAGE",
       "path": "crates/trnm-storage-core",
       "kind": "rust-library",
-      "workstreams": ["W4"],
+      "workstreams": [
+        "W4"
+      ],
       "status": "public-version-source-candidate",
       "implemented": [
         "batch atomicity model",
@@ -59,9 +109,26 @@
         "separate internal IntegrityDigest type",
         "pinned version vectors"
       ],
-      "missing": ["JSON-object API validation", "database/index integration", "cursor behavior", "wire/database differential", "independent review"],
-      "blocking_gaps": ["GAP-P1-STORAGE-001", "GAP-P0-SERVER-001", "GAP-P0-DATA-001", "GAP-P0-CI-001"],
-      "parity_ids": ["TG-PAR-021", "TG-PAR-022", "TG-PAR-023", "TG-PAR-024", "TG-PAR-025"],
+      "missing": [
+        "JSON-object API validation",
+        "database/index integration",
+        "cursor behavior",
+        "wire/database differential",
+        "independent review"
+      ],
+      "blocking_gaps": [
+        "GAP-P1-STORAGE-001",
+        "GAP-P0-SERVER-001",
+        "GAP-P0-DATA-001",
+        "GAP-P0-CI-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-021",
+        "TG-PAR-022",
+        "TG-PAR-023",
+        "TG-PAR-024",
+        "TG-PAR-025"
+      ],
       "evidence_ids": [],
       "claim_credit": false
     },
@@ -69,11 +136,27 @@
       "id": "COMP-PERSISTENCE-CORE",
       "path": "crates/trnm-persistence-core",
       "kind": "rust-library",
-      "workstreams": ["W1", "W14"],
+      "workstreams": [
+        "W1",
+        "W14"
+      ],
       "status": "outbox-terminal-source-candidate",
-      "implemented": ["command/event/outbox atomic model", "exact duplicate receipt", "authority and lease generations", "atomic attempt-limit dead-letter transition"],
-      "missing": ["lease expiry/reclaim clock", "property/model remote evidence", "independent data-integrity review"],
-      "blocking_gaps": ["GAP-P1-OUTBOX-001", "GAP-P0-DATA-001", "GAP-P0-CI-001"],
+      "implemented": [
+        "command/event/outbox atomic model",
+        "exact duplicate receipt",
+        "authority and lease generations",
+        "atomic attempt-limit dead-letter transition"
+      ],
+      "missing": [
+        "lease expiry/reclaim clock",
+        "property/model remote evidence",
+        "independent data-integrity review"
+      ],
+      "blocking_gaps": [
+        "GAP-P1-OUTBOX-001",
+        "GAP-P0-DATA-001",
+        "GAP-P0-CI-001"
+      ],
       "parity_ids": [],
       "evidence_ids": [],
       "claim_credit": false
@@ -82,7 +165,12 @@
       "id": "COMP-PERSISTENCE-PG",
       "path": "crates/trnm-persistence-pg",
       "kind": "rust-library-and-temporary-server-binary-package",
-      "workstreams": ["W1", "W2", "W14", "W15"],
+      "workstreams": [
+        "W1",
+        "W2",
+        "W14",
+        "W15"
+      ],
       "status": "http-websocket-database-vertical-source-candidate",
       "implemented": [
         "PG-wire serializable commit",
@@ -108,16 +196,38 @@
         "outbox delivery worker",
         "HA/PITR and oracle differential"
       ],
-      "blocking_gaps": ["GAP-P0-SERVER-001", "GAP-P0-DATA-001", "GAP-P1-PG-001", "GAP-P1-TEST-001", "GAP-P0-CI-001"],
-      "parity_ids": ["TG-PAR-001", "TG-PAR-002", "TG-PAR-003", "TG-PAR-004", "TG-PAR-006", "TG-PAR-063", "TG-PAR-068", "TG-PAR-071"],
-      "evidence_ids": ["TG-EV-RELAY-FOUNDATION-DATABASE-20260828"],
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-DATA-001",
+        "GAP-P1-PG-001",
+        "GAP-P1-TEST-001",
+        "GAP-P0-CI-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-001",
+        "TG-PAR-002",
+        "TG-PAR-003",
+        "TG-PAR-004",
+        "TG-PAR-006",
+        "TG-PAR-063",
+        "TG-PAR-068",
+        "TG-PAR-071"
+      ],
+      "evidence_ids": [
+        "TG-EV-RELAY-FOUNDATION-DATABASE-20260828"
+      ],
       "claim_credit": false
     },
     {
       "id": "COMP-TRNM-SERVER",
       "path": "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
       "kind": "first-party-rust-binary-source-candidate",
-      "workstreams": ["W1", "W2", "W3", "W15"],
+      "workstreams": [
+        "W1",
+        "W2",
+        "W3",
+        "W15"
+      ],
       "status": "http-websocket-source-candidate",
       "implemented": [
         "typed/redacted config",
@@ -140,8 +250,19 @@
         "distributed realtime",
         "oracle/SDK/load/security evidence"
       ],
-      "blocking_gaps": ["GAP-P0-SERVER-001", "GAP-P1-PG-001", "GAP-P0-CI-001", "GAP-P1-REVIEW-001"],
-      "parity_ids": ["TG-PAR-001", "TG-PAR-002", "TG-PAR-003", "TG-PAR-004", "TG-PAR-006"],
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P1-PG-001",
+        "GAP-P0-CI-001",
+        "GAP-P1-REVIEW-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-001",
+        "TG-PAR-002",
+        "TG-PAR-003",
+        "TG-PAR-004",
+        "TG-PAR-006"
+      ],
       "evidence_ids": [],
       "claim_credit": false
     },
@@ -149,12 +270,27 @@
       "id": "COMP-CANONICAL",
       "path": "crates/trnm-canonical-core",
       "kind": "rust-library",
-      "workstreams": ["W2"],
+      "workstreams": [
+        "W2"
+      ],
       "status": "source-candidate",
-      "implemented": ["bounded canonical framing primitives"],
-      "missing": ["generated API/RTAPI adapters", "official SDK differential"],
-      "blocking_gaps": ["GAP-P0-SCOPE-001", "GAP-P0-SERVER-001"],
-      "parity_ids": ["TG-PAR-004", "TG-PAR-005", "TG-PAR-006", "TG-PAR-007"],
+      "implemented": [
+        "bounded canonical framing primitives"
+      ],
+      "missing": [
+        "generated API/RTAPI adapters",
+        "official SDK differential"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-SCOPE-001",
+        "GAP-P0-SERVER-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-004",
+        "TG-PAR-005",
+        "TG-PAR-006",
+        "TG-PAR-007"
+      ],
       "evidence_ids": [],
       "claim_credit": false
     },
@@ -162,12 +298,27 @@
       "id": "COMP-TRANSPORT",
       "path": "crates/trnm-transport-core",
       "kind": "rust-library",
-      "workstreams": ["W2"],
+      "workstreams": [
+        "W2"
+      ],
       "status": "source-candidate",
-      "implemented": ["stable domain-to-HTTP/gRPC/RTAPI error mapping core"],
-      "missing": ["complete network adapters", "headers/retry-after/socket-close differential"],
-      "blocking_gaps": ["GAP-P0-SERVER-001", "GAP-P0-SCOPE-001"],
-      "parity_ids": ["TG-PAR-004", "TG-PAR-005", "TG-PAR-006", "TG-PAR-007"],
+      "implemented": [
+        "stable domain-to-HTTP/gRPC/RTAPI error mapping core"
+      ],
+      "missing": [
+        "complete network adapters",
+        "headers/retry-after/socket-close differential"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-SCOPE-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-004",
+        "TG-PAR-005",
+        "TG-PAR-006",
+        "TG-PAR-007"
+      ],
       "evidence_ids": [],
       "claim_credit": false
     },
@@ -175,12 +326,27 @@
       "id": "COMP-TOKEN-POLICY",
       "path": "crates/trnm-token-core",
       "kind": "rust-library",
-      "workstreams": ["W3"],
+      "workstreams": [
+        "W3"
+      ],
       "status": "source-candidate",
-      "implemented": ["token policy", "key epoch model", "claim bounds"],
-      "missing": ["production key provider", "server integration", "rotation/revoke evidence"],
-      "blocking_gaps": ["GAP-P0-CRYPTO-001", "GAP-P0-SERVER-001"],
-      "parity_ids": ["TG-PAR-017"],
+      "implemented": [
+        "token policy",
+        "key epoch model",
+        "claim bounds"
+      ],
+      "missing": [
+        "production key provider",
+        "server integration",
+        "rotation/revoke evidence"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P0-SERVER-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-017"
+      ],
       "evidence_ids": [],
       "claim_credit": false
     },
@@ -188,12 +354,33 @@
       "id": "COMP-TOKEN-JWT",
       "path": "crates/trnm-token-jwt-adapter",
       "kind": "rust-library-standalone-workspace",
-      "workstreams": ["W3", "W15"],
+      "workstreams": [
+        "W3",
+        "W15"
+      ],
       "status": "length-fix-source-candidate",
-      "implemented": ["strict HS256 routes", "legacy/epoch separation", "bounded JSON/base64 parsing", "claim validation", "full-width length comparison regression"],
-      "missing": ["independent crypto review", "KMS provider", "malformed/fuzz exact-head evidence", "accepted security decision"],
-      "blocking_gaps": ["GAP-P0-CRYPTO-001", "GAP-P1-CRYPTO-002", "GAP-P1-REVIEW-001", "GAP-P0-CI-001"],
-      "parity_ids": ["TG-PAR-017"],
+      "implemented": [
+        "strict HS256 routes",
+        "legacy/epoch separation",
+        "bounded JSON/base64 parsing",
+        "claim validation",
+        "full-width length comparison regression"
+      ],
+      "missing": [
+        "independent crypto review",
+        "KMS provider",
+        "malformed/fuzz exact-head evidence",
+        "accepted security decision"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P1-CRYPTO-002",
+        "GAP-P1-REVIEW-001",
+        "GAP-P0-CI-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-017"
+      ],
       "evidence_ids": [],
       "claim_credit": false
     },
@@ -201,12 +388,31 @@
       "id": "COMP-PRESENCE",
       "path": "crates/trnm-presence-core",
       "kind": "rust-library",
-      "workstreams": ["W6"],
+      "workstreams": [
+        "W6"
+      ],
       "status": "source-candidate",
-      "implemented": ["presence identities", "join/leave cleanup", "route generations", "bounded queue budgets"],
-      "missing": ["persistent/distributed WebSocket presence server", "distributed registry", "cross-node fanout", "reconnect cursor", "load/failover evidence"],
-      "blocking_gaps": ["GAP-P0-SERVER-001", "GAP-P0-SCOPE-001"],
-      "parity_ids": ["TG-PAR-030", "TG-PAR-031"],
+      "implemented": [
+        "presence identities",
+        "join/leave cleanup",
+        "route generations",
+        "bounded queue budgets"
+      ],
+      "missing": [
+        "persistent/distributed WebSocket presence server",
+        "distributed registry",
+        "cross-node fanout",
+        "reconnect cursor",
+        "load/failover evidence"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-SCOPE-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-030",
+        "TG-PAR-031"
+      ],
       "evidence_ids": [],
       "claim_credit": false
     },
@@ -214,12 +420,28 @@
       "id": "COMP-PRESENCE-ROUTER-V2",
       "path": "crates/trnm-presence-router-v2",
       "kind": "rust-library-standalone-workspace",
-      "workstreams": ["W6"],
+      "workstreams": [
+        "W6"
+      ],
       "status": "integration-candidate",
-      "implemented": ["extended route and ownership candidate", "explicit aggregate-gate lane"],
-      "missing": ["network runtime", "multi-node evidence", "independent review"],
-      "blocking_gaps": ["GAP-P0-SERVER-001", "GAP-P0-CI-001"],
-      "parity_ids": ["TG-PAR-030", "TG-PAR-031", "TG-PAR-034"],
+      "implemented": [
+        "extended route and ownership candidate",
+        "explicit aggregate-gate lane"
+      ],
+      "missing": [
+        "network runtime",
+        "multi-node evidence",
+        "independent review"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-CI-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-030",
+        "TG-PAR-031",
+        "TG-PAR-034"
+      ],
       "evidence_ids": [],
       "claim_credit": false
     },
@@ -227,12 +449,28 @@
       "id": "COMP-QUERY",
       "path": "crates/trnm-query-core",
       "kind": "rust-library",
-      "workstreams": ["W4", "W8"],
+      "workstreams": [
+        "W4",
+        "W8"
+      ],
       "status": "feasibility-candidate",
-      "implemented": ["query parse/evaluation subset", "bounded token/clause complexity"],
-      "missing": ["immutable oracle closure", "search execution/scoring", "full grammar leaf mapping"],
-      "blocking_gaps": ["GAP-P0-SCOPE-001", "GAP-P0-CI-001"],
-      "parity_ids": ["TG-PAR-025", "TG-PAR-039"],
+      "implemented": [
+        "query parse/evaluation subset",
+        "bounded token/clause complexity"
+      ],
+      "missing": [
+        "immutable oracle closure",
+        "search execution/scoring",
+        "full grammar leaf mapping"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-SCOPE-001",
+        "GAP-P0-CI-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-025",
+        "TG-PAR-039"
+      ],
       "evidence_ids": [],
       "claim_credit": false
     },
@@ -240,24 +478,57 @@
       "id": "COMP-MIGRATIONS",
       "path": "migrations",
       "kind": "sql-migration-chain",
-      "workstreams": ["W1", "W14"],
+      "workstreams": [
+        "W1",
+        "W14"
+      ],
       "status": "production-authority-candidate",
-      "implemented": ["separate PostgreSQL and CockroachDB foundation profiles", "ten-table schema", "server embed and metadata verification"],
-      "missing": ["Nakama migration denominator", "full semantic migration", "PITR/HA", "current-head profile evidence"],
-      "blocking_gaps": ["GAP-P0-DATA-001", "GAP-P1-PG-001", "GAP-P0-CI-001"],
-      "parity_ids": ["TG-PAR-002", "TG-PAR-063", "TG-PAR-064", "TG-PAR-065", "TG-PAR-068"],
-      "evidence_ids": ["TG-EV-RELAY-FOUNDATION-DATABASE-20260828"],
+      "implemented": [
+        "separate PostgreSQL and CockroachDB foundation profiles",
+        "ten-table schema",
+        "server embed and metadata verification"
+      ],
+      "missing": [
+        "Nakama migration denominator",
+        "full semantic migration",
+        "PITR/HA",
+        "current-head profile evidence"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-DATA-001",
+        "GAP-P1-PG-001",
+        "GAP-P0-CI-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-002",
+        "TG-PAR-063",
+        "TG-PAR-064",
+        "TG-PAR-065",
+        "TG-PAR-068"
+      ],
+      "evidence_ids": [
+        "TG-EV-RELAY-FOUNDATION-DATABASE-20260828"
+      ],
       "claim_credit": false
     },
     {
       "id": "COMP-SCHEMA-DESIGN-V2",
       "path": "database/schema/v2",
       "kind": "non-authoritative-design-history",
-      "workstreams": ["W1", "W14"],
+      "workstreams": [
+        "W1",
+        "W14"
+      ],
       "status": "must-not-be-consumed",
-      "implemented": ["alternative tenant/UUID/TIMESTAMPTZ design exploration"],
-      "missing": ["approved ADR and migration to supersede production authority"],
-      "blocking_gaps": ["GAP-P0-DATA-001"],
+      "implemented": [
+        "alternative tenant/UUID/TIMESTAMPTZ design exploration"
+      ],
+      "missing": [
+        "approved ADR and migration to supersede production authority"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-DATA-001"
+      ],
       "parity_ids": [],
       "evidence_ids": [],
       "claim_credit": false
@@ -266,12 +537,35 @@
       "id": "COMP-LEGACY-RUNTIME",
       "path": "runtime",
       "kind": "go-plugin-and-compatibility-fixtures",
-      "workstreams": ["W10", "W11", "W14"],
+      "workstreams": [
+        "W10",
+        "W11",
+        "W14"
+      ],
       "status": "migration-input-canonical-module-path",
-      "implemented": ["bounded authoritative match slice", "world transition consumer", "fault/evidence fixtures", "TrillionniumGame module identity"],
-      "missing": ["full Rust runtime migration", "Runtime denominator", "Go source disposition evidence"],
-      "blocking_gaps": ["GAP-P0-SERVER-001", "GAP-P1-IDENTITY-001", "GAP-P0-SCOPE-001", "GAP-P0-CI-001"],
-      "parity_ids": ["TG-PAR-046", "TG-PAR-047", "TG-PAR-048", "TG-PAR-055"],
+      "implemented": [
+        "bounded authoritative match slice",
+        "world transition consumer",
+        "fault/evidence fixtures",
+        "TrillionniumGame module identity"
+      ],
+      "missing": [
+        "full Rust runtime migration",
+        "Runtime denominator",
+        "Go source disposition evidence"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P1-IDENTITY-001",
+        "GAP-P0-SCOPE-001",
+        "GAP-P0-CI-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-046",
+        "TG-PAR-047",
+        "TG-PAR-048",
+        "TG-PAR-055"
+      ],
       "evidence_ids": [],
       "claim_credit": false
     },
@@ -279,7 +573,11 @@
       "id": "COMP-RUST-PACKAGE-AUTHORITY",
       "path": "docs/development/RUST_PACKAGE_AUTHORITY.json",
       "kind": "rust-package-and-target-control-plane",
-      "workstreams": ["W0", "W1", "W15"],
+      "workstreams": [
+        "W0",
+        "W1",
+        "W15"
+      ],
       "status": "source-candidate",
       "implemented": [
         "root-member and isolated-workspace machine inventory",
@@ -288,8 +586,15 @@
         "single temporary trnm-server binary authority",
         "removal of an untracked duplicate package with a missing lib target"
       ],
-      "missing": ["non-empty exact-head checker run", "Cargo build/test/Clippy evidence"],
-      "blocking_gaps": ["GAP-P0-CI-001", "GAP-P0-SERVER-001", "GAP-P0-CRYPTO-001"],
+      "missing": [
+        "non-empty exact-head checker run",
+        "Cargo build/test/Clippy evidence"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-CI-001",
+        "GAP-P0-SERVER-001",
+        "GAP-P0-CRYPTO-001"
+      ],
       "parity_ids": [],
       "evidence_ids": [],
       "claim_credit": false
@@ -298,18 +603,33 @@
       "id": "COMP-CI-CONTROL",
       "path": ".github/workflows/trillionnium-game-merge-gate.yml",
       "kind": "github-actions-aggregate-control-plane",
-      "workstreams": ["W0", "W15"],
-      "status": "stable-aggregate-source-present-startup-blocked",
+      "workstreams": [
+        "W0",
+        "W15"
+      ],
+      "status": "shared-evidence-admission-source-candidate",
       "implemented": [
         "plan/status/schema/server/package contract lane",
         "root Rust all-target lane",
         "standalone security-critical Rust matrix",
         "Python lane",
         "Go test/race/vet lane",
-        "final reject-missing aggregate job"
+        "final reject-missing aggregate job",
+        "shared retained-evidence structural admission in five control consumers"
       ],
-      "missing": ["jobs start successfully", "non-empty exact-head job collection", "required check enforcement", "ruleset read-back"],
-      "blocking_gaps": ["GAP-P0-CI-001", "GAP-P0-GOV-001"],
+      "missing": [
+        "exact final-head and prospective-merge requalification",
+        "independent retained-evidence acceptance",
+        "required check enforcement",
+        "ruleset read-back"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-CI-001",
+        "GAP-P0-EVIDENCE-001",
+        "GAP-P0-GOV-001",
+        "GAP-P0-PLAN-001",
+        "GAP-P1-REVIEW-001"
+      ],
       "parity_ids": [],
       "evidence_ids": [],
       "claim_credit": false

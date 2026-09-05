@@ -1,7 +1,7 @@
 # Testing and evidence
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-01
+Revision: 2026-09-05
 
 ## 1. Proof rule
 
@@ -163,3 +163,56 @@ The minimum local suite is documented in [`DEVELOPMENT.md`](DEVELOPMENT.md). It 
 ## 12. Evidence status boundary
 
 The current evidence index has no accepted repository-wide compatibility entry. Historical/directed evidence records remain available for audit but cannot become current authority merely because their files are present. Product gates remain evidence-derived and fail closed.
+
+## 13. Shared retained-evidence admission
+
+`scripts/evidence_admission.py` is the shared structural eligibility contract for
+`check-evidence-index.py`, `check-gap-register.py`, `derive-gap-status.py`,
+`derive-gates.py` and `check-status-transitions.py`. An `accepted` status alone,
+`review.decision=accepted`, or the `manifest` evidence type cannot substitute for
+explicit credit, schema validity, exact target binding and independent review.
+All five consumers reject the same incomplete evidence rather than applying
+separate progressively weaker predicates. Existing historical diagnostics remain
+readable and non-creditable; they are not silently converted to accepted records.
+
+Admission requires the canonical repository and lowercase commit/tree IDs; the
+exact `independent=true` and `self_review=false` pair; nonblank reviewer identity
+and role; matching reviewed commit/tree; timezone-qualified timestamps; review
+after successful execution; and unexpired evidence. Conflicting alias fields,
+duplicate JSON keys, non-finite JSON numbers, accepted-without-credit records and
+missing index-policy keys fail closed. Closed-gap type coverage and a single
+candidate cohort remain mandatory; mixed targets cannot collectively pass a gate.
+
+A credited entry must retain a local manifest and its referenced artifact bytes in
+the checked evidence root. The validator evaluates the keyword subset used by the
+existing `trillionnium.evidence.v1` schema, rejects unknown validation keywords and
+remote references, and compares index/manifest IDs, target, mappings, review,
+expiry and artifact sets. It hashes the actual retained bytes, not just the text
+of a supplied hash. Missing, empty, truncated or changed files, duplicate artifact
+names/paths, self-referencing evidence, path traversal and symlink components are
+rejected. Assertions must be nonempty and completely passing; unresolved P0/P1
+divergences remain blockers. Artifacts held externally must be staged from the
+approved immutable store for validation; a URL or digest alone earns no credit.
+
+Limits are 8 MiB per JSON document, 256 artifacts, 64 MiB per artifact and 256 MiB
+of retained artifacts per item. Schema traversal is limited to 64 levels and
+100,000 visits. Larger evidence requires an explicitly reviewed retention profile,
+not silent truncation or disabling the check. Python control scripts use only the
+standard library; this bounded validator is not a general JSON Schema engine.
+
+```bash
+python3 -m unittest tests.control_plane.test_evidence_admission -v
+python3 scripts/check-evidence-index.py
+python3 scripts/check-gap-register.py
+python3 scripts/derive-gap-status.py
+python3 scripts/derive-gates.py
+python3 scripts/check-status-transitions.py
+```
+
+The regression suite uses synthetic accepted fixtures only to exercise positive
+and negative admission. It does not invent real reviewer decisions. Structural
+checks and retained-byte validation do not establish GitHub review provenance,
+latest live candidate identity, administrator policy, native execution, oracle
+compatibility or production acceptance. Those independent prerequisites remain
+required. The source fix changes no runtime Rust, database schema, protocol,
+workflow definition or required-workflow denominator and closes no gap by itself.

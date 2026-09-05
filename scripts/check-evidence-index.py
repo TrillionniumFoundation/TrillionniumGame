@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import re
 import sys
 from datetime import datetime, timezone
@@ -10,6 +11,16 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+
+_SPEC = importlib.util.spec_from_file_location(
+    "trnm_evidence_admission_" + Path(__file__).stem.replace("-", "_"),
+    Path(__file__).with_name("evidence_admission.py"),
+)
+if _SPEC is None or _SPEC.loader is None:
+    raise RuntimeError("cannot load shared evidence admission contract")
+EVIDENCE = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = EVIDENCE
+_SPEC.loader.exec_module(EVIDENCE)
 INDEX_PATH = ROOT / "docs/evidence/index.json"
 HEX40 = re.compile(r"^[a-f0-9]{40}$")
 HEX64 = re.compile(r"^(?:sha256:)?[a-f0-9]{64}$")
@@ -25,36 +36,24 @@ def require(condition: bool, message: str) -> None:
 
 
 def load_object(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    require(isinstance(value, dict), f"{path}: top-level value must be an object")
-    return value
+    try:
+        return EVIDENCE.load_object(path)
+    except (OSError, ValueError, RecursionError) as error:
+        raise ValidationError(f"invalid control JSON: {error}") from error
 
 
 def rows(index: dict[str, Any]) -> list[dict[str, Any]]:
-    for key in ("evidence", "items", "entries"):
-        value = index.get(key)
-        if value is not None:
-            require(isinstance(value, list), f"{key} must be a list")
-            require(
-                all(isinstance(row, dict) for row in value),
-                f"{key} rows must be objects",
-            )
-            return value
-    raise ValidationError("evidence index must contain evidence, items or entries")
+    try:
+        return EVIDENCE.index_rows(index)
+    except EVIDENCE.AdmissionError as error:
+        raise ValidationError(str(error)) from error
 
 
 def first(row: dict[str, Any], *paths: str) -> Any:
-    for path in paths:
-        value: Any = row
-        found = True
-        for part in path.split("."):
-            if not isinstance(value, dict) or part not in value:
-                found = False
-                break
-            value = value[part]
-        if found:
-            return value
-    return None
+    try:
+        return EVIDENCE.exact_alias(row, *paths)
+    except (ValueError, TypeError) as error:
+        raise ValidationError(str(error)) from error
 
 
 def credit_enabled(row: dict[str, Any]) -> bool:
@@ -76,60 +75,10 @@ def parse_time(value: str) -> datetime:
 
 
 def accepted_review(
-    row: dict[str, Any],
-    *,
-    target_commit: str | None = None,
+    row: dict[str, Any], *, target_commit: str | None = None,
     target_tree: str | None = None,
 ) -> dict[str, Any] | None:
-    """Return an exact independent acceptance or None.
-
-    Independence is an exact pair, never an OR condition.  A record that says
-    both independent=true and self_review=true, omits either boolean, or carries
-    an empty reviewer identity is contradictory and receives no credit.
-    """
-
-    review = first(row, "independent_review", "review", "validity.review")
-    if not isinstance(review, dict):
-        return None
-    if review.get("decision") != "accepted":
-        return None
-    reviewer_identity = review.get("reviewer_identity")
-    if not isinstance(reviewer_identity, str) or not reviewer_identity.strip():
-        return None
-    if reviewer_identity.strip() != reviewer_identity:
-        return None
-    if review.get("independent") is not True:
-        return None
-    if review.get("self_review") is not False:
-        return None
-
-    reviewed_at = review.get("reviewed_at")
-    if not isinstance(reviewed_at, str):
-        return None
-    try:
-        parse_time(reviewed_at)
-    except (ValueError, ValidationError):
-        return None
-
-    reviewed_commit = review.get("reviewed_commit")
-    reviewed_tree = review.get("reviewed_tree")
-    if target_commit is not None:
-        if reviewed_commit != target_commit:
-            return None
-    elif reviewed_commit is not None and (
-        not isinstance(reviewed_commit, str)
-        or HEX40.fullmatch(reviewed_commit) is None
-    ):
-        return None
-    if target_tree is not None:
-        if reviewed_tree != target_tree:
-            return None
-    elif reviewed_tree is not None and (
-        not isinstance(reviewed_tree, str)
-        or HEX40.fullmatch(reviewed_tree) is None
-    ):
-        return None
-    return review
+    return EVIDENCE.accepted_review(row, target_commit=target_commit, target_tree=target_tree)
 
 
 def validate(
@@ -159,8 +108,7 @@ def validate(
         "empty_or_skipped_execution_counts": False,
     }
     for key, expected in required_policy.items():
-        if key in policy:
-            require(policy[key] is expected, f"evidence policy {key} must be {expected}")
+        require(policy.get(key) is expected, f"evidence policy {key} must be {expected}")
 
     seen: set[str] = set()
     credited = 0
@@ -183,7 +131,10 @@ def validate(
                 isinstance(path_value, str) and path_value,
                 f"{evidence_id}: invalid path",
             )
-            candidate_path = root / path_value
+            try:
+                candidate_path = EVIDENCE.repository_path(root, path_value)
+            except (OSError, ValueError) as error:
+                raise ValidationError(f"{evidence_id}: {error}") from error
             require(
                 candidate_path.is_file(),
                 f"{evidence_id}: indexed file is missing: {path_value}",
@@ -238,6 +189,11 @@ def validate(
         if status == "accepted":
             accepted_status_rows += 1
 
+        if status == "accepted" or credit_enabled(row):
+            try:
+                EVIDENCE.validate_entry(row, root=root, now=current_time)
+            except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+                raise ValidationError(f"{evidence_id}: {error}") from error
         if credit_enabled(row):
             credited += 1
             repository = first(
@@ -299,7 +255,7 @@ def validate(
             "accepted_entry_count must equal credited evidence count",
         )
     require(
-        accepted_status_rows >= credited,
+        accepted_status_rows == credited,
         "credited evidence cannot exceed accepted-status rows",
     )
 
