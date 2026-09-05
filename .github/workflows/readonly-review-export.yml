@@ -1,4 +1,4 @@
-name: verify-live-base-to-head-transitions
+name: preflight-prospective-transition-wiring
 
 on:
   push:
@@ -12,14 +12,18 @@ env:
   BASE_COMMIT: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
   PRODUCT_HEAD: 545569a4936f08d0eed0b79806e04239cbe8e835
   PRODUCT_TREE: 00ca7f813f5dcb1e46935cf6bc0121ca33888c7e
+  PRODUCT_MERGE: f23acd1054cf2f415f67ecbdfc6125152b493a29
   PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+  PROPOSED_TREE: c008d244ea1ef2544e5fe22899ee17f0d7aeae6c
+  IDENTITY_BLOB: 597232f7b9594d7cd39ecfbf4f18339105a20b5f
+  TEST_BLOB: 6f9c12d602f9716dcbee3e8f699d6ca3417f3850
 
 jobs:
-  base-to-head-transition-check:
+  prospective-transition-overlay:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 35
     steps:
-      - name: Fetch exact tooling, base and head
+      - name: Fetch exact tooling and GitHub product objects
         shell: bash
         run: |
           set -euo pipefail
@@ -27,74 +31,159 @@ jobs:
           git -C "$GITHUB_WORKSPACE/tooling" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
           git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object overlay/scripts/check-prospective-merge-identity.py)" = "$IDENTITY_BLOB"
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object overlay/tests/control_plane/test_prospective_merge_identity.py)" = "$TEST_BLOB"
 
-          for pair in "base:$BASE_COMMIT" "head:$PRODUCT_HEAD"; do
-            label=${pair%%:*}; object=${pair#*:}
-            git init "$GITHUB_WORKSPACE/$label"
-            git -C "$GITHUB_WORKSPACE/$label" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
-            git -C "$GITHUB_WORKSPACE/$label" fetch --no-tags --depth=1 origin "$object"
-            git -C "$GITHUB_WORKSPACE/$label" checkout --detach FETCH_HEAD
-            test "$(git -C "$GITHUB_WORKSPACE/$label" rev-parse HEAD)" = "$object"
-          done
-          test "$(git -C "$GITHUB_WORKSPACE/head" rev-parse HEAD^{tree})" = "$PRODUCT_TREE"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin "$PRODUCT_HEAD"
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin refs/pull/63/merge
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse FETCH_HEAD)" = "$PRODUCT_MERGE"
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse "$PRODUCT_HEAD^{tree}")" = "$PRODUCT_TREE"
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse "$PRODUCT_MERGE^{tree}")" = "$PRODUCT_TREE"
+          mapfile -t parents < <(git -C "$GITHUB_WORKSPACE/source" cat-file -p "$PRODUCT_MERGE" | sed -n 's/^parent //p')
+          test "${#parents[@]}" -eq 2
+          test "${parents[0]}" = "$BASE_COMMIT"
+          test "${parents[1]}" = "$PRODUCT_HEAD"
 
-      - name: Execute real base-to-head transition policy without masking outcome
-        id: transition
+      - name: Execute proposed source tree on source and merge
         shell: bash
-        run: |
-          set +e
-          proof="$RUNNER_TEMP/live-transition-proof"
-          mkdir -p "$proof"
-          python3 "$GITHUB_WORKSPACE/head/scripts/status_transition_policy.py" \
-            --previous-root "$GITHUB_WORKSPACE/base" \
-            --current-root "$GITHUB_WORKSPACE/head" \
-            > "$proof/report.json" 2> "$proof/stderr.txt"
-          rc=$?
-          printf '%s\n' "$rc" > "$proof/returncode.txt"
-          printf 'returncode=%s\n' "$rc" >> "$GITHUB_OUTPUT"
-          cat "$proof/report.json" || true
-          cat "$proof/stderr.txt" >&2 || true
-          exit 0
-
-      - name: Build retained diagnostic packet
-        shell: bash
+        working-directory: source
+        env:
+          GIT_AUTHOR_NAME: Trillionnium diagnostic
+          GIT_AUTHOR_EMAIL: diagnostic@invalid
+          GIT_COMMITTER_NAME: Trillionnium diagnostic
+          GIT_COMMITTER_EMAIL: diagnostic@invalid
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
           set -euo pipefail
-          proof="$RUNNER_TEMP/live-transition-proof"
-          git -C "$GITHUB_WORKSPACE/base" cat-file commit "$BASE_COMMIT" > "$proof/base-commit.txt"
-          git -C "$GITHUB_WORKSPACE/head" cat-file commit "$PRODUCT_HEAD" > "$proof/head-commit.txt"
-          git -C "$GITHUB_WORKSPACE/head" ls-remote origin refs/heads/main refs/heads/$PRODUCT_BRANCH > "$proof/live-refs.txt"
+          proof="$RUNNER_TEMP/prospective-transition-proof"
+          mkdir -p "$proof"
+          for pair in "source:$PRODUCT_HEAD" "merge:$PRODUCT_MERGE"; do
+            label=${pair%%:*}; object=${pair#*:}
+            git checkout --detach "$object"
+            install -m 755 "$GITHUB_WORKSPACE/tooling/overlay/scripts/check-prospective-merge-identity.py" scripts/check-prospective-merge-identity.py
+            install -m 644 "$GITHUB_WORKSPACE/tooling/overlay/tests/control_plane/test_prospective_merge_identity.py" tests/control_plane/test_prospective_merge_identity.py
+            git add scripts/check-prospective-merge-identity.py tests/control_plane/test_prospective_merge_identity.py
+            tree=$(git write-tree)
+            test "$tree" = "$PROPOSED_TREE"
+            commit=$(printf 'diagnostic prospective transition overlay for %s\n' "$object" | git commit-tree "$tree" -p "$object")
+            git checkout --detach "$commit"
+            test "$(git rev-parse HEAD^{tree})" = "$PROPOSED_TREE"
+            test -z "$(git status --porcelain)"
+            python3 -m compileall -q scripts tools tests 2>&1 | tee "$proof/${label}-compileall.log"
+            python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$proof/${label}-python.log"
+            grep -Eq '^Ran ([5-9][0-9]{2}|[1-9][0-9]{3,}) tests in ' "$proof/${label}-python.log"
+            grep -qx OK "$proof/${label}-python.log"
+            for name in \
+              test_exact_parent_status_transition_is_verified \
+              test_illegal_base_to_head_status_jump_is_rejected \
+              test_head_without_transition_policy_is_rejected \
+              test_merge_policy_must_equal_exact_head_policy \
+              test_cli_receipt_contains_transition_report; do
+              grep -F "$name" "$proof/${label}-python.log"
+            done
+            {
+              for check in \
+                check-documentation-authority.py \
+                check-plan.py \
+                check-evidence-index.py \
+                check-gap-register.py \
+                derive-gap-status.py \
+                derive-gates.py \
+                check-status-transitions.py \
+                check-workflow-action-policy.py \
+                check-repository-hygiene.py \
+                check-trnm-server.py \
+                check-rust-foundation.py; do
+                printf '\n=== %s ===\n' "$check"
+                python3 "scripts/$check"
+              done
+            } 2>&1 | tee "$proof/${label}-controls.log"
+            test -z "$(git status --porcelain)"
+          done
+
+      - name: Run candidate checker against the untouched live merge object
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          proof="$RUNNER_TEMP/prospective-transition-proof"
+          git checkout --detach "$PRODUCT_MERGE"
+          test -z "$(git status --porcelain)"
+          python3 "$GITHUB_WORKSPACE/tooling/overlay/scripts/check-prospective-merge-identity.py" \
+            --repository-root "$GITHUB_WORKSPACE/source" \
+            --repository TrillionniumFoundation/TrillionniumGame \
+            --expected-base "$BASE_COMMIT" \
+            --expected-head "$PRODUCT_HEAD" \
+            --expected-merge "$PRODUCT_MERGE" \
+            --output "$proof/live-merge-identity.json" \
+            | tee "$proof/live-merge-identity.stdout"
+          jq -e \
+            --arg base "$BASE_COMMIT" \
+            --arg head "$PRODUCT_HEAD" \
+            --arg merge "$PRODUCT_MERGE" \
+            '.base_commit == $base and .head_commit == $head and .merge_commit == $merge and
+             .status_transition.status == "verified" and
+             .status_transition.claim_boundary.git_history_authenticated == false and
+             .status_transition.claim_boundary.independent_review_established == false and
+             .status_transition.claim_boundary.evidence_acceptance_established == false and
+             .status_transition.claim_boundary.gap_closed == false' \
+            "$proof/live-merge-identity.json" >/dev/null
+
+      - name: Build bounded diagnostic packet
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          proof="$RUNNER_TEMP/prospective-transition-proof"
+          git cat-file commit "$PRODUCT_HEAD" > "$proof/source-commit.txt"
+          git cat-file commit "$PRODUCT_MERGE" > "$proof/merge-commit.txt"
+          git ls-remote origin refs/heads/main refs/heads/$PRODUCT_BRANCH refs/pull/63/merge > "$proof/live-refs.txt"
           python3 - <<'PY'
-          import hashlib,json,os,zipfile
+          import hashlib,json,os,re,zipfile
           from pathlib import Path
-          root=Path(os.environ['RUNNER_TEMP'])/'live-transition-proof'
-          rc=int((root/'returncode.txt').read_text())
+          root=Path(os.environ['RUNNER_TEMP'])/'prospective-transition-proof'
+          counts={}
+          for label in ('source','merge'):
+              text=(root/f'{label}-python.log').read_text(errors='replace')
+              match=re.search(r'^Ran ([1-9][0-9]*) tests in ',text,re.M)
+              if not match or not re.search(r'^OK$',text,re.M): raise RuntimeError(label+' tests incomplete')
+              counts[label]=int(match.group(1))
+          live=json.loads((root/'live-merge-identity.json').read_text())
           identity={
-            'schema':'trillionnium.live-status-transition-diagnostic.v1',
+            'schema':'trillionnium.prospective-transition-preflight.v1',
             'repository':'TrillionniumFoundation/TrillionniumGame',
             'base_commit':os.environ['BASE_COMMIT'],
-            'head_commit':os.environ['PRODUCT_HEAD'],
-            'head_tree':os.environ['PRODUCT_TREE'],
-            'returncode':rc,
-            'valid':rc==0,
+            'source_commit':os.environ['PRODUCT_HEAD'],
+            'source_tree':os.environ['PRODUCT_TREE'],
+            'merge_commit':os.environ['PRODUCT_MERGE'],
+            'proposed_tree':os.environ['PROPOSED_TREE'],
+            'changed_blobs':{
+              'scripts/check-prospective-merge-identity.py':os.environ['IDENTITY_BLOB'],
+              'tests/control_plane/test_prospective_merge_identity.py':os.environ['TEST_BLOB']},
+            'execution':{'source_python_tests_passed':counts['source'],'merge_python_tests_passed':counts['merge'],'control_checks_per_object':11,'live_transition_count':live['status_transition']['transition_count']},
             'producer':{key:os.environ.get(key) for key in ('GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_JOB')},
-            'claims':{'ordinary_required_gate_passed':False,'independently_accepted':False,'gap_closed':False},
-            'limitations':['Diagnostic comparison only; GitHub event/base provenance and ordinary workflow admission remain separate.']}
+            'claims':{'source_candidate':True,'product_branch_changed':False,'ordinary_required_gate_passed':False,'independently_accepted':False,'gap_closed':False},
+            'limitations':['Temporary overlay tree only; the product branch is unchanged.','The live merge comparison uses the exact existing GitHub merge and parents but is still a supplementary diagnostic run.','No live database, SDK, reviewer, administrator, production or compatibility acceptance is created.']}
           (root/'identity.json').write_text(json.dumps(identity,indent=2)+'\n')
           files={p.name:p.read_bytes() for p in root.iterdir() if p.is_file()}
           (root/'file-index.json').write_text(json.dumps([{'path':n,'size_bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()} for n,b in sorted(files.items())],indent=2)+'\n')
           files={p.name:p.read_bytes() for p in root.iterdir() if p.is_file()}
-          with zipfile.ZipFile(root/'live-transition-diagnostic.zip','x',zipfile.ZIP_DEFLATED) as archive:
+          with zipfile.ZipFile(root/'prospective-transition-preflight.zip','x',zipfile.ZIP_DEFLATED) as archive:
             for name,data in sorted(files.items()): archive.writestr(name,data)
           PY
 
-      - name: Retain diagnostic whether pass or fail
+      - name: Retain exact diagnostic packet
         uses: ./tooling/publish
 
-      - name: Reject illegal live transition or moved refs
+      - name: Prove product refs remain unchanged
         shell: bash
+        working-directory: source
         run: |
           set -euo pipefail
-          test "${{ steps.transition.outputs.returncode }}" = 0
-          test "$(git -C "$GITHUB_WORKSPACE/head" ls-remote origin refs/heads/main | cut -f1)" = "$BASE_COMMIT"
-          test "$(git -C "$GITHUB_WORKSPACE/head" ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$PRODUCT_HEAD"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$BASE_COMMIT"
+          test "$(git ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$PRODUCT_HEAD"
+          test "$(git ls-remote origin refs/pull/63/merge | cut -f1)" = "$PRODUCT_MERGE"
+          printf 'proposed_tree=%s\nproduct_branch_changed=false\n' "$PROPOSED_TREE"

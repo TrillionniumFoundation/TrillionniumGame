@@ -8,9 +8,9 @@ const env = {...process.env};
 delete env.GITHUB_TOKEN;
 delete env.GH_BLOB_TOKEN;
 const result = spawnSync('/usr/bin/python3', [
-  path.join(process.env.GITHUB_WORKSPACE, 'head/scripts/upload-actions-artifact.py'),
-  'trnm-live-transition-diagnostic-545569a4',
-  path.join(process.env.RUNNER_TEMP, 'live-transition-proof/live-transition-diagnostic.zip'),
+  path.join(process.env.GITHUB_WORKSPACE, 'source/scripts/upload-actions-artifact.py'),
+  'trnm-prospective-transition-preflight-c008d244',
+  path.join(process.env.RUNNER_TEMP, 'prospective-transition-proof/prospective-transition-preflight.zip'),
   '--mime-type', 'application/zip'
 ], {env, stdio: 'inherit', timeout: 180000, shell: false});
 if (result.error || result.status !== 0) process.exit(1);
