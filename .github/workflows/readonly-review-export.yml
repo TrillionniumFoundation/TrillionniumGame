@@ -106,7 +106,6 @@ jobs:
           python3 - <<'PY'
           import hashlib, json, os, re, zipfile
           from pathlib import Path
-
           root = Path(os.environ["RUNNER_TEMP"]) / "gap-scope-proof"
           counts = {}
           for label in ("source", "merge"):
@@ -158,14 +157,7 @@ jobs:
           PY
 
       - name: Retain exact diagnostic packet
-        shell: bash
-        working-directory: source
-        run: |
-          set -euo pipefail
-          python3 scripts/upload-actions-artifact.py \
-            trnm-gap-scope-supplementary-27f5eb36 \
-            "$RUNNER_TEMP/gap-scope-proof/gap-scope-supplementary.zip" \
-            --mime-type application/zip
+        uses: ./tooling/publish
 
       - name: Reject moved product identities
         shell: bash
