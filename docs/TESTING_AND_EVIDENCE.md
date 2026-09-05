@@ -258,3 +258,55 @@ cargo test -p trnm-persistence-pg --locked --bin trnm-server live_cockroach_seri
 The second command requires the isolated live database environment and explicit
 required flag in its workflow to earn execution credit. Both workflows retain
 source/unit and live jobs, nonempty-result assertions and exact definition pins.
+
+## 15. Descriptor-bound retained-file reads
+
+Retained JSON, manifests, schemas and artifacts are opened by walking from the
+filesystem root through directory descriptors. Every path component uses
+`O_NOFOLLOW`; directories use `O_DIRECTORY`, and descriptors use `O_CLOEXEC`.
+The leaf is opened with `O_NONBLOCK` before `fstat` requires a regular file. A FIFO
+substituted immediately before open therefore cannot block waiting for a writer.
+There is no fallback to a path-based open when these POSIX capabilities are absent.
+
+Size, regular-file type, byte limits and the final metadata snapshot are checked
+against the same opened descriptor that supplies the hashed bytes. A leaf or
+unopened ancestor changed to a symlink is rejected. Replacing an already opened
+parent path cannot redirect subsequent relative opens: they stay anchored to the
+original directory inode. This does not promise that all directory names remain
+unchanged; it prevents following the substituted path to different contents.
+
+The descriptor snapshot includes device, inode, type/mode, link count, size,
+mtime and ctime. Growth, truncation, unlink and observable in-place mutation during
+reading fail validation. These checks do not defeat privileged mount changes or a
+compromised kernel. They are not a cryptographic filesystem snapshot or a substitute
+for an immutable retained store and authenticated review provenance.
+
+The existing byte budgets and nullable expiry semantics are unchanged. Artifact
+reads stream in chunks no larger than 1 MiB, with a bounded extra-byte probe;
+absolute path walks allow at most 256 components including the root. These are
+byte and iteration limits, not a hard wall-clock deadline for stalled regular-file
+I/O on a failing disk or network filesystem. Such storage requires an external
+process timeout. Operating-system diagnostic text and retained contents are not
+included in the helper's public I/O error message.
+
+```bash
+python3 -m unittest discover -s tests/control_plane -p 'test_evidence_retained_io.py' -v
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+The I/O suite uses deterministic syscall-boundary mutations, not sleep-based race
+assumptions. It covers leaf/parent swaps, FIFO handling, manifest/schema consumers,
+metadata and length changes, descriptor cleanup, read budgets and absent platform
+support. A bounded child process separately guards the FIFO regression. Its
+synthetic fixtures and local results grant no independent acceptance. The
+source-candidate scope is recorded in
+[`status/EVIDENCE_RETAINED_IO_STATUS.json`](status/EVIDENCE_RETAINED_IO_STATUS.json).
+Neither gap statuses nor product gates are promoted by this repair. Native
+exact-head/prospective-merge qualification and independent acceptance remain required.
+
+The foundation dependency checker also binds the existing diagnostic OpenSSL dependency
+exactly to `=0.10.81`, matching Cargo.toml and the already pinned Cargo.lock.
+It does not allow version ranges, alternate sources, extra dependencies or pure-core
+OpenSSL imports. `test_rust_foundation_dependency_alignment.py` checks positive
+repository validation and rejected mutations, including other pins and runtime
+feature changes. This alignment is not an independent cryptographic approval.

@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import stat
+from contextlib import contextmanager
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -20,6 +23,14 @@ MAX_JSON_BYTES = 8 * 1024 * 1024
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 MAX_ARTIFACTS = 256
 MAX_RETAINED_BYTES = 256 * 1024 * 1024
+MAX_PATH_COMPONENTS = 256
+# Check the real platform once; tests may instrument os.open without changing
+# the platform's capabilities. Unsupported systems never get a path-open fallback.
+_SECURE_OPEN_SUPPORTED = (
+    os.name == "posix" and os.open in os.supports_dir_fd
+    and all(hasattr(os, flag) for flag in
+            ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK", "O_CLOEXEC"))
+)
 HEX40 = re.compile(r"[a-f0-9]{40}")
 HEX64 = re.compile(r"(?:sha256:)?[a-f0-9]{64}")
 EVIDENCE_TYPES = frozenset({
@@ -91,23 +102,92 @@ def _constant(value: str) -> None:
     raise AdmissionError("non-finite JSON number: " + value)
 
 
+def _relative_parts(value: Any) -> tuple[str, ...]:
+    need(canonical_text(value) and "\\" not in value, "invalid retained path")
+    path = PurePosixPath(value)
+    need(not path.is_absolute() and str(path) == value
+         and all(part not in (".", "..") for part in path.parts),
+         "unsafe retained path")
+    return path.parts
+
+
+def _file_snapshot(value: os.stat_result) -> tuple[int, ...]:
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_nlink,
+            value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+@contextmanager
+def _open_regular(path: Path) -> Iterator[tuple[int, os.stat_result]]:
+    """Open through pinned directory descriptors, never check-then-open a path.
+
+    O_NONBLOCK prevents a replaced FIFO from hanging open before fstat can reject
+    it. These are byte/iteration bounds, not a wall-clock guarantee for a stalled
+    filesystem. Only regular files on a supported POSIX host are accepted.
+    """
+    need(_SECURE_OPEN_SUPPORTED, "descriptor-relative no-follow I/O is required")
+    absolute = path.absolute()
+    need(absolute.anchor == os.sep and 1 < len(absolute.parts) <= MAX_PATH_COMPONENTS
+         and all(part not in (".", "..") for part in absolute.parts[1:]),
+         "noncanonical absolute evidence path")
+    directory = None
+    descriptor = None
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    try:
+        directory = os.open(os.sep, directory_flags)
+        for component in absolute.parts[1:-1]:
+            next_directory = os.open(component, directory_flags, dir_fd=directory)
+            previous_directory, directory = directory, next_directory
+            os.close(previous_directory)
+        descriptor = os.open(absolute.name, file_flags, dir_fd=directory)
+        before = os.fstat(descriptor)
+        need(stat.S_ISREG(before.st_mode), "evidence input must be a regular file")
+        yield descriptor, before
+    except OSError as error:
+        # Do not emit file data, signed URLs or arbitrary OS diagnostics.
+        raise AdmissionError("secure evidence file I/O failed") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if directory is not None:
+            os.close(directory)
+
+
+def _regular_chunks(path: Path, limit: int, *, expected_size: int | None = None) -> Iterator[bytes]:
+    need(type(limit) is int and limit > 0, "invalid file byte budget")
+    with _open_regular(path) as (descriptor, before):
+        need(0 < before.st_size <= limit, "evidence input is empty or exceeds byte limit")
+        need(expected_size is None or before.st_size == expected_size,
+             "retained artifact size mismatch")
+        total = 0
+        while True:
+            block = os.read(descriptor, min(1024 * 1024, limit + 1 - total))
+            if not block:
+                break
+            total += len(block)
+            need(total <= limit, "evidence input grew beyond byte limit")
+            yield block
+        need(total == before.st_size, "evidence input changed length during read")
+        need(_file_snapshot(os.fstat(descriptor)) == _file_snapshot(before),
+             "evidence input changed during read")
+
+
 def load_object(path: Path) -> dict[str, Any]:
-    need(not path.is_symlink() and stat.S_ISREG(path.stat().st_mode), "JSON input must be a regular non-symlink file")
-    need(0 < path.stat().st_size <= MAX_JSON_BYTES, "JSON input size exceeds budget")
-    with path.open("rb") as stream:
-        value = stream.read(MAX_JSON_BYTES + 1)
-    need(0 < len(value) <= MAX_JSON_BYTES, "JSON input is empty or exceeds byte limit")
+    value = b"".join(_regular_chunks(path, MAX_JSON_BYTES))
     parsed = json.loads(value.decode("utf-8"), object_pairs_hook=_pairs,
                         parse_constant=_constant)
     need(isinstance(parsed, dict), "JSON root must be an object")
     return parsed
 
 
+def load_retained_object(root: Path, relative: Any) -> dict[str, Any]:
+    # Lexical validation precedes any I/O. Every component is checked by the
+    # descriptor walk when it is opened, including the supplied root ancestry.
+    return load_object(root.joinpath(*_relative_parts(relative)))
+
+
 def repository_path(root: Path, value: Any) -> Path:
-    need(canonical_text(value) and "\\" not in value, "invalid retained path")
-    path = PurePosixPath(value)
-    need(not path.is_absolute() and str(path) == value
-         and all(part not in (".", "..") for part in path.parts), "unsafe retained path")
+    path = PurePosixPath(*_relative_parts(value))
     resolved_root = root.resolve(strict=True)
     current = resolved_root
     for part in path.parts:
@@ -138,19 +218,11 @@ def artifact_identity(item: Any) -> tuple[str, str, str, int]:
 def verify_artifact(root: Path, item: dict[str, Any]) -> tuple[str, str, str, int]:
     identity = artifact_identity(item)
     _, relative, expected, size = identity
-    path = repository_path(root, relative)
-    need(path.stat().st_size == size, "retained artifact size mismatch")
+    path = root.joinpath(*_relative_parts(relative))
     sha = hashlib.sha256()
-    total = 0
-    with path.open("rb") as stream:
-        while True:
-            block = stream.read(min(1024 * 1024, size + 1 - total))
-            if not block:
-                break
-            total += len(block)
-            need(total <= size, "retained artifact grew during validation")
-            sha.update(block)
-    need(total == size and sha.hexdigest() == expected, "retained artifact digest mismatch")
+    for block in _regular_chunks(path, size, expected_size=size):
+        sha.update(block)
+    need(sha.hexdigest() == expected, "retained artifact digest mismatch")
     return identity
 
 
@@ -271,9 +343,8 @@ def validate_entry(row: dict[str, Any], *, root: Path, now: datetime | None = No
     evidence_type = row.get("evidence_type")
     need(isinstance(evidence_type, str) and evidence_type in EVIDENCE_TYPES, "unsupported evidence type")
     relative = exact_alias(row, "path", "manifest_path", "source.path")
-    manifest_path = repository_path(root, relative)
-    manifest = load_object(manifest_path)
-    schema = load_object(repository_path(root, "docs/evidence/schemas/trillionnium-evidence-v1.schema.json"))
+    manifest = load_retained_object(root, relative)
+    schema = load_retained_object(root, "docs/evidence/schemas/trillionnium-evidence-v1.schema.json")
     validate_schema(manifest, schema)
     need(manifest.get("schema") == "trillionnium.evidence.v1", "retained evidence schema mismatch")
     need(manifest.get("evidence_id") == evidence_id and manifest.get("evidence_type") == evidence_type,

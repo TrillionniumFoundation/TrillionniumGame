@@ -54,6 +54,7 @@ EXPECTED_DEPENDENCIES: dict[str, dict[str, Any]] = {
     },
     "crates/trnm-persistence-pg": {
         "native-tls": "=0.2.18",
+        "openssl": "=0.10.81",
         "postgres": "=0.19.14",
         "postgres-native-tls": "=0.5.3",
         "prost": "=0.14.3",
