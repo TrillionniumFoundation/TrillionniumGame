@@ -1,0 +1,55 @@
+name: readonly-review-export
+
+on:
+  push:
+    branches: [tooling/readonly-review-export-8fde7e81]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnostic-export-not-acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - name: Fetch exact diagnostic code and unchanged product tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE/tooling"
+          git -C "$GITHUB_WORKSPACE/tooling" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+          cd "$GITHUB_WORKSPACE/tooling"
+          printf '%s\n' '1e58a66edd5b0d0bfe002ab9da78aa4adf61bdd0e6ecac95076807c8d7fce5d0  export-source.json.gz' | sha256sum -c -
+          python3 - <<'PY'
+          import gzip, json
+          from pathlib import Path
+          files = json.loads(gzip.decompress(Path('export-source.json.gz').read_bytes()))
+          assert set(files) == {'export_packet.py', 'test_export_packet.py'}
+          for name, text in files.items():
+              with open(name, 'x', encoding='utf-8') as stream:
+                  stream.write(text)
+          PY
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin 8fde7e81b94113fa72f3bc700fba78c7da01b36e
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = 8fde7e81b94113fa72f3bc700fba78c7da01b36e
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = 4d816c8d25e0e9fc42982e433447985e7bfcbee2
+          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object scripts/upload-actions-artifact.py)" = 5f94e2284cddc89dd065b76a8df06ba4e18b6589
+      - name: Test the exporter with synthetic inputs
+        shell: bash
+        working-directory: tooling
+        run: python3 -m unittest -v test_export_packet
+      - name: Retain native logs and recover bounded embedded archives without source mutation
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/tooling/export_packet.py" --source "$GITHUB_WORKSPACE/source" --output "$RUNNER_TEMP/trnm-review-8fde7e81.zip"
+      - name: Store diagnostic ZIP as an immutable Actions artifact
+        uses: ./tooling/publish

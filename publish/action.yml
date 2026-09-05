@@ -1,0 +1,5 @@
+name: Publish diagnostic packet
+description: Call the fixed repository native uploader with job-scoped artifact credentials only.
+runs:
+  using: node24
+  main: index.js
