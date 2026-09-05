@@ -1,19 +1,16 @@
-name: readonly-review-export
-
+name: world-readonly-native-diagnostic
 on:
   push:
-    branches: [tooling/readonly-review-export-arm-8fde7e81]
-
+    branches: [tooling/world-readonly-diagnostic-9a57222-20260905]
 permissions:
   contents: read
   actions: read
-
 jobs:
-  secure-uploader-native-proof-not-acceptance:
+  exact-world-source-and-cli-diagnostic-not-acceptance:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 18
+    timeout-minutes: 38
     steps:
-      - name: Fetch exact tooling and reviewed-boundary product revision
+      - name: Bind diagnostic control, reviewed uploader and exact World source
         shell: bash
         run: |
           set -euo pipefail
@@ -22,68 +19,33 @@ jobs:
           git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
-          git init "$GITHUB_WORKSPACE/source"
-          git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin c2944df15702de77e8bbe549158019f84a53a38e
-          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = c2944df15702de77e8bbe549158019f84a53a38e
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = 6a3ef7308f778920163617d53d537f817ed36ea3
-          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object scripts/upload-actions-artifact.py)" = 8baac2cca878af822428831359ab00d15ab10b71
-          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object tests/control_plane/test_actions_artifact_security.py)" = dfc8de57be914582e2571e4747a401eab256021f
-      - name: Run complete current product regression and source controls without credentials
+          git init "$GITHUB_WORKSPACE/uploader"
+          git -C "$GITHUB_WORKSPACE/uploader" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$GITHUB_WORKSPACE/uploader" fetch --no-tags --depth=1 origin c2944df15702de77e8bbe549158019f84a53a38e
+          git -C "$GITHUB_WORKSPACE/uploader" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/uploader" rev-parse HEAD^{tree})" = 6a3ef7308f778920163617d53d537f817ed36ea3
+          test "$(git -C "$GITHUB_WORKSPACE/uploader" hash-object scripts/upload-actions-artifact.py)" = 8baac2cca878af822428831359ab00d15ab10b71
+          git init "$GITHUB_WORKSPACE/trillionnium-world"
+          git -C "$GITHUB_WORKSPACE/trillionnium-world" remote add origin https://github.com/TrillionniumFoundation/Trillionnium-World.git
+          git -C "$GITHUB_WORKSPACE/trillionnium-world" fetch --no-tags --depth=1 origin 9a57222d1eacc7059e549df9c62a79046e8ae8ea
+          git -C "$GITHUB_WORKSPACE/trillionnium-world" checkout -b fix/world-plan-v4-development-closure-20260831 FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/trillionnium-world" rev-parse HEAD^{tree})" = 57b03d5ae782ee9e1e338afd34842ad8dbb653c9
+      - name: Export exact tracked World source with raw commit and tree
         shell: bash
-        working-directory: source
-        run: |
-          set -euo pipefail
-          python3 -m compileall -q scripts tools tests
-          python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/product-preflight.log"
-          grep -Eq '^Ran 441 tests in ' "$RUNNER_TEMP/product-preflight.log"
-          grep -qx 'OK' "$RUNNER_TEMP/product-preflight.log"
-          {
-            for check in check-documentation-authority.py check-plan.py check-evidence-index.py check-gap-register.py derive-gap-status.py derive-gates.py check-status-transitions.py check-workflow-action-policy.py check-repository-hygiene.py check-trnm-server.py check-rust-foundation.py; do
-              printf '\n=== %s ===\n' "$check"
-              python3 "scripts/$check" || exit "$?"
-            done
-          } 2>&1 | tee "$RUNNER_TEMP/source-controls.log"
-          test -z "$(git status --porcelain)"
-      - name: Seal exact source and raw preflight bytes without claiming ordinary gate completion
-        shell: bash
-        working-directory: source
-        run: |
-          set -euo pipefail
-          git archive --format=tar c2944df15702de77e8bbe549158019f84a53a38e > "$RUNNER_TEMP/source.tar"
-          git ls-tree -rz --full-tree c2944df15702de77e8bbe549158019f84a53a38e > "$RUNNER_TEMP/source-tree.z"
-          git cat-file commit c2944df15702de77e8bbe549158019f84a53a38e > "$RUNNER_TEMP/source-commit.raw"
-          python3 - <<'PY'
-          import hashlib,json,os,re,zipfile
-          from pathlib import Path
-          root=Path(os.environ['RUNNER_TEMP'])
-          head='c2944df15702de77e8bbe549158019f84a53a38e'
-          tree='6a3ef7308f778920163617d53d537f817ed36ea3'
-          files={name:(root/name).read_bytes() for name in ('source.tar','source-tree.z','source-commit.raw','product-preflight.log','source-controls.log')}
-          assert sum(map(len,files.values())) < 64*1024*1024
-          raw=files['source-commit.raw']
-          assert hashlib.sha1(b'commit '+str(len(raw)).encode()+b'\0'+raw).hexdigest()==head
-          assert raw.startswith(('tree '+tree+'\n').encode())
-          text=files['product-preflight.log'].decode('utf-8')
-          ids=re.findall(r'^(test_[A-Za-z0-9_]+ \([A-Za-z0-9_.]+\)) \.\.\. ok$',text,re.M)
-          assert len(ids)==len(set(ids))==441
-          assert re.findall(r'^Ran ([0-9]+) tests in [0-9.]+s$',text,re.M)==['441']
-          assert text.splitlines().count('OK')==1 and text.splitlines()[-1]=='OK'
-          observation={'schema':'trillionnium.secure-uploader-native-proof.v1','repository':'TrillionniumFoundation/TrillionniumGame',
-            'source_head':head,'source_tree':tree,'producer':{'workflow_commit':os.environ['GITHUB_SHA'],
-            'run_id':int(os.environ['GITHUB_RUN_ID']),'run_attempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'job':os.environ['GITHUB_JOB']},
-            'tests':{'collected':441,'passed':441,'identities':ids},
-            'claims':{'accepted':False,'gap_closed':False,'production_ready':False,'independently_reviewed':False},
-            'limitations':['Targeted native preflight and real uploader proof only; not the ordinary source or prospective merge gates.',
-              'No current canonical workflow collection, database execution or independent review is asserted by this artifact.']}
-          files['observation.json']=(json.dumps(observation,indent=2)+'\n').encode()
-          index=[{'path':n,'size_bytes':len(v),'sha256':hashlib.sha256(v).hexdigest()} for n,v in sorted(files.items())]
-          files['file-index.json']=(json.dumps(index,indent=2)+'\n').encode()
-          output=root/'trnm-upload-security-c2944df1.zip'
-          with zipfile.ZipFile(output,'x',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
-            for name,data in sorted(files.items()): z.writestr(name,data)
-          print(json.dumps({'path':output.name,'bytes':output.stat().st_size,'sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'accepted':False}))
-          PY
-      - name: Upload with descriptor-bound no-redirect product transport
+        run: python3 tooling/world-diagnostic.py export "$GITHUB_WORKSPACE/trillionnium-world" "$RUNNER_TEMP/world-diagnostic"
+      - name: Preserve source before running product commands
         uses: ./tooling/publish
+        env:
+          WORLD_DIAGNOSTIC_PACKET: world-source-9a57222
+      - name: Execute bounded preflight and corrected-toolchain CLI diagnostics without credentials
+        shell: bash
+        run: python3 tooling/world-diagnostic.py run "$GITHUB_WORKSPACE/trillionnium-world" "$RUNNER_TEMP/world-diagnostic"
+      - name: Preserve raw command results without qualification claims
+        if: ${{ always() }}
+        uses: ./tooling/publish
+        env:
+          WORLD_DIAGNOSTIC_PACKET: world-native-9a57222
+      - name: Fail honestly when any selected diagnostic command failed or did not run
+        if: ${{ always() }}
+        shell: bash
+        run: python3 tooling/world-diagnostic.py finish "$GITHUB_WORKSPACE/trillionnium-world" "$RUNNER_TEMP/world-diagnostic"
