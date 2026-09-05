@@ -1,29 +1,27 @@
-name: stage-gate-freshness-blob
+name: qualify-current-gap-scope-head
 
 on:
   push:
     branches: [tooling/readonly-review-export-arm-8fde7e81]
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 env:
-  BASE_COMMIT: 9f5524815422ed6e59c6a04fa3b5389a3ceef281
-  BASE_TREE: d8355f6b58bd6797f45bde6abb7ec8b266a34c24
-  RESULT_TREE: 4cce1e0499fb14fc3e67ecc0d932ce69bc4eb35c
-  PATCH_BLOB: 93938cfa81559641e8a464815b7e2d4d8bdc44af
-  PATCH_GZIP_SHA256: 9a67aa01bbacf9903129953aad39ea577e21b5d3087355943d7d37721a07bb1f
-  PATCH_SHA256: 313fc004c51b90847afcc2482ccde4af6adfec8d63364bd9f1283f79ac9b8433
-  LARGE_BLOB_SHA: ead630ba4657804ab66ef725acd1d3ad9c2fa698
+  BASE_COMMIT: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
+  PRODUCT_HEAD: 33307fd643e3f450d4d3439f8560593ea214d060
+  PRODUCT_TREE: 131eeb3f2aa67a61743aee39dec6c84dfb1e108b
+  PRODUCT_MERGE: 44a8438e84c4158332af40eec720d3b22057504a
   PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+  GAP_SCOPE_TEST_BLOB: dd3c547e7b2032d9cf3f3d85dbce6890e9bb4dc6
 
 jobs:
-  test-and-stage-unreachable-blob:
+  current-source-and-merge-supplementary:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
-      - name: Fetch exact tooling and unchanged product base
+      - name: Fetch exact tooling and immutable product objects
         shell: bash
         run: |
           set -euo pipefail
@@ -32,160 +30,142 @@ jobs:
           git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object gate-freshness.patch.gz)" = "$PATCH_BLOB"
-          printf '%s  %s\n' "$PATCH_GZIP_SHA256" "$GITHUB_WORKSPACE/tooling/gate-freshness.patch.gz" | sha256sum -c -
 
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin "$BASE_COMMIT"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin "$PRODUCT_HEAD"
           git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$BASE_COMMIT"
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$BASE_TREE"
-          test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$BASE_COMMIT"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin refs/pull/63/merge
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse FETCH_HEAD)" = "$PRODUCT_MERGE"
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse "$PRODUCT_HEAD^{tree}")" = "$PRODUCT_TREE"
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse "$PRODUCT_MERGE^{tree}")" = "$PRODUCT_TREE"
+          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object tests/control_plane/test_gap_register_scope_lock.py)" = "$GAP_SCOPE_TEST_BLOB"
+          mapfile -t parents < <(git -C "$GITHUB_WORKSPACE/source" cat-file -p "$PRODUCT_MERGE" | sed -n 's/^parent //p')
+          test "${#parents[@]}" -eq 2
+          test "${parents[0]}" = "$BASE_COMMIT"
+          test "${parents[1]}" = "$PRODUCT_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$PRODUCT_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin refs/pull/63/merge | cut -f1)" = "$PRODUCT_MERGE"
 
-      - name: Apply exact patch and verify every changed blob
+      - name: Execute complete Python and control qualification on source and merge
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          gzip -dc "$GITHUB_WORKSPACE/tooling/gate-freshness.patch.gz" > "$RUNNER_TEMP/gate-freshness.patch"
-          printf '%s  %s\n' "$PATCH_SHA256" "$RUNNER_TEMP/gate-freshness.patch" | sha256sum -c -
-          git apply --check "$RUNNER_TEMP/gate-freshness.patch"
-          git apply --index "$RUNNER_TEMP/gate-freshness.patch"
-          test "$(git write-tree)" = "$RESULT_TREE"
-          cat > "$RUNNER_TEMP/expected-files" <<'EOF'
-          scripts/derive-gates.py
-          scripts/evidence_admission.py
-          tests/control_plane/test_gate_freshness.py
-          EOF
-          git diff --cached --name-only | sort > "$RUNNER_TEMP/actual-files"
-          diff -u "$RUNNER_TEMP/expected-files" "$RUNNER_TEMP/actual-files"
-          test "$(git hash-object scripts/derive-gates.py)" = 037e34286976e32d89dfbbfaf54ae008c69ec016
-          test "$(git hash-object scripts/evidence_admission.py)" = "$LARGE_BLOB_SHA"
-          test "$(git hash-object tests/control_plane/test_gate_freshness.py)" = 1ec05c0bfba69fb59a7385afa7210ce7b0e0f9b2
-
-      - name: Execute complete regression and control qualification
-        shell: bash
-        working-directory: source
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/gate-proof"
-          python3 -m compileall -q scripts tools tests 2>&1 | tee "$RUNNER_TEMP/gate-proof/compileall.log"
-          python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/gate-proof/python.log"
-          grep -E '^Ran 539 tests in ' "$RUNNER_TEMP/gate-proof/python.log"
-          grep -qx OK "$RUNNER_TEMP/gate-proof/python.log"
-          grep -F 'test_one_second_beyond_boundary_is_stale_and_cannot_pass' "$RUNNER_TEMP/gate-proof/python.log"
-          grep -F 'test_validate_entry_returns_the_same_securely_validated_manifest' "$RUNNER_TEMP/gate-proof/python.log"
-          {
-            for check in check-documentation-authority.py check-plan.py check-evidence-index.py check-gap-register.py derive-gap-status.py derive-gates.py check-status-transitions.py check-workflow-action-policy.py check-repository-hygiene.py check-trnm-server.py check-rust-foundation.py; do
-              printf '\n=== %s ===\n' "$check"
-              python3 "scripts/$check"
+          proof="$RUNNER_TEMP/gap-scope-proof"
+          mkdir -p "$proof"
+          for pair in "source:$PRODUCT_HEAD" "merge:$PRODUCT_MERGE"; do
+            label=${pair%%:*}
+            object=${pair#*:}
+            git checkout --detach "$object"
+            test "$(git rev-parse HEAD^{tree})" = "$PRODUCT_TREE"
+            test "$(git hash-object tests/control_plane/test_gap_register_scope_lock.py)" = "$GAP_SCOPE_TEST_BLOB"
+            python3 -m compileall -q scripts tools tests 2>&1 | tee "$proof/${label}-compileall.log"
+            python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$proof/${label}-python.log"
+            grep -Eq '^Ran [1-9][0-9]* tests in ' "$proof/${label}-python.log"
+            grep -qx OK "$proof/${label}-python.log"
+            for test_name in \
+              test_repository_gap_scope_is_non_shrinkable \
+              test_gap_removal_or_substitution_is_rejected \
+              test_severity_external_dependency_and_policy_cannot_be_weakened \
+              test_required_evidence_and_blocking_claims_cannot_shrink \
+              test_close_criteria_denominator_and_per_gap_minimum_cannot_shrink \
+              test_duplicate_keys_ids_criteria_and_evidence_are_rejected \
+              test_required_aggregate_still_discovers_complete_python_suite; do
+              grep -F "$test_name" "$proof/${label}-python.log"
             done
-          } 2>&1 | tee "$RUNNER_TEMP/gate-proof/controls.log"
-          git diff --cached --check 2>&1 | tee "$RUNNER_TEMP/gate-proof/diff-check.log"
-          test "$(git write-tree)" = "$RESULT_TREE"
-
-      - name: Stage exact large source blob without moving a ref
-        shell: bash
-        working-directory: source
-        env:
-          GH_BLOB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import base64, json, os, urllib.request
-          from pathlib import Path
-
-          class RejectRedirects(urllib.request.HTTPRedirectHandler):
-              def redirect_request(self, request, fp, code, msg, headers, newurl):
-                  raise RuntimeError("redirect refused")
-
-          data = Path("scripts/evidence_admission.py").read_bytes()
-          payload = json.dumps({"content": base64.b64encode(data).decode("ascii"), "encoding": "base64"}, separators=(",", ":")).encode()
-          request = urllib.request.Request(
-              "https://api.github.com/repos/TrillionniumFoundation/TrillionniumGame/git/blobs",
-              data=payload,
-              method="POST",
-              headers={
-                  "Accept": "application/vnd.github+json",
-                  "Content-Type": "application/json",
-                  "X-GitHub-Api-Version": "2022-11-28",
-                  "User-Agent": "trillionnium-gate-freshness-stager",
-              },
-          )
-          request.add_unredirected_header("Authorization", "Bearer " + os.environ["GH_BLOB_TOKEN"])
-          opener = urllib.request.build_opener(RejectRedirects())
-          try:
-              with opener.open(request, timeout=60) as response:
-                  result = json.load(response)
-          except Exception as error:
-              raise RuntimeError("Git blob staging failed") from None
-          if result.get("sha") != os.environ["LARGE_BLOB_SHA"]:
-              raise RuntimeError("staged Git blob identity mismatch")
-          receipt = {
-              "schema": "trillionnium.unreachable-blob-staging.v1",
-              "blob_sha": result["sha"],
-              "source_path": "scripts/evidence_admission.py",
-              "source_size": len(data),
-              "base_commit": os.environ["BASE_COMMIT"],
-              "base_tree": os.environ["BASE_TREE"],
-              "result_tree": os.environ["RESULT_TREE"],
-              "product_ref_changed": False,
-          }
-          target = Path(os.environ["RUNNER_TEMP"]) / "gate-proof/blob-receipt.json"
-          target.write_text(json.dumps(receipt, indent=2) + "\n")
-          print(json.dumps(receipt, separators=(",", ":")))
-          PY
-          test "$(git ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$BASE_COMMIT"
+            {
+              for check in \
+                check-documentation-authority.py \
+                check-plan.py \
+                check-evidence-index.py \
+                check-gap-register.py \
+                derive-gap-status.py \
+                derive-gates.py \
+                check-status-transitions.py \
+                check-workflow-action-policy.py \
+                check-repository-hygiene.py \
+                check-trnm-server.py \
+                check-rust-foundation.py; do
+                printf '\n=== %s ===\n' "$check"
+                python3 "scripts/$check"
+              done
+            } 2>&1 | tee "$proof/${label}-controls.log"
+            test -z "$(git status --porcelain)"
+          done
 
       - name: Build bounded diagnostic packet
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          cp "$RUNNER_TEMP/gate-freshness.patch" "$RUNNER_TEMP/gate-proof/gate-freshness.patch"
-          git cat-file commit "$BASE_COMMIT" > "$RUNNER_TEMP/gate-proof/base-commit.txt"
+          proof="$RUNNER_TEMP/gap-scope-proof"
+          git cat-file commit "$PRODUCT_HEAD" > "$proof/source-commit.txt"
+          git cat-file commit "$PRODUCT_MERGE" > "$proof/merge-commit.txt"
+          git ls-remote origin refs/heads/main refs/heads/$PRODUCT_BRANCH refs/pull/63/merge > "$proof/live-refs.txt"
           python3 - <<'PY'
-          import hashlib, json, os, zipfile
+          import hashlib, json, os, re, zipfile
           from pathlib import Path
-          root = Path(os.environ["RUNNER_TEMP"]) / "gate-proof"
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "gap-scope-proof"
+          counts = {}
+          for label in ("source", "merge"):
+              text = (root / f"{label}-python.log").read_text(errors="replace")
+              match = re.search(r"^Ran ([1-9][0-9]*) tests in ", text, re.M)
+              if not match or not re.search(r"^OK$", text, re.M):
+                  raise RuntimeError(f"{label} Python summary missing")
+              counts[label] = int(match.group(1))
           identity = {
-              "schema": "trillionnium.gate-freshness-staging.v1",
-              "base_commit": os.environ["BASE_COMMIT"],
-              "base_tree": os.environ["BASE_TREE"],
-              "result_tree": os.environ["RESULT_TREE"],
-              "patch_sha256": os.environ["PATCH_SHA256"],
-              "large_blob_sha": os.environ["LARGE_BLOB_SHA"],
-              "producer": {k: os.environ.get(k) for k in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")},
-              "tests": {"python_passed": 539, "control_checks_passed": 11},
-              "claims": {"accepted": False, "gap_closed": False, "product_ref_changed": False, "independent_review": False},
+              "schema": "trillionnium.gap-scope-supplementary.v1",
+              "repository": "TrillionniumFoundation/TrillionniumGame",
+              "source_commit": os.environ["PRODUCT_HEAD"],
+              "source_tree": os.environ["PRODUCT_TREE"],
+              "prospective_merge": os.environ["PRODUCT_MERGE"],
+              "prospective_merge_tree": os.environ["PRODUCT_TREE"],
+              "ordered_merge_parents": [os.environ["BASE_COMMIT"], os.environ["PRODUCT_HEAD"]],
+              "gap_scope_test_blob": os.environ["GAP_SCOPE_TEST_BLOB"],
+              "producer": {key: os.environ.get(key) for key in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")},
+              "execution": {
+                  "source_python_tests_passed": counts["source"],
+                  "merge_python_tests_passed": counts["merge"],
+                  "control_checks_per_object": 11,
+                  "objects_checked": 2,
+              },
+              "claims": {
+                  "supplementary_execution_observed": True,
+                  "ordinary_required_gate_passed": False,
+                  "independently_accepted": False,
+                  "gap_closed": False,
+                  "production_ready": False,
+              },
               "limitations": [
-                  "This tooling run stages one unreachable Git blob and does not publish the product branch.",
-                  "It is not the ordinary required exact-head/prospective-merge collection or independent acceptance.",
-                  "Synthetic accepted fixtures do not constitute real product, gate or gap evidence."
+                  "Read-only supplementary ARM execution; it cannot replace the manifest-required ordinary workflow collection.",
+                  "No live database, Rust, Go, SDK differential, endurance, administrator read-back or independent acceptance credit is granted by this packet.",
+                  "The gap-scope tests validate source semantics and do not establish that any close criterion is factually satisfied.",
               ],
           }
           (root / "identity.json").write_text(json.dumps(identity, indent=2) + "\n")
           files = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
-          (root / "file-index.json").write_text(json.dumps([
+          index = [
               {"path": name, "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
               for name, data in sorted(files.items())
-          ], indent=2) + "\n")
+          ]
+          (root / "file-index.json").write_text(json.dumps(index, indent=2) + "\n")
           files = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
-          with zipfile.ZipFile(root / "gate-freshness-staging.zip", "x", zipfile.ZIP_DEFLATED) as archive:
+          with zipfile.ZipFile(root / "gap-scope-supplementary.zip", "x", zipfile.ZIP_DEFLATED) as archive:
               for name, data in sorted(files.items()):
                   archive.writestr(name, data)
           PY
 
-      - name: Retain native staging packet
+      - name: Retain exact diagnostic packet
         uses: ./tooling/publish
 
-      - name: Prove product branch remained unchanged
+      - name: Reject moved product identities
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          test "$(git ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$BASE_COMMIT"
-          test "$(git rev-parse HEAD)" = "$BASE_COMMIT"
-          test "$(git write-tree)" = "$RESULT_TREE"
-          printf 'staged_blob=%s\nresult_tree=%s\nproduct_ref_changed=false\n' "$LARGE_BLOB_SHA" "$RESULT_TREE"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$BASE_COMMIT"
+          test "$(git ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$PRODUCT_HEAD"
+          test "$(git ls-remote origin refs/pull/63/merge | cut -f1)" = "$PRODUCT_MERGE"
+          printf 'source=%s\nmerge=%s\ntree=%s\nordinary_required_gate_credit=false\n' "$PRODUCT_HEAD" "$PRODUCT_MERGE" "$PRODUCT_TREE"
