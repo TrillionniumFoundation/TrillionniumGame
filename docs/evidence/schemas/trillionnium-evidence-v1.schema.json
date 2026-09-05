@@ -79,7 +79,7 @@
       "uniqueItems": true,
       "items": {
         "type": "string",
-        "pattern": "^TG-W[0-9]+-[0-9]{3}$"
+        "pattern": "^TG-(?:W[0-9]+|V3)-[0-9]{3}$"
       }
     },
     "parity_ids": {

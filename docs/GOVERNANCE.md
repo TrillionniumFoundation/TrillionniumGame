@@ -111,9 +111,26 @@ implicit acceptance; unrelated, expired, modified, mixed-target or diagnostic
 artifacts cannot supply credit.
 
 Unspecified backlog tasks always remain `planned`. The existing immutable
-120-task backlog is digest-verified before resolving override identities and
-dependencies; an override cannot invent a task or erase its scope dependencies.
-A workstream can be accepted only after every task in that authoritative
+120-task backlog is digest-verified before resolving override identities,
+dependencies and gate membership. For an accepted backlog task, `gate_ids`,
+`blocking_gaps` and `required_evidence` must exactly equal the union derived from
+that immutable gate scope; an override cannot invent a task, erase a dependency,
+remove a blocker or narrow an evidence class. The semantic rows in
+`PRODUCT_GATES.json` are independently digest-bound without freezing their
+derived status or evidence lists. Every required gate must itself be passed for
+the same repository/commit/tree, and the task's retained evidence must map to
+both the task and each gate while covering every gate-specific evidence type.
+
+The current milestone receives the same separation. Its item identities,
+dependencies, gaps, deliverables, acceptance clauses and required evidence are
+digest-bound; only status, exact acceptance target and evidence references are
+mutable acceptance fields. A roadmap item cannot become accepted by deleting a
+gap, replacing a dependency or reducing required evidence. Evidence task IDs
+accept both immutable backlog IDs (`TG-W…`) and the current Plan-v3 roadmap IDs
+(`TG-V3-…`); other version namespaces and malformed spellings fail schema
+validation.
+
+A workstream can be accepted only after every task in its authoritative
 membership and its prerequisite workstreams is accepted for one target. A stage
 must additionally pass the product gates listed in that same approved scope;
 the state checker calls the existing gate derivation instead of trusting a

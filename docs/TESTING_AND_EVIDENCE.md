@@ -478,3 +478,35 @@ upload proof or formal gap closure. It changes no Rust runtime, DDL, workflow
 definition, credentials or required-job denominator. Old native uploads do not
 qualify this revised parser. Publishing requires exact-source/prospective CI,
 a fresh real upload/download check, retained bytes and independent review.
+
+## 20. Task and gate scope binding
+
+An accepted execution task cannot define its own smaller proof obligation. The
+digest-verified execution backlog supplies task identity, dependencies and gate
+membership. The digest-verified product-gate semantic scope supplies blocking
+gaps and evidence classes. The current milestone similarly binds item identity,
+dependencies, gaps, deliverables, acceptance clauses and required evidence while
+leaving status, target and evidence references mutable. A change to those
+immutable semantics requires a reviewed source change and a new digest; editing a
+status overlay cannot erase them.
+
+For an accepted backlog task, all derived blockers must be closed and every
+required product gate must be passed for one exact repository/commit/tree. The
+retained task evidence must map to the task and each gate and cover every required
+evidence class. Roadmap tasks obey their exact declared dependency/gap/evidence
+scope. Evidence manifests may use canonical backlog task IDs (`TG-W<n>-<nnn>`)
+or current Plan-v3 roadmap IDs (`TG-V3-<nnn>`); malformed IDs and unapproved
+version namespaces fail schema admission.
+
+The regression suite includes positive synthetic retained evidence and hostile
+status-only, scope-shrink, wrong-target, missing-gate and type-coverage cases. It
+does not create real reviews or accepted product evidence. Current-head and
+prospective-merge execution, retained artifact custody, independent review,
+administrator read-back and every semantic close criterion remain separate.
+
+```bash
+python3 -m unittest tests.control_plane.test_evidence_admission -v
+python3 -m unittest tests.control_plane.test_execution_acceptance -v
+python3 scripts/check-status-transitions.py
+python3 scripts/check-plan.py
+```

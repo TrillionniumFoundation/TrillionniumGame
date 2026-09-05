@@ -203,6 +203,130 @@ class AcceptedTaskTests(unittest.TestCase):
             self.check()
 
 
+class BacklogTaskGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.fixture = FIXTURES.RetainedFixture(self.root)
+        self.fixture.entry["expires_at"] = None
+        self.fixture.manifest["expires_at"] = None
+        self.fixture.entry["gate_ids"] = ["GATE-FIXTURE"]
+        self.fixture.manifest["gate_ids"] = ["GATE-FIXTURE"]
+        self.fixture.write()
+        self.row = {
+            "id": "TG-W0-001", "status": "accepted",
+            "gate_ids": ["GATE-FIXTURE"], "blocking_gaps": ["GAP-P0-FIXTURE"],
+            "acceptance_target": copy.deepcopy(TARGET),
+            "required_evidence": ["manifest"],
+            "evidence_ids": [self.fixture.entry["evidence_id"]],
+        }
+        self.scope = {"id": self.row["id"], "gate_ids": ["GATE-FIXTURE"]}
+        self.gates = {"GATE-FIXTURE": {
+            "blocking_gap_ids": ["GAP-P0-FIXTURE"],
+            "evidence_types": ["manifest"],
+        }}
+        self.products = {"GATE-FIXTURE": {
+            "status": "passed", "accepted_evidence_ids": [self.fixture.entry["evidence_id"]],
+        }}
+        self.gaps = {"GAP-P0-FIXTURE": {"status": "closed"}}
+        self.evidence = {self.fixture.entry["evidence_id"]: self.fixture.entry}
+        self.accepted = set(self.evidence)
+        self.tasks = {self.row["id"]: self.row}
+        self.patcher = patch.object(CHECK, "ROOT", self.root)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+
+    def check(self):
+        return CHECK.validate_backlog_task_acceptance(
+            self.row, self.scope, [], self.tasks, self.gaps, self.evidence,
+            self.accepted, self.gates, self.products,
+        )
+
+    def test_complete_task_gate_contract_passes(self):
+        self.assertEqual(self.check(), tuple(TARGET.values()))
+
+    def test_task_cannot_be_accepted_before_its_product_gate(self):
+        self.products["GATE-FIXTURE"]["status"] = "blocked"
+        with self.assertRaisesRegex(CHECK.ValidationError, "required product gate"):
+            self.check()
+
+    def test_task_evidence_must_map_to_each_canonical_gate(self):
+        self.fixture.entry["gate_ids"] = ["GATE-OTHER"]
+        self.fixture.manifest["gate_ids"] = ["GATE-OTHER"]
+        self.fixture.write()
+        with self.assertRaisesRegex(CHECK.ValidationError, "does not cover product gate"):
+            self.check()
+
+    def test_task_evidence_must_cover_each_gate_type(self):
+        self.gates["GATE-FIXTURE"]["evidence_types"] = ["manifest", "unit"]
+        self.row["required_evidence"] = ["manifest", "unit"]
+        with self.assertRaisesRegex(CHECK.ValidationError, "types are missing"):
+            self.check()
+
+    def test_product_gate_evidence_target_must_match_task(self):
+        foreign = copy.deepcopy(self.fixture.entry)
+        foreign["evidence_id"] = "TG-EV-FIXTURE-FOREIGN-GATE"
+        foreign["target"]["tree"] = "c" * 40
+        self.evidence[foreign["evidence_id"]] = foreign
+        self.products["GATE-FIXTURE"]["accepted_evidence_ids"] = [foreign["evidence_id"]]
+        with self.assertRaisesRegex(CHECK.ValidationError, "targets another candidate"):
+            self.check()
+
+
+class RoadmapTaskScopeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.fixture = FIXTURES.RetainedFixture(self.root)
+        self.fixture.entry["expires_at"] = None
+        self.fixture.manifest["expires_at"] = None
+        self.fixture.entry["task_ids"] = ["TG-V3-001"]
+        self.fixture.manifest["task_ids"] = ["TG-V3-001"]
+        self.fixture.write()
+        self.row = {
+            "id": "TG-V3-001", "status": "accepted", "depends_on": [],
+            "gap_ids": ["GAP-P0-FIXTURE"], "acceptance_target": copy.deepcopy(TARGET),
+            "required_evidence": ["manifest"],
+            "evidence_ids": [self.fixture.entry["evidence_id"]],
+        }
+        self.scope = {
+            "id": self.row["id"], "depends_on": [],
+            "gap_ids": ["GAP-P0-FIXTURE"], "required_evidence": ["manifest"],
+        }
+        self.gaps = {"GAP-P0-FIXTURE": {"status": "closed"}}
+        self.evidence = {self.fixture.entry["evidence_id"]: self.fixture.entry}
+        self.accepted = set(self.evidence)
+        self.items = {self.row["id"]: self.row}
+        self.patcher = patch.object(CHECK, "ROOT", self.root)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+
+    def check(self):
+        return CHECK.validate_roadmap_task_acceptance(
+            self.row, self.scope, self.items, self.gaps, self.evidence, self.accepted
+        )
+
+    def test_complete_v3_roadmap_task_can_be_accepted(self):
+        self.assertEqual(self.check(), tuple(TARGET.values()))
+
+    def test_roadmap_item_cannot_remove_canonical_gap(self):
+        self.row["gap_ids"] = ["GAP-P0-OTHER"]
+        with self.assertRaisesRegex(CHECK.ValidationError, "canonical gaps"):
+            self.check()
+
+    def test_roadmap_item_cannot_reduce_canonical_evidence(self):
+        self.scope["required_evidence"] = ["manifest", "unit"]
+        with self.assertRaisesRegex(CHECK.ValidationError, "canonical evidence types"):
+            self.check()
+
+    def test_roadmap_item_cannot_replace_canonical_dependencies(self):
+        self.row["depends_on"] = ["TG-V3-999"]
+        with self.assertRaisesRegex(CHECK.ValidationError, "immutable dependencies"):
+            self.check()
+
+
 class RepositoryAcceptanceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -214,6 +338,7 @@ class RepositoryAcceptanceTests(unittest.TestCase):
         cls.execution = (cls.root / "docs/status/EXECUTION_STATUS.json").read_bytes()
         cls.roadmap = (cls.root / "docs/roadmap/NEXT_MILESTONE.json").read_bytes()
         cls.products = (cls.root / "docs/status/PRODUCT_GATES.json").read_bytes()
+        cls.evidence_index = (cls.root / "docs/evidence/index.json").read_bytes()
 
     @classmethod
     def tearDownClass(cls):
@@ -222,14 +347,44 @@ class RepositoryAcceptanceTests(unittest.TestCase):
     def setUp(self):
         for name, data in (("docs/status/EXECUTION_STATUS.json", self.execution),
                            ("docs/roadmap/NEXT_MILESTONE.json", self.roadmap),
-                           ("docs/status/PRODUCT_GATES.json", self.products)):
+                           ("docs/status/PRODUCT_GATES.json", self.products),
+                           ("docs/evidence/index.json", self.evidence_index)):
             (self.root / name).write_bytes(data)
+        for relative in ("docs/evidence/fixture.json", "retained/output.txt"):
+            path = self.root / relative
+            if path.exists():
+                path.unlink()
 
     def mutate(self, name, change):
         path = self.root / name
         data = json.loads(path.read_text())
         change(data)
         path.write_text(json.dumps(data))
+
+    def install_accepted_fixture(self, task_id="TG-W0-001"):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture_root = Path(temporary)
+            fixture = FIXTURES.RetainedFixture(fixture_root)
+            fixture.entry["expires_at"] = None
+            fixture.manifest["expires_at"] = None
+            fixture.entry["task_ids"] = [task_id]
+            fixture.manifest["task_ids"] = [task_id]
+            fixture.write()
+            for relative in (fixture.entry["path"], fixture.artifact["path"]):
+                source = fixture_root / relative
+                target = self.root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+            index = json.loads((self.root / "docs/evidence/index.json").read_text())
+            index["entries"].append(copy.deepcopy(fixture.entry))
+            index["accepted_entry_count"] = 1
+            (self.root / "docs/evidence/index.json").write_text(json.dumps(index))
+            return copy.deepcopy(fixture.entry)
+
+    def canonical_requirements(self, task_id="TG-W0-001"):
+        tasks, _, _ = CHECK.load_acceptance_scope()
+        gates = CHECK.load_product_gate_scope()
+        return CHECK.canonical_task_requirements(task_id, tasks[task_id], gates)
 
     def cli(self, script="check-status-transitions.py"):
         return subprocess.run([sys.executable, "scripts/" + script], cwd=self.root,
@@ -257,7 +412,19 @@ class RepositoryAcceptanceTests(unittest.TestCase):
     def test_removing_roadmap_gaps_does_not_create_evidence(self):
         self.mutate("docs/roadmap/NEXT_MILESTONE.json", lambda d: d["items"][0].update(
             status="accepted", gap_ids=[], acceptance_target=TARGET))
-        self.reject(diagnostic="evidence_ids")
+        self.reject(diagnostic="immutable roadmap acceptance scope digest drift")
+
+    def test_valid_roadmap_evidence_cannot_shrink_current_milestone_scope(self):
+        entry = self.install_accepted_fixture("TG-V3-001")
+        self.mutate("docs/roadmap/NEXT_MILESTONE.json", lambda d: d["items"][0].update(
+            status="accepted", gap_ids=[], required_evidence=["manifest"],
+            evidence_ids=[entry["evidence_id"]], acceptance_target=TARGET))
+        self.reject(diagnostic="immutable roadmap acceptance scope digest drift")
+
+    def test_roadmap_requirement_change_requires_scope_repin(self):
+        self.mutate("docs/roadmap/NEXT_MILESTONE.json", lambda d: d["items"][0]["acceptance"].append(
+            "synthetic unreviewed acceptance relaxation"))
+        self.reject(diagnostic="roadmap acceptance scope digest drift")
 
     def test_default_acceptance_cannot_promote_unlisted_tasks(self):
         self.mutate("docs/status/EXECUTION_STATUS.json", lambda d: d.update(default_task_state="accepted"))
@@ -274,10 +441,44 @@ class RepositoryAcceptanceTests(unittest.TestCase):
         self.reject(diagnostic="cannot replace scope dependencies")
 
     def test_known_task_override_needs_accepted_evidence(self):
+        gate_ids, gap_ids, required = self.canonical_requirements()
         self.mutate("docs/status/EXECUTION_STATUS.json", lambda d: d["task_overrides"].append(
-            {"id": "TG-W0-001", "status": "accepted", "blocking_gaps": [],
-             "acceptance_target": TARGET, "required_evidence": ["manifest"], "evidence_ids": []}))
-        self.reject(diagnostic="evidence_ids")
+            {"id": "TG-W0-001", "status": "accepted", "gate_ids": gate_ids,
+             "blocking_gaps": gap_ids, "acceptance_target": TARGET,
+             "required_evidence": required, "evidence_ids": []}))
+        self.reject(diagnostic="open blocking gap")
+
+    def test_valid_manifest_cannot_erase_canonical_task_blockers(self):
+        entry = self.install_accepted_fixture()
+        gate_ids, gap_ids, _ = self.canonical_requirements()
+        self.mutate("docs/status/EXECUTION_STATUS.json", lambda d: d["task_overrides"].append(
+            {"id": "TG-W0-001", "status": "accepted", "gate_ids": gate_ids,
+             "blocking_gaps": gap_ids[:1], "acceptance_target": TARGET,
+             "required_evidence": ["manifest"], "evidence_ids": [entry["evidence_id"]]}))
+        self.reject(diagnostic="canonical blocking gaps")
+
+    def test_valid_manifest_cannot_erase_canonical_task_evidence_types(self):
+        entry = self.install_accepted_fixture()
+        gate_ids, gap_ids, _ = self.canonical_requirements()
+        self.mutate("docs/status/EXECUTION_STATUS.json", lambda d: d["task_overrides"].append(
+            {"id": "TG-W0-001", "status": "accepted", "gate_ids": gate_ids,
+             "blocking_gaps": gap_ids, "acceptance_target": TARGET,
+             "required_evidence": ["manifest"], "evidence_ids": [entry["evidence_id"]]}))
+        self.reject(diagnostic="canonical evidence types")
+
+    def test_mutable_override_cannot_shrink_immutable_task_gate_ids(self):
+        entry = self.install_accepted_fixture()
+        _, gap_ids, required = self.canonical_requirements()
+        self.mutate("docs/status/EXECUTION_STATUS.json", lambda d: d["task_overrides"].append(
+            {"id": "TG-W0-001", "status": "accepted", "gate_ids": ["GATE-SCOPE"],
+             "blocking_gaps": gap_ids, "acceptance_target": TARGET,
+             "required_evidence": required, "evidence_ids": [entry["evidence_id"]]}))
+        self.reject(diagnostic="immutable gate_ids")
+
+    def test_product_gate_requirement_drift_is_not_a_status_only_change(self):
+        self.mutate("docs/status/PRODUCT_GATES.json", lambda d: d["gates"][0]["pass_criteria"].append(
+            "synthetic requirement drift"))
+        self.reject(diagnostic="product gate scope digest drift")
 
     def test_workstream_cannot_be_accepted_with_open_gaps(self):
         self.mutate("docs/status/EXECUTION_STATUS.json", lambda d: d["workstreams"][0].update(status="accepted"))

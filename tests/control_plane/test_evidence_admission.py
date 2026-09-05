@@ -243,7 +243,16 @@ class AdmissionTests(unittest.TestCase):
     def test_schema_unknown_properties_and_patterns_reject(self):
         self.reject(lambda m: m.update(unsupported_claim=True), manifest=True)
         self.reject(lambda m: m["environment"].update(secret="value"), manifest=True)
-        self.reject(lambda m: m.update(task_ids=["TG-V3-002"]), manifest=True)
+        for value in ("TG-V4-002", "TG-V3-02", "TG-WX-001", "TG-V3-002-extra"):
+            self.reject(lambda m, value=value: m.update(task_ids=[value]), manifest=True)
+
+    def test_schema_accepts_current_v3_roadmap_task_ids(self):
+        row = copy.deepcopy(self.fixture.entry)
+        manifest = copy.deepcopy(self.fixture.manifest)
+        row["task_ids"] = ["TG-V3-002"]
+        manifest["task_ids"] = ["TG-V3-002"]
+        self.fixture.write(manifest)
+        self.assertTrue(ADMISSION.entry_eligible(row, root=self.root, now=NOW))
 
     def test_zero_partial_or_boolean_assertion_counts_reject(self):
         for total, passed in ((0, 0), (3, 2), (3, 4), (True, True), (3, 3.0)):
