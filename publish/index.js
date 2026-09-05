@@ -9,8 +9,8 @@ delete env.GITHUB_TOKEN;
 delete env.GH_BLOB_TOKEN;
 const result = spawnSync('/usr/bin/python3', [
   path.join(process.env.GITHUB_WORKSPACE, 'source/scripts/upload-actions-artifact.py'),
-  'trnm-gap-scope-fingerprint-545569a4',
-  path.join(process.env.RUNNER_TEMP, 'gap-scope-fingerprint/gap-scope-fingerprint.zip'),
+  'trnm-accelerated-control-preflight-a4108ecb',
+  path.join(process.env.RUNNER_TEMP, 'accelerated-control-proof/accelerated-control-preflight.zip'),
   '--mime-type', 'application/zip'
 ], {env, stdio: 'inherit', timeout: 180000, shell: false});
 if (result.error || result.status !== 0) process.exit(1);
