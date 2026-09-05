@@ -2,15 +2,6 @@ name: jwt-provider-adapter-source
 
 on:
   pull_request:
-    paths:
-      - 'crates/trnm-token-crypto-provider/**'
-      - 'crates/trnm-token-jwt-adapter/**'
-      - 'crates/trnm-token-jwt-provider-adapter/**'
-      - 'contracts/security/jwt-crypto-provider-v1.json'
-      - 'contracts/security/jwt-provider-adapter-v1.json'
-      - 'docs/adr/ADR-0002-JWT-CRYPTO-PROVIDER.md'
-      - 'docs/security/JWT_PROVIDER_ADAPTER_V1.md'
-      - '.github/workflows/jwt-provider-adapter-source.yml'
   push:
     branches: [main]
     paths:
@@ -19,8 +10,8 @@ on:
       - 'crates/trnm-token-jwt-provider-adapter/**'
       - 'contracts/security/jwt-crypto-provider-v1.json'
       - 'contracts/security/jwt-provider-adapter-v1.json'
-      - 'docs/adr/ADR-0002-JWT-CRYPTO-PROVIDER.md'
-      - 'docs/security/JWT_PROVIDER_ADAPTER_V1.md'
+      - 'docs/SECURITY_AND_PRIVACY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/jwt-provider-adapter-source.yml'
   workflow_dispatch:
 
@@ -57,6 +48,8 @@ jobs:
       - name: Validate structured claim boundary
         run: |
           set -euo pipefail
+          grep -q 'The provider-facing adapter and compatibility format adapter remain separate boundaries' docs/SECURITY_AND_PRIVACY.md
+          grep -q 'unknown or malformed key ID/epoch never falls back' docs/SECURITY_AND_PRIVACY.md
           jq -e '
             .status == "source-candidate" and
             .claims.source_candidate == true and

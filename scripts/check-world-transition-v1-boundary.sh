@@ -21,12 +21,17 @@ required=(
   "runtime/world_transition_v1/shadow.py"
   "tools/emit_world_transition_v1_shadow_fixture.py"
   "tests/test_world_transition_v1.py"
-  "docs/WORLD_TRANSITION_V1_ADAPTER.md"
-  "docs/WORLD_TRANSITION_V1_SHADOW_RUNBOOK.md"
+  "docs/ARCHITECTURE.md"
+  "docs/OPERATIONS_AND_RELEASE.md"
 )
 for path in "${required[@]}"; do
   [[ -f "$ROOT_DIR/$path" ]] || fail "missing required artifact: $path"
 done
+
+grep -q 'Runtime modules receive explicit capabilities' "$ROOT_DIR/docs/ARCHITECTURE.md" \
+  || fail 'current architecture omits Runtime capability boundary'
+grep -q 'Shadow is read/observe only' "$ROOT_DIR/docs/OPERATIONS_AND_RELEASE.md" \
+  || fail 'current operations documentation omits shadow no-effect boundary'
 
 python3 -S - "$ROOT_DIR" <<'PY'
 from __future__ import annotations
@@ -57,17 +62,11 @@ if status.get("status") not in {
     raise SystemExit("adapter delivery status is invalid")
 if status.get("authority", {}).get("public_online_enabled") is not False:
     raise SystemExit("adapter delivery cannot enable public online")
-# A7 is a first-party Go package already present in this repository and may be
-# represented as implemented_pending_ci. A8 and A9 still require production
-# store/callback integration and cross-repository evidence, so they must remain
-# pending or blocked here.
-external_rows = {
-    "WORLD-P0-003-A8",
-    "WORLD-P0-003-A9",
-}
 for row in status.get("acceptance", []):
-    if row.get("id") in external_rows and row.get("state") not in {"pending", "blocked"}:
-        raise SystemExit(f"external acceptance row overclaimed: {row.get('id')}")
+    if row.get("id") in {"WORLD-P0-003-A8", "WORLD-P0-003-A9"}:
+        if row.get("state") not in {"pending", "blocked"}:
+            raise SystemExit(f"external acceptance row overclaimed: {row.get('id')}")
+
 if lock.get("contract_version") != "trnm_nakama_world_transition_consumer_lock_v1":
     raise SystemExit("consumer lock contract drift")
 if lock.get("status") != "shadow_candidate" or lock.get("activation") != "shadow_only":
@@ -76,27 +75,26 @@ if lock.get("cross_repository_credit") is not False:
     raise SystemExit("Nakama source cannot grant cross-repository credit")
 
 world = lock.get("world", {})
-if world.get("repository") != "TrillionniumFoundation/Trillionnium-World":
-    raise SystemExit("unexpected World repository")
-if world.get("commit") != "0d7666d4d830fa8e56c78b23d438856064182535":
-    raise SystemExit("World transition commit drift")
-if world.get("tree") != "1619ae76fa62a5e67bc7ff94429c62eea35deb87":
-    raise SystemExit("World transition tree drift")
-if world.get("pull_request") != 21:
-    raise SystemExit("World transition PR binding drift")
-if world.get("contract_version") != "trnm_world_transition_v1":
-    raise SystemExit("World contract version drift")
+expected_world = {
+    "repository": "TrillionniumFoundation/Trillionnium-World",
+    "commit": "0d7666d4d830fa8e56c78b23d438856064182535",
+    "tree": "1619ae76fa62a5e67bc7ff94429c62eea35deb87",
+    "pull_request": 21,
+    "contract_version": "trnm_world_transition_v1",
+}
+for key, expected in expected_world.items():
+    if world.get(key) != expected:
+        raise SystemExit(f"World transition {key} drift")
 
 authority = lock.get("authority", {})
-required_false = (
+for key in (
     "world_result_can_mutate_authority_context",
     "completion_signing_performed",
     "canonical_archive_root_produced",
     "chain_finality_claimed",
     "cex_settlement_performed",
     "public_online_enabled",
-)
-for key in required_false:
+):
     if authority.get(key) is not False:
         raise SystemExit(f"authority control must remain false: {key}")
 for key in (
@@ -110,32 +108,31 @@ for key in (
 
 
 def git_blob_sha(payload: bytes) -> str:
-    header = f"blob {len(payload)}\0".encode("ascii")
-    return hashlib.sha1(header + payload).hexdigest()
+    return hashlib.sha1(f"blob {len(payload)}\0".encode("ascii") + payload).hexdigest()
 
 
-for label, local_path in (
-    ("schema", schema_path),
-    ("vectors", vectors_path),
-):
+for label, local_path in (("schema", schema_path), ("vectors", vectors_path)):
     artifact = world["artifacts"][label]
     payload = local_path.read_bytes()
     if hashlib.sha256(payload).hexdigest() != artifact["sha256"]:
         raise SystemExit(f"vendored {label} sha256 drift")
     if git_blob_sha(payload) != artifact["git_blob_sha1"]:
         raise SystemExit(f"vendored {label} is not byte-exact World blob")
-    expected_path = pathlib.Path(artifact["vendored_path"])
-    if root / expected_path != local_path:
+    if root / pathlib.Path(artifact["vendored_path"]) != local_path:
         raise SystemExit(f"vendored {label} path drift")
 
 schema = json.loads(schema_path.read_text(encoding="utf-8"))
-if schema.get("$defs", {}).get("request", {}).get("additionalProperties") is not False:
-    raise SystemExit("World request schema must reject unknown fields")
-if schema.get("$defs", {}).get("accepted", {}).get("additionalProperties") is not False:
-    raise SystemExit("World accepted schema must reject unknown fields")
-if schema.get("$defs", {}).get("rejected", {}).get("additionalProperties") is not False:
-    raise SystemExit("World rejected schema must reject unknown fields")
-if schema.get("$defs", {}).get("request", {}).get("properties", {}).get("contract_version", {}).get("const") != "trnm_world_transition_v1":
+for name in ("request", "accepted", "rejected"):
+    if schema.get("$defs", {}).get(name, {}).get("additionalProperties") is not False:
+        raise SystemExit(f"World {name} schema must reject unknown fields")
+if (
+    schema.get("$defs", {})
+    .get("request", {})
+    .get("properties", {})
+    .get("contract_version", {})
+    .get("const")
+    != "trnm_world_transition_v1"
+):
     raise SystemExit("World request contract drift")
 
 vectors = json.loads(vectors_path.read_text(encoding="utf-8"))
@@ -206,10 +203,7 @@ import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
-from runtime.world_transition_v1 import (
-    NakamaAuthorityContext,
-    prepare_world_transition,
-)
+from runtime.world_transition_v1 import NakamaAuthorityContext, prepare_world_transition
 
 context = NakamaAuthorityContext(
     match_id="boundary-match",

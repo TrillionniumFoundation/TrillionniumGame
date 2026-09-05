@@ -53,13 +53,22 @@ if [[ "$profile" == postgresql ]]; then
     -e POSTGRES_PASSWORD=trnm_live_password \
     -p "127.0.0.1:${db_port}:5432" \
     "$postgres_image" > "$evidence/container-id.txt"
-  for _ in $(seq 1 120); do
-    if docker exec "$container" pg_isready -U trnm -d trnm >/dev/null 2>&1; then
-      break
-    fi
-    sleep 0.25
-  done
-  docker exec "$container" pg_isready -U trnm -d trnm
+
+  # The official image exposes a temporary Unix-socket initialization server
+  # before starting the final TCP postmaster. A single in-container pg_isready
+  # can observe that transient process. Require a bounded run of real SQL
+  # transactions over 127.0.0.1:5432 while the container remains running.
+  python3 scripts/wait-postgres-final-ready.py \
+    --container "$container" \
+    --user trnm \
+    --database trnm \
+    --attempts 160 \
+    --consecutive-successes 6 \
+    --interval-seconds 0.25 \
+    > "$evidence/postgres-final-readiness.json"
+  python3 -m json.tool "$evidence/postgres-final-readiness.json" >/dev/null
+  cat "$evidence/postgres-final-readiness.json"
+
   db_scalar() {
     docker exec "$container" psql -X -U trnm -d trnm -At -v ON_ERROR_STOP=1 -c "$1"
   }

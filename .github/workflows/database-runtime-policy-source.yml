@@ -2,19 +2,15 @@ name: database-runtime-policy-source
 
 on:
   pull_request:
-    paths:
-      - 'crates/trnm-contracts/**'
-      - 'crates/trnm-persistence-runtime-policy/**'
-      - 'contracts/database/runtime-policy-v1.json'
-      - 'docs/development/DATABASE_RUNTIME_POLICY_V1.md'
-      - '.github/workflows/database-runtime-policy-source.yml'
   push:
     branches: [main]
     paths:
       - 'crates/trnm-contracts/**'
       - 'crates/trnm-persistence-runtime-policy/**'
       - 'contracts/database/runtime-policy-v1.json'
-      - 'docs/development/DATABASE_RUNTIME_POLICY_V1.md'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/OPERATIONS_AND_RELEASE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/database-runtime-policy-source.yml'
   workflow_dispatch:
 
@@ -51,6 +47,8 @@ jobs:
       - name: Validate claim boundary
         run: |
           set -euo pipefail
+          grep -q 'The persistence API must be asynchronous or otherwise cancellation-aware' docs/ARCHITECTURE.md
+          grep -q 'Pool, timeout and cancellation' docs/OPERATIONS_AND_RELEASE.md
           jq -e '
             .status == "source-candidate" and
             .claims.source_candidate == true and

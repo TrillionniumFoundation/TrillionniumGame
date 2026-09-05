@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECKER = ROOT / "scripts/check-rust-server-slice.py"
+SOURCE_CHECKER = ROOT / "scripts/check-rust-server-source-candidate.py"
 STATUS = ROOT / "docs/status/RUST_SERVER_VERTICAL_SLICE_STATUS.json"
 PRODUCT_CLAIMS = {
     "nakama_wire_compatible",
@@ -40,6 +41,27 @@ class RustServerSliceContractTests(unittest.TestCase):
             result["canonical_server"],
             "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
         )
+
+    def test_standalone_source_checker_passes_as_a_subprocess(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(SOURCE_CHECKER)],
+            cwd=ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["schema"], "trillionnium.server-source-check.v2")
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["binary"], "trnm-server-foundation")
+        self.assertGreaterEqual(result["source_marker_count"], 20)
+        self.assertFalse(result["claims"]["compiled"])
+        self.assertFalse(result["claims"]["live_process_executed"])
+        self.assertFalse(result["claims"]["live_database_bound"])
+        self.assertFalse(result["claims"]["wire_compatible"])
+        self.assertFalse(result["claims"]["production_ready"])
 
     def test_status_remains_fail_closed(self) -> None:
         status = json.loads(STATUS.read_text(encoding="utf-8"))

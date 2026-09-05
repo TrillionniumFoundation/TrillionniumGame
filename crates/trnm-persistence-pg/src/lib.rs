@@ -8,7 +8,7 @@ mod session;
 pub use auth::{
     parse_refresh_credential, AccessTokenVerifier, ParsedRefreshCredential, SessionPrincipal,
 };
-pub use outbox::{OutboxLease, OutboxRetryOutcome};
+pub use outbox::{OutboxClaimBatch, OutboxLease, OutboxRetryOutcome};
 pub use pool::{PgPool, PgPoolConfig, PgPoolSnapshot, PgTlsConfig};
 pub use session::{
     CreateSessionFamily, RefreshRotationOutcome, RefreshTokenCredential, RotateRefreshToken,

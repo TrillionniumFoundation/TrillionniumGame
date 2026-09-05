@@ -1,16 +1,19 @@
 #![forbid(unsafe_code)]
 #![deny(missing_debug_implementations)]
 
-//! Strict bounded RFC6455 frame boundary for a first realtime vertical slice.
+//! Strict bounded realtime wire primitives for the first TrillionniumGame
+//! WebSocket vertical slice.
 //!
-//! The slice accepts only complete, non-fragmented client frames. Client data
-//! must be masked, RSV bits must be zero, control payloads are limited to 125
-//! bytes and all payloads are bounded. Compression and extension negotiation
-//! are intentionally outside this source candidate.
+//! RFC 6455 frames are accepted only when they are complete, non-fragmented,
+//! canonically length encoded and bounded. The checked-in protobuf envelope is
+//! intentionally narrow: it transports the already reviewed JSON authority
+//! request/response through binary frames without claiming Nakama protobuf
+//! compatibility.
 
 use core::fmt;
 
 pub const MAX_PAYLOAD_BYTES: usize = 128 * 1024;
+pub const MAX_ENVELOPE_BODY_BYTES: usize = MAX_PAYLOAD_BYTES - 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -162,6 +165,72 @@ impl fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityCommandEnvelope {
+    pub json_request: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityResponseEnvelope {
+    pub status: u16,
+    pub json_body: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProtobufError {
+    Incomplete,
+    InvalidFieldKey,
+    InvalidWireType { field: u32, wire_type: u8 },
+    UnknownField(u32),
+    DuplicateField(u32),
+    NonCanonicalVarint,
+    VarintOverflow,
+    LengthOverflow,
+    PayloadTooLarge { actual: usize },
+    MissingField(u32),
+    InvalidUtf8(u32),
+    InvalidStatus(u64),
+}
+
+impl fmt::Display for ProtobufError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Incomplete => formatter.write_str("protobuf envelope is incomplete"),
+            Self::InvalidFieldKey => formatter.write_str("protobuf field key is invalid"),
+            Self::InvalidWireType { field, wire_type } => {
+                write!(
+                    formatter,
+                    "protobuf field {field} has wire type {wire_type}"
+                )
+            }
+            Self::UnknownField(field) => write!(formatter, "protobuf field {field} is unknown"),
+            Self::DuplicateField(field) => {
+                write!(formatter, "protobuf field {field} is duplicated")
+            }
+            Self::NonCanonicalVarint => {
+                formatter.write_str("protobuf varint is not minimally encoded")
+            }
+            Self::VarintOverflow => formatter.write_str("protobuf varint overflows u64"),
+            Self::LengthOverflow => formatter.write_str("protobuf length overflows usize"),
+            Self::PayloadTooLarge { actual } => write!(
+                formatter,
+                "protobuf envelope payload {actual} exceeds {MAX_ENVELOPE_BODY_BYTES} bytes"
+            ),
+            Self::MissingField(field) => {
+                write!(formatter, "protobuf required field {field} is missing")
+            }
+            Self::InvalidUtf8(field) => {
+                write!(formatter, "protobuf bytes field {field} is not UTF-8 JSON")
+            }
+            Self::InvalidStatus(status) => {
+                write!(formatter, "protobuf response status {status} is invalid")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProtobufError {}
+
 pub fn decode_client_frame(input: &[u8]) -> Result<(ClientFrame, usize), FrameError> {
     if input.len() < 2 {
         return Err(FrameError::Incomplete);
@@ -205,8 +274,6 @@ pub fn decode_client_frame(input: &[u8]) -> Result<(ClientFrame, usize), FrameEr
             }
             (value, 10)
         }
-        // `indicator` is masked with 0x7f above, but Rust deliberately does
-        // not infer that value range for exhaustiveness checking.
         128..=u8::MAX => unreachable!("masked payload indicator is at most 127"),
     };
     if opcode.is_control() && payload_length > 125 {
@@ -259,7 +326,7 @@ pub fn encode_server_frame(opcode: Opcode, payload: &[u8]) -> Result<Vec<u8>, Fr
     output.push(0x80 | opcode as u8);
     match payload.len() {
         value @ 0..=125 => output.push(value as u8),
-        value @ 126..=65535 => {
+        value @ 126..=65_535 => {
             output.push(126);
             output.extend_from_slice(&(value as u16).to_be_bytes());
         }
@@ -270,6 +337,185 @@ pub fn encode_server_frame(opcode: Opcode, payload: &[u8]) -> Result<Vec<u8>, Fr
     }
     output.extend_from_slice(payload);
     Ok(output)
+}
+
+pub fn encode_authority_command(json_request: &[u8]) -> Result<Vec<u8>, ProtobufError> {
+    validate_json_bytes(1, json_request)?;
+    let mut output = Vec::with_capacity(json_request.len().saturating_add(5));
+    output.push(0x0a);
+    write_varint(
+        u64::try_from(json_request.len()).map_err(|_| ProtobufError::LengthOverflow)?,
+        &mut output,
+    );
+    output.extend_from_slice(json_request);
+    Ok(output)
+}
+
+pub fn decode_authority_command(input: &[u8]) -> Result<AuthorityCommandEnvelope, ProtobufError> {
+    let mut cursor = 0usize;
+    let mut json_request = None;
+    while cursor < input.len() {
+        let (field, wire_type) = read_key(input, &mut cursor)?;
+        match (field, wire_type) {
+            (1, 2) => {
+                if json_request.is_some() {
+                    return Err(ProtobufError::DuplicateField(1));
+                }
+                let value = read_length_delimited(input, &mut cursor)?;
+                validate_json_bytes(1, value)?;
+                json_request = Some(value.to_vec());
+            }
+            (1, other) => {
+                return Err(ProtobufError::InvalidWireType {
+                    field: 1,
+                    wire_type: other,
+                });
+            }
+            (other, _) => return Err(ProtobufError::UnknownField(other)),
+        }
+    }
+    Ok(AuthorityCommandEnvelope {
+        json_request: json_request.ok_or(ProtobufError::MissingField(1))?,
+    })
+}
+
+pub fn encode_authority_response(status: u16, json_body: &[u8]) -> Result<Vec<u8>, ProtobufError> {
+    if !(100..=599).contains(&status) {
+        return Err(ProtobufError::InvalidStatus(u64::from(status)));
+    }
+    validate_json_bytes(2, json_body)?;
+    let mut output = Vec::with_capacity(json_body.len().saturating_add(9));
+    output.push(0x08);
+    write_varint(u64::from(status), &mut output);
+    output.push(0x12);
+    write_varint(
+        u64::try_from(json_body.len()).map_err(|_| ProtobufError::LengthOverflow)?,
+        &mut output,
+    );
+    output.extend_from_slice(json_body);
+    Ok(output)
+}
+
+pub fn decode_authority_response(input: &[u8]) -> Result<AuthorityResponseEnvelope, ProtobufError> {
+    let mut cursor = 0usize;
+    let mut status = None;
+    let mut json_body = None;
+    while cursor < input.len() {
+        let (field, wire_type) = read_key(input, &mut cursor)?;
+        match (field, wire_type) {
+            (1, 0) => {
+                if status.is_some() {
+                    return Err(ProtobufError::DuplicateField(1));
+                }
+                let raw = read_varint(input, &mut cursor)?;
+                if !(100..=599).contains(&raw) {
+                    return Err(ProtobufError::InvalidStatus(raw));
+                }
+                status = Some(u16::try_from(raw).expect("validated HTTP status fits u16"));
+            }
+            (1, other) => {
+                return Err(ProtobufError::InvalidWireType {
+                    field: 1,
+                    wire_type: other,
+                });
+            }
+            (2, 2) => {
+                if json_body.is_some() {
+                    return Err(ProtobufError::DuplicateField(2));
+                }
+                let value = read_length_delimited(input, &mut cursor)?;
+                validate_json_bytes(2, value)?;
+                json_body = Some(value.to_vec());
+            }
+            (2, other) => {
+                return Err(ProtobufError::InvalidWireType {
+                    field: 2,
+                    wire_type: other,
+                });
+            }
+            (other, _) => return Err(ProtobufError::UnknownField(other)),
+        }
+    }
+    Ok(AuthorityResponseEnvelope {
+        status: status.ok_or(ProtobufError::MissingField(1))?,
+        json_body: json_body.ok_or(ProtobufError::MissingField(2))?,
+    })
+}
+
+fn validate_json_bytes(field: u32, value: &[u8]) -> Result<(), ProtobufError> {
+    if value.is_empty() || value.len() > MAX_ENVELOPE_BODY_BYTES {
+        return Err(ProtobufError::PayloadTooLarge {
+            actual: value.len(),
+        });
+    }
+    std::str::from_utf8(value).map_err(|_| ProtobufError::InvalidUtf8(field))?;
+    Ok(())
+}
+
+fn read_key(input: &[u8], cursor: &mut usize) -> Result<(u32, u8), ProtobufError> {
+    let key = read_varint(input, cursor)?;
+    let field = u32::try_from(key >> 3).map_err(|_| ProtobufError::InvalidFieldKey)?;
+    let wire_type = u8::try_from(key & 0x07).expect("three-bit wire type");
+    if field == 0 {
+        return Err(ProtobufError::InvalidFieldKey);
+    }
+    Ok((field, wire_type))
+}
+
+fn read_length_delimited<'a>(
+    input: &'a [u8],
+    cursor: &mut usize,
+) -> Result<&'a [u8], ProtobufError> {
+    let length =
+        usize::try_from(read_varint(input, cursor)?).map_err(|_| ProtobufError::LengthOverflow)?;
+    if length > MAX_ENVELOPE_BODY_BYTES {
+        return Err(ProtobufError::PayloadTooLarge { actual: length });
+    }
+    let end = (*cursor)
+        .checked_add(length)
+        .ok_or(ProtobufError::LengthOverflow)?;
+    let value = input.get(*cursor..end).ok_or(ProtobufError::Incomplete)?;
+    *cursor = end;
+    Ok(value)
+}
+
+fn read_varint(input: &[u8], cursor: &mut usize) -> Result<u64, ProtobufError> {
+    let start = *cursor;
+    let mut value = 0u64;
+    for index in 0..10usize {
+        let byte = *input.get(*cursor).ok_or(ProtobufError::Incomplete)?;
+        *cursor = (*cursor)
+            .checked_add(1)
+            .ok_or(ProtobufError::LengthOverflow)?;
+        if index == 9 && byte > 1 {
+            return Err(ProtobufError::VarintOverflow);
+        }
+        value |= u64::from(byte & 0x7f) << (index * 7);
+        if byte & 0x80 == 0 {
+            if *cursor - start != varint_length(value) {
+                return Err(ProtobufError::NonCanonicalVarint);
+            }
+            return Ok(value);
+        }
+    }
+    Err(ProtobufError::VarintOverflow)
+}
+
+fn write_varint(mut value: u64, output: &mut Vec<u8>) {
+    while value >= 0x80 {
+        output.push((value as u8 & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    output.push(value as u8);
+}
+
+fn varint_length(mut value: u64) -> usize {
+    let mut length = 1usize;
+    while value >= 0x80 {
+        value >>= 7;
+        length += 1;
+    }
+    length
 }
 
 fn valid_close_code(code: u16) -> bool {
@@ -285,7 +531,7 @@ mod tests {
         let mut output = vec![0x80 | opcode as u8];
         match payload.len() {
             value @ 0..=125 => output.push(0x80 | value as u8),
-            value @ 126..=65535 => {
+            value @ 126..=65_535 => {
                 output.push(0x80 | 126);
                 output.extend_from_slice(&(value as u16).to_be_bytes());
             }
@@ -319,11 +565,49 @@ mod tests {
             FrameError::EncodingOpcodeMismatch
         );
 
-        let protobuf = masked(Opcode::Binary, &[0x0a, 0x01, 0x31]);
+        let protobuf = masked(Opcode::Binary, &[0x0a, 0x01, b'x']);
         let (frame, _) = decode_client_frame(&protobuf).unwrap();
         RealtimeEncoding::Protobuf
             .validate_data_frame(&frame)
             .unwrap();
+    }
+
+    #[test]
+    fn authority_command_envelope_round_trips_strictly() {
+        let encoded = encode_authority_command(br#"{"command":"one"}"#).unwrap();
+        let decoded = decode_authority_command(&encoded).unwrap();
+        assert_eq!(decoded.json_request, br#"{"command":"one"}"#);
+
+        let mut duplicate = encoded.clone();
+        duplicate.extend_from_slice(&encoded);
+        assert_eq!(
+            decode_authority_command(&duplicate).unwrap_err(),
+            ProtobufError::DuplicateField(1)
+        );
+        assert_eq!(
+            decode_authority_command(&[0x12, 0x01, b'x']).unwrap_err(),
+            ProtobufError::UnknownField(2)
+        );
+        assert_eq!(
+            decode_authority_command(&[0x0a, 0x81, 0x00, b'x']).unwrap_err(),
+            ProtobufError::NonCanonicalVarint
+        );
+    }
+
+    #[test]
+    fn authority_response_envelope_round_trips_status_and_body() {
+        let encoded = encode_authority_response(409, br#"{"code":"aborted"}"#).unwrap();
+        let decoded = decode_authority_response(&encoded).unwrap();
+        assert_eq!(decoded.status, 409);
+        assert_eq!(decoded.json_body, br#"{"code":"aborted"}"#);
+        assert_eq!(
+            encode_authority_response(99, b"{}").unwrap_err(),
+            ProtobufError::InvalidStatus(99)
+        );
+        assert_eq!(
+            decode_authority_response(&[0x08, 0x63, 0x12, 0x02, b'{', b'}']).unwrap_err(),
+            ProtobufError::InvalidStatus(99)
+        );
     }
 
     #[test]

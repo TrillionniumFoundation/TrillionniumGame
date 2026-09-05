@@ -16,8 +16,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-
-env:
   CANDIDATE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 

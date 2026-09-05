@@ -129,9 +129,11 @@ impl RefreshFamily {
         }
 
         let previous_generation = self.generation;
+        // Validate every fallible rotation condition before changing token state.
+        let current_generation = previous_generation.checked_next()?;
         self.consumed_tokens.insert(self.active_token);
         self.active_token = replacement_token;
-        self.generation = self.generation.checked_next()?;
+        self.generation = current_generation;
         Ok(RotationReceipt {
             previous_generation,
             current_generation: self.generation,
@@ -245,5 +247,129 @@ mod tests {
                 .reason(),
             "replacement_refresh_token_reused"
         );
+    }
+
+    #[test]
+    fn generation_overflow_preserves_entire_family() {
+        let mut value = family();
+        value.generation = SessionGeneration::new(u64::MAX);
+        value.consumed_tokens.insert(RefreshTokenId::new([1; 16]));
+        let before = value.clone();
+
+        for replacement in [3, 4] {
+            let failure = value
+                .rotate(
+                    RefreshTokenId::new([2; 16]),
+                    RefreshTokenId::new([replacement; 16]),
+                )
+                .unwrap_err();
+            assert_eq!(failure.code(), StableCode::OutOfRange);
+            assert_eq!(failure.reason(), "counter_overflow");
+            assert_eq!(failure.retry(), RetryClass::Never);
+            assert_eq!(value, before);
+            assert!(value.verify_active(before.active_token()).is_ok());
+        }
+    }
+
+    #[test]
+    fn final_generation_transition_succeeds_without_wrapping() {
+        let mut value = family();
+        value.generation = SessionGeneration::new(u64::MAX - 1);
+        let receipt = value
+            .rotate(RefreshTokenId::new([2; 16]), RefreshTokenId::new([3; 16]))
+            .unwrap();
+        assert_eq!(
+            receipt.previous_generation,
+            SessionGeneration::new(u64::MAX - 1)
+        );
+        assert_eq!(receipt.current_generation, SessionGeneration::new(u64::MAX));
+        assert_eq!(receipt.active_token, RefreshTokenId::new([3; 16]));
+        assert!(value
+            .consumed_tokens
+            .contains(&RefreshTokenId::new([2; 16])));
+        let before = value.clone();
+
+        assert_eq!(
+            value
+                .rotate(RefreshTokenId::new([3; 16]), RefreshTokenId::new([4; 16]))
+                .unwrap_err()
+                .reason(),
+            "counter_overflow"
+        );
+        assert_eq!(value, before);
+    }
+
+    #[test]
+    fn ordinary_rotation_rejections_preserve_all_fields() {
+        let mut initial = family();
+        initial
+            .rotate(RefreshTokenId::new([2; 16]), RefreshTokenId::new([3; 16]))
+            .unwrap();
+        for (presented, replacement, reason) in [
+            (0, 4, "zero_refresh_token"),
+            (3, 0, "zero_refresh_token"),
+            (9, 4, "refresh_token_unknown"),
+            (3, 3, "replacement_refresh_token_reused"),
+            (3, 2, "replacement_refresh_token_reused"),
+        ] {
+            let mut value = initial.clone();
+            let failure = value
+                .rotate(
+                    RefreshTokenId::new([presented; 16]),
+                    RefreshTokenId::new([replacement; 16]),
+                )
+                .unwrap_err();
+            assert_eq!(failure.reason(), reason);
+            assert_eq!(failure.retry(), RetryClass::Never);
+            assert_eq!(value, initial);
+        }
+    }
+
+    #[test]
+    fn replay_at_generation_ceiling_still_revokes_without_rotating() {
+        let mut value = family();
+        value
+            .rotate(RefreshTokenId::new([2; 16]), RefreshTokenId::new([3; 16]))
+            .unwrap();
+        value.generation = SessionGeneration::new(u64::MAX);
+        let mut expected = value.clone();
+        expected.status = FamilyStatus::Revoked(RevocationReason::RefreshReplay);
+        assert_eq!(
+            value
+                .rotate(RefreshTokenId::new([2; 16]), RefreshTokenId::new([4; 16]))
+                .unwrap_err()
+                .reason(),
+            "refresh_replay_detected"
+        );
+        assert_eq!(value, expected);
+        assert_eq!(
+            value
+                .verify_active(RefreshTokenId::new([3; 16]))
+                .unwrap_err()
+                .reason(),
+            "session_family_revoked"
+        );
+    }
+
+    #[test]
+    fn revoked_rotation_keeps_existing_reason_and_token_state() {
+        for reason in [
+            RevocationReason::Logout,
+            RevocationReason::Administrator,
+            RevocationReason::CredentialReset,
+            RevocationReason::RefreshReplay,
+        ] {
+            let mut value = family();
+            value.revoke(reason);
+            let before = value.clone();
+            assert_eq!(
+                value
+                    .rotate(RefreshTokenId::new([2; 16]), RefreshTokenId::new([3; 16]))
+                    .unwrap_err()
+                    .reason(),
+                "session_family_revoked"
+            );
+            assert_eq!(value, before);
+        }
     }
 }

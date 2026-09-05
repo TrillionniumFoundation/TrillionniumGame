@@ -69,6 +69,7 @@ impl fmt::Debug for SessionAuthConfig {
 #[derive(Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
+    pub grpc_bind: Option<SocketAddr>,
     pub database_url: String,
     pub database_profile: DatabaseProfile,
     pub database_tls_mode: DatabaseTlsMode,
@@ -89,6 +90,7 @@ impl fmt::Debug for ServerConfig {
         formatter
             .debug_struct("ServerConfig")
             .field("bind", &self.bind)
+            .field("grpc_bind", &self.grpc_bind)
             .field("database_url", &"<redacted>")
             .field("database_profile", &self.database_profile)
             .field("database_tls_mode", &self.database_tls_mode)
@@ -145,6 +147,23 @@ impl ServerConfig {
             return Err(ServerError::Configuration(
                 "non_loopback_bind_requires_explicit_opt_in",
             ));
+        }
+        let grpc_bind = lookup("TRNM_SERVER_GRPC_BIND")
+            .map(|value| {
+                value
+                    .parse::<SocketAddr>()
+                    .map_err(|_| ServerError::Configuration("grpc_bind_address_invalid"))
+            })
+            .transpose()?;
+        if let Some(grpc_bind) = grpc_bind {
+            if !grpc_bind.ip().is_loopback() && !allow_non_loopback {
+                return Err(ServerError::Configuration(
+                    "grpc_non_loopback_bind_requires_explicit_opt_in",
+                ));
+            }
+            if grpc_bind == bind {
+                return Err(ServerError::Configuration("http_and_grpc_bind_must_differ"));
+            }
         }
 
         let database_url = required(&lookup, "TRNM_SERVER_DATABASE_URL", "database_url_missing")?;
@@ -324,6 +343,7 @@ impl ServerConfig {
             command,
             Self {
                 bind,
+                grpc_bind,
                 database_url,
                 database_profile,
                 database_tls_mode,
@@ -552,6 +572,7 @@ mod tests {
     fn default_candidate_config_is_loopback_bounded_and_redacted() {
         let (_, config) = load(&base()).unwrap();
         assert!(config.bind.ip().is_loopback());
+        assert!(config.grpc_bind.is_none());
         assert_eq!(config.max_request_bytes, 128 * 1024);
         assert_eq!(config.database_pool.max_size, 8);
         assert_eq!(config.database_pool.min_idle, 1);
@@ -584,6 +605,42 @@ mod tests {
                 "plaintext_database_requires_explicit_candidate_opt_in"
             ))
         ));
+    }
+
+    #[test]
+    fn grpc_bind_is_optional_distinct_and_public_bind_requires_opt_in() {
+        let mut values = base();
+        values.insert(
+            "TRNM_SERVER_GRPC_BIND".to_owned(),
+            "127.0.0.1:7351".to_owned(),
+        );
+        let (_, config) = load(&values).unwrap();
+        assert_eq!(
+            config.grpc_bind,
+            Some("127.0.0.1:7351".parse::<SocketAddr>().unwrap())
+        );
+
+        values.insert(
+            "TRNM_SERVER_GRPC_BIND".to_owned(),
+            "127.0.0.1:7350".to_owned(),
+        );
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration("http_and_grpc_bind_must_differ"))
+        ));
+
+        values.insert(
+            "TRNM_SERVER_GRPC_BIND".to_owned(),
+            "0.0.0.0:7351".to_owned(),
+        );
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration(
+                "grpc_non_loopback_bind_requires_explicit_opt_in"
+            ))
+        ));
+        values.insert("TRNM_SERVER_ALLOW_NON_LOOPBACK".to_owned(), "1".to_owned());
+        assert!(load(&values).is_ok());
     }
 
     #[test]

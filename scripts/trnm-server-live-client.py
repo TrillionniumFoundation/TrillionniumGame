@@ -206,10 +206,14 @@ def assert_receipt(
     return document
 
 
-def encode_client_frame(payload: bytes) -> bytes:
+def encode_client_frame(payload: bytes, opcode: int = 0x1) -> bytes:
+    if opcode not in (0x1, 0x2, 0x8, 0x9, 0xA):
+        raise AssertionError(f"unsupported client opcode {opcode}")
+    if opcode >= 0x8 and len(payload) > 125:
+        raise AssertionError("client control frame exceeds 125 bytes")
     mask = b"\x11\x22\x33\x44"
     length = len(payload)
-    header = bytearray([0x81])
+    header = bytearray([0x80 | opcode])
     if length <= 125:
         header.append(0x80 | length)
     elif length <= 0xFFFF:
@@ -287,9 +291,14 @@ def websocket_commit(
         document = json.loads(body.decode("utf-8"))
         if not isinstance(document, dict):
             raise AssertionError("WebSocket response must be a JSON object")
+        # The server now preserves the upgraded connection after each data
+        # response. Complete the RFC 6455 close handshake explicitly instead
+        # of treating an immediate server EOF/close as the success condition.
+        normal_close = b"\x03\xe8"
+        stream.sendall(encode_client_frame(normal_close, opcode=0x8))
         close_opcode, close_body = read_server_frame(stream)
-        if close_opcode != 0x8 or close_body != b"\x03\xe8":
-            raise AssertionError("expected normal WebSocket close frame")
+        if close_opcode != 0x8 or close_body != normal_close:
+            raise AssertionError("expected echoed normal WebSocket close frame")
         return document
 
 

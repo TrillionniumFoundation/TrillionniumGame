@@ -3,14 +3,6 @@ name: database-backup-restore
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - 'crates/trnm-persistence-pg/**'
-      - 'migrations/**'
-      - 'scripts/ci-pgwire-backup-restore.sh'
-      - 'scripts/check-pgwire-backup-restore.py'
-      - '.github/workflows/database-backup-restore.yml'
   push:
     branches: [main]
     paths:

@@ -1,7 +1,7 @@
 {
   "schema": "trillionnium.source-candidates.v1",
   "project_id": "trillionnium-game",
-  "generated_at": "2026-08-30",
+  "generated_at": "2026-09-01",
   "policy": {
     "source_candidate_closes_gap": false,
     "source_candidate_grants_compatibility_credit": false,
@@ -14,11 +14,13 @@
       "gap_ids": ["GAP-P0-PLAN-001", "GAP-P0-EVIDENCE-001"],
       "paths": [
         "CURRENT_PLAN.md",
+        "docs/README.md",
         "docs/status/CURRENT_STATE.json",
         "docs/status/EXECUTION_STATUS.json",
         "docs/status/GAP_REGISTER.json",
         "docs/status/IMPLEMENTATION_INVENTORY.json",
         "docs/evidence/index.json",
+        "scripts/check-documentation-authority.py",
         "scripts/check-status-transitions.py",
         "scripts/derive-gates.py"
       ],
@@ -30,6 +32,8 @@
       "gap_ids": ["GAP-P0-DATA-001"],
       "paths": [
         "docs/development/SCHEMA_AUTHORITY.json",
+        "docs/ARCHITECTURE.md",
+        "docs/OPERATIONS_AND_RELEASE.md",
         "database/schema/v2/STATUS.json",
         "scripts/check-schema-authority.py"
       ],
@@ -39,14 +43,21 @@
     {
       "id": "SRC-JWT-LENGTH-FIX",
       "gap_ids": ["GAP-P1-CRYPTO-002", "GAP-P0-CRYPTO-001"],
-      "paths": ["crates/trnm-token-jwt-adapter/src/sha256.rs"],
+      "paths": [
+        "crates/trnm-token-jwt-adapter/src/sha256.rs",
+        "docs/SECURITY_AND_PRIVACY.md"
+      ],
       "status": "fixed-source",
-      "required_next": ["unit and fuzz execution", "crypto ADR", "independent security review"]
+      "required_next": ["unit and fuzz execution", "cryptography decision", "independent security review"]
     },
     {
       "id": "SRC-OUTBOX-ATTEMPT-FIX",
       "gap_ids": ["GAP-P1-OUTBOX-001"],
-      "paths": ["crates/trnm-persistence-core/src/lib.rs"],
+      "paths": [
+        "crates/trnm-persistence-core/src/lib.rs",
+        "docs/ARCHITECTURE.md",
+        "docs/OPERATIONS_AND_RELEASE.md"
+      ],
       "status": "fixed-source",
       "required_next": ["unit/property execution", "database parity", "data-integrity review"]
     },
@@ -55,7 +66,8 @@
       "gap_ids": ["GAP-P1-TEST-001"],
       "paths": [
         "crates/trnm-persistence-pg/tests/runtime.rs",
-        "crates/trnm-persistence-pg/tests/fault_matrix.rs"
+        "crates/trnm-persistence-pg/tests/fault_matrix.rs",
+        "docs/TESTING_AND_EVIDENCE.md"
       ],
       "status": "fixed-source",
       "required_next": ["CI environment proof", "missing-environment negative run", "both database profiles"]
@@ -66,7 +78,8 @@
       "paths": [
         "crates/trnm-server",
         "contracts/server/vertical-slice-v1.json",
-        "docs/development/RUST_SERVER_VERTICAL_SLICE_V1.md",
+        "docs/ARCHITECTURE.md",
+        "docs/DEVELOPMENT.md",
         "scripts/check-rust-server-source-candidate.py"
       ],
       "status": "source-candidate",
@@ -84,7 +97,7 @@
       "paths": [
         "crates/trnm-storage-nakama-version",
         "contracts/storage/nakama-public-version-v1.json",
-        "docs/development/STORAGE_PUBLIC_VERSION_COMPATIBILITY_V1.md",
+        "docs/COMPATIBILITY.md",
         "scripts/check-storage-version-compat.py"
       ],
       "status": "source-candidate",
@@ -101,11 +114,11 @@
       "gap_ids": ["GAP-P0-EVIDENCE-001", "GAP-P0-CI-001"],
       "paths": [
         "scripts/generate-candidate-manifest.py",
-        "docs/evidence/CANDIDATE_MANIFEST_CONTRACT.md",
+        "docs/TESTING_AND_EVIDENCE.md",
         ".github/workflows/candidate-identity-manifest.yml"
       ],
       "status": "source-candidate",
-      "required_next": ["non-empty exact-head run", "uploaded artifact digest", "evidence-index registration"]
+      "required_next": ["non-empty exact-head run", "artifact digest", "evidence-index registration"]
     }
   ],
   "claims": {

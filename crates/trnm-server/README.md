@@ -1,46 +1,57 @@
-# `trnm-server-foundation` source vertical slice
+# trnm-server
 
-Status: **source candidate; no compatibility, durability, SG4 or production credit**.
+Status: **module documentation; standalone-source-candidate; no automatic compatibility or production credit**  
+Path: `crates/trnm-server`  
+Workspace class: `isolated`  
+Lifecycle: `server-foundation-prototype`  
+Owner role: `foundation-runtime`
 
-Machine claim boundary:
+## Status and authority
+
+This document is the current module-level engineering contract for `trnm-server`. Its authority is limited to the module boundary described here: **foundation process prototype; not the canonical production binary**. Source presence, a passing unit suite, or this document alone does not establish compatibility, durability, security, operational, or production acceptance.
+
+The module's current maturity is `standalone-source-candidate`. Promotion requires exact-candidate execution, retained evidence, and the independent reviews required by the linked gaps.
+
+The exact no-credit source boundary consumed by the server vertical-slice gate is:
 
 ```text
-canonical_server_binary=false
 compatibility_credit=false
 database_durability_credit=false
 sg4_credit=false
 production_ready=false
 ```
 
-This standalone Rust foundation-prototype binary establishes a bounded process composition root for the plan-v3 vertical-slice program. The temporary canonical `trnm-server` binary remains the database-backed target in `crates/trnm-persistence-pg`; this crate cannot receive canonical server, compatibility or production credit while both lines are being consolidated.
+## Responsibilities
 
-It currently provides:
+Typed configuration, bounded ingress, worker supervision, health/readiness, drain, and composition-root process contracts.
 
-- typed environment/CLI configuration with explicit bounds;
-- fixed-size worker pool and bounded accepted-connection queue;
-- request read/write deadlines and maximum body/header limits;
-- liveness and readiness endpoints;
-- explicit readiness/draining lifecycle in the library server;
-- one fixed-width bootstrap request;
-- one fixed-width authority command request using `trnm-persistence-core`;
-- exact duplicate receipt replay;
-- revision and authority-generation fencing inherited from the core;
-- transactional in-memory event/outbox creation in the core;
-- malformed request, oversized body, duplicate and stale-revision tests.
+Non-goals: While the database-backed temporary authority exists, this package is not the canonical trnm-server release binary and grants no production authority.
 
-## Run
+## Architecture and dependencies
 
-```bash
-cargo run --manifest-path crates/trnm-server/Cargo.toml --locked \
-  --bin trnm-server-foundation -- check-config
-cargo run --manifest-path crates/trnm-server/Cargo.toml --locked \
-  --bin trnm-server-foundation -- serve \
-  --bind 127.0.0.1:7350 \
-  --workers 4 \
-  --queue-capacity 128
-```
+It composes bounded foundation behavior and must eventually replace the temporary binary atomically with source, tests, lockfile, status, and gate updates.
 
-Required verification:
+Dependency direction is reviewed as part of package authority. This module must not introduce hidden global state, untracked background work, unbounded queues, or transport/database coupling outside the declared lifecycle.
+
+## Public contracts
+
+Process admission, deadlines, readiness, abnormal child exit, and drain are shared across HTTP, gRPC, and upgraded WebSockets.
+
+Public Rust types, serialized fields, configuration keys, database predicates, and externally observable error classes are change-controlled. A breaking change requires an explicit migration or compatibility decision and updated tests in the same candidate.
+
+## Correctness and failure model
+
+No new mutation is admitted after drain acknowledgement; admitted work is bounded; worker panic/error converges to failure and unready state.
+
+All inputs, loops, retries, batches, queues, allocations, and shutdown paths are bounded. Unexpected states fail closed. Duplicate, stale, timeout, cancellation, restart, and partial-failure behavior must be represented in deterministic tests where applicable.
+
+## Security and privacy
+
+Non-loopback exposure is explicit, request sizes are bounded, errors are redacted, and production TLS/auth remain separate acceptance requirements.
+
+Secrets, raw tokens, user payloads, receipts, and provider credentials are not logged or used as metric labels. Any new cryptographic, parser, unsafe, native, or externally reachable boundary requires the appropriate threat, fuzz, and independent review.
+
+## Build and test
 
 ```bash
 cargo fmt --manifest-path crates/trnm-server/Cargo.toml -- --check
@@ -48,28 +59,29 @@ cargo test --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked
 cargo clippy --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked -- -D warnings
 ```
 
-## Current wire format
+This isolated workspace is explicitly registered in package authority and must execute in the stable aggregate merge gate. Empty discovery, skipped mandatory tests, warnings, older-head results, and local-only execution do not earn remote verification or claim credit.
 
-The two mutation endpoints deliberately use bounded fixed-width binary request bodies. They are internal vertical-slice contracts, not Nakama API compatibility surfaces.
+Focused vectors and live/fault/differential suites are required when this module's behavior crosses protocol, database, security, realtime, or operational boundaries.
 
-- `POST /v1/bootstrap`: 56 bytes = entity ID (16), authority generation (u64 big-endian), state digest (32).
-- `POST /v1/command`: 208 bytes = entity ID, command ID, fingerprint, expected revision, authority generation, next-state digest, one event ID/digest and one outbox ID/digest.
+## Operations
 
-Responses are bounded JSON with stable source-slice fields. `GET /healthz` is liveness. `GET /readyz` reflects the server lifecycle.
+Expose low-cardinality health, readiness reason, worker, queue, request, failure, and shutdown-phase signals.
 
-## Deliberately unresolved
+The owning adapter or process must define readiness impact, drain behavior, metrics, alerts, capacity limits, and failure recovery before the module can be part of a production profile.
 
-The following are blockers, not implied capabilities:
+## Compatibility and evidence
 
-- canonical server package extraction and removal of the temporary dual implementation line;
-- PostgreSQL/CockroachDB repository wiring and acknowledgement-after-durable-commit;
-- database retry, pool, TLS, migration and outbox worker execution;
-- HTTP/JSON v2, gRPC, grpc-gateway and official SDK compatibility;
-- WebSocket JSON/protobuf, heartbeat, close and reconnect behavior;
-- session/JWT verification and revocation fanout;
-- OS signal integration, supervised async task tree and zero-downtime drain;
-- metrics/traces and evidence artifact production;
-- immutable Nakama differential;
-- independent protocol, database, security and SRE review.
+Database durability, complete protocols, session integration, load, HA, SDK/oracle differential, and production extraction remain open.
 
-No endpoint in this crate may be advertised as Nakama-compatible until it is replaced or wrapped by a denominator-bound adapter with exact oracle evidence.
+Evidence must bind the exact repository, source commit, tree, workflow/run/job/attempt, environment, commands, assertions, retained artifact digests, limitations, expiry, and independent review decision.
+
+## Known gaps and exit criteria
+
+Blocking gaps:
+
+- `GAP-P0-SERVER-001`
+- `GAP-P1-PG-001`
+- `GAP-P0-CI-001`
+- `GAP-P1-REVIEW-001`
+
+Exit requires every applicable close criterion in `docs/status/GAP_REGISTER.json`, exact-head and prospective-merge execution, and conflict-free independent review. Temporary prototypes and gates also require an explicit convergence or removal decision.

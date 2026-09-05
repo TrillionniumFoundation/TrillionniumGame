@@ -33,6 +33,17 @@ EXPECTED_DENOMINATORS = {
     "DEN-IAP",
     "DEN-SDK",
 }
+CURRENT_HUMAN_DOCUMENTS = {
+    "docs/README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/DEVELOPMENT.md",
+    "docs/COMPATIBILITY.md",
+    "docs/TESTING_AND_EVIDENCE.md",
+    "docs/SECURITY_AND_PRIVACY.md",
+    "docs/OPERATIONS_AND_RELEASE.md",
+    "docs/GOVERNANCE.md",
+    "docs/ROADMAP.md",
+}
 TASK_STATES = {
     "planned",
     "ready",
@@ -49,7 +60,7 @@ TASK_STATES = {
 
 
 class ValidationError(RuntimeError):
-    pass
+    """Raised when plan or control-plane authority is inconsistent."""
 
 
 def fail(message: str) -> None:
@@ -90,36 +101,18 @@ def validate_files() -> None:
         "SECURITY.md",
         ".github/CODEOWNERS",
         ".github/workflows/trillionnium-game-merge-gate.yml",
-        "docs/adr/ADR-0001-FULL-RUST-REIMPLEMENTATION.md",
-        "docs/adr/ADR-ROADMAP.md",
-        "docs/development/PLAN_AUDIT_2026-08-28.md",
-        "docs/development/PROGRAM_EXECUTION_MODEL.md",
-        "docs/development/CRITICAL_PATH_AND_STAGE_GATES.md",
-        "docs/development/PARITY_DENOMINATOR_SPEC.md",
+        "docs/DOCUMENTATION_AUTHORITY.json",
+        *sorted(CURRENT_HUMAN_DOCUMENTS),
         "docs/development/PARITY_DENOMINATORS.json",
         "docs/development/FEATURE_PARITY_MATRIX.md",
-        "docs/development/COMPATIBILITY_PROFILES.md",
         "docs/development/COMPATIBILITY_PROFILES.json",
         "docs/development/COMPATIBILITY_DIVERGENCES.json",
-        "docs/development/ORACLE_AND_DIFFERENTIAL_SPEC.md",
-        "docs/development/MIGRATION_AUTHORITY_MATRIX.md",
-        "docs/development/DATA_MIGRATION_STATE_MACHINE.md",
-        "docs/development/CAPACITY_AND_SLO_SPEC.md",
-        "docs/development/TECHNICAL_SPIKES.md",
-        "docs/development/EVIDENCE_MODEL.md",
+        "docs/development/DENOMINATOR_CLASSIFICATION_RULES.json",
         "docs/development/SCHEMA_AUTHORITY.json",
         "docs/development/RUST_PACKAGE_AUTHORITY.json",
-        "docs/development/RUST_PACKAGE_AUTHORITY.md",
         "docs/development/EXECUTION_BACKLOG.json",
         "docs/development/backlog/EXECUTION_BACKLOG.v2.json.gz",
-        "docs/development/backlog/README.md",
         "docs/development/UPSTREAM_BASELINE.json",
-        "docs/development/THIRD_PARTY_POLICY.md",
-        "docs/architecture/CURRENT_AND_TARGET_RUNTIME.md",
-        "docs/architecture/RUST_SERVER_REFERENCE_ARCHITECTURE.md",
-        "docs/testing/TEST_POLICY.md",
-        "docs/security/CRYPTOGRAPHY_AND_KEYS.md",
-        "docs/governance/BRANCH_AND_MERGE_POLICY.md",
         "docs/evidence/index.json",
         "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
         "docs/status/CURRENT_STATE.json",
@@ -130,8 +123,14 @@ def validate_files() -> None:
         "docs/status/RISK_REGISTER.json",
         "docs/status/SERVICE_LEVEL_OBJECTIVES.json",
         "docs/roadmap/NEXT_MILESTONE.json",
+        "docs/review/INDEPENDENT_REVIEW_MATRIX.json",
+        "docs/governance/GITHUB_ADMIN_ACCEPTANCE.json",
+        "docs/governance/MAIN_RULESET_DESIRED.json",
+        "docs/governance/REQUIRED_CHECKS.json",
+        "docs/governance/RULESET_DESIRED_ACTIVE_REQUEST.json",
         "database/schema/v2/STATUS.json",
         "database/schema/v2/README.md",
+        "scripts/check-documentation-authority.py",
         "scripts/check-status-transitions.py",
         "scripts/derive-gates.py",
         "scripts/check-schema-authority.py",
@@ -140,25 +139,76 @@ def validate_files() -> None:
     ]
     missing = [path for path in required if not (ROOT / path).is_file()]
     require(not missing, "missing required files: " + ", ".join(missing))
-    equal((ROOT / "PROJECT_ID").read_text(encoding="utf-8").strip(), "trillionnium-game", "PROJECT_ID")
+    equal(
+        (ROOT / "PROJECT_ID").read_text(encoding="utf-8").strip(),
+        "trillionnium-game",
+        "PROJECT_ID",
+    )
+
+
+def validate_documentation_authority() -> None:
+    authority = load_json("docs/DOCUMENTATION_AUTHORITY.json")
+    equal(
+        authority.get("schema"),
+        "trillionnium.documentation-authority.v1",
+        "documentation authority schema",
+    )
+    equal(authority.get("project_id"), "trillionnium-game", "documentation project_id")
+    equal(authority.get("plan_version"), 3, "documentation plan version")
+    equal(authority.get("revision"), "2026-09-01", "documentation revision")
+    equal(
+        set(authority.get("current_human_documents", [])),
+        CURRENT_HUMAN_DOCUMENTS,
+        "current human documentation",
+    )
+    policy = authority.get("policy", {})
+    equal(policy.get("single_current_human_document_per_topic"), True, "single current doc policy")
+    equal(policy.get("historical_markdown_allowed_in_active_tree"), False, "historical Markdown policy")
+    equal(policy.get("git_history_is_the_human_document_archive"), True, "history archive policy")
+    equal(policy.get("broken_repository_document_references_allowed"), False, "broken reference policy")
+    claims = authority.get("claims", {})
+    equal(claims.get("documentation_consolidated"), True, "documentation consolidated")
+    equal(claims.get("historical_human_docs_removed_from_active_tree"), True, "historical docs removed")
+    equal(claims.get("machine_evidence_deleted"), False, "machine evidence retention")
+    for field in ("compatibility_credit", "production_ready", "public_online", "nakama_retired"):
+        equal(claims.get(field), False, f"documentation claim {field}")
 
 
 def validate_boundary() -> None:
     boundary = load_json("PROJECT_BOUNDARY.json")
     equal(boundary.get("schema"), "trillionnium.project-boundary.v2", "boundary schema")
     equal(boundary.get("project_id"), "trillionnium-game", "boundary project_id")
-    equal(boundary.get("current_repository"), "TrillionniumFoundation/TrillionniumGame", "current repository")
-    equal(boundary.get("target_repository"), "TrillionniumFoundation/TrillionniumGame", "target repository")
+    equal(
+        boundary.get("current_repository"),
+        "TrillionniumFoundation/TrillionniumGame",
+        "current repository",
+    )
+    equal(
+        boundary.get("target_repository"),
+        "TrillionniumFoundation/TrillionniumGame",
+        "target repository",
+    )
     equal(boundary.get("repository_id"), 1323087470, "repository ID")
-    equal(boundary.get("scope", {}).get("nakama_oss_full_reimplementation"), True, "full scope")
+    equal(
+        boundary.get("scope", {}).get("nakama_oss_full_reimplementation"),
+        True,
+        "full scope",
+    )
     equal(
         boundary.get("scope", {}).get("parity_source_of_truth"),
         "generated-leaf-denominators",
         "parity source",
     )
-    for field in ("go_server_allowed", "go_sidecar_allowed", "compiled_go_plugin_loader_allowed"):
+    for field in (
+        "go_server_allowed",
+        "go_sidecar_allowed",
+        "compiled_go_plugin_loader_allowed",
+    ):
         equal(boundary.get("language_policy", {}).get(field), False, field)
-    require(boundary.get("claims", {}).get("current_level") in {"C0-planning", "C0"}, "current claim level")
+    require(
+        boundary.get("claims", {}).get("current_level") in {"C0-planning", "C0"},
+        "current claim level",
+    )
 
 
 def validate_upstream() -> None:
@@ -205,7 +255,7 @@ def validate_upstream() -> None:
 def validate_plan_and_parity() -> tuple[set[str], set[str]]:
     text = (ROOT / "CURRENT_PLAN.md").read_text(encoding="utf-8")
     for marker in (
-        "开发计划 v3",
+        "开发计划 v3.1",
         "P50 48",
         "P80 60",
         "C0",
@@ -214,8 +264,11 @@ def validate_plan_and_parity() -> tuple[set[str], set[str]]:
         "SG9",
         "D0",
         "D8",
-        "Definition of Ready / Done",
+        "Definition of Ready",
+        "Definition of Done",
         "Gap closure definition",
+        "docs/DOCUMENTATION_AUTHORITY.json",
+        "历史信息只保留在 Git 历史",
         NAKAMA_COMMIT,
     ):
         require(marker in text, f"plan missing marker: {marker}")
@@ -224,8 +277,15 @@ def validate_plan_and_parity() -> tuple[set[str], set[str]]:
         [str(index) for index in range(17)],
         "workstream order",
     )
+    equal(
+        re.findall(r"^- SG(\d+)：", text, re.MULTILINE),
+        [str(index) for index in range(10)],
+        "stage gate order",
+    )
 
-    lines = (ROOT / "docs/development/FEATURE_PARITY_MATRIX.md").read_text(encoding="utf-8").splitlines()
+    lines = (
+        ROOT / "docs/development/FEATURE_PARITY_MATRIX.md"
+    ).read_text(encoding="utf-8").splitlines()
     rows = [line for line in lines if line.startswith("| TG-PAR-")]
     require(len(rows) >= 74, "parity roll-up shrank below 74")
     parity = [line.split("|")[1].strip() for line in rows]
@@ -233,9 +293,16 @@ def validate_plan_and_parity() -> tuple[set[str], set[str]]:
 
     registry = load_json("docs/development/PARITY_DENOMINATORS.json")
     denominator_rows = registry.get("denominators", [])
-    equal({row.get("id") for row in denominator_rows}, EXPECTED_DENOMINATORS, "denominator IDs")
+    equal(
+        {row.get("id") for row in denominator_rows},
+        EXPECTED_DENOMINATORS,
+        "denominator IDs",
+    )
     for row in denominator_rows:
-        require(row.get("unclassified_allowed") is False, f"{row.get('id')}: unclassified policy")
+        require(
+            row.get("unclassified_allowed") is False,
+            f"{row.get('id')}: unclassified policy",
+        )
         require(bool(row.get("extractor_task")), f"{row.get('id')}: extractor")
         require(bool(row.get("output")), f"{row.get('id')}: output")
         require(bool(row.get("layer")), f"{row.get('id')}: layer")
@@ -246,18 +313,29 @@ def validate_plan_and_parity() -> tuple[set[str], set[str]]:
     )
 
     profiles = load_json("docs/development/COMPATIBILITY_PROFILES.json")
-    equal([row["id"] for row in profiles.get("claim_levels", [])], [f"C{i}" for i in range(6)], "claim levels")
+    equal(
+        [row["id"] for row in profiles.get("claim_levels", [])],
+        [f"C{i}" for i in range(6)],
+        "claim levels",
+    )
     require(isinstance(profiles.get("current_level"), str), "compatibility current level")
     gates = load_json("docs/status/PRODUCT_GATES.json")
     gate_ids = [row.get("id") for row in gates.get("gates", [])]
-    require(len(gate_ids) == 15 and len(gate_ids) == len(set(gate_ids)), "product gate IDs")
+    require(
+        len(gate_ids) == 15 and len(gate_ids) == len(set(gate_ids)),
+        "product gate IDs",
+    )
     return set(parity), set(gate_ids)
 
 
 def validate_backlog(parity_ids: set[str], gate_ids: set[str]) -> None:
     index = load_json("docs/development/EXECUTION_BACKLOG.json")
     equal(index.get("task_count"), 120, "task count")
-    equal(sum(row["task_count"] for row in index.get("workstreams", [])), 120, "workstream total")
+    equal(
+        sum(row["task_count"] for row in index.get("workstreams", [])),
+        120,
+        "workstream total",
+    )
     artifact = index["full_backlog_artifact"]
     path = ROOT / artifact["path"]
     equal(hashlib.sha256(path.read_bytes()).hexdigest(), artifact["sha256"], "backlog SHA")
@@ -265,7 +343,11 @@ def validate_backlog(parity_ids: set[str], gate_ids: set[str]) -> None:
         backlog = json.load(handle)
     equal(backlog.get("schema"), "trillionnium.execution-backlog.v2", "backlog schema")
     workstreams = backlog.get("workstreams", [])
-    equal([row["id"] for row in workstreams], [f"W{i}" for i in range(17)], "detailed workstreams")
+    equal(
+        [row["id"] for row in workstreams],
+        [f"W{i}" for i in range(17)],
+        "detailed workstreams",
+    )
     tasks = [task for workstream in workstreams for task in workstream.get("tasks", [])]
     equal(len(tasks), 120, "detailed tasks")
     ids = [task.get("id") for task in tasks]
@@ -338,7 +420,9 @@ def validate_evidence_schema() -> None:
 def validate_identity_and_claims() -> None:
     module = (ROOT / "runtime/go.mod").read_text(encoding="utf-8")
     require(
-        module.startswith("module github.com/TrillionniumFoundation/TrillionniumGame/runtime\n"),
+        module.startswith(
+            "module github.com/TrillionniumFoundation/TrillionniumGame/runtime\n"
+        ),
         "runtime Go module is not canonical",
     )
     current = load_json("docs/status/CURRENT_STATE.json")
@@ -356,7 +440,15 @@ def validate_identity_and_claims() -> None:
     ):
         equal(claims.get(field), False, f"current claim {field}")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    require("does not yet claim" in readme or "does **not** claim" in readme, "README claim boundary")
+    for marker in (
+        "complete Nakama compatibility = false",
+        "production-ready = false",
+        "public-online = false",
+        "drop-in replacement = false",
+        "Nakama retired = false",
+        "docs/DOCUMENTATION_AUTHORITY.json",
+    ):
+        require(marker in readme, f"README missing claim/documentation marker: {marker}")
 
 
 def run_child(path: str) -> None:
@@ -372,12 +464,14 @@ def run_child(path: str) -> None:
 def main() -> int:
     try:
         validate_files()
+        validate_documentation_authority()
         validate_boundary()
         validate_upstream()
         parity_ids, gate_ids = validate_plan_and_parity()
         validate_backlog(parity_ids, gate_ids)
         validate_evidence_schema()
         validate_identity_and_claims()
+        run_child("scripts/check-documentation-authority.py")
         run_child("scripts/check-status-transitions.py")
         run_child("scripts/derive-gates.py")
         run_child("scripts/check-schema-authority.py")
@@ -385,7 +479,7 @@ def main() -> int:
     except ValidationError as exc:
         print(f"plan validation failed: {exc}", file=sys.stderr)
         return 1
-    print("TrillionniumGame plan v3 control plane: OK")
+    print("TrillionniumGame plan v3.1 control plane: OK")
     return 0
 
 

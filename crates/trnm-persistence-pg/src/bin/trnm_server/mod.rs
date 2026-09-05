@@ -4,10 +4,13 @@ pub(crate) mod auth;
 pub(crate) mod codec;
 pub(crate) mod config;
 pub(crate) mod error;
+pub(crate) mod grpc;
 pub(crate) mod http;
 pub(crate) mod json;
 pub(crate) mod pool;
 pub(crate) mod retry;
+#[cfg(test)]
+pub(crate) mod retry_live_tests;
 pub(crate) mod schema;
 pub(crate) mod server;
 pub(crate) mod session_api;

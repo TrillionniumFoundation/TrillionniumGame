@@ -3,15 +3,6 @@ name: trillionnium-game-foundation-schema-profiles
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'migrations/postgresql/**'
-      - 'migrations/cockroachdb/**'
-      - 'contracts/database/foundation-schema.v1.json'
-      - 'scripts/check-foundation-schema.py'
-      - 'tests/schema/**'
-      - 'docs/development/FOUNDATION_SCHEMA_*.md'
-      - 'docs/status/FOUNDATION_SCHEMA_STATUS.json'
-      - '.github/workflows/w1-foundation-schema-profiles.yml'
   push:
     branches: [main]
 

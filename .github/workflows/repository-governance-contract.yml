@@ -2,17 +2,12 @@ name: repository-governance-contract
 
 on:
   pull_request:
-    paths:
-      - 'scripts/apply-repository-governance.sh'
-      - 'docs/governance/REPOSITORY_GOVERNANCE_APPLY.md'
-      - '.github/CODEOWNERS'
-      - '.github/workflows/trillionnium-game-merge-gate.yml'
-      - '.github/workflows/repository-governance-contract.yml'
   push:
     branches: [main]
     paths:
       - 'scripts/apply-repository-governance.sh'
-      - 'docs/governance/REPOSITORY_GOVERNANCE_APPLY.md'
+      - 'docs/GOVERNANCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/CODEOWNERS'
       - '.github/workflows/trillionnium-game-merge-gate.yml'
       - '.github/workflows/repository-governance-contract.yml'
@@ -47,12 +42,13 @@ jobs:
       - name: Validate shell syntax and immutable identifiers
         run: |
           set -euo pipefail
+          grep -q 'A branch-protection or ruleset claim is accepted only after GitHub state is read back' docs/GOVERNANCE.md
+          grep -q 'Administrator bypass and auto-merge cannot override unresolved P0/P1' docs/GOVERNANCE.md
           bash -n scripts/apply-repository-governance.sh
           grep -q 'TrillionniumFoundation/TrillionniumGame' scripts/apply-repository-governance.sh
           grep -q 'repository_id=1323087470' scripts/apply-repository-governance.sh
           grep -q 'required_context=trillionnium-game-merge-gate' scripts/apply-repository-governance.sh
           grep -q 'TRNM_EXPECTED_MAIN' scripts/apply-repository-governance.sh
-          grep -q 'completed.*successful' docs/governance/REPOSITORY_GOVERNANCE_APPLY.md
       - name: Prove mutation cannot run without confirmation
         run: |
           set -euo pipefail

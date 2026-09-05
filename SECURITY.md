@@ -27,20 +27,22 @@ A security issue is not considered fixed merely because source changed. Required
 
 ## Supported versions
 
-The project has not released a production-supported version. `main`, branches, pull requests, crates, workflows and current Go migration inputs are development candidates. No C1–C5 compatibility, production-readiness, public-online or replacement support commitment exists unless a future signed release explicitly states one.
+The project has not released a production-supported version. `main`, branches, pull requests, crates, workflows and the current Go migration input are development candidates. No C1–C5 compatibility, production-readiness, public-online or replacement support commitment exists unless a future signed release explicitly states one.
 
-## Security boundaries
+## Current engineering controls
 
-Binding design and evidence controls include:
+The active security and evidence contracts are:
 
-- `docs/security/CRYPTOGRAPHY_AND_KEYS.md`
-- `docs/testing/TEST_POLICY.md`
-- `docs/development/EVIDENCE_MODEL.md`
-- `docs/evidence/index.json`
-- `docs/status/GAP_REGISTER.json`
-- `docs/status/PRODUCT_GATES.json`
+- [`docs/SECURITY_AND_PRIVACY.md`](docs/SECURITY_AND_PRIVACY.md)
+- [`docs/TESTING_AND_EVIDENCE.md`](docs/TESTING_AND_EVIDENCE.md)
+- [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md)
+- [`docs/evidence/index.json`](docs/evidence/index.json)
+- [`docs/status/GAP_REGISTER.json`](docs/status/GAP_REGISTER.json)
+- [`docs/status/PRODUCT_GATES.json`](docs/status/PRODUCT_GATES.json)
 
-Security-critical paths require independent review and must be covered by the aggregate merge gate. Empty, skipped, cancelled or older-head checks are not security evidence.
+`docs/DOCUMENTATION_AUTHORITY.json` defines the current documentation set. Historical/versioned security notes are not active policy.
+
+Security-critical paths require independent review and aggregate-gate coverage. Empty, skipped, cancelled, zero-job, startup-failure or older-head checks are not security evidence.
 
 ## Disclosure and remediation
 

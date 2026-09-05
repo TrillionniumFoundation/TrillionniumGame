@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -45,7 +46,7 @@ jobs:
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
       - name: Validate plan, status, gates and schema authority
         run: python3 scripts/check-plan.py
-      - name: Validate repository-native workflow action policy
+      - name: Validate repository-native workflow action and syntax policy
         run: python3 scripts/check-workflow-action-policy.py
       - name: Reject tracked build, runtime and secret-like outputs
         run: python3 scripts/check-repository-hygiene.py
@@ -53,6 +54,8 @@ jobs:
         run: python3 scripts/check-rust-package-inventory.py
       - name: Validate Rust server source contract
         run: python3 scripts/check-trnm-server.py
+      - name: Validate closed required-workflow manifest JSON
+        run: python3 -m json.tool docs/governance/REQUIRED_WORKFLOWS_V1.json >/dev/null
       - name: Compile control scripts
         run: |
           python3 -m py_compile \
@@ -61,9 +64,12 @@ jobs:
             scripts/derive-gates.py \
             scripts/check-schema-authority.py \
             scripts/check-workflow-action-policy.py \
+            scripts/check-required-workflow-runs.py \
             scripts/check-repository-hygiene.py \
             scripts/check-rust-package-inventory.py \
             scripts/check-trnm-server.py
+      - name: Exercise workflow integrity regressions
+        run: python3 -m unittest tests.control_plane.test_workflow_gate_integrity -v
 
   rust-workspace:
     name: rust-workspace
@@ -209,6 +215,38 @@ jobs:
           go test -race ./... -count=1
           go vet ./...
 
+  external-workflow-collection:
+    name: external-workflow-collection
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Fetch exact candidate without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
+            "${CANDIDATE_SHA}"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+      - name: Require the closed exact-head PR workflow set to execute
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check-required-workflow-runs.py \
+            --repository "$CANDIDATE_REPOSITORY" \
+            --head-sha "$CANDIDATE_SHA" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --manifest docs/governance/REQUIRED_WORKFLOWS_V1.json \
+            --timeout-seconds 3000 \
+            --poll-seconds 10 \
+            --stable-polls 3
+
   trillionnium-game-merge-gate:
     name: trillionnium-game-merge-gate
     if: always()
@@ -218,16 +256,19 @@ jobs:
       - isolated-rust
       - python-contracts
       - legacy-go-migration-input
+      - external-workflow-collection
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Reject missing, skipped, cancelled or failed lanes
         env:
+          EVENT_NAME: ${{ github.event_name }}
           CONTROL_PLANE: ${{ needs.control-plane.result }}
           RUST_WORKSPACE: ${{ needs.rust-workspace.result }}
           ISOLATED_RUST: ${{ needs.isolated-rust.result }}
           PYTHON_CONTRACTS: ${{ needs.python-contracts.result }}
           LEGACY_GO: ${{ needs.legacy-go-migration-input.result }}
+          EXTERNAL_WORKFLOWS: ${{ needs.external-workflow-collection.result }}
         run: |
           set -euo pipefail
           test "$CONTROL_PLANE" = success
@@ -235,5 +276,10 @@ jobs:
           test "$ISOLATED_RUST" = success
           test "$PYTHON_CONTRACTS" = success
           test "$LEGACY_GO" = success
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            test "$EXTERNAL_WORKFLOWS" = success
+          else
+            test "$EXTERNAL_WORKFLOWS" = skipped
+          fi
           printf 'repository=%s\nhead_sha=%s\nrun_id=%s\n' \
             "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" "$GITHUB_RUN_ID"
