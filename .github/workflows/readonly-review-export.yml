@@ -23,6 +23,8 @@ jobs:
           git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
           cd "$GITHUB_WORKSPACE/tooling"
+          test "$(git hash-object retain_preflight.py)" = b7470eb5c794e6e3daa6940916b4086c5aa1f716
+          test "$(git hash-object test_retain_preflight.py)" = ae934af190d3f998d30a2b7cf01414299f924014
           printf '%s\n' '1e58a66edd5b0d0bfe002ab9da78aa4adf61bdd0e6ecac95076807c8d7fce5d0  export-source.json.gz' | sha256sum -c -
           python3 - <<'PY'
           import gzip, json
@@ -50,11 +52,11 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = f2391bbf7210d155fc7e56a190253cbadc820802
           test "$(git -C "$GITHUB_WORKSPACE/source" hash-object scripts/upload-actions-artifact.py)" = 0943a72a5978241a79e590b34d759cb2878b77d2
           test "$(git -C "$GITHUB_WORKSPACE/source" hash-object tests/control_plane/test_actions_artifact_protocol.py)" = 8732c8f2464d49e7e91291591d02d661449972fe
-      - name: Test the identity-bound read-only exporter
+      - name: Test exporter and preflight retention without repository credentials
         shell: bash
         working-directory: tooling
-        run: python3 -m unittest -v test_export_packet
-      - name: Run complete product Python and source-control preflight without credentials
+        run: python3 -m unittest -v test_export_packet test_retain_preflight
+      - name: Run complete product Python and retain all source-control output
         shell: bash
         working-directory: source
         run: |
@@ -63,16 +65,33 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/product-preflight.log"
           grep -Eq '^Ran 411 tests in ' "$RUNNER_TEMP/product-preflight.log"
           grep -qx 'OK' "$RUNNER_TEMP/product-preflight.log"
-          for check in check-documentation-authority.py check-plan.py check-evidence-index.py check-gap-register.py derive-gap-status.py derive-gates.py check-status-transitions.py check-workflow-action-policy.py check-repository-hygiene.py check-trnm-server.py check-rust-foundation.py; do
-            python3 "scripts/$check"
-          done
+          {
+            for check in check-documentation-authority.py check-plan.py check-evidence-index.py check-gap-register.py derive-gap-status.py derive-gates.py check-status-transitions.py check-workflow-action-policy.py check-repository-hygiene.py check-trnm-server.py check-rust-foundation.py; do
+              printf '\n=== %s ===\n' "$check"
+              python3 "scripts/$check" || exit "$?"
+            done
+          } 2>&1 | tee "$RUNNER_TEMP/source-controls.log"
           test -z "$(git status --porcelain)"
-      - name: Retain actual current-head logs and bounded embedded archives
+      - name: Refresh current-head metadata and retain completed-job logs
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python3 "$GITHUB_WORKSPACE/tooling/export_packet.py" --source "$GITHUB_WORKSPACE/source" --output "$RUNNER_TEMP/trnm-review-bdfa705c.zip"
+          python3 "$GITHUB_WORKSPACE/tooling/export_packet.py" --source "$GITHUB_WORKSPACE/source" --output "$RUNNER_TEMP/trnm-review-base.zip"
+      - name: Bind original commit and producer-local test bytes to the packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/tooling/retain_preflight.py" --packet "$RUNNER_TEMP/trnm-review-base.zip" --output "$RUNNER_TEMP/trnm-review-bdfa705c.zip" --preflight "$RUNNER_TEMP/product-preflight.log" --controls "$RUNNER_TEMP/source-controls.log" --source "$GITHUB_WORKSPACE/source"
+          python3 - <<'PY'
+          import json, os, zipfile
+          from pathlib import Path
+          with zipfile.ZipFile(Path(os.environ['RUNNER_TEMP']) / 'trnm-review-bdfa705c.zip') as packet:
+              observation = json.loads(packet.read('observation.json'))
+              assert observation['counts']['logs'] > 0, 'no completed-job logs retained'
+              assert observation['claims']['accepted'] is False
+              assert observation['claims']['gap_closed'] is False
+          PY
       - name: Store diagnostic ZIP through the corrected product uploader
         uses: ./tooling/publish
