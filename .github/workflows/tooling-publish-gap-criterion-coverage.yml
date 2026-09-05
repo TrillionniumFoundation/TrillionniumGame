@@ -1,0 +1,134 @@
+name: tooling-publish-gap-criterion-coverage
+
+on:
+  push:
+    branches: [tooling/publish-gap-criteria-9f552481]
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+  PRODUCT_HEAD: 9f5524815422ed6e59c6a04fa3b5389a3ceef281
+  PRODUCT_TREE: d8355f6b58bd6797f45bde6abb7ec8b266a34c24
+  RESULT_TREE: c1ede5a563d43257f6a583f1af9fc4888f6307e0
+  MAIN_HEAD: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
+  OLD_MERGE: 314592d4b7b5b7a1360ac81eee9a75c87dc5d2e9
+  PATCH_SHA256: 97f024e983e32d17c8bc0d7b7194d4c2cad97b0f0b383984037cc4d6c4798625
+  GZIP_SHA256: 97229d40d879e864304a7dc7c06304ba8d7b470da8655bed9ad1db94e08584b9
+  GITHUB_TOKEN: ${{ github.token }}
+  PYTHONDONTWRITEBYTECODE: "1"
+  TERM: xterm
+
+jobs:
+  validate-retain-and-fast-forward:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Reconstruct exact patch and fixed product checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE/tooling"
+          git -C "$GITHUB_WORKSPACE/tooling" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+          cat "$GITHUB_WORKSPACE"/tooling/payload/gap-criteria/part-*.b64 > "$RUNNER_TEMP/patch.gz.b64"
+          base64 -d "$RUNNER_TEMP/patch.gz.b64" > "$RUNNER_TEMP/patch.gz"
+          printf '%s  %s\n' "$GZIP_SHA256" "$RUNNER_TEMP/patch.gz" | sha256sum -c -
+          gzip -dc "$RUNNER_TEMP/patch.gz" > "$RUNNER_TEMP/change.patch"
+          printf '%s  %s\n' "$PATCH_SHA256" "$RUNNER_TEMP/change.patch" | sha256sum -c -
+
+          git init "$GITHUB_WORKSPACE/product"
+          git -C "$GITHUB_WORKSPACE/product" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$GITHUB_WORKSPACE/product" fetch --no-tags --depth=2 origin "$PRODUCT_HEAD"
+          git -C "$GITHUB_WORKSPACE/product" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/product" rev-parse HEAD)" = "$PRODUCT_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/product" rev-parse HEAD^{tree})" = "$PRODUCT_TREE"
+          git -C "$GITHUB_WORKSPACE/product" apply --index --check "$RUNNER_TEMP/change.patch"
+          git -C "$GITHUB_WORKSPACE/product" apply --index "$RUNNER_TEMP/change.patch"
+          test "$(git -C "$GITHUB_WORKSPACE/product" write-tree)" = "$RESULT_TREE"
+          git -C "$GITHUB_WORKSPACE/product" diff --cached --check
+
+      - name: Execute complete Python and control contracts
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -q 2>&1 | tee "$RUNNER_TEMP/python.log"
+          grep -E '^Ran 537 tests in ' "$RUNNER_TEMP/python.log"
+          grep -qx OK "$RUNNER_TEMP/python.log"
+          : > "$RUNNER_TEMP/controls.log"
+          for c in check-documentation-authority.py check-plan.py check-evidence-index.py check-gap-register.py derive-gap-status.py derive-gates.py check-status-transitions.py check-workflow-action-policy.py check-repository-hygiene.py check-trnm-server.py check-rust-foundation.py; do
+            printf '\n=== %s ===\n' "$c" | tee -a "$RUNNER_TEMP/controls.log"
+            python3 "scripts/$c" 2>&1 | tee -a "$RUNNER_TEMP/controls.log"
+          done
+          test "$(git write-tree)" = "$RESULT_TREE"
+          git diff --cached --check
+
+      - name: Commit and retain exact native diagnostic
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          git config user.name 'Qian QI'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git commit -m 'fix(evidence): bind gap closure to every current criterion' \
+            -m 'Require accepted evidence to carry canonical gap_criteria mappings that bind gap ID, one-based ordinal and the SHA-256 of exact criterion text. Gap closure now rejects stale, cross-gap and incomplete mappings and requires the exact criterion union on one target cohort while preserving evidence-type checks.' \
+            -m 'Add split-coverage positive tests and hostile missing, stale wording, orphan and consumer-bypass regressions. The exact eight-file tree passed 537 Python tests, 11 controls, compileall and diff checks before publication. Structural mapping does not replace substantive specialist review, exact-head/merge execution or administrator readback.'
+          NEW_HEAD="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "$PRODUCT_HEAD"
+          test "$(git rev-parse HEAD^{tree})" = "$RESULT_TREE"
+          git show --format=raw --no-patch HEAD > "$RUNNER_TEMP/new-commit.txt"
+          git diff "$PRODUCT_HEAD"..HEAD --stat > "$RUNNER_TEMP/diff-stat.txt"
+          python3 - <<'PY'
+          import hashlib, json, os, zipfile
+          from pathlib import Path
+          temp=Path(os.environ['RUNNER_TEMP'])
+          identity={
+            'schema':'trillionnium.gap-criterion-publication.v1',
+            'repository':'TrillionniumFoundation/TrillionniumGame',
+            'parent':os.environ['PRODUCT_HEAD'],
+            'parent_tree':os.environ['PRODUCT_TREE'],
+            'candidate_commit':os.popen('git rev-parse HEAD').read().strip(),
+            'candidate_tree':os.environ['RESULT_TREE'],
+            'patch_sha256':os.environ['PATCH_SHA256'],
+            'tests':{'collected':537,'passed':537,'failed':0},
+            'control_checks':11,
+            'producer':{k:os.environ.get(k) for k in ('GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_JOB')},
+            'claims':{'accepted':False,'gap_closed':False,'ordinary_required_gate_credit':False,'independent_review':False},
+            'limitations':['Publication workflow is diagnostic and cannot substitute for ordinary PR/prospective-merge workflows.','Criterion IDs prove structural mapping only; specialist review decides substantive sufficiency.','No branch-protection readback, production credential, deployment or main mutation is performed.']
+          }
+          (temp/'identity.json').write_text(json.dumps(identity,indent=2)+'\n')
+          files={
+            'identity.json':(temp/'identity.json').read_bytes(),
+            'python.log':(temp/'python.log').read_bytes(),
+            'controls.log':(temp/'controls.log').read_bytes(),
+            'change.patch':(temp/'change.patch').read_bytes(),
+            'new-commit.txt':(temp/'new-commit.txt').read_bytes(),
+            'diff-stat.txt':(temp/'diff-stat.txt').read_bytes(),
+          }
+          files['file-index.json']=(json.dumps([{'path':n,'size_bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()} for n,b in sorted(files.items())],indent=2)+'\n').encode()
+          with zipfile.ZipFile(temp/'gap-criterion-publication.zip','x',zipfile.ZIP_DEFLATED) as archive:
+            for name,data in sorted(files.items()): archive.writestr(name,data)
+          print(json.dumps(identity))
+          PY
+          python3 scripts/upload-actions-artifact.py trnm-gap-criterion-9f552481 "$RUNNER_TEMP/gap-criterion-publication.zip" --mime-type application/zip
+
+      - name: Fast-forward only if all live identities remain unchanged
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          NEW_HEAD="$(git rev-parse HEAD)"
+          git ls-remote origin "refs/heads/$PRODUCT_BRANCH" refs/heads/main refs/pull/63/merge > "$RUNNER_TEMP/live-refs"
+          grep -qx "$PRODUCT_HEAD[[:space:]]refs/heads/$PRODUCT_BRANCH" "$RUNNER_TEMP/live-refs"
+          grep -qx "$MAIN_HEAD[[:space:]]refs/heads/main" "$RUNNER_TEMP/live-refs"
+          grep -qx "$OLD_MERGE[[:space:]]refs/pull/63/merge" "$RUNNER_TEMP/live-refs"
+          git config credential.helper '!f() { echo username=x-access-token; echo password=$GITHUB_TOKEN; }; f'
+          git push origin "HEAD:refs/heads/$PRODUCT_BRANCH"
+          test "$(git ls-remote origin "refs/heads/$PRODUCT_BRANCH" | cut -f1)" = "$NEW_HEAD"
+          printf 'published_head=%s\n' "$NEW_HEAD"
