@@ -125,5 +125,14 @@
     "cancellation_lifecycle_source_candidate": true,
     "cancelled_backend_retirement_source_candidate": true,
     "nonempty_cancellation_live_tests_source_candidate": true
+  },
+  "dependency_contract_source_candidate": {
+    "policy_source": "scripts/check-rust-foundation.py::EXPECTED_DEPENDENCIES",
+    "consumer": "scripts/check-trnm-server.py",
+    "regression_suite": "tests/control_plane/test_trnm_server_dependency_contract.py",
+    "scope": "One exact persistence dependency table; unchanged protobuf build pins and server invariants.",
+    "accepted": false,
+    "gap_closed": false,
+    "runtime_behavior_changed": false
   }
 }

@@ -310,3 +310,32 @@ It does not allow version ranges, alternate sources, extra dependencies or pure-
 OpenSSL imports. `test_rust_foundation_dependency_alignment.py` checks positive
 repository validation and rejected mutations, including other pins and runtime
 feature changes. This alignment is not an independent cryptographic approval.
+
+## 16. Shared persistence dependency policy
+
+The canonical server checker reads `EXPECTED_DEPENDENCIES` from the sibling
+`scripts/check-rust-foundation.py`; it no longer carries a second persistence
+dependency table. The sibling is resolved from the checker file rather than the
+working directory or import search path. Missing or malformed policy fails
+without a fallback, and callers receive a deep copy. The existing exact runtime
+pins, internal paths and feature lists remain enforced, including the diagnostic
+OpenSSL pin. The server's protobuf build-dependency table remains unchanged.
+
+`tests/control_plane/test_trnm_server_dependency_contract.py` exercises the real
+`check-trnm-server.py` executable in complete test discovery, in addition to the
+other foundation/slice checkers. It also rejects missing/extra dependencies,
+ranges, alternate sources, feature changes, unavailable policy, omitted required
+source and removed aggregate invocation. These regressions ensure an unrelated
+slice checker cannot stand in for the canonical server source contract.
+
+```bash
+python3 scripts/check-trnm-server.py
+python3 scripts/check-rust-foundation.py
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+This source-contract repair changes no Cargo manifest, lockfile, Rust runtime,
+DDL, workflow definition, deadline, required-job set or acceptance condition.
+It does not establish database behavior, independent cryptographic review or
+production readiness. Exact-candidate execution and independent acceptance
+remain required for every applicable gap.

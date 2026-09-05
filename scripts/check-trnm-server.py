@@ -2,7 +2,9 @@
 """Validate the first-party Rust server vertical-slice source candidate."""
 from __future__ import annotations
 
+import importlib.util
 import json
+from copy import deepcopy
 import re
 import sys
 import tomllib
@@ -126,29 +128,30 @@ def require_markers(label: str, text: str, markers: tuple[str, ...]) -> None:
             fail(f"{label}: missing marker {marker!r}")
 
 
-def main() -> int:
-    missing = sorted(str(path.relative_to(ROOT)) for path in REQUIRED_FILES if not path.is_file())
-    if missing:
-        fail("missing files: " + ", ".join(missing))
+def expected_persistence_dependencies() -> dict[str, object]:
+    """Read the same closed dependency policy used by the foundation checker.
 
-    manifest = tomllib.loads(
-        (ROOT / "crates/trnm-persistence-pg/Cargo.toml").read_text(encoding="utf-8")
-    )
-    expected_dependencies = {
-        "native-tls": "=0.2.18",
-        "postgres": "=0.19.14",
-        "postgres-native-tls": "=0.5.3",
-        "prost": "=0.14.3",
-        "r2d2": "=0.8.10",
-        "r2d2_postgres": "=0.18.2",
-        "tokio": {"version": "=1.53.1", "features": ["rt", "time"]},
-        "tonic": {"version": "=0.14.5", "features": ["transport"]},
-        "tonic-prost": "=0.14.5",
-        "trnm-contracts": {"path": "../trnm-contracts"},
-        "trnm-realtime-wire": {"path": "../trnm-realtime-wire"},
-        "trnm-session-core": {"path": "../trnm-session-core"},
-        "trnm-token-jwt-adapter": {"path": "../trnm-token-jwt-adapter"},
-    }
+    Resolve only the sibling script, never a module selected by cwd or sys.path.
+    Importing that script does not execute its command-line validation. No local
+    duplicate or fallback policy may silently diverge from the foundation table.
+    """
+    path = Path(__file__).with_name("check-rust-foundation.py")
+    spec = importlib.util.spec_from_file_location("trnm_server_foundation_policy", path)
+    if spec is None or spec.loader is None:
+        fail("foundation dependency policy loader is unavailable")
+    foundation = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(foundation)
+        dependencies = foundation.EXPECTED_DEPENDENCIES["crates/trnm-persistence-pg"]
+    except (OSError, SyntaxError, AttributeError, KeyError, TypeError) as error:
+        fail("foundation dependency policy could not be loaded: " + type(error).__name__)
+    if not isinstance(dependencies, dict) or not dependencies:
+        fail("foundation persistence dependency policy must be a nonempty mapping")
+    return deepcopy(dependencies)
+
+
+def validate_dependency_boundary(manifest: dict[str, object]) -> None:
+    expected_dependencies = expected_persistence_dependencies()
     if manifest.get("dependencies") != expected_dependencies:
         fail("server candidate changed the reviewed persistence dependency boundary")
     expected_build_dependencies = {
@@ -160,6 +163,17 @@ def main() -> int:
     }
     if manifest.get("build-dependencies") != expected_build_dependencies:
         fail("server candidate changed the reviewed protobuf build dependency boundary")
+
+
+def main() -> int:
+    missing = sorted(str(path.relative_to(ROOT)) for path in REQUIRED_FILES if not path.is_file())
+    if missing:
+        fail("missing files: " + ", ".join(missing))
+
+    manifest = tomllib.loads(
+        (ROOT / "crates/trnm-persistence-pg/Cargo.toml").read_text(encoding="utf-8")
+    )
+    validate_dependency_boundary(manifest)
 
     sources = {
         path.relative_to(ROOT): path.read_text(encoding="utf-8")
