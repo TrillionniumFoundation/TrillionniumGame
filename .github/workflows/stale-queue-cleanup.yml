@@ -1,0 +1,71 @@
+name: pr63-fixed-stale-queue-cleanup
+
+on:
+  push:
+    branches: [tooling/pr63-fixed-stale-queue-cleanup]
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: write
+
+jobs:
+  cancel-one-obsolete-unassigned-run:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 8
+    steps:
+      - name: Fetch exact operation source and fixed uploader
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE/tooling"
+          git -C "$GITHUB_WORKSPACE/tooling" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object queue_cleanup.py)" = a93f18c20668166b698031361978aecf006ddee2
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin be2be89efa3984e82b4e8584e2b8d6e7e315c9ca
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = be2be89efa3984e82b4e8584e2b8d6e7e315c9ca
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = 7aaa04dd376c6beade753d610f0649fd9db526bf
+      - name: Exercise fixed-target guards without credentials
+        shell: bash
+        working-directory: tooling
+        run: python3 -m unittest -v test_queue_cleanup
+      - name: Cancel only the fixed superseded run after repeated identity checks
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 "$GITHUB_WORKSPACE/tooling/queue_cleanup.py" --apply --output "$RUNNER_TEMP/queue-cleanup"
+      - name: Seal successful or failed operation audit without changing its conclusion
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,os,zipfile
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'queue-cleanup'
+          assert root.is_dir()
+          files={p.name:p.read_bytes() for p in root.glob('*.json')}
+          assert 'result.json' in files and len(files)<=20 and sum(map(len,files.values()))<8*1024*1024
+          files['file-index.json']=(json.dumps([{'path':n,'size_bytes':len(v),'sha256':hashlib.sha256(v).hexdigest()} for n,v in sorted(files.items())],indent=2)+'\n').encode()
+          with zipfile.ZipFile(Path(os.environ['RUNNER_TEMP'])/'queue-cleanup.zip','x',zipfile.ZIP_DEFLATED) as z:
+            for n,v in sorted(files.items()):z.writestr(n,v)
+          print(files['result.json'].decode())
+          PY
+      - name: Retain operation audit
+        if: always()
+        uses: ./tooling/publish
+      - name: Require confirmed cancellation rather than counting a submitted request
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          r=json.loads((Path(os.environ['RUNNER_TEMP'])/'queue-cleanup/result.json').read_text())
+          assert r['cancel_confirmed'] is True
+          assert r['current_candidate_modified'] is False and r['gap_closed'] is False
+          PY

@@ -1,0 +1,5 @@
+name: Retain scoped queue operation audit
+description: Upload an immutable diagnostic ZIP using the pinned product uploader.
+runs:
+  using: node24
+  main: index.js
