@@ -26,6 +26,7 @@ jobs:
           cd "$tooling"
           printf '%s\n' 'e4e50f686736d4a303bc91e79578087fbd471474007727e7c5f66eaeeb6c97bb  materialize.py.gz' 'f3ac068bd145e0ab009aec263a6a2aa4caa34f204b134fc353ce554b0f2ea29b  payload.json.gz' | sha256sum -c -
           gzip -dc materialize.py.gz > "$RUNNER_TEMP/materialize.py"
+          python3 refine_payload.py
           git init "$source"
           git -C "$source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
           git -C "$source" fetch --no-tags --depth=1 origin b2fc8ea5ffeda4a5be2c783986b71b2892d162b6
@@ -42,4 +43,4 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/trnm-source"
-          python3 "$RUNNER_TEMP/materialize.py" "$RUNNER_TEMP/trnm-tooling/payload.json.gz"
+          python3 "$RUNNER_TEMP/materialize.py" "$RUNNER_TEMP/trnm-tooling/payload.active.json.gz"
