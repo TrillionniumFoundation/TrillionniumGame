@@ -8,29 +8,133 @@ permissions:
   contents: read
   actions: read
 
+concurrency:
+  group: world-readonly-exact-head-76999aea
+  cancel-in-progress: true
+
+env:
+  WORLD_HEAD: 76999aea60a70f847e212f4a45e47e736ad43c7b
+  WORLD_TREE: 81c6c8866b49cb2a9f77f261aab047bcff18b8da
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  RUST_TEST_THREADS: "1"
+  RUSTUP_TOOLCHAIN: "1.98.0"
+  PYTHONDONTWRITEBYTECODE: "1"
+  TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/world_settlement
+  TRNM_REQUIRE_SETTLEMENT_DATABASE_TEST: "1"
+
 jobs:
-  bounded-world-object-probe:
+  world-readonly-exact-head:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 5
-    env:
-      WORLD_TOKEN: ${{ secrets.WORLD_REPOSITORY_TOKEN }}
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: postgres:16.4-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: world_settlement
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d world_settlement"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
-      - name: Create one fixed unreferenced blob in World
+      - name: Fetch exact World candidate without credentials
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${WORLD_TOKEN:-}" || { echo 'WORLD_OBJECT_WRITE_PROBE=NO_CONFIGURED_TOKEN'; exit 1; }
-          payload='trnm-world-approved-path-object-write-probe-v1'
-          expected="$(printf '%s\n' "$payload" | git hash-object --stdin)"
-          encoded="$(printf '%s\n' "$payload" | base64 -w0)"
-          response="${RUNNER_TEMP}/response.json"
-          code="$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
-            --request POST \
-            --header "Authorization: Bearer ${WORLD_TOKEN}" \
-            --header 'Accept: application/vnd.github+json' \
-            --header 'X-GitHub-Api-Version: 2022-11-28' \
-            https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/git/blobs \
-            --data "{\"content\":\"${encoded}\",\"encoding\":\"base64\"}")"
-          test "$code" = 201
-          test "$(jq -r '.sha // empty' "$response")" = "$expected"
-          printf 'WORLD_OBJECT_WRITE_PROBE=PASS blob=%s\n' "$expected"
+          git init "$GITHUB_WORKSPACE/world"
+          git -C "$GITHUB_WORKSPACE/world" remote add origin https://github.com/TrillionniumFoundation/Trillionnium-World.git
+          git -C "$GITHUB_WORKSPACE/world" fetch --no-tags --depth=1 origin "$WORLD_HEAD"
+          git -C "$GITHUB_WORKSPACE/world" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/world" rev-parse HEAD)" = "$WORLD_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/world" rev-parse HEAD^{tree})" = "$WORLD_TREE"
+          test -z "$(git -C "$GITHUB_WORKSPACE/world" status --porcelain)"
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
+          rustc +1.98.0 --version --verbose
+          cargo +1.98.0 --version --verbose
+
+      - name: Run Python and source contracts
+        shell: bash
+        working-directory: world
+        run: |
+          set -euo pipefail
+          mkdir -p run/world-head-validation
+          python3 scripts/check-trnm-world-transition-conformance.py 2>&1 | tee run/world-head-validation/transition-python.log
+          python3 scripts/test-trnm-world-transition-conformance.py 2>&1 | tee run/world-head-validation/transition-python-tests.log
+          python3 scripts/check-trnm-settlement-lock-order.py 2>&1 | tee run/world-head-validation/lock-order.log
+          python3 scripts/test-trnm-settlement-lock-order.py 2>&1 | tee run/world-head-validation/lock-order-tests.log
+          python3 scripts/check-trnm-world-documentation.py 2>&1 | tee run/world-head-validation/documentation.log
+          python3 scripts/check-trnm-world-ci-integrity.py 2>&1 | tee run/world-head-validation/ci-integrity.log
+          set +e
+          bash scripts/check-trnm-game-server-direct-source.sh >run/world-head-validation/direct-source.log 2>&1
+          direct_rc=$?
+          set -e
+          test "$direct_rc" -ne 0
+          grep -Eq 'build.rs remains|missing semantic ownership manifest|generated OUT_DIR source' run/world-head-validation/direct-source.log
+          printf 'direct_source_status=blocked rc=%s\n' "$direct_rc" | tee run/world-head-validation/direct-source-status.txt
+
+      - name: Test transition, campaign and RTS packages
+        shell: bash
+        working-directory: world
+        run: |
+          set -euo pipefail
+          manifest=trillionnium/contracts/trnm-world-transition-v1/Cargo.toml
+          cargo +1.98.0 fmt --manifest-path "$manifest" -- --check
+          cargo +1.98.0 test --manifest-path "$manifest" --locked 2>&1 | tee run/world-head-validation/transition-rust.log
+          cargo +1.98.0 clippy --manifest-path "$manifest" --locked -- -D warnings 2>&1 | tee run/world-head-validation/transition-clippy.log
+          cargo +1.98.0 fmt --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core -p trnm-rts-sim -- --check
+          cargo +1.98.0 test --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core -p trnm-rts-sim --all-targets --locked 2>&1 | tee run/world-head-validation/game-core-rust.log
+          cargo +1.98.0 clippy --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core -p trnm-rts-sim --all-targets --locked -- -D warnings 2>&1 | tee run/world-head-validation/game-core-clippy.log
+
+      - name: Test current game-server and PostgreSQL contracts
+        shell: bash
+        working-directory: world/trillionnium
+        run: |
+          set -euo pipefail
+          cargo +1.98.0 fmt -p trnm-game-server -- --check
+          cargo +1.98.0 test -p trnm-game-server --all-targets --locked 2>&1 | tee ../run/world-head-validation/game-server-rust-postgres.log
+          cargo +1.98.0 clippy -p trnm-game-server --all-targets --locked -- -D warnings 2>&1 | tee ../run/world-head-validation/game-server-clippy.log
+
+      - name: Build immutable diagnostic record
+        if: always()
+        shell: bash
+        working-directory: world
+        run: |
+          set -euo pipefail
+          mkdir -p run/world-head-validation
+          {
+            printf 'repository=TrillionniumFoundation/Trillionnium-World\n'
+            printf 'head=%s\n' "$WORLD_HEAD"
+            printf 'tree=%s\n' "$WORLD_TREE"
+            printf 'producer_repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'workflow=%s\n' "$GITHUB_WORKFLOW"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'rustc=%s\n' "$(rustc +1.98.0 --version 2>/dev/null || true)"
+            printf 'postgres_image=postgres:16.4-alpine\n'
+            printf 'source_mutated=false\n'
+            printf 'ordinary_required_check_credit=false\n'
+            printf 'independent_review_credit=false\n'
+            printf 'production_authorization=not_granted\n'
+          } > run/world-head-validation/identity.txt
+          find run/world-head-validation -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > run/world-head-validation/SHA256SUMS
+          test -z "$(git status --porcelain)"
+
+      - name: Retain read-only exact-head evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-readonly-exact-head-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: world/run/world-head-validation/**
+          if-no-files-found: error
+          retention-days: 30
