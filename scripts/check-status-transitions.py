@@ -2,6 +2,9 @@
 """Validate mutable execution, gap, evidence, gate and roadmap state."""
 from __future__ import annotations
 
+import gzip
+import hashlib
+import io
 import json
 import importlib.util
 import re
@@ -59,6 +62,9 @@ DIVERGENCE_STATES = {
     "rejected",
 }
 ACCEPTED_EVIDENCE_STATUS = "accepted"
+BACKLOG_PATH = "docs/development/backlog/EXECUTION_BACKLOG.v2.json.gz"
+BACKLOG_SHA256 = "6a3b94c1c76a44b31966e2d5919aa3c5ebc87822fc6169377b174a4a3a50c114"
+MAX_BACKLOG_BYTES = 2 * 1024 * 1024
 
 
 class ValidationError(RuntimeError):
@@ -82,8 +88,10 @@ def require(condition: bool, message: str) -> None:
 
 
 def unique_rows(rows: list[dict[str, Any]], key: str, label: str) -> dict[str, dict[str, Any]]:
+    require(isinstance(rows, list), f"{label}: rows must be an array")
     values: dict[str, dict[str, Any]] = {}
     for row in rows:
+        require(isinstance(row, dict), f"{label}: row must be an object")
         value = row.get(key)
         require(isinstance(value, str) and value, f"{label}: missing {key}")
         require(value not in values, f"{label}: duplicate {key} {value}")
@@ -175,7 +183,7 @@ def validate_gaps(
 def validate_execution(gaps: dict[str, dict[str, Any]]) -> None:
     state = load_json("docs/status/EXECUTION_STATUS.json")
     require(state.get("schema") == "trillionnium.execution-status.v1", "execution status schema")
-    require(state.get("default_task_state") in TASK_STATES, "default task state")
+    require(state.get("default_task_state") == "planned", "default task state must remain planned")
     require(state.get("fail_closed") is True, "execution status must fail closed")
     workstreams = unique_rows(state.get("workstreams", []), "id", "workstreams")
     require(list(workstreams) == [f"W{i}" for i in range(17)], "workstream order/coverage")
@@ -237,6 +245,182 @@ def validate_gates(gaps: dict[str, dict[str, Any]]) -> None:
     summary = document.get("summary", {})
     for state, count in counts.items():
         require(summary.get(state) == count, f"product gate summary {state}")
+
+
+
+def reference_list(value: Any, label: str, *, nonempty: bool = False) -> list[str]:
+    require(isinstance(value, list), f"{label}: array required")
+    require(not nonempty or bool(value), f"{label}: nonempty array required")
+    require(all(EVIDENCE.canonical_text(item) for item in value), f"{label}: invalid reference")
+    require(len(value) == len(set(value)), f"{label}: duplicate reference")
+    return value
+
+
+def acceptance_target(row: dict[str, Any]) -> tuple[str, str, str]:
+    target = row.get("acceptance_target")
+    require(isinstance(target, dict) and set(target) == {"repository", "commit", "tree"},
+            f"{row.get('id', 'milestone')}: exact acceptance_target required")
+    try:
+        return EVIDENCE.target_identity({"target": target})
+    except ValueError as error:
+        raise ValidationError(f"invalid acceptance target: {error}") from error
+
+
+def require_closed_gaps(row: dict[str, Any], key: str,
+                        gaps: dict[str, dict[str, Any]]) -> None:
+    ids = reference_list(row.get(key, []), f"{row.get('id')}: {key}")
+    require(set(ids) <= set(gaps), f"{row.get('id')}: unknown blocking gap")
+    require(all(gaps[item].get("status") == "closed" for item in ids),
+            f"{row.get('id')}: accepted state has an open blocking gap")
+
+
+def validate_accepted_task(
+    row: dict[str, Any], gap_key: str, dependencies: list[str],
+    task_rows: dict[str, dict[str, Any]], gaps: dict[str, dict[str, Any]],
+    evidence: dict[str, dict[str, Any]], accepted: set[str],
+) -> tuple[str, str, str] | None:
+    if row.get("status") != "accepted":
+        return None
+    task_id = row["id"]
+    require_closed_gaps(row, gap_key, gaps)
+    target = acceptance_target(row)
+    for dependency in dependencies:
+        require(task_rows[dependency].get("status") == "accepted",
+                f"{task_id}: dependency {dependency} is not accepted")
+        require(acceptance_target(task_rows[dependency]) == target,
+                f"{task_id}: dependency evidence belongs to another candidate")
+    required = reference_list(row.get("required_evidence"),
+                              f"{task_id}: required_evidence", nonempty=True)
+    require(set(required) <= EVIDENCE.EVIDENCE_TYPES, f"{task_id}: unsupported evidence type")
+    ids = reference_list(row.get("evidence_ids"), f"{task_id}: evidence_ids", nonempty=True)
+    require(set(ids) <= set(evidence) and set(ids) <= accepted,
+            f"{task_id}: accepted task requires accepted indexed evidence")
+    present = set()
+    for evidence_id in ids:
+        entry = evidence[evidence_id]
+        # Reuse retained-byte, schema, review and expiry validation. A caller's
+        # accepted-ID set or a copied status string is not an admission token.
+        try:
+            EVIDENCE.validate_entry(entry, root=ROOT)
+            require(EVIDENCE.target_identity(entry) == target,
+                    f"{task_id}: evidence target differs from acceptance target")
+        except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+            raise ValidationError(f"{task_id}: invalid retained evidence: {error}") from error
+        require(task_id in entry.get("task_ids", []), f"{task_id}: evidence is not mapped to this task")
+        present.add(entry["evidence_type"])
+    require(set(required) <= present, f"{task_id}: required evidence types are missing")
+    return target
+
+
+def load_acceptance_scope() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Read the unchanged approved task/gate membership, not a mutable roll-up."""
+    state = load_json("docs/status/EXECUTION_STATUS.json")
+    index = load_json("docs/development/EXECUTION_BACKLOG.json")
+    authority = state.get("base_backlog", {})
+    artifact = index.get("full_backlog_artifact", {})
+    require(authority.get("artifact") == BACKLOG_PATH and artifact.get("path") == BACKLOG_PATH,
+            "acceptance backlog path differs from approved scope")
+    require(authority.get("artifact_sha256") == BACKLOG_SHA256
+            and artifact.get("sha256") == BACKLOG_SHA256, "acceptance backlog digest drift")
+    # Fixed, digest-bound local bytes; neither URLs nor alternate scope paths are
+    # followed. Bound decompression separately from the compressed input.
+    with (ROOT / BACKLOG_PATH).open("rb") as handle:
+        compressed = handle.read(MAX_BACKLOG_BYTES + 1)
+    require(len(compressed) <= MAX_BACKLOG_BYTES, "compressed acceptance backlog too large")
+    require(hashlib.sha256(compressed).hexdigest() == BACKLOG_SHA256,
+            "acceptance backlog bytes changed")
+    with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as handle:
+        raw = handle.read(MAX_BACKLOG_BYTES + 1)
+    require(len(raw) <= MAX_BACKLOG_BYTES, "expanded acceptance backlog too large")
+    backlog = json.loads(raw)
+    require(backlog.get("schema") == "trillionnium.execution-backlog.v2", "acceptance backlog schema")
+    streams = unique_rows(backlog.get("workstreams"), "id", "scope workstreams")
+    stages = unique_rows(backlog.get("stage_gates"), "id", "scope stages")
+    tasks = unique_rows([task for stream in streams.values() for task in stream["tasks"]],
+                        "id", "scope tasks")
+    require(len(tasks) == 120 and len(streams) == 17 and len(stages) == 10,
+            "acceptance scope membership changed")
+    require_dag({key: reference_list(row.get("depends_on"), key) for key, row in tasks.items()},
+                "acceptance task scope")
+    return tasks, streams, stages
+
+
+def derived_product_gates() -> dict[str, Any]:
+    """Use the existing derivation, including its retained evidence admission."""
+    spec = importlib.util.spec_from_file_location(
+        "trnm_status_derived_gates", Path(__file__).with_name("derive-gates.py")
+    )
+    if spec is None or spec.loader is None:
+        raise ValidationError("product gate derivation unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.ROOT = ROOT
+    try:
+        result = module.derive()
+        module.check_snapshot(result)
+        return result["gates"]
+    except module.DerivationError as error:
+        raise ValidationError(f"product gate derivation failed: {error}") from error
+
+
+def validate_execution_acceptance(
+    gaps: dict[str, dict[str, Any]], evidence: dict[str, dict[str, Any]], accepted: set[str],
+) -> None:
+    """Validate present acceptance claims, not past Git transition history."""
+    scope_tasks, scope_streams, scope_stages = load_acceptance_scope()
+    state = load_json("docs/status/EXECUTION_STATUS.json")
+    overrides = unique_rows(state.get("task_overrides", []), "id", "task overrides")
+    require(set(overrides) <= set(scope_tasks), "task override is outside approved backlog")
+    tasks = {key: {"id": key, "status": "planned"} for key in scope_tasks}
+    tasks.update(overrides)
+    for task_id, row in overrides.items():
+        dependencies = scope_tasks[task_id]["depends_on"]
+        require("depends_on" not in row or row["depends_on"] == dependencies,
+                f"{task_id}: mutable override cannot replace scope dependencies")
+        validate_accepted_task(row, "blocking_gaps", dependencies, tasks, gaps, evidence, accepted)
+
+    streams = unique_rows(state.get("workstreams"), "id", "workstreams")
+    for stream_id, row in streams.items():
+        if row.get("status") != "accepted":
+            continue
+        require_closed_gaps(row, "blocking_gaps", gaps)
+        target = acceptance_target(row)
+        members = [tasks[task["id"]] for task in scope_streams[stream_id]["tasks"]]
+        require(all(task.get("status") == "accepted" for task in members),
+                f"{stream_id}: workstream has unaccepted tasks")
+        require(all(acceptance_target(task) == target for task in members),
+                f"{stream_id}: workstream mixes candidate identities")
+        for dependency in scope_streams[stream_id].get("depends_on_workstreams", []):
+            require(streams[dependency].get("status") == "accepted"
+                    and acceptance_target(streams[dependency]) == target,
+                    f"{stream_id}: workstream dependency is not accepted for this candidate")
+
+    products = derived_product_gates()
+    stages = unique_rows(state.get("stage_gates"), "id", "stage gates")
+    for stage_id, row in stages.items():
+        if row.get("status") != "accepted":
+            continue
+        require_closed_gaps(row, "blocking_gaps", gaps)
+        target = acceptance_target(row)
+        for gate_id in scope_stages[stage_id]["required_gates"]:
+            gate = products[gate_id]
+            require(gate["status"] == "passed", f"{stage_id}: product gate {gate_id} is not passed")
+            ids = gate["accepted_evidence_ids"]
+            require(bool(ids) and all(EVIDENCE.target_identity(evidence[item]) == target for item in ids),
+                    f"{stage_id}: product evidence targets another candidate")
+
+    roadmap = load_json("docs/roadmap/NEXT_MILESTONE.json")
+    items = unique_rows(roadmap.get("items"), "id", "roadmap items")
+    for item_id, row in items.items():
+        dependencies = reference_list(row.get("depends_on", []), f"{item_id}: depends_on")
+        validate_accepted_task(row, "gap_ids", dependencies, items, gaps, evidence, accepted)
+    require(roadmap.get("status") in TASK_STATES, "milestone status")
+    if roadmap.get("status") == "accepted":
+        require(bool(items) and all(row.get("status") == "accepted" for row in items.values()),
+                "accepted milestone contains unaccepted items")
+        target = acceptance_target(roadmap)
+        require(all(acceptance_target(row) == target for row in items.values()),
+                "accepted milestone mixes candidate identities")
 
 
 def validate_risks(gaps: dict[str, dict[str, Any]]) -> None:
@@ -417,7 +601,8 @@ def main() -> int:
         validate_inventory(gaps, evidence, accepted)
         validate_server_status(gaps)
         validate_current_state(gaps)
-    except ValidationError as exc:
+        validate_execution_acceptance(gaps, evidence, accepted)
+    except (ValidationError, OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
         print(f"status validation failed: {exc}", file=sys.stderr)
         return 1
     print("TrillionniumGame v3 execution/status contract: OK")

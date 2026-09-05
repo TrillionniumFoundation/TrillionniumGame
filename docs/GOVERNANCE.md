@@ -97,6 +97,37 @@ Machine status is changed only to the highest state actually earned. Closing a g
 
 Evidence is append-only in meaning. Invalid or expired evidence is marked accordingly rather than silently rewritten to accepted. Historical human narratives are removed from the live tree; immutable machine records remain audit inputs and are never alternate plans.
 
+### Execution acceptance is a derived claim, not a status toggle
+
+An `accepted` roadmap item or backlog task must declare an `acceptance_target`
+containing exactly `repository`, lowercase 40-hex `commit`, and lowercase 40-hex
+`tree`, together with nonempty unique `evidence_ids` and `required_evidence`.
+Every referenced item must pass the existing retained-evidence admission, map to
+this exact task through `task_ids`, match the acceptance target, and collectively
+cover the required evidence types. Task metadata cannot supply its own review.
+Blocking gaps must be closed with their independently validated evidence, and
+dependencies must be accepted for the same candidate. Missing fields are not
+implicit acceptance; unrelated, expired, modified, mixed-target or diagnostic
+artifacts cannot supply credit.
+
+Unspecified backlog tasks always remain `planned`. The existing immutable
+120-task backlog is digest-verified before resolving override identities and
+dependencies; an override cannot invent a task or erase its scope dependencies.
+A workstream can be accepted only after every task in that authoritative
+membership and its prerequisite workstreams is accepted for one target. A stage
+must additionally pass the product gates listed in that same approved scope;
+the state checker calls the existing gate derivation instead of trusting a
+mutable `passed` snapshot. An accepted milestone requires every current item to
+be accepted for one target. These are conjunctive requirements, not a vote or a
+percentage of passing rows.
+
+`check-status-transitions.py` validates the current snapshot's admission claims.
+It does not reconstruct historical Git state transitions or authenticate remote
+review provenance. Complete criteria, actual source/merge execution, specialist
+review, administrative read-back and protected admission remain separately
+mandatory. This contract introduces no automatic acceptance and does not change
+any existing task/gap status, product gate or compatibility claim.
+
 ## 9. Documentation governance
 
 The exact live Markdown set under `docs/` is defined by `docs/DOCUMENTATION_AUTHORITY.json`. Each topic has one current document. New version/date/final/candidate copies are forbidden. Replace the current document and use Git history for earlier content.

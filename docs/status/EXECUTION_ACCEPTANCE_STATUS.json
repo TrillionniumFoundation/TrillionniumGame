@@ -1,0 +1,40 @@
+{
+  "schema": "trillionnium.execution-acceptance-status.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "status": "source-candidate",
+  "base_commit": "620fc666f617bbdf55e64033a4151a42add2b0dd",
+  "task_ids": [
+    "TG-V3-001",
+    "TG-V3-002"
+  ],
+  "gap_ids": [
+    "GAP-P0-PLAN-001",
+    "GAP-P0-EVIDENCE-001"
+  ],
+  "source": "scripts/check-status-transitions.py",
+  "source_blob": "f1b03d91e4997cbcc49495915f94ccdf9a74e816",
+  "regression_suite": "tests/control_plane/test_execution_acceptance.py",
+  "test_blob": "9c9ebed8f8dc2fabd9984f1d57d58f4430c454c2",
+  "reproduced_defect": "A status-only TG-V3-002 acceptance passed both the state checker and top-level plan with open dependencies and no accepted evidence.",
+  "implemented": [
+    "Exact-target retained-evidence admission and task/type mapping for accepted task rows.",
+    "Closed blocking gaps and accepted same-target dependencies.",
+    "Immutable 120-task identity/dependency and workstream membership validation; no default-state promotion.",
+    "Stage acceptance uses existing product-gate derivation; workstream and milestone acceptance requires all children."
+  ],
+  "validation_rule": "Local regression results are retained separately with the exact tested tree; this record alone grants no execution or acceptance credit.",
+  "limitations": [
+    "Validates current snapshot assertions, not historical Git transitions.",
+    "Does not authenticate live GitHub review provenance, expertise, administrator policy or completeness of every semantic criterion.",
+    "No Rust, DDL, workflow definitions, required checks, production credentials or existing gap/gate statuses are changed."
+  ],
+  "claims": {
+    "source_fix_present": true,
+    "native_final_head_verified": false,
+    "independently_accepted": false,
+    "gap_closed": false,
+    "compatibility_credit": false,
+    "production_ready": false
+  }
+}
