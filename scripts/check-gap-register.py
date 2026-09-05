@@ -5,6 +5,11 @@ The existing closure/evidence validator is kept in ``gap_register_validation_cor
 This composition root first verifies the reviewed semantic baseline and then runs
 all existing evidence, review, status and summary checks. Tests importing the
 legacy checker API continue to receive the same functions.
+
+``ROOT`` remains the mutable validation root used by existing fixture tests. The
+immutable baseline is always loaded relative to this policy source file, so a test
+fixture cannot accidentally become its own proof authority and does not need to
+copy the pinned baseline into every temporary repository.
 """
 from __future__ import annotations
 
@@ -15,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+BASELINE_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load(name: str, path: Path):
@@ -49,6 +55,18 @@ def _sync_root() -> None:
     CORE.ROOT = ROOT
     CORE.REGISTER = ROOT / "docs/status/GAP_REGISTER.json"
     CORE.EVIDENCE_INDEX = ROOT / "docs/evidence/index.json"
+
+
+def _immutable_scope(register: dict[str, Any]) -> dict[str, Any]:
+    baseline, baseline_payload = SCOPE.load_object(
+        BASELINE_ROOT / SCOPE.BASELINE_RELATIVE,
+        "gap scope baseline",
+    )
+    return SCOPE.validate_document(
+        register,
+        baseline,
+        baseline_payload=baseline_payload,
+    )
 
 
 def load_object(path: Path) -> dict[str, Any]:
@@ -93,7 +111,7 @@ def validate() -> dict[str, Any]:
     _sync_root()
     register = CORE.load_object(CORE.REGISTER)
     try:
-        immutable_scope = SCOPE.validate_files(ROOT, current_document=register)
+        immutable_scope = _immutable_scope(register)
     except (OSError, TypeError, ValueError) as error:
         raise ValidationError(f"immutable gap scope: {error}") from error
     result = CORE.validate()
