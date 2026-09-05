@@ -73,13 +73,16 @@
       "implemented": [
         "refresh-family state",
         "rotation/replay model",
-        "revocation boundaries"
+        "revocation boundaries",
+        "prevalidate generation increment before mutating refresh token state"
       ],
       "missing": [
         "server integration",
         "database repository",
         "socket revocation fanout",
-        "oracle differential"
+        "oracle differential",
+        "native exact-source generation-boundary test/lint and independent acceptance",
+        "bounded durable consumed-token retention policy"
       ],
       "blocking_gaps": [
         "GAP-P0-CRYPTO-001",
@@ -90,7 +93,16 @@
         "TG-PAR-017"
       ],
       "evidence_ids": [],
-      "claim_credit": false
+      "claim_credit": false,
+      "rotation_atomicity": {
+        "status": "source-candidate",
+        "source": "crates/trnm-session-core/src/lib.rs",
+        "regression_tests_added": 5,
+        "native_verified": false,
+        "independently_accepted": false,
+        "error_mutation_exception": "consumed-token replay revokes the family",
+        "boundary": "in-memory Result-returning transition only; not persistence or distributed ownership"
+      }
     },
     {
       "id": "COMP-STORAGE",

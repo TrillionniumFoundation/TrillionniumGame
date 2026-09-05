@@ -1,7 +1,7 @@
 # Security and privacy
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-01
+Revision: 2026-09-05
 
 This document is the current engineering security contract. Vulnerability reporting and disclosure instructions remain in [`../SECURITY.md`](../SECURITY.md).
 
@@ -89,6 +89,18 @@ active refresh token
 ```
 
 Concurrent refresh requests cannot both succeed. Replay revocation, logout and emergency revoke are durable and auditable. During migration, every family has exactly one writer. Generic public failures must not reveal whether a user, family or token exists.
+
+
+The in-memory session core precomputes the next generation before consuming or
+replacing a refresh identity. Counter-overflow errors preserve the entire family;
+consumed-token replay remains an intentional exception to error non-mutation and
+must durably revoke the family. The adapter must not discard that security
+transition merely because the core returns an error. A mutable reference protects
+one value only; cloned values and separate nodes still require one durable writer.
+Detailed state/error precedence, recovery limits and named boundary tests are in
+[`trnm-session-core`](../crates/trnm-session-core/README.md). This source contract
+is not proof of database atomicity, replay-safe response-loss recovery or socket
+fanout, and adds no production or compatibility credit.
 
 ## 8. Administration plane
 
