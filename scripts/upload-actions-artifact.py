@@ -11,6 +11,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -23,6 +24,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+# Small protocol acknowledgements must not consume the archive's byte budget.
+MAX_SERVICE_RESPONSE_BYTES = 1024 * 1024
+MAX_RESPONSE_JSON_DEPTH = 64
+MAX_RESPONSE_NUMBER_CHARS = 128
+MAX_ARTIFACT_ID = (1 << 63) - 1
+ARTIFACT_ID_PATTERN = re.compile(r"[1-9][0-9]{0,18}")
 READ_CHUNK_BYTES = 1024 * 1024
 MAX_PATH_COMPONENTS = 256
 _SECURE_FILE_IO_SUPPORTED = (
@@ -185,24 +192,29 @@ def _request_bytes(
         try:
             with opener(request, timeout=60) as response:
                 status_code = _response_status(response)
-                body = response.read(MAX_ARTIFACT_BYTES + 1)
-            if status_code in TRANSIENT_HTTP_STATUSES:
-                raise urllib.error.HTTPError(
-                    request.full_url,
-                    status_code,
-                    "transient artifact service response",
-                    hdrs=None,
-                    fp=None,
-                )
-            if status_code < 200 or status_code >= 300:
-                raise ArtifactUploadError(f"artifact service returned HTTP {status_code}")
+                # Error bodies are irrelevant to retry classification and can contain
+                # credentials. Do not read them, even for a transient HTTP response.
+                if status_code in TRANSIENT_HTTP_STATUSES:
+                    raise urllib.error.HTTPError(
+                        request.full_url, status_code,
+                        "transient artifact service response", hdrs=None, fp=None,
+                    )
+                if status_code < 200 or status_code >= 300:
+                    raise ArtifactUploadError(f"artifact service returned HTTP {status_code}")
+                body = response.read(MAX_SERVICE_RESPONSE_BYTES + 1)
+                if not isinstance(body, bytes) or len(body) > MAX_SERVICE_RESPONSE_BYTES:
+                    raise ArtifactUploadError("artifact service response exceeds the byte limit")
             return status_code, body
         except urllib.error.HTTPError as error:
-            if error.code not in TRANSIENT_HTTP_STATUSES or attempt == MAX_ATTEMPTS:
-                raise ArtifactUploadError(f"artifact service returned HTTP {error.code}") from error
-        except urllib.error.URLError as error:
+            # urlopen can raise before entering a context manager. Close that
+            # response on both permanent and retryable errors without reading it.
+            code = error.code
+            error.close()
+            if code not in TRANSIENT_HTTP_STATUSES or attempt == MAX_ATTEMPTS:
+                raise ArtifactUploadError(f"artifact service returned HTTP {code}") from None
+        except urllib.error.URLError:
             if attempt == MAX_ATTEMPTS:
-                raise ArtifactUploadError("artifact service transport failed") from error
+                raise ArtifactUploadError("artifact service transport failed") from None
         sleeper(backoff)
         backoff = min(backoff * 2, 4.0)
     raise AssertionError("bounded retry loop must return or raise")
@@ -232,17 +244,92 @@ def _twirp_json(
     # even when a trusted caller supplies its own test/transport adapter.
     request.add_unredirected_header("Authorization", f"Bearer {token}")
     _, body = _request_bytes(request, opener=opener, sleeper=sleeper)
+    return _decode_service_response(body, method)
+
+
+def _decode_service_response(body: bytes, method: str) -> dict[str, Any]:
+    """Bounded strict JSON, not a general-purpose ProtoJSON implementation.
+
+    Unknown finite extension fields remain readable within the same budgets.
+    Duplicate/aliased identities are rejected, not resolved by last-key wins.
+    """
+    def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate field")
+            value[key] = item
+        return value
+
+    def integer(text: str) -> int:
+        if len(text) > MAX_RESPONSE_NUMBER_CHARS:
+            raise ValueError("number too long")
+        return int(text)
+
+    def real(text: str) -> float:
+        if len(text) > MAX_RESPONSE_NUMBER_CHARS:
+            raise ValueError("number too long")
+        result = float(text)
+        if not math.isfinite(result):
+            raise ValueError("nonfinite number")
+        return result
+
+    def constant(_text: str) -> None:
+        raise ValueError("nonfinite constant")
+
     try:
-        value = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ArtifactUploadError(f"{method} response is not valid JSON") from error
-    if not isinstance(value, dict):
-        raise ArtifactUploadError(f"{method} response must be an object")
-    return value
+        if not isinstance(body, bytes) or not 0 < len(body) <= MAX_SERVICE_RESPONSE_BYTES:
+            raise ValueError("response outside byte bound")
+        text = body.decode("utf-8")
+        # Check nesting before recursive JSON decoding; braces in escaped strings
+        # do not count. The JSON decoder remains the authority for all syntax.
+        depth, quoted, escaped = 0, False, False
+        for char in text:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    quoted = False
+            elif char == '"':
+                quoted = True
+            elif char in "[{":
+                depth += 1
+                if depth > MAX_RESPONSE_JSON_DEPTH:
+                    raise ValueError("response nesting exceeded")
+            elif char in "]}":
+                depth -= 1
+        value = json.loads(text, object_pairs_hook=unique_pairs,
+                           parse_int=integer, parse_float=real, parse_constant=constant)
+        if not isinstance(value, dict):
+            raise ValueError("response must be an object")
+        return value
+    except (ValueError, RecursionError):
+        # Never include a response value or chained JSON/source diagnostics.
+        raise ArtifactUploadError(f"{method} response is not valid bounded JSON") from None
 
 
 def _field(value: dict[str, Any], snake: str, camel: str) -> Any:
+    if snake in value and camel in value:
+        raise ArtifactUploadError("artifact service returned duplicate field aliases")
     return value.get(snake, value.get(camel))
+
+
+def _artifact_id(value: Any) -> str:
+    """A positive signed-int64 ID, encoded as canonical decimal text or an int.
+
+    bool is intentionally not an integer here. Noncanonical text must never
+    become raw GITHUB_OUTPUT content. This keeps the uploader's narrow identity
+    profile rather than pretending to accept every ProtoJSON numeric spelling.
+    """
+    if type(value) is int:
+        if 0 < value <= MAX_ARTIFACT_ID:
+            return str(value)
+    elif isinstance(value, str) and ARTIFACT_ID_PATTERN.fullmatch(value):
+        if int(value) <= MAX_ARTIFACT_ID:
+            return value
+    raise ArtifactUploadError("FinalizeArtifact returned no canonical positive int64 artifact ID")
 
 
 def _mask_signed_url(url: str) -> None:
@@ -324,11 +411,7 @@ def upload_artifact(
     )
     if finalized.get("ok") is not True:
         raise ArtifactUploadError("FinalizeArtifact did not return ok=true")
-    artifact_id = _field(finalized, "artifact_id", "artifactId")
-    if isinstance(artifact_id, int):
-        artifact_id = str(artifact_id)
-    if not isinstance(artifact_id, str) or not artifact_id or artifact_id == "0":
-        raise ArtifactUploadError("FinalizeArtifact returned no non-zero artifact ID")
+    artifact_id = _artifact_id(_field(finalized, "artifact_id", "artifactId"))
 
     return {
         "schema": "trillionnium.actions-artifact-upload.v1",

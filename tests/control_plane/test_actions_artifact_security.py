@@ -18,6 +18,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import urllib.parse
 import urllib.request
 import urllib.response
 
@@ -325,16 +326,36 @@ class RedirectBoundaryTests(unittest.TestCase):
                 sleeper=sleeps.append)
 
     def redirects(self, phase, calls):
-        targets = ('https://other.example.invalid/target', 'http://other.example.invalid/target',
-                   'https://results.example.invalid/same-origin', '/relative')
+        origin = 'blob.example.invalid' if phase == 'put' else 'results.example.invalid'
+        targets = (
+            ('cross-origin', 'https://other.example.invalid/target'),
+            ('downgrade', 'http://other.example.invalid/target'),
+            ('same-origin', f'https://{origin}/same-origin'),
+            ('relative', '/relative'),
+        )
         for code in (301, 302, 303, 307, 308):
-            for target in targets:
-                with self.subTest(phase=phase, code=code, target=target):
+            for kind, target in targets:
+                with self.subTest(phase=phase, code=code, target=target, kind=kind):
                     transport = OfflineTransport(phase, code, target)
                     sleeps = []
                     with self.assertRaises(self.m.ArtifactUploadError) as raised:
                         self.upload_default(transport, sleeps)
                     self.assertEqual(len(transport.requests), calls)
+                    # Verify the label against the actual outgoing request, not
+                    # a shared Results origin that would mislabel signed PUT.
+                    requested = urllib.parse.urlsplit(transport.requests[-1].full_url)
+                    destination = urllib.parse.urlsplit(target)
+                    self.assertEqual(requested.netloc, origin)
+                    if kind == 'same-origin':
+                        self.assertEqual((requested.scheme, requested.netloc),
+                                         (destination.scheme, destination.netloc))
+                    elif kind == 'cross-origin':
+                        self.assertEqual(requested.scheme, destination.scheme)
+                        self.assertNotEqual(requested.netloc, destination.netloc)
+                    elif kind == 'downgrade':
+                        self.assertEqual((requested.scheme, destination.scheme), ('https', 'http'))
+                    else:
+                        self.assertFalse(destination.scheme or destination.netloc)
                     self.assertEqual(sleeps, [])
                     self.assertTrue(transport.responses[-1].closed)
                     self.assertEqual(str(raised.exception), 'artifact service redirects are forbidden')

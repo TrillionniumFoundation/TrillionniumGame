@@ -409,7 +409,11 @@ transport replaces only network I/O; the redirect tests execute the real urllib
 OpenerDirector and HTTP error dispatch for all five redirect statuses and
 cross-origin, same-origin, relative and downgrade targets. Existing protocol
 tests still verify that authorization is present on the original Twirp requests
-and absent from the signed PUT.
+and absent from the signed PUT. The same-origin redirect target is selected per
+phase: the signed PUT uses its Blob origin, while Create/Finalize use Results.
+The tests compare each target label with the actual outgoing request origin;
+the previous shared Results target did not exercise PUT same-origin redirects.
+This fixture correction reruns the existing cases and adds no test-count credit.
 
 ```bash
 python3 -m unittest discover -s tests/control_plane -p 'test_actions_artifact_*.py' -v
@@ -424,3 +428,53 @@ New exact-head/prospective execution, real upload/download validation and fresh
 conflict-free review remain required. Reverting would restore the inspected
 file/credential boundary defects; no DDL, Rust business behavior, workflow
 definition, required denominator or production claim changes with this repair.
+
+## 19. Bounded service replies and canonical artifact identity
+
+Artifact upload requests and retained file bytes are separate from the service's
+small acknowledgements. `upload-actions-artifact.py` caps each successful reply,
+including the signed PUT acknowledgement, at 1 MiB plus a one-byte oversize probe.
+The 64 MiB artifact limit is unchanged. Responses exceeding the reply limit are
+rejected before JSON parsing or advancement to the next upload phase. Error
+status bodies are not consumed, and raised HTTP responses are closed before
+retry or rejection; retry statuses and the five-attempt ceiling do not change.
+
+Create/Finalize responses must be UTF-8 JSON objects with at most 64 container
+levels and number tokens of at most 128 characters. Duplicate keys (including
+escaped spellings and nested duplicates), NaN/Infinity, floating-point overflow
+and multiple spellings of the same consumed field fail closed. Either snake_case
+or camelCase is accepted individually, not both together. Bounded, finite unknown
+extension fields remain accepted. This is a narrow service-response parser, not a
+general JSON Schema or full ProtoJSON conformance implementation.
+
+A successful FinalizeArtifact reply must contain a positive signed-int64 artifact
+ID. Canonical ASCII decimal strings and positive integer JSON values are accepted;
+booleans, floats, null, zero, negative/overflow values, whitespace, leading zeros,
+exponent spellings and embedded control characters are rejected. This positive-ID
+profile is deliberately narrower than generic ProtoJSON numeric parsing. The
+inspected GitHub generated response declares an int64 field; successful retained
+native replies previously observed in this repository use canonical decimal IDs.
+No response value can add a line to GITHUB_OUTPUT. A rejected final reply creates
+neither a success receipt nor new output-file entries; it also does not prove the
+remote service rolled back or deleted any previously uploaded bytes.
+
+`test_actions_artifact_response_contract.py` invokes the real uploader and CLI
+using synthetic replies only. It checks valid and invalid IDs, contradictory
+status/identity fields, nested data bounds, exact byte/depth boundaries, escaping,
+closed HTTP responses and retry preservation. In particular, it verifies the
+output file remains untouched after a reply containing an injected output line.
+No test uses real credentials or contacts a service. Existing no-follow file
+custody, no-redirect transport, original-request authentication and credential-free
+signed PUT tests continue to run without being weakened.
+
+```bash
+python3 -m unittest discover -s tests/control_plane -p 'test_actions_artifact_*.py' -v
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+The component status maps this work to TG-V3-002 and the existing evidence/CI/test
+gaps. This source candidate supplies no independent acceptance, current native
+upload proof or formal gap closure. It changes no Rust runtime, DDL, workflow
+definition, credentials or required-job denominator. Old native uploads do not
+qualify this revised parser. Publishing requires exact-source/prospective CI,
+a fresh real upload/download check, retained bytes and independent review.
