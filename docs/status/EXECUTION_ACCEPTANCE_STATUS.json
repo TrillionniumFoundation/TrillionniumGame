@@ -3,7 +3,7 @@
   "project_id": "trillionnium-game",
   "plan_version": 3,
   "status": "source-candidate",
-  "base_commit": "c66deb47298faa19164c7060cd0efa2584210e07",
+  "base_commit": "9f5524815422ed6e59c6a04fa3b5389a3ceef281",
   "task_ids": [
     "TG-V3-001",
     "TG-V3-002"
@@ -17,9 +17,9 @@
   "regression_suite": "tests/control_plane/test_execution_acceptance.py",
   "test_blob": "a2ed5efb0de344ab412a4db989de81601197eee9",
   "evidence_admission_regression": "tests/control_plane/test_evidence_admission.py",
-  "evidence_admission_test_blob": "8085037bee674862e6895fd073757f4e2d66b8c1",
+  "evidence_admission_test_blob": "7b29b2fbd2e3ba75c057f7c5f0743608799ccd4c",
   "evidence_schema": "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
-  "evidence_schema_blob": "3e12e964054fa890bfbbf0622c336eecc36a878e",
+  "evidence_schema_blob": "6d178e0fda03f466a070b4fe2e5797dba634517f",
   "reproduced_defects": [
     "A backlog task could replace its immutable gate, blocker and evidence scope with a smaller mutable override and pass accepted-task validation.",
     "The accepted-task validator required roadmap IDs such as TG-V3-002 in evidence, while the evidence schema rejected every TG-V3 task ID, making legitimate roadmap acceptance impossible.",
@@ -37,7 +37,7 @@
   "limitations": [
     "Validates current snapshot assertions, not historical Git transitions.",
     "Digest pins require reviewed updates when the approved backlog, product-gate semantics or current milestone semantics change.",
-    "Does not authenticate live GitHub review provenance, expertise, administrator policy or completeness of every semantic criterion.",
+    "Does not authenticate live GitHub review provenance, expertise or administrator policy, and does not decide whether an assertion substantively proves its mapped close criterion.",
     "Positive tests use synthetic retained evidence and do not manufacture real approval or accepted product evidence.",
     "No Rust, Go, DDL, production workflow definitions, required checks, credentials or existing gap/gate statuses are changed."
   ],
@@ -63,8 +63,33 @@
     "native_final_head_verified": false,
     "independently_accepted": false,
     "gap_closed": false,
-    "source_blob": "9446e7a99b5c17a1e73eae309d8a5ed31abdb0a0",
-    "schema_blob": "3e12e964054fa890bfbbf0622c336eecc36a878e",
-    "test_blob": "8085037bee674862e6895fd073757f4e2d66b8c1"
+    "source_blob": "c3fe4b7d254826435da6fbfe6b3e3a95eac46f85",
+    "schema_blob": "6d178e0fda03f466a070b4fe2e5797dba634517f",
+    "test_blob": "7b29b2fbd2e3ba75c057f7c5f0743608799ccd4c"
+  },
+  "gap_criterion_mapping": {
+    "status": "source-candidate",
+    "source": "scripts/evidence_admission.py",
+    "gap_consumer": "scripts/check-gap-register.py",
+    "schema": "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
+    "regression_suites": [
+      "tests/control_plane/test_evidence_admission.py",
+      "tests/evidence/test_gap_register.py"
+    ],
+    "reproduced_defect": "One accepted item of a required evidence type could structurally close a multi-criterion gap while covering only an unspecified subset of its close criteria.",
+    "implemented": [
+      "Accepted index rows and retained manifests require identical canonical gap_criteria mappings whose gap set exactly equals gap_ids.",
+      "Each criterion identity binds the canonical gap ID, one-based ordinal and SHA-256 of the exact current criterion text.",
+      "Gap closure rejects stale, unknown, cross-gap or incomplete mappings and requires the exact union of all current criteria on one target cohort.",
+      "Different evidence items may split criterion and evidence-type coverage, while substantive proof and conflict-free specialist review remain separate."
+    ],
+    "native_final_head_verified": false,
+    "independently_accepted": false,
+    "gap_closed": false,
+    "source_blob": "c3fe4b7d254826435da6fbfe6b3e3a95eac46f85",
+    "gap_consumer_blob": "9338b55c1241a2dc4b394eccd7b0b1616bc5f948",
+    "schema_blob": "6d178e0fda03f466a070b4fe2e5797dba634517f",
+    "admission_test_blob": "7b29b2fbd2e3ba75c057f7c5f0743608799ccd4c",
+    "gap_consumer_test_blob": "5804891b332c7a42b94961a86fb3cbf3253c57f3"
   }
 }
