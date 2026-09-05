@@ -14,6 +14,9 @@ use super::retry::{BudgetedRepository, RetryPolicy, RetryingRepository};
 
 const PROBE_TABLE: &str = "trnm_crdb_retry_probe";
 
+#[path = "retry_atomicity.rs"]
+mod atomicity;
+
 #[derive(Clone, Debug)]
 struct LiveCockroachRepository {
     database_url: Arc<str>,
@@ -229,8 +232,10 @@ mod tests {
     #[test]
     fn live_cockroach_serialization_failure_retries_entire_command() {
         let Some(database_url) = live_database_url() else {
+            eprintln!("Cockroach retry: developer-only omission; no live evidence credit");
             return;
         };
+        atomicity::prove(&database_url);
         let mut setup = Config::from_str(&database_url)
             .unwrap()
             .connect(NoTls)

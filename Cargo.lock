@@ -1542,6 +1542,7 @@ name = "trnm-persistence-pg"
 version = "0.1.0"
 dependencies = [
  "native-tls",
+ "openssl",
  "postgres",
  "postgres-native-tls",
  "prost",

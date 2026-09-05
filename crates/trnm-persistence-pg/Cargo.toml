@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 native-tls = "=0.2.18"
+# Existing locked native backend, exposed only by the diagnostic TLS binary.
+openssl = "=0.10.81"
 postgres = "=0.19.14"
 postgres-native-tls = "=0.5.3"
 prost = "=0.14.3"

@@ -216,3 +216,45 @@ latest live candidate identity, administrator policy, native execution, oracle
 compatibility or production acceptance. Those independent prerequisites remain
 required. The source fix changes no runtime Rust, database schema, protocol,
 workflow definition or required-workflow denominator and closes no gap by itself.
+
+
+## 14. Database negative attribution and production retry proof
+
+The TLS rotation binary now distinguishes a bounded, credential-free OpenSSL
+X509 verification witness from native-tls pool admission. Only issuer/chain
+verification codes qualify for a cross-root failure. Expiry, hostname, protocol,
+connection, deadline, authentication and SQL failures cannot substitute. Each
+negative is bracketed by fresh witness and authenticated pool/SQL controls on the
+same single numeric loopback endpoint. The pool must also refuse the rejected
+root. A malformed PEM is a local parser rejection, not remote TLS evidence.
+The independent witness does not expose or change the production TLS connector.
+Its TCP/SSLRequest/TLS I/O shares one two-second deadline; PEM reads are capped.
+The existing pool's stalled-operation limitations still apply separately.
+OpenSSL 0.10.81 was already locked transitively through native-tls; its direct
+use is confined to this diagnostic binary. No dependency version is upgraded.
+
+The Cockroach retry test retains the natural write-skew classifier/supervisor
+phase, and additionally executes the real RetryingRepository -> PooledRepository
+-> PgRepository transaction path against the authoritative migration. A dedicated
+one-connection test pool enables Cockroach's session commit-error injection for
+the first attempt, then disables it before retrying. Before retry it asserts zero
+receipt/event/outbox/link rows and an unchanged entity head. Successful retry must
+produce exactly one of each and preserve the complete command identity. A fresh
+pool must replay the real durable receipt, while a changed fingerprint fails.
+Repeated commit faults must exhaust the retry budget without partial effects.
+The injection is test-only, confined to a newly created disposable loopback
+database, and does not introduce a production fault hook or manufactured receipt.
+This is commit-boundary fault evidence, not natural contention within the entire
+production transaction, actual network response-loss injection, multi-node HA,
+PITR, endurance, independent acceptance or complete Nakama compatibility.
+
+Focused checks:
+
+```bash
+cargo test -p trnm-persistence-pg --locked --bin trnm-pg-tls-rotation-probe
+cargo test -p trnm-persistence-pg --locked --bin trnm-server live_cockroach_serialization_failure_retries_entire_command -- --nocapture
+```
+
+The second command requires the isolated live database environment and explicit
+required flag in its workflow to earn execution credit. Both workflows retain
+source/unit and live jobs, nonempty-result assertions and exact definition pins.

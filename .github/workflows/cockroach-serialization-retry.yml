@@ -11,6 +11,10 @@ on:
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/retry_live_tests.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/mod.rs'
       - 'crates/trnm-persistence-pg/Cargo.toml'
+      - 'crates/trnm-persistence-pg/src/bin/trnm_server/retry_atomicity.rs'
+      - 'crates/trnm-persistence-pg/src/bin/trnm_server/pool.rs'
+      - 'crates/trnm-persistence-pg/src/pool_parts/**'
+      - 'migrations/cockroachdb/**'
       - 'Cargo.lock'
       - 'config/database-test-images.json'
       - '.github/workflows/cockroach-serialization-retry.yml'
@@ -131,6 +135,15 @@ jobs:
             -- --nocapture | tee run-cockroach-retry.log
           grep -Eq '^test result: ok[.] 1 passed; 0 failed; 0 ignored;' \
             run-cockroach-retry.log
+          grep -qx 'assertion=production_commit_boundary_40001_was_not_acknowledged' run-cockroach-retry.log
+          grep -qx 'assertion=failed_commit_left_no_receipt_event_or_outbox' run-cockroach-retry.log
+          grep -qx 'assertion=production_retry_preserved_complete_command_identity' run-cockroach-retry.log
+          grep -qx 'assertion=production_retry_committed_one_receipt_event_and_outbox' run-cockroach-retry.log
+          grep -qx 'assertion=fresh_pool_replayed_exact_durable_receipt' run-cockroach-retry.log
+          grep -qx 'assertion=changed_fingerprint_rejected_without_extra_effects' run-cockroach-retry.log
+          grep -qx 'assertion=retry_exhaustion_left_no_partial_durable_effect' run-cockroach-retry.log
+          grep -qx 'fault_mode=cockroach_session_commit_error_injection' run-cockroach-retry.log
+          grep -qx 'network_response_loss_injected=false' run-cockroach-retry.log
       - name: Seal exact execution receipt in immutable job log
         shell: bash
         run: |
@@ -144,6 +157,8 @@ jobs:
             'assertion=retrying_repository_replayed_whole_command_once' \
             'assertion=retry_attempts_2_retries_1_exhausted_0' \
             'assertion=final_probe_rows_1_1_and_2_1' \
+            'natural_write_skew_scope=classifier_and_supervisor_only' \
+            'production_atomicity_scope=real_repository_with_commit_boundary_fault' \
             'multi_node_evidence=false' \
             'production_ready=false'
       - name: Stop CockroachDB

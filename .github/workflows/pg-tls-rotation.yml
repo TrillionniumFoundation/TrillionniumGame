@@ -11,6 +11,8 @@ on:
       - 'crates/trnm-persistence-pg/Cargo.toml'
       - 'scripts/wait-postgresql-tls-ready.py'
       - 'tests/control_plane/test_pg_tls_endpoint_readiness.py'
+      - 'crates/trnm-persistence-pg/src/bin/tls_probe_witness/**'
+      - 'crates/trnm-persistence-pg/src/pool_parts/**'
       - 'Cargo.lock'
       - '.github/workflows/pg-tls-rotation.yml'
   workflow_dispatch:
@@ -196,6 +198,10 @@ jobs:
           grep -qx 'assertion=old_generation_rejected_by_new_endpoint' run/pg-tls/probe.env
           grep -qx 'assertion=new_generation_rejected_by_old_endpoint' run/pg-tls/probe.env
           grep -qx 'assertion=invalid_root_rejected' run/pg-tls/probe.env
+          grep -qx 'assertion=all_negative_cases_have_fresh_healthy_controls' run/pg-tls/probe.env
+          grep -qx 'assertion=unrelated_failures_do_not_count_as_certificate_rejection' run/pg-tls/probe.env
+          grep -qx 'negative_attribution=bounded_openssl_x509_witness_and_native_pool_refusal' run/pg-tls/probe.env
+          grep -qx 'invalid_root_scope=local_certificate_parse_rejection' run/pg-tls/probe.env
           grep -qx 'rotation_mode=rolling_pool_replacement' run/pg-tls/probe.env
           grep -qx 'hot_reload_claim=false' run/pg-tls/probe.env
           grep -qx 'production_ready=false' run/pg-tls/probe.env
