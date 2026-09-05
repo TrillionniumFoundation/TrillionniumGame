@@ -10,11 +10,11 @@ permissions:
 
 env:
   BASE_COMMIT: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
-  PRODUCT_HEAD: 33307fd643e3f450d4d3439f8560593ea214d060
-  PRODUCT_TREE: 131eeb3f2aa67a61743aee39dec6c84dfb1e108b
-  PRODUCT_MERGE: 44a8438e84c4158332af40eec720d3b22057504a
+  PRODUCT_HEAD: 27f5eb36c26e38725eea6e3fb78c9a22ba2462a9
+  PRODUCT_TREE: 521846258105f8cb4c863b4a85428f50e230e63b
+  PRODUCT_MERGE: ab32c43775632be2fa2244b20fd9d8e08e66979b
   PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
-  GAP_SCOPE_TEST_BLOB: dd3c547e7b2032d9cf3f3d85dbce6890e9bb4dc6
+  GAP_SCOPE_TEST_BLOB: e5ecdc97ce4bf1e176c91d24d434325c724ce484
 
 jobs:
   current-source-and-merge-supplementary:
@@ -129,20 +129,20 @@ jobs:
                   "source_python_tests_passed": counts["source"],
                   "merge_python_tests_passed": counts["merge"],
                   "control_checks_per_object": 11,
-                  "objects_checked": 2,
+                  "objects_checked": 2
               },
               "claims": {
                   "supplementary_execution_observed": True,
                   "ordinary_required_gate_passed": False,
                   "independently_accepted": False,
                   "gap_closed": False,
-                  "production_ready": False,
+                  "production_ready": False
               },
               "limitations": [
                   "Read-only supplementary ARM execution; it cannot replace the manifest-required ordinary workflow collection.",
                   "No live database, Rust, Go, SDK differential, endurance, administrator read-back or independent acceptance credit is granted by this packet.",
-                  "The gap-scope tests validate source semantics and do not establish that any close criterion is factually satisfied.",
-              ],
+                  "The gap-scope tests validate source semantics and do not establish that any close criterion is factually satisfied."
+              ]
           }
           (root / "identity.json").write_text(json.dumps(identity, indent=2) + "\n")
           files = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
@@ -158,7 +158,14 @@ jobs:
           PY
 
       - name: Retain exact diagnostic packet
-        uses: ./tooling/publish
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 scripts/upload-actions-artifact.py \
+            trnm-gap-scope-supplementary-27f5eb36 \
+            "$RUNNER_TEMP/gap-scope-proof/gap-scope-supplementary.zip" \
+            --mime-type application/zip
 
       - name: Reject moved product identities
         shell: bash
