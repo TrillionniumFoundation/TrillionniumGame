@@ -1,4 +1,4 @@
-name: qualify-published-current-head
+name: verify-live-base-to-head-transitions
 
 on:
   push:
@@ -12,19 +12,14 @@ env:
   BASE_COMMIT: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
   PRODUCT_HEAD: 545569a4936f08d0eed0b79806e04239cbe8e835
   PRODUCT_TREE: 00ca7f813f5dcb1e46935cf6bc0121ca33888c7e
-  PRODUCT_MERGE: f23acd1054cf2f415f67ecbdfc6125152b493a29
   PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
-  POLICY_BLOB: f6b64f8de887ea5a7acf525a90c5723aeab80963
-  DERIVE_BLOB: ef7276d17584f24a39e5f029a2b5c49eb36ef912
-  POLICY_TEST_BLOB: b0223b0ea3722c16ee67e40d397c01d88ebb1430
-  CARGO_TERM_COLOR: never
 
 jobs:
-  published-source-and-merge-supplementary:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 58
+  base-to-head-transition-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
     steps:
-      - name: Fetch fixed tooling and published product objects
+      - name: Fetch exact tooling, base and head
         shell: bash
         run: |
           set -euo pipefail
@@ -32,151 +27,74 @@ jobs:
           git -C "$GITHUB_WORKSPACE/tooling" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
           git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object build_probe.py)" = f6a3a513941e1db992601826f3a2c2e73b0f85a9
-          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object test_build_probe.py)" = d17e823f6067db961db9a0fa8c8bc4f84e4c107c
 
-          git init "$GITHUB_WORKSPACE/source"
-          git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin "$PRODUCT_HEAD"
-          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin refs/pull/63/merge
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse FETCH_HEAD)" = "$PRODUCT_MERGE"
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse "$PRODUCT_HEAD^{tree}")" = "$PRODUCT_TREE"
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse "$PRODUCT_MERGE^{tree}")" = "$PRODUCT_TREE"
-          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object scripts/status_transition_policy.py)" = "$POLICY_BLOB"
-          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object scripts/derive-gap-status.py)" = "$DERIVE_BLOB"
-          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object tests/control_plane/test_status_transition_policy.py)" = "$POLICY_TEST_BLOB"
-          mapfile -t parents < <(git -C "$GITHUB_WORKSPACE/source" cat-file -p "$PRODUCT_MERGE" | sed -n 's/^parent //p')
-          test "${#parents[@]}" -eq 2
-          test "${parents[0]}" = "$BASE_COMMIT"
-          test "${parents[1]}" = "$PRODUCT_HEAD"
+          for pair in "base:$BASE_COMMIT" "head:$PRODUCT_HEAD"; do
+            label=${pair%%:*}; object=${pair#*:}
+            git init "$GITHUB_WORKSPACE/$label"
+            git -C "$GITHUB_WORKSPACE/$label" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+            git -C "$GITHUB_WORKSPACE/$label" fetch --no-tags --depth=1 origin "$object"
+            git -C "$GITHUB_WORKSPACE/$label" checkout --detach FETCH_HEAD
+            test "$(git -C "$GITHUB_WORKSPACE/$label" rev-parse HEAD)" = "$object"
+          done
+          test "$(git -C "$GITHUB_WORKSPACE/head" rev-parse HEAD^{tree})" = "$PRODUCT_TREE"
 
-      - name: Test bounded command runner and install exact Rust toolchain
-        shell: bash
-        working-directory: tooling
-        run: |
-          set -euo pipefail
-          python3 -m unittest -v test_build_probe
-          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
-          rustc +1.85.1 --version --verbose
-          cargo +1.85.1 --version --verbose
-
-      - name: Execute all registered Rust packages on source and merge
+      - name: Execute real base-to-head transition policy without masking outcome
+        id: transition
         shell: bash
         run: |
+          set +e
+          proof="$RUNNER_TEMP/live-transition-proof"
+          mkdir -p "$proof"
+          python3 "$GITHUB_WORKSPACE/head/scripts/status_transition_policy.py" \
+            --previous-root "$GITHUB_WORKSPACE/base" \
+            --current-root "$GITHUB_WORKSPACE/head" \
+            > "$proof/report.json" 2> "$proof/stderr.txt"
+          rc=$?
+          printf '%s\n' "$rc" > "$proof/returncode.txt"
+          printf 'returncode=%s\n' "$rc" >> "$GITHUB_OUTPUT"
+          cat "$proof/report.json" || true
+          cat "$proof/stderr.txt" >&2 || true
+          exit 0
+
+      - name: Build retained diagnostic packet
+        shell: bash
+        run: |
           set -euo pipefail
+          proof="$RUNNER_TEMP/live-transition-proof"
+          git -C "$GITHUB_WORKSPACE/base" cat-file commit "$BASE_COMMIT" > "$proof/base-commit.txt"
+          git -C "$GITHUB_WORKSPACE/head" cat-file commit "$PRODUCT_HEAD" > "$proof/head-commit.txt"
+          git -C "$GITHUB_WORKSPACE/head" ls-remote origin refs/heads/main refs/heads/$PRODUCT_BRANCH > "$proof/live-refs.txt"
           python3 - <<'PY'
-          import os,sys
+          import hashlib,json,os,zipfile
           from pathlib import Path
-          sys.path.insert(0,str(Path(os.environ['GITHUB_WORKSPACE'])/'tooling'))
-          import build_probe as probe
-          probe.HEAD=os.environ['PRODUCT_HEAD']
-          probe.BASE=os.environ['BASE_COMMIT']
-          probe.MERGE=os.environ['PRODUCT_MERGE']
-          probe.TREE=os.environ['PRODUCT_TREE']
-          sys.argv=['build_probe.py','--source',os.environ['GITHUB_WORKSPACE']+'/source','--output',os.environ['RUNNER_TEMP']+'/published-current']
-          raise SystemExit(probe.main())
+          root=Path(os.environ['RUNNER_TEMP'])/'live-transition-proof'
+          rc=int((root/'returncode.txt').read_text())
+          identity={
+            'schema':'trillionnium.live-status-transition-diagnostic.v1',
+            'repository':'TrillionniumFoundation/TrillionniumGame',
+            'base_commit':os.environ['BASE_COMMIT'],
+            'head_commit':os.environ['PRODUCT_HEAD'],
+            'head_tree':os.environ['PRODUCT_TREE'],
+            'returncode':rc,
+            'valid':rc==0,
+            'producer':{key:os.environ.get(key) for key in ('GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_JOB')},
+            'claims':{'ordinary_required_gate_passed':False,'independently_accepted':False,'gap_closed':False},
+            'limitations':['Diagnostic comparison only; GitHub event/base provenance and ordinary workflow admission remain separate.']}
+          (root/'identity.json').write_text(json.dumps(identity,indent=2)+'\n')
+          files={p.name:p.read_bytes() for p in root.iterdir() if p.is_file()}
+          (root/'file-index.json').write_text(json.dumps([{'path':n,'size_bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()} for n,b in sorted(files.items())],indent=2)+'\n')
+          files={p.name:p.read_bytes() for p in root.iterdir() if p.is_file()}
+          with zipfile.ZipFile(root/'live-transition-diagnostic.zip','x',zipfile.ZIP_DEFLATED) as archive:
+            for name,data in sorted(files.items()): archive.writestr(name,data)
           PY
 
-      - name: Execute Python controls and Go migration input on both objects
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import hashlib,json,os,re,sys,time,zipfile
-          from pathlib import Path
-          sys.path.insert(0,str(Path(os.environ['GITHUB_WORKSPACE'])/'tooling'))
-          import build_probe as probe
-
-          source=Path(os.environ['GITHUB_WORKSPACE'])/'source'
-          out=Path(os.environ['RUNNER_TEMP'])/'published-current'
-          matrix=json.loads((out/'matrix.json').read_text())
-          rows=[]
-          result={
-              'schema':'trillionnium.published-current-supplementary.v1',
-              'source':os.environ['PRODUCT_HEAD'],
-              'merge':os.environ['PRODUCT_MERGE'],
-              'tree':os.environ['PRODUCT_TREE'],
-              'commands':rows,
-              'complete':False,
-              'ordinary_required_gate_credit':False,
-              'independent_acceptance':False,
-              'live_database_credit':False}
-          env={k:os.environ[k] for k in ('PATH','HOME','USER','TMPDIR','RUSTUP_HOME','CARGO_HOME') if k in os.environ}
-          env.update(GOTOOLCHAIN='go1.26.5',CARGO_TERM_COLOR='never',PYTHONDONTWRITEBYTECODE='1')
-          began=time.monotonic()
-          try:
-              assert matrix['complete'] is True and len(matrix['commands'])==70
-              assert all(row['returncode']==0 and row['failure'] is None for row in matrix['commands'])
-              for label,sha in [('source',result['source']),('prospective',result['merge'])]:
-                  probe.git(source,'checkout','--detach',sha)
-                  assert probe.git(source,'rev-parse','HEAD^{tree}').decode().strip()==result['tree']
-                  schedule=[
-                      ('policy-self-check',['python3','scripts/status_transition_policy.py','--self-check'],source),
-                      ('policy-self-compare',['python3','scripts/status_transition_policy.py','--previous-root','.','--current-root','.'],source),
-                      ('compileall',['python3','-m','compileall','-q','scripts','tools','tests'],source),
-                      ('python',['python3','-m','unittest','discover','-s','tests','-p','test_*.py','-v'],source)]
-                  checks=['check-documentation-authority.py','check-plan.py','check-evidence-index.py','check-gap-register.py','derive-gap-status.py','derive-gates.py','check-status-transitions.py','check-workflow-action-policy.py','check-repository-hygiene.py','check-trnm-server.py','check-rust-foundation.py']
-                  schedule += [(name,['python3','scripts/'+name],source) for name in checks]
-                  schedule += [
-                      ('go-version',['go','version'],source/'runtime'),
-                      ('go-test',['go','test','./...','-count=1'],source/'runtime'),
-                      ('go-race',['go','test','-race','./...','-count=1'],source/'runtime'),
-                      ('go-vet',['go','vet','./...'],source/'runtime')]
-                  for name,argv,cwd in schedule:
-                      remaining=1500-(time.monotonic()-began)
-                      assert remaining>0,'supplementary non-Rust deadline'
-                      log=out/f'extra-{len(rows):03d}-{label}-{name}.log'
-                      row=probe.command(argv,cwd,log,env,min(600,remaining));row.update(object=sha,name=name);rows.append(row)
-                      assert row['returncode']==0 and row['failure'] is None,name
-                      text=log.read_text(errors='replace')
-                      if name=='python':
-                          match=re.search(r'^Ran ([1-9][0-9]*) tests in ',text,re.M)
-                          assert match and int(match.group(1))>=562 and re.search(r'^OK$',text,re.M)
-                      if name in ('policy-self-check','policy-self-compare'):
-                          payload=json.loads(text)
-                          assert payload['valid'] is True
-                      if name=='go-version': assert 'go1.26.5 linux/arm64' in text
-                      if name in ('go-test','go-race'): assert re.search(r'^ok\s+',text,re.M)
-                      assert sum(item['size_bytes'] for item in rows)<20*1024*1024
-                  assert not probe.git(source,'status','--porcelain').strip()
-              assert len(rows)==38
-              result['complete']=True
-          except Exception as exc:
-              result['failure_type']=type(exc).__name__
-              result['failure']=str(exc)[:500]
-          (out/'qualification.json').write_text(json.dumps(result,indent=2)+'\n')
-          files={p.name:p.read_bytes() for p in out.iterdir() if p.is_file() and p.suffix!='.zip' and p.name!='file-index.json'}
-          assert sum(map(len,files.values()))<64*1024*1024
-          files['file-index.json']=(json.dumps([{'path':name,'size_bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()} for name,data in sorted(files.items())],indent=2)+'\n').encode()
-          with zipfile.ZipFile(out/'published-current-qualification.zip','x',zipfile.ZIP_DEFLATED) as archive:
-              for name,data in sorted(files.items()): archive.writestr(name,data)
-          print(json.dumps(result))
-          PY
-
-      - name: Retain exact source merge logs and identities
+      - name: Retain diagnostic whether pass or fail
         uses: ./tooling/publish
 
-      - name: Reject incomplete results or moved refs
+      - name: Reject illegal live transition or moved refs
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json,os,subprocess
-          from pathlib import Path
-          out=Path(os.environ['RUNNER_TEMP'])/'published-current'
-          matrix=json.loads((out/'matrix.json').read_text())
-          qualification=json.loads((out/'qualification.json').read_text())
-          assert matrix['complete'] is True and qualification['complete'] is True
-          assert len(matrix['commands'])==70 and len(qualification['commands'])==38
-          assert matrix['source_head']==qualification['source']==os.environ['PRODUCT_HEAD']
-          assert matrix['prospective_merge']==qualification['merge']==os.environ['PRODUCT_MERGE']
-          assert matrix['tree']==qualification['tree']==os.environ['PRODUCT_TREE']
-          refs=subprocess.run(['git','-C',os.environ['GITHUB_WORKSPACE']+'/source','ls-remote','origin','refs/heads/main','refs/heads/'+os.environ['PRODUCT_BRANCH'],'refs/pull/63/merge'],check=True,capture_output=True,text=True,timeout=30)
-          observed={ref:sha for sha,ref in (line.split() for line in refs.stdout.splitlines())}
-          assert observed=={
-              'refs/heads/main':os.environ['BASE_COMMIT'],
-              'refs/heads/'+os.environ['PRODUCT_BRANCH']:os.environ['PRODUCT_HEAD'],
-              'refs/pull/63/merge':os.environ['PRODUCT_MERGE']}
-          print('Published current source and merge supplementary matrix passed; ordinary gates and independent acceptance remain separate.')
-          PY
+          test "${{ steps.transition.outputs.returncode }}" = 0
+          test "$(git -C "$GITHUB_WORKSPACE/head" ls-remote origin refs/heads/main | cut -f1)" = "$BASE_COMMIT"
+          test "$(git -C "$GITHUB_WORKSPACE/head" ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$PRODUCT_HEAD"
