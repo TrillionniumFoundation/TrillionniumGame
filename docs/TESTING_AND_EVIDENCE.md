@@ -173,7 +173,7 @@ The current evidence index has no accepted repository-wide compatibility entry. 
 explicit credit, schema validity, exact target binding and independent review.
 All five consumers reject the same incomplete evidence rather than applying
 separate progressively weaker predicates. Existing historical diagnostics remain
-readable and non-creditable; they are not silently converted to accepted records.
+readable and non-creditable; they are not silently converted to accepted evidence.
 
 Admission requires the canonical repository and lowercase commit/tree IDs; the
 exact `independent=true` and `self_review=false` pair; nonblank reviewer identity
@@ -339,3 +339,34 @@ DDL, workflow definition, deadline, required-job set or acceptance condition.
 It does not establish database behavior, independent cryptographic review or
 production readiness. Exact-candidate execution and independent acceptance
 remain required for every applicable gap.
+
+## 17. Actions artifact request encoding
+
+The native uploader emits `CreateArtifact.mime_type` at the top level, as a
+ProtoJSON scalar string. The obsolete `metadata.wrapper.mime_type` shape is not
+part of the inspected version-seven request. The protocol reference is GitHub
+`actions/toolkit` commit `6fe3c0f3e61b5f34b85f28067d82e7e3ffcb312f`, generated
+`packages/artifact/src/generated/results/api/v1/artifact.ts`, blob
+`dbdd7bbb7ae3a1932bed8e877d82a235873ed08b`. Its StringValue fields use ProtoJSON
+scalar encoding. Finalization retains its scalar hash and string int64 size.
+No existing repository/job identity, digest, upload bound or retry rule changes.
+
+The original upload test's expectation is corrected rather than deleted.
+`tests/control_plane/test_actions_artifact_protocol.py` sends the actual uploader's
+serialized requests through a strict offline service fixture. It exercises ZIP
+and gzip, retry identity, nonretryable create refusal, rejected blob upload,
+failed finalization, nonempty input, MIME validation and absence of Authorization
+on the direct signed-blob PUT. It rejects the old nested request shape. This is
+not a complete redirect-security audit or a claim about a remote service run.
+
+```bash
+python3 -m unittest discover -s tests/control_plane -p 'test_actions_artifact_*.py' -v
+```
+
+A successful local fixture is not an Actions upload receipt. Real retention must
+record a nonempty finalized artifact ID, exact producer run/attempt/job, then
+download the bytes and verify their size, digest and member identities. Product
+qualification and diagnostic export have different source identities; neither
+can silently stand in for the other. No new product, gap or independent-review
+credit follows from this field correction. The source boundary is recorded in
+[`status/ACTIONS_ARTIFACT_UPLOAD_STATUS.json`](status/ACTIONS_ARTIFACT_UPLOAD_STATUS.json).

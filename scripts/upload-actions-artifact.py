@@ -204,7 +204,7 @@ def upload_artifact(
         {
             **identity,
             "version": ARTIFACT_VERSION,
-            "metadata": {"wrapper": {"mime_type": mime_type}},
+            "mime_type": mime_type,
         },
         runtime_token,
         opener=open_request,

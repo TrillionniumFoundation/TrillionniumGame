@@ -1,0 +1,32 @@
+{
+  "schema": "trillionnium.actions-artifact-upload-status.v1",
+  "status": "source-candidate",
+  "updated_at": "2026-09-05",
+  "gap_ids": [
+    "GAP-P0-EVIDENCE-001",
+    "GAP-P0-CI-001",
+    "GAP-P1-TEST-001"
+  ],
+  "source": "scripts/upload-actions-artifact.py",
+  "regression_suites": [
+    "tests/control_plane/test_actions_artifact_uploader.py",
+    "tests/control_plane/test_actions_artifact_protocol.py"
+  ],
+  "protocol": {
+    "repository": "actions/toolkit",
+    "commit": "6fe3c0f3e61b5f34b85f28067d82e7e3ffcb312f",
+    "path": "packages/artifact/src/generated/results/api/v1/artifact.ts",
+    "blob": "dbdd7bbb7ae3a1932bed8e877d82a235873ed08b",
+    "artifact_version": 7,
+    "change": "CreateArtifact uses top-level scalar mime_type; no nested metadata wrapper"
+  },
+  "accepted": false,
+  "gap_closed": false,
+  "production_ready": false,
+  "limitations": [
+    "Strict offline request fixtures do not prove remote upload or retention.",
+    "Real producer, downloaded bytes and independent acceptance remain required.",
+    "No Rust runtime, Cargo, DDL, workflow definition or permission changes.",
+    "This correction does not represent a complete uploader/redirect audit."
+  ]
+}

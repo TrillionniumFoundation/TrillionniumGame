@@ -143,7 +143,11 @@ class ActionsArtifactUploaderTests(unittest.TestCase):
         self.assertEqual(create["workflow_run_backend_id"], "run-id")
         self.assertEqual(create["workflow_job_run_backend_id"], "job-id")
         self.assertEqual(create["version"], 7)
-        self.assertEqual(create["metadata"]["wrapper"]["mime_type"], "application/gzip")
+        self.assertEqual(create["mime_type"], "application/gzip")
+        self.assertEqual(set(create), {
+            "workflow_run_backend_id", "workflow_job_run_backend_id",
+            "name", "version", "mime_type",
+        })
         self.assertEqual(requests[1].get_method(), "PUT")
         self.assertEqual(requests[1].data, b"raw-evidence")
         self.assertEqual(requests[1].headers["X-ms-blob-type"], "BlockBlob")
