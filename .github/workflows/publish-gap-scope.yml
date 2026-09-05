@@ -1,0 +1,180 @@
+name: publish-gap-scope-source-candidate
+
+on:
+  push:
+    branches: [tooling/publish-gap-scope-20260905-r1]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-gap-scope-source-candidate
+  cancel-in-progress: false
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+  STAGING_BRANCH: tooling/staged-gap-scope-20260905-r1
+  BASE_COMMIT: 9f5524815422ed6e59c6a04fa3b5389a3ceef281
+  BASE_TREE: d8355f6b58bd6797f45bde6abb7ec8b266a34c24
+  MAIN_COMMIT: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
+  OLD_MERGE_COMMIT: 314592d4b7b5b7a1360ac81eee9a75c87dc5d2e9
+  RESULT_TREE: 3c4395c11ae7ae76359f9aa4424a35735898f37e
+  B64_SHA256: fcd09ea1079da1eb9d61cb55c6d2f1c6f803d896158fbc76ea631c5d069f8b8e
+  GZIP_SHA256: 008e4ad2265c4504c571776da5fcd95344dbd3b5527f5fefeb369b663ab73827
+  PATCH_SHA256: 8cfd9fca35a1f95c6b9b9b9276bba48c929a737476c4849aa3d6fe6dfa9ff869
+  GITHUB_TOKEN: ${{ github.token }}
+
+jobs:
+  verify-and-stage:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Fetch exact tooling and fixed product source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE/tooling"
+          git -C "$GITHUB_WORKSPACE/tooling" remote add origin "https://github.com/$REPOSITORY.git"
+          git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+
+          cat "$GITHUB_WORKSPACE/tooling"/payload/gap-scope/chunk-*.b64 > "$RUNNER_TEMP/gap-scope.patch.gz.b64"
+          printf '%s  %s\n' "$B64_SHA256" "$RUNNER_TEMP/gap-scope.patch.gz.b64" | sha256sum -c -
+          base64 -d "$RUNNER_TEMP/gap-scope.patch.gz.b64" > "$RUNNER_TEMP/gap-scope.patch.gz"
+          printf '%s  %s\n' "$GZIP_SHA256" "$RUNNER_TEMP/gap-scope.patch.gz" | sha256sum -c -
+          gzip -dc "$RUNNER_TEMP/gap-scope.patch.gz" > "$RUNNER_TEMP/gap-scope.patch"
+          printf '%s  %s\n' "$PATCH_SHA256" "$RUNNER_TEMP/gap-scope.patch" | sha256sum -c -
+
+          git init "$GITHUB_WORKSPACE/product"
+          git -C "$GITHUB_WORKSPACE/product" remote add origin "https://github.com/$REPOSITORY.git"
+          git -C "$GITHUB_WORKSPACE/product" fetch --no-tags --depth=2 origin "$BASE_COMMIT"
+          git -C "$GITHUB_WORKSPACE/product" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/product" rev-parse HEAD)" = "$BASE_COMMIT"
+          test "$(git -C "$GITHUB_WORKSPACE/product" rev-parse HEAD^{tree})" = "$BASE_TREE"
+
+          observed="$(git -C "$GITHUB_WORKSPACE/product" ls-remote origin \
+            "refs/heads/main" "refs/heads/$PRODUCT_BRANCH" "refs/heads/$STAGING_BRANCH" "refs/pull/63/merge")"
+          test "$(printf '%s\n' "$observed" | awk '$2=="refs/heads/main"{print $1}')" = "$MAIN_COMMIT"
+          test "$(printf '%s\n' "$observed" | awk -v r="refs/heads/$PRODUCT_BRANCH" '$2==r{print $1}')" = "$BASE_COMMIT"
+          test "$(printf '%s\n' "$observed" | awk '$2=="refs/pull/63/merge"{print $1}')" = "$OLD_MERGE_COMMIT"
+          test -z "$(printf '%s\n' "$observed" | awk -v r="refs/heads/$STAGING_BRANCH" '$2==r{print $1}')"
+
+      - name: Apply exact patch and verify closed changed-file set
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          git apply --check "$RUNNER_TEMP/gap-scope.patch"
+          git apply "$RUNNER_TEMP/gap-scope.patch"
+          git diff --check
+          mapfile -t changed < <(git diff --name-only | LC_ALL=C sort)
+          expected=(
+            docs/GOVERNANCE.md
+            docs/TESTING_AND_EVIDENCE.md
+            docs/status/EXECUTION_ACCEPTANCE_STATUS.json
+            docs/status/GAP_REGISTER.json
+            scripts/check-gap-register.py
+            scripts/check-status-transitions.py
+            scripts/derive-gap-status.py
+            scripts/derive-gates.py
+            scripts/evidence_admission.py
+            tests/control_plane/test_evidence_admission.py
+            tests/control_plane/test_gap_register.py
+          )
+          test "${#changed[@]}" -eq "${#expected[@]}"
+          for index in "${!expected[@]}"; do
+            test "${changed[$index]}" = "${expected[$index]}"
+          done
+          git add --all
+          test "$(git write-tree)" = "$RESULT_TREE"
+
+      - name: Run full regression and control suite
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/gap-scope-evidence"
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v \
+            2>&1 | tee "$RUNNER_TEMP/gap-scope-evidence/python.log"
+          grep -E '^Ran 539 tests in ' "$RUNNER_TEMP/gap-scope-evidence/python.log"
+          grep -qx OK "$RUNNER_TEMP/gap-scope-evidence/python.log"
+          {
+            for check in \
+              check-documentation-authority.py \
+              check-plan.py \
+              check-evidence-index.py \
+              check-gap-register.py \
+              derive-gap-status.py \
+              derive-gates.py \
+              check-status-transitions.py \
+              check-workflow-action-policy.py \
+              check-repository-hygiene.py \
+              check-trnm-server.py \
+              check-rust-foundation.py; do
+              printf '\n=== %s ===\n' "$check"
+              python3 "scripts/$check"
+            done
+          } 2>&1 | tee "$RUNNER_TEMP/gap-scope-evidence/controls.log"
+          git diff --cached --check
+          test "$(git write-tree)" = "$RESULT_TREE"
+
+      - name: Create one ordinary source commit and push only the staging ref
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit \
+            -m 'fix(governance): bind immutable semantics for every registered gap' \
+            -m 'Reject severity, ownership, claim, path, criterion, evidence-type, issue and external-dependency shrinkage through mutable GAP_REGISTER edits. Reuse one digest-bound gap semantic projection across check-gap-register, derive-gap-status, derive-gates and check-status-transitions; check-plan inherits the same fail-closed result.' \
+            -m 'The exact eleven-file source tree passed 539 Python tests, all 11 control checks, compileall and diff checks. No runtime, Cargo, Go, DDL, workflow definition, required-check denominator, gap status, evidence credit, permission or production credential changes. Exact-head/prospective execution and conflict-free independent acceptance remain mandatory.'
+          staged="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^{tree})" = "$RESULT_TREE"
+          git cat-file commit HEAD > "$RUNNER_TEMP/gap-scope-evidence/staged-commit-object.txt"
+          printf '%s\n' "$staged" > "$RUNNER_TEMP/gap-scope-evidence/staged-commit.txt"
+          printf '%s\n' "$RESULT_TREE" > "$RUNNER_TEMP/gap-scope-evidence/result-tree.txt"
+          cp "$RUNNER_TEMP/gap-scope.patch" "$RUNNER_TEMP/gap-scope-evidence/change.patch"
+
+          observed="$(git ls-remote origin \
+            "refs/heads/main" "refs/heads/$PRODUCT_BRANCH" "refs/heads/$STAGING_BRANCH" "refs/pull/63/merge")"
+          test "$(printf '%s\n' "$observed" | awk '$2=="refs/heads/main"{print $1}')" = "$MAIN_COMMIT"
+          test "$(printf '%s\n' "$observed" | awk -v r="refs/heads/$PRODUCT_BRANCH" '$2==r{print $1}')" = "$BASE_COMMIT"
+          test "$(printf '%s\n' "$observed" | awk '$2=="refs/pull/63/merge"{print $1}')" = "$OLD_MERGE_COMMIT"
+          test -z "$(printf '%s\n' "$observed" | awk -v r="refs/heads/$STAGING_BRANCH" '$2==r{print $1}')"
+
+          git config credential.helper '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
+          git push --porcelain origin "HEAD:refs/heads/$STAGING_BRANCH" \
+            | tee "$RUNNER_TEMP/gap-scope-evidence/push.log"
+          test "$(git ls-remote origin "refs/heads/$STAGING_BRANCH" | awk '{print $1}')" = "$staged"
+
+      - name: Retain bounded execution packet through the product uploader
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, zipfile
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'gap-scope-evidence'
+          files = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
+          index = [
+              {'path': name, 'size_bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+              for name, data in sorted(files.items())
+          ]
+          files['file-index.json'] = (json.dumps(index, indent=2) + '\n').encode()
+          target = root / 'gap-scope-evidence.zip'
+          with zipfile.ZipFile(target, 'x', zipfile.ZIP_DEFLATED) as archive:
+              for name, data in sorted(files.items()):
+                  archive.writestr(name, data)
+          print(json.dumps({'members': len(files), 'size_bytes': target.stat().st_size,
+                            'sha256': hashlib.sha256(target.read_bytes()).hexdigest()}))
+          PY
+          python3 scripts/upload-actions-artifact.py \
+            trnm-gap-scope-3c4395c1 \
+            "$RUNNER_TEMP/gap-scope-evidence/gap-scope-evidence.zip" \
+            --mime-type application/zip
