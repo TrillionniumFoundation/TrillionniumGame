@@ -27,7 +27,7 @@ jobs:
           test "$(git -C "$tooling" rev-parse HEAD)" = "$GITHUB_SHA"
           cd "$tooling"
           cat payload.part0 payload.part1 payload.part2 payload.part3 payload.part4 > payload.json.gz
-          printf '%s\n' '583cd856650121636a6b8b0b3a8c7ed0b5889c23521bfd694a65b596d16ba6c9  payload.json.gz' 'd38e032e77f06df4ab91cd670554085ef2d0f396668eed6637515b4168f96408  stage.py' | sha256sum -c -
+          printf '%s\n' '583cd856650121636a6b8b0b3a8c7ed0b5889c23521bfd694a65b596d16ba6c9  payload.json.gz' 'd38e032e77f06df4ab91cd670554085ef2d0f396668eed6637515b4168f96408  stage.py' '54e4141fac604586a4d1a6bbe8711444084feb49c33c887945d7c27187a82984  extend_preflight.py' '062d8b5f35a803093fea488988ef160fd4cfd744892f9ad9c27f899dfaccc83b  dependency-test.py' | sha256sum -c -
           git init "$source"
           git -C "$source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
           git -C "$source" fetch --no-tags --depth=1 origin 5fe1ef9988b56025168b7942fbf4b02d1d3cfecd
@@ -39,12 +39,12 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/trnm-retained-io-source"
-          python3 "$RUNNER_TEMP/trnm-retained-io-tooling/stage.py" stage "$RUNNER_TEMP/trnm-retained-io-tooling/payload.json.gz" "$RUNNER_TEMP/retained-io-preflight.json"
-      - name: Store only the seven checked Git blobs
+          python3 "$RUNNER_TEMP/trnm-retained-io-tooling/extend_preflight.py" stage "$RUNNER_TEMP/trnm-retained-io-tooling/payload.json.gz" "$RUNNER_TEMP/retained-io-preflight.json"
+      - name: Store only the nine checked Git blobs
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/trnm-retained-io-source"
-          python3 "$RUNNER_TEMP/trnm-retained-io-tooling/stage.py" store "$RUNNER_TEMP/retained-io-preflight.json"
+          python3 "$RUNNER_TEMP/trnm-retained-io-tooling/extend_preflight.py" store "$RUNNER_TEMP/retained-io-preflight.json"
