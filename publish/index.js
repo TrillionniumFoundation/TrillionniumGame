@@ -6,10 +6,11 @@ for (const key of ['GITHUB_WORKSPACE', 'RUNNER_TEMP', 'ACTIONS_RUNTIME_TOKEN', '
 }
 const env = {...process.env};
 delete env.GITHUB_TOKEN;
+delete env.GH_BLOB_TOKEN;
 const result = spawnSync('/usr/bin/python3', [
   path.join(process.env.GITHUB_WORKSPACE, 'source/scripts/upload-actions-artifact.py'),
-  'trnm-gap-bound-evidence-d8355f6b',
-  path.join(process.env.RUNNER_TEMP, 'gap-proof/gap-bound-evidence-publication.zip'),
+  'trnm-gate-freshness-staging-9f552481',
+  path.join(process.env.RUNNER_TEMP, 'gate-proof/gate-freshness-staging.zip'),
   '--mime-type', 'application/zip'
 ], {env, stdio: 'inherit', timeout: 180000, shell: false});
 if (result.error || result.status !== 0) process.exit(1);
