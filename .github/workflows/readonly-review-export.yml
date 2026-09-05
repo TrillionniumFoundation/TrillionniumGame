@@ -9,11 +9,11 @@ permissions:
   actions: read
 
 jobs:
-  secure-uploader-native-proof-not-acceptance:
+  supplementary-arm-rust-not-required-gates:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 18
+    timeout-minutes: 50
     steps:
-      - name: Fetch exact tooling and response-integrity product revision
+      - name: Fetch exact tooling and unchanged source plus actual merge objects
         shell: bash
         run: |
           set -euo pipefail
@@ -22,69 +22,51 @@ jobs:
           git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object build_probe.py)" = f6a3a513941e1db992601826f3a2c2e73b0f85a9
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object test_build_probe.py)" = d17e823f6067db961db9a0fa8c8bc4f84e4c107c
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin be2be89efa3984e82b4e8584e2b8d6e7e315c9ca
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin be2be89efa3984e82b4e8584e2b8d6e7e315c9ca
           git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin refs/pull/63/merge
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse FETCH_HEAD)" = a630c3fab4113f5e7a8fd86252cf0f586be3aca7
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = be2be89efa3984e82b4e8584e2b8d6e7e315c9ca
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = 7aaa04dd376c6beade753d610f0649fd9db526bf
-          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object scripts/upload-actions-artifact.py)" = d9bb5453aca06a2d1310d2b8a1278acda47380c1
-          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object tests/control_plane/test_actions_artifact_security.py)" = 2ef80c956cb11377cc900d73b8b79fc1812016da
-          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object tests/control_plane/test_actions_artifact_response_contract.py)" = 6d666ad62342a76b3fe10bdd5a6de0c4326467ce
-      - name: Run complete current product regression and source controls without credentials
+      - name: Validate bounded runner and source inventory using synthetic processes
+        shell: bash
+        working-directory: tooling
+        run: python3 -m unittest -v test_build_probe
+      - name: Install the product-pinned Rust compiler format and lint components
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          python3 -m compileall -q scripts tools tests
-          python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/product-preflight.log"
-          grep -Eq '^Ran 477 tests in ' "$RUNNER_TEMP/product-preflight.log"
-          grep -qx 'OK' "$RUNNER_TEMP/product-preflight.log"
-          {
-            for check in check-documentation-authority.py check-plan.py check-evidence-index.py check-gap-register.py derive-gap-status.py derive-gates.py check-status-transitions.py check-workflow-action-policy.py check-repository-hygiene.py check-trnm-server.py check-rust-foundation.py; do
-              printf '\n=== %s ===\n' "$check"
-              python3 "scripts/$check" || exit "$?"
-            done
-          } 2>&1 | tee "$RUNNER_TEMP/source-controls.log"
-          test -z "$(git status --porcelain)"
-      - name: Seal exact source and raw preflight bytes without claiming ordinary gate completion
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustc +1.85.1 --version --verbose
+          cargo +1.85.1 --version --verbose
+      - name: Run all root and isolated Rust commands on both fixed objects without credentials
         shell: bash
-        working-directory: source
         run: |
           set -euo pipefail
-          git archive --format=tar be2be89efa3984e82b4e8584e2b8d6e7e315c9ca > "$RUNNER_TEMP/source.tar"
-          git ls-tree -rz --full-tree be2be89efa3984e82b4e8584e2b8d6e7e315c9ca > "$RUNNER_TEMP/source-tree.z"
-          git cat-file commit be2be89efa3984e82b4e8584e2b8d6e7e315c9ca > "$RUNNER_TEMP/source-commit.raw"
-          python3 - <<'PY'
-          import hashlib,json,os,re,zipfile
-          from pathlib import Path
-          root=Path(os.environ['RUNNER_TEMP'])
-          head='be2be89efa3984e82b4e8584e2b8d6e7e315c9ca'
-          tree='7aaa04dd376c6beade753d610f0649fd9db526bf'
-          files={name:(root/name).read_bytes() for name in ('source.tar','source-tree.z','source-commit.raw','product-preflight.log','source-controls.log')}
-          assert sum(map(len,files.values())) < 64*1024*1024
-          raw=files['source-commit.raw']
-          assert hashlib.sha1(b'commit '+str(len(raw)).encode()+b'\0'+raw).hexdigest()==head
-          assert raw.startswith(('tree '+tree+'\n').encode())
-          text=files['product-preflight.log'].decode('utf-8')
-          ids=re.findall(r'^(test_[A-Za-z0-9_]+ \([A-Za-z0-9_.]+\)) \.\.\. ok$',text,re.M)
-          assert len(ids)==len(set(ids))==477
-          assert re.findall(r'^Ran ([0-9]+) tests in [0-9.]+s$',text,re.M)==['477']
-          assert text.splitlines().count('OK')==1 and text.splitlines()[-1]=='OK'
-          observation={'schema':'trillionnium.secure-uploader-native-proof.v1','repository':'TrillionniumFoundation/TrillionniumGame',
-            'source_head':head,'source_tree':tree,'producer':{'workflow_commit':os.environ['GITHUB_SHA'],
-            'run_id':int(os.environ['GITHUB_RUN_ID']),'run_attempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'job':os.environ['GITHUB_JOB']},
-            'tests':{'collected':477,'passed':477,'identities':ids},
-            'claims':{'accepted':False,'gap_closed':False,'production_ready':False,'independently_reviewed':False},
-            'limitations':['Targeted native preflight and real uploader proof only; not the ordinary source or prospective merge gates.',
-              'No current canonical workflow collection, database execution or independent review is asserted by this artifact.']}
-          files['observation.json']=(json.dumps(observation,indent=2)+'\n').encode()
-          index=[{'path':n,'size_bytes':len(v),'sha256':hashlib.sha256(v).hexdigest()} for n,v in sorted(files.items())]
-          files['file-index.json']=(json.dumps(index,indent=2)+'\n').encode()
-          output=root/'trnm-upload-response-be2be89e.zip'
-          with zipfile.ZipFile(output,'x',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
-            for name,data in sorted(files.items()): z.writestr(name,data)
-          print(json.dumps({'path':output.name,'bytes':output.stat().st_size,'sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'accepted':False}))
-          PY
-      - name: Upload with bounded-reply descriptor-bound no-redirect product transport
+          python3 "$GITHUB_WORKSPACE/tooling/build_probe.py" --source "$GITHUB_WORKSPACE/source" --output "$RUNNER_TEMP/rust-matrix"
+      - name: Retain the command outcomes including failed diagnostics
         uses: ./tooling/publish
+      - name: Reject incomplete failed empty or stale supplementary matrices
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          r=json.loads((Path(os.environ['RUNNER_TEMP'])/'rust-matrix/matrix.json').read_text())
+          assert r['complete'] is True
+          assert r['architecture']=='aarch64'
+          assert len(r['commands'])==70
+          assert all(x['returncode']==0 and x['failure'] is None for x in r['commands'])
+          assert sum('tests' in x for x in r['commands'])==24
+          source=Path(os.environ['GITHUB_WORKSPACE'])/'source'
+          refs=subprocess.run(['git','-C',str(source),'ls-remote','origin','refs/heads/main','refs/heads/codex/branch-evidence-closure-2026-09-02','refs/pull/63/merge'],check=True,capture_output=True,text=True,timeout=30)
+          observed={ref:sha for sha,ref in (line.split() for line in refs.stdout.splitlines())}
+          assert observed=={'refs/heads/main':'d66c1b5b614a2a7b682c233fe2e7a19939b6976b','refs/heads/codex/branch-evidence-closure-2026-09-02':'be2be89efa3984e82b4e8584e2b8d6e7e315c9ca','refs/pull/63/merge':'a630c3fab4113f5e7a8fd86252cf0f586be3aca7'}
+          print('Supplementary ARM source/merge Rust matrix: PASS; required x64 gates, live databases and independent acceptance remain separate.')
+          PY

@@ -8,8 +8,8 @@ const env = {...process.env};
 delete env.GITHUB_TOKEN;
 const result = spawnSync('/usr/bin/python3', [
   path.join(process.env.GITHUB_WORKSPACE, 'source/scripts/upload-actions-artifact.py'),
-  'trnm-upload-response-be2be89e',
-  path.join(process.env.RUNNER_TEMP, 'trnm-upload-response-be2be89e.zip'),
+  'trnm-rust-matrix-be2be89e',
+  path.join(process.env.RUNNER_TEMP, 'rust-matrix/rust-matrix.zip'),
   '--mime-type', 'application/zip'
 ], {env, stdio: 'inherit', timeout: 180000, shell: false});
 if (result.error || result.status !== 0) process.exit(1);
