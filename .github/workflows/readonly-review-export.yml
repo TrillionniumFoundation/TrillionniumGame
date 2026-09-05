@@ -2,181 +2,35 @@ name: qualify-published-current-head
 
 on:
   push:
-    branches: [tooling/readonly-review-export-arm-8fde7e81]
+    branches: [tooling/world-object-probe-approved-path-20260906]
 
 permissions:
   contents: read
   actions: read
 
-env:
-  BASE_COMMIT: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
-  PRODUCT_HEAD: 545569a4936f08d0eed0b79806e04239cbe8e835
-  PRODUCT_TREE: 00ca7f813f5dcb1e46935cf6bc0121ca33888c7e
-  PRODUCT_MERGE: f23acd1054cf2f415f67ecbdfc6125152b493a29
-  PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
-  POLICY_BLOB: f6b64f8de887ea5a7acf525a90c5723aeab80963
-  DERIVE_BLOB: ef7276d17584f24a39e5f029a2b5c49eb36ef912
-  POLICY_TEST_BLOB: b0223b0ea3722c16ee67e40d397c01d88ebb1430
-  CARGO_TERM_COLOR: never
-
 jobs:
-  published-source-and-merge-supplementary:
+  bounded-world-object-probe:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 58
+    timeout-minutes: 5
+    env:
+      WORLD_TOKEN: ${{ secrets.WORLD_REPOSITORY_TOKEN }}
     steps:
-      - name: Fetch fixed tooling and published product objects
+      - name: Create one fixed unreferenced blob in World
         shell: bash
         run: |
           set -euo pipefail
-          git init "$GITHUB_WORKSPACE/tooling"
-          git -C "$GITHUB_WORKSPACE/tooling" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
-          git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object build_probe.py)" = f6a3a513941e1db992601826f3a2c2e73b0f85a9
-          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object test_build_probe.py)" = d17e823f6067db961db9a0fa8c8bc4f84e4c107c
-
-          git init "$GITHUB_WORKSPACE/source"
-          git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin "$PRODUCT_HEAD"
-          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin refs/pull/63/merge
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse FETCH_HEAD)" = "$PRODUCT_MERGE"
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse "$PRODUCT_HEAD^{tree}")" = "$PRODUCT_TREE"
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse "$PRODUCT_MERGE^{tree}")" = "$PRODUCT_TREE"
-          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object scripts/status_transition_policy.py)" = "$POLICY_BLOB"
-          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object scripts/derive-gap-status.py)" = "$DERIVE_BLOB"
-          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object tests/control_plane/test_status_transition_policy.py)" = "$POLICY_TEST_BLOB"
-          mapfile -t parents < <(git -C "$GITHUB_WORKSPACE/source" cat-file -p "$PRODUCT_MERGE" | sed -n 's/^parent //p')
-          test "${#parents[@]}" -eq 2
-          test "${parents[0]}" = "$BASE_COMMIT"
-          test "${parents[1]}" = "$PRODUCT_HEAD"
-
-      - name: Test bounded command runner and install exact Rust toolchain
-        shell: bash
-        working-directory: tooling
-        run: |
-          set -euo pipefail
-          python3 -m unittest -v test_build_probe
-          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
-          rustc +1.85.1 --version --verbose
-          cargo +1.85.1 --version --verbose
-
-      - name: Execute all registered Rust packages on source and merge
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os,sys
-          from pathlib import Path
-          sys.path.insert(0,str(Path(os.environ['GITHUB_WORKSPACE'])/'tooling'))
-          import build_probe as probe
-          probe.HEAD=os.environ['PRODUCT_HEAD']
-          probe.BASE=os.environ['BASE_COMMIT']
-          probe.MERGE=os.environ['PRODUCT_MERGE']
-          probe.TREE=os.environ['PRODUCT_TREE']
-          sys.argv=['build_probe.py','--source',os.environ['GITHUB_WORKSPACE']+'/source','--output',os.environ['RUNNER_TEMP']+'/published-current']
-          raise SystemExit(probe.main())
-          PY
-
-      - name: Execute Python controls and Go migration input on both objects
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import hashlib,json,os,re,sys,time,zipfile
-          from pathlib import Path
-          sys.path.insert(0,str(Path(os.environ['GITHUB_WORKSPACE'])/'tooling'))
-          import build_probe as probe
-
-          source=Path(os.environ['GITHUB_WORKSPACE'])/'source'
-          out=Path(os.environ['RUNNER_TEMP'])/'published-current'
-          matrix=json.loads((out/'matrix.json').read_text())
-          rows=[]
-          result={
-              'schema':'trillionnium.published-current-supplementary.v1',
-              'source':os.environ['PRODUCT_HEAD'],
-              'merge':os.environ['PRODUCT_MERGE'],
-              'tree':os.environ['PRODUCT_TREE'],
-              'commands':rows,
-              'complete':False,
-              'ordinary_required_gate_credit':False,
-              'independent_acceptance':False,
-              'live_database_credit':False}
-          env={k:os.environ[k] for k in ('PATH','HOME','USER','TMPDIR','RUSTUP_HOME','CARGO_HOME') if k in os.environ}
-          env.update(GOTOOLCHAIN='go1.26.5',CARGO_TERM_COLOR='never',PYTHONDONTWRITEBYTECODE='1')
-          began=time.monotonic()
-          try:
-              assert matrix['complete'] is True and len(matrix['commands'])==70
-              assert all(row['returncode']==0 and row['failure'] is None for row in matrix['commands'])
-              for label,sha in [('source',result['source']),('prospective',result['merge'])]:
-                  probe.git(source,'checkout','--detach',sha)
-                  assert probe.git(source,'rev-parse','HEAD^{tree}').decode().strip()==result['tree']
-                  schedule=[
-                      ('policy-self-check',['python3','scripts/status_transition_policy.py','--self-check'],source),
-                      ('policy-self-compare',['python3','scripts/status_transition_policy.py','--previous-root','.','--current-root','.'],source),
-                      ('compileall',['python3','-m','compileall','-q','scripts','tools','tests'],source),
-                      ('python',['python3','-m','unittest','discover','-s','tests','-p','test_*.py','-v'],source)]
-                  checks=['check-documentation-authority.py','check-plan.py','check-evidence-index.py','check-gap-register.py','derive-gap-status.py','derive-gates.py','check-status-transitions.py','check-workflow-action-policy.py','check-repository-hygiene.py','check-trnm-server.py','check-rust-foundation.py']
-                  schedule += [(name,['python3','scripts/'+name],source) for name in checks]
-                  schedule += [
-                      ('go-version',['go','version'],source/'runtime'),
-                      ('go-test',['go','test','./...','-count=1'],source/'runtime'),
-                      ('go-race',['go','test','-race','./...','-count=1'],source/'runtime'),
-                      ('go-vet',['go','vet','./...'],source/'runtime')]
-                  for name,argv,cwd in schedule:
-                      remaining=1500-(time.monotonic()-began)
-                      assert remaining>0,'supplementary non-Rust deadline'
-                      log=out/f'extra-{len(rows):03d}-{label}-{name}.log'
-                      row=probe.command(argv,cwd,log,env,min(600,remaining));row.update(object=sha,name=name);rows.append(row)
-                      assert row['returncode']==0 and row['failure'] is None,name
-                      text=log.read_text(errors='replace')
-                      if name=='python':
-                          match=re.search(r'^Ran ([1-9][0-9]*) tests in ',text,re.M)
-                          assert match and int(match.group(1))>=562 and re.search(r'^OK$',text,re.M)
-                      if name in ('policy-self-check','policy-self-compare'):
-                          payload=json.loads(text)
-                          assert payload['valid'] is True
-                      if name=='go-version': assert 'go1.26.5 linux/arm64' in text
-                      if name in ('go-test','go-race'): assert re.search(r'^ok\s+',text,re.M)
-                      assert sum(item['size_bytes'] for item in rows)<20*1024*1024
-                  assert not probe.git(source,'status','--porcelain').strip()
-              assert len(rows)==38
-              result['complete']=True
-          except Exception as exc:
-              result['failure_type']=type(exc).__name__
-              result['failure']=str(exc)[:500]
-          (out/'qualification.json').write_text(json.dumps(result,indent=2)+'\n')
-          files={p.name:p.read_bytes() for p in out.iterdir() if p.is_file() and p.suffix!='.zip' and p.name!='file-index.json'}
-          assert sum(map(len,files.values()))<64*1024*1024
-          files['file-index.json']=(json.dumps([{'path':name,'size_bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()} for name,data in sorted(files.items())],indent=2)+'\n').encode()
-          with zipfile.ZipFile(out/'published-current-qualification.zip','x',zipfile.ZIP_DEFLATED) as archive:
-              for name,data in sorted(files.items()): archive.writestr(name,data)
-          print(json.dumps(result))
-          PY
-
-      - name: Retain exact source merge logs and identities
-        uses: ./tooling/publish
-
-      - name: Reject incomplete results or moved refs
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json,os,subprocess
-          from pathlib import Path
-          out=Path(os.environ['RUNNER_TEMP'])/'published-current'
-          matrix=json.loads((out/'matrix.json').read_text())
-          qualification=json.loads((out/'qualification.json').read_text())
-          assert matrix['complete'] is True and qualification['complete'] is True
-          assert len(matrix['commands'])==70 and len(qualification['commands'])==38
-          assert matrix['source_head']==qualification['source']==os.environ['PRODUCT_HEAD']
-          assert matrix['prospective_merge']==qualification['merge']==os.environ['PRODUCT_MERGE']
-          assert matrix['tree']==qualification['tree']==os.environ['PRODUCT_TREE']
-          refs=subprocess.run(['git','-C',os.environ['GITHUB_WORKSPACE']+'/source','ls-remote','origin','refs/heads/main','refs/heads/'+os.environ['PRODUCT_BRANCH'],'refs/pull/63/merge'],check=True,capture_output=True,text=True,timeout=30)
-          observed={ref:sha for sha,ref in (line.split() for line in refs.stdout.splitlines())}
-          assert observed=={
-              'refs/heads/main':os.environ['BASE_COMMIT'],
-              'refs/heads/'+os.environ['PRODUCT_BRANCH']:os.environ['PRODUCT_HEAD'],
-              'refs/pull/63/merge':os.environ['PRODUCT_MERGE']}
-          print('Published current source and merge supplementary matrix passed; ordinary gates and independent acceptance remain separate.')
-          PY
+          test -n "${WORLD_TOKEN:-}" || { echo 'WORLD_OBJECT_WRITE_PROBE=NO_CONFIGURED_TOKEN'; exit 1; }
+          payload='trnm-world-approved-path-object-write-probe-v1'
+          expected="$(printf '%s\n' "$payload" | git hash-object --stdin)"
+          encoded="$(printf '%s\n' "$payload" | base64 -w0)"
+          response="${RUNNER_TEMP}/response.json"
+          code="$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+            --request POST \
+            --header "Authorization: Bearer ${WORLD_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/git/blobs \
+            --data "{\"content\":\"${encoded}\",\"encoding\":\"base64\"}")"
+          test "$code" = 201
+          test "$(jq -r '.sha // empty' "$response")" = "$expected"
+          printf 'WORLD_OBJECT_WRITE_PROBE=PASS blob=%s\n' "$expected"
