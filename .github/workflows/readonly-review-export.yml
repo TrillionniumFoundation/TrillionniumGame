@@ -1,4 +1,4 @@
-name: publish-acceptance-scope-fix
+name: publish-gap-bound-evidence-fix
 
 on:
   push:
@@ -9,21 +9,20 @@ permissions:
   actions: read
 
 env:
-  BASE_COMMIT: c66deb47298faa19164c7060cd0efa2584210e07
-  BASE_TREE: e3c7efed8d8f2be0780cfb3f0e80c1e67db1455d
-  RESULT_TREE: 3a9922565e23dd2dd837f3f8104fa65dfa06731f
-  PATCH_BLOB: 3bfb44ae2e01e850ea7985e59d49d9f958695a38
-  PATCH_GZIP_SHA256: c2b7a7e8e9cfc8a4c21054991d246c64639c3760a0b66e6cfca4a34bc2bfd09b
-  PATCH_SHA256: 63d2ceac5029088bebcee06cfec2bad5dba00ea373e7892c7170350c41883ec0
+  BASE_COMMIT: 58b9a5ac7d2c881bb6f667ea23284561d6f3d210
+  BASE_TREE: 3a9922565e23dd2dd837f3f8104fa65dfa06731f
+  RESULT_TREE: d8355f6b58bd6797f45bde6abb7ec8b266a34c24
+  PATCH_BLOB: 50b7388a2c0f50297444e6059c3ca1c25dcdf4dc
+  PATCH_GZIP_SHA256: e060fb15978b0a19e163aa1fe1abc583a261d6445447e2cbc8f44a5aed9538d4
+  PATCH_SHA256: 6ce7fcfb65b1e946c97716dba0c3d0eff7ee481578d95cfdfc8ccec389412520
   PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
-  CARGO_TERM_COLOR: never
 
 jobs:
   publish-tested-fast-forward:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
-      - name: Fetch exact tooling and product base
+      - name: Fetch exact tooling and unchanged product base
         shell: bash
         run: |
           set -euo pipefail
@@ -32,8 +31,9 @@ jobs:
           git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object acceptance-scope.patch.gz)" = "$PATCH_BLOB"
-          printf '%s  %s\n' "$PATCH_GZIP_SHA256" "$GITHUB_WORKSPACE/tooling/acceptance-scope.patch.gz" | sha256sum -c -
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object gap-bound-evidence.patch.gz)" = "$PATCH_BLOB"
+          printf '%s  %s\n' "$PATCH_GZIP_SHA256" "$GITHUB_WORKSPACE/tooling/gap-bound-evidence.patch.gz" | sha256sum -c -
+
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
           git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin "$BASE_COMMIT"
@@ -42,65 +42,80 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$BASE_TREE"
           test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$BASE_COMMIT"
 
-      - name: Apply exact patch and verify resulting source
+      - name: Apply exact patch and verify every changed blob
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          gzip -dc "$GITHUB_WORKSPACE/tooling/acceptance-scope.patch.gz" > "$RUNNER_TEMP/acceptance-scope.patch"
-          printf '%s  %s\n' "$PATCH_SHA256" "$RUNNER_TEMP/acceptance-scope.patch" | sha256sum -c -
-          git apply --check "$RUNNER_TEMP/acceptance-scope.patch"
-          git apply --index "$RUNNER_TEMP/acceptance-scope.patch"
+          gzip -dc "$GITHUB_WORKSPACE/tooling/gap-bound-evidence.patch.gz" > "$RUNNER_TEMP/gap-bound-evidence.patch"
+          printf '%s  %s\n' "$PATCH_SHA256" "$RUNNER_TEMP/gap-bound-evidence.patch" | sha256sum -c -
+          git apply --check "$RUNNER_TEMP/gap-bound-evidence.patch"
+          git apply --index "$RUNNER_TEMP/gap-bound-evidence.patch"
           test "$(git write-tree)" = "$RESULT_TREE"
-          test "$(git diff --cached --name-only | wc -l)" -eq 7
-          test "$(git hash-object docs/GOVERNANCE.md)" = 0d809bbb0943ceb8b482592be2e35f72629b6707
-          test "$(git hash-object docs/TESTING_AND_EVIDENCE.md)" = 58c9a538b3d0e4050be8126903bfb09d113f09fd
-          test "$(git hash-object docs/evidence/schemas/trillionnium-evidence-v1.schema.json)" = bc79ce5ac53f6a0aa2570ac35bf2036ac13a7aaf
-          test "$(git hash-object docs/status/EXECUTION_ACCEPTANCE_STATUS.json)" = eb26f29ca5893fab204a12700ba3cd97e6401eca
-          test "$(git hash-object scripts/check-status-transitions.py)" = 18308d4d0b24c7869c13791ebc7f2942c4edfa6c
-          test "$(git hash-object tests/control_plane/test_evidence_admission.py)" = 9fbb99bfa519459c75901f13033dc03d41493cb8
-          test "$(git hash-object tests/control_plane/test_execution_acceptance.py)" = a2ed5efb0de344ab412a4db989de81601197eee9
+          cat > "$RUNNER_TEMP/expected-files" <<'EOF'
+          docs/TESTING_AND_EVIDENCE.md
+          docs/evidence/schemas/trillionnium-evidence-v1.schema.json
+          docs/status/EXECUTION_ACCEPTANCE_STATUS.json
+          scripts/evidence_admission.py
+          tests/control_plane/test_evidence_admission.py
+          EOF
+          git diff --cached --name-only | sort > "$RUNNER_TEMP/actual-files"
+          diff -u "$RUNNER_TEMP/expected-files" "$RUNNER_TEMP/actual-files"
+          test "$(git hash-object docs/TESTING_AND_EVIDENCE.md)" = 7fe1ab40ab446276b8eee52384af32981f120ec1
+          test "$(git hash-object docs/evidence/schemas/trillionnium-evidence-v1.schema.json)" = 3e12e964054fa890bfbbf0622c336eecc36a878e
+          test "$(git hash-object docs/status/EXECUTION_ACCEPTANCE_STATUS.json)" = e286d0cdfd15d008bb4e7ec6538446e88c1e05b2
+          test "$(git hash-object scripts/evidence_admission.py)" = 9446e7a99b5c17a1e73eae309d8a5ed31abdb0a0
+          test "$(git hash-object tests/control_plane/test_evidence_admission.py)" = 8085037bee674862e6895fd073757f4e2d66b8c1
 
-      - name: Execute complete qualification and create commit packet
+      - name: Execute complete regression and control qualification
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/acceptance-proof"
-          python3 -m compileall -q scripts tools tests 2>&1 | tee "$RUNNER_TEMP/acceptance-proof/compileall.log"
-          python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/acceptance-proof/python.log"
-          grep -E '^Ran 530 tests in ' "$RUNNER_TEMP/acceptance-proof/python.log"
-          grep -qx OK "$RUNNER_TEMP/acceptance-proof/python.log"
+          mkdir -p "$RUNNER_TEMP/gap-proof"
+          python3 -m compileall -q scripts tools tests 2>&1 | tee "$RUNNER_TEMP/gap-proof/compileall.log"
+          python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/gap-proof/python.log"
+          grep -E '^Ran 532 tests in ' "$RUNNER_TEMP/gap-proof/python.log"
+          grep -qx OK "$RUNNER_TEMP/gap-proof/python.log"
+          grep -F 'test_evidence_for_one_gap_cannot_close_another_gap' "$RUNNER_TEMP/gap-proof/python.log"
+          grep -F 'test_gap_consumer_rejects_cross_gap_evidence' "$RUNNER_TEMP/gap-proof/python.log"
           {
             for check in check-documentation-authority.py check-plan.py check-evidence-index.py check-gap-register.py derive-gap-status.py derive-gates.py check-status-transitions.py check-workflow-action-policy.py check-repository-hygiene.py check-trnm-server.py check-rust-foundation.py; do
               printf '\n=== %s ===\n' "$check"
               python3 "scripts/$check"
             done
-          } 2>&1 | tee "$RUNNER_TEMP/acceptance-proof/controls.log"
-          git diff --check 2>&1 | tee "$RUNNER_TEMP/acceptance-proof/diff-check.log"
+          } 2>&1 | tee "$RUNNER_TEMP/gap-proof/controls.log"
+          git diff --cached --check 2>&1 | tee "$RUNNER_TEMP/gap-proof/diff-check.log"
           test "$(git write-tree)" = "$RESULT_TREE"
+
+      - name: Create exact product commit and retained packet
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
           git config user.name 'Qian QI'
           git config user.email '102159240+ProfHepta@users.noreply.github.com'
-          git commit -m 'fix(governance): bind accepted tasks to immutable gate and milestone scope' -m 'Reject mutable task-scope reduction, require same-target passed product gates and retained task-plus-gate evidence, bind current milestone semantics, and admit canonical TG-V3 evidence task IDs. Add hostile and positive regression coverage. Exact source and merge CI plus independent acceptance remain required; no gap or product claim is promoted.'
+          git commit -m 'fix(evidence): bind retained proof to exact gap identity' -m 'Require identical nonempty canonical gap_ids in accepted index rows and retained manifests. Gap closure now accepts only evidence explicitly mapped to that exact gap, preventing same-type same-target proof from closing an unrelated gap. Add schema, shared-admission and real consumer regressions. Existing diagnostic rows remain readable but non-creditable. Exact ordinary source/merge CI and independent review remain required; no gap or product claim is promoted.'
           test "$(git rev-parse HEAD^)" = "$BASE_COMMIT"
           test "$(git rev-parse HEAD^{tree})" = "$RESULT_TREE"
-          git cat-file commit HEAD > "$RUNNER_TEMP/acceptance-proof/product-commit.txt"
-          cp "$RUNNER_TEMP/acceptance-scope.patch" "$RUNNER_TEMP/acceptance-proof/acceptance-scope.patch"
+          git cat-file commit HEAD > "$RUNNER_TEMP/gap-proof/product-commit.txt"
+          cp "$RUNNER_TEMP/gap-bound-evidence.patch" "$RUNNER_TEMP/gap-proof/gap-bound-evidence.patch"
           python3 - <<'PY'
-          import hashlib, json, os, zipfile
+          import hashlib, json, os, subprocess, zipfile
           from pathlib import Path
-          root = Path(os.environ['RUNNER_TEMP']) / 'acceptance-proof'
+          root = Path(os.environ['RUNNER_TEMP']) / 'gap-proof'
+          product_commit = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
           identity = {
-              'schema': 'trillionnium.acceptance-scope-publication.v1',
+              'schema': 'trillionnium.gap-bound-evidence-publication.v1',
               'base_commit': os.environ['BASE_COMMIT'],
               'base_tree': os.environ['BASE_TREE'],
               'result_tree': os.environ['RESULT_TREE'],
-              'product_commit': os.popen('git rev-parse HEAD').read().strip(),
+              'product_commit': product_commit,
               'patch_sha256': os.environ['PATCH_SHA256'],
               'producer': {k: os.environ.get(k) for k in ('GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_JOB')},
-              'tests': {'python_passed': 530, 'control_checks_passed': 11},
+              'tests': {'python_passed': 532, 'control_checks_passed': 11},
               'claims': {'accepted': False, 'gap_closed': False, 'main_changed': False, 'independent_review': False},
-              'limitations': ['Publication execution is not the ordinary required exact-head/prospective-merge matrix.', 'No live database, administrator read-back, specialist acceptance or product-completeness credit follows.'],
+              'limitations': ['Publication execution is not the ordinary required exact-head/prospective-merge matrix.', 'Synthetic accepted fixtures do not constitute real review or gap closure.', 'No live database, administrator read-back, specialist acceptance or product-completeness credit follows.'],
           }
           (root / 'identity.json').write_text(json.dumps(identity, indent=2) + '\n')
           files = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
@@ -109,7 +124,7 @@ jobs:
               for n,b in sorted(files.items())
           ], indent=2) + '\n')
           files = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
-          with zipfile.ZipFile(root / 'acceptance-scope-publication.zip', 'x', zipfile.ZIP_DEFLATED) as archive:
+          with zipfile.ZipFile(root / 'gap-bound-evidence-publication.zip', 'x', zipfile.ZIP_DEFLATED) as archive:
               for name, data in sorted(files.items()):
                   archive.writestr(name, data)
           PY
