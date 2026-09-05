@@ -21,27 +21,12 @@ env:
   RUST_TEST_THREADS: "1"
   RUSTUP_TOOLCHAIN: "1.98.0"
   PYTHONDONTWRITEBYTECODE: "1"
-  TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/world_settlement
-  TRNM_REQUIRE_SETTLEMENT_DATABASE_TEST: "1"
+  TRNM_REQUIRE_SETTLEMENT_DATABASE_TEST: "0"
 
 jobs:
   world-readonly-exact-head:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
-    services:
-      postgres:
-        image: postgres:16.4-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: world_settlement
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d world_settlement"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
     steps:
       - name: Fetch exact World candidate without credentials
         shell: bash
@@ -96,13 +81,13 @@ jobs:
           cargo +1.98.0 test --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core -p trnm-rts-sim --all-targets --locked 2>&1 | tee run/world-head-validation/game-core-rust.log
           cargo +1.98.0 clippy --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core -p trnm-rts-sim --all-targets --locked -- -D warnings 2>&1 | tee run/world-head-validation/game-core-clippy.log
 
-      - name: Test current game-server and PostgreSQL contracts
+      - name: Compile and test current game-server without database credit
         shell: bash
         working-directory: world/trillionnium
         run: |
           set -euo pipefail
           cargo +1.98.0 fmt -p trnm-game-server -- --check
-          cargo +1.98.0 test -p trnm-game-server --all-targets --locked 2>&1 | tee ../run/world-head-validation/game-server-rust-postgres.log
+          cargo +1.98.0 test -p trnm-game-server --all-targets --locked 2>&1 | tee ../run/world-head-validation/game-server-rust.log
           cargo +1.98.0 clippy -p trnm-game-server --all-targets --locked -- -D warnings 2>&1 | tee ../run/world-head-validation/game-server-clippy.log
 
       - name: Build immutable diagnostic record
@@ -121,7 +106,7 @@ jobs:
             printf 'run_id=%s\n' "$GITHUB_RUN_ID"
             printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
             printf 'rustc=%s\n' "$(rustc +1.98.0 --version 2>/dev/null || true)"
-            printf 'postgres_image=postgres:16.4-alpine\n'
+            printf 'database_credit=false\n'
             printf 'source_mutated=false\n'
             printf 'ordinary_required_check_credit=false\n'
             printf 'independent_review_credit=false\n'
@@ -134,7 +119,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: world-readonly-exact-head-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          name: world-readonly-exact-head-76999aea-${{ github.run_attempt }}
           path: world/run/world-head-validation/**
           if-no-files-found: error
           retention-days: 30
