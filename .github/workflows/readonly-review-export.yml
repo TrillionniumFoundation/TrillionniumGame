@@ -8,14 +8,15 @@ permissions:
   contents: read
   actions: read
 
+env:
+  CARGO_TERM_COLOR: never
+
 jobs:
-  session-atomicity-preflight-not-acceptance:
+  published-source-and-merge-supplementary:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 25
-    env:
-      CARGO_TERM_COLOR: never
+    timeout-minutes: 50
     steps:
-      - name: Fetch fixed original product and the proposed library bytes
+      - name: Fetch fixed tooling and published product objects without source overlays
         shell: bash
         run: |
           set -euo pipefail
@@ -24,91 +25,109 @@ jobs:
           git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
-          cd "$GITHUB_WORKSPACE/tooling"
-          printf '%s\n' 'b2117d6b4e87f3f29552cebde63bc1761104e0d86f8478e77cfcc7c0b3a76a8c  session-lib.rs.gz' | sha256sum -c -
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object build_probe.py)" = f6a3a513941e1db992601826f3a2c2e73b0f85a9
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object test_build_probe.py)" = d17e823f6067db961db9a0fa8c8bc4f84e4c107c
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin be2be89efa3984e82b4e8584e2b8d6e7e315c9ca
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin 620fc666f617bbdf55e64033a4151a42add2b0dd
           git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = be2be89efa3984e82b4e8584e2b8d6e7e315c9ca
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = 7aaa04dd376c6beade753d610f0649fd9db526bf
-          mkdir "$RUNNER_TEMP/session-proof"
-          cp "$GITHUB_WORKSPACE/source/crates/trnm-session-core/src/lib.rs" "$RUNNER_TEMP/session-proof/original-lib.rs"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin refs/pull/63/merge
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse FETCH_HEAD)" = 7cb05f40f76adcda03df7029f5a5da1a7ef2c9ed
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = 61034e71e044a5a8af041ecc7220e9c745a196d4
+          test "$(git -C "$GITHUB_WORKSPACE/source" hash-object crates/trnm-session-core/src/lib.rs)" = e4b41563d5d79f084276898954b4a20a9a3cb6f9
+      - name: Test the existing bounded command runner
+        shell: bash
+        working-directory: tooling
+        run: python3 -m unittest -v test_build_probe
       - name: Install exact Rust compiler formatter and lint
         shell: bash
         run: |
           set -euo pipefail
           rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
-          rustc +1.85.1 --version --verbose | tee "$RUNNER_TEMP/session-proof/toolchain.log"
-      - name: Reproduce counter overflow mutation in the original implementation
+          rustc +1.85.1 --version --verbose
+      - name: Execute all registered Rust packages on both published objects
         shell: bash
-        working-directory: source
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import gzip,os,hashlib
+          import os,sys
           from pathlib import Path
-          root=Path(os.environ['GITHUB_WORKSPACE']); p=root/'source/crates/trnm-session-core/src/lib.rs'
-          original=p.read_text(); proposed=gzip.decompress((root/'tooling/session-lib.rs.gz').read_bytes()).decode()
-          assert hashlib.sha1(b'blob '+str(len(proposed.encode())).encode()+b'\0'+proposed.encode()).hexdigest()=='da857c772d4d6b7fba61b732fb80e0212905eb14'
-          old='        let previous_generation = self.generation;\n        self.consumed_tokens.insert(self.active_token);\n        self.active_token = replacement_token;\n        self.generation = self.generation.checked_next()?;'
-          new='        let previous_generation = self.generation;\n        // Validate every fallible rotation condition before changing token state.\n        let current_generation = previous_generation.checked_next()?;\n        self.consumed_tokens.insert(self.active_token);\n        self.active_token = replacement_token;\n        self.generation = current_generation;'
-          assert original.count(old)==1 and proposed.count(new)==1
-          before=proposed.replace(new,old)
-          assert before.split('#[cfg(test)]')[0]==original.split('#[cfg(test)]')[0]
-          p.write_text(before)
+          sys.path.insert(0,str(Path(os.environ['GITHUB_WORKSPACE'])/'tooling'))
+          import build_probe as p
+          p.HEAD='620fc666f617bbdf55e64033a4151a42add2b0dd'
+          p.BASE='d66c1b5b614a2a7b682c233fe2e7a19939b6976b'
+          p.MERGE='7cb05f40f76adcda03df7029f5a5da1a7ef2c9ed'
+          p.TREE='61034e71e044a5a8af041ecc7220e9c745a196d4'
+          sys.argv=['build_probe.py','--source',os.environ['GITHUB_WORKSPACE']+'/source','--output',os.environ['RUNNER_TEMP']+'/rust-matrix']
+          raise SystemExit(p.main())
           PY
-          set +e
-          cargo +1.85.1 test -p trnm-session-core --lib --locked -- --nocapture 2>&1 | tee "$RUNNER_TEMP/session-proof/before.log"
-          rc=$?
-          set -e
-          test "$rc" -eq 101
-          grep -F 'test result: FAILED. 8 passed; 2 failed; 0 ignored;' "$RUNNER_TEMP/session-proof/before.log"
-          grep -F 'tests::generation_overflow_preserves_entire_family' "$RUNNER_TEMP/session-proof/before.log"
-          grep -F 'tests::final_generation_transition_succeeds_without_wrapping' "$RUNNER_TEMP/session-proof/before.log"
-      - name: Format compile and test the proposed local overlay without changing a remote ref
-        shell: bash
-        working-directory: source
-        run: |
-          set -euo pipefail
-          gzip -dc "$GITHUB_WORKSPACE/tooling/session-lib.rs.gz" > crates/trnm-session-core/src/lib.rs
-          rustfmt +1.85.1 --edition 2021 crates/trnm-session-core/src/lib.rs
-          cargo +1.85.1 fmt --all -- --check 2>&1 | tee "$RUNNER_TEMP/session-proof/format.log"
-          cargo +1.85.1 test -p trnm-session-core --all-targets --locked -- --nocapture 2>&1 | tee "$RUNNER_TEMP/session-proof/after.log"
-          grep -F 'test result: ok. 10 passed; 0 failed; 0 ignored;' "$RUNNER_TEMP/session-proof/after.log"
-          cargo +1.85.1 clippy -p trnm-session-core --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/session-proof/clippy.log"
-          python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/session-proof/python.log"
-          grep -E '^Ran 477 tests in ' "$RUNNER_TEMP/session-proof/python.log"
-          grep -qx OK "$RUNNER_TEMP/session-proof/python.log"
-          {
-            for check in check-documentation-authority.py check-plan.py check-evidence-index.py check-gap-register.py derive-gap-status.py derive-gates.py check-status-transitions.py check-workflow-action-policy.py check-repository-hygiene.py check-trnm-server.py check-rust-foundation.py; do
-              printf '\n=== %s ===\n' "$check"
-              python3 "scripts/$check" || exit "$?"
-            done
-          } 2>&1 | tee "$RUNNER_TEMP/session-proof/controls.log"
-          git diff --check
-          git add crates/trnm-session-core/src/lib.rs
-          test "$(git diff --cached --name-only)" = crates/trnm-session-core/src/lib.rs
-          cp crates/trnm-session-core/src/lib.rs "$RUNNER_TEMP/session-proof/patched-lib.rs"
-          git diff --cached --binary > "$RUNNER_TEMP/session-proof/compiled-library.patch"
-          git write-tree > "$RUNNER_TEMP/session-proof/overlay-tree.txt"
-      - name: Seal compiled original failure and patched success as diagnostic bytes
+      - name: Execute complete Python controls and Go migration input on both objects
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import hashlib,json,os,re,sys,time,zipfile
           from pathlib import Path
-          import os,json,hashlib,zipfile
-          root=Path(os.environ['RUNNER_TEMP'])/'session-proof'
-          data={p.name:p.read_bytes() for p in root.iterdir() if p.is_file()}
-          assert sum(map(len,data.values()))<16*1024*1024
-          patched=data['patched-lib.rs']
-          identity={'schema':'trillionnium.session-rotation-atomicity-preflight.v1','base_commit':'be2be89efa3984e82b4e8584e2b8d6e7e315c9ca','base_tree':'7aaa04dd376c6beade753d610f0649fd9db526bf','patched_library_blob':hashlib.sha1(b'blob '+str(len(patched)).encode()+b'\0'+patched).hexdigest(),'overlay_tree':data['overlay-tree.txt'].decode().strip(),'original_with_regressions':{'passed':8,'failed':2},'patched_session_tests':{'passed':10,'failed':0},'python_tests_passed':477,'producer':{k:os.environ[k] for k in ('GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_JOB')},'claims':{'accepted':False,'gap_closed':False,'product_branch_changed':False},'limitations':['The tested tree is an overlay on the fixed base, not a published product commit.','Only the session package Rust tests/lint, complete Python and existing source checks are executed; no live database, SDK or independent review.','Private u64 ceiling fixtures demonstrate an error-atomicity boundary, not a practical network attack.']}
-          data['identity.json']=(json.dumps(identity,indent=2)+'\n').encode()
+          sys.path.insert(0,str(Path(os.environ['GITHUB_WORKSPACE'])/'tooling'))
+          import build_probe as p
+          source=Path(os.environ['GITHUB_WORKSPACE'])/'source'
+          out=Path(os.environ['RUNNER_TEMP'])/'rust-matrix'
+          matrix=json.loads((out/'matrix.json').read_text())
+          rows=[]; result={'schema':'trillionnium.published-source-supplementary.v1','source':'620fc666f617bbdf55e64033a4151a42add2b0dd','merge':'7cb05f40f76adcda03df7029f5a5da1a7ef2c9ed','tree':'61034e71e044a5a8af041ecc7220e9c745a196d4','commands':rows,'complete':False,'ordinary_required_gate_credit':False,'independent_acceptance':False,'live_database_credit':False}
+          env={k:os.environ[k] for k in ('PATH','HOME','USER','TMPDIR','RUSTUP_HOME','CARGO_HOME') if k in os.environ}
+          env.update(GOTOOLCHAIN='go1.26.5',CARGO_TERM_COLOR='never')
+          began=time.monotonic()
+          try:
+              assert matrix['complete'] is True and len(matrix['commands'])==70
+              assert all(x['returncode']==0 and x['failure'] is None for x in matrix['commands'])
+              for label,sha in [('source',result['source']),('prospective',result['merge'])]:
+                  p.git(source,'checkout','--detach',sha)
+                  assert p.git(source,'rev-parse','HEAD^{tree}').decode().strip()==result['tree']
+                  schedule=[('compileall',['python3','-m','compileall','-q','scripts','tools','tests'],source),('python',['python3','-m','unittest','discover','-s','tests','-p','test_*.py','-v'],source)]
+                  checks=['check-documentation-authority.py','check-plan.py','check-evidence-index.py','check-gap-register.py','derive-gap-status.py','derive-gates.py','check-status-transitions.py','check-workflow-action-policy.py','check-repository-hygiene.py','check-trnm-server.py','check-rust-foundation.py']
+                  schedule += [(x,['python3','scripts/'+x],source) for x in checks]
+                  schedule += [('go-version',['go','version'],source/'runtime'),('go-test',['go','test','./...','-count=1'],source/'runtime'),('go-race',['go','test','-race','./...','-count=1'],source/'runtime'),('go-vet',['go','vet','./...'],source/'runtime')]
+                  for name,argv,cwd in schedule:
+                      remaining=1200-(time.monotonic()-began)
+                      assert remaining>0
+                      log=out/f'extra-{len(rows):03d}-{label}-{name}.log'
+                      row=p.command(argv,cwd,log,env,min(600,remaining));row.update(object=sha,name=name);rows.append(row)
+                      assert row['returncode']==0 and row['failure'] is None,name
+                      text=log.read_text(errors='replace')
+                      if name=='python': assert re.search(r'^Ran 477 tests in ',text,re.M) and re.search(r'^OK$',text,re.M)
+                      if name=='go-version': assert 'go1.26.5 linux/arm64' in text
+                      if name in ('go-test','go-race'): assert re.search(r'^ok\s+',text,re.M)
+                      assert sum(x['size_bytes'] for x in rows)<16*1024*1024
+                  assert not p.git(source,'status','--porcelain').strip()
+              assert len(rows)==34
+              result['complete']=True
+          except Exception as exc:
+              result['failure_type']=type(exc).__name__
+              result['failure']=str(exc)[:500]
+          (out/'qualification.json').write_text(json.dumps(result,indent=2)+'\n')
+          data={x.name:x.read_bytes() for x in out.iterdir() if x.is_file() and x.suffix!='.zip' and x.name!='file-index.json'}
+          assert sum(map(len,data.values()))<48*1024*1024
           data['file-index.json']=(json.dumps([{'path':n,'size_bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()} for n,b in sorted(data.items())],indent=2)+'\n').encode()
-          with zipfile.ZipFile(root/'session-proof.zip','x',zipfile.ZIP_DEFLATED) as z:
-              for n,b in sorted(data.items()):z.writestr(n,b)
-          print(json.dumps(identity))
+          with zipfile.ZipFile(out/'published-qualification.zip','x',zipfile.ZIP_DEFLATED) as z:
+              for n,b in sorted(data.items()): z.writestr(n,b)
+          print(json.dumps(result))
           PY
-      - name: Retain proof through the unchanged verified product uploader
+      - name: Retain exact producer source merge logs and raw commit identities
         uses: ./tooling/publish
+      - name: Reject incomplete results or changed live refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          out=Path(os.environ['RUNNER_TEMP'])/'rust-matrix'
+          m=json.loads((out/'matrix.json').read_text());q=json.loads((out/'qualification.json').read_text())
+          assert m['complete'] is True and q['complete'] is True
+          assert len(m['commands'])==70 and len(q['commands'])==34
+          assert m['source_head']==q['source'] and m['prospective_merge']==q['merge'] and m['tree']==q['tree']
+          refs=subprocess.run(['git','-C',os.environ['GITHUB_WORKSPACE']+'/source','ls-remote','origin','refs/heads/main','refs/heads/codex/branch-evidence-closure-2026-09-02','refs/pull/63/merge'],check=True,capture_output=True,text=True,timeout=30)
+          observed={ref:sha for sha,ref in (line.split() for line in refs.stdout.splitlines())}
+          assert observed=={'refs/heads/main':'d66c1b5b614a2a7b682c233fe2e7a19939b6976b','refs/heads/codex/branch-evidence-closure-2026-09-02':q['source'],'refs/pull/63/merge':q['merge']}
+          print('Published source and actual merge supplementary checks passed; no required x64, live database or independent acceptance credit.')
+          PY
