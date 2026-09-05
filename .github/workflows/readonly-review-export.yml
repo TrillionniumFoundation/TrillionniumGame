@@ -2,7 +2,7 @@ name: readonly-review-export
 
 on:
   push:
-    branches: [tooling/readonly-review-export-8fde7e81]
+    branches: [tooling/readonly-review-export-v7-8fde7e81]
 
 permissions:
   contents: read
@@ -40,10 +40,25 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = 8fde7e81b94113fa72f3bc700fba78c7da01b36e
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = 4d816c8d25e0e9fc42982e433447985e7bfcbee2
           test "$(git -C "$GITHUB_WORKSPACE/source" hash-object scripts/upload-actions-artifact.py)" = 5f94e2284cddc89dd065b76a8df06ba4e18b6589
-      - name: Test the exporter with synthetic inputs
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object diagnostic/scripts/upload-actions-artifact.py)" = 0943a72a5978241a79e590b34d759cb2878b77d2
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          original = (workspace/'source/scripts/upload-actions-artifact.py').read_bytes()
+          corrected = (workspace/'tooling/diagnostic/scripts/upload-actions-artifact.py').read_bytes()
+          old = b'"metadata": {"wrapper": {"mime_type": mime_type}},'
+          assert original.count(old) == 1
+          assert corrected == original.replace(old, b'"mime_type": mime_type,')
+          print('diagnostic uploader: exact single-field correction; product unchanged')
+          PY
+      - name: Test the exporter and actual diagnostic uploader
         shell: bash
         working-directory: tooling
-        run: python3 -m unittest -v test_export_packet
+        run: |
+          set -euo pipefail
+          python3 -m unittest -v test_export_packet
+          python3 -m unittest discover -s diagnostic/tests/control_plane -p test_actions_artifact_protocol.py -v
       - name: Retain native logs and recover bounded embedded archives without source mutation
         shell: bash
         env:
@@ -51,5 +66,5 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$GITHUB_WORKSPACE/tooling/export_packet.py" --source "$GITHUB_WORKSPACE/source" --output "$RUNNER_TEMP/trnm-review-8fde7e81.zip"
-      - name: Store diagnostic ZIP as an immutable Actions artifact
+      - name: Store diagnostic ZIP using version-seven ProtoJSON
         uses: ./tooling/publish
