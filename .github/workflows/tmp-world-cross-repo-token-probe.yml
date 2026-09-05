@@ -1,0 +1,77 @@
+name: tmp-world-cross-repo-token-probe
+
+on:
+  push:
+    branches:
+      - ops/game-world-import-probe-20260905
+    paths:
+      - .github/workflows/tmp-world-cross-repo-token-probe.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tmp-world-cross-repo-token-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TOKEN_WORLD_REPOSITORY: ${{ secrets.WORLD_REPOSITORY_TOKEN }}
+      TOKEN_TRNM_WORLD: ${{ secrets.TRNM_WORLD_TOKEN }}
+      TOKEN_WORLD_GITHUB: ${{ secrets.WORLD_GITHUB_TOKEN }}
+      TOKEN_WORLD_PAT: ${{ secrets.WORLD_PAT }}
+      TOKEN_CROSS_REPO: ${{ secrets.CROSS_REPO_TOKEN }}
+      TOKEN_CROSS_REPOSITORY: ${{ secrets.CROSS_REPOSITORY_TOKEN }}
+      TOKEN_TRNM_GITHUB: ${{ secrets.TRNM_GITHUB_TOKEN }}
+      TOKEN_TRNM_REPO: ${{ secrets.TRNM_REPO_TOKEN }}
+      TOKEN_ORG_GITHUB: ${{ secrets.ORG_GITHUB_TOKEN }}
+      TOKEN_REPO_ADMIN: ${{ secrets.REPO_ADMIN_TOKEN }}
+      TOKEN_GH_PAT: ${{ secrets.GH_PAT }}
+      TOKEN_GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
+      TOKEN_RELEASE: ${{ secrets.RELEASE_TOKEN }}
+      TOKEN_BOT: ${{ secrets.BOT_TOKEN }}
+      TOKEN_MACHINE_USER: ${{ secrets.MACHINE_USER_TOKEN }}
+    steps:
+      - name: Test constant unreferenced World blob write without exposing credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_payload='trnm-world-cross-repository-object-write-probe-v1'
+          encoded="$(printf '%s\n' "$expected_payload" | base64 -w0)"
+          expected_sha="$(printf '%s\n' "$expected_payload" | git hash-object --stdin)"
+          candidates=(
+            TOKEN_WORLD_REPOSITORY TOKEN_TRNM_WORLD TOKEN_WORLD_GITHUB TOKEN_WORLD_PAT
+            TOKEN_CROSS_REPO TOKEN_CROSS_REPOSITORY TOKEN_TRNM_GITHUB TOKEN_TRNM_REPO
+            TOKEN_ORG_GITHUB TOKEN_REPO_ADMIN TOKEN_GH_PAT TOKEN_GITHUB_PAT
+            TOKEN_RELEASE TOKEN_BOT TOKEN_MACHINE_USER
+          )
+          present=0
+          for variable in "${candidates[@]}"; do
+            value="${!variable:-}"
+            if [[ -z "$value" ]]; then
+              continue
+            fi
+            present=$((present + 1))
+            response="${RUNNER_TEMP}/world-token-probe-${present}.json"
+            code="$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+              --request POST \
+              --header "Authorization: Bearer ${value}" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/git/blobs \
+              --data "{\"content\":\"${encoded}\",\"encoding\":\"base64\"}")"
+            if [[ "$code" == 201 ]] && [[ "$(jq -r '.sha // empty' "$response")" == "$expected_sha" ]]; then
+              printf 'WORLD_OBJECT_WRITE_PROBE=PASS credential_alias=%s blob=%s\n' "$variable" "$expected_sha"
+              exit 0
+            fi
+            printf 'candidate=%s result_http=%s\n' "$variable" "$code"
+          done
+          if [[ "$present" == 0 ]]; then
+            echo 'WORLD_OBJECT_WRITE_PROBE=NO_CANDIDATE_SECRET'
+          else
+            echo 'WORLD_OBJECT_WRITE_PROBE=NO_AUTHORIZED_CANDIDATE'
+          fi
+          exit 1
