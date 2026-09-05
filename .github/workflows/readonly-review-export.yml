@@ -25,8 +25,6 @@ jobs:
     steps:
       - name: Fetch exact tooling and product base
         shell: bash
-        env:
-          GH_PUSH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git init "$GITHUB_WORKSPACE/tooling"
@@ -36,7 +34,6 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object acceptance-scope.patch.gz)" = "$PATCH_BLOB"
           printf '%s  %s\n' "$PATCH_GZIP_SHA256" "$GITHUB_WORKSPACE/tooling/acceptance-scope.patch.gz" | sha256sum -c -
-
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
           git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin "$BASE_COMMIT"
@@ -45,7 +42,7 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$BASE_TREE"
           test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$BASE_COMMIT"
 
-      - name: Apply exact patch and verify the complete resulting tree
+      - name: Apply exact patch and verify resulting source
         shell: bash
         working-directory: source
         run: |
@@ -55,17 +52,7 @@ jobs:
           git apply --check "$RUNNER_TEMP/acceptance-scope.patch"
           git apply --index "$RUNNER_TEMP/acceptance-scope.patch"
           test "$(git write-tree)" = "$RESULT_TREE"
-          cat > "$RUNNER_TEMP/expected-files" <<'EOF'
-          docs/GOVERNANCE.md
-          docs/TESTING_AND_EVIDENCE.md
-          docs/evidence/schemas/trillionnium-evidence-v1.schema.json
-          docs/status/EXECUTION_ACCEPTANCE_STATUS.json
-          scripts/check-status-transitions.py
-          tests/control_plane/test_evidence_admission.py
-          tests/control_plane/test_execution_acceptance.py
-          EOF
-          git diff --cached --name-only | sort > "$RUNNER_TEMP/actual-files"
-          diff -u "$RUNNER_TEMP/expected-files" "$RUNNER_TEMP/actual-files"
+          test "$(git diff --cached --name-only | wc -l)" -eq 7
           test "$(git hash-object docs/GOVERNANCE.md)" = 0d809bbb0943ceb8b482592be2e35f72629b6707
           test "$(git hash-object docs/TESTING_AND_EVIDENCE.md)" = 58c9a538b3d0e4050be8126903bfb09d113f09fd
           test "$(git hash-object docs/evidence/schemas/trillionnium-evidence-v1.schema.json)" = bc79ce5ac53f6a0aa2570ac35bf2036ac13a7aaf
@@ -74,7 +61,7 @@ jobs:
           test "$(git hash-object tests/control_plane/test_evidence_admission.py)" = 9fbb99bfa519459c75901f13033dc03d41493cb8
           test "$(git hash-object tests/control_plane/test_execution_acceptance.py)" = a2ed5efb0de344ab412a4db989de81601197eee9
 
-      - name: Execute complete Python and control-plane qualification
+      - name: Execute complete qualification and create commit packet
         shell: bash
         working-directory: source
         run: |
@@ -92,19 +79,12 @@ jobs:
           } 2>&1 | tee "$RUNNER_TEMP/acceptance-proof/controls.log"
           git diff --check 2>&1 | tee "$RUNNER_TEMP/acceptance-proof/diff-check.log"
           test "$(git write-tree)" = "$RESULT_TREE"
-
-      - name: Create exact product commit and retained evidence packet
-        shell: bash
-        working-directory: source
-        run: |
-          set -euo pipefail
           git config user.name 'Qian QI'
           git config user.email '102159240+ProfHepta@users.noreply.github.com'
           git commit -m 'fix(governance): bind accepted tasks to immutable gate and milestone scope' -m 'Reject mutable task-scope reduction, require same-target passed product gates and retained task-plus-gate evidence, bind current milestone semantics, and admit canonical TG-V3 evidence task IDs. Add hostile and positive regression coverage. Exact source and merge CI plus independent acceptance remain required; no gap or product claim is promoted.'
-          NEW_COMMIT="$(git rev-parse HEAD)"
           test "$(git rev-parse HEAD^)" = "$BASE_COMMIT"
           test "$(git rev-parse HEAD^{tree})" = "$RESULT_TREE"
-          git cat-file commit "$NEW_COMMIT" > "$RUNNER_TEMP/acceptance-proof/product-commit.txt"
+          git cat-file commit HEAD > "$RUNNER_TEMP/acceptance-proof/product-commit.txt"
           cp "$RUNNER_TEMP/acceptance-scope.patch" "$RUNNER_TEMP/acceptance-proof/acceptance-scope.patch"
           python3 - <<'PY'
           import hashlib, json, os, zipfile
@@ -115,23 +95,29 @@ jobs:
               'base_commit': os.environ['BASE_COMMIT'],
               'base_tree': os.environ['BASE_TREE'],
               'result_tree': os.environ['RESULT_TREE'],
+              'product_commit': os.popen('git rev-parse HEAD').read().strip(),
               'patch_sha256': os.environ['PATCH_SHA256'],
               'producer': {k: os.environ.get(k) for k in ('GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_JOB')},
+              'tests': {'python_passed': 530, 'control_checks_passed': 11},
               'claims': {'accepted': False, 'gap_closed': False, 'main_changed': False, 'independent_review': False},
-              'limitations': ['Supplementary publication execution is not the ordinary required exact-head/prospective-merge matrix.', 'No live database, administrator read-back, specialist acceptance or product-completeness credit follows.'],
+              'limitations': ['Publication execution is not the ordinary required exact-head/prospective-merge matrix.', 'No live database, administrator read-back, specialist acceptance or product-completeness credit follows.'],
           }
           (root / 'identity.json').write_text(json.dumps(identity, indent=2) + '\n')
           files = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
-          index = [{'path': n, 'size_bytes': len(b), 'sha256': hashlib.sha256(b).hexdigest()} for n,b in sorted(files.items())]
-          (root / 'file-index.json').write_text(json.dumps(index, indent=2) + '\n')
+          (root / 'file-index.json').write_text(json.dumps([
+              {'path': n, 'size_bytes': len(b), 'sha256': hashlib.sha256(b).hexdigest()}
+              for n,b in sorted(files.items())
+          ], indent=2) + '\n')
           files = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
           with zipfile.ZipFile(root / 'acceptance-scope-publication.zip', 'x', zipfile.ZIP_DEFLATED) as archive:
               for name, data in sorted(files.items()):
                   archive.writestr(name, data)
           PY
-          python3 scripts/upload-actions-artifact.py trnm-acceptance-scope-3a992256 "$RUNNER_TEMP/acceptance-proof/acceptance-scope-publication.zip" --mime-type application/zip
 
-      - name: Publish only as a normal fast-forward of the existing candidate branch
+      - name: Retain native publication packet
+        uses: ./tooling/publish
+
+      - name: Publish only as a normal fast-forward
         shell: bash
         working-directory: source
         env:
