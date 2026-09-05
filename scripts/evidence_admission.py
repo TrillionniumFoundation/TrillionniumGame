@@ -321,8 +321,15 @@ def validate_schema(value: Any, schema: dict[str, Any]) -> None:
     visit(value, schema, 0)
 
 
-def validate_entry(row: dict[str, Any], *, root: Path, now: datetime | None = None) -> None:
-    """Validate the retained candidate envelope; never create an approval."""
+def validate_entry(
+    row: dict[str, Any], *, root: Path, now: datetime | None = None
+) -> dict[str, Any]:
+    """Validate and return the retained manifest opened by this admission pass.
+
+    Returning the already validated in-memory object lets downstream consumers
+    apply additional policy, such as gate freshness, without reopening a mutable
+    path or trusting duplicate index metadata. It still creates no approval.
+    """
     need(isinstance(row, dict), "evidence entry must be an object")
     current = clock(now)
     evidence_id = row.get("evidence_id")
@@ -392,6 +399,7 @@ def validate_entry(row: dict[str, Any], *, root: Path, now: datetime | None = No
     for artifact in artifacts:
         need(artifact["path"] != relative, "evidence cannot cite itself as an artifact")
         verify_artifact(root, artifact)
+    return manifest
 
 
 def entry_eligible(row: dict[str, Any], *, root: Path, now: datetime | None = None) -> bool:
