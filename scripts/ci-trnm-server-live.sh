@@ -150,11 +150,25 @@ TRNM_DATABASE_URL="$database_url" \
 TRNM_DATABASE_PROFILE="$profile" \
   cargo test -p trnm-persistence-pg --locked --test session_response_loss \
     -- --nocapture 2>&1 | tee "$evidence/session-response-loss.log"
-grep -Eq 'test result: ok[.] 1 passed; 0 failed; 0 ignored;' \
-  "$evidence/session-response-loss.log"
-test "$(db_scalar 'SELECT count(*) FROM trnm_session_families')" = 1
-test "$(db_scalar 'SELECT count(*) FROM trnm_refresh_tokens')" = 2
-test "$(db_scalar 'SELECT count(*) FROM trnm_session_families WHERE active_token_id IS NULL AND revoked_reason = 2')" = 1
+session_test_count=$(
+  sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
+    "$evidence/session-response-loss.log"
+)
+[[ "$session_test_count" =~ ^[0-9]+$ ]]
+test "$session_test_count" -ge 2
+
+response_loss_family_hex=$(printf '71%.0s' {1..16})
+test "$(db_scalar "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex')")" = 1
+test "$(db_scalar "SELECT count(*) FROM trnm_refresh_tokens WHERE family_id = decode('${response_loss_family_hex}', 'hex')")" = 2
+test "$(db_scalar "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex') AND active_token_id IS NULL AND revoked_reason = 2")" = 1
+
+concurrency_logout_families=0
+for family_byte in 90 91 92 93 94 95 96 97 98 99 9a 9b 9c 9d 9e 9f; do
+  family_hex=$(printf "${family_byte}%.0s" {1..16})
+  test "$(db_scalar "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${family_hex}', 'hex') AND active_token_id IS NULL AND revoked_reason = 0")" = 1
+  concurrency_logout_families=$((concurrency_logout_families + 1))
+done
+test "$concurrency_logout_families" = 16
 
 start_server() {
   phase=$1
@@ -224,18 +238,28 @@ printf 'pending_outbox=%s\n' "$pending" >> "$evidence/database-assertions.txt"
 source_commit=$(db_scalar 'SELECT source_commit FROM trnm_schema_metadata WHERE singleton = 1')
 test "$source_commit" = "$candidate_sha"
 printf 'schema_source_commit=%s\n' "$source_commit" >> "$evidence/database-assertions.txt"
-printf 'session_families=%s\n' \
+printf 'session_test_count=%s\n' "$session_test_count" \
+  >> "$evidence/database-assertions.txt"
+printf 'response_loss_family_rows=%s\n' \
+  "$(db_scalar "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex')")" \
+  >> "$evidence/database-assertions.txt"
+printf 'response_loss_refresh_tokens=%s\n' \
+  "$(db_scalar "SELECT count(*) FROM trnm_refresh_tokens WHERE family_id = decode('${response_loss_family_hex}', 'hex')")" \
+  >> "$evidence/database-assertions.txt"
+printf 'response_loss_replay_revoked=%s\n' \
+  "$(db_scalar "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex') AND active_token_id IS NULL AND revoked_reason = 2")" \
+  >> "$evidence/database-assertions.txt"
+printf 'concurrency_logout_families=%s\n' "$concurrency_logout_families" \
+  >> "$evidence/database-assertions.txt"
+printf 'diagnostic_total_session_families=%s\n' \
   "$(db_scalar 'SELECT count(*) FROM trnm_session_families')" \
   >> "$evidence/database-assertions.txt"
-printf 'refresh_tokens=%s\n' \
+printf 'diagnostic_total_refresh_tokens=%s\n' \
   "$(db_scalar 'SELECT count(*) FROM trnm_refresh_tokens')" \
-  >> "$evidence/database-assertions.txt"
-printf 'refresh_replay_revoked_families=%s\n' \
-  "$(db_scalar 'SELECT count(*) FROM trnm_session_families WHERE active_token_id IS NULL AND revoked_reason = 2')" \
   >> "$evidence/database-assertions.txt"
 
 cat > "$evidence/summary.json" <<EOF
-{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
+{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
 EOF
 python3 -m json.tool "$evidence/summary.json" >/dev/null
 find "$evidence" -type f ! -name SHA256SUMS -print0 \
