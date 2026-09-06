@@ -1,0 +1,17 @@
+name: tooling-push-probe
+
+on:
+  push:
+    branches:
+      - tooling/outbox-evidence-seal-export-2026-09-07
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Confirm hosted runner starts
+        run: printf 'head=%s\n' "$GITHUB_SHA"
