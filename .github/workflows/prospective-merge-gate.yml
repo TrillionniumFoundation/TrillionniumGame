@@ -309,6 +309,7 @@ jobs:
           test -s "$server/SHA256SUMS"
           test -s "$outbox/result.env"
           test -s "$outbox/identity.env"
+          test -s "$outbox/files.sha256"
           test -s "$outbox/crash-before-publish/result.env"
           test -s "$outbox/crash-after-publish/result.env"
           EXPECTED_MERGE="$PROSPECTIVE_MERGE_SHA" PROFILE="$PROFILE" \
@@ -362,6 +363,7 @@ jobs:
           assert sum(1 for path in outbox.rglob('*') if path.is_file()) >= 20
           PY
           sha256sum --check "$server/SHA256SUMS"
+          (cd "$outbox" && sha256sum --check files.sha256)
           archive="run/prospective-merge-${PROFILE}-${PROSPECTIVE_MERGE_SHA}.tar.gz"
           tar --sort=name --mtime='UTC 1970-01-01' \
             --owner=0 --group=0 --numeric-owner \
