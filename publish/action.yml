@@ -1,5 +1,23 @@
-name: Publish diagnostic packet
-description: Call the fixed repository native uploader with job-scoped artifact credentials only.
+name: Publish bounded evidence packet
+description: Invoke the repository-native artifact transport with job-scoped credentials.
+inputs:
+  name:
+    description: Canonical artifact name.
+    required: true
+  path:
+    description: Absolute or workspace-relative regular file path.
+    required: true
+  mime_type:
+    description: Canonical MIME type.
+    required: false
+    default: application/gzip
+outputs:
+  artifact_id:
+    description: Positive GitHub Actions artifact ID.
+  sha256:
+    description: SHA-256 of the exact uploaded bytes.
+  size_bytes:
+    description: Exact uploaded byte length.
 runs:
   using: node24
   main: index.js
