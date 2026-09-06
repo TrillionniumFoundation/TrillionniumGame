@@ -1,4 +1,4 @@
-name: session-rustfmt-publisher
+name: session-summary-parser-publisher
 
 on:
   push:
@@ -8,17 +8,17 @@ permissions:
   contents: write
 
 concurrency:
-  group: session-rustfmt-publisher
+  group: session-repair-publisher
   cancel-in-progress: true
 
 env:
-  EXPECTED_HEAD: 6f2b8ab5c4432e811d7eae6ac88fb8170835821a
+  EXPECTED_HEAD: 39d73f9be6020118027889dd2ebd15e6500f23c7
   PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
   CARGO_TERM_COLOR: never
 
 jobs:
-  exact-session-repair-publish:
-    runs-on: macos-15
+  exact-summary-parser-publish:
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
       - name: Fetch exact candidate with authenticated write transport
@@ -27,7 +27,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin \
             https://github.com/TrillionniumFoundation/TrillionniumGame.git
@@ -38,7 +38,7 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$EXPECTED_HEAD"
           test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
 
-      - name: Install exact formatter and compiler
+      - name: Install exact compiler and formatter
         shell: bash
         run: |
           set -euo pipefail
@@ -46,12 +46,11 @@ jobs:
           rustc +1.85.1 --version --verbose
           cargo +1.85.1 --version --verbose
 
-      - name: Apply the exact bounded repair and verify candidate
+      - name: Apply three exact parser-contract edits and verify
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          cargo +1.85.1 fmt --all
           python3 - <<'PY'
           from pathlib import Path
 
@@ -63,8 +62,8 @@ jobs:
               source = path.read_text(encoding='utf-8')
               old = 'TRNM_REQUIRE_LIVE_DATABASE=1 \\\nTRNM_DATABASE_URL="$database_url" \\\n'
               new = 'CARGO_TERM_COLOR=never \\\nTRNM_REQUIRE_LIVE_DATABASE=1 \\\nTRNM_DATABASE_URL="$database_url" \\\n'
-              if source.count(old) != 1:
-                  raise SystemExit(f'{name}: expected exactly one live cargo environment block')
+              if source.count(old) != 1 or 'CARGO_TERM_COLOR=never \\\nTRNM_REQUIRE_LIVE_DATABASE=1' in source:
+                  raise SystemExit(f'{name}: live cargo environment block changed')
               path.write_text(source.replace(old, new), encoding='utf-8')
 
           path = Path('tests/control_plane/test_session_live_harness_scope.py')
@@ -74,18 +73,16 @@ jobs:
               '                self.assertIn("CARGO_TERM_COLOR=never", source)\n'
               '                self.assertIn("session_test_count=", source)\n'
           )
-          if source.count(old) != 1:
+          if source.count(old) != 1 or 'self.assertIn("CARGO_TERM_COLOR=never", source)' in source:
               raise SystemExit('static harness test insertion point changed')
           path.write_text(source.replace(old, new), encoding='utf-8')
           PY
 
           mapfile -t changed < <(git diff --name-only)
-          test "${#changed[@]}" -eq 5
-          test "${changed[0]}" = crates/trnm-persistence-pg/src/session.rs
-          test "${changed[1]}" = crates/trnm-persistence-pg/tests/session_response_loss.rs
-          test "${changed[2]}" = scripts/check-pg-server-response-loss.sh
-          test "${changed[3]}" = scripts/ci-trnm-server-live.sh
-          test "${changed[4]}" = tests/control_plane/test_session_live_harness_scope.py
+          test "${#changed[@]}" -eq 3
+          test "${changed[0]}" = scripts/check-pg-server-response-loss.sh
+          test "${changed[1]}" = scripts/ci-trnm-server-live.sh
+          test "${changed[2]}" = tests/control_plane/test_session_live_harness_scope.py
           git diff --check
           bash -n scripts/check-pg-server-response-loss.sh
           bash -n scripts/ci-trnm-server-live.sh
@@ -101,17 +98,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
-          git config user.name 'Trillionnium formatting bot'
-          git config user.email 'formatting-bot@invalid'
+          git config user.name 'Trillionnium qualification bot'
+          git config user.email 'qualification-bot@invalid'
           git add \
-            crates/trnm-persistence-pg/src/session.rs \
-            crates/trnm-persistence-pg/tests/session_response_loss.rs \
             scripts/check-pg-server-response-loss.sh \
             scripts/ci-trnm-server-live.sh \
             tests/control_plane/test_session_live_harness_scope.py
-          git commit -m 'fix(session): format and stabilize live test summary parsing'
+          git commit -m 'fix(ci): make session test summary parsing deterministic'
           new_head=$(git rev-parse HEAD)
           new_tree=$(git rev-parse HEAD^{tree})
           git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
