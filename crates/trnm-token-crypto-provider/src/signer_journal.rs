@@ -7,6 +7,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use super::KeyDomain;
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SigningOperationId([u8; 16]);
 
@@ -22,6 +24,7 @@ impl SigningOperationId {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SigningRequest {
     pub operation_id: SigningOperationId,
+    pub key_domain: KeyDomain,
     pub key_epoch: u64,
     pub payload_digest: [u8; 32],
 }
@@ -310,6 +313,7 @@ mod tests {
     fn request(value: u8) -> SigningRequest {
         SigningRequest {
             operation_id: operation(value),
+            key_domain: KeyDomain::Authority,
             key_epoch: u64::from(value),
             payload_digest: [value; 32],
         }
@@ -324,6 +328,14 @@ mod tests {
         conflict.payload_digest = [2; 32];
         assert_eq!(
             journal.prepare(conflict),
+            Err(SignerJournalError::ConflictingOperation(operation(1)))
+        );
+        assert_eq!(journal.record(operation(1)), Some(original));
+
+        let mut cross_domain = request(1);
+        cross_domain.key_domain = KeyDomain::Socket;
+        assert_eq!(
+            journal.prepare(cross_domain),
             Err(SignerJournalError::ConflictingOperation(operation(1)))
         );
         assert_eq!(journal.record(operation(1)), Some(original));
