@@ -91,6 +91,43 @@ def _file_identity(value: os.stat_result) -> tuple[int, ...]:
             value.st_size, value.st_mtime_ns, value.st_ctime_ns)
 
 
+def _canonical_absolute(path: Path) -> Path:
+    """Resolve only a root-owned first-component namespace alias.
+
+    Hosted macOS temp paths commonly begin with ``/var``, a root-owned alias for
+    ``/private/var``. Lower path components remain descriptor-walked with
+    ``O_NOFOLLOW`` and are never resolved by this compatibility step.
+    """
+    absolute = path.absolute()
+    if (absolute.anchor != os.sep or not 1 < len(absolute.parts) <= MAX_PATH_COMPONENTS
+            or any(part in (".", "..") or "\0" in part for part in absolute.parts[1:])):
+        raise ArtifactUploadError("artifact path is not canonical")
+    if len(absolute.parts) <= 2:
+        return absolute
+
+    root_alias = Path(os.sep) / absolute.parts[1]
+    try:
+        metadata = root_alias.lstat()
+    except OSError:
+        raise ArtifactUploadError("secure artifact file I/O failed") from None
+    if not stat.S_ISLNK(metadata.st_mode):
+        return absolute
+    if metadata.st_uid != 0:
+        raise ArtifactUploadError("artifact path is not canonical")
+
+    canonical_root = Path(os.path.realpath(root_alias))
+    if (canonical_root.anchor != os.sep
+            or any(part in (".", "..") or "\0" in part
+                   for part in canonical_root.parts[1:])):
+        raise ArtifactUploadError("artifact path is not canonical")
+    result = canonical_root.joinpath(*absolute.parts[2:])
+    if (not 1 < len(result.parts) <= MAX_PATH_COMPONENTS
+            or any(part in (".", "..") or "\0" in part
+                   for part in result.parts[1:])):
+        raise ArtifactUploadError("artifact path is not canonical")
+    return result
+
+
 def validate_artifact(name: str, path: Path) -> bytes:
     """Read the inspected regular inode through one pinned descriptor.
 
@@ -104,10 +141,7 @@ def validate_artifact(name: str, path: Path) -> bytes:
         raise ArtifactUploadError("artifact name is not canonical")
     if not _SECURE_FILE_IO_SUPPORTED:
         raise ArtifactUploadError("descriptor-relative no-follow artifact I/O is required")
-    absolute = path.absolute()
-    if (absolute.anchor != os.sep or not 1 < len(absolute.parts) <= MAX_PATH_COMPONENTS
-            or any(part in (".", "..") or "\0" in part for part in absolute.parts[1:])):
-        raise ArtifactUploadError("artifact path is not canonical")
+    absolute = _canonical_absolute(path)
     directory = None
     descriptor = None
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC

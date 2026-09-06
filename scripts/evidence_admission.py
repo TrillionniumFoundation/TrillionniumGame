@@ -116,6 +116,42 @@ def _file_snapshot(value: os.stat_result) -> tuple[int, ...]:
             value.st_size, value.st_mtime_ns, value.st_ctime_ns)
 
 
+def _canonical_absolute(path: Path) -> Path:
+    """Return a lexical absolute path with only a trusted root alias resolved.
+
+    macOS exposes root-owned namespace aliases such as ``/var -> /private/var``.
+    Rejecting every symlink component makes otherwise secure descriptor-relative
+    reads unusable there. Only the first entry below ``/`` may be resolved, and
+    only when that directory entry is owned by root. Every caller-controlled
+    descendant is still opened with ``O_NOFOLLOW`` through pinned descriptors.
+    """
+    absolute = path.absolute()
+    need(absolute.anchor == os.sep and 1 < len(absolute.parts) <= MAX_PATH_COMPONENTS
+         and all(part not in (".", "..") for part in absolute.parts[1:]),
+         "noncanonical absolute evidence path")
+    if len(absolute.parts) <= 2:
+        return absolute
+
+    root_alias = Path(os.sep) / absolute.parts[1]
+    try:
+        metadata = root_alias.lstat()
+    except OSError as error:
+        raise AdmissionError("secure evidence file I/O failed") from error
+    if not stat.S_ISLNK(metadata.st_mode):
+        return absolute
+
+    need(metadata.st_uid == 0, "noncanonical absolute evidence path")
+    canonical_root = Path(os.path.realpath(root_alias))
+    need(canonical_root.anchor == os.sep
+         and all(part not in (".", "..") for part in canonical_root.parts[1:]),
+         "noncanonical absolute evidence path")
+    result = canonical_root.joinpath(*absolute.parts[2:])
+    need(1 < len(result.parts) <= MAX_PATH_COMPONENTS
+         and all(part not in (".", "..") for part in result.parts[1:]),
+         "noncanonical absolute evidence path")
+    return result
+
+
 @contextmanager
 def _open_regular(path: Path) -> Iterator[tuple[int, os.stat_result]]:
     """Open through pinned directory descriptors, never check-then-open a path.
@@ -125,10 +161,7 @@ def _open_regular(path: Path) -> Iterator[tuple[int, os.stat_result]]:
     filesystem. Only regular files on a supported POSIX host are accepted.
     """
     need(_SECURE_OPEN_SUPPORTED, "descriptor-relative no-follow I/O is required")
-    absolute = path.absolute()
-    need(absolute.anchor == os.sep and 1 < len(absolute.parts) <= MAX_PATH_COMPONENTS
-         and all(part not in (".", "..") for part in absolute.parts[1:]),
-         "noncanonical absolute evidence path")
+    absolute = _canonical_absolute(path)
     directory = None
     descriptor = None
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
