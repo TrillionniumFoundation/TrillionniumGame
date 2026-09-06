@@ -105,16 +105,39 @@ TRNM_DATABASE_URL="$database_url" \
 TRNM_DATABASE_PROFILE=postgresql \
   cargo test -p trnm-persistence-pg --locked --test session_response_loss \
     -- --nocapture 2>&1 | tee "$run_root/session-response-loss.log"
-grep -Eq 'test result: ok[.] 1 passed; 0 failed; 0 ignored;' \
-  "$run_root/session-response-loss.log"
-test "$(query 'SELECT count(*) FROM trnm_session_families;')" = 1
-test "$(query 'SELECT count(*) FROM trnm_refresh_tokens;')" = 2
-test "$(query 'SELECT count(*) FROM trnm_session_families WHERE active_token_id IS NULL AND revoked_reason = 2;')" = 1
+session_test_count=$(
+  sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
+    "$run_root/session-response-loss.log"
+)
+[[ "$session_test_count" =~ ^[0-9]+$ ]]
+test "$session_test_count" -ge 2
+
+response_loss_family_hex=$(printf '71%.0s' {1..16})
+test "$(query "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex');")" = 1
+test "$(query "SELECT count(*) FROM trnm_refresh_tokens WHERE family_id = decode('${response_loss_family_hex}', 'hex');")" = 2
+test "$(query "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex') AND active_token_id IS NULL AND revoked_reason = 2;")" = 1
+
+concurrency_logout_families=0
+for family_byte in 90 91 92 93 94 95 96 97 98 99 9a 9b 9c 9d 9e 9f; do
+  family_hex=$(printf "${family_byte}%.0s" {1..16})
+  test "$(query "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${family_hex}', 'hex') AND active_token_id IS NULL AND revoked_reason = 0;")" = 1
+  concurrency_logout_families=$((concurrency_logout_families + 1))
+done
+test "$concurrency_logout_families" = 16
+
 {
-  printf 'session_families=%s\n' "$(query 'SELECT count(*) FROM trnm_session_families;')"
-  printf 'refresh_tokens=%s\n' "$(query 'SELECT count(*) FROM trnm_refresh_tokens;')"
-  printf 'refresh_replay_revoked_families=%s\n' \
-    "$(query 'SELECT count(*) FROM trnm_session_families WHERE active_token_id IS NULL AND revoked_reason = 2;')"
+  printf 'session_test_count=%s\n' "$session_test_count"
+  printf 'response_loss_family_rows=%s\n' \
+    "$(query "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex');")"
+  printf 'response_loss_refresh_tokens=%s\n' \
+    "$(query "SELECT count(*) FROM trnm_refresh_tokens WHERE family_id = decode('${response_loss_family_hex}', 'hex');")"
+  printf 'response_loss_replay_revoked=%s\n' \
+    "$(query "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex') AND active_token_id IS NULL AND revoked_reason = 2;")"
+  printf 'concurrency_logout_families=%s\n' "$concurrency_logout_families"
+  printf 'diagnostic_total_session_families=%s\n' \
+    "$(query 'SELECT count(*) FROM trnm_session_families;')"
+  printf 'diagnostic_total_refresh_tokens=%s\n' \
+    "$(query 'SELECT count(*) FROM trnm_refresh_tokens;')"
 } >"$run_root/session-database-assertions.txt"
 
 binary=target/debug/examples/trnm_server_pg_slice
@@ -242,6 +265,7 @@ cat >"$run_root/result.json" <<JSON
     "restart_replayed_exact_duplicate": true,
     "refresh_response_loss_exact_successor_replayed": true,
     "refresh_changed_successor_revoked_family": true,
+    "refresh_logout_concurrency_deadlock_free": true,
     "duplicate_visible_effects": 0,
     "acknowledged_or_committed_command_loss": 0
   },
