@@ -379,6 +379,25 @@ jobs:
           cat "$outbox/result.env"
           cat "$outbox/crash-before-publish/result.env"
           cat "$outbox/crash-after-publish/result.env"
+      - name: Retain exact prospective merge profile packet
+        id: retained-prospective-profile
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: prospective-merge-${{ matrix.profile }}-${{ env.PROSPECTIVE_MERGE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/prospective-merge-${{ matrix.profile }}-${{ env.PROSPECTIVE_MERGE_SHA }}.tar.gz
+          mime_type: application/gzip
+      - name: Verify retained prospective profile receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.retained-prospective-profile.outputs.artifact_id }}'
+          test '${{ steps.retained-prospective-profile.outputs.sha256 }}' != ''
+          test '${{ steps.retained-prospective-profile.outputs.size_bytes }}' -gt 0
+          printf 'profile=%s artifact_id=%s sha256=%s size_bytes=%s\n' \
+            '${{ matrix.profile }}' \
+            '${{ steps.retained-prospective-profile.outputs.artifact_id }}' \
+            '${{ steps.retained-prospective-profile.outputs.sha256 }}' \
+            '${{ steps.retained-prospective-profile.outputs.size_bytes }}'
 
   prospective-merge-gate:
     name: prospective-merge-gate
@@ -432,3 +451,50 @@ jobs:
             "$BASE_REPOSITORY" "$SOURCE_BASE_SHA" "$SOURCE_HEAD_SHA" \
             "$PROSPECTIVE_MERGE_SHA" "$GITHUB_RUN_ID"
           cat run/prospective-merge/final-identity.json
+      - name: Build final prospective merge gate receipt
+        env:
+          CONTROL_PLANE: ${{ needs.control-plane.result }}
+          RUST_WORKSPACE: ${{ needs.rust-workspace.result }}
+          ISOLATED_RUST: ${{ needs.isolated-rust.result }}
+          PYTHON_GO: ${{ needs.python-and-go.result }}
+          LIVE_PROFILES: ${{ needs.live-profiles.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg repository "$BASE_REPOSITORY" \
+            --arg base "$SOURCE_BASE_SHA" \
+            --arg head "$SOURCE_HEAD_SHA" \
+            --arg merge "$PROSPECTIVE_MERGE_SHA" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg control_plane "$CONTROL_PLANE" \
+            --arg rust_workspace "$RUST_WORKSPACE" \
+            --arg isolated_rust "$ISOLATED_RUST" \
+            --arg python_go "$PYTHON_GO" \
+            --arg live_profiles "$LIVE_PROFILES" \
+            '{schema:"trillionnium.prospective-merge-retained-gate.v1",repository:$repository,base_commit:$base,source_head:$head,prospective_merge:$merge,run_id:$run_id,run_attempt:$run_attempt,lanes:{control_plane:$control_plane,rust_workspace:$rust_workspace,isolated_rust:$isolated_rust,python_go:$python_go,live_profiles:$live_profiles},claims:{accepted_evidence:false,gap_closed:false,production_ready:false}}' \
+            > run/prospective-merge/final-gate-receipt.json
+          jq -e '.lanes | to_entries | all(.value == "success")' \
+            run/prospective-merge/final-gate-receipt.json >/dev/null
+          archive="run/prospective-merge-final-${PROSPECTIVE_MERGE_SHA}.tar.gz"
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf "$archive" -C run/prospective-merge \
+            final-identity.json final-gate-receipt.json
+          test -s "$archive"
+          sha256sum "$archive"
+      - name: Retain final prospective merge gate receipt
+        id: retained-prospective-gate
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: prospective-merge-final-${{ env.PROSPECTIVE_MERGE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/prospective-merge-final-${{ env.PROSPECTIVE_MERGE_SHA }}.tar.gz
+          mime_type: application/gzip
+      - name: Verify retained prospective gate receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.retained-prospective-gate.outputs.artifact_id }}'
+          test '${{ steps.retained-prospective-gate.outputs.sha256 }}' != ''
+          test '${{ steps.retained-prospective-gate.outputs.size_bytes }}' -gt 0

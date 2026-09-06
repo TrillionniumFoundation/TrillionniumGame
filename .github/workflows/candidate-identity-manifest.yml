@@ -57,22 +57,34 @@ jobs:
             run/candidate/candidate-manifest.json >/dev/null
           sha256sum run/candidate/candidate-manifest.json \
             > run/candidate/SHA256SUMS
-      - name: Record exact-head diagnostic digest (no artifact credit)
-        if: always()
+      - name: Build deterministic retained identity packet
         shell: bash
         run: |
           set -euo pipefail
-          target='run/candidate'
-          test -e "$target"
-          manifest="$RUNNER_TEMP/diagnostic-SHA256SUMS"
-          if [[ -d "$target" ]]; then
-            mapfile -d '' files < <(find "$target" -type f -print0 | sort -z)
-            test "${#files[@]}" -gt 0
-            sha256sum "${files[@]}" | tee "$manifest"
-          else
-            sha256sum "$target" | tee "$manifest"
-          fi
-          printf '### Diagnostic evidence only\n\n' >> "$GITHUB_STEP_SUMMARY"
-          printf 'This job did not upload a persistent artifact and grants no compatibility or production credit.\n\n```text\n' >> "$GITHUB_STEP_SUMMARY"
-          cat "$manifest" >> "$GITHUB_STEP_SUMMARY"
-          printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+          archive="run/candidate/candidate-identity-${CANDIDATE_SHA}.tar.gz"
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf "$archive" -C run/candidate \
+            candidate-manifest.json SHA256SUMS
+          test -s "$archive"
+          sha256sum "$archive"
+      - name: Retain exact candidate identity packet
+        id: retained-candidate-identity
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: candidate-identity-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/candidate/candidate-identity-${{ env.CANDIDATE_SHA }}.tar.gz
+          mime_type: application/gzip
+      - name: Verify retained identity receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.retained-candidate-identity.outputs.artifact_id }}'
+          test '${{ steps.retained-candidate-identity.outputs.sha256 }}' != ''
+          test '${{ steps.retained-candidate-identity.outputs.size_bytes }}' -gt 0
+          printf '### Retained source identity packet\n\n'
+          printf 'artifact_id=%s\nsha256=%s\nsize_bytes=%s\n'
+            '${{ steps.retained-candidate-identity.outputs.artifact_id }}' \
+            '${{ steps.retained-candidate-identity.outputs.sha256 }}' \
+            '${{ steps.retained-candidate-identity.outputs.size_bytes }}'
+          printf 'Retention is transport evidence only; independent acceptance and gap closure remain false.\n'

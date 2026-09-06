@@ -233,19 +233,53 @@ jobs:
             "${CANDIDATE_SHA}"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
-      - name: Require the closed exact-head PR workflow set to execute
+      - name: Require and materialize the closed exact-head PR workflow set
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python3 scripts/check-required-workflow-runs.py \
+          mkdir -p run/merge-gate
+          output=$(python3 scripts/check-required-workflow-runs.py \
             --repository "$CANDIDATE_REPOSITORY" \
             --head-sha "$CANDIDATE_SHA" \
             --current-run-id "$GITHUB_RUN_ID" \
             --manifest docs/governance/REQUIRED_WORKFLOWS_V1.json \
             --timeout-seconds 3000 \
             --poll-seconds 10 \
-            --stable-polls 3
+            --stable-polls 3)
+          printf '%s\n' "$output"
+          receipt=$(printf '%s\n' "$output" | tail -n 1)
+          printf '%s\n' "$receipt" | jq -e 'type == "array" and length > 0' >/dev/null
+          jq -n \
+            --arg repository "$CANDIDATE_REPOSITORY" \
+            --arg head "$CANDIDATE_SHA" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson workflows "$receipt" \
+            '{schema:"trillionnium.required-workflow-retained-collection.v1",repository:$repository,head:$head,run_id:$run_id,run_attempt:$run_attempt,workflows:$workflows,claims:{accepted_evidence:false,gap_closed:false,production_ready:false}}' \
+            > run/merge-gate/external-workflow-collection.json
+          jq -e '.workflows | length > 0 and all(.jobs > 0 and .run_id > 0 and .run_attempt > 0 and (.definition_blob_sha1 | length) == 40)' \
+            run/merge-gate/external-workflow-collection.json >/dev/null
+          sha256sum run/merge-gate/external-workflow-collection.json \
+            > run/merge-gate/SHA256SUMS
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf run/required-workflow-collection-${CANDIDATE_SHA}.tar.gz \
+            -C run/merge-gate external-workflow-collection.json SHA256SUMS
+      - name: Retain exact source-head workflow collection
+        id: retained-workflow-collection
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: required-workflow-collection-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/required-workflow-collection-${{ env.CANDIDATE_SHA }}.tar.gz
+          mime_type: application/gzip
+      - name: Verify retained workflow collection receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.retained-workflow-collection.outputs.artifact_id }}'
+          test '${{ steps.retained-workflow-collection.outputs.sha256 }}' != ''
+          test '${{ steps.retained-workflow-collection.outputs.size_bytes }}' -gt 0
 
   trillionnium-game-merge-gate:
     name: trillionnium-game-merge-gate
@@ -283,3 +317,69 @@ jobs:
           fi
           printf 'repository=%s\nhead_sha=%s\nrun_id=%s\n' \
             "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" "$GITHUB_RUN_ID"
+      - name: Fetch exact candidate for retained aggregate receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
+            "${CANDIDATE_SHA}"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+      - name: Build aggregate gate receipt
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CONTROL_PLANE: ${{ needs.control-plane.result }}
+          RUST_WORKSPACE: ${{ needs.rust-workspace.result }}
+          ISOLATED_RUST: ${{ needs.isolated-rust.result }}
+          PYTHON_CONTRACTS: ${{ needs.python-contracts.result }}
+          LEGACY_GO: ${{ needs.legacy-go-migration-input.result }}
+          EXTERNAL_WORKFLOWS: ${{ needs.external-workflow-collection.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p run/merge-gate
+          jq -n \
+            --arg repository "$CANDIDATE_REPOSITORY" \
+            --arg head "$CANDIDATE_SHA" \
+            --arg event "$EVENT_NAME" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg control_plane "$CONTROL_PLANE" \
+            --arg rust_workspace "$RUST_WORKSPACE" \
+            --arg isolated_rust "$ISOLATED_RUST" \
+            --arg python_contracts "$PYTHON_CONTRACTS" \
+            --arg legacy_go "$LEGACY_GO" \
+            --arg external_workflows "$EXTERNAL_WORKFLOWS" \
+            '{schema:"trillionnium.merge-gate-retained-receipt.v1",repository:$repository,head:$head,event:$event,run_id:$run_id,run_attempt:$run_attempt,lanes:{control_plane:$control_plane,rust_workspace:$rust_workspace,isolated_rust:$isolated_rust,python_contracts:$python_contracts,legacy_go:$legacy_go,external_workflows:$external_workflows},claims:{accepted_evidence:false,gap_closed:false,production_ready:false}}' \
+            > run/merge-gate/final-gate-receipt.json
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            jq -e '.lanes | to_entries | all(.value == "success")' \
+              run/merge-gate/final-gate-receipt.json >/dev/null
+          else
+            jq -e '.lanes.control_plane == "success" and .lanes.rust_workspace == "success" and .lanes.isolated_rust == "success" and .lanes.python_contracts == "success" and .lanes.legacy_go == "success" and .lanes.external_workflows == "skipped"' \
+              run/merge-gate/final-gate-receipt.json >/dev/null
+          fi
+          sha256sum run/merge-gate/final-gate-receipt.json \
+            > run/merge-gate/final-SHA256SUMS
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf run/merge-gate-final-${CANDIDATE_SHA}.tar.gz \
+            -C run/merge-gate final-gate-receipt.json final-SHA256SUMS
+      - name: Retain stable aggregate gate receipt
+        id: retained-merge-gate
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: merge-gate-final-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/merge-gate-final-${{ env.CANDIDATE_SHA }}.tar.gz
+          mime_type: application/gzip
+      - name: Verify retained aggregate receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.retained-merge-gate.outputs.artifact_id }}'
+          test '${{ steps.retained-merge-gate.outputs.sha256 }}' != ''
+          test '${{ steps.retained-merge-gate.outputs.size_bytes }}' -gt 0
