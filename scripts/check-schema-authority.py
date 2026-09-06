@@ -17,12 +17,20 @@ HISTORICAL_DESIGN_TOOLS = {
     Path("scripts/verify-database-profile-v2.py"),
     Path("scripts/verify-command-transaction-v2.py"),
 }
+# This exact, Git-blob-pinned baseline is specification data, not a runtime,
+# CI-live-database, backup, restore or release consumer. It must retain the
+# quarantined path verbatim because that path is part of an immutable gap
+# closure criterion. Keep this exemption file-specific: sibling or future
+# control files do not inherit authority to consume the alternate schema.
+IMMUTABLE_SPECIFICATION_REFERENCES = {
+    Path("scripts/control_baselines/gap-register.v1.json"),
+}
 ALLOWED_CONTROL_REFERENCES = {
     Path("scripts/check-plan.py"),
     Path("scripts/check-plan-v3-extension.py"),
     Path("scripts/check-schema-authority.py"),
     Path("scripts/check-trnm-server.py"),
-} | HISTORICAL_DESIGN_TOOLS
+} | HISTORICAL_DESIGN_TOOLS | IMMUTABLE_SPECIFICATION_REFERENCES
 TEXT_SUFFIXES = {
     ".py",
     ".sh",
