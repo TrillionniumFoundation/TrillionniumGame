@@ -3,9 +3,7 @@ use std::env;
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use trnm_contracts::{
-    Digest32, RefreshTokenId, SessionFamilyId, StableCode, UserId,
-};
+use trnm_contracts::{Digest32, RefreshTokenId, SessionFamilyId, StableCode, UserId};
 use trnm_persistence_pg::{
     CreateSessionFamily, DatabaseProfile, PgRepository, RefreshRotationOutcome,
     RefreshTokenCredential, RotateRefreshToken,
@@ -93,8 +91,7 @@ fn session_live_fixture_digests_are_globally_unique() {
 
 #[test]
 fn committed_refresh_response_loss_is_idempotent_and_changed_successor_revokes() {
-    let Some((database_url, profile)) =
-        live_database_environment("refresh response-loss contract")
+    let Some((database_url, profile)) = live_database_environment("refresh response-loss contract")
     else {
         return;
     };

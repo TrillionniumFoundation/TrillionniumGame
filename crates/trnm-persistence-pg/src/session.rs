@@ -208,10 +208,7 @@ impl PgRepository {
             generation: from_i64(token_row.get(0), "negative_refresh_generation")?,
             state: token_row.get(1),
             issued_at_ms: from_i64(token_row.get(2), "negative_refresh_issued_at")?,
-            consumed_at_ms: optional_from_i64(
-                token_row.get(3),
-                "negative_refresh_consumed_at",
-            )?,
+            consumed_at_ms: optional_from_i64(token_row.get(3), "negative_refresh_consumed_at")?,
         };
         validate_refresh_token_snapshot(presented)?;
         if request.rotated_at_ms < presented.issued_at_ms {
@@ -475,9 +472,7 @@ fn committed_rotation_retry_matches(
 fn validate_refresh_token_snapshot(snapshot: RefreshTokenSnapshot) -> Result<(), DomainError> {
     match (snapshot.state, snapshot.consumed_at_ms) {
         (TOKEN_STATE_ACTIVE, None) => Ok(()),
-        (TOKEN_STATE_CONSUMED, Some(consumed_at_ms))
-            if consumed_at_ms >= snapshot.issued_at_ms =>
-        {
+        (TOKEN_STATE_CONSUMED, Some(consumed_at_ms)) if consumed_at_ms >= snapshot.issued_at_ms => {
             Ok(())
         }
         (TOKEN_STATE_ACTIVE, _) | (TOKEN_STATE_CONSUMED, _) => {
@@ -487,10 +482,7 @@ fn validate_refresh_token_snapshot(snapshot: RefreshTokenSnapshot) -> Result<(),
     }
 }
 
-fn optional_from_i64(
-    value: Option<i64>,
-    reason: &'static str,
-) -> Result<Option<u64>, DomainError> {
+fn optional_from_i64(value: Option<i64>, reason: &'static str) -> Result<Option<u64>, DomainError> {
     value.map(|item| from_i64(item, reason)).transpose()
 }
 
@@ -839,9 +831,7 @@ mod tests {
             },
         ] {
             assert_eq!(
-                validate_refresh_token_snapshot(invalid)
-                    .unwrap_err()
-                    .code(),
+                validate_refresh_token_snapshot(invalid).unwrap_err().code(),
                 StableCode::DataLoss
             );
         }
