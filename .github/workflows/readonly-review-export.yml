@@ -19,11 +19,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Fetch exact candidate
+      - name: Fetch exact tooling and candidate
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$GITHUB_WORKSPACE/source"
+          rm -rf "$GITHUB_WORKSPACE/tooling" "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/tooling"
+          git -C "$GITHUB_WORKSPACE/tooling" remote add origin \
+            https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin \
             https://github.com/TrillionniumFoundation/TrillionniumGame.git
@@ -45,23 +52,18 @@ jobs:
           test -s "$RUNNER_TEMP/native-artifact-preflight.tar.gz"
       - name: Upload through hardened first-party transport
         id: upload
-        shell: bash
-        working-directory: source
-        run: |
-          set -euo pipefail
-          test -n "${ACTIONS_RUNTIME_TOKEN:-}"
-          test -n "${ACTIONS_RESULTS_URL:-}"
-          python3 scripts/upload-actions-artifact.py \
-            "native-artifact-preflight-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            "$RUNNER_TEMP/native-artifact-preflight.tar.gz" \
-            --mime-type application/gzip \
-            | tee "$RUNNER_TEMP/upload-result.json"
-          jq -e '.schema == "trillionnium.actions-artifact-upload.v1" and (.artifact_id | length) > 0 and (.sha256 | length) == 64 and .size_bytes > 0' \
-            "$RUNNER_TEMP/upload-result.json" >/dev/null
+        uses: ./tooling/publish
+        with:
+          name: native-artifact-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-artifact-preflight.tar.gz
+          mime_type: application/gzip
       - name: Publish bounded receipt
         shell: bash
         run: |
           set -euo pipefail
+          test -n '${{ steps.upload.outputs.artifact_id }}'
+          test '${{ steps.upload.outputs.sha256 }}' != ''
+          test '${{ steps.upload.outputs.size_bytes }}' -gt 0
           printf 'artifact_id=%s\nsha256=%s\nsize_bytes=%s\n' \
             '${{ steps.upload.outputs.artifact_id }}' \
             '${{ steps.upload.outputs.sha256 }}' \
