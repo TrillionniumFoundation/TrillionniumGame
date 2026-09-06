@@ -83,7 +83,7 @@ jobs:
           test '${{ steps.retained-candidate-identity.outputs.sha256 }}' != ''
           test '${{ steps.retained-candidate-identity.outputs.size_bytes }}' -gt 0
           printf '### Retained source identity packet\n\n'
-          printf 'artifact_id=%s\nsha256=%s\nsize_bytes=%s\n'
+          printf 'artifact_id=%s\nsha256=%s\nsize_bytes=%s\n' \
             '${{ steps.retained-candidate-identity.outputs.artifact_id }}' \
             '${{ steps.retained-candidate-identity.outputs.sha256 }}' \
             '${{ steps.retained-candidate-identity.outputs.size_bytes }}'

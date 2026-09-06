@@ -59,6 +59,16 @@ class EvidenceRetentionWorkflowTests(unittest.TestCase):
         self.assertIn(".claims.production_ready == false", response)
         self.assertIn(".claims.sg4_complete == false", response)
 
+    def test_candidate_receipt_printf_continues_to_arguments(self) -> None:
+        source = WORKFLOWS["candidate"].read_text(encoding="utf-8")
+        receipt_lines = [
+            line
+            for line in source.splitlines()
+            if "printf " in line and "artifact_id=%s" in line
+        ]
+        self.assertEqual(len(receipt_lines), 1)
+        self.assertTrue(receipt_lines[0].endswith("\\"))
+
     def test_source_collection_binds_runs_jobs_attempts_and_definition_blobs(self) -> None:
         source = WORKFLOWS["merge_gate"].read_text(encoding="utf-8")
         self.assertIn("required-workflow-retained-collection.v1", source)
