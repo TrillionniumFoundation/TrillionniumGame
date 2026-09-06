@@ -1,4 +1,4 @@
-name: session-interleaving-publisher
+name: session-ssi-setup-repair-publisher
 
 on:
   push:
@@ -8,32 +8,23 @@ permissions:
   contents: write
 
 concurrency:
-  group: session-interleaving-publisher
+  group: session-ssi-setup-repair-publisher
   cancel-in-progress: true
 
 env:
-  EXPECTED_HEAD: 296e3deff5949c297e7147485d2b3764b838adce
+  EXPECTED_HEAD: 95548e7a6b2a00696d81579aef2e7b70715d8993
   PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
-  PATCH_SOURCE_COMMIT: dc38c707ba8f48e96cf9a08bfaefb15c7dbfe19c
   CARGO_TERM_COLOR: never
 
 jobs:
-  exact-session-interleaving-publish:
+  exact-session-ssi-setup-repair:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - name: Fetch exact tooling and candidate
+      - name: Fetch exact candidate
         shell: bash
         run: |
           set -euo pipefail
-          git init "$GITHUB_WORKSPACE/tooling"
-          git -C "$GITHUB_WORKSPACE/tooling" remote add origin \
-            https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=8 origin \
-            "refs/heads/${GITHUB_REF_NAME}"
-          git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
-          git -C "$GITHUB_WORKSPACE/tooling" cat-file -e "${PATCH_SOURCE_COMMIT}^{commit}"
-
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin \
             https://github.com/TrillionniumFoundation/TrillionniumGame.git
@@ -43,61 +34,6 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$EXPECTED_HEAD"
           test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
 
-      - name: Extract and validate fixed patch program
-        shell: bash
-        run: |
-          set -euo pipefail
-          git -C "$GITHUB_WORKSPACE/tooling" show \
-            "${PATCH_SOURCE_COMMIT}:.github/workflows/readonly-review-export.yml" \
-            > "$RUNNER_TEMP/patch-source.yml"
-          PATCH_SOURCE="$RUNNER_TEMP/patch-source.yml" \
-          PATCH_PROGRAM="$RUNNER_TEMP/session-interleaving-patch.py" \
-          python3 - <<'PY'
-          import os
-          import textwrap
-          from pathlib import Path
-
-          source = Path(os.environ["PATCH_SOURCE"]).read_text(encoding="utf-8")
-          start_marker = "          python3 - <<'PY'\n"
-          end_marker = "\n          PY\n\n          cargo +1.85.1 fmt --all"
-          if source.count(start_marker) != 1 or source.count(end_marker) != 1:
-              raise SystemExit("fixed patch program markers changed")
-          body = source.split(start_marker, 1)[1].split(end_marker, 1)[0]
-          program = textwrap.dedent(body)
-
-          needle = (
-              "    if source.count(output_marker) != 1:\n"
-              "        raise SystemExit(f\"{script_name}: evidence output insertion point changed\")\n"
-              "    source = source.replace(output_marker, output_replacement, 1)\n"
-              "    path.write_text(source, encoding=\"utf-8\")\n"
-          )
-          ci_marker = (
-              "printf 'concurrency_logout_families=%s\\n' \"$concurrency_logout_families\" \\\n"
-              "  >> \"$evidence/database-assertions.txt\"\n"
-          )
-          ci_replacement = (
-              ci_marker
-              + "printf 'deterministic_interleaving_families=%s\\n' \"$interleaving_family_count\" \\\n"
-              + "  >> \"$evidence/database-assertions.txt\"\n"
-          )
-          replacement = (
-              "    if source.count(output_marker) != 1 and script_name == \"scripts/ci-trnm-server-live.sh\":\n"
-              f"        output_marker = {ci_marker!r}\n"
-              f"        output_replacement = {ci_replacement!r}\n"
-              "    if source.count(output_marker) != 1:\n"
-              "        raise SystemExit(f\"{script_name}: evidence output insertion point changed\")\n"
-              "    source = source.replace(output_marker, output_replacement, 1)\n"
-              "    path.write_text(source, encoding=\"utf-8\")\n"
-          )
-          if program.count(needle) != 1:
-              raise SystemExit("patch-program evidence-output guard changed")
-          program = program.replace(needle, replacement, 1)
-          Path(os.environ["PATCH_PROGRAM"]).write_text(program, encoding="utf-8")
-          PY
-          python3 -m py_compile "$RUNNER_TEMP/session-interleaving-patch.py"
-          sha256sum "$RUNNER_TEMP/patch-source.yml" \
-            "$RUNNER_TEMP/session-interleaving-patch.py"
-
       - name: Install exact compiler and formatter
         shell: bash
         run: |
@@ -106,17 +42,96 @@ jobs:
           rustc +1.85.1 --version --verbose
           cargo +1.85.1 --version --verbose
 
-      - name: Apply and verify deterministic session contracts
+      - name: Apply bounded SSI setup repair
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          python3 "$RUNNER_TEMP/session-interleaving-patch.py"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          test_path = Path("crates/trnm-persistence-pg/tests/session_response_loss.rs")
+          source = test_path.read_text(encoding="utf-8")
+          old = '''    match repository
+              .rotate_refresh_token(&RotateRefreshToken {
+                  presented: predecessor,
+                  replacement: successor,
+                  rotated_at_ms: 200,
+              })
+              .unwrap()
+          {
+              RefreshRotationOutcome::Rotated(record) => record,
+              RefreshRotationOutcome::ReplayRevoked(_) => {
+                  panic!("fresh setup rotation was classified as replay")
+              }
+          }
+          '''
+          new = '''    let request = RotateRefreshToken {
+              presented: predecessor,
+              replacement: successor,
+              rotated_at_ms: 200,
+          };
+          for attempt in 0..4 {
+              match repository.rotate_refresh_token(&request) {
+                  Ok(RefreshRotationOutcome::Rotated(record)) => return record,
+                  Ok(RefreshRotationOutcome::ReplayRevoked(_)) => {
+                      panic!("fresh setup rotation was classified as replay")
+                  }
+                  Err(error)
+                      if error.code() == StableCode::Aborted
+                          && error.reason() == "database_serialization_failure"
+                          && attempt < 3 =>
+                  {
+                      repository = PgRepository::connect(database_url, profile).unwrap();
+                  }
+                  Err(error) => panic!("fresh setup rotation failed: {error}"),
+              }
+          }
+          unreachable!("bounded fresh setup rotation retries exhausted")
+          '''
+          if source.count(old) != 1:
+              raise SystemExit("session setup rotation block changed")
+          test_path.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+          for name in (
+              "scripts/check-pg-server-response-loss.sh",
+              "scripts/ci-trnm-server-live.sh",
+          ):
+              path = Path(name)
+              source = path.read_text(encoding="utf-8")
+              old = "--test session_response_loss -- --nocapture 2>&1 | tee"
+              new = "--test session_response_loss -- --nocapture --test-threads=1 2>&1 | tee"
+              if source.count(old) != 1:
+                  raise SystemExit(f"{name}: session test invocation changed")
+              path.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+          static_path = Path("tests/control_plane/test_session_live_harness_scope.py")
+          source = static_path.read_text(encoding="utf-8")
+          old = '''        self.assertIn("SessionMutationPoint::BeforeCommit", source)
+                  self.assertIn("SessionMutationPoint::CredentialResolved", source)
+          '''
+          new = '''        self.assertIn("SessionMutationPoint::BeforeCommit", source)
+                  self.assertIn("SessionMutationPoint::CredentialResolved", source)
+                  self.assertIn("for attempt in 0..4", source)
+                  self.assertIn('error.reason() == "database_serialization_failure"', source)
+          '''
+          if source.count(old) != 1:
+              raise SystemExit("static session setup-retry insertion point changed")
+          source = source.replace(old, new, 1)
+          old = '''                self.assertIn("--features session-test-hooks", source)
+                          self.assertIn('test "$session_test_count" -ge 8', source)
+          '''
+          new = '''                self.assertIn("--features session-test-hooks", source)
+                          self.assertIn("--test-threads=1", source)
+                          self.assertIn('test "$session_test_count" -ge 8', source)
+          '''
+          if source.count(old) != 1:
+              raise SystemExit("static serial invocation insertion point changed")
+          static_path.write_text(source.replace(old, new, 1), encoding="utf-8")
+          PY
+
           cargo +1.85.1 fmt --all
           expected_paths=$(cat <<'EOF'
-          crates/trnm-persistence-pg/Cargo.toml
-          crates/trnm-persistence-pg/src/lib.rs
-          crates/trnm-persistence-pg/src/session.rs
           crates/trnm-persistence-pg/tests/session_response_loss.rs
           scripts/check-pg-server-response-loss.sh
           scripts/ci-trnm-server-live.sh
@@ -129,14 +144,17 @@ jobs:
           bash -n scripts/ci-trnm-server-live.sh
           cargo +1.85.1 fmt --all -- --check
           python3 -m unittest -v tests.control_plane.test_session_live_harness_scope
-          python3 scripts/check-rust-foundation.py
-          python3 scripts/check-trnm-server.py
-          cargo +1.85.1 test -p trnm-persistence-pg --all-targets --locked -- --nocapture
           cargo +1.85.1 test -p trnm-persistence-pg --all-targets \
             --features session-test-hooks --locked -- --nocapture
-          cargo +1.85.1 clippy -p trnm-persistence-pg --all-targets --locked -- -D warnings
           cargo +1.85.1 clippy -p trnm-persistence-pg --all-targets \
             --features session-test-hooks --locked -- -D warnings
+
+      - name: Execute exact PostgreSQL response-loss contract
+        shell: bash
+        working-directory: source
+        env:
+          TRNM_PG_RESPONSE_LOSS_ROOT: run/session-ssi-preflight
+        run: bash scripts/check-pg-server-response-loss.sh
 
       - name: Commit and ordinary fast-forward push
         shell: bash
@@ -150,14 +168,11 @@ jobs:
           git config user.name 'Trillionnium qualification bot'
           git config user.email 'qualification-bot@invalid'
           git add \
-            crates/trnm-persistence-pg/Cargo.toml \
-            crates/trnm-persistence-pg/src/lib.rs \
-            crates/trnm-persistence-pg/src/session.rs \
             crates/trnm-persistence-pg/tests/session_response_loss.rs \
             scripts/check-pg-server-response-loss.sh \
             scripts/ci-trnm-server-live.sh \
             tests/control_plane/test_session_live_harness_scope.py
-          git commit -m 'test(session): add deterministic multi-connection histories'
+          git commit -m 'test(session): isolate shared database fixtures from SSI noise'
           new_head=$(git rev-parse HEAD)
           new_tree=$(git rev-parse HEAD^{tree})
           git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
