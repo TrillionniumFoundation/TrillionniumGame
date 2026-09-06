@@ -2,6 +2,15 @@ name: jwt-provider-adapter-source
 
 on:
   pull_request:
+    paths:
+      - 'crates/trnm-token-crypto-provider/**'
+      - 'crates/trnm-token-jwt-adapter/**'
+      - 'crates/trnm-token-jwt-provider-adapter/**'
+      - 'contracts/security/jwt-crypto-provider-v1.json'
+      - 'contracts/security/jwt-provider-adapter-v1.json'
+      - 'docs/SECURITY_AND_PRIVACY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
+      - '.github/workflows/jwt-provider-adapter-source.yml'
   push:
     branches: [main]
     paths:
@@ -68,5 +77,13 @@ jobs:
         run: cargo fmt --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml -- --check
       - name: Test
         run: cargo test --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml --all-targets --locked
+      - name: Verify all four external API compile-fail contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml \
+            --doc --locked 2>&1 | tee "$RUNNER_TEMP/jwt-result-doctests.log"
+          grep -Eq '^test result: ok\. 4 passed; 0 failed; 0 ignored;' \
+            "$RUNNER_TEMP/jwt-result-doctests.log"
       - name: Strict lint
         run: cargo clippy --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml --all-targets --locked -- -D warnings

@@ -19,7 +19,7 @@ fn fixture(payload_bytes: Vec<u8>, epoch: Option<u32>) -> AuthenticatedJwt {
 #[test]
 fn debug_redacts_compact_pretty_and_hex_formats() {
     let jwt = fixture(
-        br#"{\"sub\":\"sensitive-user\",\"secret\":\"do-not-log\"}"#.to_vec(),
+        br#"{"sub":"sensitive-user","secret":"do-not-log"}"#.to_vec(),
         Some(7),
     );
     for rendered in [
@@ -51,8 +51,8 @@ fn debug_is_independent_of_payload_bytes_length_and_route() {
 
 #[test]
 fn debug_redacts_nested_result_option_and_collection() {
-    let left = fixture(br#"{\"sub\":\"left-secret\"}"#.to_vec(), None);
-    let right = fixture(br#"{\"sub\":\"other-longer-secret\"}"#.to_vec(), Some(9));
+    let left = fixture(br#"{"sub":"left-secret"}"#.to_vec(), None);
+    let right = fixture(br#"{"sub":"other-longer-secret"}"#.to_vec(), Some(9));
     let left_result: Result<_, AuthenticationError> = Ok(left.clone());
     let right_result: Result<_, AuthenticationError> = Ok(right.clone());
     assert_eq!(format!("{left_result:?}"), format!("{right_result:?}"));
@@ -67,7 +67,7 @@ fn debug_redacts_derived_diagnostic_wrapper_and_format_args() {
     struct Diagnostic<'a> {
         authenticated: &'a AuthenticatedJwt,
     }
-    let left = fixture(br#"{\"sub\":\"left-secret\"}"#.to_vec(), None);
+    let left = fixture(br#"{"sub":"left-secret"}"#.to_vec(), None);
     let right = fixture(vec![0xff; 4096], Some(31));
     let left_diagnostic = Diagnostic {
         authenticated: &left,
@@ -89,7 +89,7 @@ fn debug_redacts_derived_diagnostic_wrapper_and_format_args() {
 
 #[test]
 fn read_only_accessors_preserve_exact_authenticated_data() {
-    let payload = br#"{\"sub\":\"user-1\",\"exp\":2000000000}"#;
+    let payload = br#"{"sub":"user-1","exp":2000000000}"#;
     let jwt = fixture(payload.to_vec(), Some(7));
     assert_eq!(jwt.route(), TokenRoute::Epoch(7));
     assert_eq!(jwt.key().domain, KeyDomain::AccessToken);

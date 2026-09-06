@@ -73,14 +73,75 @@ impl AuthenticationProfile {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Signature-authenticated bytes, not an authorization or claims-policy decision.
+///
+/// Only `authenticate` constructs this value outside this crate. Callers must
+/// separately validate issuer, audience, time, session state and authorization.
+/// `Debug` never exposes payload bytes, payload size, route or provider location.
+/// Explicitly extracted payloads and parsed claims remain sensitive.
+///
+/// External callers cannot fabricate an authenticated result:
+///
+/// ```compile_fail,E0451
+/// use trnm_token_crypto_provider::KeyReference;
+/// use trnm_token_jwt_provider_adapter::{AuthenticatedJwt, TokenRoute};
+/// fn forge(key: KeyReference) -> AuthenticatedJwt {
+///     AuthenticatedJwt { route: TokenRoute::Legacy, key, payload_bytes: b"{}".to_vec() }
+/// }
+/// ```
+///
+/// Nor can they replace any part after authentication:
+///
+/// ```compile_fail,E0616
+/// use trnm_token_jwt_provider_adapter::AuthenticatedJwt;
+/// fn replace_payload(jwt: &mut AuthenticatedJwt) {
+///     jwt.payload_bytes = b"{}".to_vec();
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use trnm_token_crypto_provider::KeyReference;
+/// use trnm_token_jwt_provider_adapter::AuthenticatedJwt;
+/// fn replace_key(jwt: &mut AuthenticatedJwt, key: KeyReference) {
+///     jwt.key = key;
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use trnm_token_jwt_provider_adapter::{AuthenticatedJwt, TokenRoute};
+/// fn replace_route(jwt: &mut AuthenticatedJwt) {
+///     jwt.route = TokenRoute::Legacy;
+/// }
+/// ```
+#[derive(Clone, Eq, PartialEq)]
 pub struct AuthenticatedJwt {
-    pub route: TokenRoute,
-    pub key: KeyReference,
-    pub payload_bytes: Vec<u8>,
+    route: TokenRoute,
+    key: KeyReference,
+    payload_bytes: Vec<u8>,
+}
+
+impl fmt::Debug for AuthenticatedJwt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthenticatedJwt { [REDACTED] }")
+    }
 }
 
 impl AuthenticatedJwt {
+    pub fn route(&self) -> TokenRoute {
+        self.route
+    }
+
+    pub fn key(&self) -> &KeyReference {
+        &self.key
+    }
+
+    /// Returns sensitive authenticated bytes without permitting mutation.
+    /// Do not log this slice or treat it as validated authorization claims.
+    pub fn payload_bytes(&self) -> &[u8] {
+        &self.payload_bytes
+    }
+
+    /// Parses sensitive JSON without validating issuer, audience or expiry.
     pub fn parse_claims(&self, limits: JsonLimits) -> Result<JsonValue, AuthenticationError> {
         json::parse(&self.payload_bytes, limits).map_err(|_| AuthenticationError::PayloadJson)
     }
@@ -420,7 +481,7 @@ mod tests {
             &provider,
         )
         .unwrap();
-        assert_eq!(authenticated.route, TokenRoute::Legacy);
+        assert_eq!(authenticated.route(), TokenRoute::Legacy);
         assert_eq!(
             authenticated
                 .parse_claims(JsonLimits::default())
@@ -512,8 +573,8 @@ mod tests {
             &provider,
         )
         .unwrap();
-        assert_eq!(authenticated.route, TokenRoute::Epoch(7));
-        assert_eq!(authenticated.key.epoch, Some(7));
+        assert_eq!(authenticated.route(), TokenRoute::Epoch(7));
+        assert_eq!(authenticated.key().epoch, Some(7));
 
         for kid in ["trnm-kep-v1:0", "trnm-kep-v1:07", "unknown:7"] {
             let header = format!(r#"{{"alg":"HS256","typ":"JWT","kid":"{kid}"}}"#);
@@ -619,3 +680,6 @@ mod tests {
         assert!(provider.inputs.lock().unwrap().is_empty());
     }
 }
+
+#[cfg(test)]
+mod authenticated_tests;
