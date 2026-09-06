@@ -1,0 +1,111 @@
+name: pr93-artifact-custody
+
+on:
+  push:
+    branches: [tooling/pr93-identity-and-ci-2026-09-06]
+    paths:
+      - '.github/workflows/pr93-artifact-custody.yml'
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  custody:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: '93'
+      MAX_ARTIFACT_BYTES: '268435456'
+      MAX_TOTAL_BYTES: '1073741824'
+      MAX_ZIP_MEMBERS: '10000'
+    steps:
+      - name: Wait for exact-head workflow closure and verify retained artifact bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          curl -fsS "${auth[@]}" "${api}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pr.json"
+          head=$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")
+          for poll in $(seq 1 200); do
+            live=$(curl -fsS "${auth[@]}" "${api}/pulls/${PR_NUMBER}" | jq -r '.head.sha')
+            test "$live" = "$head"
+            curl -fsS "${auth[@]}" "${api}/actions/runs?head_sha=${head}&per_page=100" > "$RUNNER_TEMP/runs.json"
+            jq -c '.workflow_runs|sort_by(.workflow_id,.run_attempt,.id)|group_by(.workflow_id)|map(last)' "$RUNNER_TEMP/runs.json" > "$RUNNER_TEMP/latest.json"
+            total=$(jq 'length' "$RUNNER_TEMP/latest.json")
+            active=$(jq '[.[]|select(.status!="completed")]|length' "$RUNNER_TEMP/latest.json")
+            test "$total" -gt 0
+            [ "$active" -eq 0 ] && break
+            sleep 30
+          done
+          test "$(jq '[.[]|select(.status!="completed")]|length' "$RUNNER_TEMP/latest.json")" -eq 0
+          mkdir -p "$RUNNER_TEMP/downloads"
+
+          python3 - "$RUNNER_TEMP" "$api" "$head" <<'PY'
+          from __future__ import annotations
+          import hashlib,json,os,stat,sys,urllib.request,zipfile
+          from pathlib import Path,PurePosixPath
+          root=Path(sys.argv[1]); api=sys.argv[2]; head=sys.argv[3]
+          token=os.environ['GH_TOKEN']; max_one=int(os.environ['MAX_ARTIFACT_BYTES']); max_total=int(os.environ['MAX_TOTAL_BYTES']); max_members=int(os.environ['MAX_ZIP_MEMBERS'])
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'pr93-artifact-custody'}
+          runs=json.loads((root/'latest.json').read_text())
+          records=[]; total_bytes=0; total_members=0
+          def get_json(url):
+              req=urllib.request.Request(url,headers=headers)
+              with urllib.request.urlopen(req,timeout=60) as response:return json.load(response)
+          def download(url,path,limit):
+              req=urllib.request.Request(url,headers=headers)
+              size=0; digest=hashlib.sha256()
+              with urllib.request.urlopen(req,timeout=120) as response,path.open('wb') as out:
+                  while True:
+                      chunk=response.read(1024*1024)
+                      if not chunk:break
+                      size+=len(chunk)
+                      if size>limit:raise RuntimeError(f'artifact exceeds limit: {url}')
+                      digest.update(chunk);out.write(chunk)
+              return size,digest.hexdigest()
+          for run in sorted(runs,key=lambda row:(row.get('name') or '',row.get('id') or 0)):
+              run_id=int(run['id']); conclusion=run.get('conclusion');
+              listing=get_json(f'{api}/actions/runs/{run_id}/artifacts?per_page=100')
+              for artifact in listing.get('artifacts',[]):
+                  aid=int(artifact['id']); declared=int(artifact.get('size_in_bytes') or 0)
+                  if declared<=0 or declared>max_one:raise RuntimeError(f'artifact {aid} invalid declared size {declared}')
+                  if total_bytes+declared>max_total:raise RuntimeError('aggregate artifact budget exceeded')
+                  path=root/'downloads'/f'{aid}.zip'
+                  size,sha=download(f'{api}/actions/artifacts/{aid}/zip',path,max_one)
+                  if size<=0:raise RuntimeError(f'artifact {aid} is empty')
+                  members=[]
+                  with zipfile.ZipFile(path) as archive:
+                      for item in archive.infolist():
+                          total_members+=1
+                          if total_members>max_members:raise RuntimeError('zip member budget exceeded')
+                          name=item.filename
+                          pure=PurePosixPath(name)
+                          if pure.is_absolute() or '..' in pure.parts or '\\' in name or '\x00' in name:raise RuntimeError(f'unsafe member {name!r}')
+                          mode=(item.external_attr>>16)&0xffff
+                          if stat.S_ISLNK(mode):raise RuntimeError(f'symlink member {name!r}')
+                          if not item.is_dir():
+                              digest=hashlib.sha256();count=0
+                              with archive.open(item) as src:
+                                  while True:
+                                      chunk=src.read(1024*1024)
+                                      if not chunk:break
+                                      count+=len(chunk);digest.update(chunk)
+                              members.append({'path':name,'size_bytes':count,'sha256':digest.hexdigest()})
+                  total_bytes+=size
+                  records.append({'run_id':run_id,'workflow_id':run.get('workflow_id'),'workflow_name':run.get('name'),'run_attempt':run.get('run_attempt'),'conclusion':conclusion,'artifact_id':aid,'artifact_name':artifact.get('name'),'declared_size_bytes':declared,'downloaded_size_bytes':size,'zip_sha256':sha,'expired':artifact.get('expired'),'created_at':artifact.get('created_at'),'expires_at':artifact.get('expires_at'),'member_count':len(members),'members':members})
+          manifest={'schema':'trillionnium.pr93-artifact-custody.v1','repository':os.environ['GITHUB_REPOSITORY'],'pull_request':93,'head':head,'workflow_count':len(runs),'artifact_count':len(records),'downloaded_bytes':total_bytes,'member_count':total_members,'artifacts':records,'accepted':False,'gap_closed':False,'production_ready':False}
+          canonical=json.dumps(manifest,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+          manifest['manifest_sha256']=hashlib.sha256(canonical).hexdigest()
+          (root/'custody.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          print(json.dumps({'head':head,'workflow_count':len(runs),'artifact_count':len(records),'downloaded_bytes':total_bytes,'member_count':total_members,'manifest_sha256':manifest['manifest_sha256']}))
+          PY
+
+          summary=$(jq '{head,workflow_count,artifact_count,downloaded_bytes,member_count,manifest_sha256,accepted,gap_closed,production_ready}' "$RUNNER_TEMP/custody.json")
+          body="<!-- pr93-artifact-custody -->\nExact-head retained-artifact custody observation:\n\\`\\`\\`json\n${summary}\n\\`\\`\\`\nAll downloaded ZIPs were bounded and checked for traversal, backslash/absolute paths, NULs and symlinks; members received SHA-256 identities. This is author-produced transport/custody evidence only, not accepted evidence or gap closure."
+          jq -n --arg body "$body" '{body:$body}' > "$RUNNER_TEMP/comment.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/comment.json" "${api}/issues/${PR_NUMBER}/comments" >/dev/null
