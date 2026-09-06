@@ -1,0 +1,836 @@
+name: crypto-key-lifecycle-patch
+
+on:
+  push:
+    branches: [tooling/crypto-key-lifecycle-patch-2026-09-06]
+    paths:
+      - '.github/workflows/crypto-key-lifecycle-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PRODUCT_BRANCH: codex/crypto-key-lifecycle-2026-09-06
+      EXPECTED_BASE: 7deee4377cff401854647151842c582f038feef1
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch exact product branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=32 origin \
+            "+refs/heads/${PRODUCT_BRANCH}:refs/remotes/origin/product"
+          git -C "$GITHUB_WORKSPACE" checkout -b "$PRODUCT_BRANCH" \
+            refs/remotes/origin/product
+          git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$EXPECTED_BASE" HEAD
+          git -C "$GITHUB_WORKSPACE" rev-parse HEAD > "$RUNNER_TEMP/original-head"
+
+      - name: Materialize bounded key lifecycle source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p crates/trnm-token-crypto-provider/src
+          cat > crates/trnm-token-crypto-provider/src/key_epoch.rs <<'RS'
+          //! Monotonic key-epoch lifecycle with anti-rollback and terminal revocation.
+
+          use std::collections::{BTreeMap, BTreeSet};
+          use std::fmt;
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct KeyEpoch(u64);
+
+          impl KeyEpoch {
+              pub fn new(value: u64) -> Result<Self, KeyEpochError> {
+                  if value == 0 {
+                      return Err(KeyEpochError::ZeroEpoch);
+                  }
+                  Ok(Self(value))
+              }
+
+              pub const fn get(self) -> u64 {
+                  self.0
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct KeyId([u8; 16]);
+
+          impl KeyId {
+              pub fn new(value: [u8; 16]) -> Result<Self, KeyEpochError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      return Err(KeyEpochError::ZeroKeyId);
+                  }
+                  Ok(Self(value))
+              }
+
+              pub const fn as_bytes(self) -> [u8; 16] {
+                  self.0
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum KeyEpochState {
+              Active,
+              VerifyOnly { retire_after_unix_seconds: i64 },
+              Retired { retired_at_unix_seconds: i64 },
+              Revoked { revoked_at_unix_seconds: i64 },
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct KeyEpochRecord {
+              pub epoch: KeyEpoch,
+              pub key_id: KeyId,
+              pub state: KeyEpochState,
+              pub activated_at_unix_seconds: i64,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub enum KeyEpochError {
+              ZeroEpoch,
+              ZeroKeyId,
+              AlreadyInitialized,
+              NotInitialized,
+              EpochNotFound(KeyEpoch),
+              NonContiguousRotation { current: KeyEpoch, received: KeyEpoch },
+              KeyIdReused(KeyId),
+              InvalidOverlap,
+              NoActiveSigner,
+              EpochNotUsableForVerification(KeyEpoch),
+              EpochRevoked(KeyEpoch),
+              EpochTerminal(KeyEpoch),
+          }
+
+          impl fmt::Display for KeyEpochError {
+              fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                  match self {
+                      Self::ZeroEpoch => formatter.write_str("key epoch must be positive"),
+                      Self::ZeroKeyId => formatter.write_str("key id must not be zero"),
+                      Self::AlreadyInitialized => formatter.write_str("key epoch registry is already initialized"),
+                      Self::NotInitialized => formatter.write_str("key epoch registry is not initialized"),
+                      Self::EpochNotFound(epoch) => write!(formatter, "key epoch {} is not registered", epoch.get()),
+                      Self::NonContiguousRotation { current, received } => write!(
+                          formatter,
+                          "key rotation must advance exactly one epoch from {} to {}, not {}",
+                          current.get(),
+                          current.get().saturating_add(1),
+                          received.get()
+                      ),
+                      Self::KeyIdReused(key) => write!(formatter, "key id {:?} was already used", key.as_bytes()),
+                      Self::InvalidOverlap => formatter.write_str("verify-only overlap must end after activation"),
+                      Self::NoActiveSigner => formatter.write_str("no active signing epoch exists"),
+                      Self::EpochNotUsableForVerification(epoch) => write!(
+                          formatter,
+                          "key epoch {} is outside its verification window",
+                          epoch.get()
+                      ),
+                      Self::EpochRevoked(epoch) => write!(formatter, "key epoch {} is revoked", epoch.get()),
+                      Self::EpochTerminal(epoch) => write!(formatter, "key epoch {} is terminal", epoch.get()),
+                  }
+              }
+          }
+
+          impl std::error::Error for KeyEpochError {}
+
+          #[derive(Clone, Debug, Default)]
+          pub struct KeyEpochRegistry {
+              active: Option<KeyEpoch>,
+              records: BTreeMap<KeyEpoch, KeyEpochRecord>,
+              used_key_ids: BTreeSet<KeyId>,
+          }
+
+          impl KeyEpochRegistry {
+              pub fn new() -> Self {
+                  Self::default()
+              }
+
+              pub fn initialize(
+                  &mut self,
+                  epoch: KeyEpoch,
+                  key_id: KeyId,
+                  activated_at_unix_seconds: i64,
+              ) -> Result<KeyEpochRecord, KeyEpochError> {
+                  if !self.records.is_empty() || self.active.is_some() {
+                      return Err(KeyEpochError::AlreadyInitialized);
+                  }
+                  let record = KeyEpochRecord {
+                      epoch,
+                      key_id,
+                      state: KeyEpochState::Active,
+                      activated_at_unix_seconds,
+                  };
+                  self.records.insert(epoch, record);
+                  self.used_key_ids.insert(key_id);
+                  self.active = Some(epoch);
+                  Ok(record)
+              }
+
+              pub fn active_signer(&self) -> Result<KeyEpochRecord, KeyEpochError> {
+                  let epoch = self.active.ok_or(KeyEpochError::NoActiveSigner)?;
+                  let record = self
+                      .records
+                      .get(&epoch)
+                      .copied()
+                      .ok_or(KeyEpochError::EpochNotFound(epoch))?;
+                  if record.state != KeyEpochState::Active {
+                      return Err(KeyEpochError::NoActiveSigner);
+                  }
+                  Ok(record)
+              }
+
+              pub fn rotate(
+                  &mut self,
+                  next_epoch: KeyEpoch,
+                  next_key_id: KeyId,
+                  activated_at_unix_seconds: i64,
+                  previous_retire_after_unix_seconds: i64,
+              ) -> Result<KeyEpochRecord, KeyEpochError> {
+                  let current = self.active_signer()?;
+                  let expected = current
+                      .epoch
+                      .get()
+                      .checked_add(1)
+                      .ok_or(KeyEpochError::NonContiguousRotation {
+                          current: current.epoch,
+                          received: next_epoch,
+                      })?;
+                  if next_epoch.get() != expected {
+                      return Err(KeyEpochError::NonContiguousRotation {
+                          current: current.epoch,
+                          received: next_epoch,
+                      });
+                  }
+                  if self.used_key_ids.contains(&next_key_id) {
+                      return Err(KeyEpochError::KeyIdReused(next_key_id));
+                  }
+                  if previous_retire_after_unix_seconds <= activated_at_unix_seconds {
+                      return Err(KeyEpochError::InvalidOverlap);
+                  }
+
+                  let previous = KeyEpochRecord {
+                      state: KeyEpochState::VerifyOnly {
+                          retire_after_unix_seconds: previous_retire_after_unix_seconds,
+                      },
+                      ..current
+                  };
+                  let next = KeyEpochRecord {
+                      epoch: next_epoch,
+                      key_id: next_key_id,
+                      state: KeyEpochState::Active,
+                      activated_at_unix_seconds,
+                  };
+                  self.records.insert(current.epoch, previous);
+                  self.records.insert(next_epoch, next);
+                  self.used_key_ids.insert(next_key_id);
+                  self.active = Some(next_epoch);
+                  Ok(next)
+              }
+
+              pub fn verification_key(
+                  &self,
+                  epoch: KeyEpoch,
+                  now_unix_seconds: i64,
+              ) -> Result<KeyEpochRecord, KeyEpochError> {
+                  let record = self
+                      .records
+                      .get(&epoch)
+                      .copied()
+                      .ok_or(KeyEpochError::EpochNotFound(epoch))?;
+                  match record.state {
+                      KeyEpochState::Active => Ok(record),
+                      KeyEpochState::VerifyOnly {
+                          retire_after_unix_seconds,
+                      } if now_unix_seconds <= retire_after_unix_seconds => Ok(record),
+                      KeyEpochState::VerifyOnly { .. } | KeyEpochState::Retired { .. } => {
+                          Err(KeyEpochError::EpochNotUsableForVerification(epoch))
+                      }
+                      KeyEpochState::Revoked { .. } => Err(KeyEpochError::EpochRevoked(epoch)),
+                  }
+              }
+
+              pub fn retire_expired(&mut self, now_unix_seconds: i64) -> usize {
+                  let mut changed = 0;
+                  for record in self.records.values_mut() {
+                      if let KeyEpochState::VerifyOnly {
+                          retire_after_unix_seconds,
+                      } = record.state
+                      {
+                          if now_unix_seconds > retire_after_unix_seconds {
+                              record.state = KeyEpochState::Retired {
+                                  retired_at_unix_seconds: retire_after_unix_seconds,
+                              };
+                              changed += 1;
+                          }
+                      }
+                  }
+                  changed
+              }
+
+              pub fn revoke(
+                  &mut self,
+                  epoch: KeyEpoch,
+                  revoked_at_unix_seconds: i64,
+              ) -> Result<KeyEpochRecord, KeyEpochError> {
+                  let current = self
+                      .records
+                      .get(&epoch)
+                      .copied()
+                      .ok_or(KeyEpochError::EpochNotFound(epoch))?;
+                  match current.state {
+                      KeyEpochState::Retired { .. } | KeyEpochState::Revoked { .. } => {
+                          return Err(KeyEpochError::EpochTerminal(epoch));
+                      }
+                      KeyEpochState::Active | KeyEpochState::VerifyOnly { .. } => {}
+                  }
+                  let next = KeyEpochRecord {
+                      state: KeyEpochState::Revoked {
+                          revoked_at_unix_seconds,
+                      },
+                      ..current
+                  };
+                  self.records.insert(epoch, next);
+                  if self.active == Some(epoch) {
+                      self.active = None;
+                  }
+                  Ok(next)
+              }
+
+              pub fn record(&self, epoch: KeyEpoch) -> Option<KeyEpochRecord> {
+                  self.records.get(&epoch).copied()
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn epoch(value: u64) -> KeyEpoch {
+                  KeyEpoch::new(value).unwrap()
+              }
+
+              fn key(value: u8) -> KeyId {
+                  KeyId::new([value; 16]).unwrap()
+              }
+
+              #[test]
+              fn rotation_is_contiguous_and_preserves_verify_only_overlap() {
+                  let mut registry = KeyEpochRegistry::new();
+                  registry.initialize(epoch(7), key(7), 100).unwrap();
+                  registry.rotate(epoch(8), key(8), 200, 300).unwrap();
+                  assert_eq!(registry.active_signer().unwrap().epoch, epoch(8));
+                  assert_eq!(registry.verification_key(epoch(7), 300).unwrap().key_id, key(7));
+                  assert_eq!(
+                      registry.verification_key(epoch(7), 301),
+                      Err(KeyEpochError::EpochNotUsableForVerification(epoch(7)))
+                  );
+              }
+
+              #[test]
+              fn rollback_skip_and_key_reuse_are_rejected_without_mutation() {
+                  let mut registry = KeyEpochRegistry::new();
+                  registry.initialize(epoch(3), key(3), 10).unwrap();
+                  assert!(matches!(
+                      registry.rotate(epoch(5), key(5), 20, 30),
+                      Err(KeyEpochError::NonContiguousRotation { .. })
+                  ));
+                  assert_eq!(registry.active_signer().unwrap().epoch, epoch(3));
+                  assert_eq!(
+                      registry.rotate(epoch(4), key(3), 20, 30),
+                      Err(KeyEpochError::KeyIdReused(key(3)))
+                  );
+                  assert_eq!(registry.active_signer().unwrap().epoch, epoch(3));
+              }
+
+              #[test]
+              fn revocation_is_terminal_and_removes_signing_authority() {
+                  let mut registry = KeyEpochRegistry::new();
+                  registry.initialize(epoch(1), key(1), 10).unwrap();
+                  registry.revoke(epoch(1), 20).unwrap();
+                  assert_eq!(registry.active_signer(), Err(KeyEpochError::NoActiveSigner));
+                  assert_eq!(
+                      registry.verification_key(epoch(1), 20),
+                      Err(KeyEpochError::EpochRevoked(epoch(1)))
+                  );
+                  assert_eq!(
+                      registry.revoke(epoch(1), 21),
+                      Err(KeyEpochError::EpochTerminal(epoch(1)))
+                  );
+              }
+
+              #[test]
+              fn expired_overlap_can_be_retired_deterministically() {
+                  let mut registry = KeyEpochRegistry::new();
+                  registry.initialize(epoch(1), key(1), 10).unwrap();
+                  registry.rotate(epoch(2), key(2), 20, 30).unwrap();
+                  assert_eq!(registry.retire_expired(30), 0);
+                  assert_eq!(registry.retire_expired(31), 1);
+                  assert!(matches!(
+                      registry.record(epoch(1)).unwrap().state,
+                      KeyEpochState::Retired { .. }
+                  ));
+              }
+          }
+          RS
+
+      - name: Materialize signer reconciliation source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > crates/trnm-token-crypto-provider/src/signer_journal.rs <<'RS'
+          //! Bounded external-signer operation journal.
+          //!
+          //! A payload may be dispatched at most once.  Timeout after dispatch
+          //! is represented as an indeterminate result and can only be resolved
+          //! by an exact operation-bound provider receipt.
+
+          use std::collections::BTreeMap;
+          use std::fmt;
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct SigningOperationId([u8; 16]);
+
+          impl SigningOperationId {
+              pub fn new(value: [u8; 16]) -> Result<Self, SignerJournalError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      return Err(SignerJournalError::ZeroOperationId);
+                  }
+                  Ok(Self(value))
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct SigningRequest {
+              pub operation_id: SigningOperationId,
+              pub key_epoch: u64,
+              pub payload_digest: [u8; 32],
+          }
+
+          impl SigningRequest {
+              pub fn validate(self) -> Result<Self, SignerJournalError> {
+                  if self.key_epoch == 0 {
+                      return Err(SignerJournalError::ZeroKeyEpoch);
+                  }
+                  if self.payload_digest.iter().all(|byte| *byte == 0) {
+                      return Err(SignerJournalError::ZeroDigest("payload_digest"));
+                  }
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum SigningOperationState {
+              Prepared,
+              Dispatched,
+              Indeterminate,
+              Confirmed {
+                  receipt_digest: [u8; 32],
+                  signature_digest: [u8; 32],
+              },
+              Rejected {
+                  reason_digest: [u8; 32],
+              },
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct SigningOperationRecord {
+              pub request: SigningRequest,
+              pub state: SigningOperationState,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub enum SignerJournalError {
+              ZeroCapacity,
+              ZeroOperationId,
+              ZeroKeyEpoch,
+              ZeroDigest(&'static str),
+              CapacityExceeded { capacity: usize },
+              UnknownOperation(SigningOperationId),
+              ConflictingOperation(SigningOperationId),
+              AlreadyDispatched(SigningOperationId),
+              NotDispatched(SigningOperationId),
+              IndeterminateRequiresReconciliation(SigningOperationId),
+              ReceiptMismatch(SigningOperationId),
+              Terminal(SigningOperationId),
+          }
+
+          impl fmt::Display for SignerJournalError {
+              fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                  match self {
+                      Self::ZeroCapacity => formatter.write_str("signer journal capacity must be positive"),
+                      Self::ZeroOperationId => formatter.write_str("signing operation id must not be zero"),
+                      Self::ZeroKeyEpoch => formatter.write_str("signing key epoch must be positive"),
+                      Self::ZeroDigest(field) => write!(formatter, "{field} must not be the zero digest"),
+                      Self::CapacityExceeded { capacity } => write!(formatter, "signer journal is full at capacity {capacity}"),
+                      Self::UnknownOperation(_) => formatter.write_str("signing operation is not registered"),
+                      Self::ConflictingOperation(_) => formatter.write_str("signing operation immutable input conflicts"),
+                      Self::AlreadyDispatched(_) => formatter.write_str("signing operation was already dispatched"),
+                      Self::NotDispatched(_) => formatter.write_str("signing operation has not been dispatched"),
+                      Self::IndeterminateRequiresReconciliation(_) => formatter.write_str(
+                          "signing operation may have completed and requires provider receipt reconciliation",
+                      ),
+                      Self::ReceiptMismatch(_) => formatter.write_str("signing operation receipt conflicts with confirmed result"),
+                      Self::Terminal(_) => formatter.write_str("signing operation is terminal"),
+                  }
+              }
+          }
+
+          impl std::error::Error for SignerJournalError {}
+
+          #[derive(Clone, Debug)]
+          pub struct SignerJournal {
+              capacity: usize,
+              records: BTreeMap<SigningOperationId, SigningOperationRecord>,
+          }
+
+          impl SignerJournal {
+              pub fn new(capacity: usize) -> Result<Self, SignerJournalError> {
+                  if capacity == 0 {
+                      return Err(SignerJournalError::ZeroCapacity);
+                  }
+                  Ok(Self {
+                      capacity,
+                      records: BTreeMap::new(),
+                  })
+              }
+
+              pub fn len(&self) -> usize {
+                  self.records.len()
+              }
+
+              pub fn is_empty(&self) -> bool {
+                  self.records.is_empty()
+              }
+
+              pub fn prepare(
+                  &mut self,
+                  request: SigningRequest,
+              ) -> Result<SigningOperationRecord, SignerJournalError> {
+                  let request = request.validate()?;
+                  if let Some(existing) = self.records.get(&request.operation_id).copied() {
+                      if existing.request == request {
+                          return Ok(existing);
+                      }
+                      return Err(SignerJournalError::ConflictingOperation(request.operation_id));
+                  }
+                  if self.records.len() >= self.capacity {
+                      return Err(SignerJournalError::CapacityExceeded {
+                          capacity: self.capacity,
+                      });
+                  }
+                  let record = SigningOperationRecord {
+                      request,
+                      state: SigningOperationState::Prepared,
+                  };
+                  self.records.insert(request.operation_id, record);
+                  Ok(record)
+              }
+
+              pub fn dispatch(
+                  &mut self,
+                  operation_id: SigningOperationId,
+              ) -> Result<SigningOperationRecord, SignerJournalError> {
+                  let current = self.require(operation_id)?;
+                  match current.state {
+                      SigningOperationState::Prepared => {}
+                      SigningOperationState::Dispatched => {
+                          return Err(SignerJournalError::AlreadyDispatched(operation_id));
+                      }
+                      SigningOperationState::Indeterminate => {
+                          return Err(SignerJournalError::IndeterminateRequiresReconciliation(
+                              operation_id,
+                          ));
+                      }
+                      SigningOperationState::Confirmed { .. }
+                      | SigningOperationState::Rejected { .. } => {
+                          return Err(SignerJournalError::Terminal(operation_id));
+                      }
+                  }
+                  let next = SigningOperationRecord {
+                      state: SigningOperationState::Dispatched,
+                      ..current
+                  };
+                  self.records.insert(operation_id, next);
+                  Ok(next)
+              }
+
+              pub fn mark_transport_lost(
+                  &mut self,
+                  operation_id: SigningOperationId,
+              ) -> Result<SigningOperationRecord, SignerJournalError> {
+                  let current = self.require(operation_id)?;
+                  match current.state {
+                      SigningOperationState::Dispatched => {}
+                      SigningOperationState::Indeterminate => return Ok(current),
+                      SigningOperationState::Prepared => {
+                          return Err(SignerJournalError::NotDispatched(operation_id));
+                      }
+                      SigningOperationState::Confirmed { .. }
+                      | SigningOperationState::Rejected { .. } => {
+                          return Err(SignerJournalError::Terminal(operation_id));
+                      }
+                  }
+                  let next = SigningOperationRecord {
+                      state: SigningOperationState::Indeterminate,
+                      ..current
+                  };
+                  self.records.insert(operation_id, next);
+                  Ok(next)
+              }
+
+              pub fn reconcile(
+                  &mut self,
+                  request: SigningRequest,
+                  receipt_digest: [u8; 32],
+                  signature_digest: [u8; 32],
+              ) -> Result<SigningOperationRecord, SignerJournalError> {
+                  let request = request.validate()?;
+                  if receipt_digest.iter().all(|byte| *byte == 0) {
+                      return Err(SignerJournalError::ZeroDigest("receipt_digest"));
+                  }
+                  if signature_digest.iter().all(|byte| *byte == 0) {
+                      return Err(SignerJournalError::ZeroDigest("signature_digest"));
+                  }
+                  let current = self.require(request.operation_id)?;
+                  if current.request != request {
+                      return Err(SignerJournalError::ConflictingOperation(request.operation_id));
+                  }
+                  match current.state {
+                      SigningOperationState::Dispatched | SigningOperationState::Indeterminate => {}
+                      SigningOperationState::Confirmed {
+                          receipt_digest: existing_receipt,
+                          signature_digest: existing_signature,
+                      } => {
+                          if existing_receipt == receipt_digest
+                              && existing_signature == signature_digest
+                          {
+                              return Ok(current);
+                          }
+                          return Err(SignerJournalError::ReceiptMismatch(request.operation_id));
+                      }
+                      SigningOperationState::Prepared => {
+                          return Err(SignerJournalError::NotDispatched(request.operation_id));
+                      }
+                      SigningOperationState::Rejected { .. } => {
+                          return Err(SignerJournalError::Terminal(request.operation_id));
+                      }
+                  }
+                  let next = SigningOperationRecord {
+                      state: SigningOperationState::Confirmed {
+                          receipt_digest,
+                          signature_digest,
+                      },
+                      ..current
+                  };
+                  self.records.insert(request.operation_id, next);
+                  Ok(next)
+              }
+
+              pub fn reject_before_dispatch(
+                  &mut self,
+                  operation_id: SigningOperationId,
+                  reason_digest: [u8; 32],
+              ) -> Result<SigningOperationRecord, SignerJournalError> {
+                  if reason_digest.iter().all(|byte| *byte == 0) {
+                      return Err(SignerJournalError::ZeroDigest("reason_digest"));
+                  }
+                  let current = self.require(operation_id)?;
+                  match current.state {
+                      SigningOperationState::Prepared => {}
+                      SigningOperationState::Dispatched | SigningOperationState::Indeterminate => {
+                          return Err(SignerJournalError::IndeterminateRequiresReconciliation(
+                              operation_id,
+                          ));
+                      }
+                      SigningOperationState::Confirmed { .. }
+                      | SigningOperationState::Rejected { .. } => {
+                          return Err(SignerJournalError::Terminal(operation_id));
+                      }
+                  }
+                  let next = SigningOperationRecord {
+                      state: SigningOperationState::Rejected { reason_digest },
+                      ..current
+                  };
+                  self.records.insert(operation_id, next);
+                  Ok(next)
+              }
+
+              pub fn record(
+                  &self,
+                  operation_id: SigningOperationId,
+              ) -> Option<SigningOperationRecord> {
+                  self.records.get(&operation_id).copied()
+              }
+
+              fn require(
+                  &self,
+                  operation_id: SigningOperationId,
+              ) -> Result<SigningOperationRecord, SignerJournalError> {
+                  self.records
+                      .get(&operation_id)
+                      .copied()
+                      .ok_or(SignerJournalError::UnknownOperation(operation_id))
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn operation(value: u8) -> SigningOperationId {
+                  SigningOperationId::new([value; 16]).unwrap()
+              }
+
+              fn request(value: u8) -> SigningRequest {
+                  SigningRequest {
+                      operation_id: operation(value),
+                      key_epoch: u64::from(value),
+                      payload_digest: [value; 32],
+                  }
+              }
+
+              #[test]
+              fn immutable_operation_identity_is_idempotent_and_conflicts_fail() {
+                  let mut journal = SignerJournal::new(2).unwrap();
+                  let original = journal.prepare(request(1)).unwrap();
+                  assert_eq!(journal.prepare(request(1)).unwrap(), original);
+                  let mut conflict = request(1);
+                  conflict.payload_digest = [2; 32];
+                  assert_eq!(
+                      journal.prepare(conflict),
+                      Err(SignerJournalError::ConflictingOperation(operation(1)))
+                  );
+                  assert_eq!(journal.record(operation(1)), Some(original));
+              }
+
+              #[test]
+              fn response_loss_forbids_a_second_signing_dispatch() {
+                  let mut journal = SignerJournal::new(2).unwrap();
+                  journal.prepare(request(1)).unwrap();
+                  journal.dispatch(operation(1)).unwrap();
+                  journal.mark_transport_lost(operation(1)).unwrap();
+                  assert_eq!(
+                      journal.dispatch(operation(1)),
+                      Err(SignerJournalError::IndeterminateRequiresReconciliation(
+                          operation(1)
+                      ))
+                  );
+                  let confirmed = journal
+                      .reconcile(request(1), [7; 32], [8; 32])
+                      .unwrap();
+                  assert_eq!(
+                      journal.reconcile(request(1), [7; 32], [8; 32]).unwrap(),
+                      confirmed
+                  );
+              }
+
+              #[test]
+              fn wrong_operation_or_receipt_cannot_reconcile() {
+                  let mut journal = SignerJournal::new(2).unwrap();
+                  journal.prepare(request(1)).unwrap();
+                  journal.dispatch(operation(1)).unwrap();
+                  let mut conflict = request(1);
+                  conflict.payload_digest = [3; 32];
+                  assert_eq!(
+                      journal.reconcile(conflict, [7; 32], [8; 32]),
+                      Err(SignerJournalError::ConflictingOperation(operation(1)))
+                  );
+                  journal.reconcile(request(1), [7; 32], [8; 32]).unwrap();
+                  assert_eq!(
+                      journal.reconcile(request(1), [9; 32], [8; 32]),
+                      Err(SignerJournalError::ReceiptMismatch(operation(1)))
+                  );
+              }
+
+              #[test]
+              fn rejection_is_allowed_only_before_dispatch() {
+                  let mut journal = SignerJournal::new(2).unwrap();
+                  journal.prepare(request(1)).unwrap();
+                  journal.reject_before_dispatch(operation(1), [4; 32]).unwrap();
+                  assert_eq!(
+                      journal.dispatch(operation(1)),
+                      Err(SignerJournalError::Terminal(operation(1)))
+                  );
+              }
+          }
+          RS
+
+      - name: Register modules without rewriting existing API
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crates/trnm-token-crypto-provider/src/lib.rs')
+          text = path.read_text(encoding='utf-8')
+          block = '''
+
+          mod key_epoch;
+          mod signer_journal;
+
+          pub use key_epoch::{
+              KeyEpoch, KeyEpochError, KeyEpochRecord, KeyEpochRegistry, KeyEpochState, KeyId,
+          };
+          pub use signer_journal::{
+              SignerJournal, SignerJournalError, SigningOperationId, SigningOperationRecord,
+              SigningOperationState, SigningRequest,
+          };
+          '''
+          if 'mod key_epoch;' not in text:
+              path.write_text(text.rstrip() + block, encoding='utf-8')
+          PY
+
+      - name: Normalize and validate exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal \
+            --component rustfmt --component clippy
+          rustup override set 1.85.1
+          cargo fmt --manifest-path crates/trnm-token-crypto-provider/Cargo.toml
+          observed=$(git diff --name-only | LC_ALL=C sort)
+          expected=$(cat <<'EOF'
+          crates/trnm-token-crypto-provider/src/key_epoch.rs
+          crates/trnm-token-crypto-provider/src/lib.rs
+          crates/trnm-token-crypto-provider/src/signer_journal.rs
+          EOF
+          )
+          test "$observed" = "$expected"
+          git diff --check
+          cargo fmt --manifest-path crates/trnm-token-crypto-provider/Cargo.toml -- --check
+          cargo test --manifest-path crates/trnm-token-crypto-provider/Cargo.toml \
+            --all-targets --locked
+          cargo clippy --manifest-path crates/trnm-token-crypto-provider/Cargo.toml \
+            --all-targets --locked -- -D warnings
+
+      - name: CAS fast-forward validated product branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          original=$(cat "$RUNNER_TEMP/original-head")
+          git config user.name 'Qian QI'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git add crates/trnm-token-crypto-provider/src
+          git commit -m 'feat(crypto): add key epoch and signer reconciliation controls'
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
+            push origin "HEAD:refs/heads/${PRODUCT_BRANCH}" \
+            --force-with-lease="refs/heads/${PRODUCT_BRANCH}:${original}"
+          printf 'old_head=%s\nnew_head=%s\ntree=%s\n' \
+            "$original" "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
+
+      - name: Preserve claim boundary
+        shell: bash
+        run: |
+          printf '%s\n' \
+            'source_candidate=true' \
+            'real_key_material_used=false' \
+            'accepted_evidence=false' \
+            'gap_closed=false' \
+            'production_ready=false'
