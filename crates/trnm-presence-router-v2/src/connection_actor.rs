@@ -90,7 +90,9 @@ pub enum ConnectionActorError {
 impl fmt::Display for ConnectionActorError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidCapacity => formatter.write_str("connection actor capacities must be positive"),
+            Self::InvalidCapacity => {
+                formatter.write_str("connection actor capacities must be positive")
+            }
             Self::ZeroCorrelationId => formatter.write_str("correlation id must be positive"),
             Self::FrameTooLarge { limit, actual } => {
                 write!(formatter, "frame length {actual} exceeds {limit} bytes")
@@ -102,7 +104,10 @@ impl fmt::Display for ConnectionActorError {
                 write!(formatter, "outbound queue is full at capacity {capacity}")
             }
             Self::PendingQueueFull { capacity } => {
-                write!(formatter, "pending request table is full at capacity {capacity}")
+                write!(
+                    formatter,
+                    "pending request table is full at capacity {capacity}"
+                )
             }
             Self::DuplicateCorrelation(value) => {
                 write!(formatter, "correlation {} is already pending", value.get())
@@ -112,7 +117,9 @@ impl fmt::Display for ConnectionActorError {
             }
             Self::Draining => formatter.write_str("connection actor is draining"),
             Self::Closed => formatter.write_str("connection actor is closed"),
-            Self::WriteSequenceExhausted => formatter.write_str("connection write sequence exhausted"),
+            Self::WriteSequenceExhausted => {
+                formatter.write_str("connection write sequence exhausted")
+            }
             Self::CannotCloseWithPendingWork => {
                 formatter.write_str("connection cannot close while queued or pending work remains")
             }
@@ -321,7 +328,9 @@ mod tests {
         ));
 
         for value in 1..=2 {
-            actor.begin_request(CorrelationId::new(value).unwrap()).unwrap();
+            actor
+                .begin_request(CorrelationId::new(value).unwrap())
+                .unwrap();
         }
         assert!(matches!(
             actor.begin_request(CorrelationId::new(3).unwrap()),
@@ -378,7 +387,10 @@ mod tests {
         let mut actor = actor();
         assert!(matches!(
             actor.enqueue_outbound(None, vec![0; 9]),
-            Err(ConnectionActorError::FrameTooLarge { limit: 8, actual: 9 })
+            Err(ConnectionActorError::FrameTooLarge {
+                limit: 8,
+                actual: 9
+            })
         ));
         assert_eq!(actor.outbound_len(), 0);
         assert_eq!(actor.enqueue_outbound(None, vec![1]).unwrap(), 1);

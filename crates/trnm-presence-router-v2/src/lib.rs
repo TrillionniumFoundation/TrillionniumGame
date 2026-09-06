@@ -22,7 +22,7 @@ pub use connection_actor::{
 };
 pub use disconnect_journal::{
     DisconnectIntentId, DisconnectJournal, DisconnectJournalError, DisconnectOperation,
-    DisconnectRecord, DisconnectState, LeaseToken, RetryDisposition, WorkerId,
+    DisconnectReceipt, DisconnectRecord, DisconnectState, LeaseToken, RetryDisposition, WorkerId,
 };
 pub use reconnect_cursor::{
     ReconnectCursor, ReconnectEvent, ReconnectJournal, ReconnectJournalConfig,

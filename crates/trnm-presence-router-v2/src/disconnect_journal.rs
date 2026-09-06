@@ -60,9 +60,7 @@ pub struct DisconnectOperation {
 impl DisconnectOperation {
     pub fn validate(self) -> Result<Self, DisconnectJournalError> {
         if self.socket_generation == 0 {
-            return Err(DisconnectJournalError::ZeroIdentifier(
-                "socket_generation",
-            ));
+            return Err(DisconnectJournalError::ZeroIdentifier("socket_generation"));
         }
         if self.operation_digest.iter().all(|byte| *byte == 0) {
             return Err(DisconnectJournalError::ZeroDigest("operation_digest"));
@@ -72,23 +70,33 @@ impl DisconnectOperation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DisconnectReceipt {
+    pub operation_digest: [u8; 32],
+    pub receipt_digest: [u8; 32],
+}
+
+impl DisconnectReceipt {
+    pub fn validate(self) -> Result<Self, DisconnectJournalError> {
+        if self.operation_digest.iter().all(|byte| *byte == 0) {
+            return Err(DisconnectJournalError::ZeroDigest(
+                "receipt.operation_digest",
+            ));
+        }
+        if self.receipt_digest.iter().all(|byte| *byte == 0) {
+            return Err(DisconnectJournalError::ZeroDigest("receipt.receipt_digest"));
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DisconnectState {
     Pending,
-    Leased {
-        worker: WorkerId,
-        token: LeaseToken,
-    },
-    Dispatched {
-        worker: WorkerId,
-        token: LeaseToken,
-    },
+    Leased { worker: WorkerId, token: LeaseToken },
+    Dispatched { worker: WorkerId, token: LeaseToken },
     Indeterminate,
-    Applied {
-        receipt: [u8; 32],
-    },
-    DeadLetter {
-        reason: [u8; 32],
-    },
+    Applied { receipt: [u8; 32] },
+    DeadLetter { reason: [u8; 32] },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -234,9 +242,7 @@ impl DisconnectJournal {
                 return Err(DisconnectJournalError::Terminal(id));
             }
             DisconnectState::Dispatched { .. } | DisconnectState::Indeterminate => {
-                return Err(
-                    DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id),
-                );
+                return Err(DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id));
             }
             DisconnectState::Leased { .. } => return Err(DisconnectJournalError::NotPending(id)),
         }
@@ -313,9 +319,7 @@ impl DisconnectJournal {
         let current = self.require(id)?;
         match current.state {
             DisconnectState::Dispatched { .. } | DisconnectState::Indeterminate => {
-                return Err(
-                    DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id),
-                );
+                return Err(DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id));
             }
             DisconnectState::Applied { .. } | DisconnectState::DeadLetter { .. } => {
                 return Err(DisconnectJournalError::Terminal(id));
@@ -341,37 +345,38 @@ impl DisconnectJournal {
     pub fn reconcile_receipt(
         &mut self,
         id: DisconnectIntentId,
-        receipt: [u8; 32],
+        receipt: DisconnectReceipt,
     ) -> Result<DisconnectRecord, DisconnectJournalError> {
-        if receipt.iter().all(|byte| *byte == 0) {
-            return Err(DisconnectJournalError::ZeroDigest("receipt"));
-        }
+        let receipt = receipt.validate()?;
         let current = self.require(id)?;
+        if receipt.operation_digest != current.operation.operation_digest {
+            return Err(DisconnectJournalError::ConflictingIntent(id));
+        }
         match current.state {
             DisconnectState::Applied { receipt: existing } => {
-                if existing == receipt {
+                if existing == receipt.receipt_digest {
                     return Ok(current);
                 }
                 return Err(DisconnectJournalError::ReceiptMismatch(id));
             }
             DisconnectState::Dispatched { .. } | DisconnectState::Indeterminate => {}
-            DisconnectState::DeadLetter { .. } => return Err(DisconnectJournalError::Terminal(id)),
+            DisconnectState::DeadLetter { .. } => {
+                return Err(DisconnectJournalError::Terminal(id));
+            }
             DisconnectState::Pending | DisconnectState::Leased { .. } => {
                 return Err(DisconnectJournalError::NotDispatched(id));
             }
         }
         let next = DisconnectRecord {
-            state: DisconnectState::Applied { receipt },
+            state: DisconnectState::Applied {
+                receipt: receipt.receipt_digest,
+            },
             ..current
         };
         self.records.insert(id, next);
         Ok(next)
     }
-
-    fn require(
-        &self,
-        id: DisconnectIntentId,
-    ) -> Result<DisconnectRecord, DisconnectJournalError> {
+    fn require(&self, id: DisconnectIntentId) -> Result<DisconnectRecord, DisconnectJournalError> {
         self.records
             .get(&id)
             .copied()
@@ -393,9 +398,9 @@ impl DisconnectJournal {
             DisconnectState::Applied { .. } | DisconnectState::DeadLetter { .. } => {
                 Err(DisconnectJournalError::Terminal(id))
             }
-            DisconnectState::Dispatched { .. } | DisconnectState::Indeterminate => Err(
-                DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id),
-            ),
+            DisconnectState::Dispatched { .. } | DisconnectState::Indeterminate => {
+                Err(DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id))
+            }
             _ => Err(DisconnectJournalError::LeaseMismatch(id)),
         }
     }
@@ -466,23 +471,58 @@ mod tests {
             _ => panic!("lease state"),
         };
         journal.mark_dispatched(id(1), worker(1), token).unwrap();
-        journal.mark_transport_lost(id(1), worker(1), token).unwrap();
+        journal
+            .mark_transport_lost(id(1), worker(1), token)
+            .unwrap();
         assert_eq!(
             journal.retry_before_dispatch(id(1), worker(1), token, digest(90)),
-            Err(DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(
-                id(1)
-            ))
+            Err(DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id(1)))
         );
-        let applied = journal.reconcile_receipt(id(1), digest(44)).unwrap();
+        assert_eq!(
+            journal.reconcile_receipt(
+                id(1),
+                DisconnectReceipt {
+                    operation_digest: digest(8),
+                    receipt_digest: digest(44),
+                },
+            ),
+            Err(DisconnectJournalError::ConflictingIntent(id(1)))
+        );
+        let applied = journal
+            .reconcile_receipt(
+                id(1),
+                DisconnectReceipt {
+                    operation_digest: digest(9),
+                    receipt_digest: digest(44),
+                },
+            )
+            .unwrap();
         assert_eq!(
             applied.state,
             DisconnectState::Applied {
                 receipt: digest(44)
             }
         );
-        assert_eq!(journal.reconcile_receipt(id(1), digest(44)).unwrap(), applied);
         assert_eq!(
-            journal.reconcile_receipt(id(1), digest(45)),
+            journal
+                .reconcile_receipt(
+                    id(1),
+                    DisconnectReceipt {
+                        operation_digest: digest(9),
+                        receipt_digest: digest(44),
+                    },
+                )
+                .unwrap(),
+            applied
+        );
+        assert_eq!(
+            journal.reconcile_receipt(
+                id(1),
+                DisconnectReceipt {
+                    operation_digest: digest(9),
+                    receipt_digest: digest(45),
+                },
+            ),
             Err(DisconnectJournalError::ReceiptMismatch(id(1)))
         );
     }
@@ -507,7 +547,10 @@ mod tests {
             terminal.state,
             DisconnectState::DeadLetter { reason: digest(90) }
         );
-        assert_eq!(journal.lease(id(1), worker(1)), Err(DisconnectJournalError::Terminal(id(1))));
+        assert_eq!(
+            journal.lease(id(1), worker(1)),
+            Err(DisconnectJournalError::Terminal(id(1)))
+        );
         assert_eq!(journal.get(id(1)), Some(terminal));
     }
 }

@@ -276,7 +276,9 @@ mod tests {
         let mut journal = ReconnectJournal::new(ReconnectJournalConfig { capacity: 2 }).unwrap();
         journal.append(digest(1)).unwrap();
         assert_eq!(
-            journal.replay_after(ReconnectCursor::before_first()).unwrap(),
+            journal
+                .replay_after(ReconnectCursor::before_first())
+                .unwrap(),
             vec![ReconnectEvent {
                 sequence: 1,
                 digest: digest(1),
