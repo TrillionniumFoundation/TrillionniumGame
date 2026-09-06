@@ -1,0 +1,99 @@
+name: pr91-ci-settle
+
+on:
+  push:
+    branches: [tooling/pr91-identity-stamp-2026-09-06]
+    paths:
+      - '.github/workflows/pr91-ci-settle.yml'
+
+permissions:
+  contents: read
+  actions: write
+  pull-requests: write
+
+jobs:
+  settle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: '91'
+    steps:
+      - name: Observe latest exact-head attempts and retry only infrastructure failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          rerun_file="$RUNNER_TEMP/rerun-workflows"
+          : > "$rerun_file"
+          final="$RUNNER_TEMP/final.json"
+
+          for poll in $(seq 1 180); do
+            curl -fsS "${auth[@]}" "${api}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pr.json"
+            head=$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")
+            curl -fsS "${auth[@]}" "${api}/actions/runs?head_sha=${head}&per_page=100" > "$RUNNER_TEMP/runs.json"
+            jq -c '
+              .workflow_runs
+              | sort_by(.workflow_id, .run_attempt, .id)
+              | group_by(.workflow_id)
+              | map(last)
+              | sort_by(.name)
+            ' "$RUNNER_TEMP/runs.json" > "$final"
+
+            total=$(jq 'length' "$final")
+            active=$(jq '[.[] | select(.status != "completed")] | length' "$final")
+            failed=$(jq '[.[] | select(.status == "completed" and (.conclusion != "success"))] | length' "$final")
+            printf 'poll=%s head=%s total=%s active=%s failed=%s\n' "$poll" "$head" "$total" "$active" "$failed"
+
+            if [ "$failed" -gt 0 ]; then
+              while IFS=$'\t' read -r run workflow_id name attempt; do
+                if grep -qx "$workflow_id" "$rerun_file"; then
+                  continue
+                fi
+                curl -fsS "${auth[@]}" "${api}/actions/runs/${run}/jobs?per_page=100" > "$RUNNER_TEMP/jobs-${run}.json"
+                job_count=$(jq '.total_count' "$RUNNER_TEMP/jobs-${run}.json")
+                step_count=$(jq '[.jobs[].steps // [] | length] | add // 0' "$RUNNER_TEMP/jobs-${run}.json")
+                infra=false
+                if [ "$job_count" -eq 0 ] || [ "$step_count" -eq 0 ]; then
+                  infra=true
+                fi
+                if [ "$infra" = true ]; then
+                  curl -fsS -X POST "${auth[@]}" "${api}/actions/runs/${run}/rerun-failed-jobs" >/dev/null
+                  printf '%s\n' "$workflow_id" >> "$rerun_file"
+                  printf 'bounded infrastructure rerun: %s run=%s attempt=%s\n' "$name" "$run" "$attempt"
+                else
+                  printf 'deterministic failure retained: %s run=%s attempt=%s\n' "$name" "$run" "$attempt"
+                fi
+              done < <(jq -r '.[] | select(.status == "completed" and (.conclusion != "success")) | [.id,.workflow_id,.name,.run_attempt] | @tsv' "$final")
+            fi
+
+            if [ "$total" -gt 0 ] && [ "$active" -eq 0 ]; then
+              break
+            fi
+            sleep 30
+          done
+
+          curl -fsS "${auth[@]}" "${api}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pr-final.json"
+          final_head=$(jq -r '.head.sha' "$RUNNER_TEMP/pr-final.json")
+          test "$final_head" = "$head"
+          total=$(jq 'length' "$final")
+          active=$(jq '[.[] | select(.status != "completed")] | length' "$final")
+          failed=$(jq '[.[] | select(.status == "completed" and (.conclusion != "success"))] | length' "$final")
+          success=$(jq '[.[] | select(.status == "completed" and .conclusion == "success")] | length' "$final")
+          jq -n \
+            --arg head "$head" \
+            --argjson total "$total" \
+            --argjson success "$success" \
+            --argjson active "$active" \
+            --argjson failed "$failed" \
+            --slurpfile runs "$final" \
+            '{head:$head,total:$total,success:$success,active:$active,failed:$failed,runs:$runs[0],accepted_evidence:false,gap_closed:false,production_ready:false}' \
+            > "$RUNNER_TEMP/status.json"
+          body=$(jq -r '"<!-- pr91-ci-settle -->\nExact-head CI observation for `" + .head + "`: total latest workflows=" + (.total|tostring) + ", success=" + (.success|tostring) + ", active=" + (.active|tostring) + ", failed=" + (.failed|tostring) + ". Only zero-job/zero-step infrastructure failures received one bounded rerun. This observation grants no evidence, gap or production credit."' "$RUNNER_TEMP/status.json")
+          jq -n --arg body "$body" '{body:$body}' > "$RUNNER_TEMP/comment.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/comment.json" \
+            "${api}/issues/${PR_NUMBER}/comments" >/dev/null
+          test "$total" -gt 0
+          test "$active" -eq 0
+          test "$failed" -eq 0
