@@ -92,6 +92,7 @@ jobs:
           )
           payload="$export_repo/retention-payload/root"
           rm -rf "$export_repo/retention-payload"
+          mkdir -p "$export_repo/retention-payload"
           while IFS= read -r path; do
             test -f "$GITHUB_WORKSPACE/source/$path"
             mkdir -p "$payload/$(dirname "$path")"
