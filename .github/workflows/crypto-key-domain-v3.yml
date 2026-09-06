@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: crypto-key-domain-v3
+  cancel-in-progress: true
+
 jobs:
   patch-validate:
     runs-on: ubuntu-24.04
@@ -18,69 +22,53 @@ jobs:
       EXPECTED_BASE: 7deee4377cff401854647151842c582f038feef1
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Wait for exact lifecycle source and fetch product branch
+      - name: Fetch exact lifecycle product branch
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$GITHUB_WORKSPACE"
-          git init "$GITHUB_WORKSPACE"
-          git -C "$GITHUB_WORKSPACE" remote add origin \
+          rm -rf "$GITHUB_WORKSPACE/product"
+          git init "$GITHUB_WORKSPACE/product"
+          git -C "$GITHUB_WORKSPACE/product" remote add origin \
             "https://github.com/${GITHUB_REPOSITORY}.git"
-          for attempt in $(seq 1 60); do
-            git -C "$GITHUB_WORKSPACE" fetch --no-tags --prune origin \
-              "+refs/heads/${PRODUCT_BRANCH}:refs/remotes/origin/product"
-            if git -C "$GITHUB_WORKSPACE" cat-file -e \
-              'refs/remotes/origin/product:crates/trnm-token-crypto-provider/src/key_epoch.rs' \
-              2>/dev/null; then
-              printf 'lifecycle source present after attempt=%s\n' "$attempt"
-              break
-            fi
-            if test "$attempt" -eq 60; then
-              printf 'key lifecycle source did not materialize\n' >&2
-              exit 1
-            fi
-            sleep 20
-          done
-          git -C "$GITHUB_WORKSPACE" checkout -b "$PRODUCT_BRANCH" \
-            refs/remotes/origin/product
-          git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$EXPECTED_BASE" HEAD
-          git -C "$GITHUB_WORKSPACE" rev-parse HEAD > "$RUNNER_TEMP/original-head"
+          git -C "$GITHUB_WORKSPACE/product" fetch --no-tags --depth=64 origin \
+            "+refs/heads/${PRODUCT_BRANCH}:refs/remotes/source/product"
+          git -C "$GITHUB_WORKSPACE/product" checkout -b "$PRODUCT_BRANCH" \
+            refs/remotes/source/product
+          git -C "$GITHUB_WORKSPACE/product" merge-base --is-ancestor \
+            "$EXPECTED_BASE" HEAD
+          git -C "$GITHUB_WORKSPACE/product" rev-parse HEAD \
+            > "$RUNNER_TEMP/original-head"
+          test -f "$GITHUB_WORKSPACE/product/crates/trnm-token-crypto-provider/src/key_epoch.rs"
+          test -f "$GITHUB_WORKSPACE/product/crates/trnm-token-crypto-provider/src/signer_journal.rs"
 
-      - name: Add domain-bound lifecycle wrapper
+      - name: Add domain-bound lifecycle wrapper using canonical KeyDomain
         shell: bash
+        working-directory: product
         run: |
           set -euo pipefail
           cat > crates/trnm-token-crypto-provider/src/key_domain.rs <<'RS'
           //! Explicit cryptographic key-domain separation.
           //!
-          //! A domain-bound registry can never import a key identifier from a
-          //! different purpose. The wrapper deliberately exposes lifecycle
-          //! operations without exposing raw key material.
+          //! The wrapper reuses the crate's canonical [`KeyDomain`] enum, so
+          //! provider keys cannot be silently reclassified through a second,
+          //! divergent domain vocabulary. It stores only opaque key IDs and
+          //! delegates lifecycle transitions to the bounded epoch registry.
 
           use std::fmt;
 
           use super::key_epoch::{
               KeyEpoch, KeyEpochError, KeyEpochRecord, KeyEpochRegistry, KeyId,
           };
+          use super::KeyDomain;
 
-          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-          pub enum KeyDomain {
-              Access,
-              Refresh,
-              Console,
-              Runtime,
-              Socket,
-              Evidence,
-              Provider,
-          }
-
-          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
           pub struct DomainBoundKeyId {
               pub domain: KeyDomain,
               pub key_id: KeyId,
           }
 
           impl DomainBoundKeyId {
+              #[must_use]
               pub const fn new(domain: KeyDomain, key_id: KeyId) -> Self {
                   Self { domain, key_id }
               }
@@ -122,6 +110,7 @@ jobs:
           }
 
           impl DomainKeyEpochRegistry {
+              #[must_use]
               pub fn new(domain: KeyDomain) -> Self {
                   Self {
                       domain,
@@ -129,6 +118,7 @@ jobs:
                   }
               }
 
+              #[must_use]
               pub const fn domain(&self) -> KeyDomain {
                   self.domain
               }
@@ -211,12 +201,12 @@ jobs:
 
               #[test]
               fn cross_domain_initialization_is_rejected_without_state() {
-                  let mut registry = DomainKeyEpochRegistry::new(KeyDomain::Access);
+                  let mut registry = DomainKeyEpochRegistry::new(KeyDomain::AccessToken);
                   assert_eq!(
-                      registry.initialize(epoch(1), key(KeyDomain::Refresh, 1), 10),
+                      registry.initialize(epoch(1), key(KeyDomain::RefreshToken, 1), 10),
                       Err(KeyDomainError::DomainMismatch {
-                          expected: KeyDomain::Access,
-                          received: KeyDomain::Refresh,
+                          expected: KeyDomain::AccessToken,
+                          received: KeyDomain::RefreshToken,
                       })
                   );
                   assert!(matches!(
@@ -232,33 +222,23 @@ jobs:
                       .initialize(epoch(1), key(KeyDomain::Socket, 1), 10)
                       .unwrap();
                   assert_eq!(
-                      registry.rotate(
-                          epoch(2),
-                          key(KeyDomain::Evidence, 2),
-                          20,
-                          30,
-                      ),
+                      registry.rotate(epoch(2), key(KeyDomain::Authority, 2), 20, 30),
                       Err(KeyDomainError::DomainMismatch {
                           expected: KeyDomain::Socket,
-                          received: KeyDomain::Evidence,
+                          received: KeyDomain::Authority,
                       })
                   );
                   assert_eq!(registry.active_signer().unwrap().epoch, epoch(1));
               }
 
               #[test]
-              fn same_domain_rotation_preserves_original_lifecycle_contract() {
-                  let mut registry = DomainKeyEpochRegistry::new(KeyDomain::Provider);
+              fn same_domain_rotation_preserves_lifecycle_contract() {
+                  let mut registry = DomainKeyEpochRegistry::new(KeyDomain::Authority);
                   registry
-                      .initialize(epoch(7), key(KeyDomain::Provider, 7), 100)
+                      .initialize(epoch(7), key(KeyDomain::Authority, 7), 100)
                       .unwrap();
                   registry
-                      .rotate(
-                          epoch(8),
-                          key(KeyDomain::Provider, 8),
-                          200,
-                          300,
-                      )
+                      .rotate(epoch(8), key(KeyDomain::Authority, 8), 200, 300)
                       .unwrap();
                   assert_eq!(registry.active_signer().unwrap().epoch, epoch(8));
                   assert_eq!(
@@ -271,26 +251,29 @@ jobs:
 
           python3 - <<'PY'
           from pathlib import Path
+
           path = Path('crates/trnm-token-crypto-provider/src/lib.rs')
           text = path.read_text(encoding='utf-8')
           if 'mod key_domain;' not in text:
               marker = 'mod key_epoch;'
-              if marker not in text:
-                  raise SystemExit('key epoch module is not registered')
+              if text.count(marker) != 1:
+                  raise SystemExit('key epoch module registration drift')
               text = text.replace(marker, 'mod key_domain;\n' + marker, 1)
-          exports = '''
-
-          pub use key_domain::{
-              DomainBoundKeyId, DomainKeyEpochRegistry, KeyDomain, KeyDomainError,
-          };
-          '''
+          export = (
+              'pub use key_domain::{\n'
+              '    DomainBoundKeyId, DomainKeyEpochRegistry, KeyDomainError,\n'
+              '};\n'
+          )
           if 'pub use key_domain::' not in text:
-              text = text.rstrip() + exports
+              text = text.rstrip() + '\n\n' + export
+          elif 'KeyDomain,' in text.split('pub use key_domain::', 1)[1].split('};', 1)[0]:
+              raise SystemExit('duplicate KeyDomain export retained')
           path.write_text(text, encoding='utf-8')
           PY
 
       - name: Normalize, test and strictly lint
         shell: bash
+        working-directory: product
         run: |
           set -euo pipefail
           rustup toolchain install 1.85.1 --profile minimal \
@@ -304,9 +287,14 @@ jobs:
             --all-targets --locked
           cargo clippy --manifest-path crates/trnm-token-crypto-provider/Cargo.toml \
             --all-targets --locked -- -D warnings
+          grep -qF 'pub struct DomainKeyEpochRegistry' \
+            crates/trnm-token-crypto-provider/src/key_domain.rs
+          grep -qF 'use super::KeyDomain;' \
+            crates/trnm-token-crypto-provider/src/key_domain.rs
 
       - name: CAS fast-forward validated branch
         shell: bash
+        working-directory: product
         run: |
           set -euo pipefail
           original=$(cat "$RUNNER_TEMP/original-head")
@@ -317,7 +305,8 @@ jobs:
             printf 'source_already_current=true\nhead=%s\n' "$original"
             exit 0
           fi
-          git commit -m 'feat(crypto): enforce explicit key-domain separation'
+          git diff --cached --check
+          git commit -m 'feat(crypto): enforce canonical key-domain separation'
           auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
           git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
             push origin "HEAD:refs/heads/${PRODUCT_BRANCH}" \
