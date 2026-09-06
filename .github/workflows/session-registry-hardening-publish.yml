@@ -1,0 +1,127 @@
+name: session-registry-hardening-publish
+
+on:
+  push:
+    branches:
+      - tooling/session-registry-hardening-2026-09-06
+    paths:
+      - '.github/workflows/session-registry-hardening-publish.yml'
+      - 'tools/apply-session-registry-hardening.py.gz.b64'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: session-revocation-rustfmt-publish
+  cancel-in-progress: false
+
+jobs:
+  harden-test-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PRODUCT_BRANCH: codex/session-revocation-fanout-2026-09-06
+      REQUIRED_ANCESTOR: 0d0f246a131902403202afcd28103f22af30c8a9
+      GH_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Fetch exact tooling and current product heads
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/tooling" "$GITHUB_WORKSPACE/product"
+
+          git init "$RUNNER_TEMP/tooling"
+          git -C "$RUNNER_TEMP/tooling" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$RUNNER_TEMP/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$RUNNER_TEMP/tooling" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+
+          git init "$GITHUB_WORKSPACE/product"
+          git -C "$GITHUB_WORKSPACE/product" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/product" fetch --no-tags --depth=16 origin \
+            "refs/heads/${PRODUCT_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/product" checkout -b "$PRODUCT_BRANCH" FETCH_HEAD
+          git -C "$GITHUB_WORKSPACE/product" merge-base --is-ancestor \
+            "$REQUIRED_ANCESTOR" HEAD
+          unexpected=$(git -C "$GITHUB_WORKSPACE/product" diff --name-only \
+            "$REQUIRED_ANCESTOR..HEAD" | \
+            grep -v '^crates/trnm-presence-router-v2/src/session_registry.rs$' || true)
+          test -z "$unexpected" || {
+            printf 'unexpected product drift:\n%s\n' "$unexpected" >&2
+            exit 1
+          }
+          printf 'input_head=%s\ninput_tree=%s\n' \
+            "$(git -C "$GITHUB_WORKSPACE/product" rev-parse HEAD)" \
+            "$(git -C "$GITHUB_WORKSPACE/product" rev-parse HEAD^{tree})"
+
+      - name: Install exact Rust
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal \
+            --component rustfmt --component clippy
+          rustup override set 1.85.1
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Apply reviewed bounded-state and session-fence repair
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path crates/trnm-presence-router-v2/Cargo.toml
+          base64 -d \
+            "$RUNNER_TEMP/tooling/tools/apply-session-registry-hardening.py.gz.b64" | \
+            gzip -dc > "$RUNNER_TEMP/apply-session-registry-hardening.py"
+          python3 -m py_compile "$RUNNER_TEMP/apply-session-registry-hardening.py"
+          python3 "$RUNNER_TEMP/apply-session-registry-hardening.py" "$PWD"
+          cargo fmt --manifest-path crates/trnm-presence-router-v2/Cargo.toml
+          expected=$(cat <<'EOF'
+          crates/trnm-presence-router-v2/README.md
+          crates/trnm-presence-router-v2/src/lib.rs
+          crates/trnm-presence-router-v2/src/router/state.rs
+          crates/trnm-presence-router-v2/src/session_registry.rs
+          EOF
+          )
+          test "$(git diff --name-only | LC_ALL=C sort)" = "$expected"
+          git diff --check
+
+      - name: Validate all affected contracts
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path crates/trnm-presence-router-v2/Cargo.toml -- --check
+          cargo test --manifest-path crates/trnm-presence-router-v2/Cargo.toml \
+            --all-targets --locked
+          cargo clippy --manifest-path crates/trnm-presence-router-v2/Cargo.toml \
+            --all-targets --locked -- -D warnings
+          python3 scripts/check-module-docs.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-gap-register.py
+
+      - name: Publish one ordinary fast-forward product commit
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          git config user.name 'Qian QI'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git add \
+            crates/trnm-presence-router-v2/README.md \
+            crates/trnm-presence-router-v2/src/lib.rs \
+            crates/trnm-presence-router-v2/src/router/state.rs \
+            crates/trnm-presence-router-v2/src/session_registry.rs
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = 4
+          git diff --cached --check
+          git commit -m 'fix(realtime): bound session state and fence every mutation'
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
+            push origin "HEAD:refs/heads/${PRODUCT_BRANCH}"
+          printf 'published_head=%s\npublished_tree=%s\n' \
+            "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
