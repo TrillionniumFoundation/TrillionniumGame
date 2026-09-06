@@ -2,7 +2,7 @@
 """Derive the reviewed v7 source-wave shell sequence from v5.
 
 The source v5 workflow remains the auditable long-form implementation. This tool
-performs narrowly-scoped, count-checked rewrites and emits seven executable shell
+performs narrowly scoped, count-checked rewrites and emits seven executable shell
 fragments. It fails closed when any reviewed anchor drifts.
 """
 from __future__ import annotations
@@ -45,13 +45,13 @@ def replace_once(script: str, old: str, new: str, label: str) -> str:
 def rewrite(scripts: list[str]) -> list[str]:
     scripts[0] = replace_once(
         scripts[0],
-        'extended_base=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/92" --jq \' .base.sha\')'.replace("' .", "'."),
+        "extended_base=$(gh api \"repos/${GITHUB_REPOSITORY}/pulls/92\" --jq '.base.sha')",
         'extended_base="$SOURCE_BASE_SHA"',
         "remove nonexistent PR #92 base lookup",
     )
     scripts[0] = replace_once(
         scripts[0],
-        'extended_head=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/92" --jq \' .head.sha\')'.replace("' .", "'."),
+        "extended_head=$(gh api \"repos/${GITHUB_REPOSITORY}/pulls/92\" --jq '.head.sha')",
         'extended_head="$SOURCE_BASE_SHA"',
         "remove nonexistent PR #92 head lookup",
     )
@@ -67,7 +67,7 @@ def rewrite(scripts: list[str]) -> list[str]:
     if "pulls/92" in scripts[0]:
         raise SystemExit("nonexistent PR #92 dependency survived rewrite")
 
-    continuation = chr(92)
+    continuation = "\\"
     hardening_fetch = (
         '"$HARDENING_SHA:refs/remotes/source/hardening" ' + continuation
     )
@@ -113,6 +113,27 @@ def rewrite(scripts: list[str]) -> list[str]:
     return scripts
 
 
+def validate_rewrite(scripts: list[str]) -> None:
+    combined = "\n".join(scripts)
+    required = (
+        'extended_base="$SOURCE_BASE_SHA"',
+        'extended_head="$SOURCE_BASE_SHA"',
+        'test "$plan_sha" = "$PLAN_HEAD_SHA"',
+        '"$CRYPTO_SHA:refs/remotes/source/crypto"',
+        '"$MIGRATION_SHA:refs/remotes/source/migration"',
+        'git checkout "$CRYPTO_SHA" -- crates/trnm-token-crypto-provider',
+        "crates/trnm-persistence-core/src/migration_fence.rs",
+        "apply-canonical-server-authority-v7.py",
+    )
+    for marker in required:
+        if combined.count(marker) != 1:
+            raise SystemExit(f"rewritten v7 marker mismatch: {marker}")
+    forbidden = ("pulls/92", "apply-canonical-server-authority-v5.py")
+    for marker in forbidden:
+        if marker in combined:
+            raise SystemExit(f"forbidden predecessor marker survived: {marker}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("source_workflow", type=Path)
@@ -124,6 +145,7 @@ def main() -> int:
     args.target_directory.mkdir(parents=True, exist_ok=True)
 
     scripts = rewrite(extract_run_scripts(args.source_workflow))
+    validate_rewrite(scripts)
     for number, body in enumerate(scripts, 1):
         path = args.target_directory / f"v7-{number}.sh"
         path.write_text(body, encoding="utf-8")
