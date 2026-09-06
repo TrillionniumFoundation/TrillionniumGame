@@ -1,0 +1,206 @@
+name: remaining-source-wave-v6-pr-monitor
+
+on:
+  push:
+    branches: [tooling/remaining-source-wave-v2-2026-09-06]
+    paths:
+      - '.github/workflows/remaining-source-wave-v6-pr-monitor.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+  actions: read
+
+concurrency:
+  group: remaining-source-wave-v6-pr-monitor
+  cancel-in-progress: true
+
+jobs:
+  bind-and-monitor:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    env:
+      PRODUCT_BRANCH: codex/remaining-source-blockers-wave-v6-2026-09-07
+      BASE_BRANCH: codex/branch-evidence-closure-2026-09-02
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Create or reconcile the exact cumulative PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          product_sha=$(git ls-remote \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/heads/${PRODUCT_BRANCH}" | awk '{print $1}')
+          test -n "$product_sha" || {
+            latest=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/remaining-source-wave-v6-bootstrap.yml/runs?branch=tooling/remaining-source-wave-v2-2026-09-06&per_page=1" \
+              --jq '.workflow_runs[0] | {id,status,conclusion,html_url}')
+            printf 'v6 product branch absent; exporter=%s\n' "$latest" >&2
+            exit 1
+          }
+          base_sha=$(git ls-remote \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/heads/${BASE_BRANCH}" | awk '{print $1}')
+          test -n "$base_sha"
+
+          rm -rf "$RUNNER_TEMP/candidate"
+          git clone --filter=blob:none --no-checkout \
+            "https://github.com/${GITHUB_REPOSITORY}.git" "$RUNNER_TEMP/candidate"
+          git -C "$RUNNER_TEMP/candidate" fetch --no-tags origin \
+            "$product_sha:refs/remotes/exact/product" \
+            "$base_sha:refs/remotes/exact/base"
+          product_tree=$(git -C "$RUNNER_TEMP/candidate" rev-parse "$product_sha^{tree}")
+          git -C "$RUNNER_TEMP/candidate" merge-base --is-ancestor "$base_sha" "$product_sha"
+          changed_paths=$(git -C "$RUNNER_TEMP/candidate" diff --name-only \
+            "$base_sha" "$product_sha" | wc -l | tr -d ' ')
+
+          gaps=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/contents/docs/status/GAP_REGISTER.json?ref=${BASE_BRANCH}" \
+            --jq -r '.content' | base64 -d | \
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print(" ".join(row["id"] for row in d["gaps"]))')
+          test -n "$gaps"
+
+          body="$RUNNER_TEMP/body.md"
+          cat > "$body" <<EOF
+          ## Singular Plan v3.1 cumulative source candidate
+
+          This PR is the only current child admission surface for the repository-controlled source wave before the singular main-target integration PR #63.
+
+          ### Exact identity
+
+          \`base_ref=${BASE_BRANCH}\`
+          \`base_sha=${base_sha}\`
+          \`head_ref=${PRODUCT_BRANCH}\`
+          \`head_sha=${product_sha}\`
+          \`head_tree=${product_tree}\`
+          \`changed_paths=${changed_paths}\`
+
+          ### Gap scope
+
+          ${gaps}
+
+          ### Source scope
+
+          - adversarial Outbox lease/retry/apply/dead-letter model;
+          - bounded and generation-fenced session/realtime ownership;
+          - disconnect indeterminate-result reconciliation and reconnect cursor;
+          - key lifecycle and migration-fence source wave;
+          - atomic promotion of \`crates/trnm-server\` as the sole first-party \`trnm-server\` process authority;
+          - removal of the persistence-owned duplicate process root;
+          - synchronized package authority, status, documentation, checkers and regression tests.
+
+          ### Claim boundary
+
+          \`source_candidate=true\`
+          \`accepted_evidence=false\`
+          \`gap_closed=false\`
+          \`production_ready=false\`
+          \`public_online=false\`
+          \`nakama_retired=false\`
+
+          Exact-head and actual prospective-merge Actions, non-empty retained artifacts, a fresh conflict-free current-head approval, resolved conversations, external governance read-back, specialist acceptance and real production/multi-node/KMS/database/endurance evidence remain mandatory. No self-approval, self-merge, force push, administrator bypass, cutover or retirement is authorized.
+          EOF
+          sed -i 's/^          //' "$body"
+
+          pr=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=TrillionniumFoundation:${PRODUCT_BRANCH}&base=${BASE_BRANCH}" \
+            --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then
+            pr=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/pulls" \
+              -f title='refactor(server): converge canonical Plan v3.1 source authority' \
+              -f head="$PRODUCT_BRANCH" \
+              -f base="$BASE_BRANCH" \
+              -F draft=true \
+              --raw-field body="$(cat "$body")" \
+              --jq '.number')
+          else
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" \
+              -f title='refactor(server): converge canonical Plan v3.1 source authority' \
+              --raw-field body="$(cat "$body")" >/dev/null
+          fi
+          test -n "$pr"
+          current_head=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.head.sha')
+          test "$current_head" = "$product_sha"
+          printf 'PR_NUMBER=%s\nPRODUCT_SHA=%s\nPRODUCT_TREE=%s\n' \
+            "$pr" "$product_sha" "$product_tree" >> "$GITHUB_ENV"
+
+          reviewer='Tomasrgbsf'
+          author=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.user.login')
+          if [ "${reviewer,,}" != "${author,,}" ]; then
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/pulls/${pr}/requested_reviewers" \
+              -f "reviewers[]=$reviewer" >/dev/null || true
+          fi
+          printf 'pr=%s head=%s tree=%s\n' "$pr" "$product_sha" "$product_tree"
+
+      - name: Wait for a settled exact-head check collection
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 180); do
+            mapfile -t rows < <(gh api --paginate \
+              -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/commits/${PRODUCT_SHA}/check-runs?per_page=100" \
+              --jq '.check_runs[] | [.name,.status,(.conclusion // "")] | @tsv')
+            if [ "${#rows[@]}" -eq 0 ]; then
+              sleep 20
+              continue
+            fi
+            active=0
+            failed=0
+            success=0
+            declare -A seen=()
+            for row in "${rows[@]}"; do
+              IFS=$'\t' read -r name status conclusion <<<"$row"
+              key="$name"
+              if [ -n "${seen[$key]:-}" ]; then
+                continue
+              fi
+              seen[$key]=1
+              if [ "$status" != completed ]; then
+                active=$((active + 1))
+              elif [ "$conclusion" = success ]; then
+                success=$((success + 1))
+              elif [ "$conclusion" = skipped ] || [ "$conclusion" = neutral ]; then
+                failed=$((failed + 1))
+              else
+                failed=$((failed + 1))
+              fi
+            done
+            printf 'attempt=%s checks=%s success=%s active=%s failed=%s\n' \
+              "$attempt" "${#seen[@]}" "$success" "$active" "$failed"
+            if [ "$active" -eq 0 ]; then
+              test "$failed" -eq 0
+              exit 0
+            fi
+            sleep 20
+          done
+          echo 'exact-head checks did not settle within monitor window' >&2
+          exit 1
+
+      - name: Record review and mergeability boundary without merging
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr_json=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          current_head=$(printf '%s' "$pr_json" | jq -r '.head.sha')
+          mergeable=$(printf '%s' "$pr_json" | jq -r '.mergeable')
+          mergeable_state=$(printf '%s' "$pr_json" | jq -r '.mergeable_state')
+          draft=$(printf '%s' "$pr_json" | jq -r '.draft')
+          test "$current_head" = "$PRODUCT_SHA"
+
+          approvals=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+            --jq --arg head "$PRODUCT_SHA" \
+            '[.[] | select(.state == "APPROVED" and .commit_id == $head and (.user.login | ascii_downcase) != "profhepta")] | length')
+          changes=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+            --jq --arg head "$PRODUCT_SHA" \
+            '[.[] | select(.state == "CHANGES_REQUESTED" and .commit_id == $head)] | length')
+          printf 'pr=%s head=%s tree=%s draft=%s mergeable=%s state=%s approvals=%s changes_requested=%s\n' \
+            "$PR_NUMBER" "$PRODUCT_SHA" "$PRODUCT_TREE" "$draft" "$mergeable" \
+            "$mergeable_state" "$approvals" "$changes"
+          test "$changes" -eq 0
+          test "$approvals" -ge 1
+          echo 'ordinary merge intentionally not performed by the monitor'
