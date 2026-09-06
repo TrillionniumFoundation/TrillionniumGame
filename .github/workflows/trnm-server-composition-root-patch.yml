@@ -10,6 +10,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: trnm-server-composition-root-patch
+  cancel-in-progress: true
+
 jobs:
   extract-validate:
     runs-on: ubuntu-24.04
@@ -228,6 +232,7 @@ jobs:
           ! grep -R -nF '../../../../../migrations/' crates/trnm-server/src/runtime
 
           TRNM_SERVER_DATABASE_URL='postgresql://127.0.0.1:5432/trillionnium' \
+          TRNM_SERVER_ALLOW_PLAINTEXT_DATABASE=1 \
           TRNM_SERVER_SCHEMA_SOURCE_COMMIT="$(git rev-parse refs/remotes/origin/source)" \
           TRNM_SERVER_ADMIN_TOKEN='source-candidate-admin-token-not-production' \
           cargo run --quiet --manifest-path crates/trnm-server/Cargo.toml --locked \
@@ -246,6 +251,7 @@ jobs:
             printf 'source_already_current=true\nhead=%s\n' "$original"
             exit 0
           fi
+          git diff --cached --check
           git commit -m 'feat(server): converge canonical composition root into trnm-server package'
           auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
           git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
