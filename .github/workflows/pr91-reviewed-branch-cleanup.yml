@@ -1,0 +1,109 @@
+name: pr91-reviewed-branch-cleanup
+
+on:
+  push:
+    branches: [tooling/pr91-reviewed-branch-cleanup-2026-09-06]
+    paths:
+      - '.github/workflows/pr91-reviewed-branch-cleanup.yml'
+
+permissions:
+  contents: write
+  pull-requests: read
+  issues: write
+
+jobs:
+  prove-archive-delete:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BASE_SHA: 7deee4377cff401854647151842c582f038feef1
+      WAVE_BRANCH: codex/remaining-source-blockers-wave-v2-2026-09-06
+      PR_NUMBER: '91'
+    steps:
+      - name: Prove exact path containment, archive tips, then delete redundant branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          repo="$GITHUB_WORKSPACE/repo"
+          rm -rf "$repo"
+          git init "$repo"
+          git -C "$repo" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          branches=(
+            codex/outbox-property-coverage-2026-09-06
+            codex/session-revocation-fanout-2026-09-06
+            codex/session-registry-hardening-v2-2026-09-06
+            codex/server-composition-root-2026-09-06
+          )
+          git -C "$repo" fetch --no-tags origin "$BASE_SHA" \
+            "refs/heads/${WAVE_BRANCH}:refs/remotes/origin/wave"
+          wave=$(git -C "$repo" rev-parse refs/remotes/origin/wave)
+          git -C "$repo" merge-base --is-ancestor "$BASE_SHA" "$wave"
+          printf 'wave=%s\n' "$wave"
+
+          : > "$RUNNER_TEMP/summary.tsv"
+          for branch in "${branches[@]}"; do
+            encoded=$(jq -nr --arg value "$branch" '$value|@uri')
+            curl -fsS "${auth[@]}" "${api}/git/ref/heads/${encoded}" > "$RUNNER_TEMP/ref.json"
+            tip=$(jq -r '.object.sha' "$RUNNER_TEMP/ref.json")
+            git -C "$repo" fetch --no-tags origin \
+              "refs/heads/${branch}:refs/remotes/origin/child"
+            test "$(git -C "$repo" rev-parse refs/remotes/origin/child)" = "$tip"
+            git -C "$repo" merge-base --is-ancestor "$BASE_SHA" "$tip"
+
+            # Every changed path in the child must have identical resulting
+            # blob/type/deletion state in the cumulative wave.
+            while IFS= read -r path; do
+              test -n "$path"
+              child_entry=$(git -C "$repo" ls-tree "$tip" -- "$path")
+              wave_entry=$(git -C "$repo" ls-tree "$wave" -- "$path")
+              test "$child_entry" = "$wave_entry" || {
+                printf 'containment mismatch branch=%s path=%s\nchild=%s\nwave=%s\n' \
+                  "$branch" "$path" "$child_entry" "$wave_entry" >&2
+                exit 1
+              }
+            done < <(git -C "$repo" diff --name-only "$BASE_SHA" "$tip")
+
+            # Closed PR or no PR only. An open review surface blocks deletion.
+            curl -fsS "${auth[@]}" \
+              "${api}/pulls?state=open&head=${GITHUB_REPOSITORY_OWNER}:${encoded}&per_page=100" \
+              > "$RUNNER_TEMP/open.json"
+            test "$(jq 'length' "$RUNNER_TEMP/open.json")" -eq 0
+
+            short=${tip:0:12}
+            safe=$(printf '%s' "$branch" | tr '/' '-')
+            tag="archive/${safe}-${short}-2026-09-06"
+            jq -n --arg ref "refs/tags/${tag}" --arg sha "$tip" '{ref:$ref,sha:$sha}' \
+              > "$RUNNER_TEMP/tag.json"
+            response=$(curl -sS -w '\n%{http_code}' -X POST "${auth[@]}" \
+              --data-binary @"$RUNNER_TEMP/tag.json" "${api}/git/refs")
+            status=${response##*$'\n'}
+            if [ "$status" != 201 ] && [ "$status" != 422 ]; then
+              printf '%s\n' "${response%$'\n'*}" >&2
+              exit 1
+            fi
+            curl -fsS "${auth[@]}" "${api}/git/ref/tags/$(jq -nr --arg value "$tag" '$value|@uri')" \
+              | jq -e --arg sha "$tip" '.object.sha == $sha' >/dev/null
+            curl -fsS -X DELETE "${auth[@]}" "${api}/git/refs/heads/${encoded}" >/dev/null
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "${auth[@]}" \
+              "${api}/git/ref/heads/${encoded}")
+            test "$code" = 404
+            printf '%s\t%s\t%s\n' "$branch" "$tip" "$tag" >> "$RUNNER_TEMP/summary.tsv"
+            git -C "$repo" update-ref -d refs/remotes/origin/child
+          done
+
+          body=$(python3 - "$RUNNER_TEMP/summary.tsv" "$wave" <<'PY'
+          from pathlib import Path
+          import sys
+          rows=[]
+          for line in Path(sys.argv[1]).read_text().splitlines():
+              branch,tip,tag=line.split('\t')
+              rows.append(f"- `{branch}` @ `{tip}` → `{tag}`")
+          print("<!-- pr91-branch-cleanup -->\nVerified byte-identical path containment in cumulative wave `" + sys.argv[2] + "`, archived each exact tip, and removed the redundant branch refs:\n" + "\n".join(rows) + "\n\nNo product, evidence, gap, review or production credit is created by branch cleanup.")
+          PY
+          )
+          jq -n --arg body "$body" '{body:$body}' > "$RUNNER_TEMP/comment.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/comment.json" \
+            "${api}/issues/${PR_NUMBER}/comments" >/dev/null
