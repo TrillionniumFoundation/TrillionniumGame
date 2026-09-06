@@ -1,4 +1,4 @@
-name: session-summary-parser-publisher
+name: session-interleaving-publisher
 
 on:
   push:
@@ -8,32 +8,28 @@ permissions:
   contents: write
 
 concurrency:
-  group: session-repair-publisher
+  group: session-interleaving-publisher
   cancel-in-progress: true
 
 env:
-  EXPECTED_HEAD: 39d73f9be6020118027889dd2ebd15e6500f23c7
+  EXPECTED_HEAD: 296e3deff5949c297e7147485d2b3764b838adce
   PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
   CARGO_TERM_COLOR: never
 
 jobs:
-  exact-summary-parser-publish:
-    runs-on: macos-15
-    timeout-minutes: 60
+  exact-session-interleaving-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
-      - name: Fetch exact candidate with authenticated write transport
+      - name: Fetch exact candidate
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin \
             https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/source" \
-            -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
-            fetch --no-tags --depth=32 origin "refs/heads/${PRODUCT_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=64 origin \
+            "refs/heads/${PRODUCT_BRANCH}"
           git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$EXPECTED_HEAD"
           test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
@@ -46,39 +42,905 @@ jobs:
           rustc +1.85.1 --version --verbose
           cargo +1.85.1 --version --verbose
 
-      - name: Apply three exact parser-contract edits and verify
+      - name: Add deterministic multi-connection session contracts
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          for name in (
-              'scripts/check-pg-server-response-loss.sh',
-              'scripts/ci-trnm-server-live.sh',
-          ):
-              path = Path(name)
-              source = path.read_text(encoding='utf-8')
-              old = 'TRNM_REQUIRE_LIVE_DATABASE=1 \\\nTRNM_DATABASE_URL="$database_url" \\\n'
-              new = 'CARGO_TERM_COLOR=never \\\nTRNM_REQUIRE_LIVE_DATABASE=1 \\\nTRNM_DATABASE_URL="$database_url" \\\n'
-              if source.count(old) != 1 or 'CARGO_TERM_COLOR=never \\\nTRNM_REQUIRE_LIVE_DATABASE=1' in source:
-                  raise SystemExit(f'{name}: live cargo environment block changed')
-              path.write_text(source.replace(old, new), encoding='utf-8')
+          def replace_once(path: Path, old: str, new: str) -> None:
+              source = path.read_text(encoding="utf-8")
+              if source.count(old) != 1:
+                  raise SystemExit(f"{path}: expected one exact replacement, found {source.count(old)}")
+              path.write_text(source.replace(old, new, 1), encoding="utf-8")
 
-          path = Path('tests/control_plane/test_session_live_harness_scope.py')
-          source = path.read_text(encoding='utf-8')
-          old = '                self.assertIn("session_test_count=", source)\n'
-          new = (
-              '                self.assertIn("CARGO_TERM_COLOR=never", source)\n'
-              '                self.assertIn("session_test_count=", source)\n'
+          manifest = Path("crates/trnm-persistence-pg/Cargo.toml")
+          replace_once(
+              manifest,
+              "[dependencies]\n",
+              "[features]\nsession-test-hooks = []\n\n[dependencies]\n",
           )
-          if source.count(old) != 1 or 'self.assertIn("CARGO_TERM_COLOR=never", source)' in source:
-              raise SystemExit('static harness test insertion point changed')
-          path.write_text(source.replace(old, new), encoding='utf-8')
+
+          lib = Path("crates/trnm-persistence-pg/src/lib.rs")
+          replace_once(
+              lib,
+              "pub use session::{\n    CreateSessionFamily, RefreshRotationOutcome, RefreshTokenCredential, RotateRefreshToken,\n    SessionFamilyRecord,\n};\n",
+              "pub use session::{\n    CreateSessionFamily, RefreshRotationOutcome, RefreshTokenCredential, RotateRefreshToken,\n    SessionFamilyRecord,\n};\n#[cfg(feature = \"session-test-hooks\")]\npub use session::SessionMutationPoint;\n",
+          )
+
+          session = Path("crates/trnm-persistence-pg/src/session.rs")
+          source = session.read_text(encoding="utf-8")
+          enum_old = """pub enum RefreshRotationOutcome {
+              Rotated(SessionFamilyRecord),
+              ReplayRevoked(SessionFamilyRecord),
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          struct RefreshTokenSnapshot {
+          """
+          enum_new = """pub enum RefreshRotationOutcome {
+              Rotated(SessionFamilyRecord),
+              ReplayRevoked(SessionFamilyRecord),
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum SessionMutationPoint {
+              CredentialResolved,
+              FamilyLocked,
+              BeforeCommit,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          struct RefreshTokenSnapshot {
+          """
+          if source.count(enum_old) != 1:
+              raise SystemExit("session.rs: mutation-point enum insertion point changed")
+          source = source.replace(enum_old, enum_new, 1)
+
+          header_old = """    pub fn rotate_refresh_token(
+                  &mut self,
+                  request: &RotateRefreshToken,
+              ) -> Result<RefreshRotationOutcome, DomainError> {
+                  validate_rotation(request)?;
+          """
+          header_new = """    pub fn rotate_refresh_token(
+                  &mut self,
+                  request: &RotateRefreshToken,
+              ) -> Result<RefreshRotationOutcome, DomainError> {
+                  self.rotate_refresh_token_with_hook(request, |_| {})
+              }
+
+              #[cfg(feature = \"session-test-hooks\")]
+              pub fn rotate_refresh_token_with_test_hook(
+                  &mut self,
+                  request: &RotateRefreshToken,
+                  hook: impl FnMut(SessionMutationPoint),
+              ) -> Result<RefreshRotationOutcome, DomainError> {
+                  self.rotate_refresh_token_with_hook(request, hook)
+              }
+
+              fn rotate_refresh_token_with_hook(
+                  &mut self,
+                  request: &RotateRefreshToken,
+                  mut hook: impl FnMut(SessionMutationPoint),
+              ) -> Result<RefreshRotationOutcome, DomainError> {
+                  validate_rotation(request)?;
+          """
+          if source.count(header_old) != 1:
+              raise SystemExit("session.rs: rotate method insertion point changed")
+          source = source.replace(header_old, header_new, 1)
+
+          start = source.index("    fn rotate_refresh_token_with_hook(")
+          end = source.index("    pub fn revoke_session_family(", start)
+          body = source[start:end]
+          credential_old = """        let family = decode_session_family_id(family_identity_row.get(0))?;
+
+                  let family_row = transaction
+          """
+          credential_new = """        let family = decode_session_family_id(family_identity_row.get(0))?;
+                  hook(SessionMutationPoint::CredentialResolved);
+
+                  let family_row = transaction
+          """
+          if body.count(credential_old) != 1:
+              raise SystemExit("session.rs: credential-resolved hook insertion point changed")
+          body = body.replace(credential_old, credential_new, 1)
+
+          family_old = """            .map_err(map_postgres_error)?
+                      .ok_or_else(|| data_loss(\"refresh_family_missing\"))?;
+
+                  let token_row = transaction
+          """
+          family_new = """            .map_err(map_postgres_error)?
+                      .ok_or_else(|| data_loss(\"refresh_family_missing\"))?;
+                  hook(SessionMutationPoint::FamilyLocked);
+
+                  let token_row = transaction
+          """
+          if body.count(family_old) != 1:
+              raise SystemExit("session.rs: family-locked hook insertion point changed")
+          body = body.replace(family_old, family_new, 1)
+
+          commit_pattern = re.compile(
+              r"(?m)^(?P<indent>[ \t]*)transaction\.commit\(\)\.map_err\(map_postgres_error\)\?;$"
+          )
+          if len(commit_pattern.findall(body)) != 4:
+              raise SystemExit(
+                  f"session.rs: expected four rotation commit points, found {len(commit_pattern.findall(body))}"
+              )
+          body = commit_pattern.sub(
+              lambda match: (
+                  f"{match.group('indent')}hook(SessionMutationPoint::BeforeCommit);\n"
+                  f"{match.group(0)}"
+              ),
+              body,
+          )
+          source = source[:start] + body + source[end:]
+          session.write_text(source, encoding="utf-8")
+
+          test_path = Path("crates/trnm-persistence-pg/tests/session_response_loss.rs")
+          source = test_path.read_text(encoding="utf-8")
+          imports_old = """use std::collections::BTreeSet;
+          use std::env;
+          use std::sync::{Arc, Barrier};
+          use std::thread;
+
+          use trnm_contracts::{Digest32, RefreshTokenId, SessionFamilyId, StableCode, UserId};
+          """
+          imports_new = """use std::collections::BTreeSet;
+          use std::env;
+          #[cfg(feature = \"session-test-hooks\")]
+          use std::sync::mpsc;
+          use std::sync::{Arc, Barrier};
+          use std::thread;
+          #[cfg(feature = \"session-test-hooks\")]
+          use std::time::Duration;
+
+          #[cfg(feature = \"session-test-hooks\")]
+          use postgres::{Client, NoTls};
+          use trnm_contracts::{Digest32, RefreshTokenId, SessionFamilyId, StableCode, UserId};
+          """
+          if source.count(imports_old) != 1:
+              raise SystemExit("session response-loss test imports changed")
+          source = source.replace(imports_old, imports_new, 1)
+
+          import_tail = """use trnm_session_core::RevocationReason;
+          """
+          import_tail_new = """use trnm_session_core::RevocationReason;
+          #[cfg(feature = \"session-test-hooks\")]
+          use trnm_persistence_pg::SessionMutationPoint;
+          """
+          if source.count(import_tail) != 1:
+              raise SystemExit("session response-loss feature import insertion point changed")
+          source = source.replace(import_tail, import_tail_new, 1)
+
+          helper_marker = """fn concurrency_credentials(iteration: u8) -> (RefreshTokenCredential, RefreshTokenCredential) {
+              let base = 0x90_u8.checked_add(iteration).unwrap();
+              (
+                  credential(base + 0x20, base),
+                  credential(base + 0x40, base ^ 0x80),
+              )
+          }
+
+          #[test]
+          """
+          helper_replacement = """fn concurrency_credentials(iteration: u8) -> (RefreshTokenCredential, RefreshTokenCredential) {
+              let base = 0x90_u8.checked_add(iteration).unwrap();
+              (
+                  credential(base + 0x20, base),
+                  credential(base + 0x40, base ^ 0x80),
+              )
+          }
+
+          fn interleaving_credentials() -> [RefreshTokenCredential; 14] {
+              [
+                  credential(0x42, 0x43),
+                  credential(0x44, 0x45),
+                  credential(0x48, 0x49),
+                  credential(0x4a, 0x4b),
+                  credential(0x4c, 0x4d),
+                  credential(0x50, 0x51),
+                  credential(0x52, 0x53),
+                  credential(0x54, 0x55),
+                  credential(0x58, 0x59),
+                  credential(0x5a, 0x5b),
+                  credential(0x5c, 0x5d),
+                  credential(0x60, 0x61),
+                  credential(0x62, 0x63),
+                  credential(0x64, 0x65),
+              ]
+          }
+
+          #[test]
+          """
+          if source.count(helper_marker) != 1:
+              raise SystemExit("session response-loss fixture helper insertion point changed")
+          source = source.replace(helper_marker, helper_replacement, 1)
+
+          uniqueness_old = """    assert_eq!(digests.len(), 35);
+          }
+          """
+          uniqueness_new = """    for value in interleaving_credentials() {
+                  assert!(digests.insert(*value.digest.as_bytes()));
+              }
+              assert_eq!(digests.len(), 49);
+          }
+          """
+          if source.count(uniqueness_old) != 1:
+              raise SystemExit("session response-loss uniqueness assertion changed")
+          source = source.replace(uniqueness_old, uniqueness_new, 1)
+
+          insertion_marker = """#[test]
+          fn concurrent_refresh_and_logout_never_surface_a_database_deadlock() {
+          """
+          interleaving_code = r'''#[cfg(feature = "session-test-hooks")]
+          type RotationResult = Result<RefreshRotationOutcome, (StableCode, &'static str)>;
+
+          #[cfg(feature = "session-test-hooks")]
+          #[derive(Debug)]
+          struct PersistedRefreshToken {
+              id: Vec<u8>,
+              generation: i64,
+              state: i16,
+              issued_at_ms: i64,
+              consumed_at_ms: Option<i64>,
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          #[derive(Debug)]
+          struct PersistedSessionFamily {
+              generation: i64,
+              active_token: Option<Vec<u8>>,
+              revoked_reason: Option<i16>,
+              tokens: Vec<PersistedRefreshToken>,
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          fn mapped_rotation(
+              result: Result<RefreshRotationOutcome, trnm_contracts::DomainError>,
+          ) -> RotationResult {
+              result.map_err(|error| (error.code(), error.reason()))
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          fn establish_committed_successor(
+              database_url: &str,
+              profile: DatabaseProfile,
+              family: SessionFamilyId,
+              user: UserId,
+              predecessor: RefreshTokenCredential,
+              successor: RefreshTokenCredential,
+          ) -> trnm_persistence_pg::SessionFamilyRecord {
+              let mut repository = PgRepository::connect(database_url, profile).unwrap();
+              repository
+                  .create_session_family(&CreateSessionFamily {
+                      family,
+                      user,
+                      refresh: predecessor,
+                      issued_at_ms: 100,
+                  })
+                  .unwrap();
+              match repository
+                  .rotate_refresh_token(&RotateRefreshToken {
+                      presented: predecessor,
+                      replacement: successor,
+                      rotated_at_ms: 200,
+                  })
+                  .unwrap()
+              {
+                  RefreshRotationOutcome::Rotated(record) => record,
+                  RefreshRotationOutcome::ReplayRevoked(_) => {
+                      panic!("fresh setup rotation was classified as replay")
+                  }
+              }
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          fn ordered_rotations(
+              database_url: &str,
+              profile: DatabaseProfile,
+              first_request: RotateRefreshToken,
+              second_request: RotateRefreshToken,
+          ) -> (RotationResult, RotationResult) {
+              let (first_ready_tx, first_ready_rx) = mpsc::channel();
+              let (release_first_tx, release_first_rx) = mpsc::channel();
+              let first_url = database_url.to_owned();
+              let first = thread::spawn(move || {
+                  let mut repository = PgRepository::connect(&first_url, profile).unwrap();
+                  let mut announced = false;
+                  mapped_rotation(repository.rotate_refresh_token_with_test_hook(
+                      &first_request,
+                      |point| {
+                          if point == SessionMutationPoint::BeforeCommit && !announced {
+                              announced = true;
+                              first_ready_tx.send(()).unwrap();
+                              release_first_rx
+                                  .recv_timeout(Duration::from_secs(20))
+                                  .expect("first rotation release was not delivered");
+                          }
+                      },
+                  ))
+              });
+
+              first_ready_rx
+                  .recv_timeout(Duration::from_secs(20))
+                  .expect("first rotation did not reach its deterministic commit fence");
+
+              let (second_ready_tx, second_ready_rx) = mpsc::channel();
+              let second_url = database_url.to_owned();
+              let second = thread::spawn(move || {
+                  let mut repository = PgRepository::connect(&second_url, profile).unwrap();
+                  let mut announced = false;
+                  mapped_rotation(repository.rotate_refresh_token_with_test_hook(
+                      &second_request,
+                      |point| {
+                          if point == SessionMutationPoint::CredentialResolved && !announced {
+                              announced = true;
+                              second_ready_tx.send(()).unwrap();
+                          }
+                      },
+                  ))
+              });
+
+              second_ready_rx
+                  .recv_timeout(Duration::from_secs(20))
+                  .expect("second rotation did not resolve the exact credential");
+              release_first_tx.send(()).unwrap();
+
+              let first = first.join().expect("first rotation thread panicked");
+              let second = second.join().expect("second rotation thread panicked");
+              for result in [&first, &second] {
+                  if let Err((_code, reason)) = result {
+                      assert_ne!(*reason, "database_deadlock");
+                  }
+              }
+              (first, second)
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          fn settle_serialization(
+              database_url: &str,
+              profile: DatabaseProfile,
+              request: RotateRefreshToken,
+              mut result: RotationResult,
+          ) -> RotationResult {
+              for _ in 0..4 {
+                  let retry = matches!(
+                      &result,
+                      Err((StableCode::Aborted, "database_serialization_failure"))
+                  );
+                  if !retry {
+                      return result;
+                  }
+                  let mut repository = PgRepository::connect(database_url, profile).unwrap();
+                  result = mapped_rotation(repository.rotate_refresh_token(&request));
+              }
+              result
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          fn expect_rotated(result: RotationResult) -> trnm_persistence_pg::SessionFamilyRecord {
+              match result {
+                  Ok(RefreshRotationOutcome::Rotated(record)) => record,
+                  other => panic!("expected rotated outcome, got {other:?}"),
+              }
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          fn expect_replay_revoked(
+              result: RotationResult,
+          ) -> trnm_persistence_pg::SessionFamilyRecord {
+              match result {
+                  Ok(RefreshRotationOutcome::ReplayRevoked(record)) => record,
+                  other => panic!("expected replay-revoked outcome, got {other:?}"),
+              }
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          fn load_persisted_family(
+              database_url: &str,
+              family: SessionFamilyId,
+          ) -> PersistedSessionFamily {
+              let mut client = Client::connect(database_url, NoTls).unwrap();
+              let row = client
+                  .query_one(
+                      "SELECT generation, active_token_id, revoked_reason \
+                       FROM trnm_session_families WHERE family_id = $1",
+                      &[&family.as_bytes().as_slice()],
+                  )
+                  .unwrap();
+              let tokens = client
+                  .query(
+                      "SELECT token_id, generation, state, issued_at_ms, consumed_at_ms \
+                       FROM trnm_refresh_tokens WHERE family_id = $1 \
+                       ORDER BY generation, token_id",
+                      &[&family.as_bytes().as_slice()],
+                  )
+                  .unwrap()
+                  .into_iter()
+                  .map(|row| PersistedRefreshToken {
+                      id: row.get(0),
+                      generation: row.get(1),
+                      state: row.get(2),
+                      issued_at_ms: row.get(3),
+                      consumed_at_ms: row.get(4),
+                  })
+                  .collect();
+              PersistedSessionFamily {
+                  generation: row.get(0),
+                  active_token: row.get(1),
+                  revoked_reason: row.get(2),
+                  tokens,
+              }
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          fn assert_family_invariants(state: &PersistedSessionFamily) {
+              let active: Vec<_> = state.tokens.iter().filter(|token| token.state == 0).collect();
+              assert_eq!(active.len(), usize::from(state.active_token.is_some()));
+              if let Some(active_token) = &state.active_token {
+                  assert_eq!(active[0].id, *active_token);
+              }
+              let mut generations = BTreeSet::new();
+              for token in &state.tokens {
+                  assert!(generations.insert(token.generation));
+                  match token.state {
+                      0 => assert_eq!(token.consumed_at_ms, None),
+                      1 => assert!(
+                          token.consumed_at_ms.unwrap() >= token.issued_at_ms,
+                          "consumed refresh token predates issue: {token:?}"
+                      ),
+                      value => panic!("unexpected refresh token state {value}"),
+                  }
+              }
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          fn assert_family_state(
+              state: &PersistedSessionFamily,
+              generation: i64,
+              active: Option<RefreshTokenCredential>,
+              revoked_reason: Option<i16>,
+          ) {
+              assert_eq!(state.generation, generation);
+              assert_eq!(state.revoked_reason, revoked_reason);
+              assert_eq!(
+                  state.active_token.as_deref(),
+                  active.map(|value| value.id).as_ref().map(|id| id.as_bytes().as_slice())
+              );
+              assert_family_invariants(state);
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          fn assert_token_state(
+              state: &PersistedSessionFamily,
+              credential: RefreshTokenCredential,
+              generation: i64,
+              token_state: i16,
+              issued_at_ms: i64,
+              consumed_at_ms: Option<i64>,
+          ) {
+              let token = state
+                  .tokens
+                  .iter()
+                  .find(|token| token.id.as_slice() == credential.id.as_bytes().as_slice())
+                  .unwrap_or_else(|| panic!("missing persisted token generation {generation}"));
+              assert_eq!(token.generation, generation);
+              assert_eq!(token.state, token_state);
+              assert_eq!(token.issued_at_ms, issued_at_ms);
+              assert_eq!(token.consumed_at_ms, consumed_at_ms);
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          #[test]
+          fn concurrent_exact_committed_retries_return_same_durable_result() {
+              let Some((database_url, profile)) =
+                  live_database_environment("concurrent exact committed refresh retries")
+              else {
+                  return;
+              };
+              let credentials = interleaving_credentials();
+              let predecessor = credentials[0];
+              let successor = credentials[1];
+              let family = SessionFamilyId::new([0x40; 16]);
+              let user = UserId::new([0x41; 16]);
+              let durable = establish_committed_successor(
+                  &database_url,
+                  profile,
+                  family,
+                  user,
+                  predecessor,
+                  successor,
+              );
+              let first_request = RotateRefreshToken {
+                  presented: predecessor,
+                  replacement: successor,
+                  rotated_at_ms: 201,
+              };
+              let second_request = RotateRefreshToken {
+                  rotated_at_ms: 202,
+                  ..first_request
+              };
+              let (first, second) =
+                  ordered_rotations(&database_url, profile, first_request, second_request);
+              assert_eq!(expect_rotated(first), durable);
+              assert_eq!(
+                  expect_rotated(settle_serialization(
+                      &database_url,
+                      profile,
+                      second_request,
+                      second,
+                  )),
+                  durable
+              );
+              let state = load_persisted_family(&database_url, family);
+              assert_family_state(&state, 1, Some(successor), None);
+              assert_eq!(state.tokens.len(), 2);
+              assert_token_state(&state, predecessor, 0, 1, 100, Some(200));
+              assert_token_state(&state, successor, 1, 0, 200, None);
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          #[test]
+          fn exact_retry_then_successor_rotation_is_one_linear_history() {
+              let Some((database_url, profile)) =
+                  live_database_environment("exact retry before successor rotation")
+              else {
+                  return;
+              };
+              let credentials = interleaving_credentials();
+              let predecessor = credentials[2];
+              let successor = credentials[3];
+              let third = credentials[4];
+              let family = SessionFamilyId::new([0x46; 16]);
+              let user = UserId::new([0x47; 16]);
+              let durable = establish_committed_successor(
+                  &database_url,
+                  profile,
+                  family,
+                  user,
+                  predecessor,
+                  successor,
+              );
+              let retry_request = RotateRefreshToken {
+                  presented: predecessor,
+                  replacement: successor,
+                  rotated_at_ms: 201,
+              };
+              let next_request = RotateRefreshToken {
+                  presented: successor,
+                  replacement: third,
+                  rotated_at_ms: 300,
+              };
+              let (retry, next) =
+                  ordered_rotations(&database_url, profile, retry_request, next_request);
+              assert_eq!(expect_rotated(retry), durable);
+              let next = expect_rotated(settle_serialization(
+                  &database_url,
+                  profile,
+                  next_request,
+                  next,
+              ));
+              assert_eq!(next.generation, 2);
+              assert_eq!(next.active_token, Some(third.id));
+              let state = load_persisted_family(&database_url, family);
+              assert_family_state(&state, 2, Some(third), None);
+              assert_eq!(state.tokens.len(), 3);
+              assert_token_state(&state, predecessor, 0, 1, 100, Some(200));
+              assert_token_state(&state, successor, 1, 1, 200, Some(300));
+              assert_token_state(&state, third, 2, 0, 300, None);
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          #[test]
+          fn successor_rotation_then_old_retry_revokes_one_linear_history() {
+              let Some((database_url, profile)) =
+                  live_database_environment("successor rotation before old exact retry")
+              else {
+                  return;
+              };
+              let credentials = interleaving_credentials();
+              let predecessor = credentials[5];
+              let successor = credentials[6];
+              let third = credentials[7];
+              let family = SessionFamilyId::new([0x4e; 16]);
+              let user = UserId::new([0x4f; 16]);
+              establish_committed_successor(
+                  &database_url,
+                  profile,
+                  family,
+                  user,
+                  predecessor,
+                  successor,
+              );
+              let next_request = RotateRefreshToken {
+                  presented: successor,
+                  replacement: third,
+                  rotated_at_ms: 300,
+              };
+              let old_retry = RotateRefreshToken {
+                  presented: predecessor,
+                  replacement: successor,
+                  rotated_at_ms: 301,
+              };
+              let (next, retry) =
+                  ordered_rotations(&database_url, profile, next_request, old_retry);
+              let next = expect_rotated(next);
+              assert_eq!(next.generation, 2);
+              assert_eq!(next.active_token, Some(third.id));
+              let revoked = expect_replay_revoked(settle_serialization(
+                  &database_url,
+                  profile,
+                  old_retry,
+                  retry,
+              ));
+              assert_eq!(revoked.generation, 2);
+              assert_eq!(revoked.active_token, None);
+              assert_eq!(revoked.revoked_reason, Some(RevocationReason::RefreshReplay));
+              let state = load_persisted_family(&database_url, family);
+              assert_family_state(&state, 2, None, Some(2));
+              assert_eq!(state.tokens.len(), 3);
+              assert_token_state(&state, predecessor, 0, 1, 100, Some(200));
+              assert_token_state(&state, successor, 1, 1, 200, Some(300));
+              assert_token_state(&state, third, 2, 1, 300, Some(301));
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          #[test]
+          fn exact_retry_then_changed_replay_revokes_one_linear_history() {
+              let Some((database_url, profile)) =
+                  live_database_environment("exact retry before changed successor replay")
+              else {
+                  return;
+              };
+              let credentials = interleaving_credentials();
+              let predecessor = credentials[8];
+              let successor = credentials[9];
+              let changed = credentials[10];
+              let family = SessionFamilyId::new([0x56; 16]);
+              let user = UserId::new([0x57; 16]);
+              let durable = establish_committed_successor(
+                  &database_url,
+                  profile,
+                  family,
+                  user,
+                  predecessor,
+                  successor,
+              );
+              let exact = RotateRefreshToken {
+                  presented: predecessor,
+                  replacement: successor,
+                  rotated_at_ms: 201,
+              };
+              let changed_request = RotateRefreshToken {
+                  presented: predecessor,
+                  replacement: changed,
+                  rotated_at_ms: 202,
+              };
+              let (exact_result, changed_result) =
+                  ordered_rotations(&database_url, profile, exact, changed_request);
+              assert_eq!(expect_rotated(exact_result), durable);
+              let revoked = expect_replay_revoked(settle_serialization(
+                  &database_url,
+                  profile,
+                  changed_request,
+                  changed_result,
+              ));
+              assert_eq!(revoked.generation, 1);
+              assert_eq!(revoked.revoked_reason, Some(RevocationReason::RefreshReplay));
+              let state = load_persisted_family(&database_url, family);
+              assert_family_state(&state, 1, None, Some(2));
+              assert_eq!(state.tokens.len(), 2);
+              assert_token_state(&state, predecessor, 0, 1, 100, Some(200));
+              assert_token_state(&state, successor, 1, 1, 200, Some(202));
+          }
+
+          #[cfg(feature = "session-test-hooks")]
+          #[test]
+          fn changed_replay_then_exact_retry_is_one_linear_history() {
+              let Some((database_url, profile)) =
+                  live_database_environment("changed successor replay before exact retry")
+              else {
+                  return;
+              };
+              let credentials = interleaving_credentials();
+              let predecessor = credentials[11];
+              let successor = credentials[12];
+              let changed = credentials[13];
+              let family = SessionFamilyId::new([0x5e; 16]);
+              let user = UserId::new([0x5f; 16]);
+              establish_committed_successor(
+                  &database_url,
+                  profile,
+                  family,
+                  user,
+                  predecessor,
+                  successor,
+              );
+              let changed_request = RotateRefreshToken {
+                  presented: predecessor,
+                  replacement: changed,
+                  rotated_at_ms: 202,
+              };
+              let exact = RotateRefreshToken {
+                  presented: predecessor,
+                  replacement: successor,
+                  rotated_at_ms: 203,
+              };
+              let (changed_result, exact_result) =
+                  ordered_rotations(&database_url, profile, changed_request, exact);
+              let revoked = expect_replay_revoked(changed_result);
+              assert_eq!(revoked.generation, 1);
+              let exact_result = settle_serialization(
+                  &database_url,
+                  profile,
+                  exact,
+                  exact_result,
+              );
+              assert!(matches!(
+                  exact_result,
+                  Err((StableCode::Unauthenticated, "session_not_active"))
+              ));
+              let state = load_persisted_family(&database_url, family);
+              assert_family_state(&state, 1, None, Some(2));
+              assert_eq!(state.tokens.len(), 2);
+              assert_token_state(&state, predecessor, 0, 1, 100, Some(200));
+              assert_token_state(&state, successor, 1, 1, 200, Some(202));
+          }
+
+          '''
+          if source.count(insertion_marker) != 1:
+              raise SystemExit("session response-loss interleaving insertion point changed")
+          source = source.replace(insertion_marker, interleaving_code + insertion_marker, 1)
+          test_path.write_text(source, encoding="utf-8")
+
+          for script_name, scalar in (
+              ("scripts/check-pg-server-response-loss.sh", "query"),
+              ("scripts/ci-trnm-server-live.sh", "db_scalar"),
+          ):
+              path = Path(script_name)
+              source = path.read_text(encoding="utf-8")
+              command_old = """  cargo test -p trnm-persistence-pg --locked --test session_response_loss \\
+              -- --nocapture 2>&1 | tee """
+              command_new = """  cargo test -p trnm-persistence-pg --features session-test-hooks --locked \\
+              --test session_response_loss -- --nocapture 2>&1 | tee """
+              if source.count(command_old) != 1:
+                  raise SystemExit(f"{script_name}: live test command changed")
+              source = source.replace(command_old, command_new, 1)
+              if source.count('test "$session_test_count" -ge 2') != 1:
+                  raise SystemExit(f"{script_name}: live test count assertion changed")
+              source = source.replace(
+                  'test "$session_test_count" -ge 2',
+                  'test "$session_test_count" -ge 8',
+                  1,
+              )
+
+              loop_tail = """done
+          test "$concurrency_logout_families" = 16
+          """
+              state_checks = f'''done
+          test "$concurrency_logout_families" = 16
+
+          assert_interleaving_family() {{
+            local family_byte=$1
+            local generation=$2
+            local active_byte=$3
+            local revoked_reason=$4
+            local token_count=$5
+            local active_count=$6
+            local family_hex active_clause revocation_clause active_hex
+            family_hex=$(printf "${{family_byte}}%.0s" {{1..16}})
+            if [[ "$active_byte" == none ]]; then
+              active_clause='active_token_id IS NULL'
+            else
+              active_hex=$(printf "${{active_byte}}%.0s" {{1..16}})
+              active_clause="active_token_id = decode('${{active_hex}}', 'hex')"
+            fi
+            if [[ "$revoked_reason" == none ]]; then
+              revocation_clause='revoked_reason IS NULL'
+            else
+              revocation_clause="revoked_reason = ${{revoked_reason}}"
+            fi
+            test "$({scalar} "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${{family_hex}}', 'hex') AND generation = ${{generation}} AND ${{active_clause}} AND ${{revocation_clause}}")" = 1
+            test "$({scalar} "SELECT count(*) FROM trnm_refresh_tokens WHERE family_id = decode('${{family_hex}}', 'hex')")" = "$token_count"
+            test "$({scalar} "SELECT count(*) FROM trnm_refresh_tokens WHERE family_id = decode('${{family_hex}}', 'hex') AND state = 0")" = "$active_count"
+          }}
+
+          assert_interleaving_family 40 1 44 none 2 1
+          assert_interleaving_family 46 2 4c none 3 1
+          assert_interleaving_family 4e 2 none 2 3 0
+          assert_interleaving_family 56 1 none 2 2 0
+          assert_interleaving_family 5e 1 none 2 2 0
+          interleaving_family_count=5
+          '''
+              if source.count(loop_tail) != 1:
+                  raise SystemExit(f"{script_name}: concurrency assertion insertion point changed")
+              source = source.replace(loop_tail, state_checks, 1)
+
+              output_marker = """  printf 'concurrency_logout_families=%s\\n' "$concurrency_logout_families"
+          """
+              output_replacement = """  printf 'concurrency_logout_families=%s\\n' "$concurrency_logout_families"
+            printf 'deterministic_interleaving_families=%s\\n' "$interleaving_family_count"
+          """
+              if source.count(output_marker) != 1:
+                  raise SystemExit(f"{script_name}: evidence output insertion point changed")
+              source = source.replace(output_marker, output_replacement, 1)
+              path.write_text(source, encoding="utf-8")
+
+          static_path = Path("tests/control_plane/test_session_live_harness_scope.py")
+          source = static_path.read_text(encoding="utf-8")
+          source = source.replace(
+              'self.assertGreaterEqual(source.count("#[test]"), 3)',
+              'self.assertGreaterEqual(source.count("#[test]"), 8)',
+              1,
+          )
+          source = source.replace(
+              'self.assertIn("assert_eq!(digests.len(), 35);", source)',
+              'self.assertIn("assert_eq!(digests.len(), 49);", source)',
+              1,
+          )
+          existing = """        self.assertIn(
+                      "concurrent_refresh_and_logout_never_surface_a_database_deadlock",
+                      source,
+                  )
+          """
+          required = """        self.assertIn(
+                      "concurrent_refresh_and_logout_never_surface_a_database_deadlock",
+                      source,
+                  )
+                  for name in (
+                      "concurrent_exact_committed_retries_return_same_durable_result",
+                      "exact_retry_then_successor_rotation_is_one_linear_history",
+                      "successor_rotation_then_old_retry_revokes_one_linear_history",
+                      "exact_retry_then_changed_replay_revokes_one_linear_history",
+                      "changed_replay_then_exact_retry_is_one_linear_history",
+                  ):
+                      self.assertIn(name, source)
+                  self.assertIn("SessionMutationPoint::BeforeCommit", source)
+                  self.assertIn("SessionMutationPoint::CredentialResolved", source)
+          """
+          if source.count(existing) != 1:
+              raise SystemExit("static session contract named-test insertion point changed")
+          source = source.replace(existing, required, 1)
+          lower_bound_old = """                # Two tests require the live database. The third is the pure
+                          # uniqueness guard above and must not be misreported as database
+                          # coverage merely by increasing this lower bound.
+                          self.assertIn('test "$session_test_count" -ge 2', source)
+          """
+          lower_bound_new = """                # Seven tests require a live database and one is a pure fixture
+                          # uniqueness guard. The harness must execute the feature-gated
+                          # deterministic coordination paths, not merely compile them.
+                          self.assertIn("--features session-test-hooks", source)
+                          self.assertIn('test "$session_test_count" -ge 8', source)
+          """
+          if source.count(lower_bound_old) != 1:
+              raise SystemExit("static session contract lower-bound block changed")
+          source = source.replace(lower_bound_old, lower_bound_new, 1)
+          output_old = """                self.assertIn("printf 'concurrency_logout_families=%s\\\\n'", source)
+          """
+          output_new = """                self.assertIn("printf 'concurrency_logout_families=%s\\\\n'", source)
+                          self.assertIn("assert_interleaving_family 40 1 44 none 2 1", source)
+                          self.assertIn("assert_interleaving_family 46 2 4c none 3 1", source)
+                          self.assertIn("assert_interleaving_family 4e 2 none 2 3 0", source)
+                          self.assertIn("assert_interleaving_family 56 1 none 2 2 0", source)
+                          self.assertIn("assert_interleaving_family 5e 1 none 2 2 0", source)
+                          self.assertIn("deterministic_interleaving_families=%s", source)
+          """
+          if source.count(output_old) != 1:
+              raise SystemExit("static session contract evidence-output insertion point changed")
+          source = source.replace(output_old, output_new, 1)
+          static_path.write_text(source, encoding="utf-8")
           PY
 
+          cargo +1.85.1 fmt --all
           expected_paths=$(cat <<'EOF'
+          crates/trnm-persistence-pg/Cargo.toml
+          crates/trnm-persistence-pg/src/lib.rs
+          crates/trnm-persistence-pg/src/session.rs
+          crates/trnm-persistence-pg/tests/session_response_loss.rs
           scripts/check-pg-server-response-loss.sh
           scripts/ci-trnm-server-live.sh
           tests/control_plane/test_session_live_harness_scope.py
@@ -90,8 +952,14 @@ jobs:
           bash -n scripts/ci-trnm-server-live.sh
           cargo +1.85.1 fmt --all -- --check
           python3 -m unittest -v tests.control_plane.test_session_live_harness_scope
+          python3 scripts/check-rust-foundation.py
+          python3 scripts/check-trnm-server.py
           cargo +1.85.1 test -p trnm-persistence-pg --all-targets --locked -- --nocapture
+          cargo +1.85.1 test -p trnm-persistence-pg --all-targets \
+            --features session-test-hooks --locked -- --nocapture
           cargo +1.85.1 clippy -p trnm-persistence-pg --all-targets --locked -- -D warnings
+          cargo +1.85.1 clippy -p trnm-persistence-pg --all-targets \
+            --features session-test-hooks --locked -- -D warnings
 
       - name: Commit and ordinary fast-forward push
         shell: bash
@@ -105,10 +973,14 @@ jobs:
           git config user.name 'Trillionnium qualification bot'
           git config user.email 'qualification-bot@invalid'
           git add \
+            crates/trnm-persistence-pg/Cargo.toml \
+            crates/trnm-persistence-pg/src/lib.rs \
+            crates/trnm-persistence-pg/src/session.rs \
+            crates/trnm-persistence-pg/tests/session_response_loss.rs \
             scripts/check-pg-server-response-loss.sh \
             scripts/ci-trnm-server-live.sh \
             tests/control_plane/test_session_live_harness_scope.py
-          git commit -m 'fix(ci): make session test summary parsing deterministic'
+          git commit -m 'test(session): add deterministic multi-connection histories'
           new_head=$(git rev-parse HEAD)
           new_tree=$(git rev-parse HEAD^{tree})
           git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
