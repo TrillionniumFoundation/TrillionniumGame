@@ -1,0 +1,204 @@
+name: candidate-receipt-fix-export
+
+on:
+  push:
+    branches: [tooling/candidate-receipt-fix-2026-09-06]
+    paths:
+      - '.github/workflows/candidate-receipt-fix-export.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      EXPECTED_HEAD: 4a4fb5b57db0620c03804f4296eb80b3aee2887a
+      EXPECTED_TREE: 0c55356ed25068a0224d2a25c82ed014aeefbff7
+      PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+      EXPORT_BRANCH: tooling/candidate-receipt-fix-2026-09-06
+      GH_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Fetch exact tooling and unchanged product
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/tooling" "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/tooling"
+          git -C "$GITHUB_WORKSPACE/tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/tooling" checkout -b "$EXPORT_BRANCH" FETCH_HEAD
+
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin "refs/heads/${PRODUCT_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+
+      - name: Repair receipt continuation, add regression and repin manifests
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import importlib.util
+          import json
+          from pathlib import Path
+          import sys
+
+          root = Path.cwd()
+          candidate = root / ".github/workflows/candidate-identity-manifest.yml"
+          source = candidate.read_text(encoding="utf-8")
+          anchor = "          printf 'artifact_id=%s\\nsha256=%s\\nsize_bytes=%s\\n'\n"
+          replacement = "          printf 'artifact_id=%s\\nsha256=%s\\nsize_bytes=%s\\n' \\\n"
+          if source.count(anchor) != 1:
+              raise SystemExit(f"candidate printf anchor count={source.count(anchor)}")
+          candidate.write_text(source.replace(anchor, replacement, 1), encoding="utf-8")
+
+          test_path = root / "tests/control_plane/test_evidence_retention_workflows.py"
+          tests = test_path.read_text(encoding="utf-8")
+          test_anchor = "    def test_source_collection_binds_runs_jobs_attempts_and_definition_blobs(self) -> None:\n"
+          addition = '''    def test_receipt_printf_arguments_are_shell_continuations(self) -> None:
+              observed = 0
+              for label, path in WORKFLOWS.items():
+                  source = path.read_text(encoding="utf-8")
+                  for line in source.splitlines():
+                      if "printf " in line and "artifact_id=%s" in line:
+                          observed += 1
+                          self.assertTrue(
+                              line.endswith("\\\\"),
+                              f"{label}: receipt printf must continue onto its arguments",
+                          )
+              self.assertGreaterEqual(observed, len(WORKFLOWS))
+
+          '''
+          if tests.count(test_anchor) != 1:
+              raise SystemExit("retention test anchor drift")
+          test_path.write_text(tests.replace(test_anchor, addition + test_anchor, 1), encoding="utf-8")
+
+          base_path = root / "docs/governance/REQUIRED_WORKFLOWS_V1.json"
+          overlay_path = root / "docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json"
+
+          def pairs(items):
+              value = {}
+              for key, item in items:
+                  if key in value:
+                      raise SystemExit(f"duplicate JSON key: {key}")
+                  value[key] = item
+              return value
+
+          def load(path: Path):
+              return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=pairs,
+                                parse_constant=lambda value: (_ for _ in ()).throw(SystemExit(value)))
+
+          def canonical(value, newline=True):
+              raw = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+              return raw + (b"\n" if newline else b"")
+
+          def blob(data: bytes):
+              return hashlib.sha1(f"blob {len(data)}\0".encode("ascii") + data).hexdigest()
+
+          candidate_blob = blob(candidate.read_bytes())
+          base = load(base_path)
+          overlay = load(overlay_path)
+          hits = 0
+          for row in [base.get("aggregate_workflow"), *base.get("workflows", []),
+                      *overlay.get("replace_workflows", []), *overlay.get("add_workflows", [])]:
+              if isinstance(row, dict) and row.get("path") == ".github/workflows/candidate-identity-manifest.yml":
+                  row["git_blob_sha1"] = candidate_blob
+                  hits += 1
+          if hits < 1:
+              raise SystemExit("candidate workflow is absent from manifest composition")
+          base_bytes = canonical(base)
+          base_path.write_bytes(base_bytes)
+          overlay["base_manifest_blob_sha1"] = blob(base_bytes)
+          overlay.pop("overlay_sha256", None)
+          overlay["overlay_sha256"] = hashlib.sha256(canonical(overlay, newline=False)).hexdigest()
+          overlay_path.write_bytes(canonical(overlay))
+
+          gate_path = root / "scripts/check-required-workflow-runs.py"
+          spec = importlib.util.spec_from_file_location("candidate_receipt_manifest_gate", gate_path)
+          if spec is None or spec.loader is None:
+              raise SystemExit("cannot load workflow gate")
+          gate = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = gate
+          spec.loader.exec_module(gate)
+          manifest = gate.load_composed_manifest(base_path.relative_to(root))
+          failures = gate.verify_files(root, manifest)
+          if failures:
+              raise SystemExit("; ".join(failures))
+          print(json.dumps({"candidate_blob": candidate_blob,
+                            "base_blob": blob(base_path.read_bytes()),
+                            "overlay_blob": blob(overlay_path.read_bytes())},
+                           sort_keys=True, separators=(",", ":")))
+          PY
+          expected=$(cat <<'EOF'
+          .github/workflows/candidate-identity-manifest.yml
+          docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json
+          docs/governance/REQUIRED_WORKFLOWS_V1.json
+          tests/control_plane/test_evidence_retention_workflows.py
+          EOF
+          )
+          test "$(git diff --name-only | LC_ALL=C sort)" = "$expected"
+          git diff --check
+
+      - name: Execute focused and complete repository control corpus
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q scripts tests
+          python3 -m unittest -v \
+            tests.control_plane.test_evidence_retention_workflows \
+            tests.control_plane.test_required_workflow_source_contract \
+            tests.control_plane.test_workflow_manifest_overlay
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-evidence-index.py
+          python3 scripts/check-gap-register.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v \
+            2>&1 | tee "$RUNNER_TEMP/full-python.log"
+          grep -Eq '^Ran [1-9][0-9]* tests in ' "$RUNNER_TEMP/full-python.log"
+          grep -qx OK "$RUNNER_TEMP/full-python.log"
+
+      - name: Export exact validated payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          export_repo="$GITHUB_WORKSPACE/tooling"
+          payload="$export_repo/candidate-receipt-fix-payload/root"
+          rm -rf "$export_repo/candidate-receipt-fix-payload"
+          mkdir -p "$export_repo/candidate-receipt-fix-payload"
+          expected=$(cat <<'EOF'
+          .github/workflows/candidate-identity-manifest.yml
+          docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json
+          docs/governance/REQUIRED_WORKFLOWS_V1.json
+          tests/control_plane/test_evidence_retention_workflows.py
+          EOF
+          )
+          while IFS= read -r path; do
+            mkdir -p "$payload/$(dirname "$path")"
+            cp "$GITHUB_WORKSPACE/source/$path" "$payload/$path"
+            printf '%s\t%s\t%s\n' "$path" \
+              "$(git -C "$GITHUB_WORKSPACE/source" hash-object "$path")" \
+              "$(sha256sum "$GITHUB_WORKSPACE/source/$path" | cut -d' ' -f1)"
+          done <<< "$expected" | tee "$export_repo/candidate-receipt-fix-payload/IDENTITIES.tsv"
+
+          cd "$export_repo"
+          git config user.name "Qian QI"
+          git config user.email "102159240+ProfHepta@users.noreply.github.com"
+          git add candidate-receipt-fix-payload
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = 5
+          git diff --cached --check
+          git commit -m "tooling: export validated candidate receipt fix"
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
+            push origin "HEAD:refs/heads/${EXPORT_BRANCH}"
+          printf 'export_head=%s\nexport_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
