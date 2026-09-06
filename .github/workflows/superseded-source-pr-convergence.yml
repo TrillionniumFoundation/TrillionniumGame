@@ -1,0 +1,151 @@
+name: superseded-source-pr-convergence
+
+on:
+  push:
+    branches: [tooling/superseded-source-pr-convergence-2026-09-06]
+    paths:
+      - '.github/workflows/superseded-source-pr-convergence.yml'
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  verify-archive-close:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BASE_SHA: 7deee4377cff401854647151842c582f038feef1
+      CANONICAL_BRANCH: codex/remaining-source-blockers-wave-v3-2026-09-06
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch canonical and candidate refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags origin \
+            "$BASE_SHA" \
+            "refs/heads/${CANONICAL_BRANCH}:refs/remotes/origin/canonical"
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse refs/remotes/origin/canonical^)" = "$BASE_SHA"
+
+      - name: Verify exact containment and close superseded Draft PRs
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          owner="${GITHUB_REPOSITORY%%/*}"
+          canonical_head=$(git rev-parse refs/remotes/origin/canonical)
+          canonical_pr=$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "$api/pulls?state=open&head=${owner}:${CANONICAL_BRANCH}&per_page=10")
+          test "$(jq 'length' <<<"$canonical_pr")" -eq 1
+          canonical_number=$(jq -r '.[0].number' <<<"$canonical_pr")
+          test "$(jq -r '.[0].head.sha' <<<"$canonical_pr")" = "$canonical_head"
+          test "$(jq -r '.[0].draft' <<<"$canonical_pr")" = true
+
+          candidates=(
+            codex/outbox-property-coverage-2026-09-06
+            codex/session-revocation-fanout-2026-09-06
+            codex/session-registry-hardening-v2-2026-09-06
+            codex/server-composition-root-2026-09-06
+            codex/remaining-source-blockers-wave-2026-09-06
+            codex/remaining-source-blockers-wave-v2-2026-09-06
+          )
+
+          : > "$RUNNER_TEMP/convergence.tsv"
+          for branch in "${candidates[@]}"; do
+            safe=${branch//\//-}
+            git fetch --no-tags origin \
+              "refs/heads/${branch}:refs/remotes/origin/${safe}"
+            target="refs/remotes/origin/${safe}"
+            target_head=$(git rev-parse "$target")
+            git merge-base --is-ancestor "$BASE_SHA" "$target"
+
+            mapfile -d '' paths < <(git diff --name-only -z "$BASE_SHA" "$target")
+            test "${#paths[@]}" -gt 0
+            if ! git diff --quiet "$target" refs/remotes/origin/canonical -- "${paths[@]}"; then
+              printf '%s\t%s\tretained\tnot-exactly-contained\n' "$branch" "$target_head" \
+                >> "$RUNNER_TEMP/convergence.tsv"
+              continue
+            fi
+
+            prs=$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "$api/pulls?state=open&head=${owner}:${branch}&per_page=10")
+            count=$(jq 'length' <<<"$prs")
+            if test "$count" -eq 0; then
+              printf '%s\t%s\tcontained\tno-open-pr\n' "$branch" "$target_head" \
+                >> "$RUNNER_TEMP/convergence.tsv"
+              continue
+            fi
+            test "$count" -eq 1
+            number=$(jq -r '.[0].number' <<<"$prs")
+            test "$number" != "$canonical_number"
+            test "$(jq -r '.[0].head.sha' <<<"$prs")" = "$target_head"
+            test "$(jq -r '.[0].draft' <<<"$prs")" = true
+
+            tag="archive/superseded-pr-${number}-${target_head}"
+            git tag "$tag" "$target_head"
+            auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+            git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
+              push origin "refs/tags/${tag}:refs/tags/${tag}"
+
+            curl -fsSL -X POST \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "$api/issues/${number}/comments" \
+              -d "$(jq -nc --arg body "Superseded by Draft #${canonical_number} at exact head ${canonical_head}. Every path changed by this PR is byte-identical in the canonical v3 tree. Archive tag ${tag} preserves the exact source. This closure grants no evidence, review, gap, compatibility or production credit." '{body:$body}')" \
+              >/dev/null
+            curl -fsSL -X PATCH \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "$api/pulls/${number}" \
+              -d '{"state":"closed"}' >/dev/null
+
+            runs=$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "$api/actions/runs?head_sha=${target_head}&per_page=100")
+            jq -r '.workflow_runs[] | select(.status != "completed") | .id' <<<"$runs" \
+              | while read -r run_id; do
+                  test -n "$run_id" || continue
+                  code=$(curl -sS -o "$RUNNER_TEMP/cancel-${run_id}.json" -w '%{http_code}' \
+                    -X POST \
+                    -H "Authorization: Bearer ${GH_TOKEN}" \
+                    -H 'Accept: application/vnd.github+json' \
+                    "$api/actions/runs/${run_id}/cancel")
+                  case "$code" in
+                    202|409) ;;
+                    *) cat "$RUNNER_TEMP/cancel-${run_id}.json" >&2; exit 1 ;;
+                  esac
+                done
+            printf '%s\t%s\tclosed\tsuperseded-by-%s\n' \
+              "$branch" "$target_head" "$canonical_number" \
+              >> "$RUNNER_TEMP/convergence.tsv"
+          done
+          cat "$RUNNER_TEMP/convergence.tsv"
+          grep -q $'\tclosed\t' "$RUNNER_TEMP/convergence.tsv"
+
+      - name: Verify canonical PR remains open and unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          owner="${GITHUB_REPOSITORY%%/*}"
+          canonical_head=$(git -C "$GITHUB_WORKSPACE/source" rev-parse refs/remotes/origin/canonical)
+          prs=$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "$api/pulls?state=open&head=${owner}:${CANONICAL_BRANCH}&per_page=10")
+          test "$(jq 'length' <<<"$prs")" -eq 1
+          test "$(jq -r '.[0].head.sha' <<<"$prs")" = "$canonical_head"
+          test "$(jq -r '.[0].draft' <<<"$prs")" = true
+          printf 'canonical_pr=%s\ncanonical_head=%s\n' \
+            "$(jq -r '.[0].number' <<<"$prs")" "$canonical_head"
