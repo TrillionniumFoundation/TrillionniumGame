@@ -1,0 +1,169 @@
+name: main-protection-reconcile-v2
+
+on:
+  push:
+    branches: [tooling/main-protection-reconcile-v2-2026-09-06]
+    paths:
+      - '.github/workflows/main-protection-reconcile-v2.yml'
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  reconcile-and-rehearse:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ADMIN_TOKEN: ${{ secrets.TRILLIONNIUM_GITHUB_ADMIN_TOKEN || secrets.GH_ADMIN_TOKEN || github.token }}
+      ISSUE_NUMBER: '7'
+    steps:
+      - name: Reconcile main protection monotonically and read it back
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ADMIN_TOKEN"
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${ADMIN_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          main_before=$(curl -fsS "${auth[@]}" "${api}/git/ref/heads/main" | jq -r '.object.sha')
+          printf '%s\n' "$main_before" > "$RUNNER_TEMP/main-before"
+
+          code=$(curl -sS -o "$RUNNER_TEMP/before.json" -w '%{http_code}' "${auth[@]}" "${api}/branches/main/protection")
+          if [ "$code" != 200 ] && [ "$code" != 404 ]; then
+            cat "$RUNNER_TEMP/before.json" >&2
+            exit 1
+          fi
+          if [ "$code" = 404 ]; then
+            printf '%s\n' '{}' > "$RUNNER_TEMP/before.json"
+          fi
+
+          jq '
+            def names($xs; $field): [($xs // [])[] | .[$field]];
+            . as $old
+            | (($old.required_status_checks.contexts // [])
+               + [($old.required_status_checks.checks // [])[]?.context]
+               + ["trillionnium-game-merge-gate"]
+               | map(select(type=="string" and length>0)) | unique) as $contexts
+            | (($old.required_pull_request_reviews.required_approving_review_count // 0) | if . < 1 then 1 else . end) as $approvals
+            | {
+                required_status_checks: {strict:true, contexts:$contexts},
+                enforce_admins:true,
+                required_pull_request_reviews:{
+                  dismissal_restrictions:{
+                    users:names($old.required_pull_request_reviews.dismissal_restrictions.users; "login"),
+                    teams:names($old.required_pull_request_reviews.dismissal_restrictions.teams; "slug"),
+                    apps:names($old.required_pull_request_reviews.dismissal_restrictions.apps; "slug")
+                  },
+                  dismiss_stale_reviews:true,
+                  require_code_owner_reviews:true,
+                  required_approving_review_count:$approvals,
+                  require_last_push_approval:true,
+                  bypass_pull_request_allowances:{users:[],teams:[],apps:[]}
+                },
+                restrictions:(if ($old.restrictions // null)==null then null else {
+                  users:names($old.restrictions.users; "login"),
+                  teams:names($old.restrictions.teams; "slug"),
+                  apps:names($old.restrictions.apps; "slug")
+                } end),
+                required_linear_history:true,
+                allow_force_pushes:false,
+                allow_deletions:false,
+                block_creations:($old.block_creations.enabled // false),
+                required_conversation_resolution:true,
+                lock_branch:($old.lock_branch.enabled // false),
+                allow_fork_syncing:($old.allow_fork_syncing.enabled // false)
+              }
+          ' "$RUNNER_TEMP/before.json" > "$RUNNER_TEMP/desired.json"
+
+          curl -fsS -X PUT "${auth[@]}" --data-binary @"$RUNNER_TEMP/desired.json" \
+            "${api}/branches/main/protection" > "$RUNNER_TEMP/mutation.json"
+          curl -fsS "${auth[@]}" "${api}/branches/main/protection" > "$RUNNER_TEMP/after.json"
+
+          jq -e '
+            .required_status_checks.strict==true
+            and ([.required_status_checks.contexts[]?, .required_status_checks.checks[]?.context] | index("trillionnium-game-merge-gate") != null)
+            and .enforce_admins.enabled==true
+            and .required_pull_request_reviews.dismiss_stale_reviews==true
+            and .required_pull_request_reviews.require_code_owner_reviews==true
+            and .required_pull_request_reviews.require_last_push_approval==true
+            and .required_pull_request_reviews.required_approving_review_count>=1
+            and ([.required_pull_request_reviews.bypass_pull_request_allowances.users[]?,.required_pull_request_reviews.bypass_pull_request_allowances.teams[]?,.required_pull_request_reviews.bypass_pull_request_allowances.apps[]?] | length)==0
+            and .required_linear_history.enabled==true
+            and .required_conversation_resolution.enabled==true
+            and .allow_force_pushes.enabled==false
+            and .allow_deletions.enabled==false
+          ' "$RUNNER_TEMP/after.json" >/dev/null
+          test "$(curl -fsS "${auth[@]}" "${api}/git/ref/heads/main" | jq -r '.object.sha')" = "$main_before"
+
+      - name: Observe a negative pull request without attempting merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${ADMIN_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          main=$(cat "$RUNNER_TEMP/main-before")
+          branch="governance-negative-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          safe=$(jq -nr --arg value "$branch" '$value|@uri')
+          curl -fsS "${auth[@]}" "${api}/git/commits/${main}" > "$RUNNER_TEMP/main-commit.json"
+          tree=$(jq -r '.tree.sha' "$RUNNER_TEMP/main-commit.json")
+          jq -n --arg content "negative-rehearsal run=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT}\n" '{content:$content,encoding:"utf-8"}' > "$RUNNER_TEMP/blob-request.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/blob-request.json" "${api}/git/blobs" > "$RUNNER_TEMP/blob.json"
+          blob=$(jq -r '.sha' "$RUNNER_TEMP/blob.json")
+          jq -n --arg base "$tree" --arg blob "$blob" --arg path "governance-negative-rehearsal/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt" '{base_tree:$base,tree:[{path:$path,mode:"100644",type:"blob",sha:$blob}]}' > "$RUNNER_TEMP/tree-request.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/tree-request.json" "${api}/git/trees" > "$RUNNER_TEMP/tree.json"
+          new_tree=$(jq -r '.sha' "$RUNNER_TEMP/tree.json")
+          jq -n --arg tree "$new_tree" --arg parent "$main" '{message:"test(governance): negative protected admission rehearsal",tree:$tree,parents:[$parent]}' > "$RUNNER_TEMP/commit-request.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/commit-request.json" "${api}/git/commits" > "$RUNNER_TEMP/commit.json"
+          commit=$(jq -r '.sha' "$RUNNER_TEMP/commit.json")
+          jq -n --arg ref "refs/heads/${branch}" --arg sha "$commit" '{ref:$ref,sha:$sha}' > "$RUNNER_TEMP/ref-request.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/ref-request.json" "${api}/git/refs" > "$RUNNER_TEMP/ref.json"
+          jq -n --arg title "governance negative rehearsal ${GITHUB_RUN_ID}" --arg head "$branch" '{title:$title,head:$head,base:"main",body:"One-time no-approval/no-settled-check negative rehearsal. This PR must remain blocked and will be closed without any merge attempt.",draft:false}' > "$RUNNER_TEMP/pr-request.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/pr-request.json" "${api}/pulls" > "$RUNNER_TEMP/pr.json"
+          number=$(jq -r '.number' "$RUNNER_TEMP/pr.json")
+
+          blocked=false
+          for _ in $(seq 1 30); do
+            curl -fsS "${auth[@]}" "${api}/pulls/${number}" > "$RUNNER_TEMP/pr-read.json"
+            state=$(jq -r '.mergeable_state' "$RUNNER_TEMP/pr-read.json")
+            if [ "$state" = blocked ] || [ "$state" = unstable ]; then
+              blocked=true
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS "${auth[@]}" "${api}/pulls/${number}/reviews?per_page=100" > "$RUNNER_TEMP/reviews.json"
+          test "$(jq '[.[]|select(.state=="APPROVED")]|length' "$RUNNER_TEMP/reviews.json")" -eq 0
+          test "$blocked" = true
+
+          jq -n '{state:"closed"}' > "$RUNNER_TEMP/close.json"
+          curl -fsS -X PATCH "${auth[@]}" --data-binary @"$RUNNER_TEMP/close.json" "${api}/pulls/${number}" > "$RUNNER_TEMP/closed.json"
+          test "$(jq -r '.state' "$RUNNER_TEMP/closed.json")" = closed
+          curl -fsS -X DELETE "${auth[@]}" "${api}/git/refs/heads/${safe}" >/dev/null
+          test "$(curl -sS -o /dev/null -w '%{http_code}' "${auth[@]}" "${api}/git/ref/heads/${safe}")" = 404
+          test "$(curl -fsS "${auth[@]}" "${api}/git/ref/heads/main" | jq -r '.object.sha')" = "$main"
+          jq -n --argjson pr "$number" --arg state "$state" --arg main "$main" '{negative_pr:$pr,mergeable_state:$state,approval_count:0,merge_attempted:false,closed:true,source_branch_deleted:true,main_unchanged:true,main_sha:$main}' > "$RUNNER_TEMP/negative.json"
+
+      - name: Publish redacted governance readback to issue
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${ADMIN_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          jq '{
+            strict_required_status_checks:.required_status_checks.strict,
+            required_contexts:([.required_status_checks.contexts[]?,.required_status_checks.checks[]?.context]|unique),
+            enforce_admins:.enforce_admins.enabled,
+            dismiss_stale_reviews:.required_pull_request_reviews.dismiss_stale_reviews,
+            require_code_owner_reviews:.required_pull_request_reviews.require_code_owner_reviews,
+            required_approvals:.required_pull_request_reviews.required_approving_review_count,
+            require_last_push_approval:.required_pull_request_reviews.require_last_push_approval,
+            bypass_actor_count:([.required_pull_request_reviews.bypass_pull_request_allowances.users[]?,.required_pull_request_reviews.bypass_pull_request_allowances.teams[]?,.required_pull_request_reviews.bypass_pull_request_allowances.apps[]?]|length),
+            required_linear_history:.required_linear_history.enabled,
+            required_conversation_resolution:.required_conversation_resolution.enabled,
+            allow_force_pushes:.allow_force_pushes.enabled,
+            allow_deletions:.allow_deletions.enabled
+          }' "$RUNNER_TEMP/after.json" > "$RUNNER_TEMP/readback.json"
+          body=$(jq -n --rawfile protection "$RUNNER_TEMP/readback.json" --rawfile negative "$RUNNER_TEMP/negative.json" --arg main "$(cat "$RUNNER_TEMP/main-before")" '"<!-- main-protection-reconcile-v2 -->\nAdministrator mutation/readback packet for unchanged main `"+$main+"`:\n\nProtection:\n```json\n"+$protection+"```\nNegative no-merge rehearsal:\n```json\n"+$negative+"```\nActor is the administrator mutator/observer, not an independent acceptor. accepted=false; gap_closed=false; production_ready=false."' -r)
+          jq -n --arg body "$body" '{body:$body}' > "$RUNNER_TEMP/comment.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/comment.json" "${api}/issues/${ISSUE_NUMBER}/comments" >/dev/null
