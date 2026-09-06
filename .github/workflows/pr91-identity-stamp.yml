@@ -1,0 +1,110 @@
+name: pr91-identity-stamp
+
+on:
+  push:
+    branches: [tooling/pr91-identity-stamp-2026-09-06]
+    paths:
+      - '.github/workflows/pr91-identity-stamp.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  stamp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: '91'
+      EXPECTED_HEAD_REF: codex/remaining-source-blockers-wave-v2-2026-09-06
+      EXPECTED_BASE_REF: codex/branch-evidence-closure-2026-09-02
+      REVIEWER: Tomasrgbsf
+    steps:
+      - name: Bind PR body to exact live source and merge identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          for _ in $(seq 1 30); do
+            curl -fsS "${auth[@]}" "${api}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pr.json"
+            merge=$(jq -r '.merge_commit_sha // empty' "$RUNNER_TEMP/pr.json")
+            test -n "$merge" && break
+            sleep 2
+          done
+          head_ref=$(jq -r '.head.ref' "$RUNNER_TEMP/pr.json")
+          base_ref=$(jq -r '.base.ref' "$RUNNER_TEMP/pr.json")
+          head=$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")
+          base=$(jq -r '.base.sha' "$RUNNER_TEMP/pr.json")
+          merge=$(jq -r '.merge_commit_sha // empty' "$RUNNER_TEMP/pr.json")
+          test "$head_ref" = "$EXPECTED_HEAD_REF"
+          test "$base_ref" = "$EXPECTED_BASE_REF"
+          test -n "$head" && test -n "$base" && test -n "$merge"
+          curl -fsS "${auth[@]}" "${api}/git/commits/${head}" > "$RUNNER_TEMP/head.json"
+          curl -fsS "${auth[@]}" "${api}/git/commits/${merge}" > "$RUNNER_TEMP/merge.json"
+          tree=$(jq -r '.tree.sha' "$RUNNER_TEMP/head.json")
+          merge_tree=$(jq -r '.tree.sha' "$RUNNER_TEMP/merge.json")
+          parent0=$(jq -r '.parents[0].sha' "$RUNNER_TEMP/merge.json")
+          parent1=$(jq -r '.parents[1].sha' "$RUNNER_TEMP/merge.json")
+          test "$parent0" = "$base"
+          test "$parent1" = "$head"
+          test "$merge_tree" = "$tree"
+
+          cat > "$RUNNER_TEMP/body.md" <<EOF
+          ## Accountable scope
+
+          One linear cumulative source candidate for the remaining repository-controlled Plan v3.1 blockers. It consolidates the Outbox adversarial model, globally bounded and generation-fenced session routing, and migration of the database-backed process composition into the canonical \\`crates/trnm-server\\` package.
+
+          ## Exact live identity
+
+          \\`\\`\\`text
+          repository         ${GITHUB_REPOSITORY}
+          base branch        ${base_ref}
+          base commit        ${base}
+          head branch        ${head_ref}
+          head commit        ${head}
+          head tree          ${tree}
+          prospective merge  ${merge}
+          merge tree         ${merge_tree}
+          ordered parents    ${parent0}, ${parent1}
+          \\`\\`\\`
+
+          Any base, head, tree, merge, workflow-definition or review movement invalidates earlier execution and acceptance.
+
+          ## Included source work
+
+          - deterministic 4,096 × 96 Outbox state-machine comparison and stale-owner/terminal-state hostile coverage;
+          - validated global budgets for active connections, presence entries, tracked sessions, revocation high-waters and per-session connections;
+          - session generation advancement only with a strictly newer connection generation;
+          - canonical server package ownership, generated standalone lockfile, typed configuration, HTTP/gRPC/WebSocket, database pool/retry/cancellation, migrations and session boundaries;
+          - root/isolated Rust, Go and complete control-plane validation in the guarded publisher.
+
+          ## Required admission
+
+          Current exact-head and actual-merge Actions must be non-empty terminal-success; retained bytes and digests must be admitted; current conversations must be resolved; and conflict-free database, security, protocol/realtime, compatibility-QA, SRE and governance reviewers must accept this exact tuple. A request, COMMENTED decision, author-produced packet, tooling run or older-head result grants no credit.
+
+          ## Claim boundary
+
+          \\`\\`\\`text
+          source_candidate=true
+          accepted_evidence=false
+          gap_closed=false
+          production_ready=false
+          public_online=false
+          complete_nakama_compatibility=false
+          nakama_retired=false
+          \\`\\`\\`
+
+          No self-approval, self-merge, force push, administrator bypass, deployment, cutover or retirement is authorized.
+          EOF
+
+          jq -n --rawfile body "$RUNNER_TEMP/body.md" '{body:$body}' > "$RUNNER_TEMP/update.json"
+          curl -fsS -X PATCH "${auth[@]}" --data-binary @"$RUNNER_TEMP/update.json" \
+            "${api}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/updated.json"
+          test "$(jq -r '.head.sha' "$RUNNER_TEMP/updated.json")" = "$head"
+          jq -n --arg reviewer "$REVIEWER" '{reviewers:[$reviewer]}' > "$RUNNER_TEMP/review.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/review.json" \
+            "${api}/pulls/${PR_NUMBER}/requested_reviewers" > /dev/null
+          printf 'pr=%s\nbase=%s\nhead=%s\ntree=%s\nmerge=%s\nmerge_tree=%s\n' \
+            "$PR_NUMBER" "$base" "$head" "$tree" "$merge" "$merge_tree"
