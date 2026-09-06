@@ -1,4 +1,6 @@
 use std::env;
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 use trnm_contracts::{
     Digest32, RefreshTokenId, SessionFamilyId, StableCode, UserId,
@@ -150,3 +152,104 @@ fn committed_refresh_response_loss_is_idempotent_and_changed_successor_revokes()
     assert_eq!(failure.code(), StableCode::Unauthenticated);
     assert_eq!(failure.reason(), "session_not_active");
 }
+
+#[test]
+fn concurrent_refresh_and_logout_never_surface_a_database_deadlock() {
+    let Some((database_url, profile)) =
+        live_database_environment("refresh/logout lock-order contract")
+    else {
+        return;
+    };
+
+    for iteration in 0_u8..16 {
+        let base = 0x90_u8.checked_add(iteration).unwrap();
+        let family = SessionFamilyId::new([base; 16]);
+        let user = UserId::new([base + 0x10; 16]);
+        let predecessor = credential(base + 0x20, base + 0x30);
+        let successor = credential(base + 0x21, base + 0x31);
+
+        let mut repository = PgRepository::connect(&database_url, profile).unwrap();
+        repository
+            .create_session_family(&CreateSessionFamily {
+                family,
+                user,
+                refresh: predecessor,
+                issued_at_ms: 100,
+            })
+            .unwrap();
+        drop(repository);
+
+        let barrier = Arc::new(Barrier::new(3));
+        let rotation_barrier = Arc::clone(&barrier);
+        let rotation_url = database_url.clone();
+        let rotation = thread::spawn(move || {
+            let mut repository = PgRepository::connect(&rotation_url, profile).unwrap();
+            rotation_barrier.wait();
+            repository
+                .rotate_refresh_token(&RotateRefreshToken {
+                    presented: predecessor,
+                    replacement: successor,
+                    rotated_at_ms: 200,
+                })
+                .map_err(|error| (error.code(), error.reason()))
+        });
+
+        let revoke_barrier = Arc::clone(&barrier);
+        let revoke_url = database_url.clone();
+        let revoke = thread::spawn(move || {
+            let mut repository = PgRepository::connect(&revoke_url, profile).unwrap();
+            revoke_barrier.wait();
+            repository
+                .revoke_session_family(family, user, RevocationReason::Logout, 201)
+                .map_err(|error| (error.code(), error.reason()))
+        });
+
+        barrier.wait();
+        let rotation = rotation.join().expect("rotation thread panicked");
+        let revoke = revoke.join().expect("revoke thread panicked");
+
+        for result in [
+            rotation.as_ref().map(|_| ()).map_err(|value| *value),
+            revoke.as_ref().map(|_| ()).map_err(|value| *value),
+        ] {
+            if let Err((_code, reason)) = result {
+                assert_ne!(reason, "database_deadlock", "iteration {iteration}");
+            }
+        }
+
+        match rotation {
+            Ok(RefreshRotationOutcome::Rotated(record)) => {
+                assert_eq!(record.generation, 1);
+                assert_eq!(record.active_token, Some(successor.id));
+            }
+            Ok(RefreshRotationOutcome::ReplayRevoked(_)) => {
+                panic!("fresh concurrent rotation was classified as replay")
+            }
+            Err((StableCode::Unauthenticated, "session_not_active"))
+            | Err((StableCode::Aborted, "database_serialization_failure")) => {}
+            Err((code, reason)) => {
+                panic!("unexpected concurrent rotation failure {code:?}:{reason}")
+            }
+        }
+
+        let mut repository = PgRepository::connect(&database_url, profile).unwrap();
+        let final_record = match revoke {
+            Ok(record) => record,
+            Err((StableCode::Aborted, "database_serialization_failure")) => repository
+                .revoke_session_family(family, user, RevocationReason::Logout, 202)
+                .unwrap(),
+            Err((code, reason)) => panic!("unexpected revoke failure {code:?}:{reason}"),
+        };
+        assert_eq!(final_record.active_token, None);
+        assert_eq!(final_record.revoked_reason, Some(RevocationReason::Logout));
+        assert_eq!(
+            repository
+                .load_session_family(family)
+                .unwrap()
+                .unwrap()
+                .revoked_reason,
+            Some(RevocationReason::Logout)
+        );
+    }
+}
+
