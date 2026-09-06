@@ -17,7 +17,7 @@ env:
   CARGO_TERM_COLOR: never
 
 jobs:
-  exact-rustfmt-publish:
+  exact-session-repair-publish:
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -46,17 +46,49 @@ jobs:
           rustc +1.85.1 --version --verbose
           cargo +1.85.1 --version --verbose
 
-      - name: Format only the two diagnosed paths and verify candidate
+      - name: Apply the exact bounded repair and verify candidate
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
           cargo +1.85.1 fmt --all
+          python3 - <<'PY'
+          from pathlib import Path
+
+          for name in (
+              'scripts/check-pg-server-response-loss.sh',
+              'scripts/ci-trnm-server-live.sh',
+          ):
+              path = Path(name)
+              source = path.read_text(encoding='utf-8')
+              old = 'TRNM_REQUIRE_LIVE_DATABASE=1 \\\nTRNM_DATABASE_URL="$database_url" \\\n'
+              new = 'CARGO_TERM_COLOR=never \\\nTRNM_REQUIRE_LIVE_DATABASE=1 \\\nTRNM_DATABASE_URL="$database_url" \\\n'
+              if source.count(old) != 1:
+                  raise SystemExit(f'{name}: expected exactly one live cargo environment block')
+              path.write_text(source.replace(old, new), encoding='utf-8')
+
+          path = Path('tests/control_plane/test_session_live_harness_scope.py')
+          source = path.read_text(encoding='utf-8')
+          old = '                self.assertIn("session_test_count=", source)\n'
+          new = (
+              '                self.assertIn("CARGO_TERM_COLOR=never", source)\n'
+              '                self.assertIn("session_test_count=", source)\n'
+          )
+          if source.count(old) != 1:
+              raise SystemExit('static harness test insertion point changed')
+          path.write_text(source.replace(old, new), encoding='utf-8')
+          PY
+
           mapfile -t changed < <(git diff --name-only)
-          test "${#changed[@]}" -eq 2
+          test "${#changed[@]}" -eq 5
           test "${changed[0]}" = crates/trnm-persistence-pg/src/session.rs
           test "${changed[1]}" = crates/trnm-persistence-pg/tests/session_response_loss.rs
+          test "${changed[2]}" = scripts/check-pg-server-response-loss.sh
+          test "${changed[3]}" = scripts/ci-trnm-server-live.sh
+          test "${changed[4]}" = tests/control_plane/test_session_live_harness_scope.py
           git diff --check
+          bash -n scripts/check-pg-server-response-loss.sh
+          bash -n scripts/ci-trnm-server-live.sh
           cargo +1.85.1 fmt --all -- --check
           python3 -m unittest -v tests.control_plane.test_session_live_harness_scope
           cargo +1.85.1 test -p trnm-persistence-pg --all-targets --locked -- --nocapture
@@ -75,8 +107,11 @@ jobs:
           git config user.email 'formatting-bot@invalid'
           git add \
             crates/trnm-persistence-pg/src/session.rs \
-            crates/trnm-persistence-pg/tests/session_response_loss.rs
-          git commit -m 'style(session): apply pinned Rust 1.85.1 formatting'
+            crates/trnm-persistence-pg/tests/session_response_loss.rs \
+            scripts/check-pg-server-response-loss.sh \
+            scripts/ci-trnm-server-live.sh \
+            tests/control_plane/test_session_live_harness_scope.py
+          git commit -m 'fix(session): format and stabilize live test summary parsing'
           new_head=$(git rev-parse HEAD)
           new_tree=$(git rev-parse HEAD^{tree})
           git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
