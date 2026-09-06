@@ -38,6 +38,7 @@ class SessionLiveHarnessContractTests(unittest.TestCase):
         for path in HARNESSES:
             with self.subTest(path=path):
                 source = path.read_text(encoding="utf-8")
+                self.assertIn("CARGO_TERM_COLOR=never", source)
                 self.assertIn("session_test_count=", source)
                 # Two tests require the live database. The third is the pure
                 # uniqueness guard above and must not be misreported as database

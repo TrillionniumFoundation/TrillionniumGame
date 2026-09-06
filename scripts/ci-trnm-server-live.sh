@@ -145,6 +145,7 @@ fi
 "$binary" migrate > "$evidence/migrate.log" 2>&1
 grep -F "migration profile=${profile} applied=true table_count=10" "$evidence/migrate.log"
 
+CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_DATABASE_URL="$database_url" \
 TRNM_DATABASE_PROFILE="$profile" \

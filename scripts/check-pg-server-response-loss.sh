@@ -100,6 +100,7 @@ query() {
 
 cargo build --workspace --all-targets --locked >"$run_root/build.log" 2>&1
 
+CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_DATABASE_URL="$database_url" \
 TRNM_DATABASE_PROFILE=postgresql \
