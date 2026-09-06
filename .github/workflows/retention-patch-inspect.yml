@@ -1,0 +1,85 @@
+name: retention-patch-inspect
+
+on:
+  push:
+    branches: [tooling/retention-inspect-2026-09-06]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      EXPECTED_HEAD: 4f78bbd93a6457da0ddb63c1508d34387ac0fa7b
+      EXPECTED_TREE: 25909e7081d8877dd20177b1423e73654a6f7882
+      PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+      PATCH_GZIP_BLOB: 6b7890b861cc6f0cde2f87a9acfff5aedd1cf456
+      PATCH_GZIP_SHA256: b0f1a8a0a29e2ed855a6ce2ace8fc7edef8f6e1e67fc607fab1d3d470d0bc5c9
+      PATCH_SHA256: 38a5fa31c5499fca933789052611f288ec1be0ce2cae5ff5e8b965945333d666
+    steps:
+      - name: Fetch exact tooling and candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/tooling" "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/tooling"
+          git -C "$GITHUB_WORKSPACE/tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object retention-patch/evidence-retention-v1.patch.gz)" = "$PATCH_GZIP_BLOB"
+          test "$(sha256sum "$GITHUB_WORKSPACE/tooling/retention-patch/evidence-retention-v1.patch.gz" | cut -d' ' -f1)" = "$PATCH_GZIP_SHA256"
+
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin "refs/heads/${PRODUCT_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+
+      - name: Apply and enumerate complete patch surface
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          patch="$RUNNER_TEMP/evidence-retention-v1.patch"
+          gzip -dc "$GITHUB_WORKSPACE/tooling/retention-patch/evidence-retention-v1.patch.gz" > "$patch"
+          test "$(sha256sum "$patch" | cut -d' ' -f1)" = "$PATCH_SHA256"
+          git apply --check "$patch"
+          git apply "$patch"
+          git diff --check
+
+          echo '===STATUS-BEGIN==='
+          git status --short --untracked-files=all
+          echo '===STATUS-END==='
+          echo '===PATHS-BEGIN==='
+          {
+            git diff --name-only
+            git ls-files --others --exclude-standard
+          } | LC_ALL=C sort -u
+          echo '===PATHS-END==='
+          echo '===IDENTITIES-BEGIN==='
+          while IFS= read -r path; do
+            test -n "$path"
+            printf '%s\tmode=%s\tgit_blob=%s\tsha256=%s\tsize=%s\n' \
+              "$path" \
+              "$(stat -c '%a' "$path")" \
+              "$(git hash-object "$path")" \
+              "$(sha256sum "$path" | cut -d' ' -f1)" \
+              "$(stat -c '%s' "$path")"
+          done < <({ git diff --name-only; git ls-files --others --exclude-standard; } | LC_ALL=C sort -u)
+          echo '===IDENTITIES-END==='
+
+      - name: Run retained-evidence focused contract
+        shell: bash
+        working-directory: source
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -euo pipefail
+          node --check .github/actions/upload-evidence/index.js
+          python3 -m compileall -q scripts tests
+          python3 -m unittest -v tests.control_plane.test_evidence_retention_workflows
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
