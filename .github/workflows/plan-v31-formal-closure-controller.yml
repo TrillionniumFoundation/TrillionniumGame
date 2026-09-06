@@ -1,0 +1,263 @@
+name: plan-v31-formal-closure-controller
+
+on:
+  push:
+    branches: [tooling/remaining-source-wave-v2-2026-09-06]
+    paths:
+      - '.github/workflows/plan-v31-formal-closure-controller.yml'
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: plan-v31-formal-closure-controller
+  cancel-in-progress: false
+
+jobs:
+  formal-closure:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      PLAN_PR: '63'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve the current singular main-target object
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PLAN_PR}")
+          state=$(jq -r '.state' <<<"$pr")
+          merged=$(jq -r '.merged' <<<"$pr")
+          head_ref=$(jq -r '.head.ref' <<<"$pr")
+          head_sha=$(jq -r '.head.sha' <<<"$pr")
+          base_ref=$(jq -r '.base.ref' <<<"$pr")
+          base_sha=$(jq -r '.base.sha' <<<"$pr")
+          test "$state" = open
+          test "$merged" = false
+          test "$base_ref" = main
+          test -n "$head_ref" && test -n "$head_sha" && test -n "$base_sha"
+          tree=$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${head_sha}" --jq '.tree.sha')
+          printf 'HEAD_REF=%s\nHEAD_SHA=%s\nHEAD_TREE=%s\nBASE_REF=%s\nBASE_SHA=%s\n' \
+            "$head_ref" "$head_sha" "$tree" "$base_ref" "$base_sha" >> "$GITHUB_ENV"
+          printf 'pr=%s base=%s@%s head=%s@%s tree=%s\n' \
+            "$PLAN_PR" "$base_ref" "$base_sha" "$head_ref" "$head_sha" "$tree"
+
+      - name: Materialize the exact head and verify the repository control plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/exact"
+          git init "$GITHUB_WORKSPACE/exact"
+          git -C "$GITHUB_WORKSPACE/exact" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/exact" fetch --no-tags origin \
+            "$HEAD_SHA:refs/remotes/exact/head"
+          git -C "$GITHUB_WORKSPACE/exact" checkout --detach "$HEAD_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/exact" rev-parse HEAD)" = "$HEAD_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/exact" rev-parse HEAD^{tree})" = "$HEAD_TREE"
+          cd "$GITHUB_WORKSPACE/exact"
+          python3 -m compileall -q scripts tools tests
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
+          python3 scripts/check-module-docs.py
+          python3 scripts/check-rust-foundation.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-trnm-server.py
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/check-evidence-index.py
+          python3 scripts/check-gap-register.py
+          python3 scripts/check-derived-gates.py
+
+      - name: Prove every formal gap and close criterion is admitted on this object
+        shell: bash
+        working-directory: exact
+        run: |
+          set -euo pipefail
+          python3 - "$HEAD_SHA" "$HEAD_TREE" "$RUNNER_TEMP/formal-gap-summary.json" <<'PY'
+          import json, pathlib, sys
+          head,tree,out=sys.argv[1:]
+          root=pathlib.Path('.')
+          gaps=json.loads((root/'docs/status/GAP_REGISTER.json').read_text())
+          evidence=json.loads((root/'docs/status/EVIDENCE_INDEX.json').read_text())
+          rows=gaps.get('gaps',[])
+          if not rows:
+              raise SystemExit('gap register is empty')
+          evidence_rows=evidence.get('evidence', evidence.get('entries', []))
+          by_id={row.get('id'):row for row in evidence_rows if isinstance(row,dict) and row.get('id')}
+          accepted={
+              key for key,row in by_id.items()
+              if row.get('status') in {'accepted','admitted'}
+          }
+          open_gaps=[]
+          invalid_closed=[]
+          criterion_count=0
+          for gap in rows:
+              criteria=gap.get('close_criteria',[])
+              criterion_count += len(criteria)
+              ids=gap.get('evidence_ids',[])
+              if gap.get('status') != 'closed':
+                  open_gaps.append(gap.get('id'))
+                  continue
+              if not criteria or not ids or not set(ids) <= accepted:
+                  invalid_closed.append(gap.get('id'))
+                  continue
+              for evidence_id in ids:
+                  row=by_id[evidence_id]
+                  target=row.get('target',{})
+                  target_head=target.get('head_sha', row.get('head_sha'))
+                  target_tree=target.get('tree_sha', row.get('tree_sha'))
+                  if target_head and target_head != head:
+                      invalid_closed.append(f'{gap.get("id")}:head:{evidence_id}')
+                  if target_tree and target_tree != tree:
+                      invalid_closed.append(f'{gap.get("id")}:tree:{evidence_id}')
+          summary={
+              'head_sha':head,
+              'head_tree':tree,
+              'gap_count':len(rows),
+              'criterion_count':criterion_count,
+              'accepted_evidence_count':len(accepted),
+              'open_gaps':open_gaps,
+              'invalid_closed':invalid_closed,
+              'all_gaps_closed':not open_gaps and not invalid_closed,
+          }
+          pathlib.Path(out).write_text(json.dumps(summary,sort_keys=True,indent=2)+'\n')
+          print(json.dumps(summary,sort_keys=True))
+          if open_gaps or invalid_closed:
+              raise SystemExit(1)
+          PY
+
+      - name: Require every latest exact-head check to be terminal success
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+            > "$RUNNER_TEMP/check-pages.json"
+          python3 - "$RUNNER_TEMP/check-pages.json" <<'PY'
+          import json,sys
+          pages=json.load(open(sys.argv[1]))
+          rows=[]
+          for page in pages: rows += page.get('check_runs',[])
+          latest={}
+          for row in sorted(rows,key=lambda value:value.get('id',0),reverse=True):
+              key=(row.get('name'),(row.get('app') or {}).get('slug'))
+              latest.setdefault(key,row)
+          if len(latest)<10:
+              raise SystemExit(f'incomplete exact-head collection: {len(latest)}')
+          bad=[]
+          for key,row in latest.items():
+              if row.get('status')!='completed' or row.get('conclusion')!='success':
+                  bad.append((key,row.get('status'),row.get('conclusion')))
+          print(json.dumps({'checks':len(latest),'bad':bad},sort_keys=True))
+          if bad: raise SystemExit(1)
+          PY
+
+      - name: Require current conflict-free approval and fully resolved conversations
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner=${GITHUB_REPOSITORY%%/*}
+          repo=${GITHUB_REPOSITORY#*/}
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PLAN_PR}/reviews?per_page=100" \
+            > "$RUNNER_TEMP/reviews.json"
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PLAN_PR}/commits?per_page=100" \
+            > "$RUNNER_TEMP/commits.json"
+          gh api graphql \
+            -f owner="$owner" -f repo="$repo" -F number="$PLAN_PR" \
+            -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){author{login}reviewThreads(first:100){nodes{isResolved}pageInfo{hasNextPage}}}}}' \
+            > "$RUNNER_TEMP/threads.json"
+          python3 - \
+            "$RUNNER_TEMP/reviews.json" "$RUNNER_TEMP/commits.json" \
+            "$RUNNER_TEMP/threads.json" "$HEAD_SHA" <<'PY'
+          import json,sys
+          reviews=json.load(open(sys.argv[1])); commits=json.load(open(sys.argv[2]))
+          data=json.load(open(sys.argv[3]))['data']['repository']['pullRequest']; head=sys.argv[4]
+          conflicts={(data.get('author') or {}).get('login','').lower(),'profhepta','franksudoman'}
+          for page in commits:
+              for commit in page:
+                  for key in ('author','committer'):
+                      login=(commit.get(key) or {}).get('login')
+                      if login: conflicts.add(login.lower())
+          latest={}
+          for page in reviews:
+              for row in sorted(page,key=lambda value:value.get('submitted_at') or ''):
+                  login=(row.get('user') or {}).get('login','').lower()
+                  if login: latest[login]=row
+          approvals=[]; changes=[]
+          for login,row in latest.items():
+              if row.get('commit_id')!=head: continue
+              if row.get('state')=='APPROVED' and login not in conflicts and not login.endswith('[bot]'):
+                  approvals.append(login)
+              if row.get('state')=='CHANGES_REQUESTED': changes.append(login)
+          threads=data['reviewThreads']
+          unresolved=sum(not row['isResolved'] for row in threads['nodes'])
+          result={'approvals':approvals,'changes_requested':changes,'unresolved':unresolved,
+                  'thread_page_complete':not threads['pageInfo']['hasNextPage']}
+          print(json.dumps(result,sort_keys=True))
+          if not approvals or changes or unresolved or not result['thread_page_complete']:
+              raise SystemExit(1)
+          PY
+
+      - name: Require effective main governance read-back
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" \
+            > "$RUNNER_TEMP/protection.json"
+          python3 - "$RUNNER_TEMP/protection.json" <<'PY'
+          import json,sys
+          value=json.load(open(sys.argv[1]))
+          checks=value.get('required_status_checks') or {}
+          reviews=value.get('required_pull_request_reviews') or {}
+          restrictions=value.get('restrictions')
+          required={
+              'strict_checks':checks.get('strict') is True,
+              'required_context':any(
+                  (row.get('context') if isinstance(row,dict) else row)=='trillionnium-game-merge-gate'
+                  for row in checks.get('checks',checks.get('contexts',[]))
+              ),
+              'review_count':reviews.get('required_approving_review_count',0)>=1,
+              'dismiss_stale':reviews.get('dismiss_stale_reviews') is True,
+              'codeowners':reviews.get('require_code_owner_reviews') is True,
+              'last_push':reviews.get('require_last_push_approval') is True,
+              'admins':(value.get('enforce_admins') or {}).get('enabled') is True,
+              'conversation_resolution':(value.get('required_conversation_resolution') or {}).get('enabled') is True,
+              'linear_history':(value.get('required_linear_history') or {}).get('enabled') is True,
+              'force_push_blocked':(value.get('allow_force_pushes') or {}).get('enabled') is not True,
+              'deletion_blocked':(value.get('allow_deletions') or {}).get('enabled') is not True,
+              'no_push_restriction_bypass':restrictions is None or not any(restrictions.get(key) for key in ('users','teams','apps')),
+          }
+          print(json.dumps(required,sort_keys=True))
+          if not all(required.values()): raise SystemExit(1)
+          PY
+
+      - name: Use only the ordinary protected exact-SHA merge path
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PLAN_PR}")
+          test "$(jq -r '.head.sha' <<<"$pr")" = "$HEAD_SHA"
+          test "$(jq -r '.merged' <<<"$pr")" = false
+          test "$(jq -r '.draft' <<<"$pr")" = false
+          test "$(jq -r '.mergeable' <<<"$pr")" = true
+          state=$(jq -r '.mergeable_state' <<<"$pr")
+          test "$state" = clean || test "$state" = has_hooks
+          main_before=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          test "$main_before" = "$BASE_SHA"
+          response=$(gh api --method PUT \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PLAN_PR}/merge" \
+            -f merge_method=squash -f sha="$HEAD_SHA")
+          test "$(jq -r '.merged' <<<"$response")" = true
+          merge_sha=$(jq -r '.sha' <<<"$response")
+          main_after=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          test "$main_after" = "$merge_sha"
+          test "$main_after" != "$main_before"
+          printf 'main_before=%s\nmain_after=%s\n' "$main_before" "$main_after"
