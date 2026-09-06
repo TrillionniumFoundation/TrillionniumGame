@@ -1,4 +1,4 @@
-name: remaining-source-wave-v2-export
+name: remaining-source-wave-v3-export
 
 on:
   push:
@@ -9,16 +9,22 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: remaining-source-wave-v3-export
+  cancel-in-progress: true
+
 jobs:
   compose-validate-export:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
     env:
       BASE_SHA: 7deee4377cff401854647151842c582f038feef1
-      OUTBOX_BRANCH: codex/outbox-property-coverage-2026-09-06
-      SESSION_BRANCH: codex/session-registry-hardening-v2-2026-09-06
-      SERVER_BRANCH: codex/server-composition-root-2026-09-06
-      PRODUCT_BRANCH: codex/remaining-source-blockers-wave-v2-2026-09-06
+      OUTBOX_SHA: 4ce383a55d76a8b2b05827c5017b36f9789c02bd
+      SESSION_SHA: 0d0f246a131902403202afcd28103f22af30c8a9
+      REALTIME_SHA: 4a72ecdb9341faa9c5211b3479f58d075f75a7ba
+      SERVER_SHA: 0fc8e03c32095bbaca6cd850426d6b3ea22696ab
+      HARDENING_SHA: f3e9476ff8b6d781b61ad35c135041eddddcfcff
+      PRODUCT_BRANCH: codex/remaining-source-blockers-wave-v3-2026-09-06
       GH_TOKEN: ${{ github.token }}
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
@@ -30,52 +36,110 @@ jobs:
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
           git -C "$GITHUB_WORKSPACE/source" fetch --no-tags origin \
-            "$BASE_SHA" \
-            "refs/heads/${OUTBOX_BRANCH}:refs/remotes/origin/outbox" \
-            "refs/heads/${SESSION_BRANCH}:refs/remotes/origin/session" \
-            "refs/heads/${SERVER_BRANCH}:refs/remotes/origin/server"
+            "$BASE_SHA:refs/remotes/source/base" \
+            "$OUTBOX_SHA:refs/remotes/source/outbox" \
+            "$SESSION_SHA:refs/remotes/source/session" \
+            "$REALTIME_SHA:refs/remotes/source/realtime" \
+            "$SERVER_SHA:refs/remotes/source/server" \
+            "$HARDENING_SHA:refs/remotes/source/hardening"
           git -C "$GITHUB_WORKSPACE/source" checkout -b "$PRODUCT_BRANCH" "$BASE_SHA"
-          for ref in outbox session server; do
+          for ref in outbox session realtime server hardening; do
             git -C "$GITHUB_WORKSPACE/source" merge-base --is-ancestor \
-              "$BASE_SHA" "refs/remotes/origin/$ref"
+              "$BASE_SHA" "refs/remotes/source/$ref"
           done
-          printf 'base=%s\noutbox=%s\nsession=%s\nserver=%s\n' \
-            "$BASE_SHA" \
-            "$(git -C "$GITHUB_WORKSPACE/source" rev-parse refs/remotes/origin/outbox)" \
-            "$(git -C "$GITHUB_WORKSPACE/source" rev-parse refs/remotes/origin/session)" \
-            "$(git -C "$GITHUB_WORKSPACE/source" rev-parse refs/remotes/origin/server)"
+          printf 'base=%s\noutbox=%s\nsession=%s\nrealtime=%s\nserver=%s\nhardening=%s\n' \
+            "$BASE_SHA" "$OUTBOX_SHA" "$SESSION_SHA" "$REALTIME_SHA" "$SERVER_SHA" "$HARDENING_SHA"
 
-      - name: Apply exact child diffs to one linear candidate
+      - name: Compose exact source diffs and apply reviewed session hardening
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          git diff --binary "$BASE_SHA" refs/remotes/origin/outbox -- \
+          git diff --binary "$BASE_SHA" refs/remotes/source/outbox -- \
             crates/trnm-persistence-core/tests/outbox_state_model.rs \
             | git apply --index --3way
-          git diff --binary "$BASE_SHA" refs/remotes/origin/session -- \
+          git diff --binary "$BASE_SHA" refs/remotes/source/session -- \
             crates/trnm-presence-router-v2 \
             | git apply --index --3way
-          git diff --binary "$BASE_SHA" refs/remotes/origin/server \
+
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          cargo fmt --manifest-path crates/trnm-presence-router-v2/Cargo.toml
+          git show refs/remotes/source/hardening:tools/apply-session-registry-hardening.py.gz.b64 \
+            | base64 -d | gzip -dc > "$RUNNER_TEMP/apply-session-registry-hardening.py"
+          python3 -m py_compile "$RUNNER_TEMP/apply-session-registry-hardening.py"
+          python3 "$RUNNER_TEMP/apply-session-registry-hardening.py" "$PWD"
+
+          git diff --binary "$BASE_SHA" refs/remotes/source/realtime -- \
+            crates/trnm-presence-router-v2/src/connection_actor.rs \
+            crates/trnm-presence-router-v2/src/disconnect_journal.rs \
+            crates/trnm-presence-router-v2/src/reconnect_cursor.rs \
+            | git apply --index --3way
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/trnm-presence-router-v2/src/lib.rs')
+          text = path.read_text(encoding='utf-8')
+          module_anchor = 'mod router;\nmod session_registry;\nmod types;\n'
+          module_replacement = (
+              'mod connection_actor;\n'
+              'mod disconnect_journal;\n'
+              'mod reconnect_cursor;\n'
+              'mod router;\n'
+              'mod session_registry;\n'
+              'mod types;\n'
+          )
+          if text.count(module_anchor) != 1:
+              raise SystemExit('module anchor drift')
+          text = text.replace(module_anchor, module_replacement, 1)
+          export_anchor = 'pub use router::{MutationDisposition, PresenceDelta, PresenceError, PresenceRouter};\n'
+          exports = (
+              'pub use connection_actor::{\n'
+              '    ConnectionActor, ConnectionActorConfig, ConnectionActorError, ConnectionActorState,\n'
+              '    CorrelationId, InboundFrame, OutboundFrame, PendingRequest,\n'
+              '};\n'
+              'pub use disconnect_journal::{\n'
+              '    DisconnectIntentId, DisconnectJournal, DisconnectJournalError, DisconnectOperation,\n'
+              '    DisconnectRecord, DisconnectState, LeaseToken, RetryDisposition, WorkerId,\n'
+              '};\n'
+              'pub use reconnect_cursor::{\n'
+              '    ReconnectCursor, ReconnectEvent, ReconnectJournal, ReconnectJournalConfig,\n'
+              '    ReconnectJournalError,\n'
+              '};\n'
+          )
+          if text.count(export_anchor) != 1:
+              raise SystemExit('export anchor drift')
+          path.write_text(text.replace(export_anchor, exports + export_anchor, 1), encoding='utf-8')
+          PY
+
+          git diff --binary "$BASE_SHA" refs/remotes/source/server -- crates/trnm-server \
             | git apply --index --3way
           test -f crates/trnm-persistence-core/tests/outbox_state_model.rs
           test -f crates/trnm-presence-router-v2/src/session_registry.rs
+          test -f crates/trnm-presence-router-v2/src/connection_actor.rs
+          test -f crates/trnm-presence-router-v2/src/disconnect_journal.rs
+          test -f crates/trnm-presence-router-v2/src/reconnect_cursor.rs
           test -f crates/trnm-server/src/runtime/server.rs
-          test ! -e crates/trnm-persistence-pg/src/bin/trnm-server.rs
-          test ! -e crates/trnm-persistence-pg/src/bin/trnm_server
+          git add -A
           git diff --cached --check
 
-      - name: Generate canonical standalone server lock
+      - name: Generate canonical standalone server lock and normalize formatting
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
-          rustup override set 1.85.1
           cargo generate-lockfile --manifest-path crates/trnm-server/Cargo.toml
-          git add crates/trnm-server/Cargo.lock
+          cargo fmt --all
+          for manifest in \
+            crates/trnm-persistence-core/Cargo.toml \
+            crates/trnm-presence-router-v2/Cargo.toml \
+            crates/trnm-server/Cargo.toml; do
+            cargo fmt --manifest-path "$manifest"
+          done
+          git add -A
           test -s crates/trnm-server/Cargo.lock
           grep -q '^version = 4$' crates/trnm-server/Cargo.lock
+          git diff --cached --check
 
       - name: Validate root and isolated Rust surfaces
         shell: bash
@@ -93,9 +157,16 @@ jobs:
             cargo test --manifest-path "$manifest" --all-targets --locked
             cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
           done
+          TRNM_SERVER_DATABASE_URL='postgresql://candidate:secret@127.0.0.1/trnm' \
+          TRNM_SERVER_DATABASE_PROFILE=postgresql \
+          TRNM_SERVER_ALLOW_PLAINTEXT_DATABASE=1 \
+          TRNM_SERVER_SCHEMA_SOURCE_COMMIT="$BASE_SHA" \
+          TRNM_SERVER_ADMIN_TOKEN='candidate-admin-token-with-sufficient-length' \
           cargo run --quiet --manifest-path crates/trnm-server/Cargo.toml --locked \
-            --bin trnm-server -- check-config 2>&1 | tee "$RUNNER_TEMP/check-config.log" || true
-          ! grep -E '(postgres://|password=|BEGIN PRIVATE KEY|TRNM_SERVER_ADMIN_TOKEN=)' \
+            --bin trnm-server -- check-config > "$RUNNER_TEMP/check-config.log"
+          grep -q 'trnm-server configuration:' "$RUNNER_TEMP/check-config.log"
+          grep -q '<redacted>' "$RUNNER_TEMP/check-config.log"
+          ! grep -Eq '(candidate-admin-token|candidate:secret|BEGIN PRIVATE KEY)' \
             "$RUNNER_TEMP/check-config.log"
 
       - name: Validate Go runtime and complete control plane
@@ -133,6 +204,7 @@ jobs:
           git config user.email "102159240+ProfHepta@users.noreply.github.com"
           git commit -m "feat: integrate remaining Plan v3.1 source blocker wave"
           auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          test -z "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}")"
           git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
             push origin "HEAD:refs/heads/${PRODUCT_BRANCH}"
           printf 'product_head=%s\nproduct_tree=%s\nchanged_paths=%s\n' \
