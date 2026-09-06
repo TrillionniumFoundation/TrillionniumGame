@@ -161,11 +161,9 @@ fn execute_actual(
 ) -> Result<OutboxRecord, &'static str> {
     let result = match action {
         Action::Lease(index) => state.lease(intent_id, worker(index)),
-        Action::Retry(index) => state.retry(
-            intent_id,
-            worker(index),
-            tokens[index].unwrap_or_default(),
-        ),
+        Action::Retry(index) => {
+            state.retry(intent_id, worker(index), tokens[index].unwrap_or_default())
+        }
         Action::Apply(index, receipt) => state.apply(
             intent_id,
             worker(index),
@@ -199,12 +197,8 @@ fn project(record: OutboxRecord) -> (u64, u64, Phase) {
                 .expect("model only uses known workers");
             Phase::Leased { worker, generation }
         }
-        OutboxState::Applied { receipt } if receipt == digest(70) => {
-            Phase::Applied { receipt: 70 }
-        }
-        OutboxState::Applied { receipt } if receipt == digest(71) => {
-            Phase::Applied { receipt: 71 }
-        }
+        OutboxState::Applied { receipt } if receipt == digest(70) => Phase::Applied { receipt: 70 },
+        OutboxState::Applied { receipt } if receipt == digest(71) => Phase::Applied { receipt: 71 },
         OutboxState::Applied { .. } => panic!("model only uses known receipts"),
         OutboxState::DeadLetter { reason } if reason == digest(90) => {
             Phase::DeadLetter { reason: 90 }
@@ -265,12 +259,7 @@ fn implementation_matches_adversarial_state_model() {
             let before_model = model.clone();
 
             let expected = model.execute(operation);
-            let observed = execute_actual(
-                &mut state,
-                intent_id,
-                &mut actual_tokens,
-                operation,
-            );
+            let observed = execute_actual(&mut state, intent_id, &mut actual_tokens, operation);
 
             match (expected, observed) {
                 (Ok(()), Ok(record)) => assert_model(seed, step, &model, record),
@@ -316,27 +305,12 @@ fn stale_generations_never_mutate_after_release() {
     let (mut state, intent_id) = fixture();
     let mut tokens = [None; WORKER_COUNT];
 
-    let first = execute_actual(
-        &mut state,
-        intent_id,
-        &mut tokens,
-        Action::Lease(0),
-    )
-    .expect("first lease");
-    execute_actual(
-        &mut state,
-        intent_id,
-        &mut tokens,
-        Action::Retry(0),
-    )
-    .expect("release first lease");
-    let second = execute_actual(
-        &mut state,
-        intent_id,
-        &mut tokens,
-        Action::Lease(1),
-    )
-    .expect("second lease");
+    let first =
+        execute_actual(&mut state, intent_id, &mut tokens, Action::Lease(0)).expect("first lease");
+    execute_actual(&mut state, intent_id, &mut tokens, Action::Retry(0))
+        .expect("release first lease");
+    let second =
+        execute_actual(&mut state, intent_id, &mut tokens, Action::Lease(1)).expect("second lease");
 
     let before = state.outbox(intent_id).expect("record");
     for receipt in [70, 71] {
@@ -364,12 +338,7 @@ fn stale_generations_never_mutate_after_release() {
     assert_eq!(state.outbox(intent_id), Some(before));
     assert_eq!(
         state
-            .dead_letter(
-                intent_id,
-                worker(0),
-                first.lease_generation,
-                digest(90),
-            )
+            .dead_letter(intent_id, worker(0), first.lease_generation, digest(90),)
             .expect_err("stale dead-letter must fail")
             .reason(),
         "outbox_lease_mismatch"
@@ -377,12 +346,7 @@ fn stale_generations_never_mutate_after_release() {
     assert_eq!(state.outbox(intent_id), Some(before));
 
     state
-        .apply(
-            intent_id,
-            worker(1),
-            second.lease_generation,
-            digest(70),
-        )
+        .apply(intent_id, worker(1), second.lease_generation, digest(70))
         .expect("current generation applies");
 }
 
@@ -392,35 +356,14 @@ fn attempt_limit_is_terminal_and_stable_under_all_later_actions() {
     let mut tokens = [None; WORKER_COUNT];
 
     for _ in 0..MAX_ATTEMPTS {
-        execute_actual(
-            &mut state,
-            intent_id,
-            &mut tokens,
-            Action::Lease(0),
-        )
-        .expect("lease before retry");
-        execute_actual(
-            &mut state,
-            intent_id,
-            &mut tokens,
-            Action::Retry(0),
-        )
-        .expect("bounded retry");
+        execute_actual(&mut state, intent_id, &mut tokens, Action::Lease(0))
+            .expect("lease before retry");
+        execute_actual(&mut state, intent_id, &mut tokens, Action::Retry(0))
+            .expect("bounded retry");
     }
-    execute_actual(
-        &mut state,
-        intent_id,
-        &mut tokens,
-        Action::Lease(1),
-    )
-    .expect("final lease");
-    let terminal = execute_actual(
-        &mut state,
-        intent_id,
-        &mut tokens,
-        Action::Retry(1),
-    )
-    .expect("attempt limit transitions to terminal state");
+    execute_actual(&mut state, intent_id, &mut tokens, Action::Lease(1)).expect("final lease");
+    let terminal = execute_actual(&mut state, intent_id, &mut tokens, Action::Retry(1))
+        .expect("attempt limit transitions to terminal state");
     assert_eq!(terminal.attempt, MAX_ATTEMPTS);
     assert!(matches!(terminal.state, OutboxState::DeadLetter { .. }));
 
@@ -435,13 +378,11 @@ fn attempt_limit_is_terminal_and_stable_under_all_later_actions() {
         Action::DeadLetter(1, 91),
     ] {
         let before = state.outbox(intent_id).expect("terminal record");
-        let result = execute_actual(
-            &mut state,
-            intent_id,
-            &mut tokens,
-            operation,
+        let result = execute_actual(&mut state, intent_id, &mut tokens, operation);
+        assert!(
+            result.is_err(),
+            "terminal action unexpectedly succeeded: {operation:?}"
         );
-        assert!(result.is_err(), "terminal action unexpectedly succeeded: {operation:?}");
         assert_eq!(state.outbox(intent_id), Some(before));
     }
 }
