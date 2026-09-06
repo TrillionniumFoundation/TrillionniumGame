@@ -1,4 +1,4 @@
-name: outbox-evidence-sealing-export
+name: outbox-evidence-sealing-apply
 
 on:
   push:
@@ -7,18 +7,22 @@ on:
 
 permissions:
   actions: read
-  contents: read
+  contents: write
 
 concurrency:
-  group: outbox-evidence-sealing-export-${{ github.ref }}
+  group: outbox-evidence-sealing-apply
   cancel-in-progress: false
 
 jobs:
-  export:
+  apply:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      EXPECTED_HEAD: 7deee4377cff401854647151842c582f038feef1
+      TARGET_BRANCH: codex/branch-evidence-closure-2026-09-02
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
-      - name: Fetch exact export commit
+      - name: Fetch exact tooling commit
         shell: bash
         run: |
           set -euo pipefail
@@ -30,43 +34,88 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           cd "$GITHUB_WORKSPACE"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          cp scripts/tooling/build-outbox-evidence-sealing-export.py /tmp/build-outbox-seal.py
 
-      - name: Build exact four-file sealing transaction
+      - name: Build and validate exact atomic patch
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/tooling/build-outbox-evidence-sealing-export.py
+          git fetch --no-tags --depth=1 origin \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/closure"
+          observed=$(git rev-parse refs/remotes/origin/closure)
+          test "$observed" = "$EXPECTED_HEAD"
+          git checkout --detach "$EXPECTED_HEAD"
+          python3 /tmp/build-outbox-seal.py
           bash -n scripts/ci-outbox-final-attempt-reaper.sh
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          json.loads(Path('docs/governance/REQUIRED_WORKFLOWS_V1.json').read_text())
+          json.loads(Path('docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json').read_text())
+          PY
           grep -F 'wait "$tee_pid"' scripts/ci-outbox-final-attempt-reaper.sh
           grep -F 'test -s "$outbox/files.sha256"' .github/workflows/prospective-merge-gate.yml
           grep -F '(cd "$outbox" && sha256sum --check files.sha256)' .github/workflows/prospective-merge-gate.yml
           tar --sort=name --mtime='UTC 1970-01-01' \
             --owner=0 --group=0 --numeric-owner \
-            -czf run/outbox-evidence-sealing-four-files.tar.gz \
+            -czf /tmp/outbox-evidence-sealing-four-files.tar.gz \
             scripts/ci-outbox-final-attempt-reaper.sh \
             .github/workflows/prospective-merge-gate.yml \
             docs/governance/REQUIRED_WORKFLOWS_V1.json \
             docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json \
             run/outbox-evidence-sealing-export/report.json
-          test -s run/outbox-evidence-sealing-four-files.tar.gz
-          sha256sum run/outbox-evidence-sealing-four-files.tar.gz
+          rm -rf run/outbox-evidence-sealing-export
+          git add \
+            scripts/ci-outbox-final-attempt-reaper.sh \
+            .github/workflows/prospective-merge-gate.yml \
+            docs/governance/REQUIRED_WORKFLOWS_V1.json \
+            docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json
+          mapfile -t changed < <(git diff --cached --name-only)
+          test "${#changed[@]}" -eq 4
+          printf '%s\n' "${changed[@]}" | diff -u - <(printf '%s\n' \
+            .github/workflows/prospective-merge-gate.yml \
+            docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json \
+            docs/governance/REQUIRED_WORKFLOWS_V1.json \
+            scripts/ci-outbox-final-attempt-reaper.sh)
+          git config user.name 'Trillionnium closure automation'
+          git config user.email 'closure-automation@users.noreply.github.com'
+          git commit -m 'fix(ci): seal outbox retained evidence deterministically'
+          printf 'new_commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        id: atomic-commit
 
-      - name: Retain exact patched four-file payload
+      - name: Push with exact old-head lease
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote set-url origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin \
+            "HEAD:refs/heads/${TARGET_BRANCH}" \
+            "--force-with-lease=refs/heads/${TARGET_BRANCH}:${EXPECTED_HEAD}"
+          git fetch --no-tags --depth=1 origin \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/closure-after"
+          test "$(git rev-parse refs/remotes/origin/closure-after)" = \
+            '${{ steps.atomic-commit.outputs.new_commit }}'
+          mkdir -p run/outbox-evidence-sealing-apply
+          cp /tmp/outbox-evidence-sealing-four-files.tar.gz \
+            run/outbox-evidence-sealing-apply/payload.tar.gz
+          printf 'old_head=%s\nnew_head=%s\n' \
+            "$EXPECTED_HEAD" '${{ steps.atomic-commit.outputs.new_commit }}' \
+            > run/outbox-evidence-sealing-apply/push.env
+
+      - name: Retain atomic patch and push receipt
         id: retained-patch
         uses: ./.github/actions/upload-evidence
         with:
-          name: outbox-evidence-sealing-four-files-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: run/outbox-evidence-sealing-four-files.tar.gz
-          mime_type: application/gzip
+          name: outbox-evidence-sealing-apply-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/outbox-evidence-sealing-apply
+          mime_type: application/octet-stream
 
-      - name: Verify retained patch receipt
+      - name: Verify retained receipt
         shell: bash
         run: |
           set -euo pipefail
           test -n '${{ steps.retained-patch.outputs.artifact_id }}'
           test -n '${{ steps.retained-patch.outputs.sha256 }}'
           test '${{ steps.retained-patch.outputs.size_bytes }}' -gt 0
-          printf 'artifact_id=%s\nsha256=%s\nsize_bytes=%s\n' \
-            '${{ steps.retained-patch.outputs.artifact_id }}' \
-            '${{ steps.retained-patch.outputs.sha256 }}' \
-            '${{ steps.retained-patch.outputs.size_bytes }}'
+          cat run/outbox-evidence-sealing-apply/push.env
