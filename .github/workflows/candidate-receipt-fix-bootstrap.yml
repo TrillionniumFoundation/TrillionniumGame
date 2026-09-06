@@ -1,0 +1,93 @@
+name: candidate-receipt-fix-bootstrap
+
+on:
+  push:
+    branches: [tooling/candidate-receipt-fix-2026-09-06]
+    paths:
+      - '.github/workflows/candidate-receipt-fix-bootstrap.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      EXPECTED_HEAD: 4a4fb5b57db0620c03804f4296eb80b3aee2887a
+      EXPECTED_TREE: 0c55356ed25068a0224d2a25c82ed014aeefbff7
+      PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+      EXPORT_BRANCH: tooling/candidate-receipt-fix-2026-09-06
+      GH_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Execute corrected validated export plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          bootstrap="$RUNNER_TEMP/candidate-receipt-bootstrap"
+          rm -rf "$bootstrap"
+          git init "$bootstrap"
+          git -C "$bootstrap" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$bootstrap" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$bootstrap" checkout --detach FETCH_HEAD
+
+          python3 - "$bootstrap/.github/workflows/candidate-receipt-fix-export.yml" "$RUNNER_TEMP" <<'PY'
+          from pathlib import Path
+          import sys
+
+          source = Path(sys.argv[1])
+          target = Path(sys.argv[2])
+          lines = source.read_text(encoding="utf-8").splitlines()
+          scripts = []
+          index = 0
+          while index < len(lines):
+              if lines[index] != "        run: |":
+                  index += 1
+                  continue
+              index += 1
+              body = []
+              while index < len(lines):
+                  line = lines[index]
+                  if line and not line.startswith("          "):
+                      break
+                  body.append(line[10:] if line.startswith("          ") else "")
+                  index += 1
+              scripts.append("\n".join(body) + "\n")
+          if len(scripts) != 4:
+              raise SystemExit(f"expected four source scripts, observed {len(scripts)}")
+          for number, body in enumerate(scripts, 1):
+              (target / f"candidate-receipt-{number}.sh").write_text(body, encoding="utf-8")
+          PY
+
+          bash "$RUNNER_TEMP/candidate-receipt-1.sh"
+          (cd "$GITHUB_WORKSPACE/source" && bash "$RUNNER_TEMP/candidate-receipt-2.sh")
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("source/tests/control_plane/test_evidence_retention_workflows.py")
+          text = path.read_text(encoding="utf-8")
+          start_marker = "    def test_receipt_printf_arguments_are_shell_continuations(self) -> None:\n"
+          end_marker = "    def test_source_collection_binds_runs_jobs_attempts_and_definition_blobs(self) -> None:\n"
+          start = text.index(start_marker)
+          end = text.index(end_marker, start)
+          corrected = '''    def test_receipt_printf_arguments_are_shell_continuations(self) -> None:
+              observed = 0
+              for label, workflow in WORKFLOWS.items():
+                  source = workflow.read_text(encoding="utf-8")
+                  for line in source.splitlines():
+                      if "printf " in line and "artifact_id=%s" in line:
+                          observed += 1
+                          self.assertTrue(
+                              line.endswith("\\\\"),
+                              f"{label}: receipt printf must continue onto its arguments",
+                          )
+              self.assertGreaterEqual(observed, len(WORKFLOWS))
+
+          '''
+          path.write_text(text[:start] + corrected + text[end:], encoding="utf-8")
+          PY
+
+          (cd "$GITHUB_WORKSPACE/source" && bash "$RUNNER_TEMP/candidate-receipt-3.sh")
+          bash "$RUNNER_TEMP/candidate-receipt-4.sh"
