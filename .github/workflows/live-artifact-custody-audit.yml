@@ -1,0 +1,304 @@
+name: live-artifact-custody-audit
+
+on:
+  push:
+    branches: [tooling/closure-audit-live-2026-09-06b]
+    paths:
+      - '.github/workflows/live-artifact-custody-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: live-artifact-custody-audit
+  cancel-in-progress: true
+
+jobs:
+  custody:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      PR_NUMBER: '63'
+      MAX_ARTIFACTS: '100'
+      MAX_ARTIFACT_BYTES: '134217728'
+      MAX_TOTAL_BYTES: '1073741824'
+      MAX_ARCHIVE_FILES: '10000'
+    steps:
+      - name: Resolve exact mutable target
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json')
+          rm -rf "$RUNNER_TEMP/custody"
+          mkdir -p "$RUNNER_TEMP/custody/archives" "$RUNNER_TEMP/custody/extracted"
+          curl -fsSL "${auth[@]}" "$api/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/custody/pr.json"
+          jq -e '.state == "open" and .merged == false' "$RUNNER_TEMP/custody/pr.json" >/dev/null
+          head=$(jq -r '.head.sha' "$RUNNER_TEMP/custody/pr.json")
+          base=$(jq -r '.base.sha' "$RUNNER_TEMP/custody/pr.json")
+          test "${#head}" -eq 40
+          test "${#base}" -eq 40
+          printf '{"repository":"%s","pull_request":%s,"base":"%s","head":"%s"}\n' \
+            "$REPOSITORY" "$PR_NUMBER" "$base" "$head" \
+            > "$RUNNER_TEMP/custody/identity.json"
+
+      - name: Enumerate latest exact-head workflow attempts and artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json')
+          head=$(jq -r '.head' "$RUNNER_TEMP/custody/identity.json")
+          for page in 1 2 3 4 5; do
+            curl -fsSL "${auth[@]}" \
+              "$api/actions/runs?head_sha=${head}&per_page=100&page=${page}" \
+              > "$RUNNER_TEMP/custody/runs-${page}.json"
+            count=$(jq '.workflow_runs | length' "$RUNNER_TEMP/custody/runs-${page}.json")
+            test "$count" -eq 100 || break
+          done
+
+          python3 - "$RUNNER_TEMP/custody" <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+
+          root = Path(sys.argv[1])
+          runs = []
+          for path in sorted(root.glob('runs-*.json')):
+              runs.extend(json.loads(path.read_text()).get('workflow_runs', []))
+          latest = {}
+          for run in runs:
+              key = (run.get('workflow_id'), run.get('path') or run.get('name'))
+              rank = (int(run.get('run_attempt') or 0), int(run.get('id') or 0))
+              if key not in latest or rank > latest[key][0]:
+                  latest[key] = (rank, run)
+          current = [item[1] for item in latest.values()]
+          plan = {
+              'latest_workflow_count': len(current),
+              'terminal_success_count': sum(
+                  run.get('status') == 'completed' and run.get('conclusion') == 'success'
+                  for run in current
+              ),
+              'active_count': sum(run.get('status') != 'completed' for run in current),
+              'blocking_count': sum(
+                  run.get('status') == 'completed' and run.get('conclusion') != 'success'
+                  for run in current
+              ),
+              'runs': [
+                  {
+                      'id': run.get('id'),
+                      'workflow_id': run.get('workflow_id'),
+                      'name': run.get('name'),
+                      'path': run.get('path'),
+                      'attempt': run.get('run_attempt'),
+                      'status': run.get('status'),
+                      'conclusion': run.get('conclusion'),
+                  }
+                  for run in sorted(current, key=lambda value: (value.get('name') or '', value.get('id') or 0))
+              ],
+          }
+          (root / 'workflow-plan.json').write_text(
+              json.dumps(plan, sort_keys=True, separators=(',', ':')) + '\n'
+          )
+          with (root / 'successful-run-ids.txt').open('w') as handle:
+              for run in current:
+                  if run.get('status') == 'completed' and run.get('conclusion') == 'success':
+                      handle.write(f"{int(run['id'])}\n")
+          print(json.dumps(plan, indent=2))
+          PY
+
+          : > "$RUNNER_TEMP/custody/artifact-pages.ndjson"
+          while IFS= read -r run_id; do
+            test -n "$run_id" || continue
+            curl -fsSL "${auth[@]}" "$api/actions/runs/${run_id}/artifacts?per_page=100" \
+              | jq -c --argjson run_id "$run_id" \
+                '.artifacts[] | . + {source_run_id:$run_id}' \
+              >> "$RUNNER_TEMP/custody/artifact-pages.ndjson"
+          done < "$RUNNER_TEMP/custody/successful-run-ids.txt"
+
+      - name: Download and verify retained bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/custody" <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import stat
+          import sys
+          import urllib.request
+          import zipfile
+
+          root = Path(sys.argv[1])
+          repository = os.environ['REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          max_artifacts = int(os.environ['MAX_ARTIFACTS'])
+          max_artifact_bytes = int(os.environ['MAX_ARTIFACT_BYTES'])
+          max_total_bytes = int(os.environ['MAX_TOTAL_BYTES'])
+          max_archive_files = int(os.environ['MAX_ARCHIVE_FILES'])
+
+          rows = []
+          ndjson = root / 'artifact-pages.ndjson'
+          if ndjson.exists():
+              for line in ndjson.read_text().splitlines():
+                  if line.strip():
+                      rows.append(json.loads(line))
+          if len(rows) > max_artifacts:
+              raise SystemExit(f'artifact count {len(rows)} exceeds {max_artifacts}')
+
+          seen_ids = set()
+          seen_names = set()
+          total = 0
+          manifest = []
+          for artifact in sorted(rows, key=lambda value: int(value['id'])):
+              artifact_id = int(artifact['id'])
+              name = str(artifact.get('name') or '')
+              size = int(artifact.get('size_in_bytes') or 0)
+              digest = str(artifact.get('digest') or '')
+              expired = bool(artifact.get('expired'))
+              if artifact_id in seen_ids:
+                  raise SystemExit(f'duplicate artifact id {artifact_id}')
+              if not name or name in seen_names:
+                  raise SystemExit(f'invalid or duplicate artifact name {name!r}')
+              if expired:
+                  raise SystemExit(f'artifact {artifact_id} is expired')
+              if size <= 0 or size > max_artifact_bytes:
+                  raise SystemExit(f'artifact {artifact_id} invalid size {size}')
+              if not digest.startswith('sha256:') or len(digest) != 71:
+                  raise SystemExit(f'artifact {artifact_id} has no canonical SHA-256 digest')
+              total += size
+              if total > max_total_bytes:
+                  raise SystemExit(f'total artifact bytes {total} exceeds {max_total_bytes}')
+              seen_ids.add(artifact_id)
+              seen_names.add(name)
+
+              destination = root / 'archives' / f'{artifact_id}.zip'
+              request = urllib.request.Request(
+                  f'https://api.github.com/repos/{repository}/actions/artifacts/{artifact_id}/zip',
+                  headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': 'application/vnd.github+json',
+                      'User-Agent': 'trillionnium-artifact-custody',
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=120) as response:
+                  body = response.read(max_artifact_bytes + 1)
+              if len(body) > max_artifact_bytes:
+                  raise SystemExit(f'artifact {artifact_id} download exceeds bound')
+              destination.write_bytes(body)
+              observed = hashlib.sha256(body).hexdigest()
+              expected = digest.removeprefix('sha256:')
+              if observed != expected:
+                  raise SystemExit(
+                      f'artifact {artifact_id} digest mismatch: expected {expected}, observed {observed}'
+                  )
+
+              file_count = 0
+              uncompressed = 0
+              members = []
+              with zipfile.ZipFile(destination) as archive:
+                  infos = archive.infolist()
+                  if not infos:
+                      raise SystemExit(f'artifact {artifact_id} archive is empty')
+                  for info in infos:
+                      file_count += 1
+                      if file_count > max_archive_files:
+                          raise SystemExit(f'artifact {artifact_id} has too many members')
+                      path = PurePosixPath(info.filename)
+                      if path.is_absolute() or '..' in path.parts or '\\' in info.filename:
+                          raise SystemExit(f'artifact {artifact_id} unsafe path {info.filename!r}')
+                      mode = (info.external_attr >> 16) & 0xFFFF
+                      if stat.S_ISLNK(mode):
+                          raise SystemExit(f'artifact {artifact_id} symlink {info.filename!r}')
+                      if info.file_size < 0:
+                          raise SystemExit(f'artifact {artifact_id} invalid member size')
+                      uncompressed += info.file_size
+                      if uncompressed > max_artifact_bytes * 8:
+                          raise SystemExit(f'artifact {artifact_id} expansion bound exceeded')
+                      members.append({
+                          'path': info.filename,
+                          'size': info.file_size,
+                          'crc32': f'{info.CRC:08x}',
+                      })
+
+              manifest.append({
+                  'artifact_id': artifact_id,
+                  'name': name,
+                  'source_run_id': int(artifact['source_run_id']),
+                  'size_in_bytes': size,
+                  'downloaded_size_in_bytes': len(body),
+                  'sha256': observed,
+                  'created_at': artifact.get('created_at'),
+                  'expires_at': artifact.get('expires_at'),
+                  'file_count': file_count,
+                  'uncompressed_bytes': uncompressed,
+                  'members': members,
+              })
+
+          identity = json.loads((root / 'identity.json').read_text())
+          workflow_plan = json.loads((root / 'workflow-plan.json').read_text())
+          report = {
+              'schema': 'trillionnium.exact-head-artifact-custody.v1',
+              'identity': identity,
+              'workflow_plan': workflow_plan,
+              'artifact_count': len(manifest),
+              'total_declared_bytes': total,
+              'artifacts': manifest,
+              'claim_boundary': {
+                  'retained_bytes_verified': bool(manifest),
+                  'collection_complete': workflow_plan['active_count'] == 0
+                      and workflow_plan['blocking_count'] == 0,
+                  'independently_reviewed': False,
+                  'accepted': False,
+                  'gap_closed': False,
+                  'production_ready': False,
+              },
+          }
+          raw = json.dumps(report, sort_keys=True, separators=(',', ':')).encode() + b'\n'
+          (root / 'custody-manifest.json').write_bytes(raw)
+          (root / 'custody-manifest.sha256').write_text(
+              hashlib.sha256(raw).hexdigest() + '  custody-manifest.json\n'
+          )
+          print(json.dumps(report, indent=2))
+          PY
+
+      - name: Build deterministic custody packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          packet="$RUNNER_TEMP/custody/exact-head-artifact-custody.tar.gz"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$packet" -C "$RUNNER_TEMP/custody" \
+            identity.json workflow-plan.json artifact-pages.ndjson \
+            custody-manifest.json custody-manifest.sha256
+          test -s "$packet"
+          sha256sum "$packet"
+
+      - name: Retain zero-credit custody packet
+        id: retained-custody
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: exact-head-artifact-custody-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/custody/exact-head-artifact-custody.tar.gz
+          mime_type: application/gzip
+
+      - name: Verify retained custody receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.retained-custody.outputs.artifact_id }}'
+          test -n '${{ steps.retained-custody.outputs.sha256 }}'
+          test '${{ steps.retained-custody.outputs.size_bytes }}' -gt 0
+          printf 'artifact_id=%s\nsha256=%s\nsize_bytes=%s\n' \
+            '${{ steps.retained-custody.outputs.artifact_id }}' \
+            '${{ steps.retained-custody.outputs.sha256 }}' \
+            '${{ steps.retained-custody.outputs.size_bytes }}'
+          printf 'independently_reviewed=false\naccepted=false\ngap_closed=false\nproduction_ready=false\n'
