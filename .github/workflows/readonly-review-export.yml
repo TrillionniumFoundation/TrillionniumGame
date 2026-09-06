@@ -1,8 +1,8 @@
-name: preflight-final-control-hardening
+name: session-harness-current-preflight
 
 on:
   push:
-    branches: [tooling/readonly-review-export-arm-8fde7e81]
+    branches: [tooling/session-response-loss-preflight-2026-09-06]
 
 permissions:
   contents: read
@@ -10,200 +10,98 @@ permissions:
 
 env:
   BASE_COMMIT: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
-  PRODUCT_HEAD: 545569a4936f08d0eed0b79806e04239cbe8e835
-  PRODUCT_TREE: 00ca7f813f5dcb1e46935cf6bc0121ca33888c7e
-  PRODUCT_MERGE: f23acd1054cf2f415f67ecbdfc6125152b493a29
+  PRODUCT_HEAD: 4c5ed43a7b6db76c13dcb80312c122e51ca3eec4
+  PRODUCT_TREE: ffa011649b83613e3f40bccb8efec1c0c15fe25e
+  PRODUCT_MERGE: e7cee006949c5c42195eba46f74184eafbe80734
   PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
-  PROPOSED_TREE: 99c53e994919eca082b59aa12aeb312aa975a6a5
-  TRANSITION_POLICY_BLOB: c27a020bfe0425cb769898cc5d786c76a9b2c7b0
-  TRANSITION_TEST_BLOB: b25ce68502c7ee7a2b54a47ef680cb6afb5906d8
-  IDENTITY_BLOB: 597232f7b9594d7cd39ecfbf4f18339105a20b5f
-  IDENTITY_TEST_BLOB: 6f9c12d602f9716dcbee3e8f699d6ca3417f3850
-  GAP_POLICY_BLOB: 4fd99e674202419cfefbe6ccfc3e1416d165c43c
-  GAP_WRAPPER_BLOB: c5a4d84602a75ee3d0a0c38c7184a3dc2ea4f4c3
-  GAP_TEST_BLOB: 321dfbb03579796f8c49c3b931d0947441240b76
-  GAP_CORE_BLOB: adca738055f5af4a8bee07facc57e87a2b7e2595
-  GAP_BASELINE_BLOB: 577cfb3a97b6b6b98b8ecd3182991910f3645296
+  CARGO_TERM_COLOR: never
+  PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
-  final-control-overlay:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+  current-source-and-merge:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
     steps:
-      - name: Fetch fixed tooling and immutable product objects
+      - name: Fetch exact current product source and GitHub merge
         shell: bash
         run: |
           set -euo pipefail
-          git init "$GITHUB_WORKSPACE/tooling"
-          git -C "$GITHUB_WORKSPACE/tooling" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
-          git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
-          for record in \
-            "overlay/scripts/status_transition_policy.py:$TRANSITION_POLICY_BLOB" \
-            "overlay/tests/control_plane/test_status_transition_policy.py:$TRANSITION_TEST_BLOB" \
-            "overlay/scripts/check-prospective-merge-identity.py:$IDENTITY_BLOB" \
-            "overlay/tests/control_plane/test_prospective_merge_identity.py:$IDENTITY_TEST_BLOB" \
-            "overlay/scripts/gap_register_scope_policy.py:$GAP_POLICY_BLOB" \
-            "overlay/scripts/check-gap-register.py:$GAP_WRAPPER_BLOB" \
-            "overlay/tests/control_plane/test_gap_register_scope_lock.py:$GAP_TEST_BLOB" \
-            "overlay/scripts/gap_register_validation_core.py:$GAP_CORE_BLOB" \
-            "overlay/scripts/control_baselines/gap-register.v1.json:$GAP_BASELINE_BLOB"; do
-            path=${record%%:*}; expected=${record#*:}
-            test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object "$path")" = "$expected"
-          done
-
           git init "$GITHUB_WORKSPACE/source"
-          git -C "$GITHUB_WORKSPACE/source" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin "$PRODUCT_HEAD"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin \
+            https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=32 origin "$PRODUCT_HEAD"
           git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$PRODUCT_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$PRODUCT_TREE"
           git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin refs/pull/63/merge
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse FETCH_HEAD)" = "$PRODUCT_MERGE"
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse "$PRODUCT_HEAD^{tree}")" = "$PRODUCT_TREE"
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse "$PRODUCT_MERGE^{tree}")" = "$PRODUCT_TREE"
           mapfile -t parents < <(git -C "$GITHUB_WORKSPACE/source" cat-file -p "$PRODUCT_MERGE" | sed -n 's/^parent //p')
           test "${#parents[@]}" -eq 2
           test "${parents[0]}" = "$BASE_COMMIT"
           test "${parents[1]}" = "$PRODUCT_HEAD"
 
-      - name: Build exact proposed source and merge objects
-        id: objects
+      - name: Install exact Rust toolchain
         shell: bash
-        working-directory: source
-        env:
-          GIT_AUTHOR_NAME: Trillionnium diagnostic
-          GIT_AUTHOR_EMAIL: diagnostic@invalid
-          GIT_COMMITTER_NAME: Trillionnium diagnostic
-          GIT_COMMITTER_EMAIL: diagnostic@invalid
         run: |
           set -euo pipefail
-          git checkout --detach "$PRODUCT_HEAD"
-          install -m 755 "$GITHUB_WORKSPACE/tooling/overlay/scripts/status_transition_policy.py" scripts/status_transition_policy.py
-          install -m 644 "$GITHUB_WORKSPACE/tooling/overlay/tests/control_plane/test_status_transition_policy.py" tests/control_plane/test_status_transition_policy.py
-          install -m 755 "$GITHUB_WORKSPACE/tooling/overlay/scripts/check-prospective-merge-identity.py" scripts/check-prospective-merge-identity.py
-          install -m 644 "$GITHUB_WORKSPACE/tooling/overlay/tests/control_plane/test_prospective_merge_identity.py" tests/control_plane/test_prospective_merge_identity.py
-          install -m 755 "$GITHUB_WORKSPACE/tooling/overlay/scripts/gap_register_scope_policy.py" scripts/gap_register_scope_policy.py
-          install -m 755 "$GITHUB_WORKSPACE/tooling/overlay/scripts/check-gap-register.py" scripts/check-gap-register.py
-          install -m 755 "$GITHUB_WORKSPACE/tooling/overlay/scripts/gap_register_validation_core.py" scripts/gap_register_validation_core.py
-          install -m 644 "$GITHUB_WORKSPACE/tooling/overlay/tests/control_plane/test_gap_register_scope_lock.py" tests/control_plane/test_gap_register_scope_lock.py
-          mkdir -p scripts/control_baselines
-          install -m 644 "$GITHUB_WORKSPACE/tooling/overlay/scripts/control_baselines/gap-register.v1.json" scripts/control_baselines/gap-register.v1.json
-          git add scripts/status_transition_policy.py tests/control_plane/test_status_transition_policy.py scripts/check-prospective-merge-identity.py tests/control_plane/test_prospective_merge_identity.py scripts/gap_register_scope_policy.py scripts/check-gap-register.py scripts/gap_register_validation_core.py tests/control_plane/test_gap_register_scope_lock.py scripts/control_baselines/gap-register.v1.json
-          tree=$(git write-tree)
-          test "$tree" = "$PROPOSED_TREE"
-          source_commit=$(printf 'diagnostic final control source\n' | git commit-tree "$tree" -p "$PRODUCT_HEAD")
-          merge_commit=$(printf 'diagnostic final control merge\n' | git commit-tree "$tree" -p "$BASE_COMMIT" -p "$source_commit")
-          printf 'source_commit=%s\nmerge_commit=%s\n' "$source_commit" "$merge_commit" >> "$GITHUB_OUTPUT"
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustc +1.85.1 --version --verbose
+          cargo +1.85.1 --version --verbose
 
-      - name: Execute complete Python and controls on proposed source and merge
+      - name: Execute current source and merge contracts
         shell: bash
         working-directory: source
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
         run: |
           set -euo pipefail
-          proof="$RUNNER_TEMP/final-control-proof"
-          mkdir -p "$proof"
-          for pair in "source:${{ steps.objects.outputs.source_commit }}" "merge:${{ steps.objects.outputs.merge_commit }}"; do
-            label=${pair%%:*}; object=${pair#*:}
+          for pair in "source:$PRODUCT_HEAD" "merge:$PRODUCT_MERGE"; do
+            label=${pair%%:*}
+            object=${pair#*:}
             git checkout --detach "$object"
-            test "$(git rev-parse HEAD^{tree})" = "$PROPOSED_TREE"
+            test "$(git rev-parse HEAD^{tree})" = "$PRODUCT_TREE"
             test -z "$(git status --porcelain)"
-            python3 scripts/status_transition_policy.py --self-check | tee "$proof/${label}-transition-policy.json"
-            python3 scripts/gap_register_scope_policy.py | tee "$proof/${label}-gap-scope.json"
-            python3 scripts/check-gap-register.py | tee "$proof/${label}-gap-checker.json"
-            jq -e '.status == "verified" and .gap_count == 18 and .close_criteria_total == 92 and .claim_boundary.gap_closed == false' "$proof/${label}-gap-scope.json" >/dev/null
-            jq -e '.immutable_scope.status == "verified" and .immutable_scope.gap_count == 18 and .immutable_scope.close_criteria_total == 92' "$proof/${label}-gap-checker.json" >/dev/null
-            python3 -m compileall -q scripts tools tests 2>&1 | tee "$proof/${label}-compileall.log"
-            python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$proof/${label}-python.log"
-            grep -Eq '^Ran ([5-9][0-9]{2}|[1-9][0-9]{3,}) tests in ' "$proof/${label}-python.log"
-            grep -qx OK "$proof/${label}-python.log"
-            for name in \
-              test_exact_roadmap_scope_replacement_resets_credit \
-              test_scope_replacement_cannot_carry_verified_or_accepted_state \
-              test_exact_parent_status_transition_is_verified \
-              test_repository_gap_scope_is_exact_and_non_shrinkable \
-              test_equal_cardinality_semantic_rewrites_are_rejected \
-              test_baseline_byte_identity_is_not_editable_with_the_register \
-              test_production_checker_executes_shared_scope_policy; do
-              grep -F "$name" "$proof/${label}-python.log"
+
+            bash -n scripts/check-pg-server-response-loss.sh
+            bash -n scripts/ci-trnm-server-live.sh
+            python3 -m unittest -v tests.control_plane.test_session_live_harness_scope
+
+            cargo +1.85.1 fmt --all -- --check
+            cargo +1.85.1 test -p trnm-persistence-pg --all-targets --locked -- --nocapture \
+              2>&1 | tee "$RUNNER_TEMP/${label}-persistence-tests.log"
+            cargo +1.85.1 clippy -p trnm-persistence-pg --all-targets --locked -- -D warnings
+
+            python3 -m compileall -q scripts tools tests
+            python3 -m unittest discover -s tests -p 'test_*.py' -v \
+              2>&1 | tee "$RUNNER_TEMP/${label}-python.log"
+            grep -Eq '^Ran [1-9][0-9]* tests in ' "$RUNNER_TEMP/${label}-python.log"
+            grep -qx OK "$RUNNER_TEMP/${label}-python.log"
+
+            for check in \
+              check-documentation-authority.py \
+              check-plan.py \
+              check-evidence-index.py \
+              check-gap-register.py \
+              derive-gap-status.py \
+              derive-gates.py \
+              check-status-transitions.py \
+              check-workflow-action-policy.py \
+              check-repository-hygiene.py \
+              check-trnm-server.py \
+              check-rust-foundation.py; do
+              python3 "scripts/$check"
             done
-            {
-              for check in \
-                check-documentation-authority.py \
-                check-plan.py \
-                check-evidence-index.py \
-                check-gap-register.py \
-                derive-gap-status.py \
-                derive-gates.py \
-                check-status-transitions.py \
-                check-workflow-action-policy.py \
-                check-repository-hygiene.py \
-                check-trnm-server.py \
-                check-rust-foundation.py; do
-                printf '\n=== %s ===\n' "$check"
-                python3 "scripts/$check"
-              done
-            } 2>&1 | tee "$proof/${label}-controls.log"
+
+            (
+              cd runtime
+              GOTOOLCHAIN=go1.26.5 go test ./... -count=1
+              GOTOOLCHAIN=go1.26.5 go test -race ./... -count=1
+              GOTOOLCHAIN=go1.26.5 go vet ./...
+            )
             test -z "$(git status --porcelain)"
+            printf '%s object=%s tree=%s result=pass\n' "$label" "$object" "$PRODUCT_TREE"
           done
 
-      - name: Verify exact base-to-proposed-head transition through prospective checker
-        shell: bash
-        working-directory: source
-        run: |
-          set -euo pipefail
-          proof="$RUNNER_TEMP/final-control-proof"
-          proposed_head='${{ steps.objects.outputs.source_commit }}'
-          proposed_merge='${{ steps.objects.outputs.merge_commit }}'
-          git checkout --detach "$proposed_merge"
-          python3 scripts/check-prospective-merge-identity.py \
-            --repository-root "$GITHUB_WORKSPACE/source" \
-            --repository TrillionniumFoundation/TrillionniumGame \
-            --expected-base "$BASE_COMMIT" \
-            --expected-head "$proposed_head" \
-            --expected-merge "$proposed_merge" \
-            --output "$proof/proposed-merge-identity.json" \
-            | tee "$proof/proposed-merge-identity.stdout"
-          jq -e '.status_transition.status == "verified" and
-                 .status_transition.scope_replacement_count == 1 and
-                 .status_transition.scope_replacements[0].credit_policy == "reset-no-verified-or-accepted-state-transfer" and
-                 .status_transition.claim_boundary.scope_replacement_transfers_acceptance == false and
-                 .status_transition.claim_boundary.gap_closed == false' "$proof/proposed-merge-identity.json" >/dev/null
-
-      - name: Build bounded diagnostic packet
-        shell: bash
-        working-directory: source
-        run: |
-          set -euo pipefail
-          proof="$RUNNER_TEMP/final-control-proof"
-          git cat-file commit '${{ steps.objects.outputs.source_commit }}' > "$proof/proposed-source-commit.txt"
-          git cat-file commit '${{ steps.objects.outputs.merge_commit }}' > "$proof/proposed-merge-commit.txt"
-          git ls-remote origin refs/heads/main refs/heads/$PRODUCT_BRANCH refs/pull/63/merge > "$proof/live-refs.txt"
-          python3 - <<'PY'
-          import hashlib,json,os,re,zipfile
-          from pathlib import Path
-          root=Path(os.environ['RUNNER_TEMP'])/'final-control-proof'
-          counts={}
-          for label in ('source','merge'):
-              text=(root/f'{label}-python.log').read_text(errors='replace')
-              match=re.search(r'^Ran ([1-9][0-9]*) tests in ',text,re.M)
-              if not match or not re.search(r'^OK$',text,re.M): raise RuntimeError(label+' tests incomplete')
-              counts[label]=int(match.group(1))
-          transition=json.loads((root/'proposed-merge-identity.json').read_text())
-          scope=json.loads((root/'source-gap-scope.json').read_text())
-          identity={'schema':'trillionnium.final-control-preflight.v1','repository':'TrillionniumFoundation/TrillionniumGame','base_commit':os.environ['BASE_COMMIT'],'predecessor_head':os.environ['PRODUCT_HEAD'],'predecessor_tree':os.environ['PRODUCT_TREE'],'proposed_tree':os.environ['PROPOSED_TREE'],'changed_blobs':{'scripts/status_transition_policy.py':os.environ['TRANSITION_POLICY_BLOB'],'tests/control_plane/test_status_transition_policy.py':os.environ['TRANSITION_TEST_BLOB'],'scripts/check-prospective-merge-identity.py':os.environ['IDENTITY_BLOB'],'tests/control_plane/test_prospective_merge_identity.py':os.environ['IDENTITY_TEST_BLOB'],'scripts/gap_register_scope_policy.py':os.environ['GAP_POLICY_BLOB'],'scripts/check-gap-register.py':os.environ['GAP_WRAPPER_BLOB'],'tests/control_plane/test_gap_register_scope_lock.py':os.environ['GAP_TEST_BLOB'],'scripts/gap_register_validation_core.py':os.environ['GAP_CORE_BLOB'],'scripts/control_baselines/gap-register.v1.json':os.environ['GAP_BASELINE_BLOB']},'execution':{'source_python_tests_passed':counts['source'],'merge_python_tests_passed':counts['merge'],'control_checks_per_object':11,'scope_replacement_count':transition['status_transition']['scope_replacement_count'],'gap_count':scope['gap_count'],'close_criteria_total':scope['close_criteria_total']},'producer':{key:os.environ.get(key) for key in ('GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_JOB')},'claims':{'source_candidate':True,'product_branch_changed':False,'ordinary_required_gate_passed':False,'independently_accepted':False,'gap_closed':False},'limitations':['Synthetic proposed commit identities; exact published source and GitHub merge require ordinary requalification.','No administrator, reviewer, live database, SDK, performance, endurance, production or retirement credit.']}
-          (root/'identity.json').write_text(json.dumps(identity,indent=2)+'\n')
-          files={p.name:p.read_bytes() for p in root.iterdir() if p.is_file()}
-          (root/'file-index.json').write_text(json.dumps([{'path':n,'size_bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()} for n,b in sorted(files.items())],indent=2)+'\n')
-          files={p.name:p.read_bytes() for p in root.iterdir() if p.is_file()}
-          with zipfile.ZipFile(root/'final-control-preflight.zip','x',zipfile.ZIP_DEFLATED) as archive:
-            for name,data in sorted(files.items()): archive.writestr(name,data)
-          PY
-
-      - name: Retain exact diagnostic packet
-        uses: ./tooling/publish
-
-      - name: Prove product refs did not move
+      - name: Prove product refs remained unchanged
         shell: bash
         working-directory: source
         run: |
@@ -211,3 +109,4 @@ jobs:
           test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$BASE_COMMIT"
           test "$(git ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$PRODUCT_HEAD"
           test "$(git ls-remote origin refs/pull/63/merge | cut -f1)" = "$PRODUCT_MERGE"
+          printf 'ordinary_required_gate_credit=false\nindependent_acceptance=false\ngap_closed=false\n'
