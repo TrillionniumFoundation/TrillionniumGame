@@ -1,0 +1,67 @@
+name: pr93-review-route
+
+on:
+  push:
+    branches: [tooling/pr93-identity-and-ci-2026-09-06]
+    paths:
+      - '.github/workflows/pr93-review-route.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: '93'
+    steps:
+      - name: Select and request only conflict-free human reviewers
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          curl -fsS "${auth[@]}" "${api}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pr.json"
+          head=$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")
+          author=$(jq -r '.user.login|ascii_downcase' "$RUNNER_TEMP/pr.json")
+          curl -fsS "${auth[@]}" "${api}/pulls/${PR_NUMBER}/commits?per_page=100" > "$RUNNER_TEMP/commits.json"
+          jq -r '[.[].author.login?, .[].committer.login?] | flatten | map(select(.!=null) | ascii_downcase) | unique[]' \
+            "$RUNNER_TEMP/commits.json" > "$RUNNER_TEMP/conflicts"
+          printf '%s\n' "$author" >> "$RUNNER_TEMP/conflicts"
+          printf '%s\n' 'profhepta' 'franksudoman' >> "$RUNNER_TEMP/conflicts"
+          sort -u "$RUNNER_TEMP/conflicts" -o "$RUNNER_TEMP/conflicts"
+
+          curl -fsS "${auth[@]}" "${api}/collaborators?per_page=100&affiliation=all" > "$RUNNER_TEMP/collaborators.json"
+          jq -r '.[] | select(.type=="User") | select(.permissions.pull==true) | .login' \
+            "$RUNNER_TEMP/collaborators.json" > "$RUNNER_TEMP/candidates"
+
+          # Prefer explicit CODEOWNERS users, then other read-capable human collaborators.
+          curl -fsS "${auth[@]}" "${api}/contents/.github/CODEOWNERS?ref=${head}" > "$RUNNER_TEMP/codeowners.json"
+          jq -r '.content' "$RUNNER_TEMP/codeowners.json" | tr -d '\n' | base64 -d > "$RUNNER_TEMP/CODEOWNERS"
+          grep -Eo '@[A-Za-z0-9_.-]+' "$RUNNER_TEMP/CODEOWNERS" | sed 's/^@//' | sort -u > "$RUNNER_TEMP/owners" || true
+          : > "$RUNNER_TEMP/eligible"
+          for source in "$RUNNER_TEMP/owners" "$RUNNER_TEMP/candidates"; do
+            while IFS= read -r login; do
+              test -n "$login" || continue
+              lower=$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')
+              grep -qx "$lower" "$RUNNER_TEMP/conflicts" && continue
+              jq -e --arg login "$lower" '.[] | select((.login|ascii_downcase)==$login and .type=="User")' \
+                "$RUNNER_TEMP/collaborators.json" >/dev/null || continue
+              printf '%s\n' "$login" >> "$RUNNER_TEMP/eligible"
+            done < "$source"
+          done
+          awk '!seen[tolower($0)]++' "$RUNNER_TEMP/eligible" | head -n 10 > "$RUNNER_TEMP/final"
+          count=$(grep -c . "$RUNNER_TEMP/final" || true)
+          test "$count" -gt 0
+          jq -Rn '[inputs] | {reviewers:.}' < "$RUNNER_TEMP/final" > "$RUNNER_TEMP/request.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/request.json" \
+            "${api}/pulls/${PR_NUMBER}/requested_reviewers" > "$RUNNER_TEMP/response.json"
+          reviewers=$(paste -sd, "$RUNNER_TEMP/final")
+          body="<!-- pr93-review-route -->\nConflict-free review requested for PR #${PR_NUMBER} head \\`${head}\\` from: \\`${reviewers}\\`. Selection excluded the PR author, commit authors/committers, known base/integration mutators, and bots. A request is not an approval and grants no evidence, gap, compatibility, or production credit."
+          jq -n --arg body "$body" '{body:$body}' > "$RUNNER_TEMP/comment.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/comment.json" \
+            "${api}/issues/${PR_NUMBER}/comments" >/dev/null
