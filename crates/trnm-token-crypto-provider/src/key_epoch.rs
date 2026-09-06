@@ -30,8 +30,8 @@ impl KeyId {
         Ok(Self(value))
     }
 
-    pub const fn as_bytes(self) -> [u8; 16] {
-        self.0
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
     }
 }
 
