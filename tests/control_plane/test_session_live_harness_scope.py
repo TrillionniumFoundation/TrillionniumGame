@@ -14,9 +14,10 @@ SESSION_TEST = ROOT / "crates/trnm-persistence-pg/tests/session_response_loss.rs
 
 
 class SessionLiveHarnessContractTests(unittest.TestCase):
-    def test_live_target_contains_response_loss_and_concurrency_contracts(self) -> None:
+    def test_live_target_contains_unique_fixtures_and_both_database_contracts(self) -> None:
         source = SESSION_TEST.read_text(encoding="utf-8")
-        self.assertGreaterEqual(source.count("#[test]"), 2)
+        self.assertGreaterEqual(source.count("#[test]"), 3)
+        self.assertIn("session_live_fixture_digests_are_globally_unique", source)
         self.assertIn(
             "committed_refresh_response_loss_is_idempotent_and_changed_successor_revokes",
             source,
@@ -25,6 +26,8 @@ class SessionLiveHarnessContractTests(unittest.TestCase):
             "concurrent_refresh_and_logout_never_surface_a_database_deadlock",
             source,
         )
+        self.assertIn("fn concurrency_credentials(iteration: u8)", source)
+        self.assertIn("assert_eq!(digests.len(), 35);", source)
 
     def test_harnesses_accept_nonempty_growth_without_weakening_fixture_checks(self) -> None:
         forbidden = (
@@ -36,6 +39,9 @@ class SessionLiveHarnessContractTests(unittest.TestCase):
             with self.subTest(path=path):
                 source = path.read_text(encoding="utf-8")
                 self.assertIn("session_test_count=", source)
+                # Two tests require the live database. The third is the pure
+                # uniqueness guard above and must not be misreported as database
+                # coverage merely by increasing this lower bound.
                 self.assertIn('test "$session_test_count" -ge 2', source)
                 self.assertIn("response_loss_family_hex", source)
                 self.assertIn(
