@@ -47,8 +47,6 @@ jobs:
             git -C "$GITHUB_WORKSPACE/source" merge-base --is-ancestor \
               "$BASE_SHA" "refs/remotes/source/$ref"
           done
-          printf 'base=%s\noutbox=%s\nsession=%s\nrealtime=%s\nserver=%s\nhardening=%s\n' \
-            "$BASE_SHA" "$OUTBOX_SHA" "$SESSION_SHA" "$REALTIME_SHA" "$SERVER_SHA" "$HARDENING_SHA"
 
       - name: Compose exact source diffs and apply reviewed session hardening
         shell: bash
@@ -77,17 +75,12 @@ jobs:
             | git apply --index --3way
           python3 - <<'PY'
           from pathlib import Path
-
           path = Path('crates/trnm-presence-router-v2/src/lib.rs')
           text = path.read_text(encoding='utf-8')
           module_anchor = 'mod router;\nmod session_registry;\nmod types;\n'
           module_replacement = (
-              'mod connection_actor;\n'
-              'mod disconnect_journal;\n'
-              'mod reconnect_cursor;\n'
-              'mod router;\n'
-              'mod session_registry;\n'
-              'mod types;\n'
+              'mod connection_actor;\nmod disconnect_journal;\nmod reconnect_cursor;\n'
+              'mod router;\nmod session_registry;\nmod types;\n'
           )
           if text.count(module_anchor) != 1:
               raise SystemExit('module anchor drift')
@@ -96,16 +89,13 @@ jobs:
           exports = (
               'pub use connection_actor::{\n'
               '    ConnectionActor, ConnectionActorConfig, ConnectionActorError, ConnectionActorState,\n'
-              '    CorrelationId, InboundFrame, OutboundFrame, PendingRequest,\n'
-              '};\n'
+              '    CorrelationId, InboundFrame, OutboundFrame, PendingRequest,\n};\n'
               'pub use disconnect_journal::{\n'
               '    DisconnectIntentId, DisconnectJournal, DisconnectJournalError, DisconnectOperation,\n'
-              '    DisconnectRecord, DisconnectState, LeaseToken, RetryDisposition, WorkerId,\n'
-              '};\n'
+              '    DisconnectRecord, DisconnectState, LeaseToken, RetryDisposition, WorkerId,\n};\n'
               'pub use reconnect_cursor::{\n'
               '    ReconnectCursor, ReconnectEvent, ReconnectJournal, ReconnectJournalConfig,\n'
-              '    ReconnectJournalError,\n'
-              '};\n'
+              '    ReconnectJournalError,\n};\n'
           )
           if text.count(export_anchor) != 1:
               raise SystemExit('export anchor drift')
@@ -114,6 +104,7 @@ jobs:
 
           git diff --binary "$BASE_SHA" refs/remotes/source/server -- crates/trnm-server \
             | git apply --index --3way
+          sed -i 's/[[:space:]]\+$//' crates/trnm-server/README.md
           test -f crates/trnm-persistence-core/tests/outbox_state_model.rs
           test -f crates/trnm-presence-router-v2/src/session_registry.rs
           test -f crates/trnm-presence-router-v2/src/connection_actor.rs
