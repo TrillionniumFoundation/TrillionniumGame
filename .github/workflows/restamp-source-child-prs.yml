@@ -1,0 +1,200 @@
+name: restamp-source-child-prs
+
+on:
+  push:
+    branches: [tooling/closure-audit-live-2026-09-06b]
+    paths:
+      - '.github/workflows/restamp-source-child-prs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  restamp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      BASE_BRANCH: codex/branch-evidence-closure-2026-09-02
+      REVIEWER: Tomasrgbsf
+    steps:
+      - name: Restamp exact current child identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          import subprocess
+          import tempfile
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          repository = os.environ['REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          base_branch = os.environ['BASE_BRANCH']
+          reviewer = os.environ['REVIEWER']
+          owner = repository.split('/', 1)[0]
+          api = f'https://api.github.com/repos/{repository}'
+          branches = [
+              'codex/outbox-property-coverage-2026-09-06',
+              'codex/session-revocation-fanout-2026-09-06',
+              'codex/realtime-control-models-2026-09-06',
+              'codex/crypto-key-lifecycle-2026-09-06',
+              'codex/migration-fence-control-2026-09-06',
+              'codex/trnm-server-composition-root-2026-09-06',
+              'codex/remaining-source-blockers-wave-v4-2026-09-06a',
+          ]
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'Content-Type': 'application/json',
+              'User-Agent': 'trillionnium-child-pr-restamp',
+          }
+
+          def request(method: str, url: str, payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              req = urllib.request.Request(url, method=method, headers=headers, data=data)
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      raw = response.read()
+                      return response.status, json.loads(raw.decode()) if raw else None
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  try:
+                      value = json.loads(raw.decode()) if raw else None
+                  except Exception:
+                      value = {'message': raw.decode(errors='replace')[:1000]}
+                  return error.code, value
+
+          workspace = Path(tempfile.mkdtemp(prefix='restamp-'))
+          subprocess.run(['git', 'init', str(workspace)], check=True, stdout=subprocess.DEVNULL)
+          subprocess.run(
+              ['git', '-C', str(workspace), 'remote', 'add', 'origin', f'https://github.com/{repository}.git'],
+              check=True,
+          )
+          results = []
+          for branch in branches:
+              query = urllib.parse.urlencode({
+                  'state': 'open',
+                  'head': f'{owner}:{branch}',
+                  'base': base_branch,
+                  'per_page': '10',
+              })
+              code, rows = request('GET', f'{api}/pulls?{query}')
+              if code != 200 or not isinstance(rows, list):
+                  raise SystemExit(f'cannot resolve PR for {branch}: HTTP {code} {rows}')
+              if not rows:
+                  results.append({'branch': branch, 'status': 'no-open-pr'})
+                  continue
+              if len(rows) != 1:
+                  raise SystemExit(f'expected one PR for {branch}, observed {len(rows)}')
+              pr = rows[0]
+              number = int(pr['number'])
+              if number == 63:
+                  raise SystemExit('child restamp must never target PR #63')
+              base_sha = pr['base']['sha']
+              head_sha = pr['head']['sha']
+              if pr['base']['ref'] != base_branch or pr['head']['ref'] != branch:
+                  raise SystemExit(f'PR #{number} topology drift')
+
+              subprocess.run(
+                  [
+                      'git', '-C', str(workspace), 'fetch', '--no-tags', '--force', '--depth=2',
+                      'origin',
+                      f'{head_sha}:refs/remotes/origin/head-{number}',
+                      f'+refs/pull/{number}/merge:refs/remotes/origin/merge-{number}',
+                  ],
+                  check=True,
+                  stdout=subprocess.DEVNULL,
+              )
+              merge_sha = subprocess.check_output(
+                  ['git', '-C', str(workspace), 'rev-parse', f'refs/remotes/origin/merge-{number}'],
+                  text=True,
+              ).strip()
+              head_tree = subprocess.check_output(
+                  ['git', '-C', str(workspace), 'rev-parse', f'{head_sha}^{{tree}}'],
+                  text=True,
+              ).strip()
+              merge_tree = subprocess.check_output(
+                  ['git', '-C', str(workspace), 'rev-parse', f'{merge_sha}^{{tree}}'],
+                  text=True,
+              ).strip()
+              parents = subprocess.check_output(
+                  ['git', '-C', str(workspace), 'show', '-s', '--format=%P', merge_sha],
+                  text=True,
+              ).strip()
+              if parents != f'{base_sha} {head_sha}':
+                  raise SystemExit(f'PR #{number} ordered parent mismatch: {parents}')
+
+              marker_start = '<!-- exact-identity:start -->'
+              marker_end = '<!-- exact-identity:end -->'
+              observed = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+              block = f'''{marker_start}
+          ## Live exact identity
+
+          ```text
+          repository         {repository}
+          pull_request       #{number}
+          base_branch        {base_branch}
+          base               {base_sha}
+          head_branch        {branch}
+          head               {head_sha}
+          head_tree          {head_tree}
+          prospective_merge  {merge_sha}
+          merge_tree         {merge_tree}
+          ordered_parents    {parents}
+          observed_at        {observed}
+          ```
+
+          Any head/base/merge/workflow-definition movement invalidates prior execution and review.
+
+          ```text
+          source_candidate=true
+          independently_reviewed=false
+          accepted_evidence=false
+          gap_closed=false
+          production_ready=false
+          ```
+          {marker_end}'''
+              body = pr.get('body') or ''
+              pattern = re.compile(re.escape(marker_start) + r'.*?' + re.escape(marker_end), re.S)
+              if pattern.search(body):
+                  updated = pattern.sub(block, body, count=1)
+              else:
+                  updated = body.rstrip() + '\n\n' + block + '\n'
+              patch_code, patched = request('PATCH', f'{api}/pulls/{number}', {'body': updated})
+              if patch_code != 200:
+                  raise SystemExit(f'cannot update PR #{number}: HTTP {patch_code} {patched}')
+              review_code, review_result = request(
+                  'POST',
+                  f'{api}/pulls/{number}/requested_reviewers',
+                  {'reviewers': [reviewer]},
+              )
+              if review_code not in {200, 201, 422}:
+                  raise SystemExit(
+                      f'cannot request reviewer for PR #{number}: HTTP {review_code} {review_result}'
+                  )
+              results.append({
+                  'branch': branch,
+                  'pull_request': number,
+                  'base': base_sha,
+                  'head': head_sha,
+                  'head_tree': head_tree,
+                  'prospective_merge': merge_sha,
+                  'merge_tree': merge_tree,
+                  'review_request_http': review_code,
+                  'status': 'restamped',
+              })
+
+          print(json.dumps({'results': results}, indent=2))
+          PY
