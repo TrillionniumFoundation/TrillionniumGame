@@ -1,0 +1,85 @@
+name: wave-v3-draft-controller
+
+on:
+  push:
+    branches: [tooling/wave-v3-draft-controller-2026-09-06]
+    paths:
+      - '.github/workflows/wave-v3-draft-controller.yml'
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PRODUCT_BRANCH: codex/remaining-source-blockers-wave-v3-2026-09-06
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Reconcile Draft state against exact latest workflow set
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          owner="${GITHUB_REPOSITORY%%/*}"
+          prs=$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "$api/pulls?state=open&head=${owner}:${PRODUCT_BRANCH}&per_page=10")
+          test "$(jq 'length' <<<"$prs")" -eq 1
+          number=$(jq -r '.[0].number' <<<"$prs")
+          node_id=$(jq -r '.[0].node_id' <<<"$prs")
+          head=$(jq -r '.[0].head.sha' <<<"$prs")
+          draft=$(jq -r '.[0].draft' <<<"$prs")
+          runs=$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "$api/actions/runs?head_sha=${head}&per_page=100")
+          latest=$(jq -c '
+            [.workflow_runs[] | select(.head_sha == $head)]
+            | sort_by(.workflow_id, .run_attempt, .id)
+            | group_by(.workflow_id)
+            | map(last)
+          ' --arg head "$head" <<<"$runs")
+          total=$(jq 'length' <<<"$latest")
+          active=$(jq '[.[] | select(.status != "completed")] | length' <<<"$latest")
+          blocking=$(jq '[.[] | select(.status == "completed" and (.conclusion | IN("success", "neutral", "skipped") | not))] | length' <<<"$latest")
+          ready=false
+          if test "$total" -gt 0 && test "$active" -eq 0 && test "$blocking" -eq 0; then
+            ready=true
+          fi
+
+          mutation=''
+          if test "$ready" = true && test "$draft" = true; then
+            mutation='mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{number isDraft headRefOid}}}'
+          elif test "$ready" = false && test "$draft" = false; then
+            mutation='mutation($id:ID!){convertPullRequestToDraft(input:{pullRequestId:$id}){pullRequest{number isDraft headRefOid}}}'
+          fi
+          if test -n "$mutation"; then
+            response=$(curl -fsSL -X POST \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              https://api.github.com/graphql \
+              -d "$(jq -nc --arg query "$mutation" --arg id "$node_id" '{query:$query,variables:{id:$id}}')")
+            test "$(jq -r '.. | objects | select(has("headRefOid")) | .headRefOid' <<<"$response")" = "$head"
+          fi
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "$api/pulls/${number}/requested_reviewers" \
+            -d '{"reviewers":["Tomasrgbsf"]}' >/dev/null
+          current=$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "$api/pulls/${number}")
+          test "$(jq -r '.head.sha' <<<"$current")" = "$head"
+          if test "$ready" = true; then
+            test "$(jq -r '.draft' <<<"$current")" = false
+          else
+            test "$(jq -r '.draft' <<<"$current")" = true
+          fi
+          printf 'pr=%s\nhead=%s\nlatest_workflows=%s\nactive=%s\nblocking=%s\nready=%s\ndraft=%s\n' \
+            "$number" "$head" "$total" "$active" "$blocking" "$ready" "$(jq -r '.draft' <<<"$current")"
