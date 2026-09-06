@@ -1,196 +1,68 @@
-name: session-ssi-setup-repair-publisher
+name: native-artifact-retention-preflight
 
 on:
   push:
     branches: [tooling/session-response-loss-preflight-2026-09-06]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: session-ssi-setup-repair-publisher
+  group: native-artifact-retention-preflight
   cancel-in-progress: true
 
 env:
-  EXPECTED_HEAD: 95548e7a6b2a00696d81579aef2e7b70715d8993
-  PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
-  CARGO_TERM_COLOR: never
+  PRODUCT_HEAD: d6df83741ea7c55d799605b349a655669498da57
 
 jobs:
-  exact-session-ssi-setup-repair:
+  upload-bounded-packet:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 15
     steps:
       - name: Fetch exact candidate
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source"
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin \
             https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=64 origin \
-            "refs/heads/${PRODUCT_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin "$PRODUCT_HEAD"
           git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$EXPECTED_HEAD"
-          test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
-
-      - name: Install exact compiler and formatter
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$PRODUCT_HEAD"
+      - name: Build deterministic nonempty packet
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
-          rustc +1.85.1 --version --verbose
-          cargo +1.85.1 --version --verbose
-
-      - name: Apply bounded SSI setup repair
+          packet="$RUNNER_TEMP/native-artifact-preflight"
+          mkdir -p "$packet"
+          printf '{"schema":"trillionnium.native-artifact-preflight.v1","repository":"%s","head":"%s","run_id":"%s","run_attempt":"%s","job":"%s","claims":{"accepted_evidence":false,"gap_closed":false}}\n' \
+            "$GITHUB_REPOSITORY" "$PRODUCT_HEAD" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_JOB" \
+            > "$packet/identity.json"
+          sha256sum "$packet/identity.json" > "$packet/SHA256SUMS"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$RUNNER_TEMP/native-artifact-preflight.tar.gz" -C "$packet" .
+          test -s "$RUNNER_TEMP/native-artifact-preflight.tar.gz"
+      - name: Upload through hardened first-party transport
+        id: upload
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          test_path = Path("crates/trnm-persistence-pg/tests/session_response_loss.rs")
-          source = test_path.read_text(encoding="utf-8")
-          start_marker = '''#[cfg(feature = "session-test-hooks")]
-          fn establish_committed_successor(
-          '''
-          end_marker = '''#[cfg(feature = "session-test-hooks")]
-          fn ordered_rotations(
-          '''
-          if source.count(start_marker) != 1 or source.count(end_marker) != 1:
-              raise SystemExit("session setup helper boundaries changed")
-          start = source.index(start_marker)
-          end = source.index(end_marker, start)
-          replacement = '''#[cfg(feature = "session-test-hooks")]
-          fn establish_committed_successor(
-              database_url: &str,
-              profile: DatabaseProfile,
-              family: SessionFamilyId,
-              user: UserId,
-              predecessor: RefreshTokenCredential,
-              successor: RefreshTokenCredential,
-          ) -> trnm_persistence_pg::SessionFamilyRecord {
-              let mut repository = PgRepository::connect(database_url, profile).unwrap();
-              repository
-                  .create_session_family(&CreateSessionFamily {
-                      family,
-                      user,
-                      refresh: predecessor,
-                      issued_at_ms: 100,
-                  })
-                  .unwrap();
-              let request = RotateRefreshToken {
-                  presented: predecessor,
-                  replacement: successor,
-                  rotated_at_ms: 200,
-              };
-              for attempt in 0..4 {
-                  match repository.rotate_refresh_token(&request) {
-                      Ok(RefreshRotationOutcome::Rotated(record)) => return record,
-                      Ok(RefreshRotationOutcome::ReplayRevoked(_)) => {
-                          panic!("fresh setup rotation was classified as replay")
-                      }
-                      Err(error)
-                          if error.code() == StableCode::Aborted
-                              && error.reason() == "database_serialization_failure"
-                              && attempt < 3 =>
-                      {
-                          repository = PgRepository::connect(database_url, profile).unwrap();
-                      }
-                      Err(error) => panic!("fresh setup rotation failed: {error}"),
-                  }
-              }
-              unreachable!("bounded fresh setup rotation retries exhausted")
-          }
-
-          '''
-          test_path.write_text(source[:start] + replacement + source[end:], encoding="utf-8")
-
-          for name in (
-              "scripts/check-pg-server-response-loss.sh",
-              "scripts/ci-trnm-server-live.sh",
-          ):
-              path = Path(name)
-              source = path.read_text(encoding="utf-8")
-              old = "--test session_response_loss -- --nocapture 2>&1 | tee"
-              new = "--test session_response_loss -- --nocapture --test-threads=1 2>&1 | tee"
-              if source.count(old) != 1:
-                  raise SystemExit(f"{name}: session test invocation changed")
-              path.write_text(source.replace(old, new, 1), encoding="utf-8")
-
-          static_path = Path("tests/control_plane/test_session_live_harness_scope.py")
-          source = static_path.read_text(encoding="utf-8")
-          old = '''        self.assertIn("SessionMutationPoint::BeforeCommit", source)
-                  self.assertIn("SessionMutationPoint::CredentialResolved", source)
-          '''
-          new = '''        self.assertIn("SessionMutationPoint::BeforeCommit", source)
-                  self.assertIn("SessionMutationPoint::CredentialResolved", source)
-                  self.assertIn("for attempt in 0..4", source)
-                  self.assertIn('error.reason() == "database_serialization_failure"', source)
-          '''
-          if source.count(old) != 1:
-              raise SystemExit("static session setup-retry insertion point changed")
-          source = source.replace(old, new, 1)
-          old = '''                self.assertIn("--features session-test-hooks", source)
-                          self.assertIn('test "$session_test_count" -ge 8', source)
-          '''
-          new = '''                self.assertIn("--features session-test-hooks", source)
-                          self.assertIn("--test-threads=1", source)
-                          self.assertIn('test "$session_test_count" -ge 8', source)
-          '''
-          if source.count(old) != 1:
-              raise SystemExit("static serial invocation insertion point changed")
-          static_path.write_text(source.replace(old, new, 1), encoding="utf-8")
-          PY
-
-          cargo +1.85.1 fmt --all
-          expected_paths=$(cat <<'EOF'
-          crates/trnm-persistence-pg/tests/session_response_loss.rs
-          scripts/check-pg-server-response-loss.sh
-          scripts/ci-trnm-server-live.sh
-          tests/control_plane/test_session_live_harness_scope.py
-          EOF
-          )
-          test "$(git diff --name-only)" = "$expected_paths"
-          git diff --check
-          bash -n scripts/check-pg-server-response-loss.sh
-          bash -n scripts/ci-trnm-server-live.sh
-          cargo +1.85.1 fmt --all -- --check
-          python3 -m unittest -v tests.control_plane.test_session_live_harness_scope
-          cargo +1.85.1 test -p trnm-persistence-pg --all-targets \
-            --features session-test-hooks --locked -- --nocapture
-          cargo +1.85.1 clippy -p trnm-persistence-pg --all-targets \
-            --features session-test-hooks --locked -- -D warnings
-
-      - name: Execute exact PostgreSQL response-loss contract
+          test -n "${ACTIONS_RUNTIME_TOKEN:-}"
+          test -n "${ACTIONS_RESULTS_URL:-}"
+          python3 scripts/upload-actions-artifact.py \
+            "native-artifact-preflight-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "$RUNNER_TEMP/native-artifact-preflight.tar.gz" \
+            --mime-type application/gzip \
+            | tee "$RUNNER_TEMP/upload-result.json"
+          jq -e '.schema == "trillionnium.actions-artifact-upload.v1" and (.artifact_id | length) > 0 and (.sha256 | length) == 64 and .size_bytes > 0' \
+            "$RUNNER_TEMP/upload-result.json" >/dev/null
+      - name: Publish bounded receipt
         shell: bash
-        working-directory: source
-        env:
-          TRNM_PG_RESPONSE_LOSS_ROOT: run/session-ssi-preflight
-        run: bash scripts/check-pg-server-response-loss.sh
-
-      - name: Commit and ordinary fast-forward push
-        shell: bash
-        working-directory: source
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-          test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
-          git config user.name 'Trillionnium qualification bot'
-          git config user.email 'qualification-bot@invalid'
-          git add \
-            crates/trnm-persistence-pg/tests/session_response_loss.rs \
-            scripts/check-pg-server-response-loss.sh \
-            scripts/ci-trnm-server-live.sh \
-            tests/control_plane/test_session_live_harness_scope.py
-          git commit -m 'test(session): isolate shared database fixtures from SSI noise'
-          new_head=$(git rev-parse HEAD)
-          new_tree=$(git rev-parse HEAD^{tree})
-          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
-            push origin "HEAD:refs/heads/${PRODUCT_BRANCH}"
-          test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$new_head"
-          printf 'new_head=%s\nnew_tree=%s\nforce_push=false\nmain_write=false\n' \
-            "$new_head" "$new_tree"
+          printf 'artifact_id=%s\nsha256=%s\nsize_bytes=%s\n' \
+            '${{ steps.upload.outputs.artifact_id }}' \
+            '${{ steps.upload.outputs.sha256 }}' \
+            '${{ steps.upload.outputs.size_bytes }}'
