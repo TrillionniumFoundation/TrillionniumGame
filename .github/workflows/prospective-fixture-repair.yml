@@ -1,0 +1,144 @@
+name: prospective-fixture-repair-publisher
+
+on:
+  push:
+    branches: [tooling/prospective-fixture-repair-2026-09-06]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prospective-fixture-repair-publisher
+  cancel-in-progress: true
+
+env:
+  EXPECTED_HEAD: d6df83741ea7c55d799605b349a655669498da57
+  PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+
+jobs:
+  exact-fixture-repair-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch exact unchanged candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin \
+            https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=64 origin \
+            "refs/heads/${PRODUCT_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
+
+      - name: Repair only deterministic control-test fixtures
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          evidence = Path("tests/control_plane/test_evidence_admission.py")
+          source = evidence.read_text(encoding="utf-8")
+          old = '"expires_at": "2026-09-06T00:00:00Z"'
+          new = '"expires_at": "2099-01-01T00:00:00Z"'
+          if source.count(old) != 1 or new in source:
+              raise SystemExit("evidence fixture expiry insertion point changed")
+          evidence.write_text(source.replace(old, new), encoding="utf-8")
+
+          prospective = Path("tests/control_plane/test_prospective_merge_identity.py")
+          source = prospective.read_text(encoding="utf-8")
+          old = '''        next_milestone = {
+              "schema": "trillionnium.next-milestone.v1",
+              "milestone_id": "M0-TEST",'''
+          new = '''        next_milestone = {
+              "schema": "trillionnium.next-milestone.v1",
+              "project_id": "trillionnium-game",
+              "plan_version": 3,
+              "milestone_id": "M0-TEST",'''
+          if source.count(old) != 1 or '"plan_version": 3,\n              "milestone_id": "M0-TEST"' in source:
+              raise SystemExit("prospective roadmap fixture insertion point changed")
+          prospective.write_text(source.replace(old, new), encoding="utf-8")
+
+          gap_scope = Path("tests/control_plane/test_gap_register_scope_lock.py")
+          source = gap_scope.read_text(encoding="utf-8")
+          old = '''        self.assertIn("gap_register_scope_policy.py", source)
+              self.assertIn("SCOPE.validate_files", source)'''
+          new = '''        self.assertIn("gap_register_scope_policy.py", source)
+              self.assertIn("SCOPE.validate_document", source)
+              self.assertIn("BASELINE_ROOT / SCOPE.BASELINE_RELATIVE", source)'''
+          if source.count(old) != 1:
+              raise SystemExit("gap policy wiring assertion changed")
+          source = source.replace(old, new)
+          old = '        self.assertIn("check-gap-register.py", source)\n'
+          new = '''        checker_test = (
+              ROOT / "tests/control_plane/test_gap_register.py"
+          ).read_text(encoding="utf-8")
+          self.assertIn(
+              'SCRIPT = ROOT / "scripts/check-gap-register.py"',
+              checker_test,
+          )
+          '''
+          if source.count(old) != 1:
+              raise SystemExit("aggregate checker assertion changed")
+          gap_scope.write_text(source.replace(old, new), encoding="utf-8")
+          PY
+
+          expected=$(cat <<'EOF'
+          tests/control_plane/test_evidence_admission.py
+          tests/control_plane/test_gap_register_scope_lock.py
+          tests/control_plane/test_prospective_merge_identity.py
+          EOF
+          )
+          test "$(git diff --name-only)" = "$expected"
+          git diff --check
+
+      - name: Execute complete control corpus
+        shell: bash
+        working-directory: source
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            tests/control_plane/test_evidence_admission.py \
+            tests/control_plane/test_gap_register_scope_lock.py \
+            tests/control_plane/test_prospective_merge_identity.py
+          python3 -m unittest -v \
+            tests.control_plane.test_evidence_admission \
+            tests.control_plane.test_gap_register_scope_lock \
+            tests.control_plane.test_prospective_merge_identity
+          python3 scripts/check-plan.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v \
+            2>&1 | tee "$RUNNER_TEMP/full-python.log"
+          grep -Eq '^Ran [1-9][0-9]* tests in ' "$RUNNER_TEMP/full-python.log"
+          grep -qx OK "$RUNNER_TEMP/full-python.log"
+          test "$(git diff --name-only)" = $'tests/control_plane/test_evidence_admission.py\ntests/control_plane/test_gap_register_scope_lock.py\ntests/control_plane/test_prospective_merge_identity.py'
+
+      - name: Commit and ordinary fast-forward push
+        shell: bash
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
+          git config user.name 'Trillionnium qualification bot'
+          git config user.email 'qualification-bot@invalid'
+          git add \
+            tests/control_plane/test_evidence_admission.py \
+            tests/control_plane/test_gap_register_scope_lock.py \
+            tests/control_plane/test_prospective_merge_identity.py
+          git commit -m 'test(control): repair deterministic prospective fixtures'
+          new_head=$(git rev-parse HEAD)
+          new_tree=$(git rev-parse HEAD^{tree})
+          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
+            push origin "HEAD:refs/heads/${PRODUCT_BRANCH}"
+          test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$new_head"
+          printf 'new_head=%s\nnew_tree=%s\nforce_push=false\nmain_write=false\n' \
+            "$new_head" "$new_tree"
