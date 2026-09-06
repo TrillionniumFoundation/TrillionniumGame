@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -62,6 +63,32 @@ fn credential(id: u8, digest: u8) -> RefreshTokenCredential {
         id: RefreshTokenId::new([id; 16]),
         digest: Digest32::new([digest; 32]),
     }
+}
+
+fn concurrency_credentials(iteration: u8) -> (RefreshTokenCredential, RefreshTokenCredential) {
+    let base = 0x90_u8.checked_add(iteration).unwrap();
+    (
+        credential(base + 0x20, base),
+        credential(base + 0x40, base ^ 0x80),
+    )
+}
+
+#[test]
+fn session_live_fixture_digests_are_globally_unique() {
+    let mut digests = BTreeSet::new();
+    for value in [
+        credential(0x73, 0x74),
+        credential(0x75, 0x76),
+        credential(0x77, 0x78),
+    ] {
+        assert!(digests.insert(*value.digest.as_bytes()));
+    }
+    for iteration in 0_u8..16 {
+        let (predecessor, successor) = concurrency_credentials(iteration);
+        assert!(digests.insert(*predecessor.digest.as_bytes()));
+        assert!(digests.insert(*successor.digest.as_bytes()));
+    }
+    assert_eq!(digests.len(), 35);
 }
 
 #[test]
@@ -165,8 +192,7 @@ fn concurrent_refresh_and_logout_never_surface_a_database_deadlock() {
         let base = 0x90_u8.checked_add(iteration).unwrap();
         let family = SessionFamilyId::new([base; 16]);
         let user = UserId::new([base + 0x10; 16]);
-        let predecessor = credential(base + 0x20, base + 0x30);
-        let successor = credential(base + 0x21, base + 0x31);
+        let (predecessor, successor) = concurrency_credentials(iteration);
 
         let mut repository = PgRepository::connect(&database_url, profile).unwrap();
         repository
@@ -252,4 +278,3 @@ fn concurrent_refresh_and_logout_never_surface_a_database_deadlock() {
         );
     }
 }
-
