@@ -29,48 +29,46 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$GITHUB_WORKSPACE"
-          git init "$GITHUB_WORKSPACE"
-          git -C "$GITHUB_WORKSPACE" remote add origin \
+          rm -rf "$GITHUB_WORKSPACE/worktree"
+          git init "$GITHUB_WORKSPACE/worktree"
+          git -C "$GITHUB_WORKSPACE/worktree" remote add origin \
             "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=64 origin \
-            "+refs/heads/${SOURCE_BRANCH}:refs/remotes/origin/source" \
-            "+refs/heads/${PRODUCT_BRANCH}:refs/remotes/origin/product"
-          git -C "$GITHUB_WORKSPACE" checkout -b "$PRODUCT_BRANCH" \
-            refs/remotes/origin/product
-          git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$BASELINE" HEAD
-          git -C "$GITHUB_WORKSPACE" rev-parse HEAD > "$RUNNER_TEMP/original-head"
-          printf 'source=%s\nsource_tree=%s\nproduct=%s\n' \
-            "$(git -C "$GITHUB_WORKSPACE" rev-parse refs/remotes/origin/source)" \
-            "$(git -C "$GITHUB_WORKSPACE" rev-parse 'refs/remotes/origin/source^{tree}')" \
-            "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+          git -C "$GITHUB_WORKSPACE/worktree" fetch --no-tags --depth=64 origin \
+            "+refs/heads/${SOURCE_BRANCH}:refs/remotes/source/integration" \
+            "+refs/heads/${PRODUCT_BRANCH}:refs/remotes/source/product"
+          git -C "$GITHUB_WORKSPACE/worktree" checkout -b "$PRODUCT_BRANCH" \
+            refs/remotes/source/product
+          git -C "$GITHUB_WORKSPACE/worktree" merge-base --is-ancestor \
+            "$BASELINE" HEAD
+          git -C "$GITHUB_WORKSPACE/worktree" rev-parse HEAD \
+            > "$RUNNER_TEMP/original-head"
 
-      - name: Extract current canonical server into final package boundary
+      - name: Extract canonical runtime into final package
         shell: bash
+        working-directory: worktree
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-          rm -rf crates/trnm-server/src/runtime crates/trnm-server/proto
-          mkdir -p crates/trnm-server/src/runtime crates/trnm-server/proto
-          git archive refs/remotes/origin/source \
+          rm -rf crates/trnm-server/src/runtime crates/trnm-server/proto \
+            "$RUNNER_TEMP/extract"
+          mkdir -p crates/trnm-server/src/runtime crates/trnm-server/proto \
+            "$RUNNER_TEMP/extract"
+          git archive refs/remotes/source/integration \
             crates/trnm-persistence-pg/src/bin/trnm_server \
             crates/trnm-persistence-pg/src/auth.rs \
             crates/trnm-persistence-pg/src/bin/trnm-server.rs \
             crates/trnm-persistence-pg/build.rs \
             crates/trnm-persistence-pg/proto/nakama-healthcheck.proto \
-            | tar -x -C "$RUNNER_TEMP"
-
-          cp -a "$RUNNER_TEMP/crates/trnm-persistence-pg/src/bin/trnm_server/." \
+            | tar -x -C "$RUNNER_TEMP/extract"
+          cp -a "$RUNNER_TEMP/extract/crates/trnm-persistence-pg/src/bin/trnm_server/." \
             crates/trnm-server/src/runtime/
-          cp "$RUNNER_TEMP/crates/trnm-persistence-pg/src/auth.rs" \
+          cp "$RUNNER_TEMP/extract/crates/trnm-persistence-pg/src/auth.rs" \
             crates/trnm-server/src/runtime/auth.rs
-          cp "$RUNNER_TEMP/crates/trnm-persistence-pg/src/bin/trnm-server.rs" \
+          cp "$RUNNER_TEMP/extract/crates/trnm-persistence-pg/src/bin/trnm-server.rs" \
             crates/trnm-server/src/canonical_main.rs
-          cp "$RUNNER_TEMP/crates/trnm-persistence-pg/build.rs" \
+          cp "$RUNNER_TEMP/extract/crates/trnm-persistence-pg/build.rs" \
             crates/trnm-server/build.rs
-          cp "$RUNNER_TEMP/crates/trnm-persistence-pg/proto/nakama-healthcheck.proto" \
+          cp "$RUNNER_TEMP/extract/crates/trnm-persistence-pg/proto/nakama-healthcheck.proto" \
             crates/trnm-server/proto/nakama-healthcheck.proto
-
           python3 - <<'PY'
           from pathlib import Path
 
@@ -84,8 +82,7 @@ jobs:
           main.write_text(text, encoding='utf-8')
 
           module = Path('crates/trnm-server/src/runtime/mod.rs')
-          text = module.read_text(encoding='utf-8')
-          text = text.replace(
+          text = module.read_text(encoding='utf-8').replace(
               '#[path = "../../auth.rs"]\npub(crate) mod auth;',
               'pub(crate) mod auth;',
               1,
@@ -95,15 +92,17 @@ jobs:
           module.write_text(text, encoding='utf-8')
 
           schema = Path('crates/trnm-server/src/runtime/schema.rs')
-          text = schema.read_text(encoding='utf-8')
-          text = text.replace('../../../../../migrations/', '../../../../migrations/')
+          text = schema.read_text(encoding='utf-8').replace(
+              '../../../../../migrations/', '../../../../migrations/'
+          )
           if '../../../../../migrations/' in text:
               raise SystemExit('schema include path was not rebased')
           schema.write_text(text, encoding='utf-8')
           PY
 
-      - name: Define isolated final composition package
+      - name: Define isolated composition package
         shell: bash
+        working-directory: worktree
         run: |
           set -euo pipefail
           cat > crates/trnm-server/Cargo.toml <<'TOML'
@@ -165,45 +164,23 @@ jobs:
           unimplemented = "deny"
           wildcard_imports = "deny"
           TOML
-
           cat > crates/trnm-server/README.md <<'MD'
           # `trnm-server` composition-root convergence candidate
 
           Status: **source candidate; no compatibility, durability, SG4 or production credit**.
 
-          This package now compiles two explicit binaries during convergence:
-
-          - `trnm-server`: the extracted database-backed HTTP/gRPC/WebSocket/session composition root;
-          - `trnm-server-foundation`: the previous bounded process prototype retained temporarily as a regression oracle.
-
-          The extraction keeps the production-authoritative migration chain, bounded pool/retry/cancellation behavior, session verification, transactional command/outbox path, HTTP, generated gRPC Healthcheck and persistent WebSocket implementation in one package boundary. It does **not** by itself establish complete Nakama protocol parity, accepted durability, multi-node behavior, production capacity, public-online readiness, cutover or retirement.
-
-          Removal of the old binary under `trnm-persistence-pg` and the foundation prototype is a separate atomic integration step after exact-head and prospective-merge validation, retained evidence, and independent protocol/database/security/SRE review.
-
-          ```bash
-          cargo fmt --manifest-path crates/trnm-server/Cargo.toml -- --check
-          cargo test --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked
-          cargo clippy --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked -- -D warnings
-          ```
+          `trnm-server` is the extracted database-backed HTTP/gRPC/WebSocket/session composition root. `trnm-server-foundation` remains temporarily as a regression oracle. Exact-head CI, retained evidence, independent protocol/database/security/SRE review, migration, capacity, cutover and retirement evidence remain mandatory.
           MD
 
-      - name: Install exact Rust and generate isolated lock
+      - name: Validate and publish exact product commit
         shell: bash
+        working-directory: worktree
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
           rustup toolchain install 1.85.1 --profile minimal \
             --component rustfmt --component clippy
           rustup override set 1.85.1
           cargo generate-lockfile --manifest-path crates/trnm-server/Cargo.toml
-          rustc --version --verbose
-          cargo --version --verbose
-
-      - name: Validate complete composition root
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
           cargo fmt --manifest-path crates/trnm-server/Cargo.toml
           git add -N \
             crates/trnm-server/src/canonical_main.rs \
@@ -216,33 +193,21 @@ jobs:
             --all-targets --locked
           cargo clippy --manifest-path crates/trnm-server/Cargo.toml \
             --all-targets --locked -- -D warnings
-
-          test -f crates/trnm-server/src/runtime/app.rs
           test -f crates/trnm-server/src/runtime/server.rs
-          test -f crates/trnm-server/src/runtime/schema.rs
           test -f crates/trnm-server/src/runtime/websocket.rs
           test -f crates/trnm-server/src/runtime/grpc.rs
           test -f crates/trnm-server/src/runtime/session_api.rs
-          test -f crates/trnm-server/src/runtime/retry.rs
-          test -f crates/trnm-server/src/runtime/pool.rs
-          test -f crates/trnm-server/src/runtime/auth.rs
           test -f crates/trnm-server/src/canonical_main.rs
-          test -f crates/trnm-server/build.rs
-          test -f crates/trnm-server/proto/nakama-healthcheck.proto
+          grep -qF 'mod runtime;' crates/trnm-server/src/canonical_main.rs
           ! grep -R -nF '../../../../../migrations/' crates/trnm-server/src/runtime
-
           TRNM_SERVER_DATABASE_URL='postgresql://127.0.0.1:5432/trillionnium' \
+          TRNM_SERVER_DATABASE_PROFILE=postgresql \
           TRNM_SERVER_ALLOW_PLAINTEXT_DATABASE=1 \
-          TRNM_SERVER_SCHEMA_SOURCE_COMMIT="$(git rev-parse refs/remotes/origin/source)" \
+          TRNM_SERVER_SCHEMA_SOURCE_COMMIT="$(git rev-parse refs/remotes/source/integration)" \
           TRNM_SERVER_ADMIN_TOKEN='source-candidate-admin-token-not-production' \
           cargo run --quiet --manifest-path crates/trnm-server/Cargo.toml --locked \
             --bin trnm-server -- check-config
 
-      - name: CAS fast-forward validated product branch
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
           original=$(cat "$RUNNER_TEMP/original-head")
           git config user.name 'Qian QI'
           git config user.email '102159240+ProfHepta@users.noreply.github.com'
@@ -265,8 +230,6 @@ jobs:
         run: |
           printf '%s\n' \
             'composition_root_source_candidate=true' \
-            'old_server_removed=false' \
             'accepted_evidence=false' \
             'gap_closed=false' \
-            'sg4_credit=false' \
             'production_ready=false'
