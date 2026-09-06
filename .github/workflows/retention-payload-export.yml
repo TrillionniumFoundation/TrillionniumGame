@@ -1,0 +1,116 @@
+name: retention-payload-export
+
+on:
+  push:
+    branches: [tooling/retention-payload-2026-09-06]
+    paths:
+      - '.github/workflows/retention-payload-export.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      EXPECTED_HEAD: 4f78bbd93a6457da0ddb63c1508d34387ac0fa7b
+      EXPECTED_TREE: 25909e7081d8877dd20177b1423e73654a6f7882
+      PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+      EXPORT_BRANCH: tooling/retention-payload-2026-09-06
+      PATCH_GZIP_BLOB: 6b7890b861cc6f0cde2f87a9acfff5aedd1cf456
+      PATCH_GZIP_SHA256: b0f1a8a0a29e2ed855a6ce2ace8fc7edef8f6e1e67fc607fab1d3d470d0bc5c9
+      PATCH_SHA256: 38a5fa31c5499fca933789052611f288ec1be0ce2cae5ff5e8b965945333d666
+      GH_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Reconstruct and export exact payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          export_repo="$GITHUB_WORKSPACE/export-repo"
+          rm -rf "$export_repo"
+          git init "$export_repo"
+          git -C "$export_repo" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$export_repo" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$export_repo" checkout -b "$EXPORT_BRANCH" FETCH_HEAD
+
+          python3 - "$export_repo/.github/workflows/retention-complete-publish.yml" "$RUNNER_TEMP" <<'PY'
+          from pathlib import Path
+          import sys
+
+          source = Path(sys.argv[1])
+          target = Path(sys.argv[2])
+          lines = source.read_text(encoding="utf-8").splitlines()
+          scripts = []
+          index = 0
+          while index < len(lines):
+              if lines[index] != "        run: |":
+                  index += 1
+                  continue
+              index += 1
+              body = []
+              while index < len(lines):
+                  line = lines[index]
+                  if line and not line.startswith("          "):
+                      break
+                  body.append(line[10:] if line.startswith("          ") else "")
+                  index += 1
+              scripts.append("\n".join(body) + "\n")
+          if len(scripts) != 4:
+              raise SystemExit(f"expected four guarded publisher scripts, observed {len(scripts)}")
+          old_digest = 'overlay["overlay_sha256"] = hashlib.sha256(canonical(overlay)).hexdigest()'
+          new_digest = (
+              'overlay["overlay_sha256"] = hashlib.sha256('\
+              'json.dumps(overlay, sort_keys=True, separators=(",", ":"), allow_nan=False)'\
+              '.encode("utf-8")).hexdigest()'
+          )
+          if scripts[1].count(old_digest) != 1:
+              raise SystemExit("publisher overlay digest anchor drift")
+          scripts[1] = scripts[1].replace(old_digest, new_digest, 1)
+          for number, body in enumerate(scripts[:2], 1):
+              (target / f"retention-export-{number}.sh").write_text(
+                  body.replace("shasum -a 256", "sha256sum"), encoding="utf-8"
+              )
+          PY
+
+          bash "$RUNNER_TEMP/retention-export-1.sh"
+          (cd "$GITHUB_WORKSPACE/source" && bash "$RUNNER_TEMP/retention-export-2.sh")
+
+          expected=$(cat <<'EOF'
+          .github/actions/upload-evidence/action.yml
+          .github/actions/upload-evidence/index.js
+          .github/workflows/candidate-identity-manifest.yml
+          .github/workflows/pg-server-response-loss.yml
+          .github/workflows/prospective-merge-gate.yml
+          .github/workflows/trillionnium-game-merge-gate.yml
+          .github/workflows/trnm-server-live.yml
+          docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json
+          docs/governance/REQUIRED_WORKFLOWS_V1.json
+          tests/control_plane/test_evidence_retention_workflows.py
+          EOF
+          )
+          payload="$export_repo/retention-payload/root"
+          rm -rf "$export_repo/retention-payload"
+          while IFS= read -r path; do
+            test -f "$GITHUB_WORKSPACE/source/$path"
+            mkdir -p "$payload/$(dirname "$path")"
+            cp "$GITHUB_WORKSPACE/source/$path" "$payload/$path"
+            printf '%s\t%s\t%s\n' \
+              "$path" \
+              "$(git -C "$GITHUB_WORKSPACE/source" hash-object "$path")" \
+              "$(sha256sum "$GITHUB_WORKSPACE/source/$path" | cut -d' ' -f1)"
+          done <<< "$expected" | tee "$export_repo/retention-payload/IDENTITIES.tsv"
+
+          cd "$export_repo"
+          git config user.name "Qian QI"
+          git config user.email "102159240+ProfHepta@users.noreply.github.com"
+          git add retention-payload
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = 11
+          git diff --cached --check
+          git commit -m "tooling: export validated exact retention payload"
+          new_head=$(git rev-parse HEAD)
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
+            push origin "HEAD:refs/heads/${EXPORT_BRANCH}"
+          printf 'export_head=%s\nexport_tree=%s\n' "$new_head" "$(git rev-parse HEAD^{tree})"
