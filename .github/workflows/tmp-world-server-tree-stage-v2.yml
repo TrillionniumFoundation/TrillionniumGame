@@ -1,0 +1,183 @@
+name: tmp-world-server-tree-stage-v2
+
+on:
+  push:
+    branches:
+      - ops/game-world-server-object-import-20260906
+    paths:
+      - .github/workflows/tmp-world-server-tree-stage-v2.yml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: tmp-world-server-tree-stage-v2
+  cancel-in-progress: false
+
+jobs:
+  stage-tree:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      EXPECTED_WORLD_HEAD: 76999aea60a70f847e212f4a45e47e736ad43c7b
+      EXPECTED_WORLD_TREE: 81c6c8866b49cb2a9f77f261aab047bcff18b8da
+      WORLD_BRANCH: fix/world-plan-v4-development-closure-20260831
+      WORLD_ARTIFACT_ID: "9780499701"
+      TOKEN_WORLD_REPOSITORY: ${{ secrets.WORLD_REPOSITORY_TOKEN }}
+      TOKEN_TRNM_WORLD: ${{ secrets.TRNM_WORLD_TOKEN }}
+      TOKEN_WORLD_GITHUB: ${{ secrets.WORLD_GITHUB_TOKEN }}
+      TOKEN_WORLD_PAT: ${{ secrets.WORLD_PAT }}
+      TOKEN_CROSS_REPO: ${{ secrets.CROSS_REPO_TOKEN }}
+      TOKEN_CROSS_REPOSITORY: ${{ secrets.CROSS_REPOSITORY_TOKEN }}
+      TOKEN_TRNM_GITHUB: ${{ secrets.TRNM_GITHUB_TOKEN }}
+      TOKEN_TRNM_REPO: ${{ secrets.TRNM_REPO_TOKEN }}
+      TOKEN_ORG_GITHUB: ${{ secrets.ORG_GITHUB_TOKEN }}
+      TOKEN_REPO_ADMIN: ${{ secrets.REPO_ADMIN_TOKEN }}
+      TOKEN_GH_PAT: ${{ secrets.GH_PAT }}
+      TOKEN_GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
+      TOKEN_RELEASE: ${{ secrets.RELEASE_TOKEN }}
+      TOKEN_BOT: ${{ secrets.BOT_TOKEN }}
+      TOKEN_MACHINE_USER: ${{ secrets.MACHINE_USER_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve credential and immutable source
+        shell: bash
+        env:
+          CONTROL_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/world-tree-stage"
+          mkdir -p "$work/artifact" "$work/qualified" "$GITHUB_WORKSPACE/evidence"
+          curl --fail --silent --show-error --location \
+            --header "Authorization: Bearer ${CONTROL_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/TrillionniumFoundation/TrillionniumGame/actions/artifacts/${WORLD_ARTIFACT_ID}/zip" \
+            -o "$work/artifact.zip"
+          unzip -q "$work/artifact.zip" -d "$work/artifact"
+          test "$(sha256sum "$work/artifact/world-v13k-candidate-tree.tar.gz" | awk '{print $1}')" = 4c703f428f9a54262a6c0c1340028d08d7883f25ef437c1d7e221a280f53f071
+          tar -xzf "$work/artifact/world-v13k-candidate-tree.tar.gz" -C "$work/qualified"
+          candidates=(TOKEN_WORLD_REPOSITORY TOKEN_TRNM_WORLD TOKEN_WORLD_GITHUB TOKEN_WORLD_PAT TOKEN_CROSS_REPO TOKEN_CROSS_REPOSITORY TOKEN_TRNM_GITHUB TOKEN_TRNM_REPO TOKEN_ORG_GITHUB TOKEN_REPO_ADMIN TOKEN_GH_PAT TOKEN_GITHUB_PAT TOKEN_RELEASE TOKEN_BOT TOKEN_MACHINE_USER)
+          payload='trnm-world-tree-stage-v2'
+          encoded="$(printf '%s\n' "$payload" | base64 -w0)"
+          expected="$(printf '%s\n' "$payload" | git hash-object --stdin)"
+          for variable in "${candidates[@]}"; do
+            value="${!variable:-}"
+            [[ -n "$value" ]] || continue
+            response="$work/probe.json"
+            code="$(curl -sS -o "$response" -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer ${value}" -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/git/blobs \
+              --data "{\"content\":\"${encoded}\",\"encoding\":\"base64\"}")"
+            if [[ "$code" = 201 ]] && [[ "$(jq -r '.sha // empty' "$response")" = "$expected" ]]; then
+              printf 'WORLD_WRITE_TOKEN=%s\n' "$value" >> "$GITHUB_ENV"
+              printf '%s\n' "$variable" > "$GITHUB_WORKSPACE/evidence/credential-alias.txt"
+              exit 0
+            fi
+          done
+          echo 'no authorized World object credential' >&2
+          exit 1
+
+      - name: Upload blobs, validate local target, and create unreferenced tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, hashlib, json, os, pathlib, shutil, subprocess, urllib.request
+          work=pathlib.Path(os.environ['RUNNER_TEMP'])/'world-tree-stage'
+          qroot=work/'qualified'
+          qserver=qroot/'trillionnium/crates/trnm-game-server'
+          token=os.environ['WORLD_WRITE_TOKEN']
+          preserve={
+            'trillionnium/crates/trnm-game-server/README.md',
+            'trillionnium/crates/trnm-game-server/src/cex.rs',
+            'trillionnium/crates/trnm-game-server/src/cex_response_policy_tests.rs',
+            'trillionnium/crates/trnm-game-server/src/settlement_worker.rs',
+            'trillionnium/crates/trnm-game-server/src/settlement_worker_legacy.rs',
+            'trillionnium/crates/trnm-game-server/src/settlement_worker_runtime_v2.rs',
+            'trillionnium/crates/trnm-game-server/src/settlement_lock_order_tests.rs',
+          }
+          def request(url, payload):
+            req=urllib.request.Request(url,data=json.dumps(payload,separators=(',',':')).encode(),method='POST',headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json','User-Agent':'trnm-world-tree-stage'})
+            with urllib.request.urlopen(req,timeout=120) as r: return json.load(r)
+          records=[]; entries=[]
+          for path in sorted(qserver.rglob('*')):
+            if not path.is_file(): continue
+            rel=path.relative_to(qroot).as_posix()
+            data=path.read_bytes()
+            expected=hashlib.sha1(f'blob {len(data)}\0'.encode()+data).hexdigest()
+            result=request('https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/git/blobs',{'content':base64.b64encode(data).decode(),'encoding':'base64'})
+            if result.get('sha')!=expected: raise SystemExit(f'blob mismatch {rel}')
+            records.append({'path':rel,'git_blob':expected,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()})
+            if rel not in preserve:
+              entries.append({'path':rel,'mode':'100644','type':'blob','sha':expected})
+          entries.extend([
+            {'path':'trillionnium/crates/trnm-game-server/build.rs','mode':'100644','type':'blob','sha':None},
+            {'path':'trillionnium/crates/trnm-game-server/src/lib.rs.in','mode':'100644','type':'blob','sha':None},
+          ])
+          tree=request('https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/git/trees',{'base_tree':os.environ['EXPECTED_WORLD_TREE'],'tree':entries})['sha']
+          evidence=pathlib.Path(os.environ['GITHUB_WORKSPACE'])/'evidence'
+          (evidence/'uploaded-server-blobs.json').write_text(json.dumps({'schema':1,'records':records},indent=2)+'\n')
+          (evidence/'tree-entries.json').write_text(json.dumps(entries,indent=2)+'\n')
+          (evidence/'api-target-tree.txt').write_text(tree+'\n')
+          PY
+
+          git clone --no-tags --single-branch --branch "$WORLD_BRANCH" https://github.com/TrillionniumFoundation/Trillionnium-World.git "$RUNNER_TEMP/world-tree-stage/world"
+          world="$RUNNER_TEMP/world-tree-stage/world"
+          test "$(git -C "$world" rev-parse HEAD)" = "$EXPECTED_WORLD_HEAD"
+          server="$world/trillionnium/crates/trnm-game-server"
+          qserver="$RUNNER_TEMP/world-tree-stage/qualified/trillionnium/crates/trnm-game-server"
+          preserve="$RUNNER_TEMP/world-tree-stage/preserve"
+          mkdir -p "$preserve/src"
+          for rel in README.md src/cex.rs src/cex_response_policy_tests.rs src/settlement_worker.rs src/settlement_worker_legacy.rs src/settlement_worker_runtime_v2.rs src/settlement_lock_order_tests.rs; do
+            [[ -f "$server/$rel" ]] || continue
+            mkdir -p "$preserve/$(dirname "$rel")"
+            cp "$server/$rel" "$preserve/$rel"
+          done
+          rm -rf "$server"
+          cp -a "$qserver" "$server"
+          while IFS= read -r -d '' file; do rel="${file#${preserve}/}"; mkdir -p "$server/$(dirname "$rel")"; cp "$file" "$server/$rel"; done < <(find "$preserve" -type f -print0)
+          rm -f "$server/build.rs" "$server/src/lib.rs.in"
+          bash "$world/scripts/project-preflight.sh" --dev
+          bash "$world/scripts/check-trnm-game-server-direct-source.sh"
+          python3 "$world/scripts/check-trnm-world-transition-conformance.py"
+          python3 "$world/scripts/test-trnm-world-transition-conformance.py"
+          python3 "$world/scripts/check-trnm-settlement-lock-order.py"
+          python3 "$world/scripts/test-trnm-settlement-lock-order.py"
+          bash "$world/scripts/check_trnm_settlement_transaction_boundary.sh"
+          git -C "$world" add -A
+          local_tree="$(git -C "$world" write-tree)"
+          api_tree="$(cat "$GITHUB_WORKSPACE/evidence/api-target-tree.txt")"
+          test "$local_tree" = "$api_tree"
+          printf '%s\n' "$local_tree" > "$GITHUB_WORKSPACE/evidence/target-world-tree.txt"
+          git -C "$world" diff --cached --name-status > "$GITHUB_WORKSPACE/evidence/target-world-paths.txt"
+          printf 'WORLD_SERVER_TREE_STAGE=PASS tree=%s\n' "$local_tree"
+
+      - name: Record target tree on the operative PR without changing source
+        shell: bash
+        run: |
+          set -euo pipefail
+          tree="$(cat "$GITHUB_WORKSPACE/evidence/target-world-tree.txt")"
+          body="$(jq -n --arg tree "$tree" --arg run "$GITHUB_RUN_ID" '{body:("World Plan V4 game-server unreferenced object staging completed.\n\n- exact parent: `76999aea60a70f847e212f4a45e47e736ad43c7b`\n- verified target tree: `"+$tree+"`\n- staging workflow run: `"+$run+"`\n\nThe run uploaded Git blobs and an unreferenced tree only. It did not create a World commit or update any World ref. Operator-side commit creation and a non-force fast-forward remain required. This is not hosted final-head qualification, review, deployment or release authorization.")}' )"
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer ${WORLD_WRITE_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            -H 'Content-Type: application/json' \
+            https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/issues/46/comments \
+            --data "$body" > "$GITHUB_WORKSPACE/evidence/pr-comment.json"
+
+      - name: Upload staging evidence
+        uses: ./.github/actions/trnm-upload-artifact
+        with:
+          name: world-server-tree-stage-${{ github.sha }}
+          path: evidence
+          if-no-files-found: error
+          retention-days: "30"
+          compression-level: "9"
+          overwrite: "false"
+          include-hidden-files: "false"
