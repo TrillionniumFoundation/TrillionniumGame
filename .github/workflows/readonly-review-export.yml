@@ -78,11 +78,13 @@ jobs:
           path.write_text(source.replace(old, new), encoding='utf-8')
           PY
 
-          mapfile -t changed < <(git diff --name-only)
-          test "${#changed[@]}" -eq 3
-          test "${changed[0]}" = scripts/check-pg-server-response-loss.sh
-          test "${changed[1]}" = scripts/ci-trnm-server-live.sh
-          test "${changed[2]}" = tests/control_plane/test_session_live_harness_scope.py
+          expected_paths=$(cat <<'EOF'
+          scripts/check-pg-server-response-loss.sh
+          scripts/ci-trnm-server-live.sh
+          tests/control_plane/test_session_live_harness_scope.py
+          EOF
+          )
+          test "$(git diff --name-only)" = "$expected_paths"
           git diff --check
           bash -n scripts/check-pg-server-response-loss.sh
           bash -n scripts/ci-trnm-server-live.sh
