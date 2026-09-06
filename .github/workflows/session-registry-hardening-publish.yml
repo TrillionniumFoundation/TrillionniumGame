@@ -12,8 +12,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: session-revocation-rustfmt-publish
-  cancel-in-progress: false
+  group: session-registry-hardening-publish
+  cancel-in-progress: true
 
 jobs:
   harden-test-publish:
