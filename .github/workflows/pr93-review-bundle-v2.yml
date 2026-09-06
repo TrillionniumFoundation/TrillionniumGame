@@ -1,0 +1,124 @@
+name: pr93-review-bundle-v2
+
+on:
+  push:
+    branches: [tooling/pr93-identity-and-ci-2026-09-06]
+    paths:
+      - '.github/workflows/pr93-review-bundle-v2.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  build-retain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: '93'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Fetch exact source base and actual merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          curl -fsS "${auth[@]}" "${api}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pr.json"
+          head=$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")
+          base=$(jq -r '.base.sha' "$RUNNER_TEMP/pr.json")
+          merge=$(jq -r '.merge_commit_sha // empty' "$RUNNER_TEMP/pr.json")
+          test -n "$head" && test -n "$base" && test -n "$merge"
+          repo="$GITHUB_WORKSPACE/source"
+          rm -rf "$repo"
+          git init "$repo"
+          git -C "$repo" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$repo" fetch --no-tags --depth=2 origin "$base" "$head" "$merge"
+          git -C "$repo" checkout --detach "$head"
+          test "$(git -C "$repo" rev-parse "$merge^1")" = "$base"
+          test "$(git -C "$repo" rev-parse "$merge^2")" = "$head"
+          test "$(git -C "$repo" rev-parse "$merge^{tree}")" = "$(git -C "$repo" rev-parse "$head^{tree}")"
+          printf '%s\n' "$head" > "$RUNNER_TEMP/head"
+          printf '%s\n' "$base" > "$RUNNER_TEMP/base"
+          printf '%s\n' "$merge" > "$RUNNER_TEMP/merge"
+
+      - name: Build bounded deterministic review packet
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          packet="$RUNNER_TEMP/review-packet"
+          rm -rf "$packet"
+          mkdir -p "$packet/controls" "$packet/docs"
+          head=$(cat "$RUNNER_TEMP/head"); base=$(cat "$RUNNER_TEMP/base"); merge=$(cat "$RUNNER_TEMP/merge")
+          git diff --binary --full-index "$base" "$head" > "$packet/source.patch"
+          git diff --name-status "$base" "$head" > "$packet/name-status.tsv"
+          git diff --numstat "$base" "$head" > "$packet/numstat.tsv"
+          git diff --stat "$base" "$head" > "$packet/diff-stat.txt"
+          git show --no-patch --format=fuller "$head" > "$packet/head-commit.txt"
+          git show --no-patch --format=fuller "$merge" > "$packet/merge-commit.txt"
+          git rev-parse "$head^{tree}" > "$packet/head-tree.txt"
+          git rev-parse "$merge^{tree}" > "$packet/merge-tree.txt"
+          git rev-parse "$merge^1" "$merge^2" > "$packet/merge-parents.txt"
+          cp CURRENT_PLAN.md "$packet/docs/"
+          cp docs/status/GAP_REGISTER.json docs/status/IMPLEMENTATION_INVENTORY.json "$packet/docs/"
+          cp docs/development/RUST_PACKAGE_AUTHORITY.json "$packet/docs/"
+          cp docs/ARCHITECTURE.md docs/SECURITY_AND_PRIVACY.md docs/OPERATIONS_AND_RELEASE.md "$packet/docs/"
+          for check in check-documentation-authority.py check-plan.py check-evidence-index.py check-gap-register.py derive-gap-status.py derive-gates.py check-status-transitions.py check-workflow-action-policy.py check-repository-hygiene.py check-trnm-server.py check-rust-foundation.py; do
+            python3 "scripts/$check" > "$packet/controls/${check}.log" 2>&1
+          done
+          cat > "$packet/REVIEW_QUESTIONS.md" <<'EOF'
+          # Exact cumulative-source review questions
+
+          - Do rejected Outbox operations preserve complete durable and worker-token state?
+          - Can stale owner/generation values mutate a successor lease?
+          - Is attempt exhaustion one terminal transition and ambiguous dispatch reconciled only by exact receipt?
+          - Are active connections, presence entries, sessions and revocation high-waters globally bounded before mutation?
+          - Can revocation fences ever be silently evicted, or stale prior-epoch commands mutate a replacement session?
+          - Are route ownership generations and reconnect cursors bounded and fail closed?
+          - Is `crates/trnm-server` the sole process owner with the old persistence-owned binary absent?
+          - Does the standalone lockfile bind this exact tree?
+          - Are key epochs monotonic and ambiguous external signer outcomes non-retryable pending exact reconciliation?
+          - Do migration phases prevent cutover before snapshot/backfill/CDC/compare/fence obligations are met?
+          - Which remaining conclusions require real KMS, multi-node, HA/PITR, capacity, endurance or production evidence?
+
+          Record a GitHub review decision bound to the exact head and state limitations. A request or comment is not acceptance.
+          EOF
+          python3 - "$packet" "$GITHUB_REPOSITORY" "$PR_NUMBER" "$base" "$head" "$merge" <<'PY'
+          import hashlib,json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1]); files=[]
+          for path in sorted(p for p in root.rglob('*') if p.is_file()):
+              data=path.read_bytes(); files.append({'path':str(path.relative_to(root)),'size_bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()})
+          value={'schema':'trillionnium.pr93-review-bundle.v2','repository':sys.argv[2],'pull_request':int(sys.argv[3]),'base':sys.argv[4],'head':sys.argv[5],'merge':sys.argv[6],'files':files,'accepted':False,'gap_closed':False,'production_ready':False}
+          canonical=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode(); value['manifest_sha256']=hashlib.sha256(canonical).hexdigest()
+          (root/'MANIFEST.json').write_text(json.dumps(value,indent=2)+'\n')
+          PY
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -czf "$RUNNER_TEMP/pr93-review-packet.tar.gz" -C "$RUNNER_TEMP" review-packet
+          test -s "$RUNNER_TEMP/pr93-review-packet.tar.gz"
+          sha256sum "$RUNNER_TEMP/pr93-review-packet.tar.gz"
+
+      - name: Retain exact review packet
+        id: retained
+        uses: ./source/.github/actions/upload-evidence
+        with:
+          name: pr93-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr93-review-packet.tar.gz
+          mime_type: application/gzip
+
+      - name: Publish bounded review receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(cat "$RUNNER_TEMP/head")
+          artifact='${{ steps.retained.outputs.artifact_id }}'
+          sha='${{ steps.retained.outputs.sha256 }}'
+          size='${{ steps.retained.outputs.size_bytes }}'
+          test -n "$artifact" && test -n "$sha" && test "$size" -gt 0
+          body="<!-- pr93-review-bundle-v2 -->\nExact review packet retained for head \\`${head}\\`: artifact_id=\\`${artifact}\\`, sha256=\\`${sha}\\`, size_bytes=\\`${size}\\`. It contains the full binary diff, actual merge identity, authorities, gap register, control logs, file digests and specialist questions. This is author-produced transport, not an approval, accepted evidence or gap closure."
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          jq -n --arg body "$body" '{body:$body}' > "$RUNNER_TEMP/comment.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/comment.json" "${api}/issues/${PR_NUMBER}/comments" >/dev/null
