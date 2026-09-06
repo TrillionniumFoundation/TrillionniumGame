@@ -23,11 +23,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin \
             https://github.com/TrillionniumFoundation/TrillionniumGame.git
           git -C "$GITHUB_WORKSPACE/source" \
-            -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" \
+            -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
             fetch --no-tags --depth=32 origin "refs/heads/${PRODUCT_BRANCH}"
           git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$EXPECTED_HEAD"
@@ -64,6 +65,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
           git config user.name 'Trillionnium formatting bot'
           git config user.email 'formatting-bot@invalid'
@@ -73,7 +75,7 @@ jobs:
           git commit -m 'style(session): apply pinned Rust 1.85.1 formatting'
           new_head=$(git rev-parse HEAD)
           new_tree=$(git rev-parse HEAD^{tree})
-          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" \
+          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
             push origin "HEAD:refs/heads/${PRODUCT_BRANCH}"
           test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$new_head"
           printf 'new_head=%s\nnew_tree=%s\nforce_push=false\nmain_write=false\n' \
