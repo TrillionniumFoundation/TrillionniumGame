@@ -87,6 +87,8 @@ class RepositoryFixture:
         }
         next_milestone = {
             "schema": "trillionnium.next-milestone.v1",
+            "project_id": "trillionnium-game",
+            "plan_version": 3,
             "milestone_id": "M0-TEST",
             "status": milestone,
             "items": [{"id": "TG-V3-001", "status": roadmap}],

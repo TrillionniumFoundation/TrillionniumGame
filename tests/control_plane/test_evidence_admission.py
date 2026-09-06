@@ -56,7 +56,7 @@ class RetainedFixture:
             "evidence_id": "TG-EV-FIXTURE-RETAINED-001", "evidence_type": "manifest",
             "status": "accepted", "compatibility_credit": True, "schema_valid": True,
             "target_identity_verified_by_current_repo": True, "target": target,
-            "independent_review": self.review, "expires_at": "2026-09-06T00:00:00Z",
+            "independent_review": self.review, "expires_at": "2099-01-01T00:00:00Z",
             "path": "docs/evidence/fixture.json", "artifacts": [self.artifact],
             "claim_ids": ["C0"], "gate_ids": ["GATE-FIXTURE"],
             "task_ids": ["TG-W0-001"], "gap_ids": ["GAP-P0-FIXTURE-001"],

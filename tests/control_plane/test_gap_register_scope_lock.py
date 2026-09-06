@@ -200,7 +200,8 @@ class GapRegisterScopeLockTests(unittest.TestCase):
     def test_production_checker_executes_shared_scope_policy(self):
         source = CHECKER.read_text(encoding="utf-8")
         self.assertIn("gap_register_scope_policy.py", source)
-        self.assertIn("SCOPE.validate_files", source)
+        self.assertIn("SCOPE.validate_document", source)
+        self.assertIn("BASELINE_ROOT / SCOPE.BASELINE_RELATIVE", source)
         result = subprocess.run(
             [sys.executable, str(CHECKER)],
             cwd=ROOT,
@@ -228,7 +229,13 @@ class GapRegisterScopeLockTests(unittest.TestCase):
         source = AGGREGATE.read_text(encoding="utf-8")
         self.assertIn("unittest discover", source)
         self.assertIn("test_*.py", source)
-        self.assertIn("check-gap-register.py", source)
+        checker_test = (
+            ROOT / "tests/control_plane/test_gap_register.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'SCRIPT = ROOT / "scripts/check-gap-register.py"',
+            checker_test,
+        )
 
 
 if __name__ == "__main__":
