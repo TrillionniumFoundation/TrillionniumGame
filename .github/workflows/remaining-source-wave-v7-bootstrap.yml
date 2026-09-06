@@ -1,0 +1,90 @@
+name: remaining-source-wave-v7-bootstrap
+
+on:
+  push:
+    branches: [tooling/remaining-source-wave-v2-2026-09-06]
+    paths:
+      - '.github/workflows/remaining-source-wave-v7-bootstrap.yml'
+      - 'tools/apply-canonical-server-authority-v7.py'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: remaining-source-wave-v7-bootstrap
+  cancel-in-progress: true
+
+jobs:
+  replay-validate-publish:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      SOURCE_BASE_SHA: 7deee4377cff401854647151842c582f038feef1
+      OUTBOX_SHA: 4ce383a55d76a8b2b05827c5017b36f9789c02bd
+      SESSION_SHA: 0d0f246a131902403202afcd28103f22af30c8a9
+      REALTIME_SHA: 4a72ecdb9341faa9c5211b3479f58d075f75a7ba
+      SERVER_SHA: 9ef64a8b93b52808bbbde0acaf74c382e6b4b15f
+      HARDENING_SHA: f3e9476ff8b6d781b61ad35c135041eddddcfcff
+      PRODUCT_BRANCH: codex/remaining-source-blockers-wave-v7-2026-09-07
+      GH_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Publish only when the validated v6 product is absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" \
+            refs/heads/codex/remaining-source-blockers-wave-v6-2026-09-07)" ]; then
+            echo 'validated v6 product branch already exists; no superseding branch created'
+            exit 0
+          fi
+
+          tooling="$RUNNER_TEMP/tooling-bootstrap"
+          rm -rf "$tooling"
+          git init "$tooling"
+          git -C "$tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$tooling" checkout --detach FETCH_HEAD
+          test "$(git -C "$tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+          test -f "$tooling/.github/workflows/remaining-source-wave-v5-bootstrap.yml"
+          test -f "$tooling/tools/apply-canonical-server-authority-v7.py"
+
+          python3 - "$tooling/.github/workflows/remaining-source-wave-v5-bootstrap.yml" "$RUNNER_TEMP" <<'PY'
+          from pathlib import Path
+          import sys
+          source = Path(sys.argv[1])
+          target = Path(sys.argv[2])
+          lines = source.read_text(encoding='utf-8').splitlines()
+          scripts = []
+          index = 0
+          while index < len(lines):
+              if lines[index] != '        run: |':
+                  index += 1
+                  continue
+              index += 1
+              body = []
+              while index < len(lines):
+                  line = lines[index]
+                  if line and not line.startswith('          '):
+                      break
+                  body.append(line[10:] if line.startswith('          ') else '')
+                  index += 1
+              scripts.append('\n'.join(body) + '\n')
+          if len(scripts) != 7:
+              raise SystemExit(f'expected seven reviewed scripts, observed {len(scripts)}')
+          scripts[2] = scripts[2].replace(
+              'apply-canonical-server-authority-v5.py',
+              'apply-canonical-server-authority-v7.py',
+          )
+          for number, body in enumerate(scripts, 1):
+              (target / f'v7-{number}.sh').write_text(body, encoding='utf-8')
+          PY
+
+          bash "$RUNNER_TEMP/v7-1.sh"
+          set -a
+          source "$GITHUB_ENV"
+          set +a
+          bash "$RUNNER_TEMP/v7-2.sh"
+          for number in 3 4 5 6 7; do
+            (cd "$GITHUB_WORKSPACE/source" && bash "$RUNNER_TEMP/v7-${number}.sh")
+          done
