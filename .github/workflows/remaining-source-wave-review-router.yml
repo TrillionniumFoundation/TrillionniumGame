@@ -1,0 +1,165 @@
+name: remaining-source-wave-review-router
+
+on:
+  push:
+    branches: [tooling/remaining-source-wave-v2-2026-09-06]
+    paths:
+      - '.github/workflows/remaining-source-wave-review-router.yml'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: remaining-source-wave-review-router
+  cancel-in-progress: true
+
+jobs:
+  route:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    env:
+      BASE_BRANCH: codex/branch-evidence-closure-2026-09-02
+      V7_BRANCH: codex/remaining-source-blockers-wave-v7-2026-09-07
+      V6_BRANCH: codex/remaining-source-blockers-wave-v6-2026-09-07
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve exact candidate PR identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote="https://github.com/${GITHUB_REPOSITORY}.git"
+          for branch in "$V7_BRANCH" "$V6_BRANCH"; do
+            sha=$(git ls-remote "$remote" "refs/heads/${branch}" | awk '{print $1}')
+            [ -n "$sha" ] || continue
+            pr=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=TrillionniumFoundation:${branch}&base=${BASE_BRANCH}" \
+              --jq '.[0].number // empty')
+            [ -n "$pr" ] || continue
+            candidate_branch="$branch"
+            candidate_sha="$sha"
+            break
+          done
+          test -n "${pr:-}" || {
+            echo 'validated candidate PR is not available yet' >&2
+            exit 1
+          }
+          observed=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.head.sha')
+          test "$observed" = "$candidate_sha"
+          tree=$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${candidate_sha}" --jq '.tree.sha')
+          base_sha=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.base.sha')
+          printf 'PR_NUMBER=%s\nCANDIDATE_BRANCH=%s\nCANDIDATE_SHA=%s\nCANDIDATE_TREE=%s\nBASE_SHA=%s\n' \
+            "$pr" "$candidate_branch" "$candidate_sha" "$tree" "$base_sha" >> "$GITHUB_ENV"
+
+      - name: Derive eligible reviewers from live authors, CODEOWNERS and collaborators
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits?per_page=100" \
+            > "$RUNNER_TEMP/commits.json"
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/collaborators?affiliation=all&per_page=100" \
+            > "$RUNNER_TEMP/collaborators.json"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pr.json"
+
+          rm -rf "$RUNNER_TEMP/repo"
+          git init "$RUNNER_TEMP/repo"
+          git -C "$RUNNER_TEMP/repo" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$RUNNER_TEMP/repo" fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git -C "$RUNNER_TEMP/repo" checkout --detach FETCH_HEAD
+
+          python3 - \
+            "$RUNNER_TEMP/pr.json" "$RUNNER_TEMP/commits.json" \
+            "$RUNNER_TEMP/collaborators.json" "$RUNNER_TEMP/repo" \
+            "$RUNNER_TEMP/reviewers.txt" <<'PY'
+          import json, pathlib, re, sys
+          pr=json.load(open(sys.argv[1]))
+          commit_pages=json.load(open(sys.argv[2]))
+          collaborator_pages=json.load(open(sys.argv[3]))
+          root=pathlib.Path(sys.argv[4])
+          output=pathlib.Path(sys.argv[5])
+          conflicts={
+              (pr.get('user') or {}).get('login','').lower(),
+              'profhepta', 'franksudoman',
+          }
+          for page in commit_pages:
+              for commit in page:
+                  for key in ('author','committer'):
+                      login=(commit.get(key) or {}).get('login')
+                      if login:
+                          conflicts.add(login.lower())
+          collaborators={}
+          for page in collaborator_pages:
+              for row in page:
+                  login=row.get('login','')
+                  permissions=row.get('permissions') or {}
+                  if login and any(permissions.get(key) for key in ('pull','triage','push','maintain','admin')):
+                      collaborators[login.lower()]=login
+          preferred=[]
+          for relative in ('.github/CODEOWNERS','CODEOWNERS','docs/CODEOWNERS'):
+              path=root/relative
+              if not path.is_file():
+                  continue
+              for line in path.read_text(encoding='utf-8').splitlines():
+                  line=line.split('#',1)[0]
+                  for token in re.findall(r'@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))',line):
+                      preferred.append(token)
+          ordered=[]
+          for login in preferred + sorted(collaborators.values(), key=str.lower):
+              key=login.lower()
+              if key in conflicts or key.endswith('[bot]') or key not in collaborators:
+                  continue
+              if login not in ordered:
+                  ordered.append(login)
+          output.write_text('\n'.join(ordered[:5]) + ('\n' if ordered else ''),encoding='utf-8')
+          print(json.dumps({'conflicts':sorted(conflicts),'eligible':ordered[:5]},sort_keys=True))
+          PY
+          test -s "$RUNNER_TEMP/reviewers.txt" || {
+            echo 'no conflict-free collaborator reviewer is currently available' >&2
+            exit 1
+          }
+
+      - name: Request every eligible reviewer without creating a decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r reviewer; do
+            test -n "$reviewer" || continue
+            args+=( -f "reviewers[]=${reviewer}" )
+          done < "$RUNNER_TEMP/reviewers.txt"
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
+            "${args[@]}" >/dev/null
+          printf 'requested_reviewers='; paste -sd, "$RUNNER_TEMP/reviewers.txt"
+
+      - name: Route exact identity to specialist review issues
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker="<!-- remaining-source-wave:${CANDIDATE_SHA} -->"
+          body="$RUNNER_TEMP/handoff.md"
+          cat > "$body" <<EOF
+          ${marker}
+          ## Plan v3.1 exact cumulative source review handoff
+
+          - PR: #${PR_NUMBER}
+          - base: \`${BASE_BRANCH}@${BASE_SHA}\`
+          - head: \`${CANDIDATE_BRANCH}@${CANDIDATE_SHA}\`
+          - tree: \`${CANDIDATE_TREE}\`
+
+          Review the complete current diff and actual prospective merge object. Required specialist questions include canonical server authority, database atomicity/retry/cancellation, session-generation fencing and revocation fanout, realtime/disconnect reconciliation, key lifecycle, migration fencing, fail-closed claims and residual operational evidence.
+
+          A comment or issue acknowledgement is not an approval. Only an eligible current-head GitHub review plus accepted evidence can satisfy admission. Production, compatibility, public-online, cutover and retirement claims remain false.
+          EOF
+          sed -i 's/^          //' "$body"
+          for issue in 7 15 21 35 36 46 47 48; do
+            current=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${issue}/comments?per_page=100" \
+              --jq --arg marker "$marker" '[.[] | select(.body | contains($marker))] | length' || echo 0)
+            if [ "$current" -eq 0 ]; then
+              gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+            fi
+          done
