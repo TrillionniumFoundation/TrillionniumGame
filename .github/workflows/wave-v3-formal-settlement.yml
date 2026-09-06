@@ -1,0 +1,515 @@
+name: wave-v3-formal-settlement
+
+on:
+  push:
+    branches: [tooling/wave-v3-formal-settlement-2026-09-06]
+    paths:
+      - '.github/workflows/wave-v3-formal-settlement.yml'
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  settle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      PRODUCT_BRANCH: codex/remaining-source-blockers-wave-v3-2026-09-06
+      BASE_BRANCH: codex/branch-evidence-closure-2026-09-02
+      GH_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Discover and freeze exact product object
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          owner="${GITHUB_REPOSITORY%%/*}"
+          ref=$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "$api/git/ref/heads/${PRODUCT_BRANCH}")
+          head=$(jq -r '.object.sha' <<<"$ref")
+          test "${#head}" -eq 40
+          prs=$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "$api/pulls?state=open&head=${owner}:${PRODUCT_BRANCH}&per_page=10")
+          test "$(jq 'length' <<<"$prs")" -eq 1
+          number=$(jq -r '.[0].number' <<<"$prs")
+          node_id=$(jq -r '.[0].node_id' <<<"$prs")
+          test "$(jq -r '.[0].head.sha' <<<"$prs")" = "$head"
+          test "$(jq -r '.[0].base.ref' <<<"$prs")" = "$BASE_BRANCH"
+          base=$(jq -r '.[0].base.sha' <<<"$prs")
+          merge=$(jq -r '.[0].merge_commit_sha // empty' <<<"$prs")
+          printf 'PRODUCT_HEAD=%s\nPRODUCT_PR=%s\nPRODUCT_NODE=%s\nPRODUCT_BASE=%s\nPRODUCT_MERGE=%s\n' \
+            "$head" "$number" "$node_id" "$base" "$merge" >> "$GITHUB_ENV"
+          printf 'head=%s\npr=%s\nbase=%s\nmerge=%s\n' "$head" "$number" "$base" "$merge"
+
+      - name: Fetch exact product and validate canonical controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/product"
+          git init "$GITHUB_WORKSPACE/product"
+          git -C "$GITHUB_WORKSPACE/product" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/product" fetch --no-tags --depth=2 origin "$PRODUCT_HEAD"
+          git -C "$GITHUB_WORKSPACE/product" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/product" rev-parse HEAD)" = "$PRODUCT_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/product" rev-parse HEAD^)" = \
+            "$(git -C "$GITHUB_WORKSPACE/product" rev-parse "$PRODUCT_BASE")"
+          cd "$GITHUB_WORKSPACE/product"
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-trnm-server.py
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/check-evidence-index.py
+          python3 scripts/check-gap-register.py
+
+      - name: Wait for latest exact-head workflow set
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          head = os.environ["PRODUCT_HEAD"]
+          api = f"https://api.github.com/repos/{repository}"
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "User-Agent": "trillionnium-wave-v3-formal-settlement",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def get(path: str):
+              request = urllib.request.Request(api + path, headers=headers)
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      return response.status, json.load(response)
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  try:
+                      body = json.loads(raw) if raw else None
+                  except Exception:
+                      body = raw.decode("utf-8", errors="replace")
+                  return error.code, body
+
+          def current_head() -> str:
+              code, value = get(
+                  "/git/ref/heads/codex/remaining-source-blockers-wave-v3-2026-09-06"
+              )
+              if code != 200:
+                  raise SystemExit(f"cannot read product ref: {code} {value}")
+              return value["object"]["sha"]
+
+          def latest_runs():
+              code, payload = get(f"/actions/runs?head_sha={head}&per_page=100")
+              if code != 200:
+                  raise SystemExit(f"cannot read workflow runs: {code} {payload}")
+              latest = {}
+              for run in payload.get("workflow_runs", []):
+                  if run.get("head_sha") != head:
+                      continue
+                  key = run.get("workflow_id") or run.get("name")
+                  rank = (int(run.get("run_attempt") or 0), int(run.get("id") or 0))
+                  previous = latest.get(key)
+                  previous_rank = (
+                      int(previous.get("run_attempt") or 0),
+                      int(previous.get("id") or 0),
+                  ) if previous else (-1, -1)
+                  if previous is None or rank > previous_rank:
+                      latest[key] = run
+              return sorted(latest.values(), key=lambda row: str(row.get("name") or ""))
+
+          deadline = time.monotonic() + 150 * 60
+          while True:
+              if current_head() != head:
+                  raise SystemExit("product branch moved during exact-head settlement")
+              runs = latest_runs()
+              active = [run for run in runs if run.get("status") != "completed"]
+              if not active or time.monotonic() >= deadline:
+                  break
+              time.sleep(30)
+
+          runs = latest_runs()
+          Path = __import__("pathlib").Path
+          Path(os.environ["RUNNER_TEMP"], "wave-v3-runs.json").write_text(
+              json.dumps(runs, sort_keys=True, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps({
+              "head": head,
+              "total": len(runs),
+              "success": sum(
+                  run.get("status") == "completed" and run.get("conclusion") == "success"
+                  for run in runs
+              ),
+              "active": sum(run.get("status") != "completed" for run in runs),
+              "blocking": sum(
+                  run.get("status") == "completed"
+                  and run.get("conclusion") not in {"success", "neutral", "skipped"}
+                  for run in runs
+              ),
+          }, sort_keys=True, indent=2))
+          PY
+
+      - name: Build exact settlement report
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          head = os.environ["PRODUCT_HEAD"]
+          number = int(os.environ["PRODUCT_PR"])
+          base = os.environ["PRODUCT_BASE"]
+          merge = os.environ.get("PRODUCT_MERGE", "")
+          api = f"https://api.github.com/repos/{repository}"
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "User-Agent": "trillionnium-wave-v3-formal-settlement",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def get(path: str):
+              request = urllib.request.Request(api + path, headers=headers)
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      raw = response.read()
+                      return response.status, json.loads(raw) if raw else None
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  try:
+                      body = json.loads(raw) if raw else None
+                  except Exception:
+                      body = raw.decode("utf-8", errors="replace")
+                  return error.code, body
+
+          runs = json.loads(
+              Path(os.environ["RUNNER_TEMP"], "wave-v3-runs.json").read_text(encoding="utf-8")
+          )
+          review_code, reviews = get(f"/pulls/{number}/reviews?per_page=100")
+          if review_code != 200 or not isinstance(reviews, list):
+              reviews = []
+          latest_review = {}
+          for review in reviews:
+              login = str((review.get("user") or {}).get("login") or "").lower()
+              if not login:
+                  continue
+              rank = str(review.get("submitted_at") or "")
+              previous = latest_review.get(login)
+              if previous is None or str(previous.get("submitted_at") or "") <= rank:
+                  latest_review[login] = review
+
+          pr_code, pr = get(f"/pulls/{number}")
+          if pr_code != 200:
+              raise SystemExit(f"cannot reread PR: {pr_code} {pr}")
+          if pr["head"]["sha"] != head or pr["base"]["sha"] != base:
+              raise SystemExit("PR tuple moved during report construction")
+
+          protection_code, protection = get(
+              f"/branches/{pr['base']['ref']}/protection"
+          )
+          rulesets_code, rulesets = get("/rulesets?includes_parents=true&per_page=100")
+
+          gap_register = json.loads(Path("docs/status/GAP_REGISTER.json").read_text())
+          product_gates = json.loads(Path("docs/status/PRODUCT_GATES.json").read_text())
+          gaps = gap_register.get("gaps", [])
+          gate_rows = product_gates.get("gates", [])
+          gap_counts = {}
+          for gap in gaps:
+              status = str(gap.get("status") or "unknown")
+              gap_counts[status] = gap_counts.get(status, 0) + 1
+          gate_counts = {}
+          for gate in gate_rows:
+              status = str(gate.get("status") or "unknown")
+              gate_counts[status] = gate_counts.get(status, 0) + 1
+
+          active = [run for run in runs if run.get("status") != "completed"]
+          blocking = [
+              run for run in runs
+              if run.get("status") == "completed"
+              and run.get("conclusion") not in {"success", "neutral", "skipped"}
+          ]
+          approvals = [
+              review for login, review in latest_review.items()
+              if review.get("state") == "APPROVED"
+              and review.get("commit_id") == head
+              and login not in {
+                  str((pr.get("user") or {}).get("login") or "").lower(),
+                  "profhepta",
+                  "franksudoman",
+              }
+              and str((review.get("user") or {}).get("type") or "").lower() != "bot"
+          ]
+          changes_requested = [
+              review for login, review in latest_review.items()
+              if review.get("state") == "CHANGES_REQUESTED"
+              and review.get("commit_id") == head
+              and login != str((pr.get("user") or {}).get("login") or "").lower()
+          ]
+          source_execution_green = bool(runs) and not active and not blocking
+
+          tree = __import__("subprocess").check_output(
+              ["git", "rev-parse", "HEAD^{tree}"], text=True
+          ).strip()
+          changed_paths = __import__("subprocess").check_output(
+              ["git", "diff", "--name-only", base, "HEAD"], text=True
+          ).splitlines()
+          report = {
+              "schema": "trillionnium.wave-v3-formal-settlement.v1",
+              "observed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+              "repository": repository,
+              "pull_request": number,
+              "base": base,
+              "head": head,
+              "tree": tree,
+              "prospective_merge": merge,
+              "changed_path_count": len(changed_paths),
+              "changed_paths_sha256": hashlib.sha256(
+                  ("\n".join(changed_paths) + "\n").encode("utf-8")
+              ).hexdigest(),
+              "workflow_summary": {
+                  "total_latest": len(runs),
+                  "success": sum(
+                      run.get("status") == "completed" and run.get("conclusion") == "success"
+                      for run in runs
+                  ),
+                  "active": len(active),
+                  "blocking": len(blocking),
+                  "source_execution_green": source_execution_green,
+              },
+              "workflow_runs": [{
+                  "id": run.get("id"),
+                  "workflow_id": run.get("workflow_id"),
+                  "name": run.get("name"),
+                  "event": run.get("event"),
+                  "status": run.get("status"),
+                  "conclusion": run.get("conclusion"),
+                  "run_attempt": run.get("run_attempt"),
+                  "created_at": run.get("created_at"),
+                  "updated_at": run.get("updated_at"),
+              } for run in runs],
+              "review_summary": {
+                  "exact_head_conflict_free_approvals": len(approvals),
+                  "exact_head_changes_requested": len(changes_requested),
+                  "requested_reviewers": [
+                      row.get("login") for row in pr.get("requested_reviewers", [])
+                  ],
+                  "review_decision_complete": bool(approvals) and not changes_requested,
+              },
+              "latest_reviews": [{
+                  "reviewer": (review.get("user") or {}).get("login"),
+                  "state": review.get("state"),
+                  "commit_id": review.get("commit_id"),
+                  "submitted_at": review.get("submitted_at"),
+                  "review_id": review.get("id"),
+              } for review in latest_review.values()],
+              "governance_readback": {
+                  "branch_protection_http_status": protection_code,
+                  "branch_protection": protection if protection_code == 200 else None,
+                  "branch_protection_error": protection if protection_code != 200 else None,
+                  "rulesets_http_status": rulesets_code,
+                  "rulesets": rulesets if rulesets_code == 200 else None,
+                  "rulesets_error": rulesets if rulesets_code != 200 else None,
+              },
+              "canonical_gap_summary": {
+                  "gap_count": len(gaps),
+                  "close_criteria_count": sum(
+                      len(gap.get("close_criteria", [])) for gap in gaps
+                  ),
+                  "status_counts": gap_counts,
+                  "closed": sum(gap.get("status") == "closed" for gap in gaps),
+              },
+              "canonical_product_gate_summary": {
+                  "gate_count": len(gate_rows),
+                  "status_counts": gate_counts,
+                  "summary": product_gates.get("summary"),
+                  "production_ready": product_gates.get("production_ready"),
+                  "public_online": product_gates.get("public_online"),
+                  "drop_in_replacement": product_gates.get("drop_in_replacement"),
+                  "nakama_retired": product_gates.get("nakama_retired"),
+              },
+              "derived": {
+                  "source_execution_green": source_execution_green,
+                  "ready_for_independent_review": source_execution_green,
+                  "accepted_evidence": False,
+                  "all_gaps_closed": False,
+                  "production_ready": False,
+                  "merge_authorized": False,
+              },
+              "claim_boundary": (
+                  "This report may establish an exact source execution packet only. It grants no "
+                  "independent review, evidence admission, gap closure, compatibility, production, "
+                  "cutover, public-online, replacement, or retirement credit."
+              ),
+          }
+          out = Path(os.environ["RUNNER_TEMP"], "settlement")
+          out.mkdir(parents=True, exist_ok=True)
+          (out / "wave-v3-formal-settlement.json").write_text(
+              json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+          )
+          lines = [
+              "# Plan v3.1 cumulative source Wave v3 settlement",
+              "",
+              f"- Repository: `{repository}`",
+              f"- PR: `#{number}`",
+              f"- Base: `{base}`",
+              f"- Head: `{head}`",
+              f"- Tree: `{tree}`",
+              f"- Prospective merge: `{merge}`",
+              f"- Latest workflows: `{len(runs)}`",
+              f"- Active workflows: `{len(active)}`",
+              f"- Blocking workflows: `{len(blocking)}`",
+              f"- Exact-head conflict-free approvals: `{len(approvals)}`",
+              f"- Formal gaps closed: `{report['canonical_gap_summary']['closed']}/{len(gaps)}`",
+              f"- Product gates: `{json.dumps(product_gates.get('summary'), sort_keys=True)}`",
+              "",
+              "## Derived boundary",
+              "",
+              "```json",
+              json.dumps(report["derived"], sort_keys=True, indent=2),
+              "```",
+              "",
+              report["claim_boundary"],
+          ]
+          (out / "wave-v3-formal-settlement.md").write_text(
+              "\n".join(lines) + "\n", encoding="utf-8"
+          )
+          (out / "changed-paths.txt").write_text(
+              "\n".join(changed_paths) + "\n", encoding="utf-8"
+          )
+          Path(os.environ["RUNNER_TEMP"], "source-green").write_text(
+              "true\n" if source_execution_green else "false\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(report["workflow_summary"], sort_keys=True, indent=2))
+          PY
+
+      - name: Publish immutable settlement branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_repo="$GITHUB_WORKSPACE/report-repo"
+          rm -rf "$report_repo"
+          git init "$report_repo"
+          git -C "$report_repo" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$report_repo" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$report_repo" checkout --detach FETCH_HEAD
+          mkdir -p "$report_repo/reports/wave-v3/${PRODUCT_HEAD}"
+          cp "$RUNNER_TEMP/settlement/"* \
+            "$report_repo/reports/wave-v3/${PRODUCT_HEAD}/"
+          cd "$report_repo"
+          git config user.name "Qian QI"
+          git config user.email "102159240+ProfHepta@users.noreply.github.com"
+          git add reports
+          git diff --cached --check
+          git commit -m "evidence: retain wave v3 formal settlement"
+          branch="evidence/wave-v3-settlement-${PRODUCT_HEAD}-${GITHUB_RUN_ID}"
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
+            push origin "HEAD:refs/heads/${branch}"
+          printf 'REPORT_BRANCH=%s\nREPORT_COMMIT=%s\nREPORT_TREE=%s\n' \
+            "$branch" "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})" >> "$GITHUB_ENV"
+
+      - name: Mark exact green source ready for independent review
+        if: ${{ hashFiles(format('{0}/source-green', runner.temp)) != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          green=$(cat "$RUNNER_TEMP/source-green")
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          current=$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "$api/pulls/${PRODUCT_PR}")
+          test "$(jq -r '.head.sha' <<<"$current")" = "$PRODUCT_HEAD"
+          if test "$green" = true && test "$(jq -r '.draft' <<<"$current")" = true; then
+            response=$(curl -fsSL -X POST \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              https://api.github.com/graphql \
+              -d "$(jq -nc --arg id "$PRODUCT_NODE" '{query:"mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{number isDraft headRefOid}}}",variables:{id:$id}}')")
+            test "$(jq -r '.data.markPullRequestReadyForReview.pullRequest.headRefOid' <<<"$response")" = "$PRODUCT_HEAD"
+            test "$(jq -r '.data.markPullRequestReadyForReview.pullRequest.isDraft' <<<"$response")" = false
+          fi
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "$api/pulls/${PRODUCT_PR}/requested_reviewers" \
+            -d '{"reviewers":["Tomasrgbsf"]}' >/dev/null
+
+      - name: Publish exact result without promoting claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          summary=$(jq -c '{
+            head,
+            tree,
+            workflow_summary,
+            review_summary,
+            canonical_gap_summary,
+            canonical_product_gate_summary,
+            derived,
+            claim_boundary
+          }' "$RUNNER_TEMP/settlement/wave-v3-formal-settlement.json")
+          body=$(cat <<EOF
+          ## Wave v3 formal settlement
+
+          Exact retained report:
+
+          \`\`\`text
+          report branch ${REPORT_BRANCH}
+          report commit ${REPORT_COMMIT}
+          report tree   ${REPORT_TREE}
+          \`\`\`
+
+          \`\`\`json
+          ${summary}
+          \`\`\`
+
+          A terminal-green source packet may make this PR ready for independent review. It does not create an approval, accepted evidence, gap closure, product-gate pass, production authority or merge authorization.
+          EOF
+          )
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PRODUCT_PR}/comments" \
+            -d "$(jq -nc --arg body "$body" '{body:$body}')" >/dev/null
+          cp "$RUNNER_TEMP/settlement/wave-v3-formal-settlement.json" \
+            "$GITHUB_WORKSPACE/wave-v3-formal-settlement.json"
+          cp "$RUNNER_TEMP/settlement/wave-v3-formal-settlement.md" \
+            "$GITHUB_WORKSPACE/wave-v3-formal-settlement.md"
+
+      - name: Fail closed when source execution is not terminal green
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat "$RUNNER_TEMP/source-green")" = true
