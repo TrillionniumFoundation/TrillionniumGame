@@ -18,7 +18,7 @@ env:
 
 jobs:
   exact-summary-parser-publish:
-    runs-on: ubuntu-24.04-arm
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - name: Fetch exact candidate with authenticated write transport
@@ -27,7 +27,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin \
             https://github.com/TrillionniumFoundation/TrillionniumGame.git
@@ -98,7 +98,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
           test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
           git config user.name 'Trillionnium qualification bot'
           git config user.email 'qualification-bot@invalid'
