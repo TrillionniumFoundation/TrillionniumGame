@@ -321,6 +321,7 @@ mod tests {
     }
 }
 
+mod key_domain;
 mod key_epoch;
 mod signer_journal;
 
@@ -332,3 +333,5 @@ pub use signer_journal::{
     SignerJournal, SignerJournalError, SigningOperationId, SigningOperationRecord,
     SigningOperationState, SigningRequest,
 };
+
+pub use key_domain::{DomainBoundKeyId, DomainKeyEpochRegistry, KeyDomainError};
