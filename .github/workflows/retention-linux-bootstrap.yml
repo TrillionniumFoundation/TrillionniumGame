@@ -1,0 +1,71 @@
+name: retention-linux-bootstrap
+
+on:
+  push:
+    branches: [tooling/retention-inspect-2026-09-06]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: retention-linux-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      EXPECTED_HEAD: 4f78bbd93a6457da0ddb63c1508d34387ac0fa7b
+      EXPECTED_TREE: 25909e7081d8877dd20177b1423e73654a6f7882
+      PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+      PATCH_GZIP_BLOB: 6b7890b861cc6f0cde2f87a9acfff5aedd1cf456
+      PATCH_GZIP_SHA256: b0f1a8a0a29e2ed855a6ce2ace8fc7edef8f6e1e67fc607fab1d3d470d0bc5c9
+      PATCH_SHA256: 38a5fa31c5499fca933789052611f288ec1be0ce2cae5ff5e8b965945333d666
+      GH_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Execute the exact guarded publisher plan on Linux
+        shell: bash
+        run: |
+          set -euo pipefail
+          bootstrap="$RUNNER_TEMP/retention-bootstrap"
+          rm -rf "$bootstrap"
+          git init "$bootstrap"
+          git -C "$bootstrap" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$bootstrap" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$bootstrap" checkout --detach FETCH_HEAD
+
+          python3 - "$bootstrap/.github/workflows/retention-complete-publish.yml" "$RUNNER_TEMP" <<'PY'
+          from pathlib import Path
+          import sys
+
+          source = Path(sys.argv[1])
+          target = Path(sys.argv[2])
+          lines = source.read_text(encoding="utf-8").splitlines()
+          scripts = []
+          index = 0
+          while index < len(lines):
+              if lines[index] != "        run: |":
+                  index += 1
+                  continue
+              index += 1
+              body = []
+              while index < len(lines):
+                  line = lines[index]
+                  if line and not line.startswith("          "):
+                      break
+                  body.append(line[10:] if line.startswith("          ") else "")
+                  index += 1
+              scripts.append("\n".join(body) + "\n")
+          if len(scripts) != 4:
+              raise SystemExit(f"expected four guarded publisher scripts, observed {len(scripts)}")
+          for number, body in enumerate(scripts, 1):
+              path = target / f"retention-publisher-{number}.sh"
+              path.write_text(body.replace("shasum -a 256", "sha256sum"), encoding="utf-8")
+          PY
+
+          bash "$RUNNER_TEMP/retention-publisher-1.sh"
+          (cd "$GITHUB_WORKSPACE/source" && bash "$RUNNER_TEMP/retention-publisher-2.sh")
+          (cd "$GITHUB_WORKSPACE/source" && bash "$RUNNER_TEMP/retention-publisher-3.sh")
+          (cd "$GITHUB_WORKSPACE/source" && bash "$RUNNER_TEMP/retention-publisher-4.sh")
