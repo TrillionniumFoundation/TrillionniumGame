@@ -22,7 +22,7 @@ jobs:
       OUTBOX_SHA: 4ce383a55d76a8b2b05827c5017b36f9789c02bd
       SESSION_SHA: 0d0f246a131902403202afcd28103f22af30c8a9
       REALTIME_SHA: 4a72ecdb9341faa9c5211b3479f58d075f75a7ba
-      SERVER_SHA: 0fc8e03c32095bbaca6cd850426d6b3ea22696ab
+      SERVER_SHA: 4c6abde65938ceb97b706111b95f6878e64375d5
       HARDENING_SHA: f3e9476ff8b6d781b61ad35c135041eddddcfcff
       PRODUCT_BRANCH: codex/remaining-source-blockers-wave-v3-2026-09-06
       GH_TOKEN: ${{ github.token }}
@@ -111,6 +111,7 @@ jobs:
           test -f crates/trnm-presence-router-v2/src/disconnect_journal.rs
           test -f crates/trnm-presence-router-v2/src/reconnect_cursor.rs
           test -f crates/trnm-server/src/runtime/server.rs
+          test -f crates/trnm-server/src/runtime/retry_atomicity.rs
           git add -A
           git diff --cached --check
 
