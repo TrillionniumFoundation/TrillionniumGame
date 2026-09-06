@@ -1,0 +1,81 @@
+name: pr93-admission-audit
+
+on:
+  push:
+    branches: [tooling/pr93-identity-and-ci-2026-09-06]
+    paths:
+      - '.github/workflows/pr93-admission-audit.yml'
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: '93'
+      EXPECTED_BASE_REF: codex/branch-evidence-closure-2026-09-02
+    steps:
+      - name: Audit exact head, workflows, current review and conversations
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          curl -fsS "${auth[@]}" "${api}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pr.json"
+          head=$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")
+          base=$(jq -r '.base.sha' "$RUNNER_TEMP/pr.json")
+          base_ref=$(jq -r '.base.ref' "$RUNNER_TEMP/pr.json")
+          author=$(jq -r '.user.login | ascii_downcase' "$RUNNER_TEMP/pr.json")
+          draft=$(jq -r '.draft' "$RUNNER_TEMP/pr.json")
+          mergeable=$(jq -r '.mergeable' "$RUNNER_TEMP/pr.json")
+          test "$base_ref" = "$EXPECTED_BASE_REF"
+
+          curl -fsS "${auth[@]}" "${api}/actions/runs?head_sha=${head}&per_page=100" > "$RUNNER_TEMP/runs.json"
+          jq -c '.workflow_runs | sort_by(.workflow_id,.run_attempt,.id) | group_by(.workflow_id) | map(last)' \
+            "$RUNNER_TEMP/runs.json" > "$RUNNER_TEMP/latest.json"
+          workflow_total=$(jq 'length' "$RUNNER_TEMP/latest.json")
+          workflow_active=$(jq '[.[]|select(.status!="completed")]|length' "$RUNNER_TEMP/latest.json")
+          workflow_failed=$(jq '[.[]|select(.status=="completed" and .conclusion!="success")]|length' "$RUNNER_TEMP/latest.json")
+
+          curl -fsS "${auth[@]}" "${api}/pulls/${PR_NUMBER}/reviews?per_page=100" > "$RUNNER_TEMP/reviews.json"
+          jq -c --arg head "$head" --arg author "$author" '
+            sort_by(.submitted_at,.id)
+            | group_by(.user.login|ascii_downcase)
+            | map(last)
+            | map(select((.user.login|ascii_downcase)!=$author and .user.type=="User" and .commit_id==$head))
+          ' "$RUNNER_TEMP/reviews.json" > "$RUNNER_TEMP/current-reviews.json"
+          approvals=$(jq '[.[]|select(.state=="APPROVED")]|length' "$RUNNER_TEMP/current-reviews.json")
+          changes=$(jq '[.[]|select(.state=="CHANGES_REQUESTED")]|length' "$RUNNER_TEMP/current-reviews.json")
+
+          owner=${GITHUB_REPOSITORY%/*}
+          repo=${GITHUB_REPOSITORY#*/}
+          jq -n --arg owner "$owner" --arg repo "$repo" --argjson number "$PR_NUMBER" \
+            '{query:"query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved isOutdated comments(first:1){nodes{author{login}}}} pageInfo{hasNextPage endCursor}}}}}",variables:{owner:$owner,repo:$repo,number:$number}}' \
+            > "$RUNNER_TEMP/graphql.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/graphql.json" https://api.github.com/graphql > "$RUNNER_TEMP/threads.json"
+          next=$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' "$RUNNER_TEMP/threads.json")
+          test "$next" = false
+          unresolved=$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false and .isOutdated==false)] | length' "$RUNNER_TEMP/threads.json")
+
+          jq -n \
+            --arg head "$head" --arg base "$base" --arg base_ref "$base_ref" \
+            --argjson draft "$draft" --argjson workflow_total "$workflow_total" \
+            --argjson workflow_active "$workflow_active" --argjson workflow_failed "$workflow_failed" \
+            --argjson approvals "$approvals" --argjson changes_requested "$changes" \
+            --argjson unresolved_threads "$unresolved" --arg mergeable "$mergeable" \
+            '{head:$head,base:$base,base_ref:$base_ref,draft:$draft,workflow_total:$workflow_total,workflow_active:$workflow_active,workflow_failed:$workflow_failed,exact_head_independent_approvals:$approvals,exact_head_changes_requested:$changes_requested,unresolved_current_threads:$unresolved,github_mergeable:$mergeable,admission_ready:($draft==false and $workflow_total>0 and $workflow_active==0 and $workflow_failed==0 and $approvals>=1 and $changes_requested==0 and $unresolved_threads==0 and $mergeable=="true"),accepted_evidence:false,gap_closed:false,production_ready:false}' \
+            > "$RUNNER_TEMP/audit.json"
+          cat "$RUNNER_TEMP/audit.json"
+          body=$(jq -r '"<!-- pr93-admission-audit -->\nFail-closed admission audit for `"+.head+"`:\n```json\n"+(.|tostring)+"\n```\nNo merge was attempted; this audit creates no evidence, review, gap, compatibility or production credit."' "$RUNNER_TEMP/audit.json")
+          jq -n --arg body "$body" '{body:$body}' > "$RUNNER_TEMP/comment.json"
+          curl -fsS -X POST "${auth[@]}" --data-binary @"$RUNNER_TEMP/comment.json" "${api}/issues/${PR_NUMBER}/comments" >/dev/null
+
+          # This is deliberately audit-only. A separate explicit admission action
+          # may consume a passing packet after independent review.
+          jq -e '.admission_ready==true' "$RUNNER_TEMP/audit.json" >/dev/null
