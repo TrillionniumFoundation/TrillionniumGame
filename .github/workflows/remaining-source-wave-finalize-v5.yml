@@ -84,7 +84,7 @@ jobs:
             'refs/remotes/source/server:crates/trnm-server/src/canonical_main.rs' \
             | grep -qF 'mod runtime;'
 
-      - name: Merge current feature heads into one cumulative line
+      - name: Merge and normalize current feature heads
         shell: bash
         working-directory: source
         run: |
@@ -128,13 +128,12 @@ jobs:
           exports = '''
 
           pub use connection_actor::{
-              ConnectionActor, ConnectionActorConfig, ConnectionActorError,
-              ConnectionActorState, CorrelationId, InboundFrame, OutboundFrame, PendingRequest,
+              ConnectionActor, ConnectionActorConfig, ConnectionActorError, ConnectionActorState,
+              CorrelationId, InboundFrame, OutboundFrame, PendingRequest,
           };
           pub use disconnect_journal::{
-              DisconnectIntentId, DisconnectJournal, DisconnectJournalError,
-              DisconnectOperation, DisconnectReceipt, DisconnectRecord, DisconnectState,
-              LeaseToken, RetryDisposition, WorkerId,
+              DisconnectIntentId, DisconnectJournal, DisconnectJournalError, DisconnectOperation,
+              DisconnectReceipt, DisconnectRecord, DisconnectState, LeaseToken, RetryDisposition, WorkerId,
           };
           pub use reconnect_cursor::{
               ReconnectCursor, ReconnectEvent, ReconnectJournal, ReconnectJournalConfig,
@@ -159,6 +158,23 @@ jobs:
           merge_ref crypto
           merge_ref migration
           merge_ref server
+
+          rustup toolchain install 1.85.1 --profile minimal \
+            --component rustfmt --component clippy
+          rustup override set 1.85.1
+          cargo fmt --all
+          for manifest in \
+            crates/trnm-persistence-core/Cargo.toml \
+            crates/trnm-presence-router-v2/Cargo.toml \
+            crates/trnm-token-crypto-provider/Cargo.toml \
+            crates/trnm-server/Cargo.toml; do
+            cargo fmt --manifest-path "$manifest"
+          done
+          git add -A
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m 'style: normalize cumulative source wave with Rust 1.85.1'
+          fi
           test -z "$(git status --porcelain)"
 
       - name: Validate root isolated workspaces and control plane
@@ -166,9 +182,6 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
-          rustup toolchain install 1.85.1 --profile minimal \
-            --component rustfmt --component clippy
-          rustup override set 1.85.1
           cargo fmt --all -- --check
           cargo test --workspace --all-targets --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
