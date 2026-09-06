@@ -60,9 +60,23 @@ jobs:
               scripts.append("\n".join(body) + "\n")
           if len(scripts) != 4:
               raise SystemExit(f"expected four guarded publisher scripts, observed {len(scripts)}")
+
+          old_digest = 'overlay["overlay_sha256"] = hashlib.sha256(canonical(overlay)).hexdigest()'
+          new_digest = (
+              'overlay["overlay_sha256"] = hashlib.sha256('\
+              'json.dumps(overlay, sort_keys=True, separators=(",", ":"), allow_nan=False)'\
+              '.encode("utf-8")).hexdigest()'
+          )
+          if scripts[1].count(old_digest) != 1:
+              raise SystemExit("publisher overlay digest anchor drift")
+          scripts[1] = scripts[1].replace(old_digest, new_digest, 1)
+
           for number, body in enumerate(scripts, 1):
               path = target / f"retention-publisher-{number}.sh"
-              path.write_text(body.replace("shasum -a 256", "sha256sum"), encoding="utf-8")
+              path.write_text(
+                  body.replace("shasum -a 256", "sha256sum"),
+                  encoding="utf-8",
+              )
           PY
 
           bash "$RUNNER_TEMP/retention-publisher-1.sh"
