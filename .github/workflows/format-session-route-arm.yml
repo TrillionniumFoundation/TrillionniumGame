@@ -1,0 +1,61 @@
+name: format-session-route-arm
+
+on:
+  push:
+    branches: [tooling/format-session-route-arm-2026-09-06]
+    paths:
+      - '.github/workflows/format-session-route-arm.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  format-test-publish:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    env:
+      PRODUCT_BRANCH: codex/session-revocation-fanout-2026-09-06
+      EXPECTED_HEAD: 0d0f246a131902403202afcd28103f22af30c8a9
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch exact product candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin "refs/heads/${PRODUCT_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/source" checkout -b "$PRODUCT_BRANCH" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$EXPECTED_HEAD"
+
+      - name: Format, test and strictly lint
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          test -z "$(git diff --name-only)"
+          cargo fmt --manifest-path crates/trnm-presence-router-v2/Cargo.toml
+          test "$(git diff --name-only)" = "crates/trnm-presence-router-v2/src/session_registry.rs"
+          git diff --check
+          cargo test --manifest-path crates/trnm-presence-router-v2/Cargo.toml --all-targets --locked
+          cargo clippy --manifest-path crates/trnm-presence-router-v2/Cargo.toml --all-targets --locked -- -D warnings
+
+      - name: Publish formatting-only repair with CAS
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git diff --name-only)" = "crates/trnm-presence-router-v2/src/session_registry.rs"
+          git config user.name "Qian QI"
+          git config user.email "102159240+ProfHepta@users.noreply.github.com"
+          git add crates/trnm-presence-router-v2/src/session_registry.rs
+          git commit -m "style(realtime): apply Rust 1.85.1 formatting"
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          remote_head=$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)
+          test "$remote_head" = "$EXPECTED_HEAD"
+          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" push origin "HEAD:refs/heads/${PRODUCT_BRANCH}"
+          printf 'published_head=%s\npublished_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
