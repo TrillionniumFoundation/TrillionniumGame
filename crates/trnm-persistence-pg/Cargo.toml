@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+session-test-hooks = []
+
 [dependencies]
 native-tls = "=0.2.18"
 # Existing locked native backend, exposed only by the diagnostic TLS binary.

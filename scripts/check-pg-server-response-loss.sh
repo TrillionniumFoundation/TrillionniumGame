@@ -104,14 +104,14 @@ CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_DATABASE_URL="$database_url" \
 TRNM_DATABASE_PROFILE=postgresql \
-  cargo test -p trnm-persistence-pg --locked --test session_response_loss \
-    -- --nocapture 2>&1 | tee "$run_root/session-response-loss.log"
+  cargo test -p trnm-persistence-pg --features session-test-hooks --locked \
+    --test session_response_loss -- --nocapture 2>&1 | tee "$run_root/session-response-loss.log"
 session_test_count=$(
   sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
     "$run_root/session-response-loss.log"
 )
 [[ "$session_test_count" =~ ^[0-9]+$ ]]
-test "$session_test_count" -ge 2
+test "$session_test_count" -ge 8
 
 response_loss_family_hex=$(printf '71%.0s' {1..16})
 test "$(query "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex');")" = 1
@@ -126,6 +126,38 @@ for family_byte in 90 91 92 93 94 95 96 97 98 99 9a 9b 9c 9d 9e 9f; do
 done
 test "$concurrency_logout_families" = 16
 
+assert_interleaving_family() {
+  local family_byte=$1
+  local generation=$2
+  local active_byte=$3
+  local revoked_reason=$4
+  local token_count=$5
+  local active_count=$6
+  local family_hex active_clause revocation_clause active_hex
+  family_hex=$(printf "${family_byte}%.0s" {1..16})
+  if [[ "$active_byte" == none ]]; then
+    active_clause='active_token_id IS NULL'
+  else
+    active_hex=$(printf "${active_byte}%.0s" {1..16})
+    active_clause="active_token_id = decode('${active_hex}', 'hex')"
+  fi
+  if [[ "$revoked_reason" == none ]]; then
+    revocation_clause='revoked_reason IS NULL'
+  else
+    revocation_clause="revoked_reason = ${revoked_reason}"
+  fi
+  test "$(query "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${family_hex}', 'hex') AND generation = ${generation} AND ${active_clause} AND ${revocation_clause}")" = 1
+  test "$(query "SELECT count(*) FROM trnm_refresh_tokens WHERE family_id = decode('${family_hex}', 'hex')")" = "$token_count"
+  test "$(query "SELECT count(*) FROM trnm_refresh_tokens WHERE family_id = decode('${family_hex}', 'hex') AND state = 0")" = "$active_count"
+}
+
+assert_interleaving_family 40 1 44 none 2 1
+assert_interleaving_family 46 2 4c none 3 1
+assert_interleaving_family 4e 2 none 2 3 0
+assert_interleaving_family 56 1 none 2 2 0
+assert_interleaving_family 5e 1 none 2 2 0
+interleaving_family_count=5
+
 {
   printf 'session_test_count=%s\n' "$session_test_count"
   printf 'response_loss_family_rows=%s\n' \
@@ -135,6 +167,7 @@ test "$concurrency_logout_families" = 16
   printf 'response_loss_replay_revoked=%s\n' \
     "$(query "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex') AND active_token_id IS NULL AND revoked_reason = 2;")"
   printf 'concurrency_logout_families=%s\n' "$concurrency_logout_families"
+  printf 'deterministic_interleaving_families=%s\n' "$interleaving_family_count"
   printf 'diagnostic_total_session_families=%s\n' \
     "$(query 'SELECT count(*) FROM trnm_session_families;')"
   printf 'diagnostic_total_refresh_tokens=%s\n' \

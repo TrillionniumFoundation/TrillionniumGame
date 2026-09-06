@@ -48,6 +48,13 @@ pub enum RefreshRotationOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionMutationPoint {
+    CredentialResolved,
+    FamilyLocked,
+    BeforeCommit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RefreshTokenSnapshot {
     generation: u64,
     state: i16,
@@ -152,6 +159,23 @@ impl PgRepository {
         &mut self,
         request: &RotateRefreshToken,
     ) -> Result<RefreshRotationOutcome, DomainError> {
+        self.rotate_refresh_token_with_hook(request, |_| {})
+    }
+
+    #[cfg(feature = "session-test-hooks")]
+    pub fn rotate_refresh_token_with_test_hook(
+        &mut self,
+        request: &RotateRefreshToken,
+        hook: impl FnMut(SessionMutationPoint),
+    ) -> Result<RefreshRotationOutcome, DomainError> {
+        self.rotate_refresh_token_with_hook(request, hook)
+    }
+
+    fn rotate_refresh_token_with_hook(
+        &mut self,
+        request: &RotateRefreshToken,
+        mut hook: impl FnMut(SessionMutationPoint),
+    ) -> Result<RefreshRotationOutcome, DomainError> {
         validate_rotation(request)?;
         let rotated_at_ms = to_i64(request.rotated_at_ms)?;
         let mut transaction = self
@@ -179,6 +203,7 @@ impl PgRepository {
             .map_err(map_postgres_error)?
             .ok_or_else(unauthenticated)?;
         let family = decode_session_family_id(family_identity_row.get(0))?;
+        hook(SessionMutationPoint::CredentialResolved);
 
         let family_row = transaction
             .query_opt(
@@ -189,6 +214,7 @@ impl PgRepository {
             )
             .map_err(map_postgres_error)?
             .ok_or_else(|| data_loss("refresh_family_missing"))?;
+        hook(SessionMutationPoint::FamilyLocked);
 
         let token_row = transaction
             .query_opt(
@@ -272,6 +298,7 @@ impl PgRepository {
                 replacement,
                 request.rotated_at_ms,
             ) {
+                hook(SessionMutationPoint::BeforeCommit);
                 transaction.commit().map_err(map_postgres_error)?;
                 return Ok(RefreshRotationOutcome::Rotated(record));
             }
@@ -281,6 +308,7 @@ impl PgRepository {
                 request.rotated_at_ms,
                 rotated_at_ms,
             )?;
+            hook(SessionMutationPoint::BeforeCommit);
             transaction.commit().map_err(map_postgres_error)?;
             return Ok(RefreshRotationOutcome::ReplayRevoked(revoked));
         }
@@ -294,6 +322,7 @@ impl PgRepository {
                 request.rotated_at_ms,
                 rotated_at_ms,
             )?;
+            hook(SessionMutationPoint::BeforeCommit);
             transaction.commit().map_err(map_postgres_error)?;
             return Ok(RefreshRotationOutcome::ReplayRevoked(revoked));
         }
@@ -361,6 +390,7 @@ impl PgRepository {
                 RetryClass::SafeImmediate,
             ));
         }
+        hook(SessionMutationPoint::BeforeCommit);
         transaction.commit().map_err(map_postgres_error)?;
         Ok(RefreshRotationOutcome::Rotated(SessionFamilyRecord {
             family,
