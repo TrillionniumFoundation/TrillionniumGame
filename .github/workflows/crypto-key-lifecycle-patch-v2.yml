@@ -76,7 +76,8 @@ jobs:
           if "mod key_epoch;" not in text:
               text = text.rstrip() + "\n\nmod key_epoch;\nmod signer_journal;\n\n"
               text += "pub use key_epoch::{\n"
-              text += "    KeyEpoch, KeyEpochError, KeyEpochRecord, KeyEpochRegistry, KeyEpochState, KeyId,\n"
+              text += "    KeyEpoch, KeyEpochError, KeyEpochRecord, KeyEpochState, KeyId,\n"
+              text += "    KeyEpochRegistry as OperationalKeyEpochRegistry,\n"
               text += "};\n"
               text += "pub use signer_journal::{\n"
               text += "    SignerJournal, SignerJournalError, SigningOperationId, SigningOperationRecord,\n"
