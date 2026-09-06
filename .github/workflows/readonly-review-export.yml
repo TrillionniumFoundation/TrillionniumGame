@@ -1,11 +1,11 @@
-name: evidence-retention-diagnostic
+name: evidence-retention-publisher
 
 on:
   push:
     branches: [tooling/session-response-loss-preflight-2026-09-06]
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   EXPECTED_HEAD: 67523089ee750db5f6ee860b66071bc04dfc1521
@@ -16,11 +16,11 @@ env:
   PATCH_SHA256: 38a5fa31c5499fca933789052611f288ec1be0ce2cae5ff5e8b965945333d666
 
 jobs:
-  exact-retention-diagnostic:
+  exact-retention-publish:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - name: Fetch exact tooling and candidate
+      - name: Fetch exact tooling and unchanged candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -41,8 +41,9 @@ jobs:
           git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$EXPECTED_HEAD"
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
 
-      - name: Apply and enumerate exact patch
+      - name: Apply exact retained-evidence patch
         shell: bash
         working-directory: source
         run: |
@@ -52,11 +53,18 @@ jobs:
           test "$(shasum -a 256 "$patch" | cut -d' ' -f1)" = "$PATCH_SHA256"
           git apply --check "$patch"
           git apply "$patch"
-          git diff --name-status | tee "$RUNNER_TEMP/changed-files.txt"
-          test "$(git diff --name-only | wc -l | tr -d ' ')" -gt 0
+          expected=$(cat <<'EOF'
+          .github/workflows/candidate-identity-manifest.yml
+          .github/workflows/pg-server-response-loss.yml
+          .github/workflows/prospective-merge-gate.yml
+          .github/workflows/trillionnium-game-merge-gate.yml
+          .github/workflows/trnm-server-live.yml
+          EOF
+          )
+          test "$(git diff --name-only)" = "$expected"
           git diff --check
 
-      - name: Execute focused retained-evidence tests
+      - name: Execute complete repository control corpus
         shell: bash
         working-directory: source
         env:
@@ -64,9 +72,41 @@ jobs:
         run: |
           set -euo pipefail
           node --check .github/actions/upload-evidence/index.js
+          python3 -m compileall -q scripts tests
           python3 -m unittest -v tests.control_plane.test_evidence_retention_workflows
           python3 scripts/check-workflow-action-policy.py
           python3 scripts/check-repository-hygiene.py
           python3 scripts/check-plan.py
           python3 scripts/check-evidence-index.py
           python3 scripts/check-gap-register.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v \
+            2>&1 | tee "$RUNNER_TEMP/full-python.log"
+          grep -Eq '^Ran [1-9][0-9]* tests in ' "$RUNNER_TEMP/full-python.log"
+          grep -qx OK "$RUNNER_TEMP/full-python.log"
+          test "$(git diff --name-only)" = $'.github/workflows/candidate-identity-manifest.yml\n.github/workflows/pg-server-response-loss.yml\n.github/workflows/prospective-merge-gate.yml\n.github/workflows/trillionnium-game-merge-gate.yml\n.github/workflows/trnm-server-live.yml'
+
+      - name: Commit and ordinary fast-forward push
+        shell: bash
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
+          git config user.name 'Trillionnium qualification bot'
+          git config user.email 'qualification-bot@invalid'
+          git add \
+            .github/workflows/candidate-identity-manifest.yml \
+            .github/workflows/pg-server-response-loss.yml \
+            .github/workflows/prospective-merge-gate.yml \
+            .github/workflows/trillionnium-game-merge-gate.yml \
+            .github/workflows/trnm-server-live.yml
+          git commit -m 'ci(evidence): retain exact source and merge packets'
+          new_head=$(git rev-parse HEAD)
+          new_tree=$(git rev-parse HEAD^{tree})
+          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
+            push origin "HEAD:refs/heads/${PRODUCT_BRANCH}"
+          test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$new_head"
+          printf 'new_head=%s\nnew_tree=%s\nforce_push=false\nmain_write=false\n' \
+            "$new_head" "$new_tree"
