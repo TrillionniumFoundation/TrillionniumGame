@@ -128,10 +128,10 @@ def validate_rewrite(scripts: list[str]) -> None:
     for marker in required:
         if combined.count(marker) != 1:
             raise SystemExit(f"rewritten v7 marker mismatch: {marker}")
-    forbidden = ("pulls/92", "apply-canonical-server-authority-v5.py")
-    for marker in forbidden:
-        if marker in combined:
-            raise SystemExit(f"forbidden predecessor marker survived: {marker}")
+    if "pulls/92" in combined:
+        raise SystemExit("forbidden predecessor marker survived: pulls/92")
+    if "apply-canonical-server-authority-v5.py" in scripts[2]:
+        raise SystemExit("v7 compose script still invokes the v5 transformer")
 
 
 def main() -> int:
