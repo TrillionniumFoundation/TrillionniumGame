@@ -1,0 +1,148 @@
+name: remaining-source-wave-race-free-orchestrator
+
+on:
+  push:
+    branches: [tooling/remaining-source-wave-v2-2026-09-06]
+    paths:
+      - '.github/workflows/remaining-source-wave-race-free-orchestrator.yml'
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: remaining-source-wave-race-free-orchestrator
+  cancel-in-progress: true
+
+jobs:
+  handoff:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      BASE_BRANCH: codex/branch-evidence-closure-2026-09-02
+      V7_BRANCH: codex/remaining-source-blockers-wave-v7-2026-09-07
+      V6_BRANCH: codex/remaining-source-blockers-wave-v6-2026-09-07
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for a validated product or a terminal exporter failure
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote="https://github.com/${GITHUB_REPOSITORY}.git"
+          for attempt in $(seq 1 180); do
+            for branch in "$V7_BRANCH" "$V6_BRANCH"; do
+              sha=$(git ls-remote "$remote" "refs/heads/${branch}" | awk '{print $1}')
+              if [ -n "$sha" ]; then
+                printf 'CANDIDATE_BRANCH=%s\nCANDIDATE_SHA=%s\n' "$branch" "$sha" >> "$GITHUB_ENV"
+                printf 'candidate_ready branch=%s sha=%s attempt=%s\n' "$branch" "$sha" "$attempt"
+                exit 0
+              fi
+            done
+            v7=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/remaining-source-wave-v7-bootstrap.yml/runs?branch=tooling/remaining-source-wave-v2-2026-09-06&per_page=1" \
+              --jq '.workflow_runs[0] // {}')
+            status=$(jq -r '.status // "missing"' <<<"$v7")
+            conclusion=$(jq -r '.conclusion // ""' <<<"$v7")
+            run_id=$(jq -r '.id // ""' <<<"$v7")
+            printf 'attempt=%s v7_run=%s status=%s conclusion=%s\n' \
+              "$attempt" "$run_id" "$status" "$conclusion"
+            if [ "$status" = completed ] && [ "$conclusion" != success ]; then
+              test -n "$run_id"
+              gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
+                --jq '.jobs[] | {id,name,status,conclusion,steps:[.steps[]|{name,status,conclusion}]}' >&2
+              echo 'v7 exporter is terminal failure; no unvalidated PR will be created' >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          echo 'candidate did not appear within the orchestration window' >&2
+          exit 1
+
+      - name: Create or reconcile exactly one candidate PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=$(git ls-remote \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/heads/${BASE_BRANCH}" | awk '{print $1}')
+          test -n "$base_sha"
+          rm -rf "$RUNNER_TEMP/repo"
+          git init "$RUNNER_TEMP/repo"
+          git -C "$RUNNER_TEMP/repo" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$RUNNER_TEMP/repo" fetch --no-tags origin \
+            "$base_sha:refs/remotes/exact/base" \
+            "$CANDIDATE_SHA:refs/remotes/exact/candidate"
+          git -C "$RUNNER_TEMP/repo" merge-base --is-ancestor "$base_sha" "$CANDIDATE_SHA"
+          tree=$(git -C "$RUNNER_TEMP/repo" rev-parse "$CANDIDATE_SHA^{tree}")
+          changed=$(git -C "$RUNNER_TEMP/repo" diff --name-only "$base_sha" "$CANDIDATE_SHA" | wc -l | tr -d ' ')
+          gaps=$(git -C "$RUNNER_TEMP/repo" show "$base_sha:docs/status/GAP_REGISTER.json" | \
+            python3 -c 'import json,sys; rows=json.load(sys.stdin)["gaps"]; print(" ".join(row["id"] for row in rows))')
+          body="$RUNNER_TEMP/body.md"
+          cat > "$body" <<EOF
+          ## Singular Plan v3.1 cumulative source candidate
+
+          Exact base: \`${BASE_BRANCH}@${base_sha}\`
+          Exact head: \`${CANDIDATE_BRANCH}@${CANDIDATE_SHA}\`
+          Exact tree: \`${tree}\`
+          Changed paths: \`${changed}\`
+
+          Formal gap scope: ${gaps}
+
+          This guarded source wave converges adversarial Outbox coverage, bounded and generation-fenced session/realtime ownership, disconnect reconciliation, key lifecycle, migration fencing, and the atomic dedicated \`trnm-server\` composition authority. The old persistence-owned process root is retired in the same candidate.
+
+          \`source_candidate=true\`
+          \`accepted_evidence=false\`
+          \`gap_closed=false\`
+          \`production_ready=false\`
+          \`public_online=false\`
+          \`nakama_retired=false\`
+
+          Exact-head/prospective-merge CI, retained artifacts, conflict-free current-head approval, resolved conversations, specialist acceptance, governance read-back, and real external evidence remain mandatory. No self-approval, bypass, force push, cutover or retirement is authorized.
+          EOF
+          sed -i 's/^          //' "$body"
+          mapfile -t prs < <(gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=TrillionniumFoundation:${CANDIDATE_BRANCH}&base=${BASE_BRANCH}" \
+            --jq '.[].number')
+          test "${#prs[@]}" -le 1
+          if [ "${#prs[@]}" -eq 0 ]; then
+            pr=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/pulls" \
+              -f title='refactor(server): converge canonical Plan v3.1 source authority' \
+              -f head="$CANDIDATE_BRANCH" -f base="$BASE_BRANCH" -F draft=true \
+              --raw-field body="$(cat "$body")" --jq '.number')
+          else
+            pr="${prs[0]}"
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" \
+              -f title='refactor(server): converge canonical Plan v3.1 source authority' \
+              --raw-field body="$(cat "$body")" >/dev/null
+          fi
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.head.sha')" = "$CANDIDATE_SHA"
+          printf 'PR_NUMBER=%s\nCANDIDATE_TREE=%s\n' "$pr" "$tree" >> "$GITHUB_ENV"
+          printf 'candidate_pr=%s head=%s tree=%s\n' "$pr" "$CANDIDATE_SHA" "$tree"
+
+      - name: Route review requests and exact specialist handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          author=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.user.login')
+          if [ "${author,,}" != tomasrgbsf ]; then
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
+              -f 'reviewers[]=Tomasrgbsf' >/dev/null || true
+          fi
+          marker="<!-- race-free-handoff:${CANDIDATE_SHA} -->"
+          body="$RUNNER_TEMP/handoff.md"
+          cat > "$body" <<EOF
+          ${marker}
+          Exact cumulative source review requested for PR #${PR_NUMBER}: base \`${BASE_BRANCH}\`, head \`${CANDIDATE_SHA}\`, tree \`${CANDIDATE_TREE}\`. Review the full diff and actual merge object. Issue acknowledgement is not approval; all compatibility, production, cutover and retirement claims remain false.
+          EOF
+          sed -i 's/^          //' "$body"
+          for issue in 7 15 21 35 36 46 47 48; do
+            seen=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${issue}/comments?per_page=100" \
+              --jq --arg marker "$marker" '[.[]|select(.body|contains($marker))]|length')
+            if [ "$seen" -eq 0 ]; then
+              gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+            fi
+          done
