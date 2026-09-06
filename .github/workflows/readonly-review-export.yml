@@ -17,7 +17,7 @@ env:
 
 jobs:
   exact-retention-diagnostic:
-    runs-on: ubuntu-24.04
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
       - name: Fetch exact tooling and candidate
@@ -31,7 +31,7 @@ jobs:
           git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object retention-patch/evidence-retention-v1.patch.gz)" = "$PATCH_GZIP_BLOB"
-          test "$(sha256sum "$GITHUB_WORKSPACE/tooling/retention-patch/evidence-retention-v1.patch.gz" | cut -d' ' -f1)" = "$PATCH_GZIP_SHA256"
+          test "$(shasum -a 256 "$GITHUB_WORKSPACE/tooling/retention-patch/evidence-retention-v1.patch.gz" | cut -d' ' -f1)" = "$PATCH_GZIP_SHA256"
 
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin \
@@ -49,7 +49,7 @@ jobs:
           set -euo pipefail
           patch="$RUNNER_TEMP/evidence-retention-v1.patch"
           gzip -dc "$GITHUB_WORKSPACE/tooling/retention-patch/evidence-retention-v1.patch.gz" > "$patch"
-          test "$(sha256sum "$patch" | cut -d' ' -f1)" = "$PATCH_SHA256"
+          test "$(shasum -a 256 "$patch" | cut -d' ' -f1)" = "$PATCH_SHA256"
           git apply --check "$patch"
           git apply "$patch"
           git diff --name-status | tee "$RUNNER_TEMP/changed-files.txt"
