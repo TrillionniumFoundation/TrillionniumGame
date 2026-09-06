@@ -1,0 +1,250 @@
+name: live-exact-head-closure-audit
+
+on:
+  push:
+    branches: [tooling/closure-audit-live-2026-09-06b]
+    paths:
+      - '.github/workflows/live-exact-head-closure-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: live-exact-head-closure-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      PR_NUMBER: '63'
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Resolve mutable PR tuple and fetch exact objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json')
+          rm -rf "$GITHUB_WORKSPACE" "$RUNNER_TEMP/closure-audit"
+          mkdir -p "$GITHUB_WORKSPACE" "$RUNNER_TEMP/closure-audit"
+          curl -fsSL "${auth[@]}" "$api/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/closure-audit/pr.json"
+          jq -e '.state == "open" and .merged == false' "$RUNNER_TEMP/closure-audit/pr.json" >/dev/null
+          base=$(jq -r '.base.sha' "$RUNNER_TEMP/closure-audit/pr.json")
+          head=$(jq -r '.head.sha' "$RUNNER_TEMP/closure-audit/pr.json")
+          head_repo=$(jq -r '.head.repo.full_name' "$RUNNER_TEMP/closure-audit/pr.json")
+          test "${#base}" -eq 40
+          test "${#head}" -eq 40
+          test "$head_repo" = "$REPOSITORY"
+
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin \
+            "$head" \
+            "+refs/pull/${PR_NUMBER}/merge:refs/remotes/origin/prospective-merge"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$head"
+          merge=$(git -C "$GITHUB_WORKSPACE" rev-parse refs/remotes/origin/prospective-merge)
+          tree=$(git -C "$GITHUB_WORKSPACE" rev-parse 'HEAD^{tree}')
+          merge_tree=$(git -C "$GITHUB_WORKSPACE" rev-parse "${merge}^{tree}")
+          parents=$(git -C "$GITHUB_WORKSPACE" show -s --format='%P' "$merge")
+          test "$tree" = "$merge_tree"
+          test "$parents" = "$base $head"
+          cat > "$RUNNER_TEMP/closure-audit/identity.json" <<EOF
+          {"repository":"$REPOSITORY","pull_request":$PR_NUMBER,"base":"$base","head":"$head","tree":"$tree","prospective_merge":"$merge","prospective_merge_tree":"$merge_tree","ordered_parents":["$base","$head"]}
+          EOF
+          jq -S . "$RUNNER_TEMP/closure-audit/identity.json" | tee "$RUNNER_TEMP/closure-audit/identity.pretty.json"
+
+      - name: Execute repository-controlled validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          python3 -m compileall -q scripts tools tests
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-evidence-index.py
+          python3 scripts/check-gap-register.py
+          python3 scripts/check-status-transitions.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v \
+            2>&1 | tee "$RUNNER_TEMP/closure-audit/python-tests.log"
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked \
+            2>&1 | tee "$RUNNER_TEMP/closure-audit/rust-tests.log"
+          cargo clippy --workspace --all-targets --locked -- -D warnings \
+            2>&1 | tee "$RUNNER_TEMP/closure-audit/rust-clippy.log"
+          if test -f runtime/go.mod; then
+            files=$(find runtime -type f -name '*.go' -print | sort)
+            test -n "$files"
+            test -z "$(printf '%s\n' "$files" | xargs gofmt -l)"
+            (cd runtime && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...) \
+              2>&1 | tee "$RUNNER_TEMP/closure-audit/go-tests.log"
+          fi
+
+      - name: Collect exact-head Actions, reviews and governance readback
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          api="https://api.github.com/repos/${REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json')
+          head=$(jq -r '.head' "$RUNNER_TEMP/closure-audit/identity.json")
+          for page in 1 2 3 4 5; do
+            curl -fsSL "${auth[@]}" \
+              "$api/actions/runs?head_sha=${head}&per_page=100&page=${page}" \
+              > "$RUNNER_TEMP/closure-audit/runs-${page}.json"
+            count=$(jq '.workflow_runs | length' "$RUNNER_TEMP/closure-audit/runs-${page}.json")
+            test "$count" -eq 100 || break
+          done
+          curl -fsSL "${auth[@]}" "$api/pulls/${PR_NUMBER}/reviews?per_page=100" \
+            > "$RUNNER_TEMP/closure-audit/reviews.json"
+          curl -fsSL "${auth[@]}" "$api/pulls/${PR_NUMBER}" \
+            > "$RUNNER_TEMP/closure-audit/pr-final.json"
+          curl -sS "${auth[@]}" -w '\n%{http_code}\n' "$api/branches/main/protection" \
+            > "$RUNNER_TEMP/closure-audit/main-protection.http"
+          curl -sS "${auth[@]}" -w '\n%{http_code}\n' "$api/rulesets" \
+            > "$RUNNER_TEMP/closure-audit/rulesets.http"
+
+          python3 - "$RUNNER_TEMP/closure-audit" <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          from pathlib import Path
+          import sys
+
+          out = Path(sys.argv[1])
+          identity = json.loads((out / 'identity.json').read_text())
+          pr = json.loads((out / 'pr-final.json').read_text())
+          reviews = json.loads((out / 'reviews.json').read_text())
+          runs = []
+          for path in sorted(out.glob('runs-*.json')):
+              runs.extend(json.loads(path.read_text()).get('workflow_runs', []))
+
+          latest = {}
+          for run in runs:
+              key = (run.get('workflow_id'), run.get('path') or run.get('name'))
+              rank = (int(run.get('run_attempt') or 0), int(run.get('id') or 0))
+              if key not in latest or rank > latest[key][0]:
+                  latest[key] = (rank, run)
+          current = [item[1] for item in latest.values()]
+          active = [r for r in current if r.get('status') != 'completed']
+          blocking = [r for r in current if r.get('status') == 'completed' and r.get('conclusion') != 'success']
+
+          newest_by_user = {}
+          for review in reviews:
+              login = ((review.get('user') or {}).get('login') or '').lower()
+              rank = (review.get('submitted_at') or '', int(review.get('id') or 0))
+              if login and (login not in newest_by_user or rank > newest_by_user[login][0]):
+                  newest_by_user[login] = (rank, review)
+          author = ((pr.get('user') or {}).get('login') or '').lower()
+          approvals = []
+          change_requests = []
+          for login, (_, review) in newest_by_user.items():
+              if login == author or (review.get('user') or {}).get('type') == 'Bot':
+                  continue
+              if review.get('commit_id') != identity['head']:
+                  continue
+              if review.get('state') == 'APPROVED': approvals.append(review)
+              if review.get('state') == 'CHANGES_REQUESTED': change_requests.append(review)
+
+          gaps = json.loads(Path('docs/status/GAP_REGISTER.json').read_text())
+          gates = json.loads(Path('docs/status/PRODUCT_GATES.json').read_text())
+          evidence = json.loads(Path('docs/evidence/index.json').read_text())
+          gap_rows = gaps.get('gaps', [])
+          gate_rows = gates.get('gates', [])
+          evidence_rows = evidence.get('items', evidence.get('evidence', []))
+          accepted = [item for item in evidence_rows if item.get('accepted') is True]
+
+          report = {
+              'schema': 'trillionnium.live-exact-head-closure-audit.v1',
+              'identity': identity,
+              'pull_request': {
+                  'state': pr.get('state'), 'draft': pr.get('draft'),
+                  'mergeable': pr.get('mergeable'), 'mergeable_state': pr.get('mergeable_state'),
+                  'head': (pr.get('head') or {}).get('sha'),
+                  'base': (pr.get('base') or {}).get('sha'),
+                  'requested_reviewers': [u.get('login') for u in pr.get('requested_reviewers', [])],
+              },
+              'actions': {
+                  'latest_workflow_count': len(current),
+                  'active_count': len(active),
+                  'blocking_count': len(blocking),
+                  'active': [{'id':r.get('id'),'name':r.get('name'),'status':r.get('status')} for r in active],
+                  'blocking': [{'id':r.get('id'),'name':r.get('name'),'conclusion':r.get('conclusion')} for r in blocking],
+                  'latest': [{'id':r.get('id'),'name':r.get('name'),'path':r.get('path'),'attempt':r.get('run_attempt'),'status':r.get('status'),'conclusion':r.get('conclusion')} for r in sorted(current,key=lambda x:(x.get('name') or '',x.get('id') or 0))],
+              },
+              'review': {
+                  'qualifying_exact_head_approvals': len(approvals),
+                  'exact_head_changes_requested': len(change_requests),
+                  'approvers': [(r.get('user') or {}).get('login') for r in approvals],
+                  'change_requesters': [(r.get('user') or {}).get('login') for r in change_requests],
+              },
+              'canonical': {
+                  'gap_count': len(gap_rows),
+                  'closed_gap_count': sum(g.get('status') == 'closed' for g in gap_rows),
+                  'close_criteria_count': sum(len(g.get('close_criteria', [])) for g in gap_rows),
+                  'gate_count': len(gate_rows),
+                  'passed_gate_count': sum(g.get('status') == 'passed' for g in gate_rows),
+                  'blocked_gate_count': sum(g.get('status') == 'blocked' for g in gate_rows),
+                  'accepted_evidence_count': len(accepted),
+                  'production_ready': gates.get('production_ready') is True,
+                  'public_online': gates.get('public_online') is True,
+                  'nakama_retired': gates.get('nakama_retired') is True,
+              },
+              'governance_readback_files': ['main-protection.http','rulesets.http'],
+              'all_gaps_closed': bool(gap_rows) and all(g.get('status') == 'closed' for g in gap_rows),
+              'claim_boundary': {
+                  'audit_only': True,
+                  'accepted_evidence_created': False,
+                  'gap_status_mutated': False,
+                  'production_credit_created': False,
+              },
+          }
+          raw = json.dumps(report, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode() + b'\n'
+          (out / 'closure-live.json').write_bytes(raw)
+          (out / 'closure-live.sha256').write_text(hashlib.sha256(raw).hexdigest() + '  closure-live.json\n')
+          print(json.dumps(report, indent=2, ensure_ascii=False))
+          PY
+
+      - name: Build deterministic closure packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          packet="$RUNNER_TEMP/closure-audit/live-exact-head-closure-audit.tar.gz"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$packet" -C "$RUNNER_TEMP/closure-audit" \
+            closure-live.json closure-live.sha256 identity.json identity.pretty.json \
+            pr.json pr-final.json reviews.json main-protection.http rulesets.http \
+            python-tests.log rust-tests.log rust-clippy.log
+          test -s "$packet"
+          sha256sum "$packet"
+
+      - name: Retain zero-credit audit packet
+        id: retained-audit
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: live-closure-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/closure-audit/live-exact-head-closure-audit.tar.gz
+          mime_type: application/gzip
+
+      - name: Verify retained audit receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.retained-audit.outputs.artifact_id }}'
+          test -n '${{ steps.retained-audit.outputs.sha256 }}'
+          test '${{ steps.retained-audit.outputs.size_bytes }}' -gt 0
+          printf 'artifact_id=%s\nsha256=%s\nsize_bytes=%s\n' \
+            '${{ steps.retained-audit.outputs.artifact_id }}' \
+            '${{ steps.retained-audit.outputs.sha256 }}' \
+            '${{ steps.retained-audit.outputs.size_bytes }}'
+          printf 'audit_only=true\naccepted_evidence=false\ngap_closed=false\nproduction_ready=false\n'
