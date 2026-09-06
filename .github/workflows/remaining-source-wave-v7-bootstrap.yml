@@ -20,9 +20,12 @@ jobs:
     timeout-minutes: 120
     env:
       SOURCE_BASE_SHA: 7deee4377cff401854647151842c582f038feef1
+      PLAN_HEAD_SHA: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
       OUTBOX_SHA: 4ce383a55d76a8b2b05827c5017b36f9789c02bd
       SESSION_SHA: 0d0f246a131902403202afcd28103f22af30c8a9
       REALTIME_SHA: 4a72ecdb9341faa9c5211b3479f58d075f75a7ba
+      CRYPTO_SHA: 72b63dcca4de879f04771b3987f8d4964756cf56
+      MIGRATION_SHA: 35f992f79fd4878e20de2db46c1641fae9b77562
       SERVER_SHA: 9ef64a8b93b52808bbbde0acaf74c382e6b4b15f
       HARDENING_SHA: f3e9476ff8b6d781b61ad35c135041eddddcfcff
       PRODUCT_BRANCH: codex/remaining-source-blockers-wave-v7-2026-09-07
@@ -52,6 +55,7 @@ jobs:
           python3 - "$tooling/.github/workflows/remaining-source-wave-v5-bootstrap.yml" "$RUNNER_TEMP" <<'PY'
           from pathlib import Path
           import sys
+
           source = Path(sys.argv[1])
           target = Path(sys.argv[2])
           lines = source.read_text(encoding='utf-8').splitlines()
@@ -72,10 +76,79 @@ jobs:
               scripts.append('\n'.join(body) + '\n')
           if len(scripts) != 7:
               raise SystemExit(f'expected seven reviewed scripts, observed {len(scripts)}')
-          scripts[2] = scripts[2].replace(
+
+          def replace_once(script: str, old: str, new: str, label: str) -> str:
+              count = script.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f'{label}: expected exactly one reviewed anchor, observed {count}'
+                  )
+              return script.replace(old, new, 1)
+
+          scripts[0] = replace_once(
+              scripts[0],
+              'extended_base=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/92" --jq \'.base.sha\')',
+              'extended_base="$SOURCE_BASE_SHA"',
+              'remove nonexistent PR #92 base lookup',
+          )
+          scripts[0] = replace_once(
+              scripts[0],
+              'extended_head=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/92" --jq \'.head.sha\')',
+              'extended_head="$SOURCE_BASE_SHA"',
+              'remove nonexistent PR #92 head lookup',
+          )
+          scripts[0] = replace_once(
+              scripts[0],
+              'test -n "$plan_sha" && test -n "$plan_ref"',
+              (
+                  'test "$plan_sha" = "$PLAN_HEAD_SHA"\n'
+                  'test "$plan_ref" = codex/branch-evidence-closure-2026-09-02'
+              ),
+              'bind singular Plan PR identity to exact current head',
+          )
+          if 'pulls/92' in scripts[0]:
+              raise SystemExit('nonexistent PR #92 dependency survived rewrite')
+
+          scripts[1] = replace_once(
+              scripts[1],
+              (
+                  '    "$HARDENING_SHA:refs/remotes/source/hardening" \\\n'
+                  '    "$EXTENDED_BASE:refs/remotes/source/extended-base" \\'
+              ),
+              (
+                  '    "$HARDENING_SHA:refs/remotes/source/hardening" \\\n'
+                  '    "$CRYPTO_SHA:refs/remotes/source/crypto" \\\n'
+                  '    "$MIGRATION_SHA:refs/remotes/source/migration" \\\n'
+                  '    "$EXTENDED_BASE:refs/remotes/source/extended-base" \\'
+              ),
+              'fetch immutable crypto and migration heads',
+          )
+          scripts[1] = replace_once(
+              scripts[1],
+              'for ref in outbox session realtime server hardening; do',
+              'for ref in outbox session realtime crypto migration server hardening; do',
+              'verify every immutable feature head descends from source-wave base',
+          )
+
+          scripts[2] = replace_once(
+              scripts[2],
+              'git checkout "$SERVER_SHA" -- crates/trnm-server',
+              (
+                  'git checkout "$CRYPTO_SHA" -- crates/trnm-token-crypto-provider\n'
+                  'git checkout "$MIGRATION_SHA" -- \\\n'
+                  '  crates/trnm-persistence-core/src/lib.rs \\\n'
+                  '  crates/trnm-persistence-core/src/migration_fence.rs\n'
+                  'git checkout "$SERVER_SHA" -- crates/trnm-server'
+              ),
+              'compose crypto and migration source waves',
+          )
+          scripts[2] = replace_once(
+              scripts[2],
               'apply-canonical-server-authority-v5.py',
               'apply-canonical-server-authority-v7.py',
+              'select latest canonical authority transformer',
           )
+
           for number, body in enumerate(scripts, 1):
               (target / f'v7-{number}.sh').write_text(body, encoding='utf-8')
           PY
