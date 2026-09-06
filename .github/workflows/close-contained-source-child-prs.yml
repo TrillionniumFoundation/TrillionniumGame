@@ -1,0 +1,212 @@
+name: close-contained-source-child-prs
+
+on:
+  push:
+    branches: [tooling/closure-audit-live-2026-09-06b]
+    paths:
+      - '.github/workflows/close-contained-source-child-prs.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: close-contained-source-child-prs
+  cancel-in-progress: true
+
+jobs:
+  close-contained:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 140
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      WAVE_BRANCH: codex/remaining-source-blockers-wave-v4-2026-09-06a
+      FINALIZER_WORKFLOW: remaining-source-wave-finalize-v5
+      BASE_BRANCH: codex/branch-evidence-closure-2026-09-02
+    steps:
+      - name: Wait for validated cumulative wave
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json')
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${REPOSITORY}.git"
+
+          for attempt in $(seq 1 100); do
+            branch_code=$(curl -sS -o "$RUNNER_TEMP/wave-ref.json" -w '%{http_code}' \
+              "${auth[@]}" "$api/git/ref/heads/${WAVE_BRANCH//\//%2F}")
+            run_ok=false
+            if test "$branch_code" = 200; then
+              head=$(jq -r '.object.sha' "$RUNNER_TEMP/wave-ref.json")
+              curl -fsSL "${auth[@]}" \
+                "$api/actions/runs?branch=${WAVE_BRANCH//\//%2F}&per_page=100" \
+                > "$RUNNER_TEMP/wave-runs.json"
+              if jq -e --arg name "$FINALIZER_WORKFLOW" \
+                '[.workflow_runs[] | select(.name == $name)]
+                 | sort_by([(.run_attempt // 0), (.id // 0)]) | last
+                 | .status == "completed" and .conclusion == "success"' \
+                "$RUNNER_TEMP/wave-runs.json" >/dev/null; then
+                run_ok=true
+              fi
+            fi
+            if test "$run_ok" = true; then
+              printf 'validated cumulative wave observed after attempt=%s head=%s\n' \
+                "$attempt" "$head"
+              break
+            fi
+            if test "$attempt" -eq 100; then
+              printf 'validated cumulative wave not observed; no PR is closed\n' >&2
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - name: Verify exact feature containment and resolve PR topology
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          branches=(
+            codex/outbox-property-coverage-2026-09-06
+            codex/session-revocation-fanout-2026-09-06
+            codex/realtime-control-models-2026-09-06
+            codex/crypto-key-lifecycle-2026-09-06
+            codex/migration-fence-control-2026-09-06
+            codex/trnm-server-composition-root-2026-09-06
+          )
+          fetch_args=("+refs/heads/${WAVE_BRANCH}:refs/remotes/origin/wave")
+          for branch in "${branches[@]}"; do
+            key=${branch//\//-}
+            fetch_args+=("+refs/heads/${branch}:refs/remotes/origin/${key}")
+          done
+          git fetch --no-tags --prune origin "${fetch_args[@]}"
+          wave=$(git rev-parse refs/remotes/origin/wave)
+          printf 'wave=%s tree=%s\n' "$wave" "$(git rev-parse "${wave}^{tree}")"
+          : > "$RUNNER_TEMP/children.tsv"
+          for branch in "${branches[@]}"; do
+            key=${branch//\//-}
+            feature=$(git rev-parse "refs/remotes/origin/${key}")
+            git merge-base --is-ancestor "$feature" "$wave"
+            printf '%s\t%s\n' "$branch" "$feature" >> "$RUNNER_TEMP/children.tsv"
+          done
+
+          api="https://api.github.com/repos/${REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json')
+          owner=${REPOSITORY%%/*}
+          curl -fsSL "${auth[@]}" \
+            "$api/pulls?state=open&head=${owner}:${WAVE_BRANCH//\//%2F}&base=${BASE_BRANCH//\//%2F}&per_page=10" \
+            > "$RUNNER_TEMP/wave-prs.json"
+          test "$(jq 'length' "$RUNNER_TEMP/wave-prs.json")" -eq 1
+          wave_pr=$(jq -r '.[0].number' "$RUNNER_TEMP/wave-prs.json")
+          test "$wave_pr" -ne 63
+          printf 'wave_pr=%s\n' "$wave_pr" | tee "$RUNNER_TEMP/wave-pr.env"
+
+      - name: Close fully contained child PRs without deleting refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/children.tsv" "$RUNNER_TEMP/wave-pr.env" <<'PY'
+          from __future__ import annotations
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+          import sys
+
+          children = []
+          for line in Path(sys.argv[1]).read_text().splitlines():
+              branch, head = line.split('\t', 1)
+              children.append((branch, head))
+          wave_pr = int(Path(sys.argv[2]).read_text().strip().split('=', 1)[1])
+          repository = os.environ['REPOSITORY']
+          owner = repository.split('/', 1)[0]
+          base = os.environ['BASE_BRANCH']
+          token = os.environ['GH_TOKEN']
+          api = f'https://api.github.com/repos/{repository}'
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'Content-Type': 'application/json',
+              'User-Agent': 'trillionnium-source-supersession',
+          }
+
+          def request(method, url, payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              req = urllib.request.Request(url, method=method, headers=headers, data=data)
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      raw = response.read()
+                      return response.status, json.loads(raw.decode()) if raw else None
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  try: value = json.loads(raw.decode()) if raw else None
+                  except Exception: value = {'message': raw.decode(errors='replace')[:1000]}
+                  return error.code, value
+
+          results = []
+          for branch, feature_head in children:
+              query = urllib.parse.urlencode({
+                  'state': 'open',
+                  'head': f'{owner}:{branch}',
+                  'base': base,
+                  'per_page': 10,
+              })
+              code, rows = request('GET', f'{api}/pulls?{query}')
+              if code != 200 or not isinstance(rows, list):
+                  raise SystemExit(f'cannot enumerate PR for {branch}: HTTP {code} {rows}')
+              if not rows:
+                  results.append({'branch': branch, 'status': 'already-closed-or-absent'})
+                  continue
+              if len(rows) != 1:
+                  raise SystemExit(f'expected one open PR for {branch}, observed {len(rows)}')
+              pr = rows[0]
+              number = int(pr['number'])
+              if number in {63, wave_pr}:
+                  raise SystemExit(f'protected integration PR #{number} reached child closer')
+              if pr['head']['sha'] != feature_head:
+                  raise SystemExit(f'PR #{number} head moved after containment check')
+              body = (
+                  f'Closing as source-superseded by cumulative Draft PR #{wave_pr}. '
+                  f'The cumulative branch contains exact child head `{feature_head}`. '
+                  'History, branch ref, checks, discussions and reviews remain retained. '
+                  'No review, evidence, gap, compatibility or production credit transfers; '
+                  'the cumulative exact head requires fresh execution and independent review.'
+              )
+              comment_code, _ = request(
+                  'POST', f'{api}/issues/{number}/comments', {'body': body}
+              )
+              if comment_code not in {200, 201}:
+                  raise SystemExit(f'cannot comment PR #{number}: HTTP {comment_code}')
+              patch_code, patched = request(
+                  'PATCH', f'{api}/pulls/{number}', {'state': 'closed'}
+              )
+              if patch_code != 200 or patched.get('state') != 'closed':
+                  raise SystemExit(f'cannot close PR #{number}: HTTP {patch_code} {patched}')
+              results.append({
+                  'branch': branch,
+                  'head': feature_head,
+                  'pull_request': number,
+                  'status': 'closed-source-superseded',
+                  'superseding_pull_request': wave_pr,
+              })
+          print(json.dumps({'wave_pr': wave_pr, 'results': results}, indent=2))
+          PY
+
+      - name: Preserve no-credit boundary
+        shell: bash
+        run: |
+          printf '%s\n' \
+            'source_topology_consolidated=true' \
+            'branches_deleted=false' \
+            'reviews_transferred=false' \
+            'evidence_transferred=false' \
+            'gap_closed=false' \
+            'production_ready=false'
