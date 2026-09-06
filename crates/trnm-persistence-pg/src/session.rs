@@ -161,11 +161,16 @@ impl PgRepository {
             .start()
             .map_err(map_postgres_error)?;
 
-        let token_row = transaction
+        // Credential lookup discovers an immutable family identity only. Every
+        // session-family mutation then locks the family row before any token row,
+        // matching create, explicit revoke and replay revoke. The exact token is
+        // re-read under lock after the family lock, so this removes the prior
+        // token -> family / family -> token deadlock cycle without trusting an
+        // unlocked credential snapshot.
+        let family_identity_row = transaction
             .query_opt(
-                "SELECT family_id, generation, state, issued_at_ms, consumed_at_ms \
-                 FROM trnm_refresh_tokens \
-                 WHERE token_id = $1 AND token_digest = $2 FOR UPDATE",
+                "SELECT family_id FROM trnm_refresh_tokens \
+                 WHERE token_id = $1 AND token_digest = $2",
                 &[
                     &request.presented.id.as_bytes().as_slice(),
                     &request.presented.digest.as_bytes().as_slice(),
@@ -173,13 +178,38 @@ impl PgRepository {
             )
             .map_err(map_postgres_error)?
             .ok_or_else(unauthenticated)?;
-        let family = decode_session_family_id(token_row.get(0))?;
+        let family = decode_session_family_id(family_identity_row.get(0))?;
+
+        let family_row = transaction
+            .query_opt(
+                "SELECT user_id, generation, active_token_id, revoked_reason, \
+                 created_at_ms, updated_at_ms FROM trnm_session_families \
+                 WHERE family_id = $1 FOR UPDATE",
+                &[&family.as_bytes().as_slice()],
+            )
+            .map_err(map_postgres_error)?
+            .ok_or_else(|| data_loss("refresh_family_missing"))?;
+
+        let token_row = transaction
+            .query_opt(
+                "SELECT generation, state, issued_at_ms, consumed_at_ms \
+                 FROM trnm_refresh_tokens \
+                 WHERE family_id = $1 AND token_id = $2 AND token_digest = $3 \
+                 FOR UPDATE",
+                &[
+                    &family.as_bytes().as_slice(),
+                    &request.presented.id.as_bytes().as_slice(),
+                    &request.presented.digest.as_bytes().as_slice(),
+                ],
+            )
+            .map_err(map_postgres_error)?
+            .ok_or_else(unauthenticated)?;
         let presented = RefreshTokenSnapshot {
-            generation: from_i64(token_row.get(1), "negative_refresh_generation")?,
-            state: token_row.get(2),
-            issued_at_ms: from_i64(token_row.get(3), "negative_refresh_issued_at")?,
+            generation: from_i64(token_row.get(0), "negative_refresh_generation")?,
+            state: token_row.get(1),
+            issued_at_ms: from_i64(token_row.get(2), "negative_refresh_issued_at")?,
             consumed_at_ms: optional_from_i64(
-                token_row.get(4),
+                token_row.get(3),
                 "negative_refresh_consumed_at",
             )?,
         };
@@ -188,9 +218,10 @@ impl PgRepository {
             return Err(invalid("refresh_rotation_before_issue"));
         }
 
-        // The family row is the serialization point for rotation. Read the exact
-        // requested successor without taking a second token lock: locking two
-        // caller-selected token identities would permit adversarial lock cycles.
+        // The family lock freezes legitimate mutation of both predecessor and
+        // successor rows. Read the exact requested successor without taking a
+        // second caller-selected token lock, which avoids adversarial token-token
+        // cycles while retaining exact durable response-loss matching.
         let replacement = if presented.state == TOKEN_STATE_CONSUMED {
             transaction
                 .query_opt(
@@ -228,15 +259,6 @@ impl PgRepository {
             None
         };
 
-        let family_row = transaction
-            .query_opt(
-                "SELECT user_id, generation, active_token_id, revoked_reason, \
-                 created_at_ms, updated_at_ms FROM trnm_session_families \
-                 WHERE family_id = $1 FOR UPDATE",
-                &[&family.as_bytes().as_slice()],
-            )
-            .map_err(map_postgres_error)?
-            .ok_or_else(|| data_loss("refresh_family_missing"))?;
         let record = decode_family(family, &family_row)?;
         if record.revoked_reason.is_some() || record.active_token.is_none() {
             return Err(unauthenticated());
