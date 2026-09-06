@@ -1,0 +1,77 @@
+name: cancel-stale-prospective-run
+
+on:
+  push:
+    branches: [tooling/source-snapshot-7deee-2026-09-06]
+    paths:
+      - '.github/workflows/cancel-stale-prospective-run.yml'
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      STALE_RUN_ID: '33999859580'
+      EXPECTED_CURRENT_HEAD: 7deee4377cff401854647151842c582f038feef1
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Cancel only the exact superseded run
+        shell: bash
+        run: |
+          set -euo pipefail
+          api='https://api.github.com'
+          auth=(-H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+
+          pr=$(curl --fail --silent --show-error "${auth[@]}" \
+            "$api/repos/$GITHUB_REPOSITORY/pulls/63")
+          current_head=$(jq -er '.head.sha' <<< "$pr")
+          test "$current_head" = "$EXPECTED_CURRENT_HEAD"
+
+          run=$(curl --fail --silent --show-error "${auth[@]}" \
+            "$api/repos/$GITHUB_REPOSITORY/actions/runs/$STALE_RUN_ID")
+          stale_head=$(jq -er '.head_sha' <<< "$run")
+          stale_name=$(jq -er '.name' <<< "$run")
+          stale_status=$(jq -er '.status' <<< "$run")
+          stale_event=$(jq -er '.event' <<< "$run")
+          stale_pr=$(jq -er '.pull_requests | map(.number) | index(63) != null' <<< "$run")
+
+          test "$stale_name" = 'prospective-merge-gate'
+          test "$stale_event" = 'pull_request'
+          test "$stale_pr" = true
+          test "$stale_head" != "$current_head"
+
+          case "$stale_status" in
+            completed)
+              printf 'run=%s already terminal; no cancellation needed\n' "$STALE_RUN_ID"
+              exit 0
+              ;;
+            queued|in_progress|pending|waiting|requested)
+              ;;
+            *)
+              printf 'unexpected nonterminal state: %s\n' "$stale_status" >&2
+              exit 1
+              ;;
+          esac
+
+          curl --fail --silent --show-error --request POST "${auth[@]}" \
+            "$api/repos/$GITHUB_REPOSITORY/actions/runs/$STALE_RUN_ID/cancel"
+
+          for attempt in $(seq 1 30); do
+            sleep 2
+            state=$(curl --fail --silent --show-error "${auth[@]}" \
+              "$api/repos/$GITHUB_REPOSITORY/actions/runs/$STALE_RUN_ID")
+            status=$(jq -er '.status' <<< "$state")
+            conclusion=$(jq -r '.conclusion // ""' <<< "$state")
+            printf 'attempt=%s status=%s conclusion=%s\n' "$attempt" "$status" "$conclusion"
+            if [[ "$status" == completed ]]; then
+              test "$conclusion" = cancelled
+              exit 0
+            fi
+          done
+          printf 'superseded run did not reach cancelled terminal state\n' >&2
+          exit 1
