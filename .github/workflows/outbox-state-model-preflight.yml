@@ -1,3 +1,4 @@
+# Retrigger after applying the exact Rust 1.85.1 formatter output.
 name: outbox-state-model-preflight
 
 on:
@@ -25,7 +26,7 @@ jobs:
           git init "$GITHUB_WORKSPACE"
           git -C "$GITHUB_WORKSPACE" remote add origin \
             "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=3 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=4 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor \
