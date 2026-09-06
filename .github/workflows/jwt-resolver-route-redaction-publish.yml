@@ -1,0 +1,234 @@
+name: jwt-resolver-route-redaction-publish
+
+on:
+  push:
+    branches:
+      - tooling/jwt-resolver-route-redaction-2026-09-06
+    paths:
+      - '.github/workflows/jwt-resolver-route-redaction-publish.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: jwt-resolver-route-redaction-publish
+  cancel-in-progress: true
+
+jobs:
+  validate-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PRODUCT_BRANCH: codex/jwt-resolver-routing-fence-v2-2026-09-06
+      EXPECTED_PRODUCT_HEAD: c78230d2cc03138d38fdcc8a350961e1549c8dc4
+      GH_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Fetch exact product source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/product"
+          git init "$GITHUB_WORKSPACE/product"
+          git -C "$GITHUB_WORKSPACE/product" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/product" fetch --no-tags --depth=2 origin \
+            "refs/heads/${PRODUCT_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/product" checkout -b "$PRODUCT_BRANCH" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/product" rev-parse HEAD)" = \
+            "$EXPECTED_PRODUCT_HEAD"
+
+      - name: Apply fail-closed public error redaction
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path('crates/trnm-token-jwt-provider-adapter/src/lib.rs')
+          source = source_path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  '''    ResolvedKeyDomainMismatch {
+                      expected: KeyDomain,
+                      actual: KeyDomain,
+                  },
+                  ResolvedKeyEpochMismatch {
+                      expected: Option<u32>,
+                      actual: Option<u32>,
+                  },''',
+                  '''    ResolvedKeyDomainMismatch,
+                  ResolvedKeyEpochMismatch,''',
+              ),
+              (
+                  '''            Self::ResolvedKeyDomainMismatch { expected, actual } => write!(
+                      formatter,
+                      "resolved JWT key domain {actual:?} does not match requested domain {expected:?}"
+                  ),
+                  Self::ResolvedKeyEpochMismatch { expected, actual } => write!(
+                      formatter,
+                      "resolved JWT key epoch {actual:?} does not match token route epoch {expected:?}"
+                  ),''',
+                  '''            Self::ResolvedKeyDomainMismatch | Self::ResolvedKeyEpochMismatch => {
+                      formatter.write_str("JWT key route is unavailable")
+                  }''',
+              ),
+              (
+                  '''        return Err(AuthenticationError::ResolvedKeyDomainMismatch {
+                      expected: expected_domain,
+                      actual: key.domain,
+                  });''',
+                  '''        return Err(AuthenticationError::ResolvedKeyDomainMismatch);''',
+              ),
+              (
+                  '''        return Err(AuthenticationError::ResolvedKeyEpochMismatch {
+                      expected: expected_epoch,
+                      actual: key.epoch,
+                  });''',
+                  '''        return Err(AuthenticationError::ResolvedKeyEpochMismatch);''',
+              ),
+              (
+                  '''            AuthenticationError::ResolvedKeyDomainMismatch {
+                      expected: KeyDomain::RefreshToken,
+                      actual: KeyDomain::AccessToken,
+                  }''',
+                  '''            AuthenticationError::ResolvedKeyDomainMismatch''',
+              ),
+              (
+                  '''            AuthenticationError::ResolvedKeyEpochMismatch {
+                      expected: Some(7),
+                      actual: Some(8),
+                  }''',
+                  '''            AuthenticationError::ResolvedKeyEpochMismatch''',
+              ),
+              (
+                  '''            AuthenticationError::ResolvedKeyEpochMismatch {
+                      expected: None,
+                      actual: Some(7),
+                  }''',
+                  '''            AuthenticationError::ResolvedKeyEpochMismatch''',
+              ),
+          ]
+          for old, new in replacements:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f'replacement anchor count={count}: {old[:80]!r}')
+              source = source.replace(old, new, 1)
+
+          anchor = '''    #[test]
+              fn signature_length_is_checked_before_provider() {'''
+          addition = '''    #[test]
+              fn resolver_route_errors_do_not_expose_domain_or_epoch_details() {
+                  for error in [
+                      AuthenticationError::ResolvedKeyDomainMismatch,
+                      AuthenticationError::ResolvedKeyEpochMismatch,
+                  ] {
+                      let public = error.to_string();
+                      assert_eq!(public, "JWT key route is unavailable");
+                      for forbidden in [
+                          "AccessToken",
+                          "RefreshToken",
+                          "Legacy",
+                          "Epoch",
+                          "Some(",
+                          "None",
+                          " 7",
+                          " 8",
+                      ] {
+                          assert!(
+                              !public.contains(forbidden),
+                              "public route error leaked {forbidden:?}: {public:?}"
+                          );
+                      }
+                  }
+              }
+
+          '''
+          if source.count(anchor) != 1:
+              raise SystemExit('signature-length test anchor drift')
+          source = source.replace(anchor, addition + anchor, 1)
+          source_path.write_text(source, encoding='utf-8')
+
+          readme_path = Path('crates/trnm-token-jwt-provider-adapter/README.md')
+          readme = readme_path.read_text(encoding='utf-8')
+          readme_anchor = (
+              'Provider failure, malformed token, wrong epoch/domain, and signature mismatch '
+              'are deterministic fail-closed results.\n'
+          )
+          readme_replacement = (
+              'Provider failure, malformed token, wrong epoch/domain, and signature mismatch '
+              'are deterministic fail-closed results. Resolver-returned domain and epoch '
+              'mismatches are rejected before provider use, while the public error surface '
+              'intentionally collapses both cases to one route-unavailable message so it '
+              'cannot act as a key-routing oracle.\n'
+          )
+          if readme.count(readme_anchor) != 1:
+              raise SystemExit('README correctness anchor drift')
+          readme_path.write_text(
+              readme.replace(readme_anchor, readme_replacement, 1),
+              encoding='utf-8',
+          )
+          PY
+          expected=$(cat <<'EOF'
+          crates/trnm-token-jwt-provider-adapter/README.md
+          crates/trnm-token-jwt-provider-adapter/src/lib.rs
+          EOF
+          )
+          test "$(git diff --name-only | LC_ALL=C sort)" = "$expected"
+          git diff --check
+
+      - name: Install exact Rust
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal \
+            --component rustfmt --component clippy
+          rustup override set 1.85.1
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Validate adapter and repository contracts
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml
+          cargo fmt --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml -- --check
+          cargo test --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml \
+            --all-targets --locked
+          cargo clippy --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml \
+            --all-targets --locked -- -D warnings
+          python3 scripts/check-module-docs.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-gap-register.py
+          expected=$(cat <<'EOF'
+          crates/trnm-token-jwt-provider-adapter/README.md
+          crates/trnm-token-jwt-provider-adapter/src/lib.rs
+          EOF
+          )
+          test "$(git diff --name-only | LC_ALL=C sort)" = "$expected"
+          git diff --check
+
+      - name: Publish ordinary fast-forward product commit
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_PRODUCT_HEAD"
+          git config user.name 'Qian QI'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git add \
+            crates/trnm-token-jwt-provider-adapter/README.md \
+            crates/trnm-token-jwt-provider-adapter/src/lib.rs
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = 2
+          git diff --cached --check
+          git commit -m 'fix(security): redact resolver route mismatch details'
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
+            push origin "HEAD:refs/heads/${PRODUCT_BRANCH}"
+          printf 'published_head=%s\npublished_tree=%s\n' \
+            "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
