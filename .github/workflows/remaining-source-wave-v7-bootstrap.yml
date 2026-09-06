@@ -109,17 +109,14 @@ jobs:
           if 'pulls/92' in scripts[0]:
               raise SystemExit('nonexistent PR #92 dependency survived rewrite')
 
+          hardening_fetch = '"$HARDENING_SHA:refs/remotes/source/hardening" ' + chr(92)
           scripts[1] = replace_once(
               scripts[1],
+              hardening_fetch,
               (
-                  '    "$HARDENING_SHA:refs/remotes/source/hardening" \\\n'
-                  '    "$EXTENDED_BASE:refs/remotes/source/extended-base" \\'
-              ),
-              (
-                  '    "$HARDENING_SHA:refs/remotes/source/hardening" \\\n'
-                  '    "$CRYPTO_SHA:refs/remotes/source/crypto" \\\n'
-                  '    "$MIGRATION_SHA:refs/remotes/source/migration" \\\n'
-                  '    "$EXTENDED_BASE:refs/remotes/source/extended-base" \\'
+                  hardening_fetch + '\n'
+                  '    "$CRYPTO_SHA:refs/remotes/source/crypto" ' + chr(92) + '\n'
+                  '    "$MIGRATION_SHA:refs/remotes/source/migration" ' + chr(92)
               ),
               'fetch immutable crypto and migration heads',
           )
@@ -135,8 +132,10 @@ jobs:
               'git checkout "$SERVER_SHA" -- crates/trnm-server',
               (
                   'git checkout "$CRYPTO_SHA" -- crates/trnm-token-crypto-provider\n'
-                  'git checkout "$MIGRATION_SHA" -- \\\n'
-                  '  crates/trnm-persistence-core/src/lib.rs \\\n'
+                  'git checkout "$MIGRATION_SHA" -- \
+'
+                  '  crates/trnm-persistence-core/src/lib.rs \
+'
                   '  crates/trnm-persistence-core/src/migration_fence.rs\n'
                   'git checkout "$SERVER_SHA" -- crates/trnm-server'
               ),
