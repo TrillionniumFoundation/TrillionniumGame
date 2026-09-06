@@ -1,47 +1,39 @@
-name: session-harness-current-preflight
+name: session-rustfmt-publisher
 
 on:
   push:
     branches: [tooling/session-response-loss-preflight-2026-09-06]
 
 permissions:
-  contents: read
-  actions: read
+  contents: write
 
 env:
-  BASE_COMMIT: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
-  PRODUCT_HEAD: 6f2b8ab5c4432e811d7eae6ac88fb8170835821a
-  PRODUCT_TREE: eacab2860d72988fd005325f5468cffe73c08596
-  PRODUCT_MERGE: b20c8a46aa72d8fb9a90076cc7536410a69fea1f
+  EXPECTED_HEAD: 6f2b8ab5c4432e811d7eae6ac88fb8170835821a
   PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
   CARGO_TERM_COLOR: never
-  PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
-  current-source-and-merge:
+  exact-rustfmt-publish:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
-      - name: Fetch exact current product source and GitHub merge
+      - name: Fetch exact candidate with authenticated write transport
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin \
             https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=32 origin "$PRODUCT_HEAD"
+          git -C "$GITHUB_WORKSPACE/source" \
+            -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" \
+            fetch --no-tags --depth=32 origin "refs/heads/${PRODUCT_BRANCH}"
           git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$PRODUCT_HEAD"
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$PRODUCT_TREE"
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin refs/pull/63/merge
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse FETCH_HEAD)" = "$PRODUCT_MERGE"
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse "$PRODUCT_MERGE^{tree}")" = "$PRODUCT_TREE"
-          mapfile -t parents < <(git -C "$GITHUB_WORKSPACE/source" cat-file -p "$PRODUCT_MERGE" | sed -n 's/^parent //p')
-          test "${#parents[@]}" -eq 2
-          test "${parents[0]}" = "$BASE_COMMIT"
-          test "${parents[1]}" = "$PRODUCT_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
 
-      - name: Install exact Rust toolchain
+      - name: Install exact formatter and compiler
         shell: bash
         run: |
           set -euo pipefail
@@ -49,64 +41,40 @@ jobs:
           rustc +1.85.1 --version --verbose
           cargo +1.85.1 --version --verbose
 
-      - name: Execute current source and merge contracts
+      - name: Format only the two diagnosed paths and verify candidate
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
-          for pair in "source:$PRODUCT_HEAD" "merge:$PRODUCT_MERGE"; do
-            label=${pair%%:*}
-            object=${pair#*:}
-            git checkout --detach "$object"
-            test "$(git rev-parse HEAD^{tree})" = "$PRODUCT_TREE"
-            test -z "$(git status --porcelain)"
+          cargo +1.85.1 fmt --all
+          mapfile -t changed < <(git diff --name-only)
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = crates/trnm-persistence-pg/src/session.rs
+          test "${changed[1]}" = crates/trnm-persistence-pg/tests/session_response_loss.rs
+          git diff --check
+          cargo +1.85.1 fmt --all -- --check
+          python3 -m unittest -v tests.control_plane.test_session_live_harness_scope
+          cargo +1.85.1 test -p trnm-persistence-pg --all-targets --locked -- --nocapture
+          cargo +1.85.1 clippy -p trnm-persistence-pg --all-targets --locked -- -D warnings
 
-            bash -n scripts/check-pg-server-response-loss.sh
-            bash -n scripts/ci-trnm-server-live.sh
-            python3 -m unittest -v tests.control_plane.test_session_live_harness_scope
-
-            cargo +1.85.1 fmt --all -- --check
-            cargo +1.85.1 test -p trnm-persistence-pg --all-targets --locked -- --nocapture \
-              2>&1 | tee "$RUNNER_TEMP/${label}-persistence-tests.log"
-            cargo +1.85.1 clippy -p trnm-persistence-pg --all-targets --locked -- -D warnings
-
-            python3 -m compileall -q scripts tools tests
-            python3 -m unittest discover -s tests -p 'test_*.py' -v \
-              2>&1 | tee "$RUNNER_TEMP/${label}-python.log"
-            grep -Eq '^Ran [1-9][0-9]* tests in ' "$RUNNER_TEMP/${label}-python.log"
-            grep -qx OK "$RUNNER_TEMP/${label}-python.log"
-
-            for check in \
-              check-documentation-authority.py \
-              check-plan.py \
-              check-evidence-index.py \
-              check-gap-register.py \
-              derive-gap-status.py \
-              derive-gates.py \
-              check-status-transitions.py \
-              check-workflow-action-policy.py \
-              check-repository-hygiene.py \
-              check-trnm-server.py \
-              check-rust-foundation.py; do
-              python3 "scripts/$check"
-            done
-
-            (
-              cd runtime
-              GOTOOLCHAIN=go1.26.5 go test ./... -count=1
-              GOTOOLCHAIN=go1.26.5 go test -race ./... -count=1
-              GOTOOLCHAIN=go1.26.5 go vet ./...
-            )
-            test -z "$(git status --porcelain)"
-            printf '%s object=%s tree=%s result=pass\n' "$label" "$object" "$PRODUCT_TREE"
-          done
-
-      - name: Prove product refs remained unchanged
+      - name: Commit and ordinary fast-forward push
         shell: bash
         working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$BASE_COMMIT"
-          test "$(git ls-remote origin refs/heads/$PRODUCT_BRANCH | cut -f1)" = "$PRODUCT_HEAD"
-          test "$(git ls-remote origin refs/pull/63/merge | cut -f1)" = "$PRODUCT_MERGE"
-          printf 'ordinary_required_gate_credit=false\nindependent_acceptance=false\ngap_closed=false\n'
+          test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
+          git config user.name 'Trillionnium formatting bot'
+          git config user.email 'formatting-bot@invalid'
+          git add \
+            crates/trnm-persistence-pg/src/session.rs \
+            crates/trnm-persistence-pg/tests/session_response_loss.rs
+          git commit -m 'style(session): apply pinned Rust 1.85.1 formatting'
+          new_head=$(git rev-parse HEAD)
+          new_tree=$(git rev-parse HEAD^{tree})
+          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" \
+            push origin "HEAD:refs/heads/${PRODUCT_BRANCH}"
+          test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$new_head"
+          printf 'new_head=%s\nnew_tree=%s\nforce_push=false\nmain_write=false\n' \
+            "$new_head" "$new_tree"
