@@ -1,0 +1,111 @@
+name: remaining-source-wave-topology-reconcile
+
+on:
+  push:
+    branches: [tooling/remaining-source-wave-v2-2026-09-06]
+    paths:
+      - '.github/workflows/remaining-source-wave-topology-reconcile.yml'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: remaining-source-wave-topology-reconcile
+  cancel-in-progress: true
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      BASE_BRANCH: codex/branch-evidence-closure-2026-09-02
+      V7_BRANCH: codex/remaining-source-blockers-wave-v7-2026-09-07
+      V6_BRANCH: codex/remaining-source-blockers-wave-v6-2026-09-07
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Select exact current candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote="https://github.com/${GITHUB_REPOSITORY}.git"
+          for branch in "$V7_BRANCH" "$V6_BRANCH"; do
+            sha=$(git ls-remote "$remote" "refs/heads/${branch}" | awk '{print $1}')
+            if [ -n "$sha" ]; then
+              candidate_branch="$branch"; candidate_sha="$sha"; break
+            fi
+          done
+          test -n "${candidate_sha:-}" || {
+            echo 'validated candidate is absent; topology left unchanged' >&2
+            exit 1
+          }
+          base_sha=$(git ls-remote "$remote" "refs/heads/${BASE_BRANCH}" | awk '{print $1}')
+          test -n "$base_sha"
+          printf 'CANDIDATE_BRANCH=%s\nCANDIDATE_SHA=%s\nBASE_SHA=%s\n' \
+            "$candidate_branch" "$candidate_sha" "$base_sha" >> "$GITHUB_ENV"
+
+      - name: Archive and close only byte-identical superseded PRs
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote="https://github.com/${GITHUB_REPOSITORY}.git"
+          rm -rf "$RUNNER_TEMP/repo"
+          git init "$RUNNER_TEMP/repo"
+          git -C "$RUNNER_TEMP/repo" remote add origin "$remote"
+          git -C "$RUNNER_TEMP/repo" fetch --no-tags origin \
+            "$BASE_SHA:refs/remotes/exact/base" \
+            "$CANDIDATE_SHA:refs/remotes/exact/candidate"
+
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=${BASE_BRANCH}&per_page=100" \
+            > "$RUNNER_TEMP/open-prs.json"
+          python3 - "$RUNNER_TEMP/open-prs.json" "$CANDIDATE_BRANCH" <<'PY' > "$RUNNER_TEMP/legacy.tsv"
+          import json,sys
+          pages=json.load(open(sys.argv[1])); current=sys.argv[2]
+          prefixes=(
+              'codex/remaining-source-blockers-wave-v3-',
+              'codex/remaining-source-blockers-wave-v4-',
+              'codex/remaining-source-blockers-wave-v5-',
+              'codex/remaining-source-blockers-wave-v6-',
+          )
+          for page in pages:
+              for pr in page:
+                  head=pr['head']['ref']
+                  if head != current and head.startswith(prefixes):
+                      print(pr['number'],head,pr['head']['sha'],sep='\t')
+          PY
+
+          while IFS=$'\t' read -r pr branch sha; do
+            test -n "$pr" || continue
+            git -C "$RUNNER_TEMP/repo" fetch --no-tags origin \
+              "$sha:refs/remotes/legacy/${pr}"
+            mapfile -t paths < <(git -C "$RUNNER_TEMP/repo" diff --name-only "$BASE_SHA" "$sha")
+            test "${#paths[@]}" -gt 0
+            mismatch=0
+            for path in "${paths[@]}"; do
+              old=$(git -C "$RUNNER_TEMP/repo" rev-parse "$sha:$path" 2>/dev/null || echo absent)
+              new=$(git -C "$RUNNER_TEMP/repo" rev-parse "$CANDIDATE_SHA:$path" 2>/dev/null || echo absent)
+              if [ "$old" != "$new" ]; then
+                printf 'preserve PR %s: path mismatch %s old=%s new=%s\n' \
+                  "$pr" "$path" "$old" "$new" >&2
+                mismatch=1
+              fi
+            done
+            if [ "$mismatch" -ne 0 ]; then
+              continue
+            fi
+            archive="archive/superseded-plan-v31/${branch//\//-}-${sha:0:12}"
+            exists=$(git ls-remote "$remote" "refs/heads/${archive}" | awk '{print $1}')
+            if [ -z "$exists" ]; then
+              gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                -f ref="refs/heads/${archive}" -f sha="$sha" >/dev/null
+            else
+              test "$exists" = "$sha"
+            fi
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" \
+              -f state=closed >/dev/null
+            observed=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.state')
+            test "$observed" = closed
+            printf 'archived_and_closed pr=%s branch=%s sha=%s archive=%s\n' \
+              "$pr" "$branch" "$sha" "$archive"
+          done < "$RUNNER_TEMP/legacy.tsv"
