@@ -5,6 +5,10 @@ on:
     branches: [tooling/remaining-source-wave-v2-2026-09-06]
     paths:
       - '.github/workflows/remaining-source-wave-v7-bootstrap.yml'
+      - '.github/workflows/remaining-source-wave-v5-bootstrap.yml'
+      - 'scripts/tooling/rewrite-remaining-source-wave-v7.py'
+      - 'tools/apply-canonical-server-authority-v5.py'
+      - 'tools/apply-canonical-server-authority-v6.py'
       - 'tools/apply-canonical-server-authority-v7.py'
 
 permissions:
@@ -32,131 +36,57 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
-      - name: Publish only when the validated v6 product is absent
+      - name: Derive, validate and publish the exact v7 product
         shell: bash
         run: |
           set -euo pipefail
+
           if [ -n "$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" \
             refs/heads/codex/remaining-source-blockers-wave-v6-2026-09-07)" ]; then
             echo 'validated v6 product branch already exists; no superseding branch created'
             exit 0
           fi
+          test -z "$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/heads/${PRODUCT_BRANCH}")"
 
           tooling="$RUNNER_TEMP/tooling-bootstrap"
-          rm -rf "$tooling"
+          rm -rf "$tooling" "$GITHUB_WORKSPACE/source"
           git init "$tooling"
-          git -C "$tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$tooling" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
           git -C "$tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$tooling" checkout --detach FETCH_HEAD
           test "$(git -C "$tooling" rev-parse HEAD)" = "$GITHUB_SHA"
-          test -f "$tooling/.github/workflows/remaining-source-wave-v5-bootstrap.yml"
+
+          rewrite="$tooling/scripts/tooling/rewrite-remaining-source-wave-v7.py"
+          source_workflow="$tooling/.github/workflows/remaining-source-wave-v5-bootstrap.yml"
+          test -f "$rewrite"
+          test -f "$source_workflow"
+          test -f "$tooling/tools/apply-canonical-server-authority-v5.py"
+          test -f "$tooling/tools/apply-canonical-server-authority-v6.py"
           test -f "$tooling/tools/apply-canonical-server-authority-v7.py"
 
-          python3 - "$tooling/.github/workflows/remaining-source-wave-v5-bootstrap.yml" "$RUNNER_TEMP" <<'PY'
-          from pathlib import Path
-          import sys
-
-          source = Path(sys.argv[1])
-          target = Path(sys.argv[2])
-          lines = source.read_text(encoding='utf-8').splitlines()
-          scripts = []
-          index = 0
-          while index < len(lines):
-              if lines[index] != '        run: |':
-                  index += 1
-                  continue
-              index += 1
-              body = []
-              while index < len(lines):
-                  line = lines[index]
-                  if line and not line.startswith('          '):
-                      break
-                  body.append(line[10:] if line.startswith('          ') else '')
-                  index += 1
-              scripts.append('\n'.join(body) + '\n')
-          if len(scripts) != 7:
-              raise SystemExit(f'expected seven reviewed scripts, observed {len(scripts)}')
-
-          def replace_once(script: str, old: str, new: str, label: str) -> str:
-              count = script.count(old)
-              if count != 1:
-                  raise SystemExit(
-                      f'{label}: expected exactly one reviewed anchor, observed {count}'
-                  )
-              return script.replace(old, new, 1)
-
-          scripts[0] = replace_once(
-              scripts[0],
-              'extended_base=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/92" --jq \'.base.sha\')',
-              'extended_base="$SOURCE_BASE_SHA"',
-              'remove nonexistent PR #92 base lookup',
-          )
-          scripts[0] = replace_once(
-              scripts[0],
-              'extended_head=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/92" --jq \'.head.sha\')',
-              'extended_head="$SOURCE_BASE_SHA"',
-              'remove nonexistent PR #92 head lookup',
-          )
-          scripts[0] = replace_once(
-              scripts[0],
-              'test -n "$plan_sha" && test -n "$plan_ref"',
-              (
-                  'test "$plan_sha" = "$PLAN_HEAD_SHA"\n'
-                  'test "$plan_ref" = codex/branch-evidence-closure-2026-09-02'
-              ),
-              'bind singular Plan PR identity to exact current head',
-          )
-          if 'pulls/92' in scripts[0]:
-              raise SystemExit('nonexistent PR #92 dependency survived rewrite')
-
-          hardening_fetch = '"$HARDENING_SHA:refs/remotes/source/hardening" ' + chr(92)
-          scripts[1] = replace_once(
-              scripts[1],
-              hardening_fetch,
-              (
-                  hardening_fetch + '\n'
-                  '    "$CRYPTO_SHA:refs/remotes/source/crypto" ' + chr(92) + '\n'
-                  '    "$MIGRATION_SHA:refs/remotes/source/migration" ' + chr(92)
-              ),
-              'fetch immutable crypto and migration heads',
-          )
-          scripts[1] = replace_once(
-              scripts[1],
-              'for ref in outbox session realtime server hardening; do',
-              'for ref in outbox session realtime crypto migration server hardening; do',
-              'verify every immutable feature head descends from source-wave base',
-          )
-
-          scripts[2] = replace_once(
-              scripts[2],
-              'git checkout "$SERVER_SHA" -- crates/trnm-server',
-              (
-                  'git checkout "$CRYPTO_SHA" -- crates/trnm-token-crypto-provider\n'
-                  'git checkout "$MIGRATION_SHA" -- \
-'
-                  '  crates/trnm-persistence-core/src/lib.rs \
-'
-                  '  crates/trnm-persistence-core/src/migration_fence.rs\n'
-                  'git checkout "$SERVER_SHA" -- crates/trnm-server'
-              ),
-              'compose crypto and migration source waves',
-          )
-          scripts[2] = replace_once(
-              scripts[2],
-              'apply-canonical-server-authority-v5.py',
-              'apply-canonical-server-authority-v7.py',
-              'select latest canonical authority transformer',
-          )
-
-          for number, body in enumerate(scripts, 1):
-              (target / f'v7-{number}.sh').write_text(body, encoding='utf-8')
-          PY
+          python3 -m py_compile \
+            "$rewrite" \
+            "$tooling/tools/apply-canonical-server-authority-v5.py" \
+            "$tooling/tools/apply-canonical-server-authority-v6.py" \
+            "$tooling/tools/apply-canonical-server-authority-v7.py"
+          python3 "$rewrite" "$source_workflow" "$RUNNER_TEMP"
+          for number in 1 2 3 4 5 6 7; do
+            bash -n "$RUNNER_TEMP/v7-${number}.sh"
+          done
 
           bash "$RUNNER_TEMP/v7-1.sh"
           set -a
           source "$GITHUB_ENV"
           set +a
+          test "$PLAN_SHA" = "$PLAN_HEAD_SHA"
+          test "$PLAN_REF" = codex/branch-evidence-closure-2026-09-02
+
           bash "$RUNNER_TEMP/v7-2.sh"
           for number in 3 4 5 6 7; do
-            (cd "$GITHUB_WORKSPACE/source" && bash "$RUNNER_TEMP/v7-${number}.sh")
+            (
+              cd "$GITHUB_WORKSPACE/source"
+              bash "$RUNNER_TEMP/v7-${number}.sh"
+            )
           done
