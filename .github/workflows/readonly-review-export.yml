@@ -1,70 +1,141 @@
-name: native-artifact-retention-preflight
+name: evidence-retention-publisher
 
 on:
   push:
     branches: [tooling/session-response-loss-preflight-2026-09-06]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: native-artifact-retention-preflight
+  group: evidence-retention-publisher
   cancel-in-progress: true
 
 env:
-  PRODUCT_HEAD: d6df83741ea7c55d799605b349a655669498da57
+  EXPECTED_HEAD: d6df83741ea7c55d799605b349a655669498da57
+  EXPECTED_TREE: 74832ffd013e7687eaeef8b9bcaf0afeec212904
+  PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+  PATCH_GZIP_BLOB: 6b7890b861cc6f0cde2f87a9acfff5aedd1cf456
+  PATCH_GZIP_SHA256: b0f1a8a0a29e2ed855a6ce2ace8fc7edef8f6e1e67fc607fab1d3d470d0bc5c9
+  PATCH_SHA256: 38a5fa31c5499fca933789052611f288ec1be0ce2cae5ff5e8b965945333d666
 
 jobs:
-  upload-bounded-packet:
+  exact-retention-publish:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - name: Fetch exact tooling and candidate
         shell: bash
         run: |
           set -euo pipefail
           rm -rf "$GITHUB_WORKSPACE/tooling" "$GITHUB_WORKSPACE/source"
+
           git init "$GITHUB_WORKSPACE/tooling"
           git -C "$GITHUB_WORKSPACE/tooling" remote add origin \
             https://github.com/TrillionniumFoundation/TrillionniumGame.git
           git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" hash-object retention-patch/evidence-retention-v1.patch.gz)" = "$PATCH_GZIP_BLOB"
+          test "$(sha256sum "$GITHUB_WORKSPACE/tooling/retention-patch/evidence-retention-v1.patch.gz" | cut -d' ' -f1)" = "$PATCH_GZIP_SHA256"
 
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin \
             https://github.com/TrillionniumFoundation/TrillionniumGame.git
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin "$PRODUCT_HEAD"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=128 origin \
+            "refs/heads/${PRODUCT_BRANCH}"
           git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$PRODUCT_HEAD"
-      - name: Build deterministic nonempty packet
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test "$(git -C "$GITHUB_WORKSPACE/source" ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
+
+      - name: Apply exact retained-evidence patch
         shell: bash
+        working-directory: source
         run: |
           set -euo pipefail
-          packet="$RUNNER_TEMP/native-artifact-preflight"
-          mkdir -p "$packet"
-          printf '{"schema":"trillionnium.native-artifact-preflight.v1","repository":"%s","head":"%s","run_id":"%s","run_attempt":"%s","job":"%s","claims":{"accepted_evidence":false,"gap_closed":false}}\n' \
-            "$GITHUB_REPOSITORY" "$PRODUCT_HEAD" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_JOB" \
-            > "$packet/identity.json"
-          sha256sum "$packet/identity.json" > "$packet/SHA256SUMS"
-          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
-            -czf "$RUNNER_TEMP/native-artifact-preflight.tar.gz" -C "$packet" .
-          test -s "$RUNNER_TEMP/native-artifact-preflight.tar.gz"
-      - name: Upload through hardened first-party transport
-        id: upload
-        uses: ./tooling/publish
-        with:
-          name: native-artifact-preflight-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/native-artifact-preflight.tar.gz
-          mime_type: application/gzip
-      - name: Publish bounded receipt
+          patch="$RUNNER_TEMP/evidence-retention-v1.patch"
+          gzip -dc "$GITHUB_WORKSPACE/tooling/retention-patch/evidence-retention-v1.patch.gz" > "$patch"
+          test "$(sha256sum "$patch" | cut -d' ' -f1)" = "$PATCH_SHA256"
+          git apply --check "$patch"
+          git apply "$patch"
+
+          expected=$(cat <<'EOF'
+          .github/actions/upload-evidence/action.yml
+          .github/actions/upload-evidence/index.js
+          .github/workflows/candidate-identity-manifest.yml
+          .github/workflows/pg-server-response-loss.yml
+          .github/workflows/prospective-merge-gate.yml
+          .github/workflows/trillionnium-game-merge-gate.yml
+          .github/workflows/trnm-server-live.yml
+          tests/control_plane/test_evidence_retention_workflows.py
+          EOF
+          )
+          test "$(git diff --name-only | sort)" = "$expected"
+          git diff --check
+
+      - name: Validate complete workflow and control contract
         shell: bash
+        working-directory: source
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
           set -euo pipefail
-          test -n '${{ steps.upload.outputs.artifact_id }}'
-          test '${{ steps.upload.outputs.sha256 }}' != ''
-          test '${{ steps.upload.outputs.size_bytes }}' -gt 0
-          printf 'artifact_id=%s\nsha256=%s\nsize_bytes=%s\n' \
-            '${{ steps.upload.outputs.artifact_id }}' \
-            '${{ steps.upload.outputs.sha256 }}' \
-            '${{ steps.upload.outputs.size_bytes }}'
+          node --check .github/actions/upload-evidence/index.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          for name in (
+              "candidate-identity-manifest.yml",
+              "pg-server-response-loss.yml",
+              "prospective-merge-gate.yml",
+              "trillionnium-game-merge-gate.yml",
+              "trnm-server-live.yml",
+          ):
+              path = Path(".github/workflows") / name
+              value = yaml.safe_load(path.read_text(encoding="utf-8"))
+              if not isinstance(value, dict) or "jobs" not in value:
+                  raise SystemExit(f"{path}: invalid workflow object")
+          PY
+          python3 -m compileall -q scripts tests
+          python3 -m unittest -v tests.control_plane.test_evidence_retention_workflows
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-evidence-index.py
+          python3 scripts/check-gap-register.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v \
+            2>&1 | tee "$RUNNER_TEMP/retention-python.log"
+          grep -Eq '^Ran [1-9][0-9]* tests in ' "$RUNNER_TEMP/retention-python.log"
+          grep -qx OK "$RUNNER_TEMP/retention-python.log"
+          test -z "$(git status --porcelain --untracked-files=no | grep -v '^ M' || true)"
+
+      - name: Commit and ordinary fast-forward push
+        shell: bash
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$EXPECTED_HEAD"
+          git config user.name 'Trillionnium qualification bot'
+          git config user.email 'qualification-bot@invalid'
+          git add \
+            .github/actions/upload-evidence/action.yml \
+            .github/actions/upload-evidence/index.js \
+            .github/workflows/candidate-identity-manifest.yml \
+            .github/workflows/pg-server-response-loss.yml \
+            .github/workflows/prospective-merge-gate.yml \
+            .github/workflows/trillionnium-game-merge-gate.yml \
+            .github/workflows/trnm-server-live.yml \
+            tests/control_plane/test_evidence_retention_workflows.py
+          git commit -m 'ci(evidence): retain exact source and merge packets'
+          new_head=$(git rev-parse HEAD)
+          new_tree=$(git rev-parse HEAD^{tree})
+          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
+            push origin "HEAD:refs/heads/${PRODUCT_BRANCH}"
+          test "$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | cut -f1)" = "$new_head"
+          printf 'new_head=%s\nnew_tree=%s\nforce_push=false\nmain_write=false\n' \
+            "$new_head" "$new_tree"
