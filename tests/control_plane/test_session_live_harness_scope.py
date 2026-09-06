@@ -36,6 +36,8 @@ class SessionLiveHarnessContractTests(unittest.TestCase):
             self.assertIn(name, source)
         self.assertIn("SessionMutationPoint::BeforeCommit", source)
         self.assertIn("SessionMutationPoint::CredentialResolved", source)
+        self.assertIn("for attempt in 0..4", source)
+        self.assertIn('error.reason() == "database_serialization_failure"', source)
         self.assertIn("fn concurrency_credentials(iteration: u8)", source)
         self.assertIn("assert_eq!(digests.len(), 49);", source)
 
@@ -54,6 +56,7 @@ class SessionLiveHarnessContractTests(unittest.TestCase):
                 # uniqueness guard. The harness must execute the feature-gated
                 # deterministic coordination paths, not merely compile them.
                 self.assertIn("--features session-test-hooks", source)
+                self.assertIn("--test-threads=1", source)
                 self.assertIn('test "$session_test_count" -ge 8', source)
                 self.assertIn("response_loss_family_hex", source)
                 self.assertIn(

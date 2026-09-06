@@ -105,7 +105,7 @@ TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_DATABASE_URL="$database_url" \
 TRNM_DATABASE_PROFILE=postgresql \
   cargo test -p trnm-persistence-pg --features session-test-hooks --locked \
-    --test session_response_loss -- --nocapture 2>&1 | tee "$run_root/session-response-loss.log"
+    --test session_response_loss -- --nocapture --test-threads=1 2>&1 | tee "$run_root/session-response-loss.log"
 session_test_count=$(
   sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
     "$run_root/session-response-loss.log"

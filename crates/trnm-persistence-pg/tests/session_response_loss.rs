@@ -254,19 +254,28 @@ fn establish_committed_successor(
             issued_at_ms: 100,
         })
         .unwrap();
-    match repository
-        .rotate_refresh_token(&RotateRefreshToken {
-            presented: predecessor,
-            replacement: successor,
-            rotated_at_ms: 200,
-        })
-        .unwrap()
-    {
-        RefreshRotationOutcome::Rotated(record) => record,
-        RefreshRotationOutcome::ReplayRevoked(_) => {
-            panic!("fresh setup rotation was classified as replay")
+    let request = RotateRefreshToken {
+        presented: predecessor,
+        replacement: successor,
+        rotated_at_ms: 200,
+    };
+    for attempt in 0..4 {
+        match repository.rotate_refresh_token(&request) {
+            Ok(RefreshRotationOutcome::Rotated(record)) => return record,
+            Ok(RefreshRotationOutcome::ReplayRevoked(_)) => {
+                panic!("fresh setup rotation was classified as replay")
+            }
+            Err(error)
+                if error.code() == StableCode::Aborted
+                    && error.reason() == "database_serialization_failure"
+                    && attempt < 3 =>
+            {
+                repository = PgRepository::connect(database_url, profile).unwrap();
+            }
+            Err(error) => panic!("fresh setup rotation failed: {error}"),
         }
     }
+    unreachable!("bounded fresh setup rotation retries exhausted")
 }
 
 #[cfg(feature = "session-test-hooks")]
