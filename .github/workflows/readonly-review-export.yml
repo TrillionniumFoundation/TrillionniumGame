@@ -52,46 +52,60 @@ jobs:
 
           test_path = Path("crates/trnm-persistence-pg/tests/session_response_loss.rs")
           source = test_path.read_text(encoding="utf-8")
-          old = '''    match repository
-              .rotate_refresh_token(&RotateRefreshToken {
+          start_marker = '''#[cfg(feature = "session-test-hooks")]
+          fn establish_committed_successor(
+          '''
+          end_marker = '''#[cfg(feature = "session-test-hooks")]
+          fn ordered_rotations(
+          '''
+          if source.count(start_marker) != 1 or source.count(end_marker) != 1:
+              raise SystemExit("session setup helper boundaries changed")
+          start = source.index(start_marker)
+          end = source.index(end_marker, start)
+          replacement = '''#[cfg(feature = "session-test-hooks")]
+          fn establish_committed_successor(
+              database_url: &str,
+              profile: DatabaseProfile,
+              family: SessionFamilyId,
+              user: UserId,
+              predecessor: RefreshTokenCredential,
+              successor: RefreshTokenCredential,
+          ) -> trnm_persistence_pg::SessionFamilyRecord {
+              let mut repository = PgRepository::connect(database_url, profile).unwrap();
+              repository
+                  .create_session_family(&CreateSessionFamily {
+                      family,
+                      user,
+                      refresh: predecessor,
+                      issued_at_ms: 100,
+                  })
+                  .unwrap();
+              let request = RotateRefreshToken {
                   presented: predecessor,
                   replacement: successor,
                   rotated_at_ms: 200,
-              })
-              .unwrap()
-          {
-              RefreshRotationOutcome::Rotated(record) => record,
-              RefreshRotationOutcome::ReplayRevoked(_) => {
-                  panic!("fresh setup rotation was classified as replay")
-              }
-          }
-          '''
-          new = '''    let request = RotateRefreshToken {
-              presented: predecessor,
-              replacement: successor,
-              rotated_at_ms: 200,
-          };
-          for attempt in 0..4 {
-              match repository.rotate_refresh_token(&request) {
-                  Ok(RefreshRotationOutcome::Rotated(record)) => return record,
-                  Ok(RefreshRotationOutcome::ReplayRevoked(_)) => {
-                      panic!("fresh setup rotation was classified as replay")
+              };
+              for attempt in 0..4 {
+                  match repository.rotate_refresh_token(&request) {
+                      Ok(RefreshRotationOutcome::Rotated(record)) => return record,
+                      Ok(RefreshRotationOutcome::ReplayRevoked(_)) => {
+                          panic!("fresh setup rotation was classified as replay")
+                      }
+                      Err(error)
+                          if error.code() == StableCode::Aborted
+                              && error.reason() == "database_serialization_failure"
+                              && attempt < 3 =>
+                      {
+                          repository = PgRepository::connect(database_url, profile).unwrap();
+                      }
+                      Err(error) => panic!("fresh setup rotation failed: {error}"),
                   }
-                  Err(error)
-                      if error.code() == StableCode::Aborted
-                          && error.reason() == "database_serialization_failure"
-                          && attempt < 3 =>
-                  {
-                      repository = PgRepository::connect(database_url, profile).unwrap();
-                  }
-                  Err(error) => panic!("fresh setup rotation failed: {error}"),
               }
+              unreachable!("bounded fresh setup rotation retries exhausted")
           }
-          unreachable!("bounded fresh setup rotation retries exhausted")
+
           '''
-          if source.count(old) != 1:
-              raise SystemExit("session setup rotation block changed")
-          test_path.write_text(source.replace(old, new, 1), encoding="utf-8")
+          test_path.write_text(source[:start] + replacement + source[end:], encoding="utf-8")
 
           for name in (
               "scripts/check-pg-server-response-loss.sh",
