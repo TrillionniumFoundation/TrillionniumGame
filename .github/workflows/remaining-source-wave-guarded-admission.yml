@@ -1,0 +1,306 @@
+name: remaining-source-wave-guarded-admission
+
+on:
+  push:
+    branches: [tooling/remaining-source-wave-v2-2026-09-06]
+    paths:
+      - '.github/workflows/remaining-source-wave-guarded-admission.yml'
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: remaining-source-wave-guarded-admission
+  cancel-in-progress: false
+
+jobs:
+  qualify-and-admit:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      BASE_BRANCH: codex/branch-evidence-closure-2026-09-02
+      V7_BRANCH: codex/remaining-source-blockers-wave-v7-2026-09-07
+      V6_BRANCH: codex/remaining-source-blockers-wave-v6-2026-09-07
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve the validated candidate and unique PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote="https://github.com/${GITHUB_REPOSITORY}.git"
+          for branch in "$V7_BRANCH" "$V6_BRANCH"; do
+            sha=$(git ls-remote "$remote" "refs/heads/${branch}" | awk '{print $1}')
+            if [ -n "$sha" ]; then
+              candidate_branch="$branch"
+              candidate_sha="$sha"
+              break
+            fi
+          done
+          test -n "${candidate_sha:-}" || {
+            echo 'no validated v7/v6 candidate branch exists' >&2
+            exit 1
+          }
+          mapfile -t prs < <(gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=TrillionniumFoundation:${candidate_branch}&base=${BASE_BRANCH}" \
+            --jq '.[].number')
+          test "${#prs[@]}" -eq 1 || {
+            printf 'expected one open candidate PR, observed %s\n' "${#prs[@]}" >&2
+            exit 1
+          }
+          pr="${prs[0]}"
+          observed=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.head.sha')
+          test "$observed" = "$candidate_sha"
+          pr_author=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.user.login')
+          printf 'CANDIDATE_BRANCH=%s\nCANDIDATE_SHA=%s\nPR_NUMBER=%s\nPR_AUTHOR=%s\n' \
+            "$candidate_branch" "$candidate_sha" "$pr" "$pr_author" >> "$GITHUB_ENV"
+          printf 'candidate=%s head=%s pr=%s author=%s\n' \
+            "$candidate_branch" "$candidate_sha" "$pr" "$pr_author"
+
+      - name: Wait for a complete terminal-success exact-head collection
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 240); do
+            gh api --paginate --slurp \
+              -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/commits/${CANDIDATE_SHA}/check-runs?per_page=100" \
+              > "$RUNNER_TEMP/check-pages.json"
+            python3 - "$RUNNER_TEMP/check-pages.json" "$RUNNER_TEMP/check-summary.json" <<'PY'
+          import json, sys
+          pages=json.load(open(sys.argv[1]))
+          rows=[]
+          for page in pages:
+              rows.extend(page.get('check_runs', []))
+          latest={}
+          for row in sorted(rows, key=lambda value: value.get('id', 0), reverse=True):
+              key=(row.get('name'), (row.get('app') or {}).get('slug'))
+              latest.setdefault(key, row)
+          result={
+              'total': len(latest),
+              'active': [],
+              'failed': [],
+              'success': [],
+          }
+          for key,row in latest.items():
+              name=f'{key[1] or "unknown"}/{key[0]}'
+              if row.get('status') != 'completed':
+                  result['active'].append(name)
+              elif row.get('conclusion') == 'success':
+                  result['success'].append(name)
+              else:
+                  result['failed'].append(f'{name}:{row.get("conclusion")}')
+          json.dump(result, open(sys.argv[2],'w'), sort_keys=True, indent=2)
+          PY
+            total=$(jq -r '.total' "$RUNNER_TEMP/check-summary.json")
+            active=$(jq -r '.active | length' "$RUNNER_TEMP/check-summary.json")
+            failed=$(jq -r '.failed | length' "$RUNNER_TEMP/check-summary.json")
+            printf 'attempt=%s total=%s active=%s failed=%s\n' \
+              "$attempt" "$total" "$active" "$failed"
+            if [ "$failed" -gt 0 ]; then
+              cat "$RUNNER_TEMP/check-summary.json" >&2
+              exit 1
+            fi
+            if [ "$active" -eq 0 ] && [ "$total" -ge 10 ]; then
+              exit 0
+            fi
+            sleep 20
+          done
+          echo 'exact-head check collection did not settle' >&2
+          cat "$RUNNER_TEMP/check-summary.json" >&2 || true
+          exit 1
+
+      - name: Retain and digest non-empty exact-head artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/artifacts"
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${CANDIDATE_SHA}&per_page=100" \
+            > "$RUNNER_TEMP/run-pages.json"
+          mapfile -t run_ids < <(python3 - "$RUNNER_TEMP/run-pages.json" <<'PY'
+          import json, sys
+          pages=json.load(open(sys.argv[1]))
+          seen=set()
+          for page in pages:
+              for row in page.get('workflow_runs', []):
+                  if row.get('head_sha') == sys.argv[2] if len(sys.argv) > 2 else True:
+                      value=row.get('id')
+                      if value and value not in seen:
+                          seen.add(value); print(value)
+          PY
+          )
+          artifact_count=0
+          for run_id in "${run_ids[@]}"; do
+            while IFS=$'\t' read -r id name expired size; do
+              test -n "$id" || continue
+              test "$expired" = false || continue
+              test "$size" -gt 0 || continue
+              file="$RUNNER_TEMP/artifacts/${run_id}-${id}.zip"
+              gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" > "$file"
+              test -s "$file"
+              python3 - "$file" <<'PY'
+          import pathlib, sys, zipfile
+          path=pathlib.Path(sys.argv[1])
+          with zipfile.ZipFile(path) as archive:
+              infos=archive.infolist()
+              if not infos:
+                  raise SystemExit('empty artifact archive')
+              for info in infos:
+                  name=info.filename
+                  pure=pathlib.PurePosixPath(name)
+                  if name.startswith('/') or '\\' in name or '\x00' in name or '..' in pure.parts:
+                      raise SystemExit(f'unsafe artifact member: {name!r}')
+                  if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                      raise SystemExit(f'symlink artifact member: {name!r}')
+          PY
+              sha256sum "$file" >> "$RUNNER_TEMP/artifact-digests.txt"
+              artifact_count=$((artifact_count + 1))
+            done < <(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100" \
+              --jq '.artifacts[] | [.id,.name,.expired,.size_in_bytes] | @tsv')
+          done
+          test "$artifact_count" -gt 0 || {
+            echo 'no retained non-empty exact-head artifact is available' >&2
+            exit 1
+          }
+          sort -u "$RUNNER_TEMP/artifact-digests.txt" -o "$RUNNER_TEMP/artifact-digests.txt"
+          printf 'retained_artifacts=%s\n' "$artifact_count"
+          cat "$RUNNER_TEMP/artifact-digests.txt"
+
+      - name: Mark ready and request independent review
+        shell: bash
+        run: |
+          set -euo pipefail
+          draft=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.draft')
+          if [ "$draft" = true ]; then
+            gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"
+          fi
+          reviewer='Tomasrgbsf'
+          if [ "${reviewer,,}" = "${PR_AUTHOR,,}" ]; then
+            echo 'reviewer conflicts with PR author' >&2
+            exit 1
+          fi
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
+            -f "reviewers[]=${reviewer}" >/dev/null || true
+
+      - name: Wait for fresh conflict-free approval and zero unresolved threads
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner=${GITHUB_REPOSITORY%%/*}
+          repo=${GITHUB_REPOSITORY#*/}
+          for attempt in $(seq 1 180); do
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+              > "$RUNNER_TEMP/reviews.json"
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits?per_page=100" \
+              > "$RUNNER_TEMP/commits.json"
+            gh api graphql \
+              -f owner="$owner" -f repo="$repo" -F number="$PR_NUMBER" \
+              -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved}pageInfo{hasNextPage}}}}}' \
+              > "$RUNNER_TEMP/threads.json"
+            result=$(python3 - \
+              "$RUNNER_TEMP/reviews.json" "$RUNNER_TEMP/commits.json" \
+              "$RUNNER_TEMP/threads.json" "$CANDIDATE_SHA" "$PR_AUTHOR" <<'PY'
+          import json, sys
+          review_pages=json.load(open(sys.argv[1]))
+          commit_pages=json.load(open(sys.argv[2]))
+          threads=json.load(open(sys.argv[3]))['data']['repository']['pullRequest']['reviewThreads']
+          head=sys.argv[4]
+          author=sys.argv[5].lower()
+          conflicts={author,'profhepta','franksudoman'}
+          for page in commit_pages:
+              for commit in page:
+                  for key in ('author','committer'):
+                      login=(commit.get(key) or {}).get('login')
+                      if login:
+                          conflicts.add(login.lower())
+          latest={}
+          for page in review_pages:
+              for row in sorted(page, key=lambda value: value.get('submitted_at') or ''):
+                  login=(row.get('user') or {}).get('login','').lower()
+                  if login:
+                      latest[login]=row
+          approvals=[]
+          changes=[]
+          for login,row in latest.items():
+              if row.get('commit_id') != head:
+                  continue
+              if row.get('state') == 'APPROVED' and login not in conflicts and not login.endswith('[bot]'):
+                  approvals.append(login)
+              if row.get('state') == 'CHANGES_REQUESTED':
+                  changes.append(login)
+          unresolved=sum(not node['isResolved'] for node in threads['nodes'])
+          result={
+              'approvals':approvals,
+              'changes_requested':changes,
+              'unresolved_threads':unresolved,
+              'thread_pagination_complete':not threads['pageInfo']['hasNextPage'],
+          }
+          print(json.dumps(result,sort_keys=True))
+          PY
+          )
+            echo "attempt=$attempt $result"
+            approvals=$(jq -r '.approvals | length' <<<"$result")
+            changes=$(jq -r '.changes_requested | length' <<<"$result")
+            unresolved=$(jq -r '.unresolved_threads' <<<"$result")
+            complete=$(jq -r '.thread_pagination_complete' <<<"$result")
+            test "$changes" -eq 0 || exit 1
+            test "$complete" = true || {
+              echo 'more than 100 review threads requires explicit pagination' >&2
+              exit 1
+            }
+            if [ "$approvals" -ge 1 ] && [ "$unresolved" -eq 0 ]; then
+              exit 0
+            fi
+            sleep 20
+          done
+          echo 'fresh independent approval did not arrive within the admission window' >&2
+          exit 1
+
+      - name: Re-read mergeability and use only the ordinary exact-SHA path
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+            current_head=$(jq -r '.head.sha' <<<"$pr")
+            mergeable=$(jq -r '.mergeable' <<<"$pr")
+            state=$(jq -r '.mergeable_state' <<<"$pr")
+            merged=$(jq -r '.merged' <<<"$pr")
+            test "$current_head" = "$CANDIDATE_SHA"
+            test "$merged" = false
+            printf 'attempt=%s mergeable=%s state=%s\n' "$attempt" "$mergeable" "$state"
+            if [ "$mergeable" = true ] && { [ "$state" = clean ] || [ "$state" = has_hooks ]; }; then
+              break
+            fi
+            sleep 10
+          done
+          test "$mergeable" = true
+          response=$(gh api --method PUT \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/merge" \
+            -f merge_method=squash \
+            -f sha="$CANDIDATE_SHA")
+          test "$(jq -r '.merged' <<<"$response")" = true
+          merge_sha=$(jq -r '.sha' <<<"$response")
+          test -n "$merge_sha" && test "$merge_sha" != null
+          observed=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.merged')
+          test "$observed" = true
+          printf 'ordinary_child_admission_merge_sha=%s\n' "$merge_sha"
+
+      - name: Rebind main-target PR 63 to its new exact head and request review
+        shell: bash
+        run: |
+          set -euo pipefail
+          new_head=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/63" --jq '.head.sha')
+          test -n "$new_head"
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/pulls/63/requested_reviewers" \
+            -f 'reviewers[]=Tomasrgbsf' >/dev/null || true
+          printf 'pr63_new_head=%s\n' "$new_head"
+          echo 'PR #63 remains unmerged pending its own exact-head/prospective-merge and independent evidence gates'
