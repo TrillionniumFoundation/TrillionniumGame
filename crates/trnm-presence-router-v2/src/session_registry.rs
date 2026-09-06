@@ -175,10 +175,7 @@ impl SessionRouteRegistry {
             .map_or(0, BTreeSet::len)
     }
 
-    pub fn revoked_through(
-        &self,
-        session_id: &SessionId,
-    ) -> Option<SessionRouteGeneration> {
+    pub fn revoked_through(&self, session_id: &SessionId) -> Option<SessionRouteGeneration> {
         self.revoked_through.get(session_id).copied()
     }
 
@@ -316,20 +313,20 @@ impl SessionRouteRegistry {
         let mut leaves = Vec::new();
         let mut hidden_changes = 0usize;
         for connection in connections {
-            let binding = candidate
-                .bindings
-                .get(&connection)
-                .cloned()
-                .ok_or(SessionRouteError::InvariantViolation(
+            let binding = candidate.bindings.get(&connection).cloned().ok_or(
+                SessionRouteError::InvariantViolation(
                     "session index references an absent connection binding",
-                ))?;
+                ),
+            )?;
             if binding.session_generation > request.through_generation {
                 continue;
             }
-            let delta = candidate.router.remove_connection(RemoveConnectionRequest {
-                connection: connection.clone(),
-                generation: binding.connection_generation,
-            })?;
+            let delta = candidate
+                .router
+                .remove_connection(RemoveConnectionRequest {
+                    connection: connection.clone(),
+                    generation: binding.connection_generation,
+                })?;
             leaves.extend(delta.leaves);
             hidden_changes = hidden_changes.saturating_add(delta.hidden_changes);
             candidate.remove_binding(&connection);
@@ -355,15 +352,14 @@ impl SessionRouteRegistry {
     pub fn verify_invariants(&self) -> Result<(), SessionRouteError> {
         self.router.verify_invariants()?;
         for (connection, binding) in &self.bindings {
-            if self.router.established_generation(connection) != Some(binding.connection_generation) {
+            if self.router.established_generation(connection) != Some(binding.connection_generation)
+            {
                 return Err(SessionRouteError::InvariantViolation(
                     "binding generation differs from presence high-water generation",
                 ));
             }
             let identity = self.router.established_identity(connection).ok_or(
-                SessionRouteError::InvariantViolation(
-                    "bound connection has no presence identity",
-                ),
+                SessionRouteError::InvariantViolation("bound connection has no presence identity"),
             )?;
             if identity.session_id != binding.session_id {
                 return Err(SessionRouteError::InvariantViolation(
@@ -401,11 +397,12 @@ impl SessionRouteRegistry {
                 ));
             }
             for connection in connections {
-                let binding = self.bindings.get(connection).ok_or(
-                    SessionRouteError::InvariantViolation(
-                        "session index references an absent binding",
-                    ),
-                )?;
+                let binding =
+                    self.bindings
+                        .get(connection)
+                        .ok_or(SessionRouteError::InvariantViolation(
+                            "session index references an absent binding",
+                        ))?;
                 if &binding.session_id != session_id {
                     return Err(SessionRouteError::InvariantViolation(
                         "session index points to a different session binding",
@@ -513,14 +510,13 @@ impl SessionRouteRegistry {
 
     fn remove_binding(&mut self, connection: &ConnectionRef) -> Option<SessionBinding> {
         let binding = self.bindings.remove(connection)?;
-        let remove_session_entry = if let Some(connections) =
-            self.connections_by_session.get_mut(&binding.session_id)
-        {
-            connections.remove(connection);
-            connections.is_empty()
-        } else {
-            false
-        };
+        let remove_session_entry =
+            if let Some(connections) = self.connections_by_session.get_mut(&binding.session_id) {
+                connections.remove(connection);
+                connections.is_empty()
+            } else {
+                false
+            };
         if remove_session_entry {
             self.connections_by_session.remove(&binding.session_id);
         }
@@ -612,9 +608,7 @@ mod tests {
         assert_eq!(delta.leaves.len(), 2);
         assert_eq!(delta.hidden_changes, 1);
         assert_eq!(
-            registry.active_connections_for_session(
-                &SessionId::new("session-a").expect("session")
-            ),
+            registry.active_connections_for_session(&SessionId::new("session-a").expect("session")),
             0
         );
         assert_eq!(registry.active_connection_count(), 1);
@@ -692,9 +686,7 @@ mod tests {
         assert_eq!(old.removed_connections, 0);
         assert_eq!(registry.active_connection_count(), 1);
         assert_eq!(
-            registry.active_connections_for_session(
-                &SessionId::new("session-b").expect("session")
-            ),
+            registry.active_connections_for_session(&SessionId::new("session-b").expect("session")),
             1
         );
         registry.verify_invariants().expect("invariants");
