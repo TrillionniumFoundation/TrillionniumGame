@@ -52,37 +52,37 @@ jobs:
 
           prospective = Path("tests/control_plane/test_prospective_merge_identity.py")
           source = prospective.read_text(encoding="utf-8")
-          old = '''        next_milestone = {
-              "schema": "trillionnium.next-milestone.v1",
-              "milestone_id": "M0-TEST",'''
-          new = '''        next_milestone = {
-              "schema": "trillionnium.next-milestone.v1",
-              "project_id": "trillionnium-game",
-              "plan_version": 3,
-              "milestone_id": "M0-TEST",'''
-          if source.count(old) != 1 or '"plan_version": 3,\n              "milestone_id": "M0-TEST"' in source:
+          old = '"schema": "trillionnium.next-milestone.v1",\n            "milestone_id": "M0-TEST",'
+          new = (
+              '"schema": "trillionnium.next-milestone.v1",\n'
+              '            "project_id": "trillionnium-game",\n'
+              '            "plan_version": 3,\n'
+              '            "milestone_id": "M0-TEST",'
+          )
+          if source.count(old) != 1 or '"plan_version": 3,\n            "milestone_id": "M0-TEST"' in source:
               raise SystemExit("prospective roadmap fixture insertion point changed")
           prospective.write_text(source.replace(old, new), encoding="utf-8")
 
           gap_scope = Path("tests/control_plane/test_gap_register_scope_lock.py")
           source = gap_scope.read_text(encoding="utf-8")
-          old = '''        self.assertIn("gap_register_scope_policy.py", source)
-              self.assertIn("SCOPE.validate_files", source)'''
-          new = '''        self.assertIn("gap_register_scope_policy.py", source)
-              self.assertIn("SCOPE.validate_document", source)
-              self.assertIn("BASELINE_ROOT / SCOPE.BASELINE_RELATIVE", source)'''
+          old = '        self.assertIn("SCOPE.validate_files", source)'
+          new = (
+              '        self.assertIn("SCOPE.validate_document", source)\n'
+              '        self.assertIn("BASELINE_ROOT / SCOPE.BASELINE_RELATIVE", source)'
+          )
           if source.count(old) != 1:
               raise SystemExit("gap policy wiring assertion changed")
           source = source.replace(old, new)
           old = '        self.assertIn("check-gap-register.py", source)\n'
-          new = '''        checker_test = (
-              ROOT / "tests/control_plane/test_gap_register.py"
-          ).read_text(encoding="utf-8")
-          self.assertIn(
-              'SCRIPT = ROOT / "scripts/check-gap-register.py"',
-              checker_test,
+          new = (
+              '        checker_test = (\n'
+              '            ROOT / "tests/control_plane/test_gap_register.py"\n'
+              '        ).read_text(encoding="utf-8")\n'
+              '        self.assertIn(\n'
+              '            \'SCRIPT = ROOT / "scripts/check-gap-register.py"\',\n'
+              '            checker_test,\n'
+              '        )\n'
           )
-          '''
           if source.count(old) != 1:
               raise SystemExit("aggregate checker assertion changed")
           gap_scope.write_text(source.replace(old, new), encoding="utf-8")
