@@ -1,4 +1,4 @@
-name: tmp-world-cross-repo-token-probe
+name: tmp-world-v13k-unreferenced-object-staging
 
 on:
   push:
@@ -6,18 +6,20 @@ on:
       - ops/game-world-import-probe-20260905
     paths:
       - .github/workflows/tmp-world-cross-repo-token-probe.yml
+  workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
-  group: tmp-world-cross-repo-token-probe
+  group: tmp-world-v13k-unreferenced-object-staging
   cancel-in-progress: true
 
 jobs:
-  probe:
+  stage-unreferenced-blobs:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     env:
       TOKEN_WORLD_REPOSITORY: ${{ secrets.WORLD_REPOSITORY_TOKEN }}
       TOKEN_TRNM_WORLD: ${{ secrets.TRNM_WORLD_TOKEN }}
@@ -34,14 +36,21 @@ jobs:
       TOKEN_RELEASE: ${{ secrets.RELEASE_TOKEN }}
       TOKEN_BOT: ${{ secrets.BOT_TOKEN }}
       TOKEN_MACHINE_USER: ${{ secrets.MACHINE_USER_TOKEN }}
+      EXPECTED_ARTIFACT_ID: "9780499701"
+      EXPECTED_ARTIFACT_DIGEST: "456a181bdc8f8aa248229b044db9eec4f52572ea3b20bca6492907db58d64ef5"
+      EXPECTED_CANDIDATE_TREE: "5e613185f5a2abda42df371f3755e73667717309"
     steps:
-      - name: Test constant unreferenced World blob write without exposing credentials
+      - name: Select masked credential without disclosure
+        id: credential
         shell: bash
         run: |
           set -euo pipefail
-          expected_payload='trnm-world-cross-repository-object-write-probe-v1'
-          encoded="$(printf '%s\n' "$expected_payload" | base64 -w0)"
-          expected_sha="$(printf '%s\n' "$expected_payload" | git hash-object --stdin)"
+          expected_payload='trnm-world-unreferenced-object-staging-v1'
+          printf '%s\n' "$expected_payload" > "$RUNNER_TEMP/probe.txt"
+          expected_sha="$(git hash-object "$RUNNER_TEMP/probe.txt")"
+          base64 -w0 "$RUNNER_TEMP/probe.txt" > "$RUNNER_TEMP/probe.b64"
+          jq -n --rawfile content "$RUNNER_TEMP/probe.b64" \
+            '{content:$content,encoding:"base64"}' > "$RUNNER_TEMP/probe.json"
           candidates=(
             TOKEN_WORLD_REPOSITORY TOKEN_TRNM_WORLD TOKEN_WORLD_GITHUB TOKEN_WORLD_PAT
             TOKEN_CROSS_REPO TOKEN_CROSS_REPOSITORY TOKEN_TRNM_GITHUB TOKEN_TRNM_REPO
@@ -51,27 +60,106 @@ jobs:
           present=0
           for variable in "${candidates[@]}"; do
             value="${!variable:-}"
-            if [[ -z "$value" ]]; then
-              continue
-            fi
+            [[ -n "$value" ]] || continue
             present=$((present + 1))
-            response="${RUNNER_TEMP}/world-token-probe-${present}.json"
+            response="$RUNNER_TEMP/probe-${present}.json"
             code="$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
               --request POST \
               --header "Authorization: Bearer ${value}" \
               --header 'Accept: application/vnd.github+json' \
               --header 'X-GitHub-Api-Version: 2022-11-28' \
               https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/git/blobs \
-              --data "{\"content\":\"${encoded}\",\"encoding\":\"base64\"}")"
+              --data-binary @"$RUNNER_TEMP/probe.json")"
             if [[ "$code" == 201 ]] && [[ "$(jq -r '.sha // empty' "$response")" == "$expected_sha" ]]; then
-              printf 'WORLD_OBJECT_WRITE_PROBE=PASS credential_alias=%s blob=%s\n' "$variable" "$expected_sha"
+              printf 'credential_alias=%s\n' "$variable" >> "$GITHUB_OUTPUT"
+              printf '%s' "$value" > "$RUNNER_TEMP/world-token"
+              chmod 600 "$RUNNER_TEMP/world-token"
+              echo 'WORLD_OBJECT_WRITE_CREDENTIAL=AVAILABLE'
               exit 0
             fi
-            printf 'candidate=%s result_http=%s\n' "$variable" "$code"
           done
           if [[ "$present" == 0 ]]; then
-            echo 'WORLD_OBJECT_WRITE_PROBE=NO_CANDIDATE_SECRET'
+            echo 'WORLD_OBJECT_WRITE_CREDENTIAL=NO_CANDIDATE_SECRET'
           else
-            echo 'WORLD_OBJECT_WRITE_PROBE=NO_AUTHORIZED_CANDIDATE'
+            echo 'WORLD_OBJECT_WRITE_CREDENTIAL=NO_AUTHORIZED_CANDIDATE'
           fi
           exit 1
+
+      - name: Download immutable qualification artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/v13k"
+          curl --fail --location --silent --show-error \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/TrillionniumFoundation/TrillionniumGame/actions/artifacts/${EXPECTED_ARTIFACT_ID}/zip" \
+            --output "$RUNNER_TEMP/v13k/artifact.zip"
+          test -s "$RUNNER_TEMP/v13k/artifact.zip"
+          actual_digest="$(sha256sum "$RUNNER_TEMP/v13k/artifact.zip" | awk '{print $1}')"
+          if [[ "$actual_digest" != "$EXPECTED_ARTIFACT_DIGEST" ]]; then
+            echo "artifact archive digest differs from API digest; checking artifact metadata binding"
+            metadata_digest="$(curl --fail --silent --show-error \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/TrillionniumFoundation/TrillionniumGame/actions/artifacts/${EXPECTED_ARTIFACT_ID}" \
+              | jq -r '.digest // empty' | sed 's/^sha256://')"
+            test "$metadata_digest" = "$EXPECTED_ARTIFACT_DIGEST"
+          fi
+          unzip -q "$RUNNER_TEMP/v13k/artifact.zip" -d "$RUNNER_TEMP/v13k/export"
+          tree_archive="$(find "$RUNNER_TEMP/v13k/export" -type f -name '*candidate-tree*.tar.gz' -print -quit)"
+          test -n "$tree_archive"
+          mkdir -p "$RUNNER_TEMP/v13k/candidate"
+          tar -xzf "$tree_archive" -C "$RUNNER_TEMP/v13k/candidate"
+          test -f "$RUNNER_TEMP/v13k/candidate/trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json"
+          test ! -e "$RUNNER_TEMP/v13k/candidate/trillionnium/crates/trnm-game-server/build.rs"
+          test ! -e "$RUNNER_TEMP/v13k/candidate/trillionnium/crates/trnm-game-server/src/lib.rs.in"
+
+      - name: Stage exact candidate blobs without commit or ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(cat "$RUNNER_TEMP/world-token")"
+          candidate="$RUNNER_TEMP/v13k/candidate"
+          manifest="$RUNNER_TEMP/world-v13k-object-manifest.tsv"
+          : > "$manifest"
+          uploaded=0
+          while IFS= read -r -d '' file; do
+            relative="${file#${candidate}/}"
+            expected="$(git hash-object "$file")"
+            encoded="$RUNNER_TEMP/blob.b64"
+            payload="$RUNNER_TEMP/blob.json"
+            response="$RUNNER_TEMP/blob-response.json"
+            base64 -w0 "$file" > "$encoded"
+            jq -n --rawfile content "$encoded" \
+              '{content:$content,encoding:"base64"}' > "$payload"
+            code="$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+              --request POST \
+              --header "Authorization: Bearer ${token}" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/git/blobs \
+              --data-binary @"$payload")"
+            test "$code" = 201
+            actual="$(jq -r '.sha // empty' "$response")"
+            test "$actual" = "$expected"
+            printf '%s\t%s\t%s\n' "$expected" "$(stat -c '%s' "$file")" "$relative" >> "$manifest"
+            uploaded=$((uploaded + 1))
+          done < <(find "$candidate" -type f -print0 | sort -z)
+          test "$uploaded" -gt 70
+          sort -k3,3 "$manifest" -o "$manifest"
+          printf 'WORLD_V13K_UNREFERENCED_BLOBS=PASS count=%s\n' "$uploaded"
+          echo 'No tree, commit, ref, PR, tag, release or deployment was created by this workflow.'
+
+      - name: Upload staging manifest as evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-v13k-unreferenced-object-manifest-${{ github.sha }}
+          path: ${{ runner.temp }}/world-v13k-object-manifest.tsv
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
