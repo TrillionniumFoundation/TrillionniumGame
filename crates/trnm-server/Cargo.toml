@@ -4,19 +4,34 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85.1"
 license = "Apache-2.0"
-description = "Fail-closed TrillionniumGame Rust server foundation prototype"
+description = "Canonical fail-closed TrillionniumGame server composition root"
 publish = false
+build = "build.rs"
 
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
-name = "trnm-server-foundation"
+name = "trnm-server"
 path = "src/main.rs"
 
 [dependencies]
+prost = "=0.14.3"
+tokio = { version = "=1.53.1", features = ["rt", "time"] }
+tonic = { version = "=0.14.5", features = ["transport"] }
+tonic-prost = "=0.14.5"
 trnm-contracts = { path = "../trnm-contracts" }
-trnm-persistence-core = { path = "../trnm-persistence-core" }
+trnm-persistence-pg = { path = "../trnm-persistence-pg" }
+trnm-realtime-wire = { path = "../trnm-realtime-wire" }
+trnm-session-core = { path = "../trnm-session-core" }
+trnm-token-jwt-adapter = { path = "../trnm-token-jwt-adapter" }
+
+[build-dependencies]
+prost-build = "=0.14.3"
+prost-types = "=0.14.3"
+protoc-bin-vendored = "=3.2.0"
+tonic-build = "=0.14.5"
+tonic-prost-build = "=0.14.5"
 
 [workspace]
 

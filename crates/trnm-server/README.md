@@ -1,55 +1,57 @@
-# trnm-server
+# `trnm-server` canonical composition root
 
-Status: **module documentation; standalone-source-candidate; no automatic compatibility or production credit**  
+Status: **source candidate; no compatibility, durability, SG4 or production credit**  
 Path: `crates/trnm-server`  
-Workspace class: `isolated`  
-Lifecycle: `server-foundation-prototype`  
+Workspace class: `isolated mandatory aggregate target`  
 Owner role: `foundation-runtime`
 
-## Status and authority
+## Purpose
 
-This document is the current module-level engineering contract for `trnm-server`. Its authority is limited to the module boundary described here: **foundation process prototype; not the canonical production binary**. Source presence, a passing unit suite, or this document alone does not establish compatibility, durability, security, operational, or production acceptance.
+This package is the single first-party Rust server process composition root. It owns typed process configuration, migration invocation, HTTP, the bounded Nakama Healthcheck gRPC subset, persistent WebSocket handling, session endpoints, graceful drain and the connection-worker lifecycle. The persistence implementation remains in `trnm-persistence-pg`; the executable process no longer belongs to the persistence package.
 
-The module's current maturity is `standalone-source-candidate`. Promotion requires exact-candidate execution, retained evidence, and the independent reviews required by the linked gaps.
+The source modules under `src/runtime/` are moved byte-for-byte from the previously exercised temporary `trnm-persistence-pg/src/bin/trnm_server/` tree except for path-sensitive composition files. The move deliberately does not widen protocol, authority or production claims.
 
-The exact no-credit source boundary consumed by the server vertical-slice gate is:
+## Commands
 
-```text
-compatibility_credit=false
-database_durability_credit=false
-sg4_credit=false
-production_ready=false
+The binary has no implicit serve mode. Exactly one command is required:
+
+```bash
+cargo run --manifest-path crates/trnm-server/Cargo.toml --locked --bin trnm-server -- check-config
+cargo run --manifest-path crates/trnm-server/Cargo.toml --locked --bin trnm-server -- migrate
+cargo run --manifest-path crates/trnm-server/Cargo.toml --locked --bin trnm-server -- serve
 ```
 
-## Responsibilities
+`check-config` parses and redacts the complete typed configuration. `migrate` applies only the authoritative migration chain and verifies its required table set. `serve` verifies schema metadata before binding the service.
 
-Typed configuration, bounded ingress, worker supervision, health/readiness, drain, and composition-root process contracts.
+## Architecture
 
-Non-goals: While the database-backed temporary authority exists, this package is not the canonical trnm-server release binary and grants no production authority.
+```text
+trnm-server process root
+  -> typed configuration and fail-closed startup
+  -> trnm-persistence-pg pool/repository/TLS/cancellation
+  -> authoritative migrations/
+  -> HTTP authority/session handlers
+  -> bounded gRPC healthcheck subset
+  -> strict WebSocket framing and authority envelopes
+  -> shared drain, worker failure fence and bounded shutdown
+```
 
-## Architecture and dependencies
+The package contains one binary target, `trnm-server`. The former `trnm-server-foundation` prototype is superseded by this composition root; a later cleanup increment must remove the old persistence-package auto-discovered server entry after all scripts, machine status and workflow contracts point to this target.
 
-It composes bounded foundation behavior and must eventually replace the temporary binary atomically with source, tests, lockfile, status, and gate updates.
+## Configuration and fail-closed defaults
 
-Dependency direction is reviewed as part of package authority. This module must not introduce hidden global state, untracked background work, unbounded queues, or transport/database coupling outside the declared lifecycle.
-
-## Public contracts
-
-Process admission, deadlines, readiness, abnormal child exit, and drain are shared across HTTP, gRPC, and upgraded WebSockets.
-
-Public Rust types, serialized fields, configuration keys, database predicates, and externally observable error classes are change-controlled. A breaking change requires an explicit migration or compatibility decision and updated tests in the same candidate.
+The runtime preserves the existing typed `TRNM_SERVER_*` contract. Loopback binding and plaintext database use require their existing explicit candidate controls. Database URLs, administrative tokens, session key material and private-key paths are redacted from debug output. Invalid/missing profile, TLS pairing, pool bounds, request limits or command values terminate startup.
 
 ## Correctness and failure model
 
-No new mutation is admitted after drain acknowledgement; admitted work is bounded; worker panic/error converges to failure and unready state.
-
-All inputs, loops, retries, batches, queues, allocations, and shutdown paths are bounded. Unexpected states fail closed. Duplicate, stale, timeout, cancellation, restart, and partial-failure behavior must be represented in deterministic tests where applicable.
-
-## Security and privacy
-
-Non-loopback exposure is explicit, request sizes are bounded, errors are redacted, and production TLS/auth remain separate acceptance requirements.
-
-Secrets, raw tokens, user payloads, receipts, and provider credentials are not logged or used as metric labels. Any new cryptographic, parser, unsafe, native, or externally reachable boundary requires the appropriate threat, fuzz, and independent review.
+- the authoritative schema is verified before serving;
+- repository operations use bounded pool acquisition, statement/lock/idle transaction limits and total retry budgets;
+- ambiguous database completion is reconciled through exact command identity and receipt replay;
+- WebSocket frames, envelopes, messages per connection and worker queues are bounded;
+- shared drain fences already-upgraded sockets as well as new accepts;
+- a connection or gRPC worker panic begins global drain;
+- shutdown requests in-flight database cancellation and joins all owned workers;
+- source tests preserve existing response-loss, restart, saturation, malformed-frame and session replay behavior.
 
 ## Build and test
 
@@ -59,29 +61,14 @@ cargo test --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked
 cargo clippy --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked -- -D warnings
 ```
 
-This isolated workspace is explicitly registered in package authority and must execute in the stable aggregate merge gate. Empty discovery, skipped mandatory tests, warnings, older-head results, and local-only execution do not earn remote verification or claim credit.
+The exact standalone lockfile, vendored `protoc`, narrow proto source, source commit/tree, generated code and all runtime module blobs must be bound in retained evidence. Empty, skipped, cancelled, older-head or stale-base execution receives no credit.
 
-Focused vectors and live/fault/differential suites are required when this module's behavior crosses protocol, database, security, realtime, or operational boundaries.
+## Security and privacy
 
-## Operations
+The process holds only the scoped material required by its configured adapters. It must not log database credentials, JWT keys, refresh secrets, administrative tokens, private-key bytes, raw user payloads or provider credentials. Production key custody, certificate issuance, revocation operations and provider authority remain external gates.
 
-Expose low-cardinality health, readiness reason, worker, queue, request, failure, and shutdown-phase signals.
+## Compatibility and evidence boundary
 
-The owning adapter or process must define readiness impact, drain behavior, metrics, alerts, capacity limits, and failure recovery before the module can be part of a production profile.
+This package preserves only the already declared vertical-slice behavior. It does not establish complete Nakama API/RTAPI/Runtime/Console/provider/IAP compatibility. The narrow gRPC service is Healthcheck only; the WebSocket protobuf envelope is a bounded authority subset, not the complete Nakama realtime denominator.
 
-## Compatibility and evidence
-
-Database durability, complete protocols, session integration, load, HA, SDK/oracle differential, and production extraction remain open.
-
-Evidence must bind the exact repository, source commit, tree, workflow/run/job/attempt, environment, commands, assertions, retained artifact digests, limitations, expiry, and independent review decision.
-
-## Known gaps and exit criteria
-
-Blocking gaps:
-
-- `GAP-P0-SERVER-001`
-- `GAP-P1-PG-001`
-- `GAP-P0-CI-001`
-- `GAP-P1-REVIEW-001`
-
-Exit requires every applicable close criterion in `docs/status/GAP_REGISTER.json`, exact-head and prospective-merge execution, and conflict-free independent review. Temporary prototypes and gates also require an explicit convergence or removal decision.
+Promotion requires exact-head and prospective-merge execution against both database profiles, retained source/build/artifact identities, and independent protocol, database, security and SRE acceptance. HA, PITR, capacity/endurance, multi-node routing, canary, cutover, public online and Nakama retirement remain false until their separate evidence gates pass.
