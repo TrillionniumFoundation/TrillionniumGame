@@ -1,0 +1,127 @@
+name: reviewer-capacity-discovery
+
+on:
+  push:
+    branches:
+      - tooling/gap-closure-audit-2026-09-07
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: reviewer-capacity-discovery
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Discover and request eligible non-conflicted reviewers
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"; org="${repo%/*}"; pr_number=93
+          out="$RUNNER_TEMP/reviewer-discovery"
+          mkdir -p "$out"
+          pr=$(gh api "repos/$repo/pulls/$pr_number")
+          head=$(jq -r .head.sha <<<"$pr")
+          printf '%s\n' "$pr" > "$out/pr.json"
+
+          gh api --paginate "repos/$repo/pulls/$pr_number/commits?per_page=100" \
+            | jq -s '[.[][]] | unique_by(.sha)' > "$out/commits.json"
+          gh api "repos/$repo/pulls/63/reviews?per_page=100" > "$out/pr63-reviews.json"
+          gh api "repos/$repo/pulls/93/reviews?per_page=100" > "$out/pr93-reviews.json"
+          gh api "repos/$repo/contributors?per_page=100" > "$out/contributors.json" || echo '[]' > "$out/contributors.json"
+          gh api "orgs/$org/public_members?per_page=100" > "$out/public-members.json" || echo '[]' > "$out/public-members.json"
+
+          for path in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
+            safe=$(tr '/' '_' <<<"$path")
+            status=$(curl -sS -o "$out/$safe" -w '%{http_code}' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github.raw+json' \
+              "https://api.github.com/repos/$repo/contents/$path?ref=$head")
+            printf '%s\n' "$status" > "$out/$safe.http-status"
+          done
+
+          python3 - "$out" <<'PY'
+          from __future__ import annotations
+          import json, re, sys
+          from pathlib import Path
+          out=Path(sys.argv[1])
+          def load(name):
+              try: return json.loads((out/name).read_text())
+              except Exception: return []
+          candidates=set()
+          for name in ('public-members.json','contributors.json'):
+              for row in load(name):
+                  login=row.get('login')
+                  if isinstance(login,str): candidates.add(login)
+          for name in ('pr63-reviews.json','pr93-reviews.json'):
+              for row in load(name):
+                  login=(row.get('user') or {}).get('login')
+                  if isinstance(login,str): candidates.add(login)
+          for path in out.glob('*CODEOWNERS'):
+              for login in re.findall(r'(?<![\w-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\b', path.read_text(errors='ignore')):
+                  candidates.add(login)
+          conflicted={'Franksudoman','ProfHepta','github-actions','github-actions[bot]'}
+          for row in load('commits.json'):
+              for key in ('author','committer'):
+                  login=(row.get(key) or {}).get('login')
+                  if isinstance(login,str): conflicted.add(login)
+          candidates={c for c in candidates if c not in conflicted and not c.endswith('[bot]')}
+          (out/'candidate-logins.txt').write_text('\n'.join(sorted(candidates))+'\n')
+          (out/'conflicted-logins.txt').write_text('\n'.join(sorted(conflicted))+'\n')
+          PY
+
+          : > "$out/permissions.jsonl"
+          while read -r login; do
+            [[ -n "$login" ]] || continue
+            set +e
+            response=$(gh api "repos/$repo/collaborators/$login/permission" 2>"$out/permission-$login.stderr")
+            status=$?
+            set -e
+            if [[ "$status" -eq 0 ]]; then
+              jq -c --arg login "$login" '{login:$login,accessible:true,permission:.permission,user_permission:(.user.permissions // {})}' <<<"$response" >> "$out/permissions.jsonl"
+            else
+              jq -nc --arg login "$login" --argjson exit "$status" '{login:$login,accessible:false,exit:$exit}' >> "$out/permissions.jsonl"
+            fi
+          done < "$out/candidate-logins.txt"
+          jq -s . "$out/permissions.jsonl" > "$out/permissions.json"
+
+          jq -r '.[] | select(.accessible == true and (.permission | IN("write","maintain","admin"))) | .login' \
+            "$out/permissions.json" | sort -u > "$out/eligible.txt"
+          # Tomasrgbsf is already the known eligible route; include the exact
+          # permission result where accessible, and request every additional
+          # eligible non-conflicted route without treating a request as approval.
+          request_json=$(jq -Rn '[inputs | select(length>0)] | {reviewers:.}' < "$out/eligible.txt")
+          if [[ "$(jq '.reviewers | length' <<<"$request_json")" -gt 0 ]]; then
+            gh api -X POST "repos/$repo/pulls/$pr_number/requested_reviewers" \
+              --input - <<<"$request_json" || true
+          fi
+
+          eligible_count=$(wc -l < "$out/eligible.txt" | tr -d ' ')
+          second_count=$(grep -vx 'Tomasrgbsf' "$out/eligible.txt" | sed '/^$/d' | wc -l | tr -d ' ')
+          jq -n --arg head "$head" --argjson eligible "$eligible_count" \
+            --argjson additional "$second_count" \
+            --slurpfile permissions "$out/permissions.json" \
+            '{schema:"trillionnium.reviewer-capacity-discovery.v1",pr:93,head:$head,eligible_permission_routes:$eligible,additional_beyond_known_tomas:$additional,permissions:$permissions[0],review_requests_are_not_approvals:true,capacity_accepted:false,gap_closed:false,production_ready:false}' \
+            > "$out/report.json"
+          report=$(jq -c . "$out/report.json")
+          body=$(cat <<EOF
+          Conflict-aware reviewer-capacity discovery for PR #93 head \`$head\`:
+
+          \`\`\`json
+          $report
+          \`\`\`
+
+          Only non-conflicted users whose repository permission endpoint returned write/maintain/admin were requested. A review request is not an approval; specialist and global SG1 decisions remain distinct.
+          EOF
+          )
+          gh api -X POST "repos/$repo/issues/93/comments" --raw-field body="$body"
+          gh api -X POST "repos/$repo/issues/7/comments" --raw-field body="$body"
