@@ -1,0 +1,1 @@
+This branch is an execution vehicle only. The validated transaction changes the outbox final-attempt reaper, prospective-merge packet verification, required-workflow manifests, and hostile regression. It grants no evidence, gap, compatibility, production, cutover, or retirement credit by itself.
