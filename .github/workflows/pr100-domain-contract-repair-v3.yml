@@ -1,0 +1,104 @@
+name: pr100-domain-contract-repair-v3
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr100-domain-contract-repair-v3
+  cancel-in-progress: false
+
+env:
+  TARGET_BRANCH: codex/reviewer-conflict-capacity-fix-2026-09-07
+  EXPECTED_TARGET_HEAD: d6f0e0cae4bb951097ae7916e98523bbf4522058
+  TRIGGER_BRANCH: tooling/pr100-domain-contract-trigger-v3-2026-09-07
+
+jobs:
+  repair-and-validate:
+    if: github.head_ref == 'tooling/pr100-domain-contract-trigger-v3-2026-09-07'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      CANDIDATE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+      AUTHOR_NAME: trillionnium-governance-bot
+      AUTHOR_EMAIL: trillionnium-governance-bot@users.noreply.github.com
+    steps:
+      - name: Fetch exact trigger without external actions
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$CANDIDATE_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+
+      - name: Execute checked-in v2 repair transaction
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import os
+          import subprocess
+          from pathlib import Path
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          workflow = workspace / ".github/workflows/pr100-domain-contract-repair-v2.yml"
+          lines = workflow.read_text(encoding="utf-8").splitlines()
+          scripts: dict[str, str] = {}
+          current: str | None = None
+          capturing = False
+          body: list[str] = []
+
+          def flush() -> None:
+              global capturing, body
+              if current is not None and capturing:
+                  scripts[current] = "\n".join(body) + "\n"
+              capturing = False
+              body = []
+
+          for line in lines:
+              if line.startswith("      - name: "):
+                  flush()
+                  current = line[len("      - name: "):]
+                  continue
+              if current is not None and line == "        run: |":
+                  capturing = True
+                  body = []
+                  continue
+              if capturing:
+                  if line.startswith("          "):
+                      body.append(line[10:])
+                  elif not line.strip():
+                      body.append("")
+                  else:
+                      flush()
+          flush()
+
+          selected = [
+              "Patch exact target",
+              "Execute focused and complete controls",
+              "Commit non-force exact target repair",
+          ]
+          missing = [name for name in selected if name not in scripts]
+          if missing:
+              raise SystemExit(f"v2 repair scripts missing: {missing}")
+
+          environment = os.environ.copy()
+          for name in selected:
+              print(f"::group::{name}", flush=True)
+              subprocess.run(
+                  ["bash", "-c", "set -euo pipefail\n" + scripts[name]],
+                  cwd=workspace,
+                  env=environment,
+                  check=True,
+              )
+              print("::endgroup::", flush=True)
+          PY
