@@ -1,0 +1,1 @@
+No acceptance credit.
