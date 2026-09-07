@@ -1,18 +1,18 @@
-name: pr104-recovery-state-repair
+name: pr104-recovery-state-repair-v2
 
 on:
   push:
     branches:
       - codex/realtime-recovery-wave-2026-09-07
     paths:
-      - scripts/one_shot_pr104_recovery_state_repair.py
+      - scripts/one_shot_pr104_recovery_state_repair_v2.py
       - .github/workflows/pr104-recovery-state-repair.yml
 
 permissions:
   contents: write
 
 concurrency:
-  group: pr104-recovery-state-repair
+  group: pr104-recovery-state-repair-v2
   cancel-in-progress: false
 
 env:
@@ -43,31 +43,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/one_shot_pr104_recovery_state_repair.py
+          python3 scripts/one_shot_pr104_recovery_state_repair_v2.py
           cargo fmt --manifest-path crates/trnm-presence-router-v2/Cargo.toml
           git diff --check
           actual="$(git diff --name-only | sort | paste -sd, -)"
-          expected=".github/workflows/pr104-recovery-state-repair.yml,crates/trnm-presence-router-v2/src/connection_actor.rs,crates/trnm-presence-router-v2/src/disconnect_journal.rs,crates/trnm-presence-router-v2/src/lib.rs,scripts/one_shot_pr104_recovery_state_repair.py"
+          expected="crates/trnm-presence-router-v2/src/connection_actor.rs,crates/trnm-presence-router-v2/src/disconnect_journal.rs,crates/trnm-presence-router-v2/src/lib.rs"
           test "$actual" = "$expected"
 
-      - name: Form and validate unpushed final tree
+      - name: Validate and publish source-only commit
         shell: bash
         run: |
           set -euo pipefail
           git config user.name trillionnium-recovery-bot
           git config user.email trillionnium-recovery-bot@users.noreply.github.com
-          git add -A
+          git add \
+            crates/trnm-presence-router-v2/src/connection_actor.rs \
+            crates/trnm-presence-router-v2/src/disconnect_journal.rs \
+            crates/trnm-presence-router-v2/src/lib.rs
           git commit -m "fix(realtime): fence request reuse and bound reconciliation"
+          source_commit="$(git rev-parse HEAD)"
           test -z "$(git status --porcelain)"
           cargo fmt --manifest-path crates/trnm-presence-router-v2/Cargo.toml -- --check
           cargo test --manifest-path crates/trnm-presence-router-v2/Cargo.toml --all-targets
           cargo clippy --manifest-path crates/trnm-presence-router-v2/Cargo.toml \
             --all-targets -- -D warnings
-
-      - name: Publish exact tested tree without force
-        shell: bash
-        run: |
-          set -euo pipefail
           observed="$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
           test "$observed" = "$GITHUB_SHA"
-          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          git push origin "${source_commit}:refs/heads/${TARGET_BRANCH}"
