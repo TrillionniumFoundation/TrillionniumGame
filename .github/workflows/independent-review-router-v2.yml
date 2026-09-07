@@ -1,0 +1,59 @@
+name: independent-review-router-v2
+
+on:
+  push:
+    branches: [tooling/outbox-evidence-sealing-staging-2026-09-07a]
+    paths:
+      - '.github/workflows/independent-review-router-v2.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Select only conflict-free human collaborators
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          headers=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json')
+          curl -fsSL "${headers[@]}" "$api/pulls?state=open&per_page=100" > "$RUNNER_TEMP/open-prs.json"
+          curl -fsSL "${headers[@]}" "$api/collaborators?affiliation=all&per_page=100" > "$RUNNER_TEMP/collaborators.json" || echo '[]' > "$RUNNER_TEMP/collaborators.json"
+          jq '[.[]|select(.type=="User" and (.login|endswith("[bot]")|not) and ((.permissions.pull//false)==true))|.login]' "$RUNNER_TEMP/collaborators.json" > "$RUNNER_TEMP/pull-users.json"
+
+          jq '[.[]|select(.number==63 or .head.ref=="fix/outbox-evidence-sealing-2026-09-07" or .head.ref=="codex/remaining-source-blockers-wave-v5-2026-09-07" or .head.ref=="codex/remaining-source-blockers-wave-v6-2026-09-07")]' "$RUNNER_TEMP/open-prs.json" > "$RUNNER_TEMP/targets.json"
+          : > "$RUNNER_TEMP/result.ndjson"
+          while IFS= read -r pr; do
+            number=$(jq -r '.number' <<<"$pr")
+            head=$(jq -r '.head.sha' <<<"$pr")
+            author=$(jq -r '.user.login|ascii_downcase' <<<"$pr")
+            curl -fsSL "${headers[@]}" "$api/pulls/$number/commits?per_page=100" > "$RUNNER_TEMP/commits-$number.json"
+            jq -r '.[].commit.author.email?,.[].commit.committer.email?,.[].author.login?,.[].committer.login?' "$RUNNER_TEMP/commits-$number.json" | sed '/^null$/d;/^$/d' | tr '[:upper:]' '[:lower:]' | sort -u > "$RUNNER_TEMP/conflicts-$number"
+            printf '%s\n' "$author" profhepta franksudoman github-actions >> "$RUNNER_TEMP/conflicts-$number"
+            sort -u -o "$RUNNER_TEMP/conflicts-$number" "$RUNNER_TEMP/conflicts-$number"
+
+            jq -r '.[]' "$RUNNER_TEMP/pull-users.json" | while IFS= read -r login; do
+              lower=$(printf '%s' "$login"|tr '[:upper:]' '[:lower:]')
+              if ! grep -Fxq "$lower" "$RUNNER_TEMP/conflicts-$number"; then printf '%s\n' "$login"; fi
+            done > "$RUNNER_TEMP/eligible-$number"
+            if grep -Fxq Tomasrgbsf "$RUNNER_TEMP/eligible-$number"; then
+              { echo Tomasrgbsf; grep -Fvx Tomasrgbsf "$RUNNER_TEMP/eligible-$number"; } | head -5 > "$RUNNER_TEMP/selected-$number"
+            else
+              head -5 "$RUNNER_TEMP/eligible-$number" > "$RUNNER_TEMP/selected-$number"
+            fi
+            jq -Rn '[inputs]' < "$RUNNER_TEMP/selected-$number" > "$RUNNER_TEMP/selected-$number.json"
+            count=$(jq 'length' "$RUNNER_TEMP/selected-$number.json")
+            if [ "$count" -gt 0 ]; then
+              jq -n --slurpfile selected "$RUNNER_TEMP/selected-$number.json" '{reviewers:$selected[0]}' > "$RUNNER_TEMP/request-$number.json"
+              curl -sS -X POST "${headers[@]}" "$api/pulls/$number/requested_reviewers" --data-binary @"$RUNNER_TEMP/request-$number.json" >/dev/null || true
+            fi
+            jq -n --argjson pr "$number" --arg head "$head" --argjson eligible "$count" --slurpfile selected "$RUNNER_TEMP/selected-$number.json" '{pr:$pr,head:$head,eligible_count:$eligible,requested:$selected[0],request_is_not_approval:true}' >> "$RUNNER_TEMP/result.ndjson"
+          done < <(jq -c '.[]' "$RUNNER_TEMP/targets.json")
+          jq -s '{schema:"trillionnium.independent-review-routing.v2",observed_at:(now|todate),targets:.,claims:{approval_granted:false,gap_closed:false}}' "$RUNNER_TEMP/result.ndjson" > "$RUNNER_TEMP/result.json"
+          cat "$RUNNER_TEMP/result.json"
