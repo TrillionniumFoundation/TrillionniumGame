@@ -58,7 +58,7 @@ Public Rust types, serialized fields, configuration keys, database predicates, p
 
 - epochs are greater than zero and strictly increase per domain, including after retirement;
 - signing windows use half-open intervals and never overlap inside one domain;
-- verification epochs are bounded to two simultaneous windows per domain;
+- Verification epochs are bounded to two simultaneous windows per domain;
 - verification always names an exact epoch and does not search for an alternative;
 - an emergency revoke blocks signing and verification immediately;
 - retirement is permitted only after revocation or verification expiry;
