@@ -1,0 +1,1 @@
+Reserved zero-credit transfer surface for the validated evidence-sealing payload. No product, evidence, gap, production, cutover, or retirement credit.
