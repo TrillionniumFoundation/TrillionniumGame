@@ -1,0 +1,224 @@
+name: pr93-review-readiness-gate
+
+on:
+  push:
+    branches:
+      - tooling/gap-closure-audit-2026-09-07
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr93-review-readiness-gate
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PR_NUMBER: "93"
+    steps:
+      - name: Bind and fetch the exact review candidate
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          pr=$(gh api "repos/$repo/pulls/$PR_NUMBER")
+          head=$(jq -r .head.sha <<<"$pr")
+          base=$(jq -r .base.sha <<<"$pr")
+          merge=$(jq -r .merge_commit_sha <<<"$pr")
+          branch=$(jq -r .head.ref <<<"$pr")
+          node=$(jq -r .node_id <<<"$pr")
+          test "$(jq -r .state <<<"$pr")" = open
+          test "$branch" = tooling/outbox-evidence-sealing-assets-2026-09-07a
+          printf 'head=%s\nbase=%s\nmerge=%s\nbranch=%s\nnode=%s\n' \
+            "$head" "$base" "$merge" "$branch" "$node" >> "$GITHUB_OUTPUT"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags origin \
+            "$head" "$base" "$merge" "refs/pull/$PR_NUMBER/merge"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$head"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$head"
+
+      - name: Require the complete zero-credit wave tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f docs/status/DENOMINATOR_CLASSIFICATION_CANDIDATE.json
+          test -f docs/status/REVIEWER_CAPACITY.json
+          test -f docs/status/WAVE3_BLOCKERS.json
+          test -f tests/control_plane/test_gap_closure_wave.py
+          jq -e '
+            .family_count == 14 and .leaf_count == 10173 and
+            .unclassified_count == 0 and .accepted == false and
+            .gap_closed == false and .sg1_credit == false and
+            .compatibility_credit == false and .production_ready == false and
+            .public_online == false and .nakama_retired == false and
+            (.families | length) == 14
+          ' docs/status/DENOMINATOR_CLASSIFICATION_CANDIDATE.json >/dev/null
+          jq -e '
+            .policy_minimum_eligible_reviewers == 2 and
+            .eligible_reviewer_count == 1 and .capacity_satisfied == false and
+            (.domains | length) == 6 and all(.domains[]; .accepted == false)
+          ' docs/status/REVIEWER_CAPACITY.json >/dev/null
+          jq -e '
+            .accepted_evidence == false and .all_gaps_closed == false and
+            .production_ready == false and .public_online == false and
+            .nakama_retired == false
+          ' docs/status/WAVE3_BLOCKERS.json >/dev/null
+          test ! -e tools/apply-gap-closure-wave-20260907.py
+          test ! -e .github/workflows/apply-gap-closure-wave-20260907.yml
+          test ! -e .github/workflows/apply-gap-closure-wave-20260907-v2.yml
+          test ! -e tooling/outbox-evidence-sealing/RELEASE_TRANSFER.md
+          test ! -e tooling/outbox-evidence-sealing/TRANSFER_ATTEMPT.md
+          test ! -e tooling/outbox-evidence-sealing/TRANSFER_DEBUG.md
+          python3 -m unittest tests.control_plane.test_gap_closure_wave -v
+          python3 scripts/check-plan.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/derive-gates.py
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
+
+      - name: Require settled current-head Actions and checks
+        id: execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.identity.outputs.head }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 100); do
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
+              | jq -s '[.[].workflow_runs[]] | unique_by(.id)' \
+              > "$RUNNER_TEMP/runs.json"
+            active=$(jq '[.[] | select(.status != "completed")] | length' "$RUNNER_TEMP/runs.json")
+            [[ "$active" -eq 0 ]] && break
+            sleep 12
+          done
+          gh api --paginate -H 'Accept: application/vnd.github+json' \
+            "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?per_page=100" \
+            | jq -s '[.[].check_runs[]] | unique_by(.id)' \
+            > "$RUNNER_TEMP/checks.json"
+          total=$(jq 'length' "$RUNNER_TEMP/runs.json")
+          success=$(jq '[.[] | select(.status == "completed" and .conclusion == "success")] | length' "$RUNNER_TEMP/runs.json")
+          active=$(jq '[.[] | select(.status != "completed")] | length' "$RUNNER_TEMP/runs.json")
+          failed=$(jq '[.[] | select(.conclusion | IN("failure","timed_out","action_required","startup_failure"))] | length' "$RUNNER_TEMP/runs.json")
+          check_active=$(jq '[.[] | select(.status != "completed")] | length' "$RUNNER_TEMP/checks.json")
+          check_failed=$(jq '[.[] | select(.conclusion | IN("failure","timed_out","action_required","startup_failure"))] | length' "$RUNNER_TEMP/checks.json")
+          test "$total" -gt 0
+          test "$success" -gt 0
+          test "$active" -eq 0
+          test "$failed" -eq 0
+          test "$check_active" -eq 0
+          test "$check_failed" -eq 0
+          printf 'total=%s\nsuccess=%s\nactive=%s\nfailed=%s\ncheck_active=%s\ncheck_failed=%s\n' \
+            "$total" "$success" "$active" "$failed" "$check_active" "$check_failed" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Refresh exact PR metadata and request current-object review
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.identity.outputs.head }}
+          BASE_SHA: ${{ steps.identity.outputs.base }}
+          MERGE_SHA: ${{ steps.identity.outputs.merge }}
+        run: |
+          set -euo pipefail
+          tree=$(git rev-parse "$HEAD_SHA^{tree}")
+          merge_tree=$(git rev-parse "$MERGE_SHA^{tree}")
+          test "$tree" = "$merge_tree"
+          classification=$(jq -c '{family_count,leaf_count,unclassified_count,classification_counts,accepted,sg1_credit}' docs/status/DENOMINATOR_CLASSIFICATION_CANDIDATE.json)
+          capacity=$(jq -c '{policy_minimum_eligible_reviewers,eligible_reviewer_count,capacity_satisfied,eligible_conflict_free_reviewers}' docs/status/REVIEWER_CAPACITY.json)
+          body=$(cat <<EOF
+          ## Exact Plan v3.1 cumulative source wave
+
+          - repository: \`$GITHUB_REPOSITORY\`
+          - base branch: \`codex/branch-evidence-closure-2026-09-02\`
+          - base commit: \`$BASE_SHA\`
+          - head branch: \`${{ steps.identity.outputs.branch }}\`
+          - head commit: \`$HEAD_SHA\`
+          - head tree: \`$tree\`
+          - GitHub prospective merge: \`$MERGE_SHA\`
+          - prospective merge tree: \`$merge_tree\`
+          - current-head workflow runs: \`${{ steps.execution.outputs.total }}\`
+          - successful current-head runs: \`${{ steps.execution.outputs.success }}\`
+          - failed/active current-head runs: \`${{ steps.execution.outputs.failed }}/${{ steps.execution.outputs.active }}\`
+
+          ## Repository-controlled blocker closure
+
+          This cumulative wave replaces the former three-line transfer placeholders with a deterministic, fail-closed denominator review surface and hostile regressions. It materializes all fourteen pinned denominator families and all 10,173 leaves with zero unclassified candidates. The output is a **review proposal**, not an accepted classification or SG1 claim.
+
+          \`\`\`json
+          $classification
+          \`\`\`
+
+          Reviewer capacity is now reported from the actual conflict set instead of appearing sufficient:
+
+          \`\`\`json
+          $capacity
+          \`\`\`
+
+          ## Required independent and external closure
+
+          Current-object conflict-free decisions remain required for program governance, security/cryptography, database/data-integrity, protocol/realtime, compatibility QA, SRE/operations, each denominator family, and a separate global SG1 decision. A second eligible reviewer is still missing. Effective main protection/ruleset/CODEOWNER/conversation/latest-push/no-bypass readback and a harmless blocked-merge rehearsal remain external-admin evidence. KMS/HSM, multi-node HA, PITR, capacity/endurance, migration, canary, cutover, rollback and retirement remain real-environment evidence.
+
+          Every source or base movement invalidates old-head execution and review. PR #63 remains the only main-target integration candidate and must remain Draft until ordinary protected admission requirements are satisfied.
+
+          \`\`\`text
+          source_candidate=true
+          accepted_evidence=false
+          gap_closed=false
+          sg1_credit=false
+          compatibility_credit=false
+          production_ready=false
+          public_online=false
+          nakama_retired=false
+          \`\`\`
+
+          No self-approval, self-merge, auto-merge, administrator bypass, force push, direct main update, production deployment, cutover or retirement is authorized by this PR.
+          EOF
+          )
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
+            -f title='control-plane: materialize Plan v3.1 scope and reviewer blockers' \
+            --raw-field body="$body"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/requested_reviewers" \
+            -f reviewers[]=Tomasrgbsf
+
+      - name: Mark the source wave ready for independent review
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NODE_ID: ${{ steps.identity.outputs.node }}
+        run: |
+          set -euo pipefail
+          draft=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .draft)
+          if [[ "$draft" == true ]]; then
+            gh api graphql \
+              -f pullRequestId="$PR_NODE_ID" \
+              -f query='mutation($pullRequestId:ID!){markPullRequestReadyForReview(input:{pullRequestId:$pullRequestId}){pullRequest{id isDraft}}}' \
+              | jq -e '.data.markPullRequestReadyForReview.pullRequest.isDraft == false' >/dev/null
+          fi
+          body="PR #93 passed the repository-controlled review-readiness gate on exact head \`${{ steps.identity.outputs.head }}\`: complete zero-credit scope materialization, hostile regression, nonempty settled current-head execution, no failed checks, and no temporary executor files. It is now ready for independent review only. No evidence/gap/SG1/compatibility/production credit and no merge authorization were granted."
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --raw-field body="$body"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/7/comments" --raw-field body="$body"
+
+      - name: Report blocked readiness without weakening the gate
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/$PR_NUMBER/comments" \
+            --raw-field body="PR #93 review-readiness gate failed on tooling run \`$GITHUB_RUN_ID\`. The PR remains unaccepted and must not be merged or bypassed. Inspect the exact failing step; do not weaken the condition or manually promote any claim."
