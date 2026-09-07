@@ -15,6 +15,8 @@ GAPS_PATH = ROOT / "docs/status/GAP_REGISTER.json"
 CODEOWNERS_PATH = ROOT / ".github/CODEOWNERS"
 REPOSITORY = "TrillionniumFoundation/TrillionniumGame"
 IDENTITY = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REQUIRED_CODEOWNER_PATTERNS = {
     "*",
     "/.github/",
@@ -49,6 +51,14 @@ REQUIRED_DYNAMIC_CONFLICTS = {
     "candidate-author",
     "evidence-producer",
     "administrator-mutator-under-review",
+}
+# These identities were observed in the immutable PR #63 commit collection through
+# the bound candidate head. Descendant candidates may add conflicts but cannot
+# erase an already observed author/committer conflict.
+REQUIRED_CANDIDATE_CONFLICT_IDENTITIES = {
+    "ProfHepta",
+    "Franksudoman",
+    "Tomasrgbsf",
 }
 
 
@@ -101,6 +111,61 @@ def parse_codeowners(path: Path) -> dict[str, list[str]]:
     return rows
 
 
+def validate_candidate_scope(matrix: dict[str, Any]) -> tuple[set[str], dict[str, Any]]:
+    scope = matrix.get("candidate_scope")
+    require(isinstance(scope, dict), "candidate scope is required")
+    required = {
+        "repository",
+        "pull_request",
+        "base_commit",
+        "authorship_observed_through_head",
+        "head_tree",
+        "prospective_merge",
+        "candidate_commit_count",
+        "conflict_identities",
+        "evidence",
+    }
+    require(set(scope) == required, "candidate scope fields drift")
+    require(scope.get("repository") == REPOSITORY, "candidate repository mismatch")
+    require(scope.get("pull_request") == 63, "candidate pull request mismatch")
+    for field in (
+        "base_commit",
+        "authorship_observed_through_head",
+        "head_tree",
+        "prospective_merge",
+    ):
+        value = scope.get(field)
+        require(isinstance(value, str) and GIT_SHA.fullmatch(value) is not None, f"candidate {field} must be a full Git SHA")
+    count = scope.get("candidate_commit_count")
+    require(isinstance(count, int) and not isinstance(count, bool) and count > 0, "candidate commit count must be positive")
+    identities = scope.get("conflict_identities")
+    require(
+        isinstance(identities, list)
+        and identities
+        and len(identities) == len(set(identities))
+        and all(isinstance(value, str) and IDENTITY.fullmatch(value) for value in identities),
+        "candidate conflict identities are invalid",
+    )
+    identity_set = set(identities)
+    missing = sorted(REQUIRED_CANDIDATE_CONFLICT_IDENTITIES - identity_set)
+    require(not missing, f"candidate conflict identities removed: {missing}")
+
+    evidence = scope.get("evidence")
+    require(isinstance(evidence, dict), "candidate authorship evidence missing")
+    require(
+        set(evidence)
+        == {"workflow_run_id", "job_id", "artifact_id", "artifact_sha256", "observed_at"},
+        "candidate authorship evidence fields drift",
+    )
+    for field in ("workflow_run_id", "job_id", "artifact_id"):
+        value = evidence.get(field)
+        require(isinstance(value, int) and not isinstance(value, bool) and value > 0, f"candidate evidence {field} must be positive")
+    digest = evidence.get("artifact_sha256")
+    require(isinstance(digest, str) and SHA256.fullmatch(digest) is not None, "candidate evidence artifact digest is invalid")
+    parse_time(evidence.get("observed_at"), "candidate evidence observed_at")
+    return identity_set, scope
+
+
 def validate(
     matrix_path: Path = MATRIX_PATH,
     gaps_path: Path = GAPS_PATH,
@@ -108,10 +173,7 @@ def validate(
 ) -> dict[str, Any]:
     matrix = load(matrix_path)
     gaps = load(gaps_path)
-    require(
-        matrix.get("schema") == "trillionnium.independent-review-matrix.v1",
-        "wrong review matrix schema",
-    )
+    require(matrix.get("schema") == "trillionnium.independent-review-matrix.v1", "wrong review matrix schema")
     require(matrix.get("project_id") == "trillionnium-game", "wrong review matrix project")
     require(matrix.get("plan_version") == 3, "review matrix must target plan v3")
     generated_at = parse_time(matrix.get("generated_at"), "generated_at")
@@ -133,6 +195,8 @@ def validate(
         "latest_head_and_tree_binding_required",
         "permission_readback_required",
         "branch_policy_enforcement_required_for_closure",
+        "candidate_conflicts_must_be_explicit",
+        "conflicted_assignment_cannot_satisfy_availability",
     ):
         require(policy.get(key) is True, f"{key} must be true")
     minimum_reviewers = policy.get("minimum_redundant_reviewers_per_domain")
@@ -147,7 +211,6 @@ def validate(
     require(isinstance(assignment_contract, dict), "assignment contract is required")
     required_fields = assignment_contract.get("required_fields")
     require(isinstance(required_fields, list) and required_fields, "assignment required_fields missing")
-    required_field_set = set(required_fields)
     expected_fields = {
         "identity",
         "kind",
@@ -161,17 +224,19 @@ def validate(
         "permission_readback",
         "qualification_basis",
     }
-    require(required_field_set == expected_fields, "assignment required_fields drift")
+    require(set(required_fields) == expected_fields, "assignment required_fields drift")
     allowed_kinds = set(assignment_contract.get("allowed_kinds", []))
     allowed_permissions = set(assignment_contract.get("allowed_repository_permissions", []))
+    allowed_conflicts = set(assignment_contract.get("allowed_conflicts", []))
     require(allowed_kinds == {"github-user", "github-team", "external-review-provider"}, "allowed reviewer kinds drift")
     require(allowed_permissions == {"write", "maintain", "admin"}, "allowed repository permissions drift")
+    require(allowed_conflicts == REQUIRED_DYNAMIC_CONFLICTS, "allowed reviewer conflicts drift")
     require(
-        set(assignment_contract.get("required_candidate_ineligibility", []))
-        == REQUIRED_DYNAMIC_CONFLICTS,
+        set(assignment_contract.get("required_candidate_ineligibility", [])) == REQUIRED_DYNAMIC_CONFLICTS,
         "dynamic conflict contract drift",
     )
 
+    candidate_conflicts, candidate_scope = validate_candidate_scope(matrix)
     gap_by_id = {
         row.get("id"): row
         for row in gaps.get("gaps", [])
@@ -182,8 +247,12 @@ def validate(
     ids: set[str] = set()
     assigned_domains = 0
     redundant_domains = 0
+    available_domains = 0
+    blocked_domains = 0
     required_roles = 0
     global_identities: set[str] = set()
+    global_eligible_identities: set[str] = set()
+    observed_candidate_conflicts: set[str] = set()
 
     for domain in domains:
         require(isinstance(domain, dict), "review domain must be an object")
@@ -205,14 +274,12 @@ def validate(
         require(not unknown, f"{domain_id}: unknown blocking gaps {unknown}")
         required_roles += len(roles)
 
-        require(
-            len(reviewers) >= minimum_reviewers,
-            f"{domain_id}: at least {minimum_reviewers} redundant reviewers required",
-        )
-        require(domain.get("status") == "active", f"{domain_id}: assigned domain must be active")
+        require(len(reviewers) >= minimum_reviewers, f"{domain_id}: at least {minimum_reviewers} redundant reviewers required")
         assigned_domains += 1
         identities: set[str] = set()
         reviewer_roles: dict[str, set[str]] = {}
+        eligible_roles_by_identity: dict[str, set[str]] = {}
+
         for reviewer in reviewers:
             require(isinstance(reviewer, dict), f"{domain_id}: reviewer must be an object")
             require(set(reviewer) == expected_fields, f"{domain_id}: reviewer fields drift")
@@ -230,9 +297,25 @@ def validate(
             role_set = set(role_values)
             require(role_set == set(roles), f"{domain_id}: each reviewer must cover every required role")
             reviewer_roles[identity] = role_set
+
             conflicts = reviewer.get("conflicts")
-            require(isinstance(conflicts, list), f"{domain_id}: conflicts must be a list")
-            require(not conflicts, f"{domain_id}: reviewer {identity} has unresolved static conflicts")
+            require(
+                isinstance(conflicts, list)
+                and len(conflicts) == len(set(conflicts))
+                and set(conflicts) <= allowed_conflicts,
+                f"{domain_id}: reviewer {identity} has invalid conflicts",
+            )
+            if identity in candidate_conflicts:
+                require(
+                    "candidate-author" in conflicts,
+                    f"{domain_id}: candidate author {identity} must declare candidate-author conflict",
+                )
+            if "candidate-author" in conflicts:
+                observed_candidate_conflicts.add(identity)
+            if not conflicts:
+                eligible_roles_by_identity[identity] = role_set
+                global_eligible_identities.add(identity)
+
             require(
                 set(reviewer.get("candidate_ineligibility", [])) == REQUIRED_DYNAMIC_CONFLICTS,
                 f"{domain_id}: candidate conflict rules drift for {identity}",
@@ -242,10 +325,7 @@ def validate(
             require(effective <= generated_at < expires, f"{domain_id}: reviewer assignment is inactive or expired")
             permission = reviewer.get("permission_readback")
             require(isinstance(permission, dict), f"{domain_id}: permission readback missing")
-            require(
-                set(permission) == {"repository", "permission", "observed_at"},
-                f"{domain_id}: permission readback fields drift",
-            )
+            require(set(permission) == {"repository", "permission", "observed_at"}, f"{domain_id}: permission readback fields drift")
             require(permission.get("repository") == REPOSITORY, f"{domain_id}: permission repository mismatch")
             require(permission.get("permission") in allowed_permissions, f"{domain_id}: insufficient repository permission")
             observed = parse_time(permission.get("observed_at"), f"{domain_id}.{identity}.permission.observed_at")
@@ -260,25 +340,37 @@ def validate(
                 f"{domain_id}: qualification basis is required",
             )
 
+        # Routing remains redundant even when every route is currently conflicted.
         for excluded in identities:
-            survivors = {
-                identity: role_set
-                for identity, role_set in reviewer_roles.items()
-                if identity != excluded
-            }
+            survivors = {identity: role_set for identity, role_set in reviewer_roles.items() if identity != excluded}
             require(
                 len(survivors) >= minimum_reviewers,
-                f"{domain_id}: losing conflicted reviewer {excluded} leaves fewer than "
-                f"{minimum_reviewers} eligible reviewers",
+                f"{domain_id}: losing assigned reviewer {excluded} leaves fewer than {minimum_reviewers} routing assignments",
             )
             surviving_roles: set[str] = set()
             for role_set in survivors.values():
                 surviving_roles.update(role_set)
-            require(
-                surviving_roles == set(roles),
-                f"{domain_id}: losing conflicted reviewer {excluded} removes required role coverage",
-            )
+            require(surviving_roles == set(roles), f"{domain_id}: losing assigned reviewer {excluded} removes required role coverage")
         redundant_domains += 1
+
+        eligible_roles: set[str] = set()
+        for role_set in eligible_roles_by_identity.values():
+            eligible_roles.update(role_set)
+        available = len(eligible_roles_by_identity) >= minimum_reviewers and eligible_roles == set(roles)
+        if available:
+            require(domain.get("status") == "active", f"{domain_id}: available domain must be active")
+            available_domains += 1
+        else:
+            require(
+                domain.get("status") == "blocked-reviewer-capacity",
+                f"{domain_id}: insufficient conflict-free reviewers must block the domain",
+            )
+            blocked_domains += 1
+
+    require(
+        candidate_conflicts <= observed_candidate_conflicts,
+        "candidate conflict identities are not declared across reviewer assignments",
+    )
 
     codeowners = parse_codeowners(codeowners_path)
     missing_patterns = sorted(REQUIRED_CODEOWNER_PATTERNS - set(codeowners))
@@ -286,24 +378,27 @@ def validate(
     required_named_owners = {"@ProfHepta", "@Franksudoman", "@Tomasrgbsf"}
     for pattern in REQUIRED_CODEOWNER_PATTERNS:
         owners = set(codeowners[pattern])
-        require(
-            required_named_owners <= owners,
-            f"CODEOWNERS pattern {pattern} lacks conflict-surviving review routes",
-        )
+        require(required_named_owners <= owners, f"CODEOWNERS pattern {pattern} lacks conflict-surviving review routes")
 
+    all_available = available_domains == len(domains)
     summary = matrix.get("summary")
     require(isinstance(summary, dict), "review matrix summary missing")
     require(summary.get("domain_count") == len(domains), "review domain count summary mismatch")
     require(summary.get("assigned_domain_count") == assigned_domains, "assigned domain count summary mismatch")
     require(summary.get("redundant_domain_count") == redundant_domains, "redundant domain count summary mismatch")
+    require(summary.get("available_domain_count") == available_domains, "available domain count summary mismatch")
+    require(summary.get("blocked_domain_count") == blocked_domains, "blocked domain count summary mismatch")
     require(summary.get("named_reviewer_count") == len(global_identities), "named reviewer count summary mismatch")
-    require(summary.get("all_required_reviews_available") is True, "review availability must be true")
+    require(summary.get("eligible_named_reviewer_count") == len(global_eligible_identities), "eligible named reviewer count summary mismatch")
+    require(summary.get("candidate_conflict_identity_count") == len(candidate_conflicts), "candidate conflict identity count summary mismatch")
+    require(summary.get("all_required_reviews_available") is all_available, "review availability summary mismatch")
 
     claim_boundary = matrix.get("claim_boundary")
     require(isinstance(claim_boundary, dict), "review claim boundary missing")
     require(claim_boundary.get("matrix_presence_is_review") is False, "matrix cannot be review")
     require(claim_boundary.get("assignment_is_acceptance") is False, "assignment cannot be acceptance")
-    require(claim_boundary.get("reviewer_routing_available") is True, "reviewer routing must be available")
+    require(claim_boundary.get("reviewer_routing_available") is all_available, "reviewer routing availability mismatch")
+    require(claim_boundary.get("candidate_specific_availability") is all_available, "candidate-specific availability mismatch")
     require(claim_boundary.get("branch_policy_enforced") is False, "branch policy enforcement remains external")
     require(claim_boundary.get("latest_head_review_observed") is False, "latest-head review is candidate-specific")
     require(claim_boundary.get("production_review_complete") is False, "production review cannot be claimed")
@@ -315,11 +410,16 @@ def validate(
         "redundant_domains": redundant_domains,
         "required_roles": required_roles,
         "named_reviewers": sorted(global_identities),
-        "all_required_reviews_available": True,
+        "available_domains": available_domains,
+        "blocked_domains": blocked_domains,
+        "eligible_reviewers": sorted(global_eligible_identities),
+        "candidate_conflicts": sorted(candidate_conflicts),
+        "authorship_observed_through_head": candidate_scope["authorship_observed_through_head"],
+        "all_required_reviews_available": all_available,
         "codeowners_redundant": True,
-        "conflict_survivable": True,
+        "conflict_survivable": all_available,
         "branch_policy_enforced": False,
-        "status": "passed",
+        "status": "passed" if all_available else "blocked-reviewer-capacity",
         "claim_boundary": {
             "matrix_presence_is_review": False,
             "assignment_is_acceptance": False,
