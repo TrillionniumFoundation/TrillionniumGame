@@ -1,0 +1,245 @@
+name: current-gap-producer-diagnostics
+
+on:
+  push:
+    branches: [tooling/gap-closure-audit-2026-09-07]
+    paths:
+      - '.github/workflows/current-gap-producer-diagnostics.yml'
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      TARGET_BRANCH: tooling/gap-closure-audit-2026-09-07
+      TARGET_PR: '63'
+      COMMAND_ISSUE: '7'
+    steps:
+      - name: Collect latest producer state and failed logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/diagnostics/logs"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import io
+          import json
+          import os
+          import re
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          import zipfile
+          from pathlib import Path
+
+          repository = os.environ['TARGET_REPOSITORY']
+          branch = os.environ['TARGET_BRANCH']
+          token = os.environ['GH_TOKEN']
+          root = f'https://api.github.com/repos/{repository}'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'Content-Type': 'application/json',
+              'User-Agent': 'trillionnium-current-gap-producer-diagnostics',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+          wanted = {
+              'effective-governance-readback',
+              'monotonic-main-protection-reconcile',
+              'governance-negative-rehearsal',
+              'governance-settlement',
+              'conflict-free-reviewer-discovery',
+              'v7-source-wave-admission-handoff',
+              'archive-zero-credit-transfer-pr',
+              'storage-nakama-live-differential',
+              'database-ha-restore-live-evidence',
+          }
+
+          def call(method, path, body=None, allowed=(), raw=False):
+              data = None if body is None else json.dumps(body, separators=(',', ':')).encode()
+              request = urllib.request.Request(root + path, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      payload = response.read()
+                      if raw:
+                          return response.status, payload
+                      return response.status, json.loads(payload.decode()) if payload else None
+              except urllib.error.HTTPError as error:
+                  payload = error.read()
+                  if error.code in allowed:
+                      try:
+                          value = json.loads(payload.decode()) if payload else None
+                      except Exception:
+                          value = {'message': payload.decode(errors='replace')[:1000]}
+                      return error.code, value
+                  raise SystemExit(f'{method} {path}: HTTP {error.code}: {payload.decode(errors="replace")[:2000]}')
+
+          deadline = time.monotonic() + 20 * 60
+          latest = {}
+          while True:
+              _, payload = call('GET', '/actions/runs?' + urllib.parse.urlencode({
+                  'branch': branch, 'per_page': 100,
+              }))
+              for row in payload.get('workflow_runs', []):
+                  if row.get('name') not in wanted:
+                      continue
+                  key = row['name']
+                  rank = (int(row.get('run_attempt') or 0), int(row.get('id') or 0))
+                  old = latest.get(key)
+                  old_rank = (int(old.get('run_attempt') or 0), int(old.get('id') or 0)) if old else (-1, -1)
+                  if old is None or rank > old_rank:
+                      latest[key] = row
+              terminal = [row for row in latest.values() if row.get('status') == 'completed']
+              if len(terminal) == len(wanted):
+                  break
+              if time.monotonic() >= deadline:
+                  break
+              time.sleep(10)
+
+          infra_patterns = [
+              r'runner.*(lost|disconnected|shutdown)',
+              r'the hosted runner.*(lost|failed)',
+              r'502 bad gateway', r'503 service unavailable', r'504 gateway timeout',
+              r'failed to download action', r'connection reset by peer',
+              r'temporary failure in name resolution', r'no space left on device',
+          ]
+          permission_patterns = [
+              r'no separately administered github token', r'resource not accessible by integration',
+              r'http 403', r'requires.*permission', r'not permitted',
+          ]
+          external_patterns = [
+              r'no digest-pinned heroiclabs/nakama image', r'independent', r'approval',
+              r'kms', r'hsm', r'protection readback',
+          ]
+          records = []
+          for name in sorted(wanted):
+              run = latest.get(name)
+              if run is None:
+                  records.append({'workflow': name, 'classification': 'missing', 'run_id': None})
+                  continue
+              record = {
+                  'workflow': name, 'run_id': run['id'], 'run_attempt': run.get('run_attempt'),
+                  'status': run.get('status'), 'conclusion': run.get('conclusion'),
+                  'head_sha': run.get('head_sha'), 'classification': 'success' if run.get('conclusion') == 'success' else 'active',
+                  'failed_steps': [], 'artifacts': [],
+              }
+              _, artifacts = call('GET', f"/actions/runs/{run['id']}/artifacts?per_page=100")
+              record['artifacts'] = [{
+                  'id': row.get('id'), 'name': row.get('name'), 'size_in_bytes': row.get('size_in_bytes'),
+                  'digest': row.get('digest'), 'expired': row.get('expired'),
+              } for row in artifacts.get('artifacts', [])]
+              if run.get('status') == 'completed' and run.get('conclusion') != 'success':
+                  _, jobs = call('GET', f"/actions/runs/{run['id']}/jobs?per_page=100")
+                  for job in jobs.get('jobs', []):
+                      for step in job.get('steps', []):
+                          if step.get('conclusion') == 'failure':
+                              record['failed_steps'].append({'job': job.get('name'), 'step': step.get('name')})
+                  try:
+                      _, raw_logs = call('GET', f"/actions/runs/{run['id']}/logs", raw=True)
+                      with zipfile.ZipFile(io.BytesIO(raw_logs)) as archive:
+                          text = '\n'.join(
+                              archive.read(path).decode('utf-8', errors='replace')
+                              for path in archive.namelist() if path.endswith('.txt')
+                          )
+                      (Path(os.environ['RUNNER_TEMP']) / 'diagnostics' / 'logs' / f"{run['id']}.log").write_text(text[-200000:], encoding='utf-8')
+                  except Exception as error:
+                      text = f'log download failed: {type(error).__name__}: {error}'
+                  lower = text.lower()
+                  if any(re.search(pattern, lower) for pattern in infra_patterns):
+                      record['classification'] = 'infrastructure'
+                  elif any(re.search(pattern, lower) for pattern in permission_patterns):
+                      record['classification'] = 'permission-or-admin-secret'
+                  elif any(re.search(pattern, lower) for pattern in external_patterns):
+                      record['classification'] = 'external-prerequisite'
+                  else:
+                      record['classification'] = 'code-or-test-failure'
+                  record['diagnostic_tail'] = text[-4000:]
+              records.append(record)
+
+          value = {
+              'schema': 'trillionnium.current-gap-producer-diagnostics.v1',
+              'repository': repository,
+              'branch': branch,
+              'producer_results': records,
+              'counts': {
+                  'success': sum(row['classification'] == 'success' for row in records),
+                  'active': sum(row['classification'] == 'active' for row in records),
+                  'infrastructure': sum(row['classification'] == 'infrastructure' for row in records),
+                  'permission_or_admin_secret': sum(row['classification'] == 'permission-or-admin-secret' for row in records),
+                  'external_prerequisite': sum(row['classification'] == 'external-prerequisite' for row in records),
+                  'code_or_test_failure': sum(row['classification'] == 'code-or-test-failure' for row in records),
+                  'missing': sum(row['classification'] == 'missing' for row in records),
+              },
+              'rerun_policy': 'Only infrastructure-classified failures are eligible for one bounded rerun; this workflow does not rerun them automatically.',
+              'accepted': False,
+              'gap_closed': False,
+              'production_ready': False,
+          }
+          target = Path(os.environ['RUNNER_TEMP']) / 'diagnostics' / 'diagnostics.json'
+          target.write_text(json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n')
+
+          lines = [
+              '<!-- TRNM-CURRENT-GAP-PRODUCER-DIAGNOSTICS -->',
+              '## Current gap-evidence producer diagnostics', '',
+              '| Workflow | Run | Conclusion | Classification | Failed step |',
+              '| --- | ---: | --- | --- | --- |',
+          ]
+          for row in records:
+              failed = '; '.join(f"{x['job']} / {x['step']}" for x in row.get('failed_steps', [])) or 'none'
+              lines.append(f"| `{row['workflow']}` | {row.get('run_id') or 'missing'} | `{row.get('conclusion') or row.get('status') or 'missing'}` | `{row['classification']}` | {failed} |")
+          lines += ['', 'Only infrastructure-classified failures may receive one bounded rerun. Permission, external prerequisite and code/test failures remain blockers. No gap, evidence, compatibility, production, cutover or retirement credit is granted.']
+          body = '\n'.join(lines)
+          for issue in (os.environ['TARGET_PR'], os.environ['COMMAND_ISSUE']):
+              _, comments = call('GET', f'/issues/{issue}/comments?per_page=100')
+              old = next((row for row in reversed(comments) if '<!-- TRNM-CURRENT-GAP-PRODUCER-DIAGNOSTICS -->' in (row.get('body') or '')), None)
+              if old:
+                  call('PATCH', f"/issues/comments/{old['id']}", {'body': body})
+              else:
+                  call('POST', f'/issues/{issue}/comments', {'body': body})
+          print(json.dumps(value['counts'], sort_keys=True))
+          PY
+          (
+            cd "$RUNNER_TEMP/diagnostics"
+            find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$RUNNER_TEMP/current-gap-producer-diagnostics.tar.gz" \
+            -C "$RUNNER_TEMP/diagnostics" .
+
+      - name: Fetch exact source for uploader
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin \
+            "https://github.com/${TARGET_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin \
+            88c02a417c7b0c64f27dc9f49e0b5e6317150964
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+
+      - name: Retain diagnostics
+        id: retained
+        uses: ./source/.github/actions/upload-evidence
+        with:
+          name: current-gap-producer-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/current-gap-producer-diagnostics.tar.gz
+          mime_type: application/gzip
+
+      - name: Verify receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.retained.outputs.artifact_id }}'
+          test -n '${{ steps.retained.outputs.sha256 }}'
+          test '${{ steps.retained.outputs.size_bytes }}' -gt 0
