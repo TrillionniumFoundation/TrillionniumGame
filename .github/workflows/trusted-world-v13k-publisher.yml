@@ -1,0 +1,300 @@
+name: trusted-world-v13k-publisher
+run-name: trusted World v13k publication from ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Exact checked-in publication request identifier
+        required: true
+        type: string
+        default: world-v13k-2026-09-08
+      approved_main_sha:
+        description: Exact protected-main commit approved for this publication
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: trusted-world-v13k-publisher
+  cancel-in-progress: false
+
+env:
+  REQUEST_PATH: .github/world-publication-requests/world-v13k-2026-09-08.json
+  REQUEST_SHA256: a7222f31e7ec27e33f4f1d414525236ac21d2187404e78fe8098ad11b15867ae
+  REQUEST_ID: world-v13k-2026-09-08
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_BRANCH: fix/world-plan-v4-development-closure-20260831
+  WORLD_EXPECTED_HEAD: 010370c540a3a17e871b4b5349fc01ffe9502553
+  IMPORTER_COMMIT: d8ab3164cbd573e642d98fbfb626fe551574c7e5
+  IMPORTER_BLOB_SHA1: 5c21773242423b083f87ee0924474754646065d0
+  QUALIFICATION_ARTIFACT_ID: "9780499701"
+  QUALIFICATION_ARTIFACT_SHA256: 456a181bdc8f8aa248229b044db9eec4f52572ea3b20bca6492907db58d64ef5
+  QUALIFIED_TREE: 5e613185f5a2abda42df371f3755e73667717309
+
+jobs:
+  verify-request:
+    if: >-
+      github.repository == 'TrillionniumFoundation/TrillionniumGame' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      DISPATCH_REQUEST_ID: ${{ inputs.request_id }}
+      DISPATCH_APPROVED_MAIN_SHA: ${{ inputs.approved_main_sha }}
+    steps:
+      - name: Fetch exact protected-main source without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DISPATCH_REQUEST_ID" = "$REQUEST_ID"
+          test "$DISPATCH_APPROVED_MAIN_SHA" = "$GITHUB_SHA"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(sha256sum "$GITHUB_WORKSPACE/$REQUEST_PATH" | awk '{print $1}')" = \
+            "$REQUEST_SHA256"
+
+      - name: Validate immutable request and reviewed importer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          request = json.loads(Path(os.environ["REQUEST_PATH"]).read_text())
+          assert request["schema"] == "trillionnium.world-publication-request.v1"
+          assert request["request_id"] == os.environ["REQUEST_ID"]
+          assert request["source"]["artifact_id"] == int(os.environ["QUALIFICATION_ARTIFACT_ID"])
+          assert request["source"]["artifact_zip_sha256"] == os.environ["QUALIFICATION_ARTIFACT_SHA256"]
+          assert request["source"]["qualified_tree"] == os.environ["QUALIFIED_TREE"]
+          assert request["importer"]["commit"] == os.environ["IMPORTER_COMMIT"]
+          assert request["importer"]["git_blob_sha1"] == os.environ["IMPORTER_BLOB_SHA1"]
+          assert request["target"]["repository"] == os.environ["WORLD_REPOSITORY"]
+          assert request["target"]["branch"] == os.environ["WORLD_BRANCH"]
+          assert request["target"]["expected_head"] == os.environ["WORLD_EXPECTED_HEAD"]
+          assert request["target"]["write_count"] == 73
+          assert request["target"]["deletion_count"] == 2
+          assert request["target"]["force_update_allowed"] is False
+          assert request["target"]["default_branch_write_allowed"] is False
+          assert request["execution"]["trusted_workflow_ref"] == "refs/heads/main"
+          assert request["execution"]["protected_environment"] == "world-source-publication"
+          assert request["execution"]["candidate_controlled_code_allowed"] is False
+          assert request["claims"]["request_is_publication"] is False
+          assert request["claims"]["gap_closed"] is False
+          PY
+          curl --fail-with-body --location --retry 3 --retry-all-errors \
+            "https://raw.githubusercontent.com/${WORLD_REPOSITORY}/${IMPORTER_COMMIT}/scripts/import-qualified-world-v13k.py" \
+            --output /tmp/import-qualified-world-v13k.py
+          test "$(git hash-object /tmp/import-qualified-world-v13k.py)" = \
+            "$IMPORTER_BLOB_SHA1"
+          python3 -m py_compile /tmp/import-qualified-world-v13k.py
+
+      - name: Verify retained artifact and execute secret-free dry run
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --location --retry 3 --retry-all-errors \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${QUALIFICATION_ARTIFACT_ID}/zip" \
+            --output /tmp/world-v13k-source-candidate.zip
+          test "$(sha256sum /tmp/world-v13k-source-candidate.zip | awk '{print $1}')" = \
+            "$QUALIFICATION_ARTIFACT_SHA256"
+          python3 /tmp/import-qualified-world-v13k.py \
+            --artifact-zip /tmp/world-v13k-source-candidate.zip \
+            --repository "$WORLD_REPOSITORY" \
+            --target-branch "$WORLD_BRANCH" \
+            --result /tmp/world-v13k-dry-run.json
+          python3 - <<'PY'
+          import json
+          value = json.load(open('/tmp/world-v13k-dry-run.json'))
+          assert value['published'] is False
+          assert value['qualified_tree'] == '5e613185f5a2abda42df371f3755e73667717309'
+          assert value['file_count'] == 73
+          assert value['deletion_count'] == 2
+          PY
+
+  publish:
+    needs: verify-request
+    if: >-
+      needs.verify-request.result == 'success' &&
+      github.repository == 'TrillionniumFoundation/TrillionniumGame' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: world-source-publication
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      DISPATCH_REQUEST_ID: ${{ inputs.request_id }}
+      DISPATCH_APPROVED_MAIN_SHA: ${{ inputs.approved_main_sha }}
+      TRNM_WORLD_ENV_IMPORT_TOKEN: ${{ secrets.TRNM_WORLD_ENV_IMPORT_TOKEN }}
+    steps:
+      - name: Re-fetch and rebind exact protected-main transaction
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DISPATCH_REQUEST_ID" = "$REQUEST_ID"
+          test "$DISPATCH_APPROVED_MAIN_SHA" = "$GITHUB_SHA"
+          test -n "$TRNM_WORLD_ENV_IMPORT_TOKEN"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(sha256sum "$GITHUB_WORKSPACE/$REQUEST_PATH" | awk '{print $1}')" = \
+            "$REQUEST_SHA256"
+          curl --fail-with-body --location --retry 3 --retry-all-errors \
+            "https://raw.githubusercontent.com/${WORLD_REPOSITORY}/${IMPORTER_COMMIT}/scripts/import-qualified-world-v13k.py" \
+            --output /tmp/import-qualified-world-v13k.py
+          test "$(git hash-object /tmp/import-qualified-world-v13k.py)" = \
+            "$IMPORTER_BLOB_SHA1"
+          curl --fail-with-body --location --retry 3 --retry-all-errors \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${QUALIFICATION_ARTIFACT_ID}/zip" \
+            --output /tmp/world-v13k-source-candidate.zip
+          test "$(sha256sum /tmp/world-v13k-source-candidate.zip | awk '{print $1}')" = \
+            "$QUALIFICATION_ARTIFACT_SHA256"
+          python3 /tmp/import-qualified-world-v13k.py \
+            --artifact-zip /tmp/world-v13k-source-candidate.zip \
+            --repository "$WORLD_REPOSITORY" \
+            --target-branch "$WORLD_BRANCH" \
+            --result /tmp/world-v13k-dry-run.json
+
+      - name: Compare-and-swap exact World review branch
+        shell: bash
+        env:
+          TRNM_WORLD_IMPORT_TOKEN: ${{ secrets.TRNM_WORLD_ENV_IMPORT_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "$WORLD_BRANCH" != main
+          test "$WORLD_BRANCH" != master
+          python3 /tmp/import-qualified-world-v13k.py \
+            --artifact-zip /tmp/world-v13k-source-candidate.zip \
+            --repository "$WORLD_REPOSITORY" \
+            --target-branch "$WORLD_BRANCH" \
+            --expected-head "$WORLD_EXPECTED_HEAD" \
+            --publish \
+            --result /tmp/world-v13k-publication-receipt.json
+
+      - name: Verify parent, tree and complete changed-path closure
+        shell: bash
+        env:
+          TRNM_WORLD_IMPORT_TOKEN: ${{ secrets.TRNM_WORLD_ENV_IMPORT_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import importlib.util
+          import json
+          import os
+          import tempfile
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          token = os.environ['TRNM_WORLD_IMPORT_TOKEN']
+          repository = os.environ['WORLD_REPOSITORY']
+          branch = os.environ['WORLD_BRANCH']
+          expected_head = os.environ['WORLD_EXPECTED_HEAD']
+          qualified_tree = os.environ['QUALIFIED_TREE']
+          receipt = json.loads(Path('/tmp/world-v13k-publication-receipt.json').read_text())
+          assert receipt['published'] is True
+          assert receipt['old_head'] == expected_head
+          assert receipt['qualified_tree'] == qualified_tree
+          assert receipt['repository'] == repository
+          assert receipt['target_branch'] == branch
+          assert receipt['file_count'] == 73
+          assert receipt['deletion_count'] == 2
+
+          spec = importlib.util.spec_from_file_location(
+              'trusted_world_importer', '/tmp/import-qualified-world-v13k.py'
+          )
+          assert spec is not None and spec.loader is not None
+          importer = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(importer)
+          with tempfile.TemporaryDirectory(prefix='world-v13k-readback-') as directory:
+              _, records = importer.prepare(
+                  Path('/tmp/world-v13k-source-candidate.zip'), Path(directory)
+              )
+          expected = {record['path']: record for record in records}
+          assert len(expected) == 75
+
+          def api(path: str):
+              request = urllib.request.Request(
+                  'https://api.github.com' + path,
+                  headers={
+                      'Accept': 'application/vnd.github+json',
+                      'Authorization': f'Bearer {token}',
+                      'User-Agent': 'trnm-trusted-world-publication-readback/v1',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=120) as response:
+                  return json.load(response)
+
+          encoded_branch = urllib.parse.quote(branch, safe='')
+          branch_value = api(f'/repos/{repository}/branches/{encoded_branch}')
+          assert branch_value['commit']['sha'] == receipt['new_head']
+          git_commit = api(f'/repos/{repository}/git/commits/{receipt["new_head"]}')
+          assert [row['sha'] for row in git_commit['parents']] == [expected_head]
+          assert git_commit['tree']['sha'] == receipt['overlay_tree']
+
+          commit = api(
+              f'/repos/{repository}/commits/{receipt["new_head"]}?per_page=100&page=1'
+          )
+          files = commit['files']
+          assert len(files) == len(expected)
+          observed_paths = {row['filename'] for row in files}
+          assert observed_paths == set(expected)
+          for row in files:
+              record = expected[row['filename']]
+              if record['sha'] is None:
+                  assert row['status'] == 'removed'
+              else:
+                  assert row['status'] in {'added', 'modified'}
+                  assert row['sha'] == record['sha']
+
+          required_deletions = {
+              'trillionnium/crates/trnm-game-server/build.rs',
+              'trillionnium/crates/trnm-game-server/src/lib.rs.in',
+          }
+          assert {
+              path for path, record in expected.items() if record['sha'] is None
+          } == required_deletions
+          print(json.dumps({
+              'schema': 'trillionnium.world-publication-receipt.v1',
+              'trusted_main_sha': os.environ['GITHUB_SHA'],
+              'request_sha256': os.environ['REQUEST_SHA256'],
+              'old_head': expected_head,
+              'new_head': receipt['new_head'],
+              'overlay_tree': receipt['overlay_tree'],
+              'qualified_tree': qualified_tree,
+              'write_count': 73,
+              'deletion_count': 2,
+              'complete_path_readback': True,
+              'force_update': False,
+              'deployment_authorized': False,
+          }, sort_keys=True))
+          PY
