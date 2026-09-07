@@ -1,18 +1,18 @@
-name: pr103-signer-journal-archive-repair-v2
+name: pr103-key-epoch-archive-chain-repair
 
 on:
   push:
     branches:
       - codex/plan-v31-product-gap-wave-2026-09-07
     paths:
-      - scripts/one_shot_pr103_signer_journal_archive_repair_v2.py
+      - scripts/one_shot_pr103_key_epoch_archive_chain_repair.py
       - .github/workflows/pr103-signer-journal-archive-repair.yml
 
 permissions:
   contents: write
 
 concurrency:
-  group: pr103-signer-journal-archive-repair-v2
+  group: pr103-key-epoch-archive-chain-repair
   cancel-in-progress: false
 
 env:
@@ -40,35 +40,36 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
 
-      - name: Apply verified signer journal archive repair
+      - name: Apply chained archive witness repair
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/one_shot_pr103_signer_journal_archive_repair_v2.py
+          python3 scripts/one_shot_pr103_key_epoch_archive_chain_repair.py
+          rm -f \
+            scripts/one_shot_pr103_key_epoch_archive_chain_repair.py \
+            scripts/one_shot_pr103_signer_journal_archive_repair.py \
+            scripts/one_shot_pr103_signer_journal_archive_repair_v2.py
           cargo fmt --manifest-path crates/trnm-token-crypto-provider/Cargo.toml
           git diff --check
           actual="$(git diff --name-only | sort | paste -sd, -)"
-          expected="crates/trnm-token-crypto-provider/README.md,crates/trnm-token-crypto-provider/src/lib.rs,crates/trnm-token-crypto-provider/src/signer_journal.rs"
+          expected="crates/trnm-token-crypto-provider/src/key_epoch.rs,scripts/one_shot_pr103_key_epoch_archive_chain_repair.py,scripts/one_shot_pr103_signer_journal_archive_repair.py,scripts/one_shot_pr103_signer_journal_archive_repair_v2.py"
           test "$actual" = "$expected"
 
-      - name: Form and validate source-only commit
+      - name: Validate and publish exact source commit
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name trillionnium-crypto-bot
-          git config user.email trillionnium-crypto-bot@users.noreply.github.com
-          git add \
-            crates/trnm-token-crypto-provider/README.md \
-            crates/trnm-token-crypto-provider/src/lib.rs \
-            crates/trnm-token-crypto-provider/src/signer_journal.rs
-          git commit -m "fix(crypto): add verified signer journal compaction"
-          source_commit="$(git rev-parse HEAD)"
-          test -z "$(git status --porcelain)"
           cargo fmt --manifest-path crates/trnm-token-crypto-provider/Cargo.toml -- --check
           cargo test --manifest-path crates/trnm-token-crypto-provider/Cargo.toml \
             --all-targets --locked
           cargo clippy --manifest-path crates/trnm-token-crypto-provider/Cargo.toml \
             --all-targets --locked -- -D warnings
+          git config user.name trillionnium-crypto-bot
+          git config user.email trillionnium-crypto-bot@users.noreply.github.com
+          git add -A
+          git commit -m "fix(crypto): preserve archive high-water across checkpoints"
+          source_commit="$(git rev-parse HEAD)"
+          test -z "$(git status --porcelain)"
           observed="$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
           test "$observed" = "$GITHUB_SHA"
           git push origin "${source_commit}:refs/heads/${TARGET_BRANCH}"
