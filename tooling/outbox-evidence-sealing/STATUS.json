@@ -1,0 +1,8 @@
+{
+  "schema": "trillionnium.outbox-evidence-sealing-handoff.v1",
+  "status": "validated-local-transaction",
+  "target_branch": "codex/branch-evidence-closure-2026-09-02",
+  "claim_credit": false,
+  "gap_closed": false,
+  "production_ready": false
+}
