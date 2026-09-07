@@ -101,14 +101,8 @@ pub struct SignerDispatchIdentity {
 impl SignerDispatchIdentity {
     pub fn validate(self) -> Result<Self, SignerJournalError> {
         self.request.validate()?;
-        require_nonzero_digest(
-            "provider_identity_digest",
-            self.provider_identity_digest,
-        )?;
-        require_nonzero_digest(
-            "provider_endpoint_digest",
-            self.provider_endpoint_digest,
-        )?;
+        require_nonzero_digest("provider_identity_digest", self.provider_identity_digest)?;
+        require_nonzero_digest("provider_endpoint_digest", self.provider_endpoint_digest)?;
         if self.attempt == 0 {
             return Err(SignerJournalError::ZeroDispatchAttempt);
         }
@@ -141,10 +135,7 @@ impl SignerOutcomeEvidence {
         }
         require_nonzero_digest("receipt_digest", self.receipt_digest)?;
         require_nonzero_digest("signature_digest", self.signature_digest)?;
-        require_nonzero_digest(
-            "provider_evidence_digest",
-            self.provider_evidence_digest,
-        )?;
+        require_nonzero_digest("provider_evidence_digest", self.provider_evidence_digest)?;
         Ok(self)
     }
 }
@@ -166,9 +157,7 @@ impl fmt::Display for SignerOutcomeVerificationError {
             Self::BindingMismatch => {
                 formatter.write_str("signer outcome evidence binding does not match")
             }
-            Self::SignatureRejected => {
-                formatter.write_str("signer outcome signature was rejected")
-            }
+            Self::SignatureRejected => formatter.write_str("signer outcome signature was rejected"),
             Self::ProviderUnavailable => {
                 formatter.write_str("signer outcome verifier is unavailable")
             }
@@ -671,9 +660,7 @@ impl SignerJournal {
                 ));
             }
             SigningOperationState::Rejected { .. } => {
-                return Err(SignerJournalError::Terminal(
-                    evidence.request.operation_id,
-                ));
+                return Err(SignerJournalError::Terminal(evidence.request.operation_id));
             }
             SigningOperationState::Dispatched
             | SigningOperationState::Indeterminate
@@ -703,11 +690,7 @@ impl SignerJournal {
             ));
         }
 
-        if let Some(receipt_owner) = self
-            .receipt_owners
-            .get(&evidence.receipt_digest)
-            .copied()
-        {
+        if let Some(receipt_owner) = self.receipt_owners.get(&evidence.receipt_digest).copied() {
             if receipt_owner != evidence.request.operation_id {
                 return Err(SignerJournalError::ReceiptReused {
                     receipt_owner,
@@ -715,8 +698,8 @@ impl SignerJournal {
                 });
             }
         } else if let Some(checkpoint) = self.checkpoint.as_ref() {
-            let verifier = archive_verifier
-                .ok_or(SignerJournalError::ArchiveVerificationRequired)?;
+            let verifier =
+                archive_verifier.ok_or(SignerJournalError::ArchiveVerificationRequired)?;
             if !verifier.verify_checkpoint(checkpoint) {
                 return Err(SignerJournalError::ArchiveVerificationFailed);
             }
@@ -919,11 +902,7 @@ impl SignerJournal {
                 || tombstone.request.journal_epoch != self.epoch
                 || !tombstone.state.is_terminal()
                 || tombstone.archive_digest.iter().all(|byte| *byte == 0)
-                || !operation_shape_valid(
-                    tombstone.request,
-                    tombstone.dispatch,
-                    tombstone.state,
-                )
+                || !operation_shape_valid(tombstone.request, tombstone.dispatch, tombstone.state)
             {
                 return Err(SignerJournalError::InvariantViolation(
                     "terminal tombstone is malformed",
@@ -935,11 +914,7 @@ impl SignerJournal {
             collect_receipt(&mut expected_receipts, record.request, record.state)?;
         }
         for tombstone in self.tombstones.values() {
-            collect_receipt(
-                &mut expected_receipts,
-                tombstone.request,
-                tombstone.state,
-            )?;
+            collect_receipt(&mut expected_receipts, tombstone.request, tombstone.state)?;
         }
         if expected_receipts != self.receipt_owners {
             return Err(SignerJournalError::InvariantViolation(
@@ -980,14 +955,14 @@ impl SignerJournal {
     }
 
     fn require_next_epoch(&self, received: SignerJournalEpoch) -> Result<(), SignerJournalError> {
-        let expected = self
-            .epoch
-            .get()
-            .checked_add(1)
-            .ok_or(SignerJournalError::EpochNotAdvanced {
-                current: self.epoch,
-                received,
-            })?;
+        let expected =
+            self.epoch
+                .get()
+                .checked_add(1)
+                .ok_or(SignerJournalError::EpochNotAdvanced {
+                    current: self.epoch,
+                    received,
+                })?;
         if received.get() != expected {
             Err(SignerJournalError::EpochNotAdvanced {
                 current: self.epoch,
@@ -1078,11 +1053,7 @@ fn validate_checkpoint_shape(
         if tombstone.request.journal_epoch != checkpoint.retired_epoch
             || !tombstone.state.is_terminal()
             || tombstone.archive_digest.iter().all(|byte| *byte == 0)
-            || !operation_shape_valid(
-                tombstone.request,
-                tombstone.dispatch,
-                tombstone.state,
-            )
+            || !operation_shape_valid(tombstone.request, tombstone.dispatch, tombstone.state)
             || tombstones
                 .insert(tombstone.request.operation_id, *tombstone)
                 .is_some()
@@ -1091,11 +1062,7 @@ fn validate_checkpoint_shape(
                 "malformed or duplicate tombstone",
             ));
         }
-        collect_receipt(
-            &mut expected_receipts,
-            tombstone.request,
-            tombstone.state,
-        )?;
+        collect_receipt(&mut expected_receipts, tombstone.request, tombstone.state)?;
     }
 
     let mut actual_receipts = BTreeMap::new();
@@ -1176,10 +1143,7 @@ fn collect_receipt(
     Ok(())
 }
 
-fn require_nonzero_digest(
-    field: &'static str,
-    digest: [u8; 32],
-) -> Result<(), SignerJournalError> {
+fn require_nonzero_digest(field: &'static str, digest: [u8; 32]) -> Result<(), SignerJournalError> {
     if digest.iter().all(|byte| *byte == 0) {
         Err(SignerJournalError::ZeroDigest(field))
     } else {
@@ -1201,8 +1165,7 @@ mod tests {
     impl SignerJournalArchiveVerifier for ExactArchiveVerifier {
         fn verify_checkpoint(&self, checkpoint: &SignerJournalCheckpoint) -> bool {
             checkpoint.checkpoint_digest[0] == self.digest
-                && (!self.require_predecessor
-                    || checkpoint.previous_checkpoint_digest.is_some())
+                && (!self.require_predecessor || checkpoint.previous_checkpoint_digest.is_some())
         }
 
         fn receipt_is_absent(
@@ -1279,10 +1242,7 @@ mod tests {
         }
     }
 
-    fn evidence(
-        dispatch: SignerDispatchIdentity,
-        receipt: u8,
-    ) -> SignerOutcomeEvidence {
+    fn evidence(dispatch: SignerDispatchIdentity, receipt: u8) -> SignerOutcomeEvidence {
         SignerOutcomeEvidence {
             request: dispatch.request,
             dispatch,
@@ -1303,10 +1263,7 @@ mod tests {
         journal.dispatch(dispatch).unwrap();
         let evidence = evidence(dispatch, marker.wrapping_add(10));
         journal
-            .reconcile(
-                evidence,
-                &ExactOutcomeVerifier { expected: evidence },
-            )
+            .reconcile(evidence, &ExactOutcomeVerifier { expected: evidence })
             .unwrap()
     }
 
@@ -1372,12 +1329,7 @@ mod tests {
         let mut wrong_attempt = authentic;
         wrong_attempt.dispatch.attempt = 2;
 
-        for candidate in [
-            wrong_request,
-            wrong_provider,
-            wrong_endpoint,
-            wrong_attempt,
-        ] {
+        for candidate in [wrong_request, wrong_provider, wrong_endpoint, wrong_attempt] {
             assert!(matches!(
                 journal.reconcile(
                     candidate,
@@ -1446,17 +1398,11 @@ mod tests {
         );
         let evidence = evidence(dispatch, 30);
         let confirmed = journal
-            .reconcile(
-                evidence,
-                &ExactOutcomeVerifier { expected: evidence },
-            )
+            .reconcile(evidence, &ExactOutcomeVerifier { expected: evidence })
             .unwrap();
         assert_eq!(
             journal
-                .reconcile(
-                    evidence,
-                    &ExactOutcomeVerifier { expected: evidence },
-                )
+                .reconcile(evidence, &ExactOutcomeVerifier { expected: evidence },)
                 .unwrap(),
             confirmed
         );
@@ -1572,11 +1518,7 @@ mod tests {
             require_predecessor: false,
         };
         assert_eq!(
-            journal.reconcile_with_archive_verifier(
-                replay,
-                &outcome_verifier,
-                &deny,
-            ),
+            journal.reconcile_with_archive_verifier(replay, &outcome_verifier, &deny,),
             Err(SignerJournalError::ArchivedReceiptReused {
                 received_for: operation(2),
             })
@@ -1614,12 +1556,7 @@ mod tests {
         let mut first_with_predecessor = valid.clone();
         first_with_predecessor.previous_checkpoint_digest = Some([11; 32]);
         assert!(matches!(
-            SignerJournal::from_checkpoint(
-                1,
-                1,
-                first_with_predecessor,
-                &verifier(12),
-            ),
+            SignerJournal::from_checkpoint(1, 1, first_with_predecessor, &verifier(12),),
             Err(SignerJournalError::CheckpointInvalid(
                 "first checkpoint must not name a predecessor",
             ))
@@ -1662,17 +1599,15 @@ mod tests {
         assert_eq!(second.sequence, 2);
         assert_eq!(second.previous_checkpoint_digest, Some([12; 32]));
         assert!(verifier(13).verify_checkpoint(&second));
-        assert!(
-            !(ExactArchiveVerifier {
-                digest: 13,
-                denied_receipt: None,
-                require_predecessor: true,
-            })
-            .verify_checkpoint(&SignerJournalCheckpoint {
-                previous_checkpoint_digest: None,
-                ..second
-            })
-        );
+        assert!(!(ExactArchiveVerifier {
+            digest: 13,
+            denied_receipt: None,
+            require_predecessor: true,
+        })
+        .verify_checkpoint(&SignerJournalCheckpoint {
+            previous_checkpoint_digest: None,
+            ..second
+        }));
     }
 
     #[test]
