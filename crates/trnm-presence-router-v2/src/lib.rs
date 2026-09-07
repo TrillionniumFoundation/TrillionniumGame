@@ -5,9 +5,9 @@
 //!
 //! Connection-owned presence records are generation fenced. The session
 //! registry composes them with a monotonic session-generation revocation
-//! high-water. Connection actors, replay cursors and disconnect effects are
-//! independently bounded, single-owner, and fail closed across response loss,
-//! reconnect, drain and stale-generation attempts.
+//! high-water. Connection actors, authenticated replay cursors and reconciled
+//! disconnect effects are independently bounded and fail closed across
+//! response loss, reconnect, drain and stale-generation attempts.
 
 mod connection_actor;
 mod disconnect_journal;
@@ -19,14 +19,22 @@ mod types;
 pub use connection_actor::{
     ConnectionActor, ConnectionActorConfig, ConnectionActorError, ConnectionActorState,
     CorrelationId, InboundFrame, OutboundFrame, PendingRequest,
+    MAX_CONNECTION_ACTOR_BUFFER_BYTES, MAX_CONNECTION_ACTOR_FRAME_BYTES,
+    MAX_CONNECTION_ACTOR_QUEUE_ITEMS,
 };
 pub use disconnect_journal::{
-    DisconnectIntentId, DisconnectJournal, DisconnectJournalError, DisconnectOperation,
-    DisconnectRecord, DisconnectState, LeaseToken, RetryDisposition, WorkerId,
+    DisconnectArchiveTombstone, DisconnectDispatchBinding, DisconnectIntentId, DisconnectJournal,
+    DisconnectJournalConfig, DisconnectJournalEpoch, DisconnectJournalError, DisconnectJournalId,
+    DisconnectOperation, DisconnectOutcomeEvidence, DisconnectOutcomeKind,
+    DisconnectOutcomeVerifier, DisconnectRecord, DisconnectState, LeaseToken,
+    ReconciliationDisposition, RetryDisposition, WorkerId, MAX_DISCONNECT_ACTIVE_RECORDS,
+    MAX_DISCONNECT_ATTEMPTS, MAX_DISCONNECT_TOMBSTONES,
 };
 pub use reconnect_cursor::{
-    ReconnectCursor, ReconnectEvent, ReconnectJournal, ReconnectJournalConfig,
-    ReconnectJournalError,
+    ReconnectCursor, ReconnectCursorAuthenticator, ReconnectEvent, ReconnectIdentity,
+    ReconnectJournal, ReconnectJournalConfig, ReconnectJournalError, ReconnectJournalId,
+    ReconnectProducerEpoch, ReconnectSessionGeneration, ReconnectStreamId,
+    MAX_RECONNECT_JOURNAL_CAPACITY,
 };
 pub use router::{MutationDisposition, PresenceDelta, PresenceError, PresenceRouter};
 pub use session_registry::{
