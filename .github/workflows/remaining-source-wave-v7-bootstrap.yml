@@ -90,3 +90,5 @@ jobs:
               bash "$RUNNER_TEMP/v7-${number}.sh"
             )
           done
+
+          echo 'exact v7 cumulative source-wave trigger: 2026-09-07'
