@@ -1,0 +1,225 @@
+name: v7-source-wave-admission-handoff
+
+on:
+  push:
+    branches: [tooling/gap-closure-audit-2026-09-07]
+    paths:
+      - '.github/workflows/v7-source-wave-admission-handoff.yml'
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  handoff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      PRODUCER_RUN_ID: '34070392783'
+      PRODUCER_HEAD: 804724670095d7b2fe2c30e85f128cc30b1b2000
+      BASE_BRANCH: codex/branch-evidence-closure-2026-09-02
+      EXPECTED_BASE_HEAD: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+      COMMAND_ISSUE: '7'
+    steps:
+      - name: Wait for exact producer and create guarded child handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import io
+          import json
+          import os
+          import re
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          import zipfile
+
+          repository = os.environ['TARGET_REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          run_id = int(os.environ['PRODUCER_RUN_ID'])
+          expected_producer = os.environ['PRODUCER_HEAD']
+          base_branch = os.environ['BASE_BRANCH']
+          expected_base = os.environ['EXPECTED_BASE_HEAD']
+          root = f'https://api.github.com/repos/{repository}'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'Content-Type': 'application/json',
+              'User-Agent': 'trillionnium-v7-source-wave-handoff',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+
+          def call(method: str, path: str, body=None, allowed=(), raw=False):
+              data = None if body is None else json.dumps(body, separators=(',', ':')).encode()
+              request = urllib.request.Request(root + path, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      payload = response.read()
+                      if raw:
+                          return response.status, payload
+                      return response.status, json.loads(payload.decode()) if payload else None
+              except urllib.error.HTTPError as error:
+                  payload = error.read()
+                  if error.code in allowed:
+                      try:
+                          value = json.loads(payload.decode()) if payload else None
+                      except Exception:
+                          value = {'message': payload.decode(errors='replace')[:1000]}
+                      return error.code, value
+                  raise SystemExit(
+                      f'{method} {path}: HTTP {error.code}: '
+                      + payload.decode(errors='replace')[:2000]
+                  )
+
+          deadline = time.monotonic() + 60 * 60
+          while True:
+              _, run = call('GET', f'/actions/runs/{run_id}')
+              if run.get('head_sha') != expected_producer:
+                  raise SystemExit('producer identity mismatch')
+              if run.get('status') == 'completed':
+                  break
+              if time.monotonic() >= deadline:
+                  raise SystemExit('producer did not reach terminal state')
+              time.sleep(15)
+
+          _, base_ref = call('GET', '/git/ref/heads/' + urllib.parse.quote(base_branch, safe=''))
+          if base_ref['object']['sha'] != expected_base:
+              raise SystemExit('singular candidate moved before child handoff')
+
+          producer_ok = run.get('conclusion') == 'success'
+          product_branch = None
+          product_head = None
+          product_tree = None
+          log_excerpt = ''
+          if producer_ok:
+              _, log_zip = call('GET', f'/actions/runs/{run_id}/logs', raw=True)
+              with zipfile.ZipFile(io.BytesIO(log_zip)) as archive:
+                  chunks = []
+                  for name in archive.namelist():
+                      if name.endswith('.txt'):
+                          chunks.append(archive.read(name).decode('utf-8', errors='replace'))
+              logs = '\n'.join(chunks)
+              branches = re.findall(r'(?:product_branch|PRODUCT_BRANCH)=([^\s]+)', logs)
+              heads = re.findall(r'product_head=([0-9a-f]{40})', logs)
+              trees = re.findall(r'product_tree=([0-9a-f]{40})', logs)
+              if branches:
+                  product_branch = branches[-1].strip('"\'')
+              if heads:
+                  product_head = heads[-1]
+              if trees:
+                  product_tree = trees[-1]
+              log_excerpt = '\n'.join(
+                  line for line in logs.splitlines()
+                  if any(token in line for token in ('product_branch=', 'PRODUCT_BRANCH=', 'product_head=', 'product_tree='))
+              )[-4000:]
+
+              if product_branch is None:
+                  _, content = call(
+                      'GET',
+                      '/contents/.github/workflows/remaining-source-wave-v7-bootstrap.yml?ref=' + expected_producer,
+                  )
+                  import base64
+                  workflow = base64.b64decode(content['content']).decode('utf-8')
+                  match = re.search(r'^\s*PRODUCT_BRANCH:\s*([^\s#]+)', workflow, re.M)
+                  if match:
+                      product_branch = match.group(1).strip('"\'')
+              if not product_branch:
+                  raise SystemExit('successful producer did not expose product branch')
+
+              _, product_ref = call('GET', '/git/ref/heads/' + urllib.parse.quote(product_branch, safe=''))
+              observed_product = product_ref['object']['sha']
+              if product_head and observed_product != product_head:
+                  raise SystemExit('published product branch does not match producer log')
+              product_head = observed_product
+              _, commit = call('GET', f'/git/commits/{product_head}')
+              product_tree = commit['tree']['sha']
+
+          marker = '<!-- TRNM-V7-SOURCE-WAVE-HANDOFF -->'
+          if not producer_ok:
+              body = '\n'.join([
+                  marker,
+                  '## v7 source-wave producer did not qualify',
+                  '',
+                  f"Producer run: `{run_id}`",
+                  f"Producer head: `{expected_producer}`",
+                  f"Conclusion: `{run.get('conclusion')}`",
+                  '',
+                  'No product PR was created and no source, evidence, gap, compatibility or production credit is granted.',
+              ])
+              call('POST', f"/issues/{os.environ['COMMAND_ISSUE']}/comments", {'body': body})
+              raise SystemExit('v7 source producer failed; handoff stopped')
+
+          _, search = call('GET', '/pulls?' + urllib.parse.urlencode({
+              'state': 'open',
+              'head': repository.split('/')[0] + ':' + product_branch,
+              'base': base_branch,
+              'per_page': 100,
+          }))
+          title = 'feat: admit validated Plan v3.1 remaining source wave'
+          pr_body = '\n'.join([
+              '## Exact source-wave handoff',
+              '',
+              f'- producer run: `{run_id}`',
+              f'- producer tooling head: `{expected_producer}`',
+              f'- base branch/head: `{base_branch}` / `{expected_base}`',
+              f'- product branch/head: `{product_branch}` / `{product_head}`',
+              f'- product tree: `{product_tree}`',
+              '',
+              'The producer completed its guarded Rust 1.85.1, Go and control-plane validation before publishing this branch. This child PR remains Draft until its own exact-head and actual-merge checks, retained artifacts, conflict-free specialist review and resolved conversations are complete.',
+              '',
+              '```text',
+              'accepted_evidence=false',
+              'gap_closed=false',
+              'production_ready=false',
+              'public_online=false',
+              'nakama_retired=false',
+              '```',
+          ])
+          if search:
+              pull = search[0]
+              call('PATCH', f"/pulls/{pull['number']}", {
+                  'title': title,
+                  'body': pr_body,
+                  'draft': True,
+              })
+          else:
+              _, pull = call('POST', '/pulls', {
+                  'title': title,
+                  'head': product_branch,
+                  'base': base_branch,
+                  'body': pr_body,
+                  'draft': True,
+              })
+          call('POST', f"/pulls/{pull['number']}/requested_reviewers", {
+              'reviewers': ['Tomasrgbsf'],
+          }, allowed=(422,))
+
+          comment = '\n'.join([
+              marker,
+              '## v7 remaining-source wave published for guarded admission',
+              '',
+              f"Child PR: `#{pull['number']}`",
+              f"Base: `{base_branch}@{expected_base}`",
+              f"Head: `{product_branch}@{product_head}`",
+              f"Tree: `{product_tree}`",
+              f"Producer: run `{run_id}` / tooling `{expected_producer}` / conclusion `success`",
+              '',
+              'The child remains Draft and zero-credit until current-object CI, retained evidence, independent review and protected admission complete. PR #63 and main were not modified.',
+          ])
+          call('POST', f"/issues/{os.environ['COMMAND_ISSUE']}/comments", {'body': comment})
+          print(json.dumps({
+              'pull_request': pull['number'],
+              'product_branch': product_branch,
+              'product_head': product_head,
+              'product_tree': product_tree,
+              'producer_run': run_id,
+          }, sort_keys=True))
+          PY
