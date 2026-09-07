@@ -23,6 +23,9 @@ PRINCIPALS = {
     273670192: "Franksudoman",
     273673612: "Tomasrgbsf",
 }
+HEAD = "88c02a417c7b0c64f27dc9f49e0b5e6317150964"
+TREE = "9d3ae2fadb2684f095855ecf16307376b55a440f"
+OBSERVED = "2026-09-07T06:00:00Z"
 
 
 def module():
@@ -54,6 +57,99 @@ class IndependentReviewMatrixTests(unittest.TestCase):
             with self.assertRaisesRegex(checker.ReviewMatrixError, pattern):
                 checker.validate(matrix, gaps, owners)
 
+    @staticmethod
+    def reviewer(user_id: int, login: str) -> dict:
+        return {
+            "github_user_id": user_id,
+            "login": login,
+            "kind": "github-user",
+            "organization": "TrillionniumFoundation",
+            "effective_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2026-12-01T00:00:00Z",
+            "permission_readback": {
+                "repository": "TrillionniumFoundation/TrillionniumGame",
+                "permission": "write",
+                "observed_at": "2026-09-07T06:00:00Z",
+            },
+            "routing_basis": [
+                "Synthetic independent qualification fixture.",
+                "Test-only principal; no repository claim.",
+            ],
+        }
+
+    @staticmethod
+    def qualification(
+        user_id: int,
+        login: str,
+        domain_roles: dict[str, list[str]],
+        *,
+        marker: str,
+    ) -> tuple[dict, tuple]:
+        evidence = {
+            "evidence_id": f"TG-QUAL-{marker}",
+            "artifact_sha256": marker[0] * 64,
+            "candidate_head": HEAD,
+            "candidate_tree": TREE,
+            "observed_at": OBSERVED,
+            "decision": "accepted",
+            "independent": True,
+            "self_review": False,
+        }
+        rows = [
+            {"domain": domain, "roles": roles, "evidence": [dict(evidence)]}
+            for domain, roles in domain_roles.items()
+        ]
+        records = tuple(
+            sorted(
+                (
+                    domain,
+                    role,
+                    evidence["evidence_id"],
+                    evidence["artifact_sha256"],
+                    HEAD,
+                    TREE,
+                    OBSERVED,
+                    "accepted",
+                    True,
+                    False,
+                )
+                for domain, roles in domain_roles.items()
+                for role in roles
+            )
+        )
+        return {
+            "github_user_id": user_id,
+            "login": login,
+            "qualifications": rows,
+        }, (login, records)
+
+    @staticmethod
+    def add_codeowners(owners: Path, *logins: str) -> None:
+        suffix = "".join(f" @{login}" for login in logins)
+        rows = []
+        for raw in owners.read_text(encoding="utf-8").splitlines():
+            rows.append(raw if not raw or raw.lstrip().startswith("#") else raw + suffix)
+        owners.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    def install_principals(
+        self,
+        checker,
+        matrix: Path,
+        principals: list[tuple[int, str, dict[str, list[str]], str]],
+    ) -> dict:
+        value = json.loads(matrix.read_text(encoding="utf-8"))
+        expected = {}
+        for user_id, login, domain_roles, marker in principals:
+            value["reviewers"].append(self.reviewer(user_id, login))
+            row, expected_row = self.qualification(
+                user_id, login, domain_roles, marker=marker
+            )
+            value["candidate_scope"]["qualification_principals"].append(row)
+            expected[user_id] = expected_row
+        checker.EXPECTED_QUALIFICATIONS = expected
+        matrix.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+        return value
+
     def test_current_matrix_reports_capacity_block(self) -> None:
         completed = subprocess.run(
             [sys.executable, str(SCRIPT)],
@@ -68,11 +164,14 @@ class IndependentReviewMatrixTests(unittest.TestCase):
         self.assertEqual(result["status"], "blocked-reviewer-capacity")
         self.assertEqual(result["available_domains"], 0)
         self.assertEqual(result["blocked_domains"], 6)
+        self.assertEqual(result["required_roles"], 12)
+        self.assertEqual(result["covered_required_roles"], 0)
         self.assertEqual(result["eligible_reviewers"], [])
+        self.assertEqual(result["qualification_principals"], [])
         self.assertEqual(result["candidate_conflict_user_ids"], sorted(PRINCIPALS))
         self.assertTrue(result["candidate_conflict_evidence_bound"])
+        self.assertTrue(result["role_qualification_evidence_bound"])
         self.assertFalse(result["all_required_reviews_available"])
-        self.assertFalse(result["conflict_survivable"])
 
     def test_matrix_binds_all_three_conflicts_to_stable_ids(self) -> None:
         value = json.loads(MATRIX.read_text(encoding="utf-8"))
@@ -80,6 +179,12 @@ class IndependentReviewMatrixTests(unittest.TestCase):
             row["github_user_id"]: row["login"] for row in value["reviewers"]
         }
         self.assertEqual(reviewers, PRINCIPALS)
+        self.assertTrue(
+            all(
+                "routing_basis" in row and "qualification_basis" not in row
+                for row in value["reviewers"]
+            )
+        )
         principals = {
             row["github_user_id"]: row
             for row in value["candidate_scope"]["conflict_principals"]
@@ -94,10 +199,9 @@ class IndependentReviewMatrixTests(unittest.TestCase):
                 CONFLICTS,
             )
             self.assertTrue(all(item["evidence"] for item in row["conflicts"]))
+        self.assertEqual(value["candidate_scope"]["qualification_principals"], [])
         for domain in value["domains"]:
-            self.assertEqual(
-                set(domain["assigned_reviewer_ids"]), set(PRINCIPALS)
-            )
+            self.assertEqual(set(domain["assigned_reviewer_ids"]), set(PRINCIPALS))
             self.assertEqual(domain["status"], "blocked-reviewer-capacity")
 
     def test_login_case_variation_is_same_principal(self) -> None:
@@ -152,7 +256,9 @@ class IndependentReviewMatrixTests(unittest.TestCase):
                 def change(value, conflict=conflict):
                     row = value["candidate_scope"]["conflict_principals"][0]
                     row["conflicts"] = [
-                        item for item in row["conflicts"] if item["type"] != conflict
+                        item
+                        for item in row["conflicts"]
+                        if item["type"] != conflict
                     ]
 
                 self.invalid(change, "candidate principal conflicts incomplete")
@@ -238,9 +344,7 @@ class IndependentReviewMatrixTests(unittest.TestCase):
     def test_single_reviewer_domain_is_rejected(self) -> None:
         self.invalid(
             lambda value: value["domains"][0].update(
-                assigned_reviewer_ids=value["domains"][0][
-                    "assigned_reviewer_ids"
-                ][:1]
+                assigned_reviewer_ids=value["domains"][0]["assigned_reviewer_ids"][:1]
             ),
             "at least 2 reviewers required",
         )
@@ -248,9 +352,7 @@ class IndependentReviewMatrixTests(unittest.TestCase):
     def test_two_reviewers_cannot_delete_a_known_conflicted_route(self) -> None:
         self.invalid(
             lambda value: value["domains"][0].update(
-                assigned_reviewer_ids=value["domains"][0][
-                    "assigned_reviewer_ids"
-                ][:2]
+                assigned_reviewer_ids=value["domains"][0]["assigned_reviewer_ids"][:2]
             ),
             "candidate-conflicted routing principals removed",
         )
@@ -258,7 +360,7 @@ class IndependentReviewMatrixTests(unittest.TestCase):
     def test_active_status_cannot_hide_capacity_shortage(self) -> None:
         self.invalid(
             lambda value: value["domains"][0].update(status="active"),
-            "insufficient conflict-free reviewers must block",
+            "insufficient qualified role coverage must block",
         )
 
     def test_false_summary_is_rejected(self) -> None:
@@ -329,6 +431,238 @@ class IndependentReviewMatrixTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 checker.ReviewMatrixError,
                 "lacks conflict-surviving review routes",
+            ):
+                checker.validate(matrix, gaps, owners)
+
+    def test_two_unqualified_principals_cannot_create_capacity(self) -> None:
+        def change(value):
+            for user_id, login in ((9001, "ExternalOne"), (9002, "ExternalTwo")):
+                value["reviewers"].append(self.reviewer(user_id, login))
+            for domain in value["domains"]:
+                domain["assigned_reviewer_ids"].extend([9001, 9002])
+                domain["status"] = "active"
+            value["summary"].update(
+                available_domain_count=6,
+                blocked_domain_count=0,
+                named_reviewer_count=5,
+                eligible_named_reviewer_count=2,
+                all_required_reviews_available=True,
+            )
+            value["claim_boundary"].update(
+                reviewer_routing_available=True,
+                candidate_specific_availability=True,
+            )
+
+        self.invalid(change, "insufficient qualified role coverage must block")
+
+    def test_well_formed_unbound_qualification_is_rejected(self) -> None:
+        def change(value):
+            value["reviewers"].append(self.reviewer(9001, "ExternalOne"))
+            row, _ = self.qualification(
+                9001,
+                "ExternalOne",
+                {"governance": ["repository-administrator"]},
+                marker="1",
+            )
+            value["candidate_scope"]["qualification_principals"].append(row)
+
+        self.invalid(
+            change,
+            "qualification principal lacks exact accepted evidence binding",
+        )
+
+    def test_wrong_domain_only_qualifications_do_not_create_capacity(self) -> None:
+        checker = module()
+        with tempfile.TemporaryDirectory() as directory:
+            matrix, gaps, owners = self.fixture(directory)
+            self.install_principals(
+                checker,
+                matrix,
+                [
+                    (
+                        9001,
+                        "ExternalOne",
+                        {"governance": ["repository-administrator"]},
+                        "1",
+                    ),
+                    (
+                        9002,
+                        "ExternalTwo",
+                        {"governance": ["independent-program-governance-reviewer"]},
+                        "2",
+                    ),
+                ],
+            )
+
+            def change(value):
+                target = next(
+                    row
+                    for row in value["domains"]
+                    if row["id"] == "database-data-integrity"
+                )
+                target["assigned_reviewer_ids"].extend([9001, 9002])
+                target["status"] = "active"
+
+            self.mutate(matrix, change)
+            with self.assertRaisesRegex(
+                checker.ReviewMatrixError,
+                "insufficient qualified role coverage must block",
+            ):
+                checker.validate(matrix, gaps, owners)
+
+    def test_missing_required_role_keeps_domain_blocked(self) -> None:
+        checker = module()
+        with tempfile.TemporaryDirectory() as directory:
+            matrix, gaps, owners = self.fixture(directory)
+            self.install_principals(
+                checker,
+                matrix,
+                [
+                    (
+                        9001,
+                        "ExternalOne",
+                        {"governance": ["repository-administrator"]},
+                        "1",
+                    ),
+                    (
+                        9002,
+                        "ExternalTwo",
+                        {"governance": ["repository-administrator"]},
+                        "2",
+                    ),
+                ],
+            )
+            self.add_codeowners(owners, "ExternalOne", "ExternalTwo")
+
+            def change(value):
+                target = next(
+                    row for row in value["domains"] if row["id"] == "governance"
+                )
+                target["assigned_reviewer_ids"].extend([9001, 9002])
+                target["status"] = "active"
+
+            self.mutate(matrix, change)
+            with self.assertRaisesRegex(
+                checker.ReviewMatrixError,
+                "insufficient qualified role coverage must block",
+            ):
+                checker.validate(matrix, gaps, owners)
+
+    def test_role_qualified_principals_must_be_codeowners(self) -> None:
+        checker = module()
+        with tempfile.TemporaryDirectory() as directory:
+            matrix, gaps, owners = self.fixture(directory)
+            all_roles = {
+                row["id"]: list(row["required_roles"])
+                for row in json.loads(matrix.read_text(encoding="utf-8"))["domains"]
+            }
+            self.install_principals(
+                checker,
+                matrix,
+                [
+                    (9001, "ExternalOne", all_roles, "1"),
+                    (9002, "ExternalTwo", all_roles, "2"),
+                ],
+            )
+
+            def change(value):
+                for domain in value["domains"]:
+                    domain["assigned_reviewer_ids"].extend([9001, 9002])
+                    domain["status"] = "active"
+
+            self.mutate(matrix, change)
+            with self.assertRaisesRegex(
+                checker.ReviewMatrixError,
+                "is not a CODEOWNER route",
+            ):
+                checker.validate(matrix, gaps, owners)
+
+    def test_genuinely_role_qualified_fixture_can_make_domains_available(self) -> None:
+        checker = module()
+        with tempfile.TemporaryDirectory() as directory:
+            matrix, gaps, owners = self.fixture(directory)
+            base = json.loads(matrix.read_text(encoding="utf-8"))
+            all_roles = {
+                row["id"]: list(row["required_roles"]) for row in base["domains"]
+            }
+            self.install_principals(
+                checker,
+                matrix,
+                [
+                    (9001, "ExternalOne", all_roles, "1"),
+                    (9002, "ExternalTwo", all_roles, "2"),
+                ],
+            )
+            self.add_codeowners(owners, "ExternalOne", "ExternalTwo")
+
+            def change(value):
+                for domain in value["domains"]:
+                    domain["assigned_reviewer_ids"].extend([9001, 9002])
+                    domain["status"] = "active"
+                value["summary"].update(
+                    available_domain_count=6,
+                    blocked_domain_count=0,
+                    required_role_count=12,
+                    covered_required_role_count=12,
+                    named_reviewer_count=5,
+                    eligible_named_reviewer_count=2,
+                    qualification_principal_count=2,
+                    all_required_reviews_available=True,
+                )
+                value["claim_boundary"].update(
+                    reviewer_routing_available=True,
+                    candidate_specific_availability=True,
+                    required_role_coverage_available=True,
+                )
+
+            self.mutate(matrix, change)
+            result = checker.validate(matrix, gaps, owners)
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(result["available_domains"], 6)
+            self.assertEqual(result["covered_required_roles"], 12)
+            self.assertEqual(
+                result["eligible_reviewers"], ["ExternalOne", "ExternalTwo"]
+            )
+
+    def test_qualification_candidate_head_mismatch_is_rejected(self) -> None:
+        checker = module()
+        with tempfile.TemporaryDirectory() as directory:
+            matrix, gaps, owners = self.fixture(directory)
+            row, expected = self.qualification(
+                9001,
+                "ExternalOne",
+                {"governance": ["repository-administrator"]},
+                marker="1",
+            )
+            checker.EXPECTED_QUALIFICATIONS = {9001: expected}
+            value = json.loads(matrix.read_text(encoding="utf-8"))
+            value["reviewers"].append(self.reviewer(9001, "ExternalOne"))
+            row["qualifications"][0]["evidence"][0]["candidate_head"] = "0" * 40
+            value["candidate_scope"]["qualification_principals"].append(row)
+            matrix.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                checker.ReviewMatrixError, "candidate head mismatch"
+            ):
+                checker.validate(matrix, gaps, owners)
+
+    def test_qualification_self_review_is_rejected(self) -> None:
+        checker = module()
+        with tempfile.TemporaryDirectory() as directory:
+            matrix, gaps, owners = self.fixture(directory)
+            row, expected = self.qualification(
+                9001,
+                "ExternalOne",
+                {"governance": ["repository-administrator"]},
+                marker="1",
+            )
+            checker.EXPECTED_QUALIFICATIONS = {9001: expected}
+            value = json.loads(matrix.read_text(encoding="utf-8"))
+            value["reviewers"].append(self.reviewer(9001, "ExternalOne"))
+            row["qualifications"][0]["evidence"][0]["self_review"] = True
+            value["candidate_scope"]["qualification_principals"].append(row)
+            matrix.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                checker.ReviewMatrixError, "self_review=false required"
             ):
                 checker.validate(matrix, gaps, owners)
 
