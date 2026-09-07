@@ -1,0 +1,84 @@
+name: outbox-evidence-sealing-restamp
+
+on:
+  push:
+    branches: [tooling/outbox-evidence-sealing-staging-2026-09-07a]
+    paths:
+      - '.github/workflows/outbox-evidence-sealing-restamp.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  restamp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+    steps:
+      - name: Bind PR body to live source and actual merge identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          api="https://api.github.com/repos/$repo"
+          auth=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json')
+          pr=$(curl -fsSL "${auth[@]}" "$api/pulls/63")
+          base=$(jq -r '.base.sha' <<<"$pr")
+          head=$(jq -r '.head.sha' <<<"$pr")
+          head_ref=$(jq -r '.head.ref' <<<"$pr")
+          test "$head_ref" = "$PRODUCT_BRANCH"
+          head_tree=$(curl -fsSL "${auth[@]}" "$api/git/commits/$head" | jq -r '.tree.sha')
+          merge=$(git ls-remote "https://github.com/${repo}.git" refs/pull/63/merge | awk '{print $1}')
+          test -n "$merge"
+          merge_obj=$(curl -fsSL "${auth[@]}" "$api/git/commits/$merge")
+          merge_tree=$(jq -r '.tree.sha' <<<"$merge_obj")
+          parents=$(jq -r '[.parents[].sha] | join(", ")' <<<"$merge_obj")
+          test "$merge_tree" = "$head_tree"
+          test "$(jq '.parents | length' <<<"$merge_obj")" = 2
+          test "$(jq -r '.parents[0].sha' <<<"$merge_obj")" = "$base"
+          test "$(jq -r '.parents[1].sha' <<<"$merge_obj")" = "$head"
+
+          body=$(cat <<EOF
+          ## Exact Plan v3.1 candidate identity
+
+          - repository: \`$repo\`
+          - base branch: \`main\`
+          - base commit: \`$base\`
+          - head branch: \`$head_ref\`
+          - head commit: \`$head\`
+          - head tree: \`$head_tree\`
+          - actual prospective merge: \`$merge\`
+          - prospective merge tree: \`$merge_tree\`
+          - ordered prospective parents: \`$parents\`
+
+          This remains the singular Draft integration candidate. Every source change invalidates older-head workflow, artifact, review, gap, compatibility and production credit.
+
+          ## Latest evidence-sealing increment
+
+          The candidate either contains, or remains awaiting, the guarded outbox retained-artifact sealing transaction. Formal credit is determined only by exact current-head source and actual-merge execution, retained-byte admission and conflict-free independent review. A tooling run, local replay, request for review or successful upload does not itself close a gap.
+
+          ## Required closure boundary
+
+          All 18 registered gaps and all 92 close criteria remain binding. No implementation-only or documentation-only promotion is permitted. Complete D0-D8 classification, independent SG1, security/cryptography, database/data-integrity, protocol/realtime, compatibility-QA, SRE, KMS/HSM, multi-node, HA/PITR, capacity/endurance, migration, canary, cutover and retirement evidence remain mandatory where not yet accepted.
+
+          ## Claim boundary
+
+          \`\`\`text
+          source_candidate=true
+          accepted_evidence=false
+          gap_closed=false
+          production_ready=false
+          public_online=false
+          drop_in_replacement=false
+          nakama_retired=false
+          \`\`\`
+
+          Keep Draft. No self-approval, self-merge, administrator bypass, force push, production deployment, cutover or retirement is authorized.
+          EOF
+          )
+          jq -n --arg body "$body" '{body:$body,draft:true}' > "$RUNNER_TEMP/pr.json"
+          curl -fsSL -X PATCH "${auth[@]}" "$api/pulls/63" --data-binary @"$RUNNER_TEMP/pr.json" >/dev/null
+          printf 'base=%s\nhead=%s\ntree=%s\nmerge=%s\nmerge_tree=%s\n' "$base" "$head" "$head_tree" "$merge" "$merge_tree"
