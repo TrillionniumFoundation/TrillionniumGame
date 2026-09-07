@@ -1,0 +1,177 @@
+name: main-governance-graphql-evidence
+
+on:
+  push:
+    branches:
+      - tooling/gap-closure-audit-2026-09-07
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: main-governance-graphql-evidence
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Capture branch protection, bypass and review topology
+        id: collect
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          owner="${repo%/*}"
+          name="${repo#*/}"
+          packet="$RUNNER_TEMP/main-governance-graphql"
+          mkdir -p "$packet"
+
+          set +e
+          gh api graphql \
+            -f owner="$owner" -f name="$name" \
+            -f query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id nameWithOwner defaultBranchRef{name target{... on Commit{oid}}} branchProtectionRules(first:100){totalCount nodes{id pattern allowsDeletions allowsForcePushes blocksCreations dismissesStaleReviews isAdminEnforced lockAllowsFetchAndMerge lockBranch requiredApprovingReviewCount requiredDeploymentEnvironments requiredStatusCheckContexts requiresApprovingReviews requiresCodeOwnerReviews requiresCommitSignatures requiresConversationResolution requiresDeployments requiresLinearHistory requiresStatusChecks requiresStrictStatusChecks restrictsPushes restrictsReviewDismissals bypassForcePushAllowances(first:100){totalCount nodes{actor{... on User{login} ... on Team{slug organization{login}} ... on App{slug}}}} bypassPullRequestAllowances(first:100){totalCount nodes{actor{... on User{login} ... on Team{slug organization{login}} ... on App{slug}}}} pushAllowances(first:100){totalCount nodes{actor{... on User{login} ... on Team{slug organization{login}} ... on App{slug}}}} reviewDismissalAllowances(first:100){totalCount nodes{actor{... on User{login} ... on Team{slug organization{login}} ... on App{slug}}}} requiredStatusChecks{context app{id slug}}}}}}' \
+            > "$packet/branch-protection-graphql.json" \
+            2> "$packet/branch-protection-graphql.stderr"
+          protection_exit=$?
+
+          gh api graphql \
+            -f owner="$owner" -f name="$name" \
+            -F pr63=63 -F pr93=93 \
+            -f query='query($owner:String!,$name:String!,$pr63:Int!,$pr93:Int!){repository(owner:$owner,name:$name){pull63:pullRequest(number:$pr63){id number state isDraft mergeable mergeStateStatus reviewDecision baseRefName baseRefOid headRefName headRefOid headRef{target{... on Commit{oid tree{oid} committedDate author{user{login}} committer{user{login}}}}} reviewThreads(first:100){totalCount nodes{id isResolved isOutdated path line comments(first:20){totalCount nodes{author{login} body createdAt state}}}} reviews(first:100){totalCount nodes{author{login} state submittedAt commit{oid}}}} pull93:pullRequest(number:$pr93){id number state isDraft mergeable mergeStateStatus reviewDecision baseRefName baseRefOid headRefName headRefOid headRef{target{... on Commit{oid tree{oid} committedDate author{user{login}} committer{user{login}}}}} reviewThreads(first:100){totalCount nodes{id isResolved isOutdated path line comments(first:20){totalCount nodes{author{login} body createdAt state}}}} reviews(first:100){totalCount nodes{author{login} state submittedAt commit{oid}}}}}}}' \
+            > "$packet/pr-review-topology-graphql.json" \
+            2> "$packet/pr-review-topology-graphql.stderr"
+          review_exit=$?
+          set -e
+          printf '%s\n' "$protection_exit" > "$packet/branch-protection-graphql.exit-status"
+          printf '%s\n' "$review_exit" > "$packet/pr-review-topology-graphql.exit-status"
+
+          gh api "repos/$repo/branches/main" > "$packet/main-branch-summary.json"
+          gh api "repos/$repo/pulls/63" > "$packet/pr63.json"
+          gh api "repos/$repo/pulls/93" > "$packet/pr93.json"
+          head93=$(jq -r .head.sha "$packet/pr93.json")
+          base93=$(jq -r .base.sha "$packet/pr93.json")
+          merge93=$(jq -r .merge_commit_sha "$packet/pr93.json")
+          printf 'head93=%s\nbase93=%s\nmerge93=%s\n' "$head93" "$base93" "$merge93" \
+            >> "$GITHUB_OUTPUT"
+
+          for ref in "$head93" "$base93" main; do
+            safe=$(tr '/:' '__' <<<"$ref")
+            for path in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
+              target="$packet/codeowners-$safe-$(tr '/' '_' <<<"$path")"
+              status=$(curl -sS -o "$target" -w '%{http_code}' \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H 'Accept: application/vnd.github.raw+json' \
+                "https://api.github.com/repos/$repo/contents/$path?ref=$ref")
+              printf '%s\n' "$status" > "$target.http-status"
+            done
+          done
+
+          python3 - "$packet" "$repo" <<'PY'
+          from __future__ import annotations
+          import hashlib, json, sys
+          from pathlib import Path
+          packet=Path(sys.argv[1]); repo=sys.argv[2]
+          def maybe(path):
+              try: return json.loads(path.read_text())
+              except Exception: return None
+          protection=maybe(packet/'branch-protection-graphql.json')
+          topology=maybe(packet/'pr-review-topology-graphql.json')
+          rules=[]
+          if protection:
+              rules=((protection.get('data') or {}).get('repository') or {}).get('branchProtectionRules',{}).get('nodes',[]) or []
+          main_rules=[r for r in rules if r.get('pattern')=='main']
+          readback={
+              'schema':'trillionnium.main-governance-graphql-readback.v1',
+              'repository':repo,
+              'branch_protection_query_exit':int((packet/'branch-protection-graphql.exit-status').read_text()),
+              'review_topology_query_exit':int((packet/'pr-review-topology-graphql.exit-status').read_text()),
+              'main_rule_count':len(main_rules),
+              'main_rules':main_rules,
+              'pr_topology_available':bool(topology and (topology.get('data') or {}).get('repository')),
+              'non_mutating_negative_observation':'mergeStateStatus/reviewDecision only; no merge or direct-push attempt executed',
+              'independent_governance_acceptance_required':True,
+              'negative_enforcement_rehearsal_required':True,
+              'accepted_evidence':False,
+              'gap_closed':False,
+              'production_ready':False,
+          }
+          (packet/'readback.json').write_text(json.dumps(readback,indent=2,sort_keys=True)+'\n')
+          members=[]
+          for path in sorted(p for p in packet.rglob('*') if p.is_file() and p.name not in ('files.sha256','manifest.json')):
+              raw=path.read_bytes()
+              members.append({'path':path.relative_to(packet).as_posix(),'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()})
+          manifest={'schema':'trillionnium.main-governance-graphql-packet.v1','repository':repo,'members':members,'accepted_evidence':False,'gap_closed':False,'production_ready':False}
+          (packet/'manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          PY
+
+          (
+            cd "$packet"
+            find . -type f ! -path './files.sha256' -print0 \
+              | LC_ALL=C sort -z | xargs -0 sha256sum > files.sha256
+            sha256sum --check files.sha256
+          )
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 \
+            --numeric-owner -C "$RUNNER_TEMP" -czf \
+            "$GITHUB_WORKSPACE/main-governance-graphql-evidence.tar.gz" \
+            main-governance-graphql
+          sha256sum "$GITHUB_WORKSPACE/main-governance-graphql-evidence.tar.gz" \
+            > "$GITHUB_WORKSPACE/main-governance-graphql-evidence.tar.gz.sha256"
+          cp "$packet/readback.json" "$GITHUB_WORKSPACE/main-governance-graphql-readback.json"
+
+      - name: Fetch exact PR 93 source for the repository-native uploader
+        shell: bash
+        env:
+          HEAD_SHA: ${{ steps.collect.outputs.head93 }}
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/source"
+          git -C "$RUNNER_TEMP/source" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$RUNNER_TEMP/source" fetch --no-tags --depth=1 origin "$HEAD_SHA"
+          git -C "$RUNNER_TEMP/source" checkout --detach FETCH_HEAD
+          cp -a "$RUNNER_TEMP/source/.github/actions" "$GITHUB_WORKSPACE/.github/"
+
+      - name: Retain GraphQL governance evidence candidate
+        id: upload
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: main-governance-graphql-${{ steps.collect.outputs.head93 }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: main-governance-graphql-evidence.tar.gz
+          mime_type: application/gzip
+
+      - name: Publish exact readback and limitations
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.upload.outputs.artifact_id }}'
+          digest=$(cut -d' ' -f1 main-governance-graphql-evidence.tar.gz.sha256)
+          readback=$(jq -c . main-governance-graphql-readback.json)
+          body=$(cat <<EOF
+          Non-mutating main governance GraphQL readback candidate:
+
+          - run: \`$GITHUB_RUN_ID\` attempt \`$GITHUB_RUN_ATTEMPT\`
+          - bound PR #93 head: \`${{ steps.collect.outputs.head93 }}\`
+          - artifact ID: \`${{ steps.upload.outputs.artifact_id }}\`
+          - native receipt SHA-256: \`${{ steps.upload.outputs.sha256 }}\`
+          - packet SHA-256: \`$digest\`
+
+          \`\`\`json
+          $readback
+          \`\`\`
+
+          This query is read-only. It does not substitute for an independently accepted negative enforcement rehearsal, and it grants no governance or gap credit by itself.
+          EOF
+          )
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/7/comments" --raw-field body="$body"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/93/comments" --raw-field body="$body"
