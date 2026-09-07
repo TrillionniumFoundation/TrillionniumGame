@@ -1,44 +1,48 @@
 name: one-shot-format-crypto
 
 on:
-  push:
-    branches:
-      - codex/plan-v31-product-gap-wave-2026-09-07
-    paths:
-      - '.github/workflows/one-shot-format-crypto.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: one-shot-format-crypto-${{ github.ref }}
+  group: one-shot-format-crypto-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
   format-and-self-remove:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.number == 103 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'codex/plan-v31-product-gap-wave-2026-09-07'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      TARGET_BRANCH: codex/plan-v31-product-gap-wave-2026-09-07
+      TARGET_BRANCH: ${{ github.event.pull_request.head.ref }}
+      TARGET_SHA: ${{ github.event.pull_request.head.sha }}
       ONE_SHOT_PATH: .github/workflows/one-shot-format-crypto.yml
     steps:
-      - name: Fetch exact branch head without external actions
+      - name: Fetch exact pull-request head without external actions
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_REF" = "refs/heads/$TARGET_BRANCH"
+          test -n "$TARGET_BRANCH"
+          test -n "$TARGET_SHA"
           rm -rf "$GITHUB_WORKSPACE"
           git init "$GITHUB_WORKSPACE"
           git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           git -C "$GITHUB_WORKSPACE" config http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
-          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$TARGET_SHA"
           git -C "$GITHUB_WORKSPACE" checkout -B "$TARGET_BRANCH" FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git -C "$GITHUB_WORKSPACE" ls-remote origin "refs/heads/$TARGET_BRANCH" | cut -f1)" = "$GITHUB_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE" ls-remote origin "refs/heads/$TARGET_BRANCH" | cut -f1)" = "$TARGET_SHA"
       - name: Install pinned formatter
         shell: bash
         run: |
@@ -55,8 +59,6 @@ jobs:
           rustup run 1.85.1 rustfmt --edition 2021 --check \
             crates/trnm-token-crypto-provider/src/signer_journal.rs
       - name: Commit ordinary reviewable source without force
-        env:
-          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -65,6 +67,6 @@ jobs:
           git add -- crates/trnm-token-crypto-provider/src/signer_journal.rs "$ONE_SHOT_PATH"
           git diff --cached --check
           git diff --cached --quiet && { echo "one-shot transaction produced no change" >&2; exit 1; }
-          test "$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | cut -f1)" = "$GITHUB_SHA"
+          test "$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | cut -f1)" = "$TARGET_SHA"
           git commit -m "chore(crypto): apply pinned rustfmt and remove formatter"
           git push origin "HEAD:refs/heads/$TARGET_BRANCH"
