@@ -1,18 +1,18 @@
-name: pr100-canonical-contract-repair-v2
+name: pr100-canonical-contract-repair-v3
 
 on:
   push:
     branches:
       - codex/reviewer-conflict-capacity-fix-2026-09-07
     paths:
-      - scripts/one_shot_pr100_canonical_contract_repair.py
+      - scripts/one_shot_pr100_canonical_contract_repair_v3.py
       - .github/workflows/pr100-canonical-contract-repair-v2.yml
 
 permissions:
   contents: write
 
 concurrency:
-  group: pr100-canonical-contract-repair-v2
+  group: pr100-canonical-contract-repair-v3
   cancel-in-progress: false
 
 env:
@@ -38,68 +38,12 @@ jobs:
           test "$observed" = "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
 
-      - name: Apply fail-closed canonical contract repair
+      - name: Apply canonical contract repair without workflow mutation
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/one_shot_pr100_canonical_contract_repair.py
-          python3 - <<'PY'
-          from __future__ import annotations
-
-          import hashlib
-          import json
-          from pathlib import Path
-
-          overlay_path = Path("docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json")
-          overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
-
-          def blob_sha(path: str) -> str:
-              payload = Path(path).read_bytes()
-              header = f"blob {len(payload)}\0".encode("ascii")
-              return hashlib.sha1(header + payload).hexdigest()
-
-          bindings = {
-              344260281: {
-                  "allowed_events": ["pull_request"],
-                  "git_blob_sha1": blob_sha(".github/workflows/plan-contract.yml"),
-                  "minimum_successful_execution_jobs": 1,
-                  "name": "trillionnium-game-plan-contract",
-                  "path": ".github/workflows/plan-contract.yml",
-                  "workflow_id": 344260281,
-              },
-              347178559: {
-                  "allowed_events": ["pull_request"],
-                  "git_blob_sha1": blob_sha(
-                      ".github/workflows/prospective-merge-gate.yml"
-                  ),
-                  "minimum_successful_execution_jobs": 1,
-                  "name": "prospective-merge-gate",
-                  "path": ".github/workflows/prospective-merge-gate.yml",
-                  "workflow_id": 347178559,
-              },
-          }
-          replacements = {
-              int(item["workflow_id"]): item
-              for item in overlay.get("replace_workflows", [])
-          }
-          replacements.update(bindings)
-          overlay["replace_workflows"] = sorted(
-              replacements.values(),
-              key=lambda item: (item["path"], int(item["workflow_id"])),
-          )
-          digest_value = dict(overlay)
-          digest_value.pop("overlay_sha256", None)
-          encoded = json.dumps(
-              digest_value, sort_keys=True, separators=(",", ":")
-          ).encode("utf-8")
-          overlay["overlay_sha256"] = hashlib.sha256(encoded).hexdigest()
-          overlay_path.write_text(
-              json.dumps(overlay, separators=(",", ":")) + "\n",
-              encoding="utf-8",
-          )
-          PY
+          python3 scripts/one_shot_pr100_canonical_contract_repair_v3.py
           git diff --check
           actual="$(
             {
@@ -107,16 +51,13 @@ jobs:
               git ls-files --others --exclude-standard
             } | sort -u | paste -sd, -
           )"
-          expected=".github/workflows/plan-contract.yml,.github/workflows/pr100-canonical-contract-repair-v2.yml,.github/workflows/prospective-merge-gate.yml,docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json,scripts/check-independent-review-domain-contract.py,scripts/check-independent-review-matrix.py,scripts/check-plan.py,scripts/one_shot_pr100_canonical_contract_repair.py,tests/control_plane/test_independent_review_domain_integration.py"
+          expected="scripts/check-independent-review-domain-contract.py,scripts/check-independent-review-matrix.py,scripts/check-plan.py,tests/control_plane/test_independent_review_domain_integration.py"
           test "$actual" = "$expected"
 
-      - name: Validate and form unpushed final tree
+      - name: Validate final hypothetical tree and publish source-only commit
         shell: bash
         run: |
           set -euo pipefail
-          git checkout HEAD -- \
-            scripts/one_shot_pr100_canonical_contract_repair.py \
-            .github/workflows/pr100-canonical-contract-repair-v2.yml
           python3 -m py_compile \
             scripts/check-independent-review-domain-contract.py \
             scripts/check-independent-review-matrix.py \
@@ -131,21 +72,28 @@ jobs:
             tests.control_plane.test_independent_review_domain_contract \
             tests.control_plane.test_independent_review_domain_integration \
             tests.control_plane.test_independent_review_matrix -v
-          rm -f \
-            scripts/one_shot_pr100_canonical_contract_repair.py \
-            .github/workflows/pr100-canonical-contract-repair-v2.yml
+
           git config user.name trillionnium-governance-bot
           git config user.email trillionnium-governance-bot@users.noreply.github.com
-          git add -A
+          git add \
+            scripts/check-independent-review-domain-contract.py \
+            scripts/check-independent-review-matrix.py \
+            scripts/check-plan.py \
+            tests/control_plane/test_independent_review_domain_integration.py
           git commit -m "fix(governance): bind canonical review-domain ownership"
+          source_commit="$(git rev-parse HEAD)"
           test -z "$(git status --porcelain)"
-          python3 -m unittest discover -s tests -p 'test_*.py'
-          git diff --check HEAD^
 
-      - name: Publish exact tested final tree without force
-        shell: bash
-        run: |
-          set -euo pipefail
+          rm -f \
+            .github/workflows/pr100-canonical-contract-repair-v2.yml \
+            scripts/one_shot_pr100_canonical_contract_repair.py \
+            scripts/one_shot_pr100_canonical_contract_repair_v3.py
+          git add -A
+          git commit -m "test(governance): materialize final cleanup tree"
+          python3 -m unittest discover -s tests -p 'test_*.py'
+          git diff --check HEAD^^
+          git reset --hard "$source_commit"
+
           observed="$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
           test "$observed" = "$GITHUB_SHA"
-          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          git push origin "${source_commit}:refs/heads/${TARGET_BRANCH}"
