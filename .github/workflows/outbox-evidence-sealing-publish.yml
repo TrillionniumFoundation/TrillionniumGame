@@ -1,0 +1,399 @@
+name: outbox-evidence-sealing-publish
+
+on:
+  push:
+    branches: [tooling/outbox-evidence-sealing-2026-09-07]
+    paths:
+      - '.github/workflows/outbox-evidence-sealing-publish.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+      GH_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Fetch live candidate with ordinary fast-forward custody
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin "refs/heads/${PRODUCT_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/source" checkout -b "$PRODUCT_BRANCH" FETCH_HEAD
+          git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD | tee "$RUNNER_TEMP/source-head"
+          git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree} | tee "$RUNNER_TEMP/source-tree"
+
+      - name: Apply fail-closed sealing and pre-package verification
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import re
+          from pathlib import Path
+
+          root = Path.cwd()
+          script_path = root / "scripts/ci-outbox-final-attempt-reaper.sh"
+          workflow_path = root / ".github/workflows/prospective-merge-gate.yml"
+          test_path = root / "tests/control_plane/test_outbox_evidence_sealing.py"
+          base_path = root / "docs/governance/REQUIRED_WORKFLOWS_V1.json"
+          overlay_path = root / "docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json"
+          for path in (script_path, workflow_path, base_path, overlay_path):
+              if not path.is_file():
+                  raise SystemExit(f"required source path missing: {path}")
+
+          script = script_path.read_text(encoding="utf-8")
+          if "TRNM_OUTBOX_TEE_PID" not in script:
+              tee_pattern = re.compile(
+                  r"(?m)^(?P<indent>[ \t]*)exec[ \t]+>[ \t]*>\(tee\b[^\n]*\)[ \t]+2>&1[ \t]*$"
+              )
+              matches = list(tee_pattern.finditer(script))
+              if len(matches) != 1:
+                  raise SystemExit(f"expected one Outbox tee redirection, observed {len(matches)}")
+              match = matches[0]
+              indent = match.group("indent")
+              original = match.group(0)
+              replacement = (
+                  f"{indent}exec 3>&1 4>&2\n"
+                  f"{original}\n"
+                  f"{indent}TRNM_OUTBOX_TEE_PID=$!"
+              )
+              script = script[: match.start()] + replacement + script[match.end() :]
+
+          if "wait \"$TRNM_OUTBOX_TEE_PID\"" not in script:
+              checksum_pattern = re.compile(
+                  r"(?m)^(?P<indent>[ \t]*)find[ \t]+\.[^\n]*?"
+                  r"(?P<digest>sha256sum|shasum[ \t]+-a[ \t]+256)"
+                  r"[^\n]*?>[ \t]*files\.sha256[ \t]*$"
+              )
+              matches = list(checksum_pattern.finditer(script))
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"expected one root files.sha256 generation command, observed {len(matches)}"
+                  )
+              match = matches[0]
+              indent = match.group("indent")
+              digest = match.group("digest")
+              check_command = (
+                  "sha256sum --check files.sha256"
+                  if digest == "sha256sum"
+                  else "shasum -a 256 --check files.sha256"
+              )
+              replacement = "\n".join(
+                  [
+                      f"{indent}exec 1>&3 2>&4",
+                      f"{indent}exec 3>&- 4>&-",
+                      f"{indent}wait \"$TRNM_OUTBOX_TEE_PID\"",
+                      f"{indent}find . -type f ! -path './files.sha256' -print0 | sort -z | xargs -0 {digest} > files.sha256",
+                      f"{indent}{check_command}",
+                  ]
+              )
+              script = script[: match.start()] + replacement + script[match.end() :]
+
+          required_script_markers = (
+              "exec 3>&1 4>&2",
+              "TRNM_OUTBOX_TEE_PID=$!",
+              "exec 1>&3 2>&4",
+              "wait \"$TRNM_OUTBOX_TEE_PID\"",
+              "! -path './files.sha256'",
+              "--check files.sha256",
+          )
+          missing = [marker for marker in required_script_markers if marker not in script]
+          if missing:
+              raise SystemExit(f"Outbox sealing markers missing after transformation: {missing}")
+          positions = [script.index(marker) for marker in required_script_markers]
+          if not positions[0] < positions[1] < positions[2] < positions[3] < positions[4] < positions[5]:
+              raise SystemExit("Outbox sealing operations are not in the required order")
+          script_path.write_text(script, encoding="utf-8")
+
+          workflow = workflow_path.read_text(encoding="utf-8")
+          verification_name = "Verify sealed Outbox manifests before packaging"
+          if verification_name not in workflow:
+              lines = workflow.splitlines(keepends=True)
+              script_lines = [
+                  index
+                  for index, line in enumerate(lines)
+                  if "ci-outbox-final-attempt-reaper.sh" in line
+              ]
+              if len(script_lines) != 1:
+                  raise SystemExit(
+                      f"expected one prospective Outbox script invocation, observed {len(script_lines)}"
+                  )
+              script_index = script_lines[0]
+              job_start = None
+              for index in range(script_index, -1, -1):
+                  if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[index]):
+                      job_start = index
+                      break
+              if job_start is None:
+                  raise SystemExit("could not locate Outbox job start")
+              job_end = len(lines)
+              for index in range(job_start + 1, len(lines)):
+                  if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[index]):
+                      job_end = index
+                      break
+              upload_line = None
+              for index in range(script_index + 1, job_end):
+                  if "uses: ./.github/actions/upload-evidence" in lines[index]:
+                      upload_line = index
+                      break
+              if upload_line is None:
+                  raise SystemExit("Outbox job has no local retained-evidence upload step")
+              step_start = upload_line
+              while step_start > job_start and not re.match(r"^      - (?:name|uses):", lines[step_start]):
+                  step_start -= 1
+              if step_start <= job_start:
+                  raise SystemExit("could not locate Outbox upload step boundary")
+              verification = '''      - name: Verify sealed Outbox manifests before packaging
+                shell: bash
+                run: |
+                  set -euo pipefail
+                  python3 - <<'PY_VERIFY_OUTBOX'
+                  from __future__ import annotations
+
+                  import hashlib
+                  import os
+                  from pathlib import Path, PurePosixPath
+
+                  roots = [Path(os.environ["GITHUB_WORKSPACE"]), Path(os.environ["RUNNER_TEMP"])]
+                  manifests = sorted(
+                      {
+                          path.resolve()
+                          for root in roots
+                          if root.exists()
+                          for path in root.rglob("files.sha256")
+                      }
+                  )
+                  if not manifests:
+                      raise SystemExit("no sealed Outbox files.sha256 manifest found")
+                  for manifest in manifests:
+                      entries = 0
+                      for number, raw in enumerate(manifest.read_text(encoding="utf-8").splitlines(), 1):
+                          if not raw.strip():
+                              continue
+                          parts = raw.split(maxsplit=1)
+                          if len(parts) != 2 or len(parts[0]) != 64:
+                              raise SystemExit(f"{manifest}:{number}: malformed checksum entry")
+                          expected, relative = parts
+                          relative = relative.lstrip(" *")
+                          pure = PurePosixPath(relative)
+                          if pure.is_absolute() or ".." in pure.parts or pure.name == "files.sha256":
+                              raise SystemExit(f"{manifest}:{number}: unsafe or self-referential path")
+                          target = manifest.parent.joinpath(*pure.parts)
+                          if target.is_symlink() or not target.is_file():
+                              raise SystemExit(f"{manifest}:{number}: target is not a regular file")
+                          observed = hashlib.sha256(target.read_bytes()).hexdigest()
+                          if observed != expected.lower():
+                              raise SystemExit(f"{manifest}:{number}: checksum mismatch for {relative}")
+                          entries += 1
+                      if entries == 0:
+                          raise SystemExit(f"{manifest}: empty checksum manifest")
+                      print(f"verified {entries} sealed Outbox files from {manifest}")
+                  PY_VERIFY_OUTBOX
+
+          '''
+              lines.insert(step_start, verification)
+              workflow = "".join(lines)
+          if verification_name not in workflow or "unsafe or self-referential path" not in workflow:
+              raise SystemExit("prospective merge pre-package verification was not installed")
+          workflow_path.write_text(workflow, encoding="utf-8")
+
+          test_source = '''#!/usr/bin/env python3
+          """Regression contract for immutable Outbox retained-evidence sealing."""
+          from __future__ import annotations
+
+          import unittest
+          from pathlib import Path
+
+          ROOT = Path(__file__).resolve().parents[2]
+          SCRIPT = ROOT / "scripts/ci-outbox-final-attempt-reaper.sh"
+          WORKFLOW = ROOT / ".github/workflows/prospective-merge-gate.yml"
+
+
+          class OutboxEvidenceSealingTests(unittest.TestCase):
+              def test_log_writer_is_joined_before_manifest_generation(self) -> None:
+                  source = SCRIPT.read_text(encoding="utf-8")
+                  markers = [
+                      "TRNM_OUTBOX_TEE_PID=$!",
+                      "exec 1>&3 2>&4",
+                      'wait "$TRNM_OUTBOX_TEE_PID"',
+                      "! -path './files.sha256'",
+                      "--check files.sha256",
+                  ]
+                  positions = [source.index(marker) for marker in markers]
+                  self.assertEqual(positions, sorted(positions))
+
+              def test_checksum_manifest_excludes_only_its_root_self_entry(self) -> None:
+                  source = SCRIPT.read_text(encoding="utf-8")
+                  line = next(
+                      line
+                      for line in source.splitlines()
+                      if "! -path './files.sha256'" in line
+                  )
+                  self.assertIn("-type f", line)
+                  self.assertNotIn("logs/run.log", line)
+                  self.assertEqual(line.count("! -path"), 1)
+
+              def test_prospective_packet_is_reverified_after_script_exit(self) -> None:
+                  source = WORKFLOW.read_text(encoding="utf-8")
+                  script_at = source.index("ci-outbox-final-attempt-reaper.sh")
+                  verify_at = source.index("Verify sealed Outbox manifests before packaging")
+                  upload_at = source.index("uses: ./.github/actions/upload-evidence", verify_at)
+                  self.assertLess(script_at, verify_at)
+                  self.assertLess(verify_at, upload_at)
+                  self.assertIn("checksum mismatch", source[verify_at:upload_at])
+                  self.assertIn("unsafe or self-referential path", source[verify_at:upload_at])
+
+
+          if __name__ == "__main__":
+              unittest.main()
+          '''
+          test_source = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in test_source.splitlines()
+          ) + "\n"
+          test_path.write_text(test_source, encoding="utf-8")
+
+          def reject_duplicates(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise SystemExit(f"duplicate JSON key: {key}")
+                  result[key] = value
+              return result
+
+          def load_json(path: Path):
+              return json.loads(
+                  path.read_text(encoding="utf-8"),
+                  object_pairs_hook=reject_duplicates,
+                  parse_constant=lambda value: (_ for _ in ()).throw(
+                      SystemExit(f"nonfinite JSON constant: {value}")
+                  ),
+              )
+
+          def canonical(value, newline=True):
+              raw = json.dumps(
+                  value,
+                  sort_keys=True,
+                  separators=(",", ":"),
+                  allow_nan=False,
+              ).encode("utf-8")
+              return raw + (b"\n" if newline else b"")
+
+          def git_blob(data: bytes):
+              return hashlib.sha1(
+                  f"blob {len(data)}\0".encode("ascii") + data
+              ).hexdigest()
+
+          workflow_blob = git_blob(workflow_path.read_bytes())
+          base = load_json(base_path)
+          hits = 0
+
+          def repin(value):
+              nonlocal hits
+              if isinstance(value, dict):
+                  if value.get("path") == ".github/workflows/prospective-merge-gate.yml":
+                      if "git_blob_sha1" not in value:
+                          raise SystemExit("prospective workflow manifest row has no git_blob_sha1")
+                      value["git_blob_sha1"] = workflow_blob
+                      hits += 1
+                  for child in value.values():
+                      repin(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      repin(child)
+
+          repin(base)
+          if hits < 1:
+              raise SystemExit("prospective merge workflow is absent from required-workflow manifest")
+          base_bytes = canonical(base)
+          base_path.write_bytes(base_bytes)
+
+          overlay = load_json(overlay_path)
+          overlay["base_manifest_blob_sha1"] = git_blob(base_bytes)
+          overlay.pop("overlay_sha256", None)
+          overlay["overlay_sha256"] = hashlib.sha256(
+              canonical(overlay, newline=False)
+          ).hexdigest()
+          overlay_path.write_bytes(canonical(overlay))
+
+          print(
+              json.dumps(
+                  {
+                      "workflow_blob": workflow_blob,
+                      "base_blob": git_blob(base_bytes),
+                      "overlay_blob": git_blob(overlay_path.read_bytes()),
+                      "repinned_rows": hits,
+                  },
+                  sort_keys=True,
+                  separators=(",", ":"),
+              )
+          )
+          PY
+          bash -n scripts/ci-outbox-final-attempt-reaper.sh
+          git diff --check
+          expected=$(cat <<'EOF'
+          .github/workflows/prospective-merge-gate.yml
+          docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json
+          docs/governance/REQUIRED_WORKFLOWS_V1.json
+          scripts/ci-outbox-final-attempt-reaper.sh
+          tests/control_plane/test_outbox_evidence_sealing.py
+          EOF
+          )
+          test "$(git diff --name-only | LC_ALL=C sort)" = "$expected"
+
+      - name: Execute focused and complete control corpus
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q scripts tests
+          python3 -m unittest -v tests.control_plane.test_outbox_evidence_sealing
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-evidence-index.py
+          python3 scripts/check-gap-register.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v \
+            2>&1 | tee "$RUNNER_TEMP/full-python.log"
+          grep -Eq '^Ran [1-9][0-9]* tests in ' "$RUNNER_TEMP/full-python.log"
+          grep -qx OK "$RUNNER_TEMP/full-python.log"
+          git diff --check
+
+      - name: Publish with normal non-forced fast-forward only
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          start_head=$(cat "$RUNNER_TEMP/source-head")
+          live_head=$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | awk '{print $1}')
+          test "$live_head" = "$start_head"
+          git config user.name "Qian QI"
+          git config user.email "102159240+ProfHepta@users.noreply.github.com"
+          git add \
+            .github/workflows/prospective-merge-gate.yml \
+            docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json \
+            docs/governance/REQUIRED_WORKFLOWS_V1.json \
+            scripts/ci-outbox-final-attempt-reaper.sh \
+            tests/control_plane/test_outbox_evidence_sealing.py
+          if git diff --cached --quiet; then
+            echo "The live candidate already contains the exact repair."
+            exit 0
+          fi
+          git commit -m "ci(evidence): seal Outbox packets after log completion"
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
+            push origin "HEAD:refs/heads/${PRODUCT_BRANCH}"
+          printf 'product_head=%s\nproduct_tree=%s\n' \
+            "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
