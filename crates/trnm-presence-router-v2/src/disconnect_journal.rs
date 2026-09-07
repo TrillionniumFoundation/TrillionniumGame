@@ -93,9 +93,7 @@ pub struct DisconnectOperation {
 impl DisconnectOperation {
     pub fn validate(self) -> Result<Self, DisconnectJournalError> {
         if self.socket_generation == 0 {
-            return Err(DisconnectJournalError::ZeroIdentifier(
-                "socket_generation",
-            ));
+            return Err(DisconnectJournalError::ZeroIdentifier("socket_generation"));
         }
         require_nonzero("operation_digest", &self.operation_digest)?;
         Ok(self)
@@ -133,10 +131,7 @@ pub struct DisconnectOutcomeEvidence {
 impl DisconnectOutcomeEvidence {
     pub fn validate(self) -> Result<Self, DisconnectJournalError> {
         require_nonzero("outcome_digest", &self.outcome_digest)?;
-        require_nonzero(
-            "verifier_receipt_digest",
-            &self.verifier_receipt_digest,
-        )?;
+        require_nonzero("verifier_receipt_digest", &self.verifier_receipt_digest)?;
         Ok(self)
     }
 }
@@ -207,10 +202,7 @@ pub struct DisconnectJournalConfig {
 
 impl DisconnectJournalConfig {
     pub fn validate(self) -> Result<Self, DisconnectJournalError> {
-        if self.active_capacity == 0
-            || self.tombstone_capacity == 0
-            || self.max_attempts == 0
-        {
+        if self.active_capacity == 0 || self.tombstone_capacity == 0 || self.max_attempts == 0 {
             return Err(DisconnectJournalError::InvalidCapacity);
         }
         if self.active_capacity > MAX_DISCONNECT_ACTIVE_RECORDS {
@@ -313,7 +305,10 @@ impl fmt::Display for DisconnectJournalError {
                 field,
                 received,
                 maximum,
-            } => write!(formatter, "{field} {received} exceeds hard maximum {maximum}"),
+            } => write!(
+                formatter,
+                "{field} {received} exceeds hard maximum {maximum}"
+            ),
             Self::AttemptLimitTooLarge { received, maximum } => write!(
                 formatter,
                 "disconnect max attempts {received} exceeds hard maximum {maximum}"
@@ -321,7 +316,10 @@ impl fmt::Display for DisconnectJournalError {
             Self::ZeroIdentifier(field) => write!(formatter, "{field} must be positive"),
             Self::ZeroDigest(field) => write!(formatter, "{field} must not be the zero digest"),
             Self::ActiveCapacityExceeded { capacity } => {
-                write!(formatter, "disconnect journal is full at capacity {capacity}")
+                write!(
+                    formatter,
+                    "disconnect journal is full at capacity {capacity}"
+                )
             }
             Self::TombstoneCapacityExceeded { capacity } => write!(
                 formatter,
@@ -510,9 +508,7 @@ impl DisconnectJournal {
                 return Err(DisconnectJournalError::Terminal(id));
             }
             DisconnectState::Dispatched { .. } | DisconnectState::Indeterminate { .. } => {
-                return Err(
-                    DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id),
-                );
+                return Err(DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id));
             }
             DisconnectState::Leased { .. } => {
                 return Err(DisconnectJournalError::NotPending(id));
@@ -608,9 +604,7 @@ impl DisconnectJournal {
         let current = self.require(id)?;
         match current.state {
             DisconnectState::Dispatched { .. } | DisconnectState::Indeterminate { .. } => {
-                return Err(
-                    DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id),
-                );
+                return Err(DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id));
             }
             DisconnectState::Applied { .. }
             | DisconnectState::Rejected { .. }
@@ -731,8 +725,9 @@ impl DisconnectJournal {
         let current = self.require(id)?;
         let terminal_digest = match current.state {
             DisconnectState::Applied { receipt, .. } => receipt,
-            DisconnectState::Rejected { reason, .. }
-            | DisconnectState::DeadLetter { reason } => reason,
+            DisconnectState::Rejected { reason, .. } | DisconnectState::DeadLetter { reason } => {
+                reason
+            }
             DisconnectState::Pending
             | DisconnectState::Leased { .. }
             | DisconnectState::Dispatched { .. }
@@ -810,20 +805,14 @@ impl DisconnectJournal {
         Ok(())
     }
 
-    fn require(
-        &self,
-        id: DisconnectIntentId,
-    ) -> Result<DisconnectRecord, DisconnectJournalError> {
-        self.records
-            .get(&id)
-            .copied()
-            .ok_or_else(|| {
-                if self.tombstones.contains_key(&id) {
-                    DisconnectJournalError::ArchivedIntent(id)
-                } else {
-                    DisconnectJournalError::UnknownIntent(id)
-                }
-            })
+    fn require(&self, id: DisconnectIntentId) -> Result<DisconnectRecord, DisconnectJournalError> {
+        self.records.get(&id).copied().ok_or_else(|| {
+            if self.tombstones.contains_key(&id) {
+                DisconnectJournalError::ArchivedIntent(id)
+            } else {
+                DisconnectJournalError::UnknownIntent(id)
+            }
+        })
     }
 
     fn require_fence(
@@ -840,12 +829,10 @@ impl DisconnectJournal {
             } if owner == worker && lease == token => Ok(current),
             DisconnectState::Applied { .. }
             | DisconnectState::Rejected { .. }
-            | DisconnectState::DeadLetter { .. } => {
-                Err(DisconnectJournalError::Terminal(id))
+            | DisconnectState::DeadLetter { .. } => Err(DisconnectJournalError::Terminal(id)),
+            DisconnectState::Dispatched { .. } | DisconnectState::Indeterminate { .. } => {
+                Err(DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id))
             }
-            DisconnectState::Dispatched { .. } | DisconnectState::Indeterminate { .. } => Err(
-                DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id),
-            ),
             DisconnectState::Pending | DisconnectState::Leased { .. } => {
                 Err(DisconnectJournalError::LeaseMismatch(id))
             }
@@ -1028,15 +1015,8 @@ mod tests {
             .mark_transport_lost(id(1), binding.worker, binding.lease_token)
             .unwrap();
         assert_eq!(
-            journal.retry_before_dispatch(
-                id(1),
-                binding.worker,
-                binding.lease_token,
-                digest(90),
-            ),
-            Err(DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(
-                id(1)
-            ))
+            journal.retry_before_dispatch(id(1), binding.worker, binding.lease_token, digest(90),),
+            Err(DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id(1)))
         );
         let verifier = ExactVerifier {
             accepted_verifier_prefix: 70,
@@ -1044,12 +1024,7 @@ mod tests {
         let (_, disposition) = journal
             .reconcile(
                 id(1),
-                evidence(
-                    binding,
-                    DisconnectOutcomeKind::DefinitelyNotApplied,
-                    71,
-                    70,
-                ),
+                evidence(binding, DisconnectOutcomeKind::DefinitelyNotApplied, 71, 70),
                 &verifier,
             )
             .unwrap();
@@ -1143,27 +1118,18 @@ mod tests {
         };
         let mut journal = journal(3, 3, 3);
         let applied_binding = dispatch(&mut journal, id(1), operation(9), worker(1), 8);
-        let applied_evidence = evidence(
-            applied_binding,
-            DisconnectOutcomeKind::Applied,
-            80,
-            70,
-        );
+        let applied_evidence = evidence(applied_binding, DisconnectOutcomeKind::Applied, 80, 70);
         let applied = journal
             .reconcile(id(1), applied_evidence, &verifier)
             .unwrap();
         assert_eq!(applied.1, ReconciliationDisposition::Applied);
         assert_eq!(
-            journal.reconcile(id(1), applied_evidence, &verifier)
+            journal
+                .reconcile(id(1), applied_evidence, &verifier)
                 .unwrap(),
             applied
         );
-        let conflicting = evidence(
-            applied_binding,
-            DisconnectOutcomeKind::Applied,
-            81,
-            70,
-        );
+        let conflicting = evidence(applied_binding, DisconnectOutcomeKind::Applied, 81, 70);
         assert_eq!(
             journal.reconcile(id(1), conflicting, &verifier),
             Err(DisconnectJournalError::OutcomeMismatch(id(1)))
@@ -1173,12 +1139,7 @@ mod tests {
         let rejected = journal
             .reconcile(
                 id(2),
-                evidence(
-                    rejected_binding,
-                    DisconnectOutcomeKind::Rejected,
-                    90,
-                    71,
-                ),
+                evidence(rejected_binding, DisconnectOutcomeKind::Rejected, 90, 71),
                 &ExactVerifier {
                     accepted_verifier_prefix: 71,
                 },
@@ -1298,12 +1259,7 @@ mod tests {
         let (record, disposition) = journal
             .reconcile(
                 id(1),
-                evidence(
-                    binding,
-                    DisconnectOutcomeKind::DefinitelyNotApplied,
-                    90,
-                    70,
-                ),
+                evidence(binding, DisconnectOutcomeKind::DefinitelyNotApplied, 90, 70),
                 &ExactVerifier {
                     accepted_verifier_prefix: 70,
                 },

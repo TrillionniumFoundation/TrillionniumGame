@@ -18,9 +18,8 @@ mod types;
 
 pub use connection_actor::{
     ConnectionActor, ConnectionActorConfig, ConnectionActorError, ConnectionActorState,
-    CorrelationId, InboundFrame, OutboundFrame, PendingRequest,
-    MAX_CONNECTION_ACTOR_BUFFER_BYTES, MAX_CONNECTION_ACTOR_FRAME_BYTES,
-    MAX_CONNECTION_ACTOR_QUEUE_ITEMS,
+    CorrelationId, InboundFrame, OutboundFrame, PendingRequest, MAX_CONNECTION_ACTOR_BUFFER_BYTES,
+    MAX_CONNECTION_ACTOR_FRAME_BYTES, MAX_CONNECTION_ACTOR_QUEUE_ITEMS,
 };
 pub use disconnect_journal::{
     DisconnectArchiveTombstone, DisconnectDispatchBinding, DisconnectIntentId, DisconnectJournal,

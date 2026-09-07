@@ -44,9 +44,7 @@ pub struct ReconnectSessionGeneration(u64);
 impl ReconnectSessionGeneration {
     pub fn new(value: u64) -> Result<Self, ReconnectJournalError> {
         if value == 0 {
-            return Err(ReconnectJournalError::ZeroIdentifier(
-                "session_generation",
-            ));
+            return Err(ReconnectJournalError::ZeroIdentifier("session_generation"));
         }
         Ok(Self(value))
     }
