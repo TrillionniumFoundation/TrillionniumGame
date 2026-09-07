@@ -1,0 +1,81 @@
+name: pr113-eof-repair
+
+on:
+  push:
+    branches:
+      - ops/trusted-world-v13k-publisher-plan-v31-2026-09-08
+    paths:
+      - .github/workflows/pr113-eof-repair.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr113-eof-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      TARGET_BRANCH: ops/trusted-world-v13k-publisher-plan-v31-2026-09-08
+    steps:
+      - name: Fetch exact branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          observed="$(git -C "$GITHUB_WORKSPACE" ls-remote origin \
+            "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
+          test "$observed" = "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+
+      - name: Repair generator and self-delete
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          generator = Path('.github/workflows/pr113-integrator-expression-repair.yml')
+          helper = Path('.github/workflows/pr113-eof-repair.yml')
+          text = generator.read_text(encoding='utf-8')
+          old = '          workflow = workflow.rstrip() + appendix + "\\n"\n'
+          new = (
+              '          workflow = (\n'
+              '              workflow.rstrip() + "\\n" + appendix.strip("\\n") + "\\n"\n'
+              '          )\n'
+          )
+          if text.count(old) != 1:
+              raise SystemExit('generated EOF anchor drift')
+          generator.write_text(text.replace(old, new, 1), encoding='utf-8')
+          helper.unlink()
+          PY
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/pr113-integrator-expression-repair.yml').read_text()
+          assert 'appendix.strip("\\n")' in text
+          assert not Path('.github/workflows/pr113-eof-repair.yml').exists()
+          PY
+
+      - name: Commit exact repair and trigger final integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config user.name trillionnium-governance-bot
+          git config user.email trillionnium-governance-bot@users.noreply.github.com
+          git add -A
+          git commit -m "fix(tooling): normalize generated workflow EOF"
+          repaired="$(git rev-parse HEAD)"
+          observed="$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
+          test "$observed" = "$GITHUB_SHA"
+          git push origin "${repaired}:refs/heads/${TARGET_BRANCH}"
