@@ -1,0 +1,299 @@
+name: database-ha-restore-live-evidence
+
+on:
+  push:
+    branches: [tooling/gap-closure-audit-2026-09-07]
+    paths:
+      - '.github/workflows/database-ha-restore-live-evidence.yml'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      TARGET_REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      TARGET_HEAD: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+      TARGET_TREE: 9d3ae2fadb2684f095855ecf16307376b55a440f
+      TARGET_MERGE: 6965f95d03031156edc92cc862bd979ff87e9edb
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch exact candidate and resolve locked images/migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin \
+            "https://github.com/${TARGET_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin "$TARGET_HEAD"
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$TARGET_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$TARGET_TREE"
+          cd "$GITHUB_WORKSPACE/source"
+          python3 - <<'PY' > "$RUNNER_TEMP/database.env"
+          import json
+          from pathlib import Path
+          images=json.loads(Path('config/database-test-images.json').read_text())['profiles']
+          lock=json.loads(Path('migrations/MIGRATION_CHAIN.lock.json').read_text())['profiles']
+          for profile,key in [('postgresql','POSTGRES'),('cockroachdb','COCKROACH')]:
+              image=images[profile]['image']
+              if '@sha256:' not in image:
+                  raise SystemExit(f'{profile} image is not digest-pinned')
+              ordered=lock[profile]['ordered_files']
+              if len(ordered)!=1:
+                  raise SystemExit(f'{profile} requires exactly one locked migration')
+              migration=ordered[0]['path']
+              if not Path(migration).is_file():
+                  raise SystemExit(f'migration absent: {migration}')
+              print(f'{key}_IMAGE={image}')
+              print(f'{key}_MIGRATION={migration}')
+          PY
+          cat "$RUNNER_TEMP/database.env"
+
+      - name: Build exact persistence command client
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo build --locked --package trnm-persistence-pg --bin trnm-pg-command
+
+      - name: PostgreSQL native backup and restore
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/database.env"
+          mkdir -p run/database-ha/postgresql
+          docker pull "$POSTGRES_IMAGE"
+          docker run -d --name trnm-ha-postgresql --network host \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=trnm \
+            "$POSTGRES_IMAGE" -c fsync=on -c synchronous_commit=on
+          for _ in $(seq 1 120); do
+            docker exec -e PGPASSWORD=postgres trnm-ha-postgresql \
+              pg_isready -h 127.0.0.1 -U postgres -d trnm >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec -e PGPASSWORD=postgres -i trnm-ha-postgresql psql \
+            -h 127.0.0.1 -U postgres -d trnm -v ON_ERROR_STOP=1 \
+            < "$POSTGRES_MIGRATION"
+          export TRNM_DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/trnm?sslmode=disable'
+          export TRNM_DATABASE_PROFILE=postgresql
+          export TRNM_SCHEMA_SOURCE_COMMIT="$TARGET_HEAD"
+          export TRNM_SCHEMA_APPLIED_AT_MS=1
+          target/debug/trnm-pg-command bootstrap \
+            --entity-byte 81 --authority-generation 1 --state-byte 82 --updated-at-ms 100 \
+            > run/database-ha/postgresql/bootstrap.json
+          target/debug/trnm-pg-command apply \
+            --entity-byte 81 --command-byte 83 --fingerprint-byte 84 \
+            --expected-revision 0 --authority-generation 1 --state-byte 85 \
+            --committed-at-ms 200 > run/database-ha/postgresql/apply.json
+          cat > "$RUNNER_TEMP/table-counts.sh" <<'SH'
+          set -euo pipefail
+          database=$1 output=$2
+          docker exec -e PGPASSWORD=postgres trnm-ha-postgresql psql -At \
+            -h 127.0.0.1 -U postgres -d "$database" -v ON_ERROR_STOP=1 \
+            -c "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY table_name" \
+            | while IFS= read -r table; do
+                count=$(docker exec -e PGPASSWORD=postgres trnm-ha-postgresql psql -At \
+                  -h 127.0.0.1 -U postgres -d "$database" -v ON_ERROR_STOP=1 \
+                  -c "SELECT COUNT(*) FROM \"$table\"")
+                printf '%s\t%s\n' "$table" "$count"
+              done > "$output"
+          SH
+          bash "$RUNNER_TEMP/table-counts.sh" trnm run/database-ha/postgresql/counts-before.tsv
+          docker exec -e PGPASSWORD=postgres trnm-ha-postgresql pg_dump \
+            -h 127.0.0.1 -U postgres -d trnm --format=custom --no-owner --no-acl \
+            -f /tmp/trnm.dump
+          docker cp trnm-ha-postgresql:/tmp/trnm.dump run/database-ha/postgresql/trnm.dump
+          test -s run/database-ha/postgresql/trnm.dump
+          docker exec -e PGPASSWORD=postgres trnm-ha-postgresql dropdb \
+            -h 127.0.0.1 -U postgres trnm
+          docker exec -e PGPASSWORD=postgres trnm-ha-postgresql createdb \
+            -h 127.0.0.1 -U postgres trnm_restored
+          docker exec -i trnm-ha-postgresql sh -c 'cat >/tmp/trnm.dump' \
+            < run/database-ha/postgresql/trnm.dump
+          docker exec -e PGPASSWORD=postgres trnm-ha-postgresql pg_restore \
+            -h 127.0.0.1 -U postgres -d trnm_restored --no-owner --no-acl \
+            /tmp/trnm.dump
+          bash "$RUNNER_TEMP/table-counts.sh" trnm_restored run/database-ha/postgresql/counts-after.tsv
+          diff -u run/database-ha/postgresql/counts-before.tsv run/database-ha/postgresql/counts-after.tsv
+          docker image inspect "$POSTGRES_IMAGE" --format '{{json .RepoDigests}}' \
+            > run/database-ha/postgresql/image-repodigests.json
+
+      - name: CockroachDB three-node loss and native restore
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/database.env"
+          mkdir -p run/database-ha/cockroachdb
+          docker pull "$COCKROACH_IMAGE"
+          docker network create trnm-crdb-ha
+          for n in 1 2 3; do
+            port=$((26256+n))
+            http=$((8080+n))
+            docker run -d --name "trnm-crdb$n" --hostname "crdb$n" \
+              --network trnm-crdb-ha -p "$port:26257" -p "$http:8080" \
+              "$COCKROACH_IMAGE" start --insecure \
+              --advertise-addr="crdb$n:26257" \
+              --listen-addr=0.0.0.0:26257 --http-addr=0.0.0.0:8080 \
+              --join=crdb1:26257,crdb2:26257,crdb3:26257 \
+              --store=type=mem,size=1GiB --cache=128MiB --max-sql-memory=128MiB
+          done
+          sleep 5
+          docker exec trnm-crdb1 cockroach init --insecure --host=crdb1:26257 || true
+          ready=false
+          for _ in $(seq 1 180); do
+            if docker exec trnm-crdb1 cockroach sql --insecure --host=crdb1:26257 \
+              --execute='SELECT 1' >/dev/null 2>&1; then ready=true; break; fi
+            sleep 1
+          done
+          test "$ready" = true
+          docker exec trnm-crdb1 cockroach sql --insecure --host=crdb1:26257 \
+            --execute='CREATE DATABASE IF NOT EXISTS trnm'
+          docker exec -i trnm-crdb1 cockroach sql --insecure --host=crdb1:26257 \
+            --database=trnm < "$COCKROACH_MIGRATION"
+          export TRNM_DATABASE_URL='postgresql://root@127.0.0.1:26257/trnm?sslmode=disable'
+          export TRNM_DATABASE_PROFILE=cockroachdb
+          export TRNM_SCHEMA_SOURCE_COMMIT="$TARGET_HEAD"
+          export TRNM_SCHEMA_APPLIED_AT_MS=1
+          target/debug/trnm-pg-command bootstrap \
+            --entity-byte 91 --authority-generation 1 --state-byte 92 --updated-at-ms 100 \
+            > run/database-ha/cockroachdb/bootstrap.json
+          target/debug/trnm-pg-command apply \
+            --entity-byte 91 --command-byte 93 --fingerprint-byte 94 \
+            --expected-revision 0 --authority-generation 1 --state-byte 95 \
+            --committed-at-ms 200 > run/database-ha/cockroachdb/apply.json
+
+          count_query="SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY table_name"
+          docker exec trnm-crdb1 cockroach sql --insecure --host=crdb1:26257 \
+            --database=trnm --format=tsv --execute="$count_query" | tail -n +2 \
+            > "$RUNNER_TEMP/crdb-tables.txt"
+          : > run/database-ha/cockroachdb/counts-before.tsv
+          while IFS= read -r table; do
+            count=$(docker exec trnm-crdb1 cockroach sql --insecure --host=crdb1:26257 \
+              --database=trnm --format=tsv --execute="SELECT COUNT(*) FROM \"$table\"" \
+              | tail -n 1)
+            printf '%s\t%s\n' "$table" "$count" >> run/database-ha/cockroachdb/counts-before.tsv
+          done < "$RUNNER_TEMP/crdb-tables.txt"
+
+          docker stop trnm-crdb1
+          ready=false
+          for _ in $(seq 1 120); do
+            if docker exec trnm-crdb2 cockroach sql --insecure --host=crdb2:26257 \
+              --database=trnm --execute='SELECT COUNT(*) FROM trnm_entities' >/dev/null 2>&1; then
+              ready=true; break
+            fi
+            sleep 1
+          done
+          test "$ready" = true
+          docker exec trnm-crdb2 cockroach sql --insecure --host=crdb2:26257 \
+            --database=trnm --format=tsv --execute='SELECT COUNT(*) FROM trnm_entities' \
+            > run/database-ha/cockroachdb/read-after-node-loss.tsv
+          docker start trnm-crdb1
+          for _ in $(seq 1 120); do
+            docker exec trnm-crdb1 cockroach sql --insecure --host=crdb1:26257 \
+              --execute='SELECT 1' >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+          node_id=$(docker exec trnm-crdb2 cockroach sql --insecure --host=crdb2:26257 \
+            --format=tsv --execute='SELECT crdb_internal.node_id()' | tail -n 1)
+          test -n "$node_id"
+          destination="nodelocal://${node_id}/trnm-plan-v31-${GITHUB_RUN_ID}"
+          docker exec trnm-crdb2 cockroach sql --insecure --host=crdb2:26257 \
+            --execute="BACKUP DATABASE trnm INTO '$destination'"
+          docker exec trnm-crdb2 cockroach sql --insecure --host=crdb2:26257 \
+            --execute="RESTORE DATABASE trnm FROM LATEST IN '$destination' WITH new_db_name='trnm_restored'"
+          : > run/database-ha/cockroachdb/counts-after.tsv
+          while IFS= read -r table; do
+            count=$(docker exec trnm-crdb3 cockroach sql --insecure --host=crdb3:26257 \
+              --database=trnm_restored --format=tsv --execute="SELECT COUNT(*) FROM \"$table\"" \
+              | tail -n 1)
+            printf '%s\t%s\n' "$table" "$count" >> run/database-ha/cockroachdb/counts-after.tsv
+          done < "$RUNNER_TEMP/crdb-tables.txt"
+          diff -u run/database-ha/cockroachdb/counts-before.tsv run/database-ha/cockroachdb/counts-after.tsv
+          docker image inspect "$COCKROACH_IMAGE" --format '{{json .RepoDigests}}' \
+            > run/database-ha/cockroachdb/image-repodigests.json
+
+      - name: Seal and retain database evidence
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path('run/database-ha')
+          packet={
+            'schema':'trillionnium.database-ha-restore-live.v1',
+            'repository':os.environ['TARGET_REPOSITORY'],
+            'head':os.environ['TARGET_HEAD'],
+            'tree':os.environ['TARGET_TREE'],
+            'prospective_merge':os.environ['TARGET_MERGE'],
+            'profiles':{
+              'postgresql':{'native_dump_restore':True,'count_files':['counts-before.tsv','counts-after.tsv']},
+              'cockroachdb':{'nodes':3,'node_loss_readback':True,'native_backup_restore':True,'count_files':['counts-before.tsv','counts-after.tsv']},
+            },
+            'claims':{'accepted_evidence':False,'gap_closed':False,'production_ready':False},
+            'limitations':[
+              'This is an ephemeral GitHub-hosted fault and restore packet, not a production RPO/RTO measurement.',
+              'It does not prove geographically distributed partitions, long-duration endurance, or application-level connection failover.',
+              'Independent database and SRE review remains required.',
+            ],
+          }
+          (root/'summary.json').write_text(json.dumps(packet,sort_keys=True,separators=(',',':'))+'\n')
+          PY
+          (
+            cd run/database-ha
+            find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf run/database-ha-restore-${TARGET_HEAD}.tar.gz -C run/database-ha .
+
+      - name: Retain database HA/restore packet
+        id: retained
+        uses: ./source/.github/actions/upload-evidence
+        with:
+          name: database-ha-restore-${{ env.TARGET_HEAD }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: source/run/database-ha-restore-${{ env.TARGET_HEAD }}.tar.gz
+          mime_type: application/gzip
+
+      - name: Publish review handoff
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.retained.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.retained.outputs.sha256 }}
+          ARTIFACT_SIZE: ${{ steps.retained.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_ID"; test -n "$ARTIFACT_SHA256"; test "$ARTIFACT_SIZE" -gt 0
+          body=$(cat <<EOF
+          ## Current-head database HA/restore evidence candidate
+
+          Head: \`$TARGET_HEAD\` / tree \`$TARGET_TREE\` / merge \`$TARGET_MERGE\`  
+          Run: \`$GITHUB_RUN_ID\` / artifact \`$ARTIFACT_ID\` / \`$ARTIFACT_SHA256\` / \`$ARTIFACT_SIZE\` bytes
+
+          Packet scope: PostgreSQL native dump/restore with exact table-count equality; three-node CockroachDB node-loss readback plus native BACKUP/RESTORE and count equality. This is not a production RPO/RTO, geographic partition, endurance, or application pool-failover result. Independent database/SRE acceptance remains required.
+          EOF
+          )
+          curl --fail-with-body --silent --show-error -X POST \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$TARGET_REPOSITORY/issues/63/comments" \
+            -d "$(jq -n --arg body "$body" '{body:$body}')" >/dev/null
+
+      - name: Cleanup database containers
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f trnm-ha-postgresql trnm-crdb1 trnm-crdb2 trnm-crdb3 >/dev/null 2>&1 || true
+          docker network rm trnm-crdb-ha >/dev/null 2>&1 || true
