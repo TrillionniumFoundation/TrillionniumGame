@@ -19,6 +19,7 @@ EXPECTED_PATHS = {
     "scripts/check-rust-server-slice.py",
     "tests/control_plane/test_rust_server_slice.py",
 }
+CANDIDATE_BINARY = "trnm-server-composition-candidate"
 
 README_SECTIONS = """## Correctness and failure model
 
@@ -58,6 +59,14 @@ def arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def replace_once(path: str, old: str, new: str) -> None:
+    target = Path(path)
+    text = target.read_text(encoding="utf-8")
+    if text.count(old) != 1:
+        raise RuntimeError(f"replacement anchor drift in {path}: {old!r}")
+    target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
 def main() -> int:
     options = arguments()
     encoded = "".join(options.payload.read_text(encoding="utf-8").splitlines())
@@ -90,6 +99,66 @@ def main() -> int:
             raise RuntimeError(f"README section already present: {heading}")
     readme_path.write_text(
         readme.replace(anchor, README_SECTIONS + anchor, 1), encoding="utf-8"
+    )
+
+    replace_once(
+        "crates/trnm-server/Cargo.toml",
+        '[[bin]]\nname = "trnm-server"\npath = "src/main.rs"',
+        f'[[bin]]\nname = "{CANDIDATE_BINARY}"\npath = "src/main.rs"',
+    )
+    replace_once(
+        "crates/trnm-server/README.md",
+        "Its package-local binary is named `trnm-server`.",
+        f"Its non-authoritative package-local binary is named `{CANDIDATE_BINARY}`.",
+    )
+    replace_once(
+        "docs/status/RUST_SERVER_VERTICAL_SLICE_STATUS.json",
+        '"isolated package-local trnm-server composition binary"',
+        f'"isolated non-authoritative {CANDIDATE_BINARY} binary"',
+    )
+    for contract in (
+        "contracts/server/vertical-slice-v1.json",
+        "contracts/server/rust-server-vertical-slice.v1.json",
+    ):
+        replace_once(
+            contract,
+            '"binary": "trnm-server"',
+            f'"binary": "{CANDIDATE_BINARY}"',
+        )
+    replace_once(
+        "scripts/check-rust-server-source-candidate.py",
+        'binaries[0] == {"name": "trnm-server", "path": "src/main.rs"}',
+        f'binaries[0] == {{"name": "{CANDIDATE_BINARY}", "path": "src/main.rs"}}',
+    )
+    replace_once(
+        "scripts/check-rust-server-source-candidate.py",
+        'require(contract.get("binary") == "trnm-server", "contract binary drift")',
+        f'require(contract.get("binary") == "{CANDIDATE_BINARY}", "contract binary drift")',
+    )
+    replace_once(
+        "scripts/check-rust-server-vertical-slice.py",
+        'require(contract.get("binary") == "trnm-server", "contract binary drift")',
+        f'require(contract.get("binary") == "{CANDIDATE_BINARY}", "contract binary drift")',
+    )
+    replace_once(
+        "scripts/check-rust-server-slice.py",
+        'require(\'name = "trnm-server"\\npath = "src/main.rs"\' in manifest, "candidate binary binding missing")',
+        f'require(\'name = "{CANDIDATE_BINARY}"\\npath = "src/main.rs"\' in manifest, "candidate binary binding missing")',
+    )
+    replace_once(
+        "tests/control_plane/test_rust_server_slice.py",
+        'self.assertEqual(result["binary"], "trnm-server")',
+        f'self.assertEqual(result["binary"], "{CANDIDATE_BINARY}")',
+    )
+    replace_once(
+        "scripts/check-rust-server-process.sh",
+        "  --bin trnm-server \\",
+        f"  --bin {CANDIDATE_BINARY} \\",
+    )
+    replace_once(
+        "scripts/check-rust-server-process.sh",
+        "binary=crates/trnm-server/target/debug/trnm-server",
+        f"binary=crates/trnm-server/target/debug/{CANDIDATE_BINARY}",
     )
     return 0
 
