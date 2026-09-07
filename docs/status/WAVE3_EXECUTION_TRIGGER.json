@@ -1,0 +1,13 @@
+{
+  "schema": "trillionnium.gap-closure-wave-trigger.v1",
+  "plan": "v3.1",
+  "base_commit": "88c02a417c7b0c64f27dc9f49e0b5e6317150964",
+  "purpose": "trigger ordinary exact-head and prospective-merge validation after conservative scope and reviewer-capacity materialization",
+  "accepted_evidence": false,
+  "gap_closed": false,
+  "sg1_credit": false,
+  "compatibility_credit": false,
+  "production_ready": false,
+  "public_online": false,
+  "nakama_retired": false
+}
