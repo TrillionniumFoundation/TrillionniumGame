@@ -1,0 +1,174 @@
+name: remaining-source-wave-v5-rebase
+
+on:
+  push:
+    branches: [tooling/outbox-evidence-sealing-staging-2026-09-07a]
+    paths:
+      - '.github/workflows/remaining-source-wave-v5-rebase.yml'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+  SOURCE_WAVE: codex/remaining-source-blockers-wave-v3-2026-09-06
+  OUTPUT_BRANCH: codex/remaining-source-blockers-wave-v5-2026-09-07
+  PYTHONDONTWRITEBYTECODE: '1'
+  CARGO_TERM_COLOR: never
+
+jobs:
+  compose-validate-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch live candidate and reviewed source wave
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags origin \
+            "refs/heads/${PRODUCT_BRANCH}:refs/remotes/origin/product" \
+            "refs/heads/${SOURCE_WAVE}:refs/remotes/origin/source-wave"
+          git -C "$GITHUB_WORKSPACE/source" checkout -b "$OUTPUT_BRANCH" refs/remotes/origin/product
+          git -C "$GITHUB_WORKSPACE/source" rev-parse refs/remotes/origin/product > "$RUNNER_TEMP/product-head"
+          git -C "$GITHUB_WORKSPACE/source" rev-parse refs/remotes/origin/source-wave > "$RUNNER_TEMP/wave-head"
+          base=$(git -C "$GITHUB_WORKSPACE/source" merge-base refs/remotes/origin/product refs/remotes/origin/source-wave)
+          test -n "$base"
+          printf 'product=%s\nsource_wave=%s\nmerge_base=%s\n' \
+            "$(cat "$RUNNER_TEMP/product-head")" "$(cat "$RUNNER_TEMP/wave-head")" "$base"
+
+      - name: Apply cumulative wave without replacing formal status
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          git merge --squash refs/remotes/origin/source-wave
+          git diff --cached --check
+          changed=$(git diff --cached --name-only)
+          test -n "$changed"
+          if printf '%s\n' "$changed" | grep -Eq '^(docs/status/(GAP_REGISTER|PRODUCT_GATES|EXECUTION_STATUS)\.json|docs/evidence/index\.json|CURRENT_PLAN\.md)$'; then
+            echo 'source wave attempted to replace formal status or plan authority' >&2
+            exit 1
+          fi
+          if printf '%s\n' "$changed" | grep -Eq '^\.github/workflows/'; then
+            echo 'source wave attempted to modify workflow definitions' >&2
+            exit 1
+          fi
+          test -f crates/trnm-persistence-core/tests/outbox_state_model.rs
+          test -f crates/trnm-presence-router-v2/src/session_registry.rs
+          test -f crates/trnm-server/src/main.rs
+          test -f crates/trnm-token-crypto-provider/src/lib.rs
+          test -f crates/trnm-persistence-core/src/migration_fence.rs
+          test ! -e crates/trnm-persistence-pg/src/bin/trnm-server.rs
+          test ! -e crates/trnm-persistence-pg/src/bin/trnm_server
+          if grep -q 'trnm_outbox_finalize_sealed_artifact' scripts/ci-outbox-final-attempt-reaper.sh; then
+            echo 'current outbox sealing retained'
+          fi
+
+      - name: Validate all Rust package authorities
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          python3 - <<'PY' > "$RUNNER_TEMP/isolated-manifests"
+          import json
+          from pathlib import Path
+          value=json.loads(Path('docs/development/RUST_PACKAGE_AUTHORITY.json').read_text())
+          seen=set()
+          def walk(node):
+              if isinstance(node, dict):
+                  path=node.get('manifest_path') or node.get('manifest')
+                  if isinstance(path,str) and path.endswith('Cargo.toml') and path not in seen:
+                      seen.add(path); print(path)
+                  for item in node.values(): walk(item)
+              elif isinstance(node,list):
+                  for item in node: walk(item)
+          walk(value)
+          PY
+          while IFS= read -r manifest; do
+            test -f "$manifest"
+            case "$manifest" in Cargo.toml) continue;; esac
+            cargo fmt --manifest-path "$manifest" -- --check
+            cargo test --manifest-path "$manifest" --all-targets --locked
+            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
+          done < "$RUNNER_TEMP/isolated-manifests"
+
+      - name: Validate Go and complete repository controls
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          files=$(find runtime -type f -name '*.go' -print | sort)
+          test -n "$files"
+          test -z "$(printf '%s\n' "$files" | xargs gofmt -l)"
+          (cd runtime && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
+          python3 -m compileall -q scripts tools tests
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-evidence-index.py
+          python3 scripts/check-gap-register.py
+          python3 scripts/derive-gap-status.py
+          python3 scripts/derive-gates.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
+          python3 scripts/check-trnm-server.py
+          python3 scripts/check-rust-foundation.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/full-python.log"
+          grep -Eq '^Ran [1-9][0-9]* tests in ' "$RUNNER_TEMP/full-python.log"
+          grep -qx OK "$RUNNER_TEMP/full-python.log"
+          git diff --cached --check
+
+      - name: Commit, publish and create one Draft review surface
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          product=$(cat "$RUNNER_TEMP/product-head")
+          current=$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | awk '{print $1}')
+          test "$current" = "$product"
+          existing=$(git ls-remote origin "refs/heads/${OUTPUT_BRANCH}" | awk '{print $1}')
+          test -z "$existing"
+          git config user.name "Qian QI"
+          git config user.email "102159240+ProfHepta@users.noreply.github.com"
+          git commit -m "feat: rebase full remaining Plan v3.1 source wave"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic ${auth}" \
+            push origin "HEAD:refs/heads/${OUTPUT_BRANCH}"
+          head=$(git rev-parse HEAD)
+          tree=$(git rev-parse HEAD^{tree})
+          test "$(git ls-remote origin "refs/heads/${OUTPUT_BRANCH}" | awk '{print $1}')" = "$head"
+
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          headers=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json')
+          query=$(python3 - <<PY
+          import urllib.parse
+          print(urllib.parse.quote('${GITHUB_REPOSITORY_OWNER}:${OUTPUT_BRANCH}', safe=''))
+          PY
+          )
+          prs=$(curl -fsSL "${headers[@]}" "$api/pulls?state=open&head=$query&base=${PRODUCT_BRANCH//\//%2F}")
+          number=$(jq -r '.[0].number // empty' <<<"$prs")
+          if [ -z "$number" ]; then
+            jq -n \
+              --arg title 'feat: rebase full remaining Plan v3.1 source wave' \
+              --arg head "$OUTPUT_BRANCH" \
+              --arg base "$PRODUCT_BRANCH" \
+              --arg body "Exact product parent: \`$product\`\n\nSource wave: \`$(cat "$RUNNER_TEMP/wave-head")\`\n\nHead: \`$head\`\nTree: \`$tree\`\n\nThis remains a Draft source candidate. Exact-head/actual-merge CI, retained artifact admission, conflict-free specialist review, external governance read-back, D0-D8/global SG1 and real production evidence remain mandatory.\n\n\`\`\`text\naccepted_evidence=false\ngap_closed=false\nproduction_ready=false\npublic_online=false\nnakama_retired=false\n\`\`\`" \
+              '{title:$title,head:$head,base:$base,body:$body,draft:true}' > "$RUNNER_TEMP/pr.json"
+            number=$(curl -fsSL -X POST "${headers[@]}" "$api/pulls" --data-binary @"$RUNNER_TEMP/pr.json" | jq -r '.number')
+          fi
+          jq -n --arg reviewer 'Tomasrgbsf' '{reviewers:[$reviewer]}' > "$RUNNER_TEMP/review.json"
+          curl -fsSL -X POST "${headers[@]}" "$api/pulls/$number/requested_reviewers" --data-binary @"$RUNNER_TEMP/review.json" >/dev/null || true
+          printf 'product_parent=%s\nsource_wave=%s\noutput_head=%s\noutput_tree=%s\npr=%s\n' \
+            "$product" "$(cat "$RUNNER_TEMP/wave-head")" "$head" "$tree" "$number"
