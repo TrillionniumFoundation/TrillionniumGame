@@ -1,6 +1,6 @@
 //! Monotonic migration, cutover and rollback fencing model.
 //!
-//! This source contract does not execute a production migration.  It
+//! This source contract does not execute a production migration. It
 //! prevents a controller from silently skipping snapshot, catch-up,
 //! semantic comparison, write fencing, canary or source-read-only
 //! stages and preserves a strictly increasing fence epoch across
@@ -37,7 +37,7 @@ impl MigrationCursor {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct FenceEpoch(u64);
 
 impl FenceEpoch {
@@ -199,6 +199,10 @@ impl std::error::Error for MigrationFenceError {}
 #[derive(Clone, Debug)]
 pub struct MigrationFence {
     state: MigrationFenceSnapshot,
+    // The cursor at which source and target semantic digests were compared.
+    // This is intentionally internal so a snapshot consumer cannot forge or
+    // restore a comparison certificate independently from the state machine.
+    verified_cursor: Option<MigrationCursor>,
 }
 
 impl MigrationFence {
@@ -220,6 +224,7 @@ impl MigrationFence {
                 rollback_receipt: None,
                 retirement_receipt: None,
             },
+            verified_cursor: None,
         })
     }
 
@@ -248,7 +253,7 @@ impl MigrationFence {
     }
 
     pub fn advance_source(&mut self, cursor: MigrationCursor) -> Result<(), MigrationFenceError> {
-        if matches!(self.state.phase, MigrationPhase::Retired) {
+        if self.state.phase == MigrationPhase::Retired {
             return Err(MigrationFenceError::RetirementIsTerminal);
         }
         if cursor < self.state.source_cursor {
@@ -258,7 +263,37 @@ impl MigrationFence {
                 received: cursor.get(),
             });
         }
-        self.state.source_cursor = cursor;
+        if cursor == self.state.source_cursor {
+            return Ok(());
+        }
+
+        match self.state.phase {
+            MigrationPhase::SourcePrimary
+            | MigrationPhase::SnapshotSealed
+            | MigrationPhase::CatchingUp
+            | MigrationPhase::RolledBack => {
+                self.state.source_cursor = cursor;
+            }
+            MigrationPhase::ShadowVerified => {
+                // A semantic comparison is valid only for the exact source and
+                // target cut it observed. Advancing the source reopens catch-up
+                // and atomically revokes the stale comparison certificate.
+                self.state.source_cursor = cursor;
+                self.state.semantic_digest = None;
+                self.verified_cursor = None;
+                self.state.phase = MigrationPhase::CatchingUp;
+            }
+            MigrationPhase::WriteFenced
+            | MigrationPhase::Canary { .. }
+            | MigrationPhase::TargetPrimary
+            | MigrationPhase::SourceReadOnly => {
+                return Err(MigrationFenceError::InvalidPhase {
+                    expected: "source-authoritative unfenced phase",
+                    observed: self.state.phase,
+                });
+            }
+            MigrationPhase::Retired => unreachable!("retirement handled above"),
+        }
         Ok(())
     }
 
@@ -272,6 +307,8 @@ impl MigrationFence {
         })?;
         self.advance_source(cursor)?;
         self.state.snapshot_digest = Some(digest);
+        self.state.semantic_digest = None;
+        self.verified_cursor = None;
         self.state.phase = MigrationPhase::SnapshotSealed;
         Ok(())
     }
@@ -297,6 +334,8 @@ impl MigrationFence {
             });
         }
         self.state.target_cursor = cursor;
+        self.state.semantic_digest = None;
+        self.verified_cursor = None;
         self.state.phase = MigrationPhase::CatchingUp;
         Ok(())
     }
@@ -317,6 +356,7 @@ impl MigrationFence {
             return Err(MigrationFenceError::SemanticMismatch);
         }
         self.state.semantic_digest = Some(source_semantic_digest);
+        self.verified_cursor = Some(self.state.source_cursor);
         self.state.phase = MigrationPhase::ShadowVerified;
         Ok(())
     }
@@ -329,6 +369,7 @@ impl MigrationFence {
         self.require_phase("ShadowVerified", |phase| {
             phase == MigrationPhase::ShadowVerified
         })?;
+        self.require_current_shadow_verification()?;
         if self
             .state
             .fence_epoch
@@ -365,6 +406,7 @@ impl MigrationFence {
                 });
             }
         };
+        self.require_current_shadow_verification()?;
         if target_basis_points < current {
             return Err(MigrationFenceError::CanaryRegression {
                 current,
@@ -392,6 +434,7 @@ impl MigrationFence {
                 });
             }
         };
+        self.require_current_shadow_verification()?;
         if value != 10_000 {
             return Err(MigrationFenceError::CanaryIncomplete(value));
         }
@@ -439,6 +482,7 @@ impl MigrationFence {
         self.state.source_cursor = source_cursor;
         self.state.target_cursor = MigrationCursor::new(0);
         self.state.semantic_digest = None;
+        self.verified_cursor = None;
         self.state.cutover_receipt = None;
         self.state.source_read_only_receipt = None;
         self.state.retirement_receipt = None;
@@ -478,7 +522,27 @@ impl MigrationFence {
         }
         self.state.fence_epoch = Some(rollback_epoch);
         self.state.rollback_receipt = Some(rollback_receipt);
+        self.state.semantic_digest = None;
+        self.verified_cursor = None;
         self.state.phase = MigrationPhase::RolledBack;
+        Ok(())
+    }
+
+    fn require_current_shadow_verification(&self) -> Result<(), MigrationFenceError> {
+        if self.state.source_cursor != self.state.target_cursor {
+            return Err(MigrationFenceError::CatchUpIncomplete {
+                source: self.state.source_cursor.get(),
+                target: self.state.target_cursor.get(),
+            });
+        }
+        if self.state.semantic_digest.is_none()
+            || self.verified_cursor != Some(self.state.source_cursor)
+        {
+            return Err(MigrationFenceError::InvalidPhase {
+                expected: "current-cut shadow verification",
+                observed: self.state.phase,
+            });
+        }
         Ok(())
     }
 
@@ -576,6 +640,82 @@ mod tests {
         fence.set_canary(10_000).unwrap();
         fence.promote_target(digest(8)).unwrap();
         assert_eq!(fence.authority_mode(), AuthorityMode::TargetOnly);
+    }
+
+    #[test]
+    fn source_advance_invalidates_shadow_certificate_until_reverified() {
+        let mut fence = caught_up();
+        assert_eq!(fence.snapshot().phase, MigrationPhase::ShadowVerified);
+        assert_eq!(fence.snapshot().semantic_digest, Some(digest(5)));
+
+        fence.advance_source(MigrationCursor::new(11)).unwrap();
+        let invalidated = fence.snapshot();
+        assert_eq!(invalidated.phase, MigrationPhase::CatchingUp);
+        assert_eq!(invalidated.source_cursor, MigrationCursor::new(11));
+        assert_eq!(invalidated.target_cursor, MigrationCursor::new(10));
+        assert_eq!(invalidated.semantic_digest, None);
+        assert_eq!(fence.authority_mode(), AuthorityMode::SourceOnly);
+
+        let before = fence.snapshot();
+        assert!(matches!(
+            fence.activate_write_fence(FenceEpoch::new(1).unwrap(), digest(7)),
+            Err(MigrationFenceError::InvalidPhase { .. })
+        ));
+        assert_eq!(fence.snapshot(), before);
+
+        fence.advance_target(MigrationCursor::new(11)).unwrap();
+        fence.verify_shadow(digest(6), digest(6)).unwrap();
+        fence
+            .activate_write_fence(FenceEpoch::new(1).unwrap(), digest(7))
+            .unwrap();
+    }
+
+    #[test]
+    fn source_advance_after_write_fence_is_rejected_without_mutation() {
+        let mut fence = caught_up();
+        fence
+            .activate_write_fence(FenceEpoch::new(1).unwrap(), digest(7))
+            .unwrap();
+
+        let before = fence.snapshot();
+        assert!(matches!(
+            fence.advance_source(MigrationCursor::new(11)),
+            Err(MigrationFenceError::InvalidPhase {
+                expected: "source-authoritative unfenced phase",
+                observed: MigrationPhase::WriteFenced,
+            })
+        ));
+        assert_eq!(fence.snapshot(), before);
+
+        // A same-cursor observation is a no-op and does not invalidate the
+        // already-fenced exact cut.
+        fence.advance_source(MigrationCursor::new(10)).unwrap();
+        assert_eq!(fence.snapshot(), before);
+
+        fence.set_canary(10_000).unwrap();
+        let before = fence.snapshot();
+        assert!(matches!(
+            fence.advance_source(MigrationCursor::new(11)),
+            Err(MigrationFenceError::InvalidPhase {
+                expected: "source-authoritative unfenced phase",
+                observed: MigrationPhase::Canary {
+                    target_basis_points: 10_000,
+                },
+            })
+        ));
+        assert_eq!(fence.snapshot(), before);
+        fence.promote_target(digest(8)).unwrap();
+    }
+
+    #[test]
+    fn same_source_cursor_preserves_current_shadow_certificate() {
+        let mut fence = caught_up();
+        let before = fence.snapshot();
+        fence.advance_source(MigrationCursor::new(10)).unwrap();
+        assert_eq!(fence.snapshot(), before);
+        fence
+            .activate_write_fence(FenceEpoch::new(1).unwrap(), digest(7))
+            .unwrap();
     }
 
     #[test]
