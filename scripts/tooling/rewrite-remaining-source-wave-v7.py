@@ -116,6 +116,12 @@ def rewrite(scripts: list[str]) -> list[str]:
         "",
         "remove nonexistent module-doc alias while retaining authority checks",
     )
+    scripts[5] = replace_once(
+        scripts[5],
+        "python3 scripts/check-derived-gates.py\n",
+        "python3 scripts/derive-gates.py\n",
+        "use the repository's product-gate derivation authority",
+    )
     return scripts
 
 
@@ -130,6 +136,7 @@ def validate_rewrite(scripts: list[str]) -> None:
         'git checkout "$CRYPTO_SHA" -- crates/trnm-token-crypto-provider',
         "crates/trnm-persistence-core/src/migration_fence.rs",
         "apply-canonical-server-authority-v7.py",
+        "python3 scripts/derive-gates.py",
     )
     for marker in required_unique:
         if combined.count(marker) != 1:
@@ -148,6 +155,8 @@ def validate_rewrite(scripts: list[str]) -> None:
         raise SystemExit("forbidden predecessor marker survived: pulls/92")
     if "check-module-docs.py" in combined:
         raise SystemExit("nonexistent module-doc alias survived rewrite")
+    if "check-derived-gates.py" in combined:
+        raise SystemExit("nonexistent derived-gates alias survived rewrite")
     if "apply-canonical-server-authority-v5.py" in scripts[2]:
         raise SystemExit("v7 compose script still invokes the v5 transformer")
 
