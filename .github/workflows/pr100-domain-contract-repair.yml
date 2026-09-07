@@ -34,6 +34,7 @@ jobs:
             "${CANDIDATE_SHA}"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+
       - name: Patch exact target in detached worktree
         shell: bash
         run: |
@@ -90,9 +91,6 @@ jobs:
                   ),
               }
 
-          def frozen(values: tuple[str, ...]) -> str:
-              return f"frozenset({values!r})"
-
           rows = [
               "# Canonical candidate-review contract. This mapping is independent of",
               "# the matrix being validated: deleting or exchanging a domain, role,",
@@ -107,24 +105,32 @@ jobs:
                   "blocking_gaps",
                   "codeowner_patterns",
               ):
-                  rows.append(f"        {field!r}: {frozen(specs[domain_id][field])},")
+                  values = specs[domain_id][field]
+                  rows.append(f"        {field!r}: frozenset({values!r}),")
               rows.append("    },")
           rows.append("}")
           constant = "\n".join(rows)
 
           validator = validator_path.read_text(encoding="utf-8")
-          anchor = "\n\nclass ReviewMatrixError(RuntimeError):"
+          class_anchor = "\n\nclass ReviewMatrixError(RuntimeError):"
           if "EXPECTED_DOMAINS:" in validator:
               raise SystemExit("EXPECTED_DOMAINS already present")
-          if anchor not in validator:
-              raise SystemExit("validator constant insertion anchor missing")
-          validator = validator.replace(anchor, f"\n\n{constant}{anchor}", 1)
+          if class_anchor not in validator:
+              raise SystemExit("validator class anchor missing")
+          validator = validator.replace(
+              class_anchor,
+              f"\n\n{constant}{class_anchor}",
+              1,
+          )
 
-          start = validator.index("def domain_role_map(domains: Any)")
-          end = validator.index("\n\ndef qualification_evidence", start)
-          replacement = '''def domain_role_map(domains: Any) -> dict[str, frozenset[str]]:
+          helper_anchor = "\n\ndef qualification_evidence("
+          if helper_anchor not in validator:
+              raise SystemExit("validator helper anchor missing")
+          helper = r'''
+
+          def validate_canonical_domains(domains: object) -> None:
               require(isinstance(domains, list) and domains, "review domains required")
-              result: dict[str, frozenset[str]] = {}
+              actual: dict[str, dict[str, object]] = {}
               for index, domain in enumerate(domains):
                   label = f"domains[{index}]"
                   require(isinstance(domain, dict), f"{label}: object required")
@@ -132,103 +138,79 @@ jobs:
                   require(
                       isinstance(domain_id, str)
                       and IDENTIFIER.fullmatch(domain_id) is not None
-                      and domain_id not in result,
+                      and domain_id not in actual,
                       f"{label}: invalid or duplicate domain id",
                   )
-                  expected = EXPECTED_DOMAINS.get(domain_id)
-                  require(expected is not None, f"{label}: unknown review domain")
-                  roles = string_list(
-                      domain.get("required_roles"), f"{domain_id}.required_roles"
-                  )
-                  paths = string_list(
-                      domain.get("protected_paths"), f"{domain_id}.protected_paths"
-                  )
-                  blocking_gaps = string_list(
-                      domain.get("blocking_gaps"), f"{domain_id}.blocking_gaps"
-                  )
-                  require(
-                      all(IDENTIFIER.fullmatch(role) is not None for role in roles),
-                      f"{domain_id}: invalid role identifier",
-                  )
-                  require(
-                      frozenset(roles) == expected["required_roles"],
-                      f"{domain_id}: required roles drift",
-                  )
-                  require(
-                      frozenset(paths) == expected["protected_paths"],
-                      f"{domain_id}: protected paths drift",
-                  )
-                  require(
-                      frozenset(blocking_gaps) == expected["blocking_gaps"],
-                      f"{domain_id}: blocking gaps drift",
-                  )
-                  result[domain_id] = frozenset(roles)
-              missing = sorted(set(EXPECTED_DOMAINS) - set(result))
-              extra = sorted(set(result) - set(EXPECTED_DOMAINS))
+                  actual[domain_id] = domain
+              missing = sorted(set(EXPECTED_DOMAINS) - set(actual))
+              extra = sorted(set(actual) - set(EXPECTED_DOMAINS))
               require(
                   not missing and not extra,
                   f"review domain set mismatch: missing={missing}, extra={extra}",
               )
-              return result
-          '''
-          # The source replacement is deliberately dedented after the literal.
-          import textwrap
-          validator = validator[:start] + textwrap.dedent(replacement) + validator[end:]
-
-          old = '''    for pattern in REQUIRED_CODEOWNER_PATTERNS:
-              require(
-                  expected_owners <= codeowners[pattern],
-                  f"CODEOWNERS pattern {pattern} lacks conflict-surviving review routes",
-              )
-
-              domain_ids: set[str] = set()
-          '''
-          old = textwrap.dedent(old)
-          new = '''    for pattern in REQUIRED_CODEOWNER_PATTERNS:
-              require(
-                  expected_owners <= codeowners[pattern],
-                  f"CODEOWNERS pattern {pattern} lacks conflict-surviving review routes",
-              )
               for domain_id, expected in EXPECTED_DOMAINS.items():
-                  missing_domain_patterns = sorted(
-                      expected["codeowner_patterns"] - set(codeowners)
+                  domain = actual[domain_id]
+                  roles = frozenset(
+                      string_list(domain.get("required_roles"), f"{domain_id}.required_roles")
                   )
+                  paths = frozenset(
+                      string_list(domain.get("protected_paths"), f"{domain_id}.protected_paths")
+                  )
+                  gaps = frozenset(
+                      string_list(domain.get("blocking_gaps"), f"{domain_id}.blocking_gaps")
+                  )
+                  require(roles == expected["required_roles"], f"{domain_id}: required roles drift")
+                  require(paths == expected["protected_paths"], f"{domain_id}: protected paths drift")
+                  require(gaps == expected["blocking_gaps"], f"{domain_id}: blocking gaps drift")
+
+
+          def validate_domain_codeowners(
+              codeowners: dict[str, set[str]], expected_owners: set[str]
+          ) -> None:
+              for domain_id, expected in EXPECTED_DOMAINS.items():
+                  missing = sorted(expected["codeowner_patterns"] - set(codeowners))
                   require(
-                      not missing_domain_patterns,
-                      f"{domain_id}: CODEOWNERS missing expected domain patterns "
-                      f"{missing_domain_patterns}",
+                      not missing,
+                      f"{domain_id}: CODEOWNERS missing expected domain patterns {missing}",
                   )
                   for pattern in expected["codeowner_patterns"]:
                       require(
                           expected_owners <= codeowners[pattern],
-                          f"{domain_id}: CODEOWNERS pattern {pattern} lacks "
-                          "conflict-surviving review routes",
+                          f"{domain_id}: CODEOWNERS pattern {pattern} lacks conflict-surviving review routes",
                       )
+          '''
+          import textwrap
+          validator = validator.replace(
+              helper_anchor,
+              textwrap.dedent(helper) + helper_anchor,
+              1,
+          )
 
-              domain_ids: set[str] = set()
+          domain_call_anchor = '''    domains_raw = matrix.get("domains")
+              domains_to_roles = domain_role_map(domains_raw)
           '''
-          new = textwrap.dedent(new)
-          if old not in validator:
-              raise SystemExit("CODEOWNERS contract anchor missing")
-          validator = validator.replace(old, new, 1)
+          domain_call_anchor = textwrap.dedent(domain_call_anchor)
+          domain_call_replacement = '''    domains_raw = matrix.get("domains")
+              validate_canonical_domains(domains_raw)
+              domains_to_roles = domain_role_map(domains_raw)
+          '''
+          domain_call_replacement = textwrap.dedent(domain_call_replacement)
+          if domain_call_anchor not in validator:
+              raise SystemExit("domain validation call anchor missing")
+          validator = validator.replace(
+              domain_call_anchor,
+              domain_call_replacement,
+              1,
+          )
 
-          old = '''            for pattern in REQUIRED_CODEOWNER_PATTERNS:
-                          require(
-                              owner in codeowners[pattern],
-                              f"{domain_id}: eligible reviewer {user_id} is not a CODEOWNER route",
-                          )
-          '''
-          old = textwrap.dedent(old)
-          new = '''            for pattern in EXPECTED_DOMAINS[domain_id]["codeowner_patterns"]:
-                          require(
-                              owner in codeowners[pattern],
-                              f"{domain_id}: eligible reviewer {user_id} is not a CODEOWNER route",
-                          )
-          '''
-          new = textwrap.dedent(new)
-          if old not in validator:
-              raise SystemExit("eligible CODEOWNERS anchor missing")
-          validator = validator.replace(old, new, 1)
+          loop_anchor = "    domain_ids: set[str] = set()\n"
+          if validator.count(loop_anchor) != 1:
+              raise SystemExit("domain loop anchor is not unique")
+          validator = validator.replace(
+              loop_anchor,
+              "    validate_domain_codeowners(codeowners, expected_owners)\n\n" + loop_anchor,
+              1,
+          )
           validator_path.write_text(validator, encoding="utf-8")
 
           tests = tests_path.read_text(encoding="utf-8")
@@ -277,74 +259,45 @@ jobs:
               def test_entire_review_domain_cannot_be_removed(self) -> None:
                   def change(value):
                       value["domains"] = [
-                          domain
-                          for domain in value["domains"]
+                          domain for domain in value["domains"]
                           if domain["id"] != "security-cryptography"
                       ]
                       self.recompute_declared_summary(value)
-
                   self.invalid(change, "review domain set mismatch")
 
               def test_required_role_contract_cannot_shrink(self) -> None:
                   def change(value):
-                      target = next(
-                          row
-                          for row in value["domains"]
-                          if row["id"] == "security-cryptography"
-                      )
-                      target["required_roles"].remove(
-                          "independent-cryptography-reviewer"
-                      )
+                      target = next(row for row in value["domains"] if row["id"] == "security-cryptography")
+                      target["required_roles"].remove("independent-cryptography-reviewer")
                       self.recompute_declared_summary(value)
-
                   self.invalid(change, "required roles drift")
 
               def test_protected_path_contract_cannot_shrink(self) -> None:
                   def change(value):
-                      target = next(
-                          row
-                          for row in value["domains"]
-                          if row["id"] == "database-data-integrity"
-                      )
+                      target = next(row for row in value["domains"] if row["id"] == "database-data-integrity")
                       target["protected_paths"].remove("migrations/**")
                       self.recompute_declared_summary(value)
-
                   self.invalid(change, "protected paths drift")
 
               def test_protected_path_contract_cannot_be_exchanged(self) -> None:
                   def change(value):
-                      target = next(
-                          row
-                          for row in value["domains"]
-                          if row["id"] == "database-data-integrity"
-                      )
+                      target = next(row for row in value["domains"] if row["id"] == "database-data-integrity")
                       target["protected_paths"][0] = "crates/trnm-token-core/**"
                       self.recompute_declared_summary(value)
-
                   self.invalid(change, "protected paths drift")
 
               def test_blocking_gap_contract_cannot_shrink(self) -> None:
                   def change(value):
-                      target = next(
-                          row
-                          for row in value["domains"]
-                          if row["id"] == "database-data-integrity"
-                      )
+                      target = next(row for row in value["domains"] if row["id"] == "database-data-integrity")
                       target["blocking_gaps"].remove("GAP-P0-DATA-001")
                       self.recompute_declared_summary(value)
-
                   self.invalid(change, "blocking gaps drift")
 
               def test_blocking_gap_contract_cannot_be_exchanged(self) -> None:
                   def change(value):
-                      target = next(
-                          row
-                          for row in value["domains"]
-                          if row["id"] == "database-data-integrity"
-                      )
+                      target = next(row for row in value["domains"] if row["id"] == "database-data-integrity")
                       target["blocking_gaps"][0] = "GAP-P0-CRYPTO-001"
                       self.recompute_declared_summary(value)
-
                   self.invalid(change, "blocking gaps drift")
 
               def test_domain_specific_codeowner_mapping_is_required(self) -> None:
@@ -353,11 +306,8 @@ jobs:
                       matrix, gaps, owners = self.fixture(directory)
                       text = owners.read_text(encoding="utf-8")
                       text = "\n".join(
-                          line
-                          for line in text.splitlines()
-                          if not line.startswith(
-                              "/docs/development/SCHEMA_AUTHORITY.json "
-                          )
+                          line for line in text.splitlines()
+                          if not line.startswith("/docs/development/SCHEMA_AUTHORITY.json ")
                       ) + "\n"
                       owners.write_text(text, encoding="utf-8")
                       with self.assertRaisesRegex(
@@ -366,12 +316,14 @@ jobs:
                       ):
                           checker.validate(matrix, gaps, owners)
           '''
-          additions = textwrap.dedent(additions)
-          # Methods must remain inside the existing unittest class.
-          additions = textwrap.indent(additions, "    ")
-          tests = tests.replace(marker, "\n" + additions + marker, 1)
+          tests = tests.replace(
+              marker,
+              "\n" + textwrap.dedent(additions) + marker,
+              1,
+          )
           tests_path.write_text(tests, encoding="utf-8")
           PY
+
       - name: Execute focused and full Python controls
         shell: bash
         run: |
@@ -382,6 +334,7 @@ jobs:
             -p 'test_independent_review_matrix.py' -v
           python3 -m unittest discover -s tests -p 'test_*.py' -v
           git diff --check
+
       - name: Commit exact target repair
         shell: bash
         env:
