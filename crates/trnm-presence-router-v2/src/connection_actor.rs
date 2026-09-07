@@ -462,7 +462,9 @@ impl ConnectionActor {
             .copied()
             .ok_or(ConnectionActorError::UnknownCorrelation(correlation))?;
         if current.response_sequence.is_some() {
-            return Err(ConnectionActorError::CannotCancelQueuedResponse(correlation));
+            return Err(ConnectionActorError::CannotCancelQueuedResponse(
+                correlation,
+            ));
         }
         self.pending.remove(&correlation);
         Ok(current)
@@ -608,9 +610,7 @@ mod tests {
         })
         .unwrap();
         let first = CorrelationId::new(1).unwrap();
-        let admitted = actor
-            .admit_immediate_response(first, vec![1])
-            .unwrap();
+        let admitted = actor.admit_immediate_response(first, vec![1]).unwrap();
         assert_eq!(admitted.admitted_at_sequence, 1);
         assert_eq!(admitted.response_sequence, Some(1));
 
@@ -660,7 +660,10 @@ mod tests {
             actor.begin_request(CorrelationId::new(3).unwrap()),
             Err(ConnectionActorError::Draining)
         );
-        assert_eq!(actor.enqueue_control(vec![9]), Err(ConnectionActorError::Draining));
+        assert_eq!(
+            actor.enqueue_control(vec![9]),
+            Err(ConnectionActorError::Draining)
+        );
         actor.enqueue_response(first, vec![1]).unwrap();
         actor.enqueue_response(second, vec![2]).unwrap();
         assert_eq!(
