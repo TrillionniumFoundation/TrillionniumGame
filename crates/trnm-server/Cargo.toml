@@ -12,7 +12,7 @@ build = "build.rs"
 path = "src/lib.rs"
 
 [[bin]]
-name = "trnm-server"
+name = "trnm-server-composition-candidate"
 path = "src/main.rs"
 
 [dependencies]

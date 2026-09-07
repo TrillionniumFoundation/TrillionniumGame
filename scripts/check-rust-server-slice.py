@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the bounded Rust server source slice without granting product credit.
-
-The repository has one production-candidate server binary in
-``trnm-persistence-pg`` and one explicitly standalone in-memory foundation
-prototype in ``crates/trnm-server``.  This checker validates the latter's
-fail-closed source contract.  It must not resurrect the retired alternate
-``trnm-server`` binary that previously lived in ``trnm-persistence-core``.
-"""
+"""Validate server composition convergence without prematurely transferring authority."""
 from __future__ import annotations
 
 import json
@@ -14,17 +7,24 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = ROOT / "crates/trnm-server/Cargo.toml"
-LIBRARY = ROOT / "crates/trnm-server/src/lib.rs"
-BINARY = ROOT / "crates/trnm-server/src/main.rs"
-README = ROOT / "crates/trnm-server/README.md"
+CRATE = ROOT / "crates/trnm-server"
 STATUS = ROOT / "docs/status/RUST_SERVER_VERTICAL_SLICE_STATUS.json"
 CANONICAL_SERVER = ROOT / "crates/trnm-persistence-pg/src/bin/trnm-server.rs"
+CANDIDATE_SERVER = CRATE / "src/main.rs"
 RETIRED_ALTERNATE = ROOT / "crates/trnm-persistence-core/src/bin/trnm-server.rs"
+PRODUCT_CLAIMS = (
+    "nakama_wire_compatible",
+    "database_durable",
+    "sg4_complete",
+    "compatibility_credit",
+    "production_ready",
+    "public_online",
+    "nakama_replaced",
+)
 
 
 class ContractError(RuntimeError):
-    """Raised when the source slice violates its fail-closed contract."""
+    pass
 
 
 def require(condition: bool, message: str) -> None:
@@ -40,104 +40,84 @@ def read(path: Path) -> str:
     return value
 
 
-def load_json(path: Path) -> dict[str, object]:
-    try:
-        value = json.loads(read(path))
-    except json.JSONDecodeError as error:
-        raise ContractError(f"{path.relative_to(ROOT)}: invalid JSON: {error}") from error
-    require(isinstance(value, dict), f"{path.relative_to(ROOT)}: root must be an object")
-    return value
-
-
 def validate() -> dict[str, object]:
-    require(CANONICAL_SERVER.is_file(), "canonical PostgreSQL server binary is missing")
-    require(
-        not RETIRED_ALTERNATE.exists(),
-        f"retired alternate server binary still exists: {RETIRED_ALTERNATE.relative_to(ROOT)}",
+    require(CANONICAL_SERVER.is_file(), "current canonical persistence-owned server is missing")
+    require(CANDIDATE_SERVER.is_file(), "package-local composition candidate is missing")
+    require(not RETIRED_ALTERNATE.exists(), "retired persistence-core alternate server returned")
+
+    manifest = read(CRATE / "Cargo.toml")
+    readme = read(CRATE / "README.md")
+    source_paths = [CRATE / "src/lib.rs", CANDIDATE_SERVER] + sorted(
+        (CRATE / "src/runtime").glob("*.rs")
     )
+    source = "\n".join(read(path) for path in source_paths)
+    status = json.loads(read(STATUS))
+    require(isinstance(status, dict), "status object required")
 
-    manifest = read(MANIFEST)
-    source = read(LIBRARY) + "\n" + read(BINARY)
-    readme = read(README)
-    status = load_json(STATUS)
-
-    require('name = "trnm-server"' in manifest, "standalone foundation package name missing")
-    require("[workspace]" in manifest, "foundation prototype must remain an explicit standalone workspace")
-
-    required_source_tokens = [
+    require('name = "trnm-server"' in manifest, "candidate package name missing")
+    require('name = "trnm-server-composition-candidate"\npath = "src/main.rs"' in manifest, "candidate binary binding missing")
+    require("[workspace]" in manifest, "candidate must remain isolated")
+    required_source_tokens = (
         "#![forbid(unsafe_code)]",
-        "sync_channel",
-        "queue_capacity",
-        "worker_count",
-        "set_read_timeout",
-        "set_write_timeout",
-        "AtomicBool",
+        "trnm_server::run_from_environment()",
+        "ServerConfig::from_environment(arguments)",
+        "Command::Migrate",
+        "PgRepository",
+        "sync_channel(queue_capacity)",
+        "set_read_timeout(Some(config.read_timeout))",
+        "set_write_timeout(Some(config.write_timeout))",
+        "RetryingRepository",
+        "cancel_inflight()",
+        "tonic::transport::Server",
+        "websocket::serve_once",
+        "AccessTokenVerifier",
+        "CommitOutcome::Duplicate",
         '"/healthz"',
         '"/readyz"',
-        '"/v1/bootstrap"',
-        '"/v1/command"',
-        "PrepareOutcome::Duplicate",
-        "durable.commit",
-        "request_queue_full",
-        "shutdown.try_recv",
-        "ServerConfig::from_env",
-    ]
+        '"/metrics"',
+        '"/-/drain"',
+        '"/v1/authority/bootstrap"',
+        '"/v1/authority/commit"',
+        '"/v1/session/me"',
+        '"/v1/session/refresh"',
+        '"/v1/session/logout"',
+    )
     for token in required_source_tokens:
-        require(token in source, f"server source missing token: {token}")
+        require(token in source, f"server candidate missing token: {token}")
+    require("unsafe {" not in source.replace("#![forbid(unsafe_code)]", ""), "unsafe block entered candidate")
 
-    for token in (
-        "unsafe {",
-        "postgres::Client",
-        "compatibility_credit=true",
-        "production_ready=true",
-    ):
-        require(token not in source, f"server source contains forbidden token: {token}")
-
-    require(
-        status.get("schema") == "trillionnium.rust-server-vertical-slice-status.v1",
-        "wrong status schema",
-    )
+    require(status.get("schema") == "trillionnium.rust-server-vertical-slice-status.v1", "wrong status schema")
     require(status.get("status") == "source-candidate", "server status must remain source-candidate")
-    require(status.get("implementation") == "crates/trnm-server", "status implementation authority drift")
-
+    require(status.get("implementation") == "crates/trnm-server", "status authority drift")
     claims = status.get("claims")
-    require(isinstance(claims, dict), "status claims must be an object")
-    require(claims.get("source_vertical_slice_exists") is True, "source-presence fact must remain explicit")
-    product_claims = (
-        "nakama_wire_compatible",
-        "database_durable",
-        "sg4_complete",
-        "compatibility_credit",
-        "production_ready",
-        "public_online",
-        "nakama_replaced",
-    )
-    for name in product_claims:
+    require(isinstance(claims, dict), "status claims object required")
+    require(claims.get("source_vertical_slice_exists") is True, "source presence fact missing")
+    require(claims.get("composition_source_exists") is True, "composition source fact missing")
+    for name in PRODUCT_CLAIMS:
         require(claims.get(name) is False, f"product claim must remain false: {name}")
-
-    not_implemented = status.get("not_implemented")
-    require(isinstance(not_implemented, list), "not_implemented must be a list")
+    gaps = status.get("not_implemented")
+    require(isinstance(gaps, list), "not_implemented list required")
     for required_gap in (
-        "PostgreSQL repository binding",
-        "gRPC and grpc-gateway",
-        "WebSocket JSON and protobuf",
-        "immutable oracle differential",
+        "atomic canonical authority transfer from trnm-persistence-pg",
+        "complete Nakama HTTP gRPC gateway and RTAPI parity",
+        "accepted PostgreSQL and CockroachDB durability and ambiguity evidence",
+        "conflict-free database protocol security SRE and whole-candidate review",
     ):
-        require(required_gap in not_implemented, f"status omits limitation: {required_gap}")
-
+        require(required_gap in gaps, f"status omits limitation: {required_gap}")
     for marker in (
-        "compatibility_credit=false",
-        "database_durability_credit=false",
-        "sg4_credit=false",
+        "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
+        "accepted_evidence=false",
         "production_ready=false",
     ):
-        require(marker in readme, f"foundation README missing marker: {marker}")
+        require(marker in readme, f"README convergence boundary missing: {marker}")
 
     return {
-        "schema": "trillionnium.rust-server-slice-contract.v2",
-        "source": str(LIBRARY.relative_to(ROOT)),
+        "schema": "trillionnium.rust-server-slice-contract.v3",
+        "source": str((CRATE / "src/lib.rs").relative_to(ROOT)),
+        "candidate_server": str(CANDIDATE_SERVER.relative_to(ROOT)),
         "canonical_server": str(CANONICAL_SERVER.relative_to(ROOT)),
         "source_tokens": len(required_source_tokens),
+        "authority_transferred": False,
         "claims_all_false": True,
         "status": "passed",
         "compatibility_credit": False,
@@ -147,7 +127,7 @@ def validate() -> dict[str, object]:
 def main() -> int:
     try:
         result = validate()
-    except (OSError, ContractError) as error:
+    except (OSError, json.JSONDecodeError, ContractError) as error:
         print(f"Rust server slice contract failed: {error}", file=sys.stderr)
         return 1
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))

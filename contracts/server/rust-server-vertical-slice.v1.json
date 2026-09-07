@@ -1,57 +1,108 @@
 {
   "schema": "trillionnium.rust-server-vertical-slice.v1",
   "project_id": "trillionnium-game",
-  "contract_version": 1,
+  "contract_version": 2,
   "status": "source-candidate",
   "crate": "crates/trnm-server",
-  "binary": "trnm-server",
-  "runtime_profile": "bounded-std-http-in-memory-authority",
+  "binary": "trnm-server-composition-candidate",
+  "runtime_profile": "isolated-postgresql-grpc-realtime-composition-source",
   "configuration": {
     "environment": [
-      "TRNM_SERVER_BIND",
+      "TRNM_SERVER_HTTP_BIND",
+      "TRNM_SERVER_GRPC_BIND",
+      "TRNM_SERVER_DATABASE_URL",
+      "TRNM_SERVER_DATABASE_PROFILE",
       "TRNM_SERVER_WORKERS",
       "TRNM_SERVER_QUEUE_CAPACITY",
-      "TRNM_SERVER_MAX_REQUEST_BYTES"
+      "TRNM_SERVER_MAX_HEADER_BYTES",
+      "TRNM_SERVER_MAX_BODY_BYTES",
+      "TRNM_SERVER_MAX_WEBSOCKET_FRAME_BYTES",
+      "TRNM_SERVER_MAX_WEBSOCKET_MESSAGES",
+      "TRNM_SERVER_ADMIN_TOKEN",
+      "TRNM_SERVER_ACCESS_TOKEN_PUBLIC_KEY"
     ],
-    "cli_commands": ["serve", "check-config", "version"],
+    "cli_commands": [
+      "check-config",
+      "migrate",
+      "serve"
+    ],
     "bounds": {
-      "worker_count_min": 1,
-      "worker_count_max": 64,
-      "queue_capacity_min": 1,
-      "queue_capacity_max": 4096,
-      "request_bytes_min": 1024,
-      "request_bytes_max": 1048576,
-      "header_bytes_max": 16384
+      "listener_workers": true,
+      "accepted_connection_queue": true,
+      "header_and_body_bytes": true,
+      "socket_deadlines": true,
+      "websocket_frames_and_messages": true,
+      "database_pool_and_acquisition": true,
+      "retry_attempts_and_elapsed_time": true
     }
   },
   "implemented_routes": [
-    {"method": "GET", "path": "/healthz", "classification": "liveness"},
-    {"method": "GET", "path": "/readyz", "classification": "lifecycle-readiness"},
-    {"method": "POST", "path": "/v1/bootstrap", "classification": "internal-fixed-binary-v1"},
-    {"method": "POST", "path": "/v1/command", "classification": "internal-fixed-binary-v1"}
+    {
+      "method": "GET",
+      "path": "/healthz",
+      "classification": "liveness-source"
+    },
+    {
+      "method": "GET",
+      "path": "/readyz",
+      "classification": "readiness-source"
+    },
+    {
+      "method": "GET",
+      "path": "/metrics",
+      "classification": "redacted-metrics-source"
+    },
+    {
+      "method": "POST",
+      "path": "/-/drain",
+      "classification": "authenticated-control-source"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/authority/bootstrap",
+      "classification": "internal-json-source"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/authority/commit",
+      "classification": "internal-json-source"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/session/me",
+      "classification": "session-source"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/session/refresh",
+      "classification": "session-source"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/session/logout",
+      "classification": "session-source"
+    }
   ],
   "implemented_invariants": [
-    "bounded accepted-connection queue",
-    "fixed worker count",
-    "read and write deadlines",
-    "bounded header and request body",
-    "explicit readiness and draining state",
-    "entity revision compare-and-swap",
-    "authority generation fencing",
-    "command fingerprint idempotency",
-    "exact duplicate receipt replay",
-    "atomic in-memory state event and outbox creation"
+    "bounded accepted-connection queue and fixed listener workers",
+    "bounded parser frame body message pool retry and elapsed budgets",
+    "explicit readiness shared drain and admitted-operation accounting",
+    "PostgreSQL entity revision and authority-generation fencing",
+    "command fingerprint idempotency and exact duplicate receipt replay",
+    "response construction after durable commit or durable receipt load",
+    "session family generation access-token and refresh-replay checks",
+    "typed public error redaction",
+    "generated gRPC Healthcheck and bounded WebSocket candidate adapters"
   ],
   "required_next_adapters": [
-    "authoritative PostgreSQL repository",
-    "authoritative CockroachDB repository",
-    "transaction retry and acknowledgement-after-commit",
-    "durable outbox worker",
-    "HTTP JSON v2 and gRPC adapters",
-    "WebSocket JSON and protobuf adapters",
-    "session/JWT verification and revocation",
-    "metrics tracing signal and drain integration",
-    "immutable Nakama differential"
+    "atomic removal of the persistence-owned duplicate process entry point",
+    "complete official Nakama HTTP gRPC gateway and RTAPI mappings",
+    "complete official SDK black-box differential",
+    "durable outbox external delivery and reconciliation evidence",
+    "distributed route ownership node-loss partition and takeover",
+    "accepted PostgreSQL CockroachDB backup PITR migration and ambiguity evidence",
+    "KMS HSM provider IAP Console and runtime surfaces",
+    "capacity rolling upgrade endurance shadow canary cutover and retirement"
   ],
   "tests": {
     "commands": [
@@ -61,12 +112,16 @@
       "python3 scripts/check-rust-server-vertical-slice.py"
     ],
     "required_remote_check": "trillionnium-game-merge-gate",
-    "required_live_database": false,
-    "required_oracle": false
+    "required_live_database": true,
+    "required_oracle": true
   },
   "claims": {
     "process_bootstrap_source_candidate": true,
     "bounded_http_source_candidate": true,
+    "postgresql_composition_source_candidate": true,
+    "grpc_source_candidate": true,
+    "websocket_source_candidate": true,
+    "session_security_source_candidate": true,
     "nakama_wire_compatible": false,
     "grpc_implemented": false,
     "websocket_implemented": false,

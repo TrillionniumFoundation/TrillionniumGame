@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the bounded standalone trnm-server source-candidate contract."""
+"""Validate the isolated trnm-server composition source without granting product credit."""
 from __future__ import annotations
 
 import json
@@ -9,37 +9,59 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+CRATE = ROOT / "crates/trnm-server"
 
-EXPECTED_IMPLEMENTED = {
-    "typed serve/check-config/version/help command parsing",
-    "bounded configurable HTTP/1.1 request parser",
-    "duplicate content-length rejection",
-    "transfer-encoding rejection",
-    "health and readiness endpoints",
-    "one bootstrap and one authority command reaching prepare/commit",
-    "event and transactional-outbox intent creation in the pure core",
-    "exact duplicate receipt replay",
-    "stale revision rejection",
-    "bounded synchronous worker queue and socket I/O timeouts",
+EXPECTED_RUNTIME_FILES = {
+    "app.rs",
+    "auth.rs",
+    "codec.rs",
+    "config.rs",
+    "error.rs",
+    "grpc.rs",
+    "http.rs",
+    "json.rs",
+    "mod.rs",
+    "pool.rs",
+    "retry.rs",
+    "retry_atomicity.rs",
+    "retry_live_tests.rs",
+    "schema.rs",
+    "server.rs",
+    "session_api.rs",
+    "websocket.rs",
 }
-EXPECTED_NOT_IMPLEMENTED = {
-    "production configuration loader",
-    "actual migration execution",
-    "PostgreSQL or CockroachDB repository binding",
-    "HTTP JSON compatibility adapter",
-    "gRPC server",
-    "WebSocket JSON/protobuf server",
-    "production session verification",
-    "outbox worker and external delivery",
-    "signal-based graceful shutdown",
-    "metrics and traces",
-    "immutable Nakama differential",
-    "load, HA, security and operations evidence",
+EXPECTED_DEPENDENCIES: dict[str, object] = {
+    "postgres": "=0.19.14",
+    "prost": "=0.14.3",
+    "tokio": {"version": "=1.53.1", "features": ["rt", "time"]},
+    "tonic": {"version": "=0.14.5", "features": ["transport"]},
+    "tonic-prost": "=0.14.5",
+    "trnm-contracts": {"path": "../trnm-contracts"},
+    "trnm-persistence-pg": {"path": "../trnm-persistence-pg"},
+    "trnm-realtime-wire": {"path": "../trnm-realtime-wire"},
+    "trnm-session-core": {"path": "../trnm-session-core"},
+    "trnm-token-jwt-adapter": {"path": "../trnm-token-jwt-adapter"},
+}
+EXPECTED_BUILD_DEPENDENCIES: dict[str, object] = {
+    "prost-build": "=0.14.3",
+    "prost-types": "=0.14.3",
+    "protoc-bin-vendored": "=3.2.0",
+    "tonic-build": "=0.14.5",
+    "tonic-prost-build": "=0.14.5",
+}
+EXPECTED_FALSE_CLAIMS = {
+    "live_database_bound",
+    "wire_compatible",
+    "behavior_compatible",
+    "sg4_complete",
+    "production_ready",
+    "public_online",
+    "nakama_replaced",
 }
 
 
 class ValidationError(RuntimeError):
-    """Raised when the source candidate and its declared contract diverge."""
+    pass
 
 
 def require(condition: bool, message: str) -> None:
@@ -47,243 +69,158 @@ def require(condition: bool, message: str) -> None:
         raise ValidationError(message)
 
 
-def require_string_list(value: Any, label: str) -> list[str]:
-    require(isinstance(value, list) and value, f"{label} must be a non-empty list")
-    result: list[str] = []
-    for index, item in enumerate(value):
-        require(isinstance(item, str), f"{label}[{index}] must be a string")
-        require(item and item.strip() == item, f"{label}[{index}] must be canonical text")
-        result.append(item)
-    require(len(result) == len(set(result)), f"{label} contains duplicates")
-    return result
+def read(path: Path) -> str:
+    require(path.is_file(), f"missing required source: {path.relative_to(ROOT)}")
+    value = path.read_text(encoding="utf-8")
+    require(value.endswith("\n"), f"file lacks trailing newline: {path.relative_to(ROOT)}")
+    require("\r" not in value, f"CRLF is forbidden: {path.relative_to(ROOT)}")
+    return value
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    value = json.loads(read(path))
+    require(isinstance(value, dict), f"object required: {path.relative_to(ROOT)}")
+    return value
 
 
 def main() -> int:
     try:
-        manifest_path = ROOT / "crates/trnm-server/Cargo.toml"
-        lock_path = ROOT / "crates/trnm-server/Cargo.lock"
-        lib_path = ROOT / "crates/trnm-server/src/lib.rs"
-        main_path = ROOT / "crates/trnm-server/src/main.rs"
+        manifest_path = CRATE / "Cargo.toml"
+        lock_path = CRATE / "Cargo.lock"
+        lib_path = CRATE / "src/lib.rs"
+        main_path = CRATE / "src/main.rs"
+        runtime_path = CRATE / "src/runtime"
+        readme_path = CRATE / "README.md"
         contract_path = ROOT / "contracts/server/vertical-slice-v1.json"
-        documentation_path = ROOT / "docs/DEVELOPMENT.md"
-        architecture_path = ROOT / "docs/ARCHITECTURE.md"
-        process_smoke_path = ROOT / "scripts/check-rust-server-process.sh"
-        for path in (
-            manifest_path,
-            lock_path,
-            lib_path,
-            main_path,
-            contract_path,
-            documentation_path,
-            architecture_path,
-            process_smoke_path,
-        ):
-            require(
-                path.is_file(),
-                f"missing required server source: {path.relative_to(ROOT)}",
-            )
 
-        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-        package = manifest.get("package", {})
+        manifest = tomllib.loads(read(manifest_path))
+        package = manifest.get("package")
+        require(isinstance(package, dict), "server package table missing")
         require(package.get("name") == "trnm-server", "wrong server package name")
-        require(package.get("publish") is False, "server source candidate must not publish")
+        require(package.get("publish") is False, "server package must not publish")
+        require(package.get("rust-version") == "1.85.1", "server Rust version drift")
+        require(package.get("build") == "build.rs", "server build script binding drift")
+        require(manifest.get("workspace") == {}, "server must remain an isolated workspace")
+        require(manifest.get("dependencies") == EXPECTED_DEPENDENCIES, "server dependency contract drift")
         require(
-            manifest.get("workspace") == {},
-            "server must remain an explicit standalone workspace candidate",
+            manifest.get("build-dependencies") == EXPECTED_BUILD_DEPENDENCIES,
+            "server build-dependency contract drift",
         )
-        dependencies = manifest.get("dependencies", {})
+        binaries = manifest.get("bin")
+        require(isinstance(binaries, list) and len(binaries) == 1, "exactly one binary required")
         require(
-            set(dependencies) == {"trnm-contracts", "trnm-persistence-core"},
-            "server source candidate dependency boundary changed",
-        )
-        for name, value in dependencies.items():
-            require(
-                isinstance(value, dict) and "path" in value,
-                f"{name} must be a path dependency",
-            )
-            require(
-                "version" not in value and "git" not in value,
-                f"{name} introduced an external source",
-            )
-        binary_targets = manifest.get("bin")
-        require(
-            isinstance(binary_targets, list) and len(binary_targets) == 1,
-            "server must expose exactly one standalone binary target",
-        )
-        binary_target = binary_targets[0]
-        require(
-            isinstance(binary_target, dict)
-            and binary_target.get("name") == "trnm-server-foundation"
-            and binary_target.get("path") == "src/main.rs",
-            "standalone binary target changed",
+            binaries[0] == {"name": "trnm-server-composition-candidate", "path": "src/main.rs"},
+            "canonical package-local binary binding drift",
         )
 
-        lock = lock_path.read_text(encoding="utf-8")
-        for package_name in ("trnm-server", "trnm-contracts", "trnm-persistence-core"):
+        lock = read(lock_path)
+        for package_name in (
+            "trnm-server",
+            "trnm-contracts",
+            "trnm-persistence-pg",
+            "trnm-realtime-wire",
+            "trnm-session-core",
+            "trnm-token-jwt-adapter",
+        ):
             require(f'name = "{package_name}"' in lock, f"lock omits {package_name}")
-        require(
-            "registry+" not in lock and "git+" not in lock,
-            "source candidate lock gained an external dependency",
-        )
+        require("git+" not in lock, "isolated lock introduced a Git dependency")
 
-        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        runtime_files = {path.name for path in runtime_path.glob("*.rs") if path.is_file()}
+        require(runtime_files == EXPECTED_RUNTIME_FILES, "runtime module file set drift")
+        source_paths = [lib_path, main_path, CRATE / "build.rs"] + sorted(runtime_path.glob("*.rs"))
+        source = "\n".join(read(path) for path in source_paths)
+        markers = {
+            "unsafe prohibition": "#![forbid(unsafe_code)]",
+            "composition entry": "runtime::run_from_environment()",
+            "typed CLI": "ServerConfig::from_environment(arguments)",
+            "migration command": "Command::Migrate",
+            "PostgreSQL composition": "PgRepository",
+            "bounded queue": "sync_channel(queue_capacity)",
+            "bounded reads": "set_read_timeout(Some(config.read_timeout))",
+            "bounded writes": "set_write_timeout(Some(config.write_timeout))",
+            "health route": '"/healthz"',
+            "readiness route": '"/readyz"',
+            "metrics route": '"/metrics"',
+            "drain route": '"/-/drain"',
+            "authority bootstrap": '"/v1/authority/bootstrap"',
+            "authority commit": '"/v1/authority/commit"',
+            "session me": '"/v1/session/me"',
+            "session refresh": '"/v1/session/refresh"',
+            "session logout": '"/v1/session/logout"',
+            "durable replay": "CommitOutcome::Duplicate",
+            "acknowledgement fence": "acknowledgement-after-commit fence",
+            "retry wrapper": "RetryingRepository",
+            "inflight cancellation": "cancel_inflight()",
+            "gRPC transport": "tonic::transport::Server",
+            "WebSocket route": "websocket::serve_once",
+            "access verifier": "AccessTokenVerifier",
+            "generated protobuf": 'tonic::include_proto!("nakama.api")',
+        }
+        for label, marker in markers.items():
+            require(marker in source, f"server source missing {label}: {marker}")
         require(
-            contract.get("schema") == "trillionnium.server-vertical-slice.v1",
-            "wrong server contract schema",
+            "unsafe {" not in source.replace("#![forbid(unsafe_code)]", ""),
+            "unsafe block entered server source",
         )
-        require(contract.get("project_id") == "trillionnium-game", "wrong project ID")
-        require(
-            contract.get("status") == "source-candidate",
-            "server status must remain source-candidate",
-        )
-        require(contract.get("crate") == "crates/trnm-server", "wrong server crate path")
-        require(
-            contract.get("binary") == "trnm-server-foundation",
-            "contract binary does not match Cargo target",
-        )
-        implemented = set(
-            require_string_list(contract.get("implemented"), "contract.implemented")
-        )
-        missing_implemented = EXPECTED_IMPLEMENTED - implemented
-        require(
-            not missing_implemented,
-            f"contract omits implemented boundaries: {sorted(missing_implemented)}",
-        )
-        not_implemented = set(
-            require_string_list(contract.get("not_implemented"), "contract.not_implemented")
-        )
-        missing_limitations = EXPECTED_NOT_IMPLEMENTED - not_implemented
-        require(
-            not missing_limitations,
-            f"contract omits limitations: {sorted(missing_limitations)}",
-        )
-        claims = contract.get("claims", {})
-        require(isinstance(claims, dict), "contract claims must be an object")
-        require(claims.get("rust_binary_exists") is True, "Rust binary claim missing")
-        require(claims.get("source_candidate") is True, "source-candidate claim missing")
         for forbidden in (
-            "live_database_bound",
-            "wire_compatible",
-            "behavior_compatible",
-            "sg4_complete",
-            "production_ready",
-            "public_online",
-            "nakama_replaced",
+            "compatibility_credit=true",
+            "production_ready=true",
+            "public_online=true",
+            "nakama_replaced=true",
         ):
-            require(claims.get(forbidden) is False, f"premature server claim: {forbidden}")
+            require(forbidden not in source, f"premature source claim: {forbidden}")
 
-        source = lib_path.read_text(encoding="utf-8")
-        source_markers = {
-            "typed configuration": "pub struct ServerConfig",
-            "request limit field": "pub max_request_bytes: usize",
-            "request limit environment": "TRNM_SERVER_MAX_REQUEST_BYTES",
-            "header limit": "MAX_HEADER_BYTES",
-            "bootstrap fixed width": "BOOTSTRAP_BODY_BYTES",
-            "command fixed width": "COMMAND_BODY_BYTES",
-            "bounded worker queue": "mpsc::sync_channel(self.config.queue_capacity)",
-            "bounded socket reads": "set_read_timeout(Some(config.read_timeout))",
-            "bounded socket writes": "set_write_timeout(Some(config.write_timeout))",
-            "limit threaded to parser": "read_request(&mut stream, config.max_request_bytes)",
-            "content-length duplicate fence": "if content_length.is_some()",
-            "content-length limit": "if content_length > max_request_bytes",
-            "aggregate request limit": "MAX_HEADER_BYTES + max_request_bytes",
-            "transfer-encoding fence": 'name.eq_ignore_ascii_case("transfer-encoding")',
-            "transfer-encoding error": "ProtocolError::UnsupportedTransferEncoding",
-            "health route": '("GET", "/healthz")',
-            "readiness route": '("GET", "/readyz")',
-            "bootstrap route": '("POST", "/v1/bootstrap")',
-            "command route": '("POST", "/v1/command")',
-            "duplicate replay": "PrepareOutcome::Duplicate",
-            "transactional effect intent": "IntentKind::Broadcast",
-            "queue saturation response": "request_queue_full",
-            "revision fence regression": "entity_revision_mismatch",
-        }
-        for boundary, marker in source_markers.items():
-            require(marker in source, f"server source missing {boundary}: {marker}")
-        require(
-            "unsafe" not in source.replace("#![forbid(unsafe_code)]", ""),
-            "unsafe token entered server source",
-        )
+        contract = load_json(contract_path)
+        require(contract.get("schema") == "trillionnium.server-vertical-slice.v1", "wrong contract schema")
+        require(contract.get("status") == "source-candidate", "contract status must fail closed")
+        require(contract.get("crate") == "crates/trnm-server", "contract crate drift")
+        require(contract.get("binary") == "trnm-server-composition-candidate", "contract binary drift")
+        claims = contract.get("claims")
+        require(isinstance(claims, dict), "contract claims object required")
+        require(claims.get("rust_binary_exists") is True, "binary source-presence claim missing")
+        require(claims.get("source_candidate") is True, "source-candidate claim missing")
+        for name in EXPECTED_FALSE_CLAIMS:
+            require(claims.get(name) is False, f"premature contract claim: {name}")
 
-        binary = main_path.read_text(encoding="utf-8")
-        binary_markers = {
-            "serve command": '"serve"',
-            "config validation command": '"check-config"',
-            "version command": '"version"',
-            "request bound option": '"--max-request-bytes"',
-            "no-credit runtime banner": "compatibility_credit=false",
-        }
-        for boundary, marker in binary_markers.items():
-            require(marker in binary, f"server binary missing {boundary}: {marker}")
-
-        documentation = documentation_path.read_text(encoding="utf-8")
-        documentation_markers = (
-            "# Development guide",
-            "Status: **authoritative current documentation**",
-            "`serve`, `check-config`, `version`",
-            "`POST /v1/bootstrap`",
-            "`POST /v1/command`",
-            "`TRNM_SERVER_MAX_REQUEST_BYTES`",
-            "graceful_shutdown_verified=false",
-            "database_durability_verified=false",
-            "Do not claim remote verification from local commands.",
-        )
-        for marker in documentation_markers:
-            require(marker in documentation, f"server documentation missing marker: {marker}")
-        for obsolete in (
-            "`POST /v2/rpc/trnm_vertical_slice`",
-            "`--max-requests`",
-            "`serve`, `migrate` and help command parsing",
+        readme = read(readme_path)
+        require(readme.startswith("# trnm-server\n"), "canonical README title required")
+        require("Status: **module documentation; source candidate;" in readme, "README status marker missing")
+        for heading in (
+            "## Status and authority",
+            "## Responsibilities",
+            "## Architecture and dependencies",
+            "## Public contracts",
+            "## Operations",
+            "## Known gaps and exit criteria",
         ):
-            require(
-                obsolete not in documentation,
-                f"server documentation retains obsolete contract: {obsolete}",
-            )
-
-        architecture = architecture_path.read_text(encoding="utf-8")
+            require(readme.count(heading) == 1, f"README section drift: {heading}")
         for marker in (
-            "`crates/trnm-persistence-pg/src/bin/trnm-server.rs`",
-            "`crates/trnm-server`",
-            "temporary split is not the target architecture",
-            "one `trnm-server` composition root",
-        ):
-            require(marker in architecture, f"architecture missing server boundary: {marker}")
-
-        process_smoke = process_smoke_path.read_text(encoding="utf-8")
-        for marker in (
-            "--bin trnm-server-foundation",
-            "--max-request-bytes 4096",
-            'request("POST", "/v1/bootstrap"',
-            'request("POST", "/v1/command"',
-            "graceful_shutdown_verified=false",
+            "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
             "compatibility_credit=false",
+            "database_durability_credit=false",
+            "sg4_credit=false",
+            "production_ready=false",
+            "accepted_evidence=false",
         ):
-            require(marker in process_smoke, f"process smoke missing marker: {marker}")
+            require(marker in readme, f"README boundary missing: {marker}")
 
-        print(
-            json.dumps(
-                {
-                    "schema": "trillionnium.server-source-check.v2",
-                    "status": "passed",
-                    "package": package.get("name"),
-                    "binary": binary_target.get("name"),
-                    "source_marker_count": len(source_markers),
-                    "documentation": "docs/DEVELOPMENT.md",
-                    "claims": {
-                        "source_contract_passed": True,
-                        "compiled": False,
-                        "live_process_executed": False,
-                        "live_database_bound": False,
-                        "wire_compatible": False,
-                        "production_ready": False,
-                    },
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        )
+        print(json.dumps({
+            "schema": "trillionnium.server-source-check.v3",
+            "status": "passed",
+            "package": package.get("name"),
+            "binary": binaries[0]["name"],
+            "runtime_module_count": len(runtime_files),
+            "source_marker_count": len(markers),
+            "claims": {
+                "compiled": False,
+                "live_process_executed": False,
+                "live_database_bound": False,
+                "wire_compatible": False,
+                "production_ready": False,
+            },
+        }, sort_keys=True, separators=(",", ":")))
         return 0
-    except (OSError, ValueError, tomllib.TOMLDecodeError, ValidationError) as error:
+    except (OSError, ValueError, tomllib.TOMLDecodeError, json.JSONDecodeError, ValidationError) as error:
         print(f"trnm-server source check failed: {error}", file=sys.stderr)
         return 1
 

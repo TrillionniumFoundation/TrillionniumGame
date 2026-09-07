@@ -25,37 +25,33 @@ PRODUCT_CLAIMS = {
 class RustServerSliceContractTests(unittest.TestCase):
     def test_checker_passes_as_a_subprocess(self) -> None:
         completed = subprocess.run(
-            [sys.executable, str(CHECKER)],
-            cwd=ROOT,
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            [sys.executable, str(CHECKER)], cwd=ROOT, check=False, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         result = json.loads(completed.stdout)
         self.assertEqual(result["status"], "passed")
         self.assertFalse(result["compatibility_credit"])
         self.assertTrue(result["claims_all_false"])
+        self.assertFalse(result["authority_transferred"])
         self.assertEqual(
             result["canonical_server"],
             "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
         )
+        self.assertEqual(result["candidate_server"], "crates/trnm-server/src/main.rs")
+        self.assertGreaterEqual(result["source_tokens"], 20)
 
     def test_standalone_source_checker_passes_as_a_subprocess(self) -> None:
         completed = subprocess.run(
-            [sys.executable, str(SOURCE_CHECKER)],
-            cwd=ROOT,
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            [sys.executable, str(SOURCE_CHECKER)], cwd=ROOT, check=False, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         result = json.loads(completed.stdout)
-        self.assertEqual(result["schema"], "trillionnium.server-source-check.v2")
+        self.assertEqual(result["schema"], "trillionnium.server-source-check.v3")
         self.assertEqual(result["status"], "passed")
-        self.assertEqual(result["binary"], "trnm-server-foundation")
+        self.assertEqual(result["binary"], "trnm-server-composition-candidate")
+        self.assertEqual(result["runtime_module_count"], 17)
         self.assertGreaterEqual(result["source_marker_count"], 20)
         self.assertFalse(result["claims"]["compiled"])
         self.assertFalse(result["claims"]["live_process_executed"])
@@ -69,6 +65,7 @@ class RustServerSliceContractTests(unittest.TestCase):
         self.assertTrue(status["not_implemented"])
         claims = status["claims"]
         self.assertTrue(claims["source_vertical_slice_exists"])
+        self.assertTrue(claims["composition_source_exists"])
         self.assertTrue(PRODUCT_CLAIMS.issubset(claims))
         self.assertFalse(any(claims[name] for name in PRODUCT_CLAIMS))
 
@@ -79,7 +76,8 @@ class RustServerSliceContractTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         result = module.validate()
-        self.assertEqual(result["source_tokens"], 16)
+        self.assertGreaterEqual(result["source_tokens"], 20)
+        self.assertFalse(result["authority_transferred"])
 
 
 if __name__ == "__main__":
