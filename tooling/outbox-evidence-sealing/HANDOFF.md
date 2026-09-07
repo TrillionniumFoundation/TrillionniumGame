@@ -1,0 +1,1 @@
+Temporary zero-credit execution branch for publishing the already validated outbox artifact sealing transaction. This branch grants no evidence, gap, compatibility, production, cutover, or retirement credit.
