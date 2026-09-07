@@ -55,8 +55,13 @@ pub enum SigningOperationState {
     Prepared,
     Dispatched,
     Indeterminate,
-    Confirmed { receipt_digest: [u8; 32], signature_digest: [u8; 32] },
-    Rejected { reason_digest: [u8; 32] },
+    Confirmed {
+        receipt_digest: [u8; 32],
+        signature_digest: [u8; 32],
+    },
+    Rejected {
+        reason_digest: [u8; 32],
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -68,11 +73,16 @@ pub struct SigningOperationRecord {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SignerJournalError {
     ZeroCapacity,
-    CapacityTooLarge { received: usize, maximum: usize },
+    CapacityTooLarge {
+        received: usize,
+        maximum: usize,
+    },
     ZeroOperationId,
     ZeroKeyEpoch,
     ZeroDigest(&'static str),
-    CapacityExceeded { capacity: usize },
+    CapacityExceeded {
+        capacity: usize,
+    },
     UnknownOperation(SigningOperationId),
     ConflictingOperation(SigningOperationId),
     AlreadyDispatched(SigningOperationId),
@@ -104,8 +114,12 @@ impl fmt::Display for SignerJournalError {
             Self::ConflictingOperation(_) => {
                 formatter.write_str("signing operation immutable input conflicts")
             }
-            Self::AlreadyDispatched(_) => formatter.write_str("signing operation was already dispatched"),
-            Self::NotDispatched(_) => formatter.write_str("signing operation has not been dispatched"),
+            Self::AlreadyDispatched(_) => {
+                formatter.write_str("signing operation was already dispatched")
+            }
+            Self::NotDispatched(_) => {
+                formatter.write_str("signing operation has not been dispatched")
+            }
             Self::IndeterminateRequiresReconciliation(_) => formatter.write_str(
                 "signing operation may have completed and requires provider receipt reconciliation",
             ),
@@ -168,10 +182,14 @@ impl SignerJournal {
             if existing.request == request {
                 return Ok(existing);
             }
-            return Err(SignerJournalError::ConflictingOperation(request.operation_id));
+            return Err(SignerJournalError::ConflictingOperation(
+                request.operation_id,
+            ));
         }
         if self.records.len() >= self.capacity {
-            return Err(SignerJournalError::CapacityExceeded { capacity: self.capacity });
+            return Err(SignerJournalError::CapacityExceeded {
+                capacity: self.capacity,
+            });
         }
         let record = SigningOperationRecord {
             request,
@@ -192,7 +210,9 @@ impl SignerJournal {
                 return Err(SignerJournalError::AlreadyDispatched(operation_id));
             }
             SigningOperationState::Indeterminate => {
-                return Err(SignerJournalError::IndeterminateRequiresReconciliation(operation_id));
+                return Err(SignerJournalError::IndeterminateRequiresReconciliation(
+                    operation_id,
+                ));
             }
             SigningOperationState::Confirmed { .. } | SigningOperationState::Rejected { .. } => {
                 return Err(SignerJournalError::Terminal(operation_id));
@@ -240,7 +260,9 @@ impl SignerJournal {
         require_nonzero_digest("signature_digest", signature_digest)?;
         let current = self.require(request.operation_id)?;
         if current.request != request {
-            return Err(SignerJournalError::ConflictingOperation(request.operation_id));
+            return Err(SignerJournalError::ConflictingOperation(
+                request.operation_id,
+            ));
         }
         match current.state {
             SigningOperationState::Dispatched | SigningOperationState::Indeterminate => {}
@@ -269,11 +291,15 @@ impl SignerJournal {
             }
         }
         let next = SigningOperationRecord {
-            state: SigningOperationState::Confirmed { receipt_digest, signature_digest },
+            state: SigningOperationState::Confirmed {
+                receipt_digest,
+                signature_digest,
+            },
             ..current
         };
         self.records.insert(request.operation_id, next);
-        self.receipt_owners.insert(receipt_digest, request.operation_id);
+        self.receipt_owners
+            .insert(receipt_digest, request.operation_id);
         Ok(next)
     }
 
@@ -287,7 +313,9 @@ impl SignerJournal {
         match current.state {
             SigningOperationState::Prepared => {}
             SigningOperationState::Dispatched | SigningOperationState::Indeterminate => {
-                return Err(SignerJournalError::IndeterminateRequiresReconciliation(operation_id));
+                return Err(SignerJournalError::IndeterminateRequiresReconciliation(
+                    operation_id,
+                ));
             }
             SigningOperationState::Confirmed { .. } | SigningOperationState::Rejected { .. } => {
                 return Err(SignerJournalError::Terminal(operation_id));
@@ -316,10 +344,7 @@ impl SignerJournal {
     }
 }
 
-fn require_nonzero_digest(
-    field: &'static str,
-    digest: [u8; 32],
-) -> Result<(), SignerJournalError> {
+fn require_nonzero_digest(field: &'static str, digest: [u8; 32]) -> Result<(), SignerJournalError> {
     if digest.iter().all(|byte| *byte == 0) {
         Err(SignerJournalError::ZeroDigest(field))
     } else {
@@ -372,10 +397,15 @@ mod tests {
         journal.mark_transport_lost(operation(1)).unwrap();
         assert_eq!(
             journal.dispatch(operation(1)),
-            Err(SignerJournalError::IndeterminateRequiresReconciliation(operation(1)))
+            Err(SignerJournalError::IndeterminateRequiresReconciliation(
+                operation(1)
+            ))
         );
         let confirmed = journal.reconcile(request(1), [7; 32], [8; 32]).unwrap();
-        assert_eq!(journal.reconcile(request(1), [7; 32], [8; 32]).unwrap(), confirmed);
+        assert_eq!(
+            journal.reconcile(request(1), [7; 32], [8; 32]).unwrap(),
+            confirmed
+        );
     }
 
     #[test]
@@ -393,7 +423,10 @@ mod tests {
                 received_for: operation(2),
             })
         );
-        assert!(matches!(journal.record(operation(2)).unwrap().state, SigningOperationState::Dispatched));
+        assert!(matches!(
+            journal.record(operation(2)).unwrap().state,
+            SigningOperationState::Dispatched
+        ));
     }
 
     #[test]
@@ -418,7 +451,9 @@ mod tests {
     fn rejection_is_allowed_only_before_dispatch() {
         let mut journal = SignerJournal::new(2).unwrap();
         journal.prepare(request(1)).unwrap();
-        journal.reject_before_dispatch(operation(1), [4; 32]).unwrap();
+        journal
+            .reject_before_dispatch(operation(1), [4; 32])
+            .unwrap();
         assert_eq!(
             journal.dispatch(operation(1)),
             Err(SignerJournalError::Terminal(operation(1)))

@@ -68,14 +68,25 @@ pub enum KeyEpochError {
     ZeroEpoch,
     ZeroKeyId,
     ZeroCapacity,
-    CapacityTooLarge { received: usize, maximum: usize },
-    CapacityExceeded { capacity: usize },
+    CapacityTooLarge {
+        received: usize,
+        maximum: usize,
+    },
+    CapacityExceeded {
+        capacity: usize,
+    },
     AlreadyInitialized,
     NotInitialized,
     EpochNotFound(KeyEpoch),
-    NonContiguousRotation { current: KeyEpoch, received: KeyEpoch },
+    NonContiguousRotation {
+        current: KeyEpoch,
+        received: KeyEpoch,
+    },
     KeyIdReused(KeyId),
-    ActivationTimeRegression { previous: i64, received: i64 },
+    ActivationTimeRegression {
+        previous: i64,
+        received: i64,
+    },
     InvalidOverlap,
     NoActiveSigner,
     SignerNotYetActive {
@@ -105,9 +116,14 @@ impl fmt::Display for KeyEpochError {
                 "key epoch capacity {received} exceeds hard maximum {maximum}"
             ),
             Self::CapacityExceeded { capacity } => {
-                write!(formatter, "key epoch registry is full at capacity {capacity}")
+                write!(
+                    formatter,
+                    "key epoch registry is full at capacity {capacity}"
+                )
             }
-            Self::AlreadyInitialized => formatter.write_str("key epoch registry is already initialized"),
+            Self::AlreadyInitialized => {
+                formatter.write_str("key epoch registry is already initialized")
+            }
             Self::NotInitialized => formatter.write_str("key epoch registry is not initialized"),
             Self::EpochNotFound(epoch) => {
                 write!(formatter, "key epoch {} is not registered", epoch.get())
@@ -311,8 +327,14 @@ impl KeyEpochRegistry {
             .map(|(_, record)| *record)
             .ok_or(KeyEpochError::NotInitialized)?;
         let revoked_at = match highest.state {
-            KeyEpochState::Revoked { revoked_at_unix_seconds } => revoked_at_unix_seconds,
-            _ => return Err(KeyEpochError::ReplacementRequiresRevokedEpoch(highest.epoch)),
+            KeyEpochState::Revoked {
+                revoked_at_unix_seconds,
+            } => revoked_at_unix_seconds,
+            _ => {
+                return Err(KeyEpochError::ReplacementRequiresRevokedEpoch(
+                    highest.epoch,
+                ))
+            }
         };
         self.validate_next_epoch(
             highest.epoch,
@@ -352,8 +374,9 @@ impl KeyEpochRegistry {
         }
         match record.state {
             KeyEpochState::Active => Ok(record),
-            KeyEpochState::VerifyOnly { retire_after_unix_seconds }
-                if now_unix_seconds <= retire_after_unix_seconds => Ok(record),
+            KeyEpochState::VerifyOnly {
+                retire_after_unix_seconds,
+            } if now_unix_seconds <= retire_after_unix_seconds => Ok(record),
             KeyEpochState::VerifyOnly { .. } | KeyEpochState::Retired { .. } => {
                 Err(KeyEpochError::EpochNotUsableForVerification(epoch))
             }
@@ -364,7 +387,10 @@ impl KeyEpochRegistry {
     pub fn retire_expired(&mut self, now_unix_seconds: i64) -> usize {
         let mut changed = 0;
         for record in self.records.values_mut() {
-            if let KeyEpochState::VerifyOnly { retire_after_unix_seconds } = record.state {
+            if let KeyEpochState::VerifyOnly {
+                retire_after_unix_seconds,
+            } = record.state
+            {
                 if now_unix_seconds > retire_after_unix_seconds {
                     record.state = KeyEpochState::Retired {
                         retired_at_unix_seconds: retire_after_unix_seconds,
@@ -399,7 +425,9 @@ impl KeyEpochRegistry {
             KeyEpochState::Active | KeyEpochState::VerifyOnly { .. } => {}
         }
         let next = KeyEpochRecord {
-            state: KeyEpochState::Revoked { revoked_at_unix_seconds },
+            state: KeyEpochState::Revoked {
+                revoked_at_unix_seconds,
+            },
             ..current
         };
         self.records.insert(epoch, next);
@@ -434,12 +462,14 @@ impl KeyEpochRegistry {
         next_key_id: KeyId,
         activated_at_unix_seconds: i64,
     ) -> Result<(), KeyEpochError> {
-        let expected = current_epoch.get().checked_add(1).ok_or(
-            KeyEpochError::NonContiguousRotation {
-                current: current_epoch,
-                received: next_epoch,
-            },
-        )?;
+        let expected =
+            current_epoch
+                .get()
+                .checked_add(1)
+                .ok_or(KeyEpochError::NonContiguousRotation {
+                    current: current_epoch,
+                    received: next_epoch,
+                })?;
         if next_epoch.get() != expected {
             return Err(KeyEpochError::NonContiguousRotation {
                 current: current_epoch,
@@ -460,7 +490,9 @@ impl KeyEpochRegistry {
 
     fn require_capacity(&self) -> Result<(), KeyEpochError> {
         if self.records.len() >= self.capacity {
-            Err(KeyEpochError::CapacityExceeded { capacity: self.capacity })
+            Err(KeyEpochError::CapacityExceeded {
+                capacity: self.capacity,
+            })
         } else {
             Ok(())
         }
@@ -471,14 +503,21 @@ impl KeyEpochRegistry {
 mod tests {
     use super::*;
 
-    fn epoch(value: u64) -> KeyEpoch { KeyEpoch::new(value).unwrap() }
-    fn key(value: u8) -> KeyId { KeyId::new([value; 16]).unwrap() }
+    fn epoch(value: u64) -> KeyEpoch {
+        KeyEpoch::new(value).unwrap()
+    }
+    fn key(value: u8) -> KeyId {
+        KeyId::new([value; 16]).unwrap()
+    }
 
     #[test]
     fn rotation_is_contiguous_time_monotonic_and_bounded() {
         let mut registry = KeyEpochRegistry::with_capacity(2).unwrap();
         registry.initialize(epoch(7), key(7), 100).unwrap();
-        assert!(matches!(registry.active_signer_at(99), Err(KeyEpochError::SignerNotYetActive { .. })));
+        assert!(matches!(
+            registry.active_signer_at(99),
+            Err(KeyEpochError::SignerNotYetActive { .. })
+        ));
         assert!(matches!(
             registry.rotate(epoch(8), key(8), 100, 300),
             Err(KeyEpochError::ActivationTimeRegression { .. })
@@ -501,7 +540,10 @@ mod tests {
             registry.verification_key(epoch(2), 19),
             Err(KeyEpochError::SignerNotYetActive { .. })
         ));
-        assert_eq!(registry.verification_key(epoch(1), 30).unwrap().epoch, epoch(1));
+        assert_eq!(
+            registry.verification_key(epoch(1), 30).unwrap().epoch,
+            epoch(1)
+        );
         assert_eq!(
             registry.verification_key(epoch(1), 31),
             Err(KeyEpochError::EpochNotUsableForVerification(epoch(1)))
@@ -518,7 +560,10 @@ mod tests {
         ));
         let revoked = registry.revoke(epoch(1), 20).unwrap();
         assert_eq!(registry.revoke(epoch(1), 21).unwrap(), revoked);
-        assert_eq!(registry.active_signer_at(21), Err(KeyEpochError::NoActiveSigner));
+        assert_eq!(
+            registry.active_signer_at(21),
+            Err(KeyEpochError::NoActiveSigner)
+        );
         assert_eq!(
             registry.verification_key(epoch(1), 21),
             Err(KeyEpochError::EpochRevoked(epoch(1)))
@@ -534,7 +579,9 @@ mod tests {
             registry.install_after_revocation(epoch(4), key(4), 20),
             Err(KeyEpochError::ActivationTimeRegression { .. })
         ));
-        registry.install_after_revocation(epoch(4), key(4), 21).unwrap();
+        registry
+            .install_after_revocation(epoch(4), key(4), 21)
+            .unwrap();
         assert_eq!(registry.active_signer_at(21).unwrap().epoch, epoch(4));
         assert_eq!(
             registry.verification_key(epoch(3), 21),
@@ -565,12 +612,18 @@ mod tests {
         registry.rotate(epoch(2), key(2), 20, 30).unwrap();
         assert_eq!(registry.retire_expired(30), 0);
         assert_eq!(registry.retire_expired(31), 1);
-        assert!(matches!(registry.record(epoch(1)).unwrap().state, KeyEpochState::Retired { .. }));
+        assert!(matches!(
+            registry.record(epoch(1)).unwrap().state,
+            KeyEpochState::Retired { .. }
+        ));
     }
 
     #[test]
     fn capacity_configuration_has_a_hard_upper_bound() {
-        assert!(matches!(KeyEpochRegistry::with_capacity(0), Err(KeyEpochError::ZeroCapacity)));
+        assert!(matches!(
+            KeyEpochRegistry::with_capacity(0),
+            Err(KeyEpochError::ZeroCapacity)
+        ));
         assert!(matches!(
             KeyEpochRegistry::with_capacity(MAX_OPERATIONAL_KEY_EPOCHS + 1),
             Err(KeyEpochError::CapacityTooLarge { received, maximum: MAX_OPERATIONAL_KEY_EPOCHS })

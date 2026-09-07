@@ -25,7 +25,10 @@ impl DomainBoundKeyId {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KeyDomainError {
-    DomainMismatch { expected: KeyDomain, received: KeyDomain },
+    DomainMismatch {
+        expected: KeyDomain,
+        received: KeyDomain,
+    },
     Lifecycle(KeyEpochError),
 }
 
@@ -58,11 +61,17 @@ pub struct DomainKeyEpochRegistry {
 impl DomainKeyEpochRegistry {
     #[must_use]
     pub fn new(domain: KeyDomain) -> Self {
-        Self { domain, inner: KeyEpochRegistry::new() }
+        Self {
+            domain,
+            inner: KeyEpochRegistry::new(),
+        }
     }
 
     pub fn with_capacity(domain: KeyDomain, capacity: usize) -> Result<Self, KeyDomainError> {
-        Ok(Self { domain, inner: KeyEpochRegistry::with_capacity(capacity)? })
+        Ok(Self {
+            domain,
+            inner: KeyEpochRegistry::with_capacity(capacity)?,
+        })
     }
 
     #[must_use]
@@ -92,7 +101,9 @@ impl DomainKeyEpochRegistry {
         activated_at_unix_seconds: i64,
     ) -> Result<KeyEpochRecord, KeyDomainError> {
         self.require_domain(key)?;
-        Ok(self.inner.initialize(epoch, key.key_id, activated_at_unix_seconds)?)
+        Ok(self
+            .inner
+            .initialize(epoch, key.key_id, activated_at_unix_seconds)?)
     }
 
     pub fn rotate(
@@ -168,7 +179,9 @@ impl DomainKeyEpochRegistry {
 mod tests {
     use super::*;
 
-    fn epoch(value: u64) -> KeyEpoch { KeyEpoch::new(value).unwrap() }
+    fn epoch(value: u64) -> KeyEpoch {
+        KeyEpoch::new(value).unwrap()
+    }
     fn key(domain: KeyDomain, value: u8) -> DomainBoundKeyId {
         DomainBoundKeyId::new(domain, KeyId::new([value; 16]).unwrap())
     }
@@ -193,7 +206,9 @@ mod tests {
     #[test]
     fn cross_domain_rotation_does_not_retire_current_signer() {
         let mut registry = DomainKeyEpochRegistry::new(KeyDomain::Socket);
-        registry.initialize(epoch(1), key(KeyDomain::Socket, 1), 10).unwrap();
+        registry
+            .initialize(epoch(1), key(KeyDomain::Socket, 1), 10)
+            .unwrap();
         assert_eq!(
             registry.rotate(epoch(2), key(KeyDomain::Authority, 2), 20, 30),
             Err(KeyDomainError::DomainMismatch {
@@ -207,16 +222,25 @@ mod tests {
     #[test]
     fn same_domain_rotation_preserves_activation_and_overlap_contract() {
         let mut registry = DomainKeyEpochRegistry::new(KeyDomain::Authority);
-        registry.initialize(epoch(7), key(KeyDomain::Authority, 7), 100).unwrap();
-        registry.rotate(epoch(8), key(KeyDomain::Authority, 8), 200, 300).unwrap();
+        registry
+            .initialize(epoch(7), key(KeyDomain::Authority, 7), 100)
+            .unwrap();
+        registry
+            .rotate(epoch(8), key(KeyDomain::Authority, 8), 200, 300)
+            .unwrap();
         assert_eq!(registry.active_signer_at(200).unwrap().epoch, epoch(8));
-        assert_eq!(registry.verification_key(epoch(7), 300).unwrap().epoch, epoch(7));
+        assert_eq!(
+            registry.verification_key(epoch(7), 300).unwrap().epoch,
+            epoch(7)
+        );
     }
 
     #[test]
     fn revoked_domain_can_only_install_a_same_domain_successor() {
         let mut registry = DomainKeyEpochRegistry::new(KeyDomain::Console);
-        registry.initialize(epoch(1), key(KeyDomain::Console, 1), 10).unwrap();
+        registry
+            .initialize(epoch(1), key(KeyDomain::Console, 1), 10)
+            .unwrap();
         registry.revoke(epoch(1), 20).unwrap();
         assert_eq!(
             registry.install_after_revocation(epoch(2), key(KeyDomain::RuntimeHttp, 2), 21),
@@ -225,7 +249,9 @@ mod tests {
                 received: KeyDomain::RuntimeHttp,
             })
         );
-        registry.install_after_revocation(epoch(2), key(KeyDomain::Console, 2), 21).unwrap();
+        registry
+            .install_after_revocation(epoch(2), key(KeyDomain::Console, 2), 21)
+            .unwrap();
         assert_eq!(registry.active_signer_at(21).unwrap().epoch, epoch(2));
     }
 }

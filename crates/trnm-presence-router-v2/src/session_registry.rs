@@ -44,19 +44,31 @@ impl SessionRouteLimits {
             max_connections_per_session,
             MAX_CONNECTIONS_PER_SESSION,
         )?;
-        validate_limit("active_connections", max_active_connections, MAX_ACTIVE_CONNECTIONS)?;
+        validate_limit(
+            "active_connections",
+            max_active_connections,
+            MAX_ACTIVE_CONNECTIONS,
+        )?;
         validate_limit(
             "tracked_connections",
             max_tracked_connections,
             MAX_TRACKED_CONNECTIONS,
         )?;
-        validate_limit("tracked_sessions", max_tracked_sessions, MAX_TRACKED_SESSIONS)?;
+        validate_limit(
+            "tracked_sessions",
+            max_tracked_sessions,
+            MAX_TRACKED_SESSIONS,
+        )?;
         validate_limit(
             "revocation_high_waters",
             max_revocation_high_waters,
             MAX_REVOCATION_HIGH_WATERS,
         )?;
-        validate_limit("presence_entries", max_presence_entries, MAX_PRESENCE_ENTRIES)?;
+        validate_limit(
+            "presence_entries",
+            max_presence_entries,
+            MAX_PRESENCE_ENTRIES,
+        )?;
         if max_connections_per_session > max_active_connections {
             return Err(SessionRouteError::InvalidLimit {
                 resource: "connections_per_session",
@@ -256,7 +268,10 @@ impl fmt::Display for SessionRouteError {
                 resource,
                 value,
                 maximum,
-            } => write!(formatter, "{resource} limit {value} must be in 1..={maximum}"),
+            } => write!(
+                formatter,
+                "{resource} limit {value} must be in 1..={maximum}"
+            ),
             Self::ResourceExhausted { resource, limit } => {
                 write!(formatter, "{resource} capacity is exhausted at {limit}")
             }
@@ -671,11 +686,12 @@ impl SessionRouteRegistry {
                 ));
             }
             for connection in connections {
-                let binding = self.bindings.get(connection).ok_or(
-                    SessionRouteError::InvariantViolation(
-                        "session index references an absent binding",
-                    ),
-                )?;
+                let binding =
+                    self.bindings
+                        .get(connection)
+                        .ok_or(SessionRouteError::InvariantViolation(
+                            "session index references an absent binding",
+                        ))?;
                 if &binding.session_id != session_id {
                     return Err(SessionRouteError::InvariantViolation(
                         "session index points to a different session binding",
@@ -737,12 +753,11 @@ impl SessionRouteRegistry {
         session_id: &SessionId,
         session_generation: SessionRouteGeneration,
     ) -> Result<(), SessionRouteError> {
-        let binding = self
-            .bindings
-            .get(connection)
-            .ok_or_else(|| SessionRouteError::SessionBindingMissing {
+        let binding = self.bindings.get(connection).ok_or_else(|| {
+            SessionRouteError::SessionBindingMissing {
                 connection: connection.clone(),
-            })?;
+            }
+        })?;
         if connection_generation < binding.connection_generation {
             return Err(PresenceError::StaleGeneration {
                 connection: connection.clone(),
@@ -1122,14 +1137,7 @@ mod tests {
             .snapshot(&stream("room"), SnapshotVisibility::IncludeHidden)
             .expect("snapshot");
         assert!(matches!(
-            registry.update_presence(update(
-                "connection-a",
-                1,
-                "session-a",
-                1,
-                "room",
-                "stale"
-            )),
+            registry.update_presence(update("connection-a", 1, "session-a", 1, "room", "stale")),
             Err(SessionRouteError::StaleSessionGeneration { .. })
         ));
         assert!(matches!(
@@ -1148,14 +1156,7 @@ mod tests {
             before
         );
         registry
-            .update_presence(update(
-                "connection-a",
-                1,
-                "session-a",
-                2,
-                "room",
-                "current"
-            ))
+            .update_presence(update("connection-a", 1, "session-a", 2, "room", "current"))
             .expect("current session generation");
     }
 
