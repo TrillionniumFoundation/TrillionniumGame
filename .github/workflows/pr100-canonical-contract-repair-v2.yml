@@ -59,6 +59,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git checkout HEAD -- \
+            scripts/one_shot_pr100_canonical_contract_repair.py \
+            .github/workflows/pr100-canonical-contract-repair-v2.yml
           python3 -m py_compile \
             scripts/check-independent-review-domain-contract.py \
             scripts/check-independent-review-matrix.py \
@@ -74,6 +77,9 @@ jobs:
             tests.control_plane.test_independent_review_domain_integration \
             tests.control_plane.test_independent_review_matrix -v
           python3 -m unittest discover -s tests -p 'test_*.py'
+          rm -f \
+            scripts/one_shot_pr100_canonical_contract_repair.py \
+            .github/workflows/pr100-canonical-contract-repair-v2.yml
 
       - name: Commit exact tested repair without force
         shell: bash
