@@ -55,6 +55,14 @@ class IndependentReviewDomainIntegrationTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0, completed.stdout)
         self.assertIn(pattern, completed.stderr)
 
+    def assert_codeowners_rejects(self, mutation) -> None:
+        completed = self.run_cli(codeowners_mutation=mutation)
+        self.assertNotEqual(completed.returncode, 0, completed.stdout)
+        self.assertIn(
+            "CODEOWNERS normalized rule sequence drift",
+            completed.stderr,
+        )
+
     def test_canonical_cli_executes_shared_contract(self) -> None:
         completed = self.run_cli()
         self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -94,7 +102,7 @@ class IndependentReviewDomainIntegrationTests(unittest.TestCase):
 
         self.assert_cli_rejects(mutation, "protected_paths drift")
 
-    def test_uncovered_path_fails_effective_mapping(self) -> None:
+    def test_codeowners_rule_cannot_be_removed(self) -> None:
         def mutation(text: str) -> str:
             return "\n".join(
                 line
@@ -104,20 +112,79 @@ class IndependentReviewDomainIntegrationTests(unittest.TestCase):
                 )
             ) + "\n"
 
-        completed = self.run_cli(codeowners_mutation=mutation)
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("effective CODEOWNERS pattern drift", completed.stderr)
+        self.assert_codeowners_rejects(mutation)
 
-    def test_later_override_fails_last_match_binding(self) -> None:
+    def test_broad_later_override_is_rejected(self) -> None:
+        self.assert_codeowners_rejects(
+            lambda text: (
+                text.rstrip()
+                + "\n/docs/development/** "
+                "@ProfHepta @Franksudoman @Tomasrgbsf\n"
+            )
+        )
+
+    def test_narrow_later_overrides_are_rejected_by_canonical_cli(self) -> None:
+        cases = {
+            "subdirectory": (
+                "/migrations/private/ @ProfHepta @Tomasrgbsf"
+            ),
+            "exact-file": (
+                "/migrations/001_init.sql @ProfHepta @Tomasrgbsf"
+            ),
+            "question-pattern": (
+                "/migrations/00?_*.sql @ProfHepta @Tomasrgbsf"
+            ),
+            "star-pattern": (
+                "/migrations/*_privileged.sql @ProfHepta @Tomasrgbsf"
+            ),
+        }
+        for label, rule in cases.items():
+            with self.subTest(label=label):
+                self.assert_codeowners_rejects(
+                    lambda text, rule=rule: text.rstrip() + "\n" + rule + "\n"
+                )
+
+    def test_multiple_later_overrides_are_rejected_by_canonical_cli(self) -> None:
         def mutation(text: str) -> str:
             return (
                 text.rstrip()
-                + "\n/docs/development/** @ProfHepta @Franksudoman @Tomasrgbsf\n"
+                + "\n/migrations/private/ @ProfHepta @Tomasrgbsf"
+                + "\n/.github/workflows/extra/*.yml "
+                "@ProfHepta @Tomasrgbsf\n"
+            )
+
+        self.assert_codeowners_rejects(mutation)
+
+    def test_codeowners_owner_set_cannot_be_reduced(self) -> None:
+        def mutation(text: str) -> str:
+            return text.replace(
+                "/migrations/ @ProfHepta @Franksudoman @Tomasrgbsf",
+                "/migrations/ @ProfHepta @Tomasrgbsf",
+                1,
             )
 
         completed = self.run_cli(codeowners_mutation=mutation)
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("effective CODEOWNERS pattern drift", completed.stderr)
+        self.assertNotEqual(completed.returncode, 0, completed.stdout)
+        self.assertIn(
+            "lacks conflict-surviving review routes",
+            completed.stderr,
+        )
+
+    def test_codeowners_rule_order_cannot_change(self) -> None:
+        def mutation(text: str) -> str:
+            first = "/migrations/ @ProfHepta @Franksudoman @Tomasrgbsf"
+            second = "/database/ @ProfHepta @Franksudoman @Tomasrgbsf"
+            return text.replace(first + "\n" + second, second + "\n" + first, 1)
+
+        self.assert_codeowners_rejects(mutation)
+
+    def test_nonsemantic_comments_do_not_change_contract(self) -> None:
+        completed = self.run_cli(
+            codeowners_mutation=lambda text: (
+                "# additional non-semantic comment\n\n" + text
+            )
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_plan_checker_requires_and_executes_canonical_entrypoint(self) -> None:
         source = PLAN_CHECKER.read_text(encoding="utf-8")
