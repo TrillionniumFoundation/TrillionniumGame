@@ -16,7 +16,7 @@ The module owns:
 
 - deterministic route deltas and hidden/visible transitions;
 - exact connection-generation ownership fencing;
-- exact session ID and session-generation binding for every mutating operation;
+- exact session ID, session-generation and route-namespace binding for every mutating operation;
 - monotonic per-session revocation high-water;
 - atomic removal of all bound connections at or below a revoked session generation;
 - stale session and connection re-entry rejection;
@@ -37,13 +37,13 @@ session ID -> monotonic revoked-through generation
 
 Every applied registry mutation is executed against a cloned candidate and committed only after route, index, generation, and configured-capacity invariants pass. The complete state is finite; cloning cost is therefore bounded by the configured admitted universe rather than historical unbounded input.
 
-`PresenceRouter` retains connection-generation high-water state after route removal. `SessionRouteRegistry` consequently has separate active-connection and tracked-connection limits. Removing a connection releases active capacity, while a new connection identity is still rejected once the tracked-connection universe is full. Reusing the same admitted identity requires a strictly newer connection generation.
+`PresenceRouter` retains connection-generation high-water state after route removal. `SessionRouteRegistry` consequently has separate active-connection and tracked-connection limits. Removing a connection releases active capacity, while a new connection identity is still rejected once the tracked-connection universe is full. Reusing the same admitted identity requires a strictly newer connection generation. Capacity admission computes the checked post-replacement inventory, so a higher generation that atomically retires old streams or an exclusively owned old session is accepted when it does not increase the bounded state.
 
-Revocation high-waters are security state and are not opportunistically evicted. Their configured hard limit is a finite admitted-session universe. Deployments requiring compaction must first establish a durable external generation floor and add a separately reviewed compaction protocol; this source candidate deliberately fails closed instead of deleting a fence.
+Revocation and connection high-waters are never opportunistically evicted. Long-lived deployments may compact only through a quiescent namespace rollover: every mutation carries the active `SessionRouteNamespace`; a trusted verifier must accept a proof binding the current registry/router revisions, retained cardinalities, a durable checkpoint digest and a producer-barrier digest; active bindings and presence entries must be zero. The rollover advances the namespace monotonically, emits a restartable `SessionRouteCheckpoint`, resets the bounded high-water window, and permanently rejects delayed messages from retired namespaces.
 
 ## Public contracts
 
-`SessionJoinRequest` binds a `JoinPresenceRequest` to a positive `SessionRouteGeneration`.
+`SessionJoinRequest` binds a `JoinPresenceRequest` to a positive `SessionRouteGeneration` and the exact active `SessionRouteNamespace`.
 
 The other mutation paths are deliberately session-fenced wrappers:
 
@@ -79,9 +79,9 @@ The registry verifies that:
 - active, tracked, session, revocation, and presence cardinalities stay within configured limits;
 - all underlying presence invariants remain valid.
 
-Capacity checks run before cloning or allocating a candidate. Rejected stale, conflicting, ahead-of-current, revoked, or exhausted operations leave route state, indexes, revisions, and deltas unchanged.
+Capacity checks use checked projected post-transition cardinalities before cloning or allocating a candidate. Rejected stale, conflicting, ahead-of-current, revoked, exhausted, wrong-namespace or unverified rollover operations leave route state, indexes, revisions and deltas unchanged.
 
-The implementation is an in-memory state machine. Process restart, durable replay, cross-node ordering, and network partitions remain adapter-level obligations.
+The implementation remains an in-memory state machine, but namespace retirement now has an explicit durable handoff: adapters must persist the accepted checkpoint and producer barrier and must verify the latest checkpoint before restart. Cross-node barrier construction, storage durability, ordering and network partitions remain adapter-level obligations.
 
 ## Security and privacy
 
@@ -108,7 +108,10 @@ The focused corpus covers:
 - unique zero-connection revocation exhaustion;
 - per-session and presence-entry exhaustion;
 - no mutation on rejection and safe active-capacity reuse inside the admitted identity universe;
-- invalid or incoherent limit configuration.
+- full-capacity same-connection generation takeover and multi-stream-to-one replacement;
+- exclusive-session replacement without false tracked-session exhaustion;
+- verified quiescent namespace rollover, restart restore and stale-namespace rejection;
+- invalid, incoherent or unverified limit/rollover configuration.
 
 The isolated workspace must also execute in the stable aggregate gate. Empty discovery, skipped mandatory tests, warnings, stale-head results, and local-only execution receive no evidence credit.
 
