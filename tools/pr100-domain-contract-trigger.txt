@@ -1,0 +1,3 @@
+One-shot pull_request trigger for the exact PR #100 domain-contract repair.
+
+This file carries no product, evidence, gap, compatibility, production, cutover, or retirement credit. The base workflow must verify the exact target head and complete the focused plus full Python control suite before any non-force push to the target branch.
