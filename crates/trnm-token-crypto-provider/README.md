@@ -20,7 +20,8 @@ The module's current maturity is `source-candidate`. Promotion requires exact-ca
 - select one exact active signing epoch and one exact requested verification epoch;
 - bound active records, verification overlap and audit growth;
 - revoke immediately and monotonically;
-- retire and externally archive revoked or verification-expired records while preserving the epoch/time high-watermarks;
+- retire and externally archive revoked or verification-expired key records while preserving the epoch/time high-watermarks;
+- bind every external signing operation to a journal epoch, reserve its terminal archive slot and preserve provider-receipt uniqueness across checkpoint compaction;
 - expose bounded handle-free lifecycle status and health.
 
 Non-goals: this crate does not define JWT format, implement HS256, expose raw production keys, persist schedules, distribute rotation state between nodes, or substitute a real KMS/HSM deployment.
@@ -54,6 +55,8 @@ Public Rust types, serialized fields, configuration keys, database predicates, a
 
 The operational registry remains deterministic and bounded. Terminal operational records leave memory only through a digest-chained `KeyEpochArchiveCheckpoint` accepted by a trusted `KeyEpochArchiveVerifier`. The checkpoint carries the global highest epoch, last lifecycle time, authority-loss state, retained verification window and exact archived records. New key IDs after archival require an external absence proof, and archived verification requests return an explicit durable-archive requirement instead of falling back. A durable adapter must atomically persist and verify this checkpoint before the window is restored on another node.
 
+`SignerJournal` uses the same durable handoff principle. Every request and asynchronous handle binds an explicit `SignerJournalEpoch`; admission checks both active capacity and the total epoch tombstone budget, so every accepted operation can be archived. Confirmed/rejected records become bounded tombstones. Epoch advance requires zero active records and a trusted, digest-chained `SignerJournalCheckpoint` containing every tombstone and receipt binding. The current receipt map is then compacted, while subsequent reconciliation must obtain a durable absence proof before accepting a receipt not present locally. Operation IDs may be reused only in a later epoch; stale handles and old-epoch requests fail before mutation.
+
 ## Correctness and failure model
 
 Active/verification epoch transitions are deterministic, bounded and revision-fenced. Two writers starting from the same revision cannot both apply through a conforming durable adapter. Unknown epochs, stale snapshots, out-of-order clocks and exhausted counters fail closed.
@@ -74,7 +77,7 @@ cargo test --manifest-path crates/trnm-token-crypto-provider/Cargo.toml --all-ta
 cargo clippy --manifest-path crates/trnm-token-crypto-provider/Cargo.toml --all-targets --locked -- -D warnings
 ```
 
-The unit corpus covers all six domains, non-overlapping sign windows, bounded verification overlap, exact-epoch no-fallback, emergency revoke, retirement, full-window terminal archival, capacity-full compromise recovery, archived key-ID rejection, checkpoint restore, revision/clock/audit exhaustion atomicity and debug redaction.
+The unit corpus covers all six domains, non-overlapping sign windows, bounded verification overlap, exact-epoch no-fallback, emergency revoke, retirement, full-window terminal archival, capacity-full compromise recovery, archived key-ID rejection, signer archive-slot reservation, journal-epoch rollover, restart restore, archived receipt replay rejection, operation-ID reuse fencing, revision/clock/audit exhaustion atomicity and debug redaction.
 
 This isolated workspace is explicitly registered in package authority and must execute in the stable aggregate merge gate. Empty discovery, skipped mandatory tests, warnings, older-head results, local-only execution and self-review do not earn remote verification or claim credit.
 

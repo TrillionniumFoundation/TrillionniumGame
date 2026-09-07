@@ -330,8 +330,9 @@ pub use key_epoch::{
     KeyEpochRegistry as OperationalKeyEpochRegistry, KeyEpochState, KeyId,
 };
 pub use signer_journal::{
-    SignerJournal, SignerJournalError, SigningOperationId, SigningOperationRecord,
-    SigningOperationState, SigningRequest,
+    SignerJournal, SignerJournalArchiveVerifier, SignerJournalCheckpoint, SignerJournalEpoch,
+    SignerJournalError, SignerReceiptBinding, SigningOperationHandle, SigningOperationId,
+    SigningOperationRecord, SigningOperationState, SigningOperationTombstone, SigningRequest,
 };
 
 pub use key_domain::{DomainBoundKeyId, DomainKeyEpochRegistry, KeyDomainError};
