@@ -110,6 +110,12 @@ def rewrite(scripts: list[str]) -> list[str]:
         "apply-canonical-server-authority-v7.py",
         "select latest canonical authority transformer",
     )
+    scripts[5] = replace_once(
+        scripts[5],
+        "python3 scripts/check-module-docs.py\n",
+        "",
+        "remove nonexistent module-doc alias while retaining authority checks",
+    )
     return scripts
 
 
@@ -124,12 +130,19 @@ def validate_rewrite(scripts: list[str]) -> None:
         'git checkout "$CRYPTO_SHA" -- crates/trnm-token-crypto-provider',
         "crates/trnm-persistence-core/src/migration_fence.rs",
         "apply-canonical-server-authority-v7.py",
+        "python3 scripts/check-rust-package-inventory.py",
+        "python3 scripts/check-documentation-authority.py",
+        "python3 scripts/check-plan.py",
+        "python3 scripts/check-evidence-index.py",
+        "python3 scripts/check-gap-register.py",
     )
     for marker in required:
         if combined.count(marker) != 1:
             raise SystemExit(f"rewritten v7 marker mismatch: {marker}")
     if "pulls/92" in combined:
         raise SystemExit("forbidden predecessor marker survived: pulls/92")
+    if "check-module-docs.py" in combined:
+        raise SystemExit("nonexistent module-doc alias survived rewrite")
     if "apply-canonical-server-authority-v5.py" in scripts[2]:
         raise SystemExit("v7 compose script still invokes the v5 transformer")
 
