@@ -179,8 +179,8 @@ def repin_workflow_manifests() -> dict[str, Any]:
     before_overlay = load(OVERLAY)
     base = copy.deepcopy(before_base)
     overlay = copy.deepcopy(before_overlay)
-    changed: list[dict[str, str]] = []
-    seen_paths: set[str] = set()
+    changed_rows: list[dict[str, str]] = []
+    actual_by_path: dict[str, str] = {}
 
     for document_name, document in (("base", base), ("overlay", overlay)):
         for row in walk_dicts(document):
@@ -193,13 +193,15 @@ def repin_workflow_manifests() -> dict[str, Any]:
                 and re.fullmatch(r"[0-9a-f]{40}", declared)
             ):
                 continue
-            if path_value in seen_paths:
-                raise SystemExit(f"workflow path appears more than once in composed identity rows: {path_value}")
-            seen_paths.add(path_value)
-            actual = git_blob_file(ROOT / path_value)
+            actual = actual_by_path.get(path_value)
+            if actual is None:
+                actual = git_blob_file(ROOT / path_value)
+                actual_by_path[path_value] = actual
+            elif actual != git_blob_file(ROOT / path_value):
+                raise SystemExit(f"workflow path changed during manifest repin: {path_value}")
             row["git_blob_sha1"] = actual
             if actual != declared:
-                changed.append(
+                changed_rows.append(
                     {
                         "document": document_name,
                         "path": path_value,
@@ -208,10 +210,11 @@ def repin_workflow_manifests() -> dict[str, Any]:
                     }
                 )
 
-    if not changed:
+    changed_paths = sorted({row["path"] for row in changed_rows})
+    if not changed_paths:
         raise SystemExit("expected transformed workflow definition drift, observed none")
-    if len(changed) > 12:
-        raise SystemExit(f"unexpectedly broad workflow repin set: {len(changed)}")
+    if len(changed_paths) > 12:
+        raise SystemExit(f"unexpectedly broad workflow repin set: {len(changed_paths)}")
     if scrub_identity_fields(before_base) != scrub_identity_fields(base):
         raise SystemExit("base required-workflow semantics changed outside Git blob identities")
 
@@ -227,8 +230,10 @@ def repin_workflow_manifests() -> dict[str, Any]:
     OVERLAY.write_bytes(canonical(overlay))
 
     return {
-        "changed_definition_count": len(changed),
-        "changed_definitions": changed,
+        "changed_definition_count": len(changed_paths),
+        "changed_paths": changed_paths,
+        "changed_row_count": len(changed_rows),
+        "changed_rows": changed_rows,
         "base_manifest_git_blob_sha1": git_blob_file(BASE_MANIFEST),
         "overlay_git_blob_sha1": git_blob_file(OVERLAY),
         "overlay_sha256": overlay["overlay_sha256"],
