@@ -1,0 +1,1 @@
+Temporary staging ref for the exact validated evidence-sealing payload. No product or acceptance credit.
