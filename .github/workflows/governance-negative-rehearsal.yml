@@ -1,0 +1,237 @@
+name: governance-negative-rehearsal
+
+on:
+  push:
+    branches: [tooling/gap-closure-audit-2026-09-07]
+    paths:
+      - '.github/workflows/governance-negative-rehearsal.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  rehearse:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TARGET_REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      EXPECTED_MAIN: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
+      ADMIN_TOKEN: ${{ secrets.TRNM_GITHUB_ADMIN_TOKEN || secrets.TRNM_ADMIN_TOKEN || secrets.GH_ADMIN_TOKEN || secrets.GITHUB_ADMIN_TOKEN || secrets.ADMIN_TOKEN }}
+    steps:
+      - name: Require separately administered credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ADMIN_TOKEN" || exit 78
+
+      - name: Execute disposable protected-branch negative rehearsal
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rehearsal"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import base64
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          repository = os.environ['TARGET_REPOSITORY']
+          expected_main = os.environ['EXPECTED_MAIN']
+          token = os.environ['ADMIN_TOKEN']
+          run_id = os.environ['GITHUB_RUN_ID']
+          target = f'trnm-protection-rehearsal-target-{run_id}'
+          source = f'trnm-protection-rehearsal-source-{run_id}'
+          root = f'https://api.github.com/repos/{repository}'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'Content-Type': 'application/json',
+              'User-Agent': 'trillionnium-governance-negative-rehearsal',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+
+          def call(method: str, path: str, body=None, allowed=()):
+              raw = None if body is None else json.dumps(body, separators=(',', ':')).encode()
+              request = urllib.request.Request(root + path, data=raw, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      payload = response.read()
+                      value = json.loads(payload.decode()) if payload else None
+                      return response.status, value
+              except urllib.error.HTTPError as error:
+                  payload = error.read().decode('utf-8', errors='replace')
+                  if error.code in allowed:
+                      try:
+                          value = json.loads(payload) if payload else None
+                      except Exception:
+                          value = {'message': payload[:1000]}
+                      return error.code, value
+                  raise SystemExit(f'{method} {path}: HTTP {error.code}: {payload[:2000]}')
+
+          _, main = call('GET', '/git/ref/heads/main')
+          if main['object']['sha'] != expected_main:
+              raise SystemExit('main drift before rehearsal')
+
+          created = {'target': False, 'source': False, 'pull': None, 'target_protected': False}
+          result = {
+              'schema': 'trillionnium.governance-negative-rehearsal.v1',
+              'repository': repository,
+              'main': expected_main,
+              'target_branch': target,
+              'source_branch': source,
+              'checks': {},
+              'actor_scope': 'administrator-mutator-and-observer',
+              'independently_accepted': False,
+              'gap_closed': False,
+          }
+          try:
+              call('POST', '/git/refs', {'ref': f'refs/heads/{target}', 'sha': expected_main})
+              created['target'] = True
+              call('POST', '/git/refs', {'ref': f'refs/heads/{source}', 'sha': expected_main})
+              created['source'] = True
+
+              protection = {
+                  'required_status_checks': {
+                      'strict': True,
+                      'contexts': ['trillionnium-game-merge-gate'],
+                  },
+                  'enforce_admins': True,
+                  'required_pull_request_reviews': {
+                      'dismissal_restrictions': {'users': [], 'teams': []},
+                      'dismiss_stale_reviews': True,
+                      'require_code_owner_reviews': True,
+                      'required_approving_review_count': 1,
+                      'require_last_push_approval': True,
+                  },
+                  'restrictions': None,
+                  'required_linear_history': True,
+                  'allow_force_pushes': False,
+                  'allow_deletions': False,
+                  'block_creations': False,
+                  'required_conversation_resolution': True,
+                  'lock_branch': False,
+                  'allow_fork_syncing': False,
+              }
+              call('PUT', f'/branches/{target}/protection', protection)
+              created['target_protected'] = True
+
+              tree_status, tree = call('POST', '/git/trees', {
+                  'base_tree': expected_main,
+                  'tree': [{
+                      'path': f'governance-rehearsal-{run_id}.txt',
+                      'mode': '100644',
+                      'type': 'blob',
+                      'content': 'disposable negative rehearsal\n',
+                  }],
+              })
+              _, commit = call('POST', '/git/commits', {
+                  'message': 'governance: disposable negative rehearsal',
+                  'tree': tree['sha'],
+                  'parents': [expected_main],
+              })
+              rehearsal_commit = commit['sha']
+              call('PATCH', f'/git/refs/heads/{source}', {'sha': rehearsal_commit, 'force': False})
+
+              status, value = call(
+                  'PATCH', f'/git/refs/heads/{target}',
+                  {'sha': rehearsal_commit, 'force': False},
+                  allowed=(403, 409, 422),
+              )
+              result['checks']['administrator_direct_update_blocked'] = status in (403, 409, 422)
+              if status < 300:
+                  call('PATCH', f'/git/refs/heads/{target}', {'sha': expected_main, 'force': True})
+
+              status, value = call(
+                  'PATCH', f'/git/refs/heads/{target}',
+                  {'sha': rehearsal_commit, 'force': True},
+                  allowed=(403, 409, 422),
+              )
+              result['checks']['administrator_force_update_blocked'] = status in (403, 409, 422)
+              if status < 300:
+                  call('PATCH', f'/git/refs/heads/{target}', {'sha': expected_main, 'force': True})
+
+              status, value = call(
+                  'DELETE', f'/git/refs/heads/{target}',
+                  allowed=(403, 409, 422),
+              )
+              result['checks']['administrator_branch_deletion_blocked'] = status in (403, 409, 422)
+              if status < 300:
+                  created['target'] = False
+                  call('POST', '/git/refs', {'ref': f'refs/heads/{target}', 'sha': expected_main})
+                  created['target'] = True
+                  call('PUT', f'/branches/{target}/protection', protection)
+
+              _, pull = call('POST', '/pulls', {
+                  'title': 'governance: disposable negative rehearsal',
+                  'head': source,
+                  'base': target,
+                  'body': 'Disposable no-credit negative protection rehearsal.',
+                  'draft': False,
+              })
+              created['pull'] = pull['number']
+              status, value = call(
+                  'PUT', f"/pulls/{pull['number']}/merge",
+                  {'sha': rehearsal_commit, 'merge_method': 'squash'},
+                  allowed=(403, 405, 409, 422),
+              )
+              result['checks']['merge_without_review_or_required_check_blocked'] = status in (403, 405, 409, 422)
+              if status < 300:
+                  raise SystemExit('unsafe governance result: disposable unqualified PR merged')
+
+              _, after_main = call('GET', '/git/ref/heads/main')
+              result['checks']['main_unchanged'] = after_main['object']['sha'] == expected_main
+              if not all(result['checks'].values()):
+                  failed = [key for key, value in result['checks'].items() if not value]
+                  raise SystemExit('negative rehearsal failed: ' + ', '.join(failed))
+          finally:
+              if created['pull'] is not None:
+                  call('PATCH', f"/pulls/{created['pull']}", {'state': 'closed'}, allowed=(404,))
+              if created['target_protected'] and created['target']:
+                  call('DELETE', f'/branches/{target}/protection', allowed=(404,))
+              if created['source']:
+                  call('DELETE', f'/git/refs/heads/{source}', allowed=(404, 422))
+              if created['target']:
+                  call('DELETE', f'/git/refs/heads/{target}', allowed=(404, 422))
+
+          path = Path(os.environ['RUNNER_TEMP']) / 'rehearsal' / 'negative-rehearsal.json'
+          path.write_text(json.dumps(result, sort_keys=True, separators=(',', ':')) + '\n')
+          print(json.dumps(result['checks'], sort_keys=True))
+          PY
+          sha256sum "$RUNNER_TEMP/rehearsal/negative-rehearsal.json" \
+            > "$RUNNER_TEMP/rehearsal/SHA256SUMS"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$RUNNER_TEMP/governance-negative-rehearsal.tar.gz" \
+            -C "$RUNNER_TEMP/rehearsal" negative-rehearsal.json SHA256SUMS
+
+      - name: Fetch current source for native uploader
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin \
+            "https://github.com/${TARGET_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin \
+            88c02a417c7b0c64f27dc9f49e0b5e6317150964
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+
+      - name: Retain negative rehearsal
+        id: retained
+        uses: ./source/.github/actions/upload-evidence
+        with:
+          name: governance-negative-rehearsal-${{ env.EXPECTED_MAIN }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/governance-negative-rehearsal.tar.gz
+          mime_type: application/gzip
+
+      - name: Verify receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.retained.outputs.artifact_id }}'
+          test -n '${{ steps.retained.outputs.sha256 }}'
+          test '${{ steps.retained.outputs.size_bytes }}' -gt 0
