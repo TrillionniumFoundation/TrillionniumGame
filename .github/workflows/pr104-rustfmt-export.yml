@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: pr104-rustfmt-export-${{ github.ref }}
@@ -14,13 +14,15 @@ concurrency:
 env:
   CANDIDATE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  TARGET_BRANCH: codex/realtime-recovery-wave-2026-09-07
+  EXPECTED_TARGET_HEAD: 97e98c78877bb5ee6ba6a6d66ab106833b139557
 
 jobs:
   rustfmt-export:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Fetch exact candidate without external actions
+      - name: Fetch exact tooling candidate without external actions
         shell: bash
         run: |
           set -euo pipefail
@@ -82,3 +84,39 @@ jobs:
             '${{ steps.retained.outputs.artifact_id }}' \
             '${{ steps.retained.outputs.sha256 }}' \
             '${{ steps.retained.outputs.size_bytes }}'
+      - name: Apply formatted files to exact product branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          formatted="$RUNNER_TEMP/pr104-formatted"
+          mkdir -p "$formatted"
+          for file in connection_actor.rs disconnect_journal.rs reconnect_cursor.rs lib.rs; do
+            cp "crates/trnm-presence-router-v2/src/${file}" "$formatted/${file}"
+          done
+
+          observed="$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
+          test "$observed" = "$EXPECTED_TARGET_HEAD"
+          git fetch --no-tags --depth=1 origin "$EXPECTED_TARGET_HEAD"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$EXPECTED_TARGET_HEAD"
+          for file in connection_actor.rs disconnect_journal.rs reconnect_cursor.rs lib.rs; do
+            cp "$formatted/${file}" "crates/trnm-presence-router-v2/src/${file}"
+          done
+          cargo fmt --manifest-path crates/trnm-presence-router-v2/Cargo.toml -- --check
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-presence-router-v2/src/connection_actor.rs \
+            crates/trnm-presence-router-v2/src/disconnect_journal.rs \
+            crates/trnm-presence-router-v2/src/reconnect_cursor.rs \
+            crates/trnm-presence-router-v2/src/lib.rs
+          if git diff --cached --quiet; then
+            echo 'no formatting delta to apply'
+            exit 0
+          fi
+          git commit -m 'style(realtime): apply exact Rust 1.85.1 formatting'
+          git remote set-url origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${CANDIDATE_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
