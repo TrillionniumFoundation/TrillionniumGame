@@ -93,6 +93,50 @@ jobs:
           Path('scripts/check-rust-server-process.sh').write_bytes(
               Path('/tmp/check-rust-server-process.sh').read_bytes()
           )
+
+          readme_path = Path('crates/trnm-server/README.md')
+          readme = readme_path.read_text(encoding='utf-8')
+          anchor = '## Known gaps and exit criteria\n'
+          addition = '''## Correctness and failure model
+
+- Command admission preserves typed validation, idempotency keys, bounded retry budgets and explicit ambiguous-commit handling.
+- Accepted work is not reported as durable until the PostgreSQL transaction and acknowledgement fence have both succeeded.
+- Cancellation is propagated through the bounded repository wrapper; stale or failed work does not become a success claim.
+- The extracted composition root remains a source candidate until its database and protocol evidence is independently accepted.
+
+## Security and privacy
+
+- Database URLs, administrator tokens, session keys and client credentials are redacted from diagnostics.
+- Non-loopback listeners and plaintext database transport require explicit candidate-only opt-in.
+- HTTP body size, read/write deadlines, listener workers, queue depth and WebSocket message counts are bounded.
+- No production credential, personal data set, custody key or protected environment secret is stored in this crate.
+
+## Build and test
+
+- Use Rust 1.85.1 with the isolated `Cargo.lock`.
+- Required source checks are `cargo fmt --check`, all-target tests and strict Clippy.
+- The bounded process smoke verifies configuration parsing, redaction and fail-closed startup without claiming live database ingress.
+- PostgreSQL and CockroachDB live lanes, protocol differentials and prospective-merge execution remain separate required evidence.
+
+## Compatibility and evidence
+
+- These routes are not a complete Nakama API, gRPC gateway or RTAPI implementation.
+- Source equivalence to the persistence-owned process does not transfer canonical authority or prove deployed behavior.
+- Compatibility, database durability, SG4, production, public-online, cutover and retirement claims require retained exact-object evidence and conflict-free specialist review.
+- A green unit or smoke result alone cannot close `GAP-P0-SERVER-001`, `GAP-P0-DATA-001` or `GAP-P0-CRYPTO-001`.
+
+'''
+          if readme.count(anchor) != 1:
+              raise SystemExit('README known-gap anchor drift')
+          for heading in (
+              '## Correctness and failure model',
+              '## Security and privacy',
+              '## Build and test',
+              '## Compatibility and evidence',
+          ):
+              if heading in readme:
+                  raise SystemExit(f'README section already present: {heading}')
+          readme_path.write_text(readme.replace(anchor, addition + anchor, 1), encoding='utf-8')
           PY
           git diff --check
           bash -n scripts/check-rust-server-process.sh
