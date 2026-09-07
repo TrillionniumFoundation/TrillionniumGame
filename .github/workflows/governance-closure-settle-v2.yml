@@ -1,0 +1,225 @@
+name: governance-closure-settle-v2
+
+on:
+  push:
+    branches: [tooling/governance-readback-v2-2026-09-07]
+    paths:
+      - '.github/workflows/governance-closure-settle-v2.yml'
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  settle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_PR: '63'
+      TARGET_HEAD: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+      TARGET_TREE: 9d3ae2fadb2684f095855ecf16307376b55a440f
+      TARGET_MERGE: 6965f95d03031156edc92cc862bd979ff87e9edb
+    steps:
+      - name: Collect terminal evidence and publish one fail-closed settlement
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json, os, time, urllib.error, urllib.request
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          api = f'https://api.github.com/repos/{repository}'
+          token = os.environ['GH_TOKEN']
+          target_pr = int(os.environ['TARGET_PR'])
+          target_head = os.environ['TARGET_HEAD']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'trillionnium-governance-closure-settle-v2',
+          }
+
+          def call(url, method='GET', body=None):
+              data = None if body is None else json.dumps(body).encode('utf-8')
+              request = urllib.request.Request(url, data=data, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      raw = response.read()
+                      return response.status, json.loads(raw.decode('utf-8')) if raw else None
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  try:
+                      value = json.loads(raw.decode('utf-8')) if raw else None
+                  except Exception:
+                      value = {'message': raw.decode('utf-8', errors='replace')[:2000]}
+                  return error.code, value
+
+          wanted = {
+              'governance-readback-v2',
+              'governance-readback-report',
+              'reviewer-capacity-discovery-v2',
+              'specialist-review-handoff-v2',
+          }
+          latest = {}
+          for _ in range(240):
+              code, payload = call(api + '/actions/runs?branch=tooling%2Fgovernance-readback-v2-2026-09-07&per_page=100')
+              if code != 200 or not isinstance(payload, dict):
+                  raise SystemExit(f'cannot read governance runs: HTTP {code}')
+              latest = {}
+              for row in payload.get('workflow_runs', []):
+                  name = row.get('name')
+                  if name not in wanted:
+                      continue
+                  rank = (int(row.get('run_attempt') or 0), int(row.get('id') or 0))
+                  previous = latest.get(name)
+                  old = (int(previous.get('run_attempt') or 0), int(previous.get('id') or 0)) if previous else (-1, -1)
+                  if previous is None or rank > old:
+                      latest[name] = row
+              if wanted.issubset(latest) and all(row.get('status') == 'completed' for row in latest.values()):
+                  break
+              time.sleep(5)
+          if not wanted.issubset(latest):
+              raise SystemExit(f'missing governance workflows: {sorted(wanted - set(latest))}')
+          if not all(row.get('status') == 'completed' for row in latest.values()):
+              raise SystemExit('governance workflows did not settle')
+
+          code, pr = call(api + f'/pulls/{target_pr}')
+          if code != 200 or not isinstance(pr, dict):
+              raise SystemExit(f'cannot read target PR: HTTP {code}')
+          tuple_matches = (
+              (pr.get('head') or {}).get('sha') == target_head
+              and pr.get('merge_commit_sha') == os.environ['TARGET_MERGE']
+          )
+          code, commit = call(api + f'/git/commits/{target_head}')
+          tuple_matches = tuple_matches and code == 200 and ((commit or {}).get('tree') or {}).get('sha') == os.environ['TARGET_TREE']
+
+          code, reviews = call(api + f'/pulls/{target_pr}/reviews?per_page=100')
+          reviews = reviews if code == 200 and isinstance(reviews, list) else []
+          code, comments = call(api + '/issues/7/comments?per_page=100')
+          comments = comments if code == 200 and isinstance(comments, list) else []
+          markers = {
+              'readback': 'TRNM-GOVERNANCE-READBACK-V2',
+              'capacity': 'TRNM-REVIEWER-CAPACITY-V2',
+              'negative': 'TRNM-GOVERNANCE-NEGATIVE-REHEARSAL-V2',
+              'specialist': 'TRNM-SPECIALIST-HANDOFF-V2',
+          }
+          marker_hits = {
+              key: [row for row in comments if marker in str(row.get('body') or '')]
+              for key, marker in markers.items()
+          }
+
+          current_approvals = []
+          current_changes_requested = []
+          author = str((pr.get('user') or {}).get('login') or '').lower()
+          for row in reviews:
+              login = str((row.get('user') or {}).get('login') or '').lower()
+              if row.get('commit_id') != target_head or login == author or login in {'profhepta', 'franksudoman'} or login.endswith('[bot]'):
+                  continue
+              if row.get('state') == 'APPROVED':
+                  current_approvals.append(login)
+              elif row.get('state') == 'CHANGES_REQUESTED':
+                  current_changes_requested.append(login)
+
+          workflow_results = {
+              name: {
+                  'id': row.get('id'), 'attempt': row.get('run_attempt'),
+                  'head': row.get('head_sha'), 'conclusion': row.get('conclusion'),
+              }
+              for name, row in sorted(latest.items())
+          }
+          artifact_rows = []
+          for name, row in latest.items():
+              acode, payload = call(api + f"/actions/runs/{row['id']}/artifacts?per_page=100")
+              if acode == 200 and isinstance(payload, dict):
+                  for artifact in payload.get('artifacts', []):
+                      artifact_rows.append({
+                          'workflow': name, 'run_id': row.get('id'),
+                          'artifact_id': artifact.get('id'), 'name': artifact.get('name'),
+                          'size_in_bytes': artifact.get('size_in_bytes'),
+                          'digest': artifact.get('digest'), 'expired': artifact.get('expired'),
+                      })
+
+          complete = {
+              'tuple_matches': tuple_matches,
+              'readback_run_success': latest['governance-readback-v2'].get('conclusion') == 'success',
+              'readback_report_success': latest['governance-readback-report'].get('conclusion') == 'success',
+              'reviewer_capacity_success': latest['reviewer-capacity-discovery-v2'].get('conclusion') == 'success',
+              'specialist_handoff_success': latest['specialist-review-handoff-v2'].get('conclusion') == 'success',
+              'negative_rehearsal_reported': bool(marker_hits['negative']),
+              'governance_readback_reported': bool(marker_hits['readback']),
+              'reviewer_capacity_reported': bool(marker_hits['capacity']),
+              'specialist_handoff_reported': bool(marker_hits['specialist']),
+              'current_conflict_free_approval_count': len(set(current_approvals)),
+              'current_changes_requested_count': len(set(current_changes_requested)),
+              'retained_artifact_count': len(artifact_rows),
+          }
+          governance_evidence_ready = all([
+              complete['tuple_matches'], complete['readback_run_success'],
+              complete['readback_report_success'], complete['reviewer_capacity_success'],
+              complete['specialist_handoff_success'], complete['negative_rehearsal_reported'],
+              complete['governance_readback_reported'], complete['reviewer_capacity_reported'],
+              complete['specialist_handoff_reported'], complete['retained_artifact_count'] > 0,
+          ])
+          whole_pr_review_ready = governance_evidence_ready and complete['current_changes_requested_count'] == 0
+          packet = {
+              'schema': 'trillionnium.governance-closure-settlement.v2',
+              'target': {
+                  'pull_request': target_pr, 'head': target_head,
+                  'tree': os.environ['TARGET_TREE'], 'prospective_merge': os.environ['TARGET_MERGE'],
+              },
+              'workflow_results': workflow_results,
+              'artifacts': artifact_rows,
+              'marker_counts': {key: len(value) for key, value in marker_hits.items()},
+              'review': {
+                  'current_conflict_free_approvals': sorted(set(current_approvals)),
+                  'current_changes_requested': sorted(set(current_changes_requested)),
+              },
+              'complete': complete,
+              'claims': {
+                  'governance_evidence_ready_for_independent_review': governance_evidence_ready,
+                  'whole_pr_review_ready': whole_pr_review_ready,
+                  'independently_accepted': False,
+                  'accepted_evidence': False,
+                  'gap_closed': False,
+                  'production_ready': False,
+              },
+          }
+          marker = '<!-- TRNM-GOVERNANCE-CLOSURE-SETTLEMENT-V2 -->'
+          body = '\n'.join([
+              marker,
+              '## Governance and specialist closure settlement v2',
+              '',
+              f'- exact target: `#{target_pr}` / `{target_head}` / `{os.environ["TARGET_TREE"]}` / `{os.environ["TARGET_MERGE"]}`',
+              f'- tuple unchanged: `{str(tuple_matches).lower()}`',
+              f'- readback/report/capacity/specialist conclusions: `{workflow_results["governance-readback-v2"]["conclusion"]}` / `{workflow_results["governance-readback-report"]["conclusion"]}` / `{workflow_results["reviewer-capacity-discovery-v2"]["conclusion"]}` / `{workflow_results["specialist-review-handoff-v2"]["conclusion"]}`',
+              f'- harmless negative rehearsal packet observed: `{str(complete["negative_rehearsal_reported"]).lower()}`',
+              f'- retained governance artifact count: `{len(artifact_rows)}`',
+              f'- current conflict-free approvals: `{len(set(current_approvals))}`',
+              f'- current conflict-free changes requested: `{len(set(current_changes_requested))}`',
+              f'- governance evidence ready for independent review: `{str(governance_evidence_ready).lower()}`',
+              f'- whole-PR review ready: `{str(whole_pr_review_ready).lower()}`',
+              '',
+              '```json', json.dumps(packet, indent=2, sort_keys=True), '```',
+              '',
+              'This settlement does not independently accept its own administrator-observer packets and does not close any gap. It never invokes merge, auto-merge, bypass, force push, direct main update, deployment, cutover or retirement.',
+          ])
+          code, existing_comments = call(api + f'/issues/{target_pr}/comments?per_page=100')
+          existing = []
+          if code == 200 and isinstance(existing_comments, list):
+              existing = [row for row in existing_comments if marker in str(row.get('body') or '') and (row.get('user') or {}).get('login') == 'github-actions[bot]']
+          if existing:
+              call(api + f"/issues/comments/{existing[-1]['id']}", method='PATCH', body={'body': body})
+          else:
+              call(api + f'/issues/{target_pr}/comments', method='POST', body={'body': body})
+          call(api + '/issues/7/comments', method='POST', body={'body': body})
+
+          if whole_pr_review_ready:
+              call(api + f'/pulls/{target_pr}/requested_reviewers', method='POST', body={'reviewers': ['Tomasrgbsf']})
+          print(json.dumps(packet, sort_keys=True))
+          if not governance_evidence_ready:
+              raise SystemExit('governance evidence is not yet complete')
+          PY
