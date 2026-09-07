@@ -1,0 +1,188 @@
+name: current-candidate-settle
+
+on:
+  push:
+    branches: [tooling/outbox-evidence-sealing-2026-09-07]
+    paths:
+      - '.github/workflows/current-candidate-settle.yml'
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  settle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      PR_NUMBER: '63'
+      PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+    steps:
+      - name: Rebind exact identity and settle only eligible attempts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ["GH_TOKEN"]
+          repository = os.environ["REPOSITORY"]
+          pr_number = int(os.environ["PR_NUMBER"])
+          branch = os.environ["PRODUCT_BRANCH"]
+          api = f"https://api.github.com/repos/{repository}"
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "trillionnium-current-candidate-settle",
+          }
+
+          def request(method, url, payload=None, accepted=(200, 201, 202, 204)):
+              body = None if payload is None else json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      raw = response.read()
+                      value = json.loads(raw.decode("utf-8")) if raw else None
+                      if response.status not in accepted:
+                          raise RuntimeError(f"unexpected HTTP {response.status}: {url}")
+                      return response.status, value
+              except urllib.error.HTTPError as error:
+                  raw = error.read().decode("utf-8", errors="replace")
+                  raise RuntimeError(f"HTTP {error.code} {method} {url}: {raw[:1000]}") from error
+
+          _, pr = request("GET", f"{api}/pulls/{pr_number}")
+          if pr["state"] != "open" or pr["head"]["ref"] != branch:
+              raise SystemExit("PR #63 is not the expected open candidate")
+          head = pr["head"]["sha"]
+          base = pr["base"]["sha"]
+          _, commit = request("GET", f"{api}/git/commits/{head}")
+          tree = commit["tree"]["sha"]
+          merge = pr.get("merge_commit_sha")
+
+          _, payload = request(
+              "GET",
+              f"{api}/actions/runs?branch={urllib.parse.quote(branch)}&per_page=100",
+          )
+          runs = payload.get("workflow_runs", [])
+          latest = {}
+          for run in runs:
+              if run.get("head_sha") != head:
+                  continue
+              workflow_id = str(run.get("workflow_id"))
+              rank = (int(run.get("run_attempt") or 0), int(run.get("id") or 0))
+              prior = latest.get(workflow_id)
+              prior_rank = (
+                  (int(prior.get("run_attempt") or 0), int(prior.get("id") or 0))
+                  if prior
+                  else (-1, -1)
+              )
+              if prior is None or rank > prior_rank:
+                  latest[workflow_id] = run
+
+          rerunnable = {
+              "failure",
+              "cancelled",
+              "timed_out",
+              "startup_failure",
+              "stale",
+              "action_required",
+          }
+          rerun = []
+          for run in latest.values():
+              if run.get("status") == "completed" and run.get("conclusion") in rerunnable:
+                  request(
+                      "POST",
+                      f"{api}/actions/runs/{run['id']}/rerun-failed-jobs",
+                      {},
+                      accepted=(201, 202),
+                  )
+                  rerun.append(run["id"])
+
+          # Cancel only obsolete, still-running executions on the same product branch.
+          cancelled = []
+          for run in runs:
+              if run.get("head_sha") == head or run.get("head_branch") != branch:
+                  continue
+              if run.get("status") not in {"queued", "in_progress", "pending", "waiting", "requested"}:
+                  continue
+              try:
+                  request(
+                      "POST",
+                      f"{api}/actions/runs/{run['id']}/cancel",
+                      {},
+                      accepted=(202,),
+                  )
+                  cancelled.append(run["id"])
+              except RuntimeError:
+                  # A run may have become terminal after the listing; that is not a bypass.
+                  pass
+
+          marker_start = "<!-- TRNM-EXACT-CANDIDATE:START -->"
+          marker_end = "<!-- TRNM-EXACT-CANDIDATE:END -->"
+          managed = "\n".join(
+              [
+                  marker_start,
+                  "## Live exact-candidate binding",
+                  "",
+                  f"- base commit: `{base}`",
+                  f"- head commit: `{head}`",
+                  f"- head tree: `{tree}`",
+                  f"- GitHub prospective merge: `{merge}`",
+                  f"- latest exact-head workflow families observed: `{len(latest)}`",
+                  f"- eligible failed runs requested for bounded rerun: `{len(rerun)}`",
+                  "",
+                  "```text",
+                  "accepted_evidence=false",
+                  "gap_closed=false",
+                  "production_ready=false",
+                  "public_online=false",
+                  "nakama_retired=false",
+                  "```",
+                  marker_end,
+              ]
+          )
+          body = pr.get("body") or ""
+          if marker_start in body and marker_end in body:
+              before = body.split(marker_start, 1)[0].rstrip()
+              after = body.split(marker_end, 1)[1].lstrip()
+              body = before + "\n\n" + managed + ("\n\n" + after if after else "")
+          else:
+              body = body.rstrip() + "\n\n" + managed + "\n"
+          request("PATCH", f"{api}/pulls/{pr_number}", {"body": body, "draft": True})
+
+          # Review request is routing only and never counted as approval.
+          try:
+              request(
+                  "POST",
+                  f"{api}/pulls/{pr_number}/requested_reviewers",
+                  {"reviewers": ["Tomasrgbsf"]},
+                  accepted=(201,),
+              )
+          except RuntimeError:
+              pass
+
+          summary = {
+              "base": base,
+              "head": head,
+              "tree": tree,
+              "prospective_merge": merge,
+              "workflow_families": len(latest),
+              "rerun_requested": rerun,
+              "obsolete_nonterminal_cancelled": cancelled,
+              "draft_preserved": True,
+              "merge_attempted": False,
+              "gap_promoted": False,
+          }
+          print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+          PY
