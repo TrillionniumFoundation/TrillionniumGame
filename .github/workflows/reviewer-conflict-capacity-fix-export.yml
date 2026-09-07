@@ -83,10 +83,14 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/full-python.log"
           grep -Eq '^Ran [1-9][0-9]* tests in ' "$RUNNER_TEMP/full-python.log"
           grep -qx OK "$RUNNER_TEMP/full-python.log"
-          test -z "$(git status --porcelain --untracked-files=no)" || {
-            git status --short
-            exit 1
-          }
+          expected=$(cat <<'EOF'
+          docs/review/INDEPENDENT_REVIEW_MATRIX.json
+          scripts/check-independent-review-matrix.py
+          tests/control_plane/test_independent_review_matrix.py
+          EOF
+          )
+          test "$(git diff --name-only | LC_ALL=C sort)" = "$expected"
+          git diff --check
 
       - name: Publish exact tested source candidate
         shell: bash
