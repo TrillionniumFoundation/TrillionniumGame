@@ -1,0 +1,210 @@
+name: main-protection-reconcile-v3
+
+on:
+  push:
+    branches: [tooling/governance-readback-v2-2026-09-07]
+    paths:
+      - '.github/workflows/main-protection-reconcile-v3.yml'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  reconcile-readback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      ADMIN_TOKEN: ${{ secrets.TRNM_GITHUB_ADMIN_TOKEN || secrets.TRNM_GITHUB_GOVERNANCE_TOKEN || secrets.GH_ADMIN_TOKEN }}
+      TARGET_HEAD: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Monotonically strengthen main and verify the server state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ADMIN_TOKEN" || { echo 'administration token unavailable' >&2; exit 78; }
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json, os, urllib.error, urllib.request
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          api = f'https://api.github.com/repos/{repository}'
+          token = os.environ['ADMIN_TOKEN']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'trillionnium-main-protection-reconcile-v3',
+          }
+
+          def call(url, method='GET', body=None):
+              data = None if body is None else json.dumps(body, separators=(',', ':')).encode('utf-8')
+              request = urllib.request.Request(url, data=data, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      raw = response.read()
+                      return response.status, json.loads(raw.decode('utf-8')) if raw else None
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  try:
+                      value = json.loads(raw.decode('utf-8')) if raw else None
+                  except Exception:
+                      value = {'message': raw.decode('utf-8', errors='replace')[:2000]}
+                  return error.code, value
+
+          url = api + '/branches/main/protection'
+          code, before = call(url)
+          if code != 200 or not isinstance(before, dict):
+              raise SystemExit(f'cannot read existing main protection: HTTP {code} {before}')
+
+          current_checks = before.get('required_status_checks') or {}
+          contexts = set(current_checks.get('contexts') or [])
+          contexts.update(
+              row.get('context') for row in current_checks.get('checks') or []
+              if isinstance(row, dict) and isinstance(row.get('context'), str)
+          )
+          contexts.add('trillionnium-game-merge-gate')
+          current_reviews = before.get('required_pull_request_reviews') or {}
+          required_count = max(1, int(current_reviews.get('required_approving_review_count') or 0))
+
+          restrictions = before.get('restrictions')
+          restrictions_payload = None
+          if isinstance(restrictions, dict):
+              restrictions_payload = {
+                  'users': sorted({str(row.get('login')) for row in restrictions.get('users') or [] if row.get('login')}),
+                  'teams': sorted({str(row.get('slug')) for row in restrictions.get('teams') or [] if row.get('slug')}),
+                  'apps': sorted({str(row.get('slug')) for row in restrictions.get('apps') or [] if row.get('slug')}),
+              }
+
+          dismissal = current_reviews.get('dismissal_restrictions')
+          dismissal_payload = None
+          if isinstance(dismissal, dict):
+              dismissal_payload = {
+                  'users': sorted({str(row.get('login')) for row in dismissal.get('users') or [] if row.get('login')}),
+                  'teams': sorted({str(row.get('slug')) for row in dismissal.get('teams') or [] if row.get('slug')}),
+                  'apps': sorted({str(row.get('slug')) for row in dismissal.get('apps') or [] if row.get('slug')}),
+              }
+
+          bypass = current_reviews.get('bypass_pull_request_allowances')
+          bypass_payload = None
+          if isinstance(bypass, dict):
+              # Never create a new bypass actor. Preserve a non-empty existing list only so the mutation is not destructive;
+              # a later independent governance decision must explicitly remove any legacy bypass.
+              bypass_payload = {
+                  'users': sorted({str(row.get('login')) for row in bypass.get('users') or [] if row.get('login')}),
+                  'teams': sorted({str(row.get('slug')) for row in bypass.get('teams') or [] if row.get('slug')}),
+                  'apps': sorted({str(row.get('slug')) for row in bypass.get('apps') or [] if row.get('slug')}),
+              }
+
+          payload = {
+              'required_status_checks': {'strict': True, 'contexts': sorted(contexts)},
+              'enforce_admins': True,
+              'required_pull_request_reviews': {
+                  'dismissal_restrictions': dismissal_payload,
+                  'dismiss_stale_reviews': True,
+                  'require_code_owner_reviews': True,
+                  'required_approving_review_count': required_count,
+                  'require_last_push_approval': True,
+                  'bypass_pull_request_allowances': bypass_payload,
+              },
+              'restrictions': restrictions_payload,
+              'required_linear_history': True,
+              'allow_force_pushes': False,
+              'allow_deletions': False,
+              'block_creations': bool((before.get('block_creations') or {}).get('enabled')),
+              'required_conversation_resolution': True,
+              'lock_branch': bool((before.get('lock_branch') or {}).get('enabled')),
+              'allow_fork_syncing': bool((before.get('allow_fork_syncing') or {}).get('enabled')),
+          }
+          pcode, applied = call(url, method='PUT', body=payload)
+          if pcode != 200 or not isinstance(applied, dict):
+              raise SystemExit(f'protection update failed: HTTP {pcode} {applied}')
+          rcode, after = call(url)
+          if rcode != 200 or not isinstance(after, dict):
+              raise SystemExit(f'protection readback failed: HTTP {rcode}')
+
+          checks = after.get('required_status_checks') or {}
+          observed_contexts = set(checks.get('contexts') or [])
+          observed_contexts.update(
+              row.get('context') for row in checks.get('checks') or []
+              if isinstance(row, dict) and isinstance(row.get('context'), str)
+          )
+          reviews = after.get('required_pull_request_reviews') or {}
+          observed_bypass = reviews.get('bypass_pull_request_allowances') or {}
+          bypass_count = sum(len(observed_bypass.get(key) or []) for key in ('users', 'teams', 'apps'))
+          evaluation = {
+              'strict_status_checks': checks.get('strict') is True,
+              'aggregate_gate_required': 'trillionnium-game-merge-gate' in observed_contexts,
+              'administrator_enforcement': bool((after.get('enforce_admins') or {}).get('enabled')),
+              'dismiss_stale_reviews': reviews.get('dismiss_stale_reviews') is True,
+              'require_code_owner_reviews': reviews.get('require_code_owner_reviews') is True,
+              'required_approving_review_count': int(reviews.get('required_approving_review_count') or 0),
+              'require_last_push_approval': reviews.get('require_last_push_approval') is True,
+              'require_conversation_resolution': bool((after.get('required_conversation_resolution') or {}).get('enabled')),
+              'required_linear_history': bool((after.get('required_linear_history') or {}).get('enabled')),
+              'allow_force_pushes': bool((after.get('allow_force_pushes') or {}).get('enabled')),
+              'allow_deletions': bool((after.get('allow_deletions') or {}).get('enabled')),
+              'bypass_actor_count': bypass_count,
+          }
+          minimum = (
+              evaluation['strict_status_checks']
+              and evaluation['aggregate_gate_required']
+              and evaluation['administrator_enforcement']
+              and evaluation['dismiss_stale_reviews']
+              and evaluation['require_code_owner_reviews']
+              and evaluation['required_approving_review_count'] >= 1
+              and evaluation['require_last_push_approval']
+              and evaluation['require_conversation_resolution']
+              and evaluation['required_linear_history']
+              and not evaluation['allow_force_pushes']
+              and not evaluation['allow_deletions']
+              and evaluation['bypass_actor_count'] == 0
+          )
+          packet = {
+              'schema': 'trillionnium.main-protection-reconciliation.v3',
+              'repository': repository,
+              'target_head': os.environ['TARGET_HEAD'],
+              'producer': {
+                  'workflow_repository': os.environ.get('GITHUB_REPOSITORY'),
+                  'workflow_sha': os.environ.get('GITHUB_SHA'),
+                  'run_id': os.environ.get('GITHUB_RUN_ID'),
+                  'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+              },
+              'before': before,
+              'requested': payload,
+              'after': after,
+              'evaluation': evaluation,
+              'claims': {
+                  'configuration_matches_required_minimum': minimum,
+                  'independently_accepted': False,
+                  'gap_closed': False,
+                  'production_ready': False,
+              },
+          }
+          marker = '<!-- TRNM-MAIN-PROTECTION-RECONCILE-V3 -->'
+          body = '\n'.join([
+              marker,
+              '## Main protection reconciliation v3',
+              '',
+              f"- target candidate head: `{os.environ['TARGET_HEAD']}`",
+              f"- strict aggregate/admin/CODEOWNER/latest-push/conversation/linear: `{evaluation['strict_status_checks']}` / `{evaluation['aggregate_gate_required']}` / `{evaluation['administrator_enforcement']}` / `{evaluation['require_code_owner_reviews']}` / `{evaluation['require_last_push_approval']}` / `{evaluation['require_conversation_resolution']}` / `{evaluation['required_linear_history']}`",
+              f"- approvals required: `{evaluation['required_approving_review_count']}`",
+              f"- force push/deletion allowed: `{evaluation['allow_force_pushes']}` / `{evaluation['allow_deletions']}`",
+              f"- bypass actors: `{evaluation['bypass_actor_count']}`",
+              f"- required minimum matched after server readback: `{str(minimum).lower()}`",
+              '',
+              'This is an administrator mutation/readback record, not independent governance acceptance. No merge, bypass, gap, compatibility, production, cutover or retirement credit is granted.',
+              '',
+              '```json', json.dumps(packet, indent=2, sort_keys=True), '```',
+          ])
+          observer_headers = dict(headers)
+          observer_headers['Authorization'] = f"Bearer {os.environ['GH_TOKEN']}"
+          data = json.dumps({'body': body}).encode('utf-8')
+          request = urllib.request.Request(api + '/issues/7/comments', data=data, method='POST', headers=observer_headers)
+          with urllib.request.urlopen(request, timeout=30):
+              pass
+          print(json.dumps({'evaluation': evaluation, 'minimum': minimum}, sort_keys=True))
+          if not minimum:
+              raise SystemExit('effective protection does not meet the Plan minimum')
+          PY
