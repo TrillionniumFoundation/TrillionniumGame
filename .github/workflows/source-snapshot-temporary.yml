@@ -1,0 +1,46 @@
+name: Temporary Exact Source Snapshot
+
+on:
+  push:
+    branches:
+      - tooling/rust-ledger-snapshot-20260907
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    name: source-snapshot-temporary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact pushed commit without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify and archive exact public source
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --check
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
+          archive="$RUNNER_TEMP/TrillionniumGame-${EXPECTED_SHA}.tar.gz"
+          tar --exclude=.git --exclude=.github/workflows/source-snapshot-temporary.yml -czf "$archive" .
+          sha256sum "$archive" > "$archive.sha256"
+
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: TrillionniumGame-source-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/TrillionniumGame-${{ github.sha }}.tar.gz
+            ${{ runner.temp }}/TrillionniumGame-${{ github.sha }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
