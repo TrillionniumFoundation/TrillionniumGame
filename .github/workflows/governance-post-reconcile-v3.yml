@@ -1,0 +1,155 @@
+name: governance-post-reconcile-v3
+
+on:
+  push:
+    branches: [tooling/governance-readback-v2-2026-09-07]
+    paths:
+      - '.github/workflows/governance-post-reconcile-v3.yml'
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  sequence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_HEAD: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+    steps:
+      - name: Reconcile dependent governance runs in a deterministic order
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json, os, time, urllib.error, urllib.parse, urllib.request
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          api = f'https://api.github.com/repos/{repository}'
+          token = os.environ['GH_TOKEN']
+          branch = 'tooling/governance-readback-v2-2026-09-07'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'trillionnium-governance-post-reconcile-v3',
+          }
+
+          def call(url, method='GET', body=None):
+              data = None if body is None else json.dumps(body).encode('utf-8')
+              request = urllib.request.Request(url, data=data, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      raw = response.read()
+                      return response.status, json.loads(raw.decode('utf-8')) if raw else None
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  try:
+                      value = json.loads(raw.decode('utf-8')) if raw else None
+                  except Exception:
+                      value = {'message': raw.decode('utf-8', errors='replace')[:2000]}
+                  return error.code, value
+
+          def latest(name: str):
+              code, payload = call(api + '/actions/runs?branch=' + urllib.parse.quote(branch) + '&per_page=100')
+              if code != 200 or not isinstance(payload, dict):
+                  raise RuntimeError(f'cannot read runs: HTTP {code}')
+              rows = [row for row in payload.get('workflow_runs', []) if row.get('name') == name]
+              rows.sort(key=lambda row: (int(row.get('run_attempt') or 0), int(row.get('id') or 0)), reverse=True)
+              return rows[0] if rows else None
+
+          def wait_terminal(name: str, timeout_seconds=900):
+              deadline = time.monotonic() + timeout_seconds
+              while time.monotonic() < deadline:
+                  row = latest(name)
+                  if row and row.get('status') == 'completed':
+                      return row
+                  time.sleep(5)
+              raise RuntimeError(f'{name} did not reach terminal state')
+
+          def rerun_if_failed(name: str):
+              row = wait_terminal(name)
+              if row.get('conclusion') == 'success':
+                  return row, False
+              code, body = call(api + f"/actions/runs/{row['id']}/rerun", method='POST')
+              if code not in (201, 202):
+                  raise RuntimeError(f'cannot rerun {name}: HTTP {code} {body}')
+              old_attempt = int(row.get('run_attempt') or 0)
+              deadline = time.monotonic() + 1200
+              while time.monotonic() < deadline:
+                  candidate = latest(name)
+                  if candidate and (
+                      int(candidate.get('run_attempt') or 0) > old_attempt
+                      or int(candidate.get('id') or 0) != int(row.get('id') or 0)
+                  ) and candidate.get('status') == 'completed':
+                      return candidate, True
+                  time.sleep(5)
+              raise RuntimeError(f'rerun for {name} did not settle')
+
+          reconcile = wait_terminal('main-protection-reconcile-v3')
+          sequence = []
+          if reconcile.get('conclusion') != 'success':
+              packet = {
+                  'schema': 'trillionnium.governance-post-reconcile.v3',
+                  'target_head': os.environ['TARGET_HEAD'],
+                  'reconcile': {
+                      'id': reconcile.get('id'), 'attempt': reconcile.get('run_attempt'),
+                      'conclusion': reconcile.get('conclusion'),
+                  },
+                  'sequence': [],
+                  'claims': {'gap_closed': False, 'production_ready': False},
+              }
+          else:
+              for name in [
+                  'governance-readback-v2',
+                  'governance-readback-report',
+                  'reviewer-capacity-discovery-v2',
+                  'specialist-review-handoff-v2',
+                  'governance-closure-settle-v2',
+              ]:
+                  row, rerun = rerun_if_failed(name)
+                  sequence.append({
+                      'name': name, 'id': row.get('id'), 'attempt': row.get('run_attempt'),
+                      'status': row.get('status'), 'conclusion': row.get('conclusion'),
+                      'rerun_requested': rerun,
+                  })
+              packet = {
+                  'schema': 'trillionnium.governance-post-reconcile.v3',
+                  'target_head': os.environ['TARGET_HEAD'],
+                  'reconcile': {
+                      'id': reconcile.get('id'), 'attempt': reconcile.get('run_attempt'),
+                      'conclusion': reconcile.get('conclusion'),
+                  },
+                  'sequence': sequence,
+                  'claims': {
+                      'all_sequence_success': all(row['conclusion'] == 'success' for row in sequence),
+                      'independently_accepted': False,
+                      'gap_closed': False,
+                      'production_ready': False,
+                  },
+              }
+
+          marker = '<!-- TRNM-GOVERNANCE-POST-RECONCILE-V3 -->'
+          body = '\n'.join([
+              marker,
+              '## Governance post-reconcile sequence v3',
+              '',
+              f"- exact product head: `{os.environ['TARGET_HEAD']}`",
+              f"- protection reconcile: run `{reconcile.get('id')}` attempt `{reconcile.get('run_attempt')}` / `{reconcile.get('conclusion')}`",
+              '',
+              '```json', json.dumps(packet, indent=2, sort_keys=True), '```',
+              '',
+              'This sequence only retries failed current-tooling evidence runs after successful protection reconciliation. It does not change the product head, approve, merge, bypass, close a gap, deploy, cut over or retire Nakama.',
+          ])
+          call(api + '/issues/7/comments', method='POST', body={'body': body})
+          call(api + '/issues/63/comments', method='POST', body={'body': body})
+          print(json.dumps(packet, sort_keys=True))
+          if reconcile.get('conclusion') != 'success':
+              raise SystemExit('protection reconciliation is not successful')
+          if not all(row['conclusion'] == 'success' for row in sequence):
+              raise SystemExit('one or more governance evidence runs remain unsuccessful')
+          PY
