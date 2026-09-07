@@ -75,7 +75,7 @@ jobs:
                   value = json.load(response)
               if value.get('encoding') != 'base64' or value.get('sha') != sha:
                   raise SystemExit(f'blob identity mismatch: {sha}')
-              return base64.b64decode(value['content'], validate=True)
+              return base64.b64decode(''.join(value['content'].split()), validate=True)
 
           Path('docs/review/INDEPENDENT_REVIEW_MATRIX.json').write_bytes(
               gzip.decompress(blob(os.environ['MATRIX_GZIP_BLOB']))
