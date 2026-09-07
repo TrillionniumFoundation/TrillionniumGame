@@ -1,0 +1,216 @@
+name: aws-kms-hmac-live-evidence
+
+on:
+  push:
+    branches: [tooling/gap-closure-audit-2026-09-07]
+    paths:
+      - '.github/workflows/aws-kms-hmac-live-evidence.yml'
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TARGET_REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      TARGET_HEAD: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+      TARGET_TREE: 9d3ae2fadb2684f095855ecf16307376b55a440f
+      TARGET_MERGE: 6965f95d03031156edc92cc862bd979ff87e9edb
+      AWS_ROLE_ARN: ${{ secrets.TRNM_AWS_KMS_ROLE_ARN }}
+      AWS_REGION: ${{ secrets.TRNM_AWS_REGION }}
+      ACCESS_CURRENT: ${{ secrets.TRNM_AWS_KMS_ACCESS_CURRENT_KEY_ID }}
+      ACCESS_PREVIOUS: ${{ secrets.TRNM_AWS_KMS_ACCESS_PREVIOUS_KEY_ID }}
+      REFRESH_CURRENT: ${{ secrets.TRNM_AWS_KMS_REFRESH_CURRENT_KEY_ID }}
+      AUTHORITY_CURRENT: ${{ secrets.TRNM_AWS_KMS_AUTHORITY_CURRENT_KEY_ID }}
+      REVOKED_KEY: ${{ secrets.TRNM_AWS_KMS_REVOKED_KEY_ID }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Require independently administered provider configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in AWS_ROLE_ARN AWS_REGION ACCESS_CURRENT ACCESS_PREVIOUS REFRESH_CURRENT AUTHORITY_CURRENT REVOKED_KEY; do
+            test -n "${!name}" || { echo "missing required provider configuration: $name" >&2; exit 78; }
+          done
+          test "$ACCESS_CURRENT" != "$ACCESS_PREVIOUS"
+          test "$ACCESS_CURRENT" != "$REFRESH_CURRENT"
+          test "$ACCESS_CURRENT" != "$AUTHORITY_CURRENT"
+          test "$REFRESH_CURRENT" != "$AUTHORITY_CURRENT"
+          test "$REVOKED_KEY" != "$ACCESS_CURRENT"
+          test "$REVOKED_KEY" != "$ACCESS_PREVIOUS"
+          test "$REVOKED_KEY" != "$REFRESH_CURRENT"
+          test "$REVOKED_KEY" != "$AUTHORITY_CURRENT"
+
+      - name: Exchange GitHub OIDC token for bounded AWS role
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v aws >/dev/null
+          command -v jq >/dev/null
+          response=$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+          token=$(printf '%s' "$response" | jq -er '.value')
+          test -n "$token"
+          credentials=$(aws sts assume-role-with-web-identity \
+            --role-arn "$AWS_ROLE_ARN" \
+            --role-session-name "trnm-plan-v31-${GITHUB_RUN_ID}" \
+            --web-identity-token "$token" \
+            --duration-seconds 900 \
+            --region "$AWS_REGION" \
+            --output json)
+          {
+            printf 'AWS_ACCESS_KEY_ID=%s\n' "$(printf '%s' "$credentials" | jq -er '.Credentials.AccessKeyId')"
+            printf 'AWS_SECRET_ACCESS_KEY=%s\n' "$(printf '%s' "$credentials" | jq -er '.Credentials.SecretAccessKey')"
+            printf 'AWS_SESSION_TOKEN=%s\n' "$(printf '%s' "$credentials" | jq -er '.Credentials.SessionToken')"
+          } >> "$GITHUB_ENV"
+          unset token credentials response
+
+      - name: Exercise non-exportable domain and epoch keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p run/kms-live
+          python3 - <<'PY' > run/kms-live/messages.json
+          import base64, hashlib, json, os
+          values={
+            'access-current':b'trnm-access-current:'+os.environ['TARGET_HEAD'].encode(),
+            'access-previous':b'trnm-access-previous:'+os.environ['TARGET_HEAD'].encode(),
+            'refresh-current':b'trnm-refresh-current:'+os.environ['TARGET_HEAD'].encode(),
+            'authority-current':b'trnm-authority-current:'+os.environ['TARGET_HEAD'].encode(),
+          }
+          print(json.dumps({
+            name:{'base64':base64.b64encode(value).decode(),'sha256':hashlib.sha256(value).hexdigest()}
+            for name,value in values.items()
+          },sort_keys=True,separators=(',',':')))
+          PY
+          declare -A keys=(
+            [access-current]="$ACCESS_CURRENT"
+            [access-previous]="$ACCESS_PREVIOUS"
+            [refresh-current]="$REFRESH_CURRENT"
+            [authority-current]="$AUTHORITY_CURRENT"
+          )
+          : > run/kms-live/results.jsonl
+          for domain in access-current access-previous refresh-current authority-current; do
+            key=${keys[$domain]}
+            message=$(jq -r --arg domain "$domain" '.[$domain].base64' run/kms-live/messages.json)
+            aws kms describe-key --key-id "$key" --region "$AWS_REGION" --output json \
+              > "$RUNNER_TEMP/$domain.describe.json"
+            jq -e '.KeyMetadata.Enabled == true and .KeyMetadata.KeyUsage == "GENERATE_VERIFY_MAC" and (.KeyMetadata.MacAlgorithms | index("HMAC_SHA_256")) != null' \
+              "$RUNNER_TEMP/$domain.describe.json" >/dev/null
+            mac=$(aws kms generate-mac --key-id "$key" --mac-algorithm HMAC_SHA_256 \
+              --message "$message" --region "$AWS_REGION" --output json | jq -er '.Mac')
+            aws kms verify-mac --key-id "$key" --mac-algorithm HMAC_SHA_256 \
+              --message "$message" --mac "$mac" --region "$AWS_REGION" --output json \
+              | jq -e '.MacValid == true' >/dev/null
+            wrong=$(printf '%s' "$message" | base64 -d | sed 's/$/x/' | base64 -w0)
+            set +e
+            invalid=$(aws kms verify-mac --key-id "$key" --mac-algorithm HMAC_SHA_256 \
+              --message "$wrong" --mac "$mac" --region "$AWS_REGION" --output json 2>&1)
+            status=$?
+            set -e
+            test "$status" -ne 0 || printf '%s' "$invalid" | jq -e '.MacValid == false' >/dev/null
+            jq -n \
+              --arg domain "$domain" \
+              --arg key_arn "$(jq -er '.KeyMetadata.Arn' "$RUNNER_TEMP/$domain.describe.json")" \
+              --arg key_id "$(jq -er '.KeyMetadata.KeyId' "$RUNNER_TEMP/$domain.describe.json")" \
+              --arg message_sha256 "$(jq -r --arg domain "$domain" '.[$domain].sha256' run/kms-live/messages.json)" \
+              '{domain:$domain,key_arn_sha256:($key_arn|@base64),key_id_sha256:($key_id|@base64),message_sha256:$message_sha256,valid_mac:true,wrong_message_rejected:true}' \
+              >> run/kms-live/results.jsonl
+            unset mac message wrong invalid key
+          done
+
+          aws kms describe-key --key-id "$REVOKED_KEY" --region "$AWS_REGION" --output json \
+            > "$RUNNER_TEMP/revoked.describe.json"
+          jq -e '.KeyMetadata.Enabled == false or .KeyMetadata.KeyState != "Enabled"' \
+            "$RUNNER_TEMP/revoked.describe.json" >/dev/null
+          test "$(wc -l < run/kms-live/results.jsonl | tr -d ' ')" -eq 4
+
+      - name: Build and seal provider packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path('run/kms-live')
+          rows=[json.loads(line) for line in (root/'results.jsonl').read_text().splitlines()]
+          # Replace base64-encoded key identifiers with one-way digests before retention.
+          for row in rows:
+              row['key_arn_sha256']=hashlib.sha256(row['key_arn_sha256'].encode()).hexdigest()
+              row['key_id_sha256']=hashlib.sha256(row['key_id_sha256'].encode()).hexdigest()
+          packet={
+            'schema':'trillionnium.aws-kms-hmac-live-evidence.v1',
+            'repository':os.environ['TARGET_REPOSITORY'],
+            'head':os.environ['TARGET_HEAD'],
+            'tree':os.environ['TARGET_TREE'],
+            'prospective_merge':os.environ['TARGET_MERGE'],
+            'aws_region':os.environ['AWS_REGION'],
+            'domains':rows,
+            'revoked_key_non_enabled':True,
+            'claims':{'accepted_evidence':False,'gap_closed':False,'production_ready':False},
+            'limitations':[
+              'The packet exercises AWS KMS HMAC operations through OIDC without exporting key material.',
+              'It does not rotate aliases, destroy a production key, prove multi-region convergence, or independently accept the provider integration.',
+              'Key identifiers are retained only as one-way digests.',
+            ],
+          }
+          (root/'packet.json').write_text(json.dumps(packet,sort_keys=True,separators=(',',':'))+'\n')
+          (root/'messages.json').unlink()
+          (root/'results.jsonl').unlink()
+          PY
+          (
+            cd run/kms-live
+            find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf run/aws-kms-hmac-live-${TARGET_HEAD}.tar.gz -C run/kms-live .
+
+      - name: Fetch exact source for uploader
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin \
+            "https://github.com/${TARGET_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin "$TARGET_HEAD"
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+
+      - name: Retain KMS provider packet
+        id: retained
+        uses: ./source/.github/actions/upload-evidence
+        with:
+          name: aws-kms-hmac-live-${{ env.TARGET_HEAD }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/aws-kms-hmac-live-${{ env.TARGET_HEAD }}.tar.gz
+          mime_type: application/gzip
+
+      - name: Publish security-review handoff
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.retained.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.retained.outputs.sha256 }}
+          ARTIFACT_SIZE: ${{ steps.retained.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_ID"; test -n "$ARTIFACT_SHA256"; test "$ARTIFACT_SIZE" -gt 0
+          body=$(cat <<EOF
+          ## Current-head AWS KMS HMAC evidence candidate
+
+          Head: \`$TARGET_HEAD\` / tree \`$TARGET_TREE\` / merge \`$TARGET_MERGE\`  
+          Run: \`$GITHUB_RUN_ID\` / artifact \`$ARTIFACT_ID\` / \`$ARTIFACT_SHA256\` / \`$ARTIFACT_SIZE\` bytes
+
+          The packet used GitHub OIDC and non-exportable AWS KMS HMAC keys for domain-separated current/previous epochs, correct/wrong-message verification, and a disabled/revoked-key assertion. Key identifiers are retained only as one-way digests. Alias rotation, destruction, multi-region convergence and independent acceptance remain outside this packet.
+          EOF
+          )
+          curl --fail-with-body --silent --show-error -X POST \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$TARGET_REPOSITORY/issues/35/comments" \
+            -d "$(jq -n --arg body "$body" '{body:$body}')" >/dev/null
