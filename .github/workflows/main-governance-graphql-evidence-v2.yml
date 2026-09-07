@@ -1,0 +1,163 @@
+name: main-governance-graphql-evidence-v2
+
+on:
+  push:
+    branches:
+      - tooling/gap-closure-audit-2026-09-07
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: main-governance-graphql-evidence-v2
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Capture conservative GraphQL governance readback
+        id: collect
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"; owner="${repo%/*}"; name="${repo#*/}"
+          packet="$RUNNER_TEMP/main-governance-graphql-v2"
+          mkdir -p "$packet"
+          set +e
+          gh api graphql -f owner="$owner" -f name="$name" \
+            -f query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id nameWithOwner defaultBranchRef{name target{... on Commit{oid}}} branchProtectionRules(first:100){totalCount nodes{id pattern allowsDeletions allowsForcePushes dismissesStaleReviews isAdminEnforced requiredApprovingReviewCount requiredStatusCheckContexts requiresApprovingReviews requiresCodeOwnerReviews requiresCommitSignatures requiresConversationResolution requiresLinearHistory requiresStatusChecks requiresStrictStatusChecks restrictsPushes restrictsReviewDismissals bypassForcePushAllowances(first:100){totalCount nodes{actor{__typename ... on User{login} ... on Team{slug organization{login}} ... on App{slug}}}} bypassPullRequestAllowances(first:100){totalCount nodes{actor{__typename ... on User{login} ... on Team{slug organization{login}} ... on App{slug}}}} pushAllowances(first:100){totalCount nodes{actor{__typename ... on User{login} ... on Team{slug organization{login}} ... on App{slug}}}} reviewDismissalAllowances(first:100){totalCount nodes{actor{__typename ... on User{login} ... on Team{slug organization{login}} ... on App{slug}}}}}}}}' \
+            > "$packet/branch-protection.json" 2> "$packet/branch-protection.stderr"
+          protection_exit=$?
+          gh api graphql -f owner="$owner" -f name="$name" -F pr63=63 -F pr93=93 \
+            -f query='query($owner:String!,$name:String!,$pr63:Int!,$pr93:Int!){repository(owner:$owner,name:$name){pull63:pullRequest(number:$pr63){id number state isDraft mergeable mergeStateStatus reviewDecision baseRefName baseRefOid headRefName headRefOid reviewThreads(first:100){totalCount nodes{id isResolved isOutdated path line comments(first:20){totalCount nodes{author{login} body createdAt}}}} reviews(first:100){totalCount nodes{author{login} state submittedAt commit{oid}}}} pull93:pullRequest(number:$pr93){id number state isDraft mergeable mergeStateStatus reviewDecision baseRefName baseRefOid headRefName headRefOid reviewThreads(first:100){totalCount nodes{id isResolved isOutdated path line comments(first:20){totalCount nodes{author{login} body createdAt}}}} reviews(first:100){totalCount nodes{author{login} state submittedAt commit{oid}}}}}}}' \
+            > "$packet/review-topology.json" 2> "$packet/review-topology.stderr"
+          topology_exit=$?
+          set -e
+          printf '%s\n' "$protection_exit" > "$packet/branch-protection.exit-status"
+          printf '%s\n' "$topology_exit" > "$packet/review-topology.exit-status"
+          gh api "repos/$repo/branches/main" > "$packet/main-branch-summary.json"
+          gh api "repos/$repo/pulls/93" > "$packet/pr93.json"
+          head=$(jq -r .head.sha "$packet/pr93.json")
+          base=$(jq -r .base.sha "$packet/pr93.json")
+          merge=$(jq -r .merge_commit_sha "$packet/pr93.json")
+          printf 'head=%s\nbase=%s\nmerge=%s\n' "$head" "$base" "$merge" >> "$GITHUB_OUTPUT"
+
+          for ref in main "$head"; do
+            safe=$(tr '/:' '__' <<<"$ref")
+            for path in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
+              target="$packet/codeowners-$safe-$(tr '/' '_' <<<"$path")"
+              status=$(curl -sS -o "$target" -w '%{http_code}' \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H 'Accept: application/vnd.github.raw+json' \
+                "https://api.github.com/repos/$repo/contents/$path?ref=$ref")
+              printf '%s\n' "$status" > "$target.http-status"
+            done
+          done
+
+          python3 - "$packet" "$repo" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+          packet=Path(sys.argv[1]); repo=sys.argv[2]
+          def read_json(name):
+              try: return json.loads((packet/name).read_text())
+              except Exception: return None
+          protection=read_json('branch-protection.json')
+          topology=read_json('review-topology.json')
+          rules=[]
+          if protection:
+              rules=((((protection.get('data') or {}).get('repository') or {})
+                      .get('branchProtectionRules') or {}).get('nodes') or [])
+          main_rules=[r for r in rules if r.get('pattern')=='main']
+          pr_repo=((topology or {}).get('data') or {}).get('repository') or {}
+          def pr_summary(value):
+              if not value: return None
+              threads=((value.get('reviewThreads') or {}).get('nodes') or [])
+              return {
+                  'number':value.get('number'),'state':value.get('state'),
+                  'isDraft':value.get('isDraft'),'mergeable':value.get('mergeable'),
+                  'mergeStateStatus':value.get('mergeStateStatus'),
+                  'reviewDecision':value.get('reviewDecision'),
+                  'headRefOid':value.get('headRefOid'),'baseRefOid':value.get('baseRefOid'),
+                  'thread_count':len(threads),
+                  'unresolved_current_threads':sum(not t.get('isResolved') and not t.get('isOutdated') for t in threads),
+              }
+          readback={
+              'schema':'trillionnium.main-governance-graphql-readback.v2',
+              'repository':repo,
+              'branch_protection_query_exit':int((packet/'branch-protection.exit-status').read_text()),
+              'review_topology_query_exit':int((packet/'review-topology.exit-status').read_text()),
+              'main_rule_count':len(main_rules),'main_rules':main_rules,
+              'pr63':pr_summary(pr_repo.get('pull63')),
+              'pr93':pr_summary(pr_repo.get('pull93')),
+              'non_mutating_negative_observation':True,
+              'negative_enforcement_rehearsal_executed':False,
+              'independent_governance_acceptance_required':True,
+              'accepted_evidence':False,'gap_closed':False,'production_ready':False,
+          }
+          (packet/'readback.json').write_text(json.dumps(readback,indent=2,sort_keys=True)+'\n')
+          members=[]
+          for path in sorted(p for p in packet.rglob('*') if p.is_file() and p.name not in ('files.sha256','manifest.json')):
+              raw=path.read_bytes(); members.append({'path':path.relative_to(packet).as_posix(),'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()})
+          (packet/'manifest.json').write_text(json.dumps({'schema':'trillionnium.main-governance-graphql-packet.v2','repository':repo,'members':members,'accepted_evidence':False,'gap_closed':False,'production_ready':False},indent=2,sort_keys=True)+'\n')
+          PY
+          (cd "$packet" && find . -type f ! -path './files.sha256' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > files.sha256 && sha256sum --check files.sha256)
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -C "$RUNNER_TEMP" -czf "$GITHUB_WORKSPACE/main-governance-graphql-v2.tar.gz" main-governance-graphql-v2
+          sha256sum "$GITHUB_WORKSPACE/main-governance-graphql-v2.tar.gz" > "$GITHUB_WORKSPACE/main-governance-graphql-v2.tar.gz.sha256"
+          cp "$packet/readback.json" "$GITHUB_WORKSPACE/main-governance-graphql-readback-v2.json"
+
+      - name: Install exact candidate native uploader
+        shell: bash
+        env:
+          HEAD_SHA: ${{ steps.collect.outputs.head }}
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/source"
+          git -C "$RUNNER_TEMP/source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$RUNNER_TEMP/source" fetch --no-tags --depth=1 origin "$HEAD_SHA"
+          git -C "$RUNNER_TEMP/source" checkout --detach FETCH_HEAD
+          mkdir -p "$GITHUB_WORKSPACE/.github"
+          cp -a "$RUNNER_TEMP/source/.github/actions" "$GITHUB_WORKSPACE/.github/"
+
+      - name: Retain governance GraphQL candidate
+        id: upload
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: main-governance-graphql-v2-${{ steps.collect.outputs.head }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: main-governance-graphql-v2.tar.gz
+          mime_type: application/gzip
+
+      - name: Publish locator and exact limits
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.upload.outputs.artifact_id }}'
+          digest=$(cut -d' ' -f1 main-governance-graphql-v2.tar.gz.sha256)
+          readback=$(jq -c . main-governance-graphql-readback-v2.json)
+          body=$(cat <<EOF
+          Main governance GraphQL readback v2 (read-only, exact PR #93 head \`${{ steps.collect.outputs.head }}\`):
+
+          - run: \`$GITHUB_RUN_ID\` attempt \`$GITHUB_RUN_ATTEMPT\`
+          - artifact ID: \`${{ steps.upload.outputs.artifact_id }}\`
+          - native receipt SHA-256: \`${{ steps.upload.outputs.sha256 }}\`
+          - packet SHA-256: \`$digest\`
+
+          \`\`\`json
+          $readback
+          \`\`\`
+
+          This grants no governance/gap credit without independent acceptance and does not claim a negative enforcement rehearsal was executed.
+          EOF
+          )
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/7/comments" --raw-field body="$body"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/93/comments" --raw-field body="$body"
