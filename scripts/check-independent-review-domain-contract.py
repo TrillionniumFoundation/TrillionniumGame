@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Validate the immutable candidate-specific independent-review domain contract."""
+"""Validate the immutable candidate-specific review-domain and CODEOWNERS contract."""
 from __future__ import annotations
 
+import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = ROOT / "docs/review/INDEPENDENT_REVIEW_MATRIX.json"
+CODEOWNERS_PATH = ROOT / ".github/CODEOWNERS"
 
 EXPECTED_DOMAINS: dict[str, dict[str, frozenset[str]]] = {
     "governance": {
@@ -133,9 +136,82 @@ EXPECTED_DOMAINS: dict[str, dict[str, frozenset[str]]] = {
     },
 }
 
+# This is a closed-world mapping from every protected path declaration to the
+# exact CODEOWNERS rule expected to be effective under GitHub's last-match rule.
+EXPECTED_DOMAIN_CODEOWNER_PATTERNS: dict[str, dict[str, str]] = {
+    "governance": {
+        ".github/**": "/.github/",
+        "CURRENT_PLAN.md": "/CURRENT_PLAN.md",
+        "docs/DOCUMENTATION_AUTHORITY.json": "/docs/DOCUMENTATION_AUTHORITY.json",
+        "docs/GOVERNANCE.md": "/docs/GOVERNANCE.md",
+        "docs/TESTING_AND_EVIDENCE.md": "/docs/TESTING_AND_EVIDENCE.md",
+        "docs/governance/**": "/docs/governance/",
+        "docs/review/**": "/docs/review/",
+        "docs/status/PRODUCT_GATES.json": "/docs/status/",
+        "docs/status/GAP_REGISTER.json": "/docs/status/",
+        "docs/evidence/index.json": "/docs/evidence/",
+    },
+    "database-data-integrity": {
+        "migrations/**": "/migrations/",
+        "database/**": "/database/",
+        "crates/trnm-persistence-core/**": "/crates/trnm-persistence-core/",
+        "crates/trnm-persistence-pg/**": "/crates/trnm-persistence-pg/",
+        "docs/development/SCHEMA_AUTHORITY.json": "/docs/development/SCHEMA_AUTHORITY.json",
+        "docs/ARCHITECTURE.md": "*",
+        "docs/OPERATIONS_AND_RELEASE.md": "/docs/OPERATIONS_AND_RELEASE.md",
+    },
+    "security-cryptography": {
+        "SECURITY.md": "/SECURITY.md",
+        "docs/SECURITY_AND_PRIVACY.md": "/docs/SECURITY_AND_PRIVACY.md",
+        "crates/trnm-token-core/**": "/crates/trnm-token-core/",
+        "crates/trnm-token-jwt-adapter/**": "/crates/trnm-token-jwt-adapter/",
+        "crates/trnm-token-crypto-provider/**": "/crates/trnm-token-crypto-provider/",
+        "crates/trnm-token-jwt-provider-adapter/**": "/crates/trnm-token-jwt-provider-adapter/",
+        "crates/trnm-session-core/**": "/crates/trnm-session-core/",
+    },
+    "protocol-compatibility": {
+        "contracts/**": "/contracts/",
+        "crates/trnm-canonical-core/**": "/crates/trnm-canonical-core/",
+        "crates/trnm-transport-core/**": "/crates/trnm-transport-core/",
+        "crates/trnm-realtime-wire/**": "/crates/trnm-realtime-wire/",
+        "crates/trnm-persistence-pg/src/bin/trnm-server.rs": "/crates/trnm-persistence-pg/",
+        "crates/trnm-persistence-pg/src/bin/trnm_server/**": "/crates/trnm-persistence-pg/",
+        "docs/ARCHITECTURE.md": "*",
+        "docs/COMPATIBILITY.md": "/docs/COMPATIBILITY.md",
+        "docs/TESTING_AND_EVIDENCE.md": "/docs/TESTING_AND_EVIDENCE.md",
+    },
+    "realtime-distributed-systems": {
+        "crates/trnm-presence-core/**": "/crates/trnm-presence-core/",
+        "crates/trnm-presence-router-v2/**": "/crates/trnm-presence-router-v2/",
+        "crates/trnm-realtime-wire/**": "/crates/trnm-realtime-wire/",
+        "runtime/internal/worldcommand/**": "/runtime/",
+        "runtime/internal/worldtransition/**": "/runtime/",
+        "docs/ARCHITECTURE.md": "*",
+        "docs/COMPATIBILITY.md": "/docs/COMPATIBILITY.md",
+    },
+    "operations-sre": {
+        "deploy/**": "/deploy/",
+        "compose.yaml": "/compose.yaml",
+        ".github/workflows/database-backup-restore.yml": "/.github/",
+        ".github/workflows/prospective-merge-gate.yml": "/.github/",
+        "scripts/ci-pgwire-backup-restore.sh": "*",
+        "scripts/ci-trnm-server-live.sh": "*",
+        "docs/OPERATIONS_AND_RELEASE.md": "/docs/OPERATIONS_AND_RELEASE.md",
+        "docs/TESTING_AND_EVIDENCE.md": "/docs/TESTING_AND_EVIDENCE.md",
+    },
+}
+
+# Additional independently qualified owners may be added later, but these
+# candidate-conflicted routes cannot silently disappear from the effective rule.
+REQUIRED_OWNER_LOGINS = frozenset({
+    "profhepta",
+    "franksudoman",
+    "tomasrgbsf",
+})
+
 
 class DomainContractError(RuntimeError):
-    """The review matrix changed a canonical review-domain obligation."""
+    """The review matrix or effective CODEOWNERS routing changed its contract."""
 
 
 def require(condition: bool, message: str) -> None:
@@ -180,7 +256,142 @@ def string_set(value: Any, label: str) -> frozenset[str]:
     return frozenset(value)
 
 
-def validate(path: Path = MATRIX_PATH) -> dict[str, int | bool]:
+def parse_codeowners(path: Path) -> list[tuple[str, frozenset[str], int]]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise DomainContractError(f"{path}: {error}") from error
+    rules: list[tuple[str, frozenset[str], int]] = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        require(
+            len(parts) >= 3,
+            f"CODEOWNERS line {number}: at least two owners required",
+        )
+        pattern = parts[0]
+        require(
+            not pattern.startswith("!") and "[" not in pattern and "]" not in pattern,
+            f"CODEOWNERS line {number}: unsupported pattern syntax",
+        )
+        owners = [item[1:].casefold() for item in parts[1:] if item.startswith("@")]
+        require(
+            len(owners) == len(parts) - 1 and all(owners),
+            f"CODEOWNERS line {number}: invalid owner",
+        )
+        require(
+            len(owners) == len(set(owners)),
+            f"CODEOWNERS line {number}: duplicate owner alias",
+        )
+        rules.append((pattern, frozenset(owners), number))
+    require(rules, "CODEOWNERS has no effective rules")
+    return rules
+
+
+def pattern_regex(pattern: str) -> re.Pattern[str]:
+    if pattern == "*":
+        return re.compile(r"^.*$")
+    rooted = pattern.startswith("/")
+    raw = pattern[1:] if rooted else pattern
+    if raw.endswith("/"):
+        raw += "**"
+    pieces: list[str] = []
+    offset = 0
+    while offset < len(raw):
+        token = raw[offset]
+        if token == "*":
+            if offset + 1 < len(raw) and raw[offset + 1] == "*":
+                pieces.append(".*")
+                offset += 2
+            else:
+                pieces.append("[^/]*")
+                offset += 1
+        elif token == "?":
+            pieces.append("[^/]")
+            offset += 1
+        else:
+            pieces.append(re.escape(token))
+            offset += 1
+    body = "".join(pieces)
+    if not rooted and "/" not in raw:
+        return re.compile(r"^(?:.*/)?" + body + r"$")
+    return re.compile("^" + body + "$")
+
+
+def matches(pattern: str, repository_path: str) -> bool:
+    return pattern_regex(pattern).fullmatch(repository_path) is not None
+
+
+def witnesses(protected_path: str) -> tuple[str, ...]:
+    if protected_path.endswith("/**"):
+        prefix = protected_path[:-2]
+        return (
+            prefix + "__domain_contract__",
+            prefix + "nested/__domain_contract__",
+        )
+    return (protected_path,)
+
+
+def effective_rule(
+    rules: list[tuple[str, frozenset[str], int]],
+    repository_path: str,
+) -> tuple[str, frozenset[str], int]:
+    matched = [rule for rule in rules if matches(rule[0], repository_path)]
+    require(matched, f"CODEOWNERS has no effective rule for {repository_path}")
+    return matched[-1]
+
+
+def effective_domain_owners(
+    codeowners_path: Path = CODEOWNERS_PATH,
+) -> dict[str, dict[str, frozenset[str]]]:
+    require(
+        set(EXPECTED_DOMAIN_CODEOWNER_PATTERNS) == set(EXPECTED_DOMAINS),
+        "domain-to-CODEOWNERS domain set drift",
+    )
+    rules = parse_codeowners(codeowners_path)
+    result: dict[str, dict[str, frozenset[str]]] = {}
+    for domain_id, expected in EXPECTED_DOMAINS.items():
+        mappings = EXPECTED_DOMAIN_CODEOWNER_PATTERNS[domain_id]
+        require(
+            set(mappings) == set(expected["protected_paths"]),
+            f"{domain_id}: domain-to-CODEOWNERS path set drift",
+        )
+        bound: dict[str, frozenset[str]] = {}
+        for protected_path, expected_pattern in mappings.items():
+            observed_owners: frozenset[str] | None = None
+            for witness in witnesses(protected_path):
+                pattern, owners, line = effective_rule(rules, witness)
+                require(
+                    pattern == expected_pattern,
+                    f"{domain_id}: effective CODEOWNERS pattern drift for "
+                    f"{protected_path} at witness {witness}; "
+                    f"expected={expected_pattern!r}, observed={pattern!r}, line={line}",
+                )
+                require(
+                    REQUIRED_OWNER_LOGINS <= owners,
+                    f"{domain_id}: CODEOWNERS pattern {pattern} lacks "
+                    "conflict-surviving review routes; "
+                    f"missing={sorted(REQUIRED_OWNER_LOGINS - owners)}",
+                )
+                if observed_owners is None:
+                    observed_owners = owners
+                else:
+                    require(
+                        observed_owners == owners,
+                        f"{domain_id}: CODEOWNERS owners vary inside {protected_path}",
+                    )
+            assert observed_owners is not None
+            bound[protected_path] = observed_owners
+        result[domain_id] = bound
+    return result
+
+
+def validate(
+    path: Path = MATRIX_PATH,
+    codeowners_path: Path = CODEOWNERS_PATH,
+) -> dict[str, int | bool]:
     matrix = load(path)
     require(
         matrix.get("schema") == "trillionnium.independent-review-matrix.v2",
@@ -232,18 +443,25 @@ def validate(path: Path = MATRIX_PATH) -> dict[str, int | bool]:
         summary.get("required_role_count") == role_count,
         "summary required-role count drift",
     )
+    bindings = effective_domain_owners(codeowners_path)
     return {
         "domain_contract_valid": True,
+        "codeowners_contract_valid": True,
         "domain_count": len(EXPECTED_DOMAINS),
         "required_role_count": role_count,
         "protected_path_assignments": path_count,
         "blocking_gap_assignments": gap_count,
+        "effective_codeowner_bindings": sum(len(item) for item in bindings.values()),
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--matrix", type=Path, default=MATRIX_PATH)
+    parser.add_argument("--codeowners", type=Path, default=CODEOWNERS_PATH)
+    args = parser.parse_args(argv)
     try:
-        result = validate()
+        result = validate(args.matrix, args.codeowners)
     except DomainContractError as error:
         print(f"independent review domain contract invalid: {error}", file=sys.stderr)
         return 1

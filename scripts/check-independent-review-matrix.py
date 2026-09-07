@@ -2,6 +2,8 @@
 """Validate candidate-aware reviewer routing without treating routing as acceptance."""
 from __future__ import annotations
 
+import argparse
+import importlib.util
 import json
 import re
 import sys
@@ -114,6 +116,38 @@ def load(path: Path) -> dict[str, Any]:
         raise ReviewMatrixError(f"{path}: {error}") from error
     require(isinstance(value, dict), f"{path}: root must be an object")
     return value
+
+
+def load_domain_contract_module() -> Any:
+    path = ROOT / "scripts/check-independent-review-domain-contract.py"
+    spec = importlib.util.spec_from_file_location(
+        "independent_review_domain_contract",
+        path,
+    )
+    require(
+        spec is not None and spec.loader is not None,
+        "independent review domain contract loader unavailable",
+    )
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as error:
+        raise ReviewMatrixError(
+            f"independent review domain contract import failed: {error}"
+        ) from error
+    return module
+
+
+def validate_domain_contract(
+    matrix_path: Path,
+    codeowners_path: Path,
+) -> dict[str, dict[str, frozenset[str]]]:
+    module = load_domain_contract_module()
+    try:
+        module.validate(matrix_path, codeowners_path)
+        return module.effective_domain_owners(codeowners_path)
+    except module.DomainContractError as error:
+        raise ReviewMatrixError(f"review domain contract: {error}") from error
 
 
 def timestamp(value: Any, label: str) -> datetime:
@@ -525,6 +559,7 @@ def validate(
     )
     generated_at = timestamp(matrix["generated_at"], "generated_at")
     domains_raw = matrix.get("domains")
+    domain_codeowners = validate_domain_contract(matrix_path, codeowners_path)
     domains_to_roles = domain_role_map(domains_raw)
 
     policy = matrix.get("policy")
@@ -770,13 +805,19 @@ def validate(
             if role_coverage[role]:
                 covered_role_count += 1
 
+        effective_paths = domain_codeowners[domain_id]
         for user_id in qualified_eligible:
             owner = login_key(registry[user_id]["login"])
-            for pattern in REQUIRED_CODEOWNER_PATTERNS:
-                require(
-                    owner in codeowners[pattern],
-                    f"{domain_id}: eligible reviewer {user_id} is not a CODEOWNER route",
-                )
+            missing_owner_paths = sorted(
+                path
+                for path, owners in effective_paths.items()
+                if owner not in owners
+            )
+            require(
+                not missing_owner_paths,
+                f"{domain_id}: eligible reviewer {user_id} is not a CODEOWNER "
+                f"route for {missing_owner_paths}",
+            )
 
         roles_covered = all(role_coverage[role] for role in roles)
         domain_available = len(qualified_eligible) >= minimum and roles_covered
@@ -859,6 +900,8 @@ def validate(
         ],
         "candidate_conflict_evidence_bound": True,
         "role_qualification_evidence_bound": True,
+        "domain_contract_bound": True,
+        "codeowners_last_match_bound": True,
         "all_required_reviews_available": all_available,
         "codeowners_redundant": True,
         "conflict_survivable": all_available,
@@ -872,9 +915,14 @@ def validate(
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--matrix", type=Path, default=MATRIX_PATH)
+    parser.add_argument("--gaps", type=Path, default=GAPS_PATH)
+    parser.add_argument("--codeowners", type=Path, default=CODEOWNERS_PATH)
+    args = parser.parse_args(argv)
     try:
-        result = validate()
+        result = validate(args.matrix, args.gaps, args.codeowners)
     except ReviewMatrixError as error:
         print(f"independent review matrix validation failed: {error}", file=sys.stderr)
         return 1
