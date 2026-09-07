@@ -15,6 +15,7 @@ GAPS_PATH = ROOT / "docs/status/GAP_REGISTER.json"
 CODEOWNERS_PATH = ROOT / ".github/CODEOWNERS"
 REPOSITORY = "TrillionniumFoundation/TrillionniumGame"
 LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 CONFLICT_TYPES = {
@@ -69,6 +70,14 @@ EXPECTED_CONFLICTS: dict[int, tuple[str, dict[str, tuple[tuple[str, str], ...]]]
         "administrator-mutator-under-review": (("d66c1b5b614a2a7b682c233fe2e7a19939b6976b", "protected-main-negative-rehearsal"),),
     }),
 }
+# Qualification records are accepted only after an independently reviewed source
+# change binds their exact principal, domain, role, candidate and retained evidence.
+# The current candidate has no such principal, so source truth is intentionally empty.
+# Record: (domain, role, evidence_id, artifact_sha256, candidate_head,
+#          candidate_tree, observed_at, decision, independent, self_review)
+EXPECTED_QUALIFICATIONS: dict[
+    int, tuple[str, tuple[tuple[str, str, str, str, str, str, str, str, bool, bool], ...]]
+] = {}
 
 
 class ReviewMatrixError(RuntimeError):
@@ -193,9 +202,115 @@ def evidence_rows(value: Any, label: str) -> tuple[tuple[str, str], ...]:
     return tuple(result)
 
 
-def validate_scope(scope: Any) -> dict[int, frozenset[str]]:
+def domain_role_map(domains: Any) -> dict[str, frozenset[str]]:
+    require(isinstance(domains, list) and domains, "review domains required")
+    result: dict[str, frozenset[str]] = {}
+    for index, domain in enumerate(domains):
+        label = f"domains[{index}]"
+        require(isinstance(domain, dict), f"{label}: object required")
+        domain_id = domain.get("id")
+        require(
+            isinstance(domain_id, str)
+            and IDENTIFIER.fullmatch(domain_id) is not None
+            and domain_id not in result,
+            f"{label}: invalid or duplicate domain id",
+        )
+        roles = string_list(domain.get("required_roles"), f"{domain_id}.required_roles")
+        require(
+            all(IDENTIFIER.fullmatch(role) is not None for role in roles),
+            f"{domain_id}: invalid role identifier",
+        )
+        result[domain_id] = frozenset(roles)
+    return result
+
+
+def qualification_evidence(
+    value: Any,
+    label: str,
+    *,
+    generated_at: datetime,
+) -> tuple[tuple[str, str, str, str, str, str, bool, bool], ...]:
+    require(isinstance(value, list) and value, f"{label}: evidence required")
+    result: list[tuple[str, str, str, str, str, str, bool, bool]] = []
+    required_fields = {
+        "evidence_id",
+        "artifact_sha256",
+        "candidate_head",
+        "candidate_tree",
+        "observed_at",
+        "decision",
+        "independent",
+        "self_review",
+    }
+    for index, row in enumerate(value):
+        item = f"{label}[{index}]"
+        require(
+            isinstance(row, dict) and set(row) == required_fields,
+            f"{item}: qualification evidence fields drift",
+        )
+        evidence_id = row["evidence_id"]
+        digest = row["artifact_sha256"]
+        head = row["candidate_head"]
+        tree = row["candidate_tree"]
+        observed_at = row["observed_at"]
+        require(
+            isinstance(evidence_id, str)
+            and IDENTIFIER.fullmatch(evidence_id) is not None,
+            f"{item}: evidence_id invalid",
+        )
+        require(
+            isinstance(digest, str) and SHA256.fullmatch(digest) is not None,
+            f"{item}: artifact digest invalid",
+        )
+        require(
+            head == EXPECTED_SCOPE["authorship_observed_through_head"],
+            f"{item}: candidate head mismatch",
+        )
+        require(
+            tree == EXPECTED_SCOPE["head_tree"],
+            f"{item}: candidate tree mismatch",
+        )
+        observed = timestamp(observed_at, f"{item}.observed_at")
+        require(observed <= generated_at, f"{item}: observation is from the future")
+        require(row["decision"] == "accepted", f"{item}: accepted decision required")
+        require(row["independent"] is True, f"{item}: independent=true required")
+        require(row["self_review"] is False, f"{item}: self_review=false required")
+        result.append(
+            (
+                evidence_id,
+                digest,
+                head,
+                tree,
+                observed_at,
+                row["decision"],
+                row["independent"],
+                row["self_review"],
+            )
+        )
+    require(
+        len(result) == len(set(result)),
+        f"{label}: duplicate qualification evidence",
+    )
+    return tuple(result)
+
+
+def validate_scope(
+    scope: Any,
+    *,
+    domains: dict[str, frozenset[str]],
+    generated_at: datetime,
+) -> tuple[
+    dict[int, frozenset[str]],
+    dict[int, dict[str, frozenset[str]]],
+    dict[int, str],
+]:
     require(isinstance(scope, dict), "candidate scope is required")
-    expected_fields = {*EXPECTED_SCOPE, "evidence", "conflict_principals"}
+    expected_fields = {
+        *EXPECTED_SCOPE,
+        "evidence",
+        "conflict_principals",
+        "qualification_principals",
+    }
     require(set(scope) == expected_fields, "candidate scope fields drift")
     for field, expected in EXPECTED_SCOPE.items():
         require(scope.get(field) == expected, f"candidate {field} exact binding mismatch")
@@ -223,15 +338,16 @@ def validate_scope(scope: Any) -> dict[int, frozenset[str]]:
     for field in ("workflow_run_id", "job_id", "artifact_id"):
         positive(evidence[field], f"candidate evidence {field}")
 
-    principals = scope.get("conflict_principals")
+    conflicts_raw = scope.get("conflict_principals")
     require(
-        isinstance(principals, list) and principals,
+        isinstance(conflicts_raw, list) and conflicts_raw,
         "candidate conflict principals are required",
     )
-    result: dict[int, frozenset[str]] = {}
-    logins: set[str] = set()
-    for index, principal in enumerate(principals):
-        label = f"candidate principal[{index}]"
+    conflicts: dict[int, frozenset[str]] = {}
+    principal_logins: dict[int, str] = {}
+    login_ids: dict[str, int] = {}
+    for index, principal in enumerate(conflicts_raw):
+        label = f"candidate conflict principal[{index}]"
         require(
             isinstance(principal, dict)
             and set(principal) == {"github_user_id", "login", "conflicts"},
@@ -244,13 +360,15 @@ def validate_scope(scope: Any) -> dict[int, frozenset[str]]:
             f"{label}: invalid login",
         )
         key = login_key(login)
-        require(user_id not in result, f"{label}: duplicate stable GitHub user id")
-        require(key not in logins, f"{label}: duplicate case-insensitive login")
-        logins.add(key)
-        conflicts = principal["conflicts"]
-        require(isinstance(conflicts, list) and conflicts, f"{label}: conflicts required")
+        require(user_id not in conflicts, f"{label}: duplicate stable GitHub user id")
+        require(key not in login_ids, f"{label}: duplicate case-insensitive login")
+        login_ids[key] = user_id
+        principal_logins[user_id] = login
+
+        raw_items = principal["conflicts"]
+        require(isinstance(raw_items, list) and raw_items, f"{label}: conflicts required")
         conflict_map: dict[str, tuple[tuple[str, str], ...]] = {}
-        for offset, conflict in enumerate(conflicts):
+        for offset, conflict in enumerate(raw_items):
             item = f"{label}.conflicts[{offset}]"
             require(
                 isinstance(conflict, dict) and set(conflict) == {"type", "evidence"},
@@ -259,9 +377,7 @@ def validate_scope(scope: Any) -> dict[int, frozenset[str]]:
             kind = conflict["type"]
             require(kind in CONFLICT_TYPES, f"{item}: unknown conflict type")
             require(kind not in conflict_map, f"{label}: duplicate conflict type")
-            conflict_map[kind] = evidence_rows(
-                conflict["evidence"], f"{item}.evidence"
-            )
+            conflict_map[kind] = evidence_rows(conflict["evidence"], f"{item}.evidence")
         require(
             set(conflict_map) == CONFLICT_TYPES,
             f"{label}: candidate principal conflicts incomplete",
@@ -277,10 +393,103 @@ def validate_scope(scope: Any) -> dict[int, frozenset[str]]:
                 conflict_map == expected_map,
                 f"{label}: principal conflict binding mismatch",
             )
-        result[user_id] = frozenset(conflict_map)
-    missing = sorted(set(EXPECTED_CONFLICTS) - set(result))
-    require(not missing, f"candidate conflict principals removed: {missing}")
-    return result
+        conflicts[user_id] = frozenset(conflict_map)
+    missing_conflicts = sorted(set(EXPECTED_CONFLICTS) - set(conflicts))
+    require(
+        not missing_conflicts,
+        f"candidate conflict principals removed: {missing_conflicts}",
+    )
+
+    qualifications_raw = scope.get("qualification_principals")
+    require(isinstance(qualifications_raw, list), "qualification principals list required")
+    qualifications: dict[int, dict[str, frozenset[str]]] = {}
+    for index, principal in enumerate(qualifications_raw):
+        label = f"candidate qualification principal[{index}]"
+        require(
+            isinstance(principal, dict)
+            and set(principal) == {"github_user_id", "login", "qualifications"},
+            f"{label}: fields drift",
+        )
+        user_id = positive(principal["github_user_id"], f"{label}.github_user_id")
+        login = principal["login"]
+        require(
+            isinstance(login, str) and LOGIN.fullmatch(login) is not None,
+            f"{label}: invalid login",
+        )
+        key = login_key(login)
+        if user_id in principal_logins:
+            require(
+                key == login_key(principal_logins[user_id]),
+                f"{label}: stable GitHub user id/login binding mismatch",
+            )
+        else:
+            require(key not in login_ids, f"{label}: duplicate case-insensitive login")
+            login_ids[key] = user_id
+            principal_logins[user_id] = login
+        require(user_id not in qualifications, f"{label}: duplicate stable GitHub user id")
+
+        raw_qualifications = principal["qualifications"]
+        require(
+            isinstance(raw_qualifications, list) and raw_qualifications,
+            f"{label}: qualifications required",
+        )
+        roles_by_domain: dict[str, set[str]] = {}
+        records: list[
+            tuple[str, str, str, str, str, str, str, str, bool, bool]
+        ] = []
+        seen_domain_roles: set[tuple[str, str]] = set()
+        for offset, qualification in enumerate(raw_qualifications):
+            item = f"{label}.qualifications[{offset}]"
+            require(
+                isinstance(qualification, dict)
+                and set(qualification) == {"domain", "roles", "evidence"},
+                f"{item}: fields drift",
+            )
+            domain = qualification["domain"]
+            require(domain in domains, f"{item}: unknown qualification domain")
+            roles = string_list(qualification["roles"], f"{item}.roles")
+            require(
+                set(roles) <= set(domains[domain]),
+                f"{item}: role is not required by qualification domain",
+            )
+            evidence_items = qualification_evidence(
+                qualification["evidence"],
+                f"{item}.evidence",
+                generated_at=generated_at,
+            )
+            for role in roles:
+                require(
+                    (domain, role) not in seen_domain_roles,
+                    f"{label}: duplicate domain role qualification",
+                )
+                seen_domain_roles.add((domain, role))
+                roles_by_domain.setdefault(domain, set()).add(role)
+                for evidence_row in evidence_items:
+                    records.append((domain, role, *evidence_row))
+        normalized_records = tuple(sorted(records))
+        expected = EXPECTED_QUALIFICATIONS.get(user_id)
+        require(
+            expected is not None,
+            f"{label}: qualification principal lacks exact accepted evidence binding",
+        )
+        expected_login, expected_records = expected
+        require(
+            key == login_key(expected_login),
+            f"{label}: stable GitHub user id/login binding mismatch",
+        )
+        require(
+            normalized_records == tuple(sorted(expected_records)),
+            f"{label}: role qualification evidence binding mismatch",
+        )
+        qualifications[user_id] = {
+            domain: frozenset(roles) for domain, roles in roles_by_domain.items()
+        }
+    missing_qualifications = sorted(set(EXPECTED_QUALIFICATIONS) - set(qualifications))
+    require(
+        not missing_qualifications,
+        f"candidate qualification principals removed: {missing_qualifications}",
+    )
+    return conflicts, qualifications, principal_logins
 
 
 def validate(
@@ -310,16 +519,20 @@ def validate(
         "wrong review matrix schema",
     )
     require(
-        matrix["project_id"] == "trillionnium-game" and matrix["plan_version"] == 3,
+        matrix["project_id"] == "trillionnium-game"
+        and matrix["plan_version"] == 3,
         "wrong review matrix identity",
     )
     generated_at = timestamp(matrix["generated_at"], "generated_at")
+    domains_raw = matrix.get("domains")
+    domains_to_roles = domain_role_map(domains_raw)
 
     policy = matrix.get("policy")
     false_keys = {
         "implementation_author_may_accept_own_evidence",
         "administrator_mutator_may_accept_own_governance_evidence",
         "evidence_producer_may_accept_own_evidence",
+        "qualification_self_attestation_allowed",
     }
     true_keys = {
         "candidate_author_is_conflict",
@@ -335,6 +548,10 @@ def validate(
         "stable_principal_id_required",
         "github_login_case_insensitive",
         "candidate_conflict_evidence_binding_required",
+        "role_qualification_evidence_required",
+        "unqualified_principal_cannot_satisfy_availability",
+        "required_roles_must_be_covered",
+        "eligible_reviewer_must_be_codeowner",
     }
     require(
         isinstance(policy, dict)
@@ -351,12 +568,21 @@ def validate(
     )
     require(minimum >= 2, "minimum reviewers must be at least two")
 
-    candidate_conflicts = validate_scope(matrix["candidate_scope"])
+    candidate_conflicts, qualifications, scope_logins = validate_scope(
+        matrix["candidate_scope"],
+        domains=domains_to_roles,
+        generated_at=generated_at,
+    )
+
     reviewers = matrix.get("reviewers")
     require(isinstance(reviewers, list) and reviewers, "reviewer registry required")
     registry: dict[int, dict[str, Any]] = {}
     logins: dict[str, int] = {}
-    expected_login_keys = {login_key(item[0]) for item in EXPECTED_CONFLICTS.values()}
+    expected_login_keys = {
+        login_key(item[0]) for item in EXPECTED_CONFLICTS.values()
+    } | {
+        login_key(item[0]) for item in EXPECTED_QUALIFICATIONS.values()
+    }
     for index, reviewer in enumerate(reviewers):
         label = f"reviewers[{index}]"
         required = {
@@ -367,7 +593,7 @@ def validate(
             "effective_at",
             "expires_at",
             "permission_readback",
-            "qualification_basis",
+            "routing_basis",
         }
         require(
             isinstance(reviewer, dict) and set(reviewer) == required,
@@ -382,10 +608,23 @@ def validate(
         key = login_key(login)
         require(user_id not in registry, f"{label}: duplicate stable GitHub user id")
         require(key not in logins, f"{label}: duplicate case-insensitive login")
-        expected = EXPECTED_CONFLICTS.get(user_id)
-        if expected is not None:
+        if user_id in scope_logins:
             require(
-                key == login_key(expected[0]),
+                key == login_key(scope_logins[user_id]),
+                f"{label}: stable GitHub user id/login binding mismatch",
+            )
+        expected_conflict = EXPECTED_CONFLICTS.get(user_id)
+        expected_qualification = EXPECTED_QUALIFICATIONS.get(user_id)
+        expected_login = (
+            expected_conflict[0]
+            if expected_conflict is not None
+            else expected_qualification[0]
+            if expected_qualification is not None
+            else None
+        )
+        if expected_login is not None:
+            require(
+                key == login_key(expected_login),
                 f"{label}: stable GitHub user id/login binding mismatch",
             )
         elif key in expected_login_keys:
@@ -417,28 +656,45 @@ def validate(
             0 <= age.total_seconds() <= 7 * 86400,
             f"{label}: permission readback stale or from future",
         )
-        string_list(reviewer["qualification_basis"], f"{label}.qualification_basis")
+        string_list(reviewer["routing_basis"], f"{label}.routing_basis")
         registry[user_id] = reviewer
         logins[key] = user_id
 
-    missing_reviewers = sorted(set(EXPECTED_CONFLICTS) - set(registry))
+    missing_reviewers = sorted(
+        (set(EXPECTED_CONFLICTS) | set(EXPECTED_QUALIFICATIONS)) - set(registry)
+    )
     require(
         not missing_reviewers,
-        f"conflicted reviewer routes removed: {missing_reviewers}",
+        f"candidate-bound reviewer routes removed: {missing_reviewers}",
     )
+
     gap_ids = {
         row.get("id")
         for row in gaps.get("gaps", [])
         if isinstance(row, dict)
     }
-    domains = matrix.get("domains")
-    require(isinstance(domains, list) and domains, "review domains required")
+    codeowners = parse_codeowners(codeowners_path)
+    missing_patterns = sorted(REQUIRED_CODEOWNER_PATTERNS - set(codeowners))
+    require(
+        not missing_patterns,
+        f"CODEOWNERS missing critical patterns {missing_patterns}",
+    )
+    expected_owners = {
+        login_key(item[0]) for item in EXPECTED_CONFLICTS.values()
+    }
+    for pattern in REQUIRED_CODEOWNER_PATTERNS:
+        require(
+            expected_owners <= codeowners[pattern],
+            f"CODEOWNERS pattern {pattern} lacks conflict-surviving review routes",
+        )
+
     domain_ids: set[str] = set()
     available = blocked = redundant = 0
     assigned_global: set[int] = set()
     eligible_global: set[int] = set()
-    required_roles = 0
-    for index, domain in enumerate(domains):
+    required_role_count = 0
+    covered_role_count = 0
+    for index, domain in enumerate(domains_raw):
         label = f"domains[{index}]"
         require(
             isinstance(domain, dict)
@@ -454,16 +710,11 @@ def validate(
             f"{label}: fields drift",
         )
         domain_id = domain["id"]
-        require(
-            isinstance(domain_id, str)
-            and domain_id
-            and domain_id not in domain_ids,
-            f"{label}: invalid or duplicate domain id",
-        )
+        require(domain_id not in domain_ids, f"{label}: duplicate domain id")
         domain_ids.add(domain_id)
         string_list(domain["protected_paths"], f"{domain_id}.protected_paths")
-        roles = string_list(domain["required_roles"], f"{domain_id}.required_roles")
-        required_roles += len(roles)
+        roles = list(domains_to_roles[domain_id])
+        required_role_count += len(roles)
         blocking_gaps = string_list(
             domain["blocking_gaps"], f"{domain_id}.blocking_gaps"
         )
@@ -472,7 +723,12 @@ def validate(
         assigned = domain["assigned_reviewer_ids"]
         require(
             isinstance(assigned, list)
-            and all(isinstance(item, int) and item > 0 for item in assigned),
+            and all(
+                isinstance(item, int)
+                and not isinstance(item, bool)
+                and item > 0
+                for item in assigned
+            ),
             f"{domain_id}: reviewer ids invalid",
         )
         require(
@@ -497,46 +753,62 @@ def validate(
             )
         redundant += 1
         assigned_global.update(assigned)
-        eligible = [item for item in assigned if item not in candidate_conflicts]
-        eligible_global.update(eligible)
-        domain_available = len(eligible) >= minimum
+
+        role_coverage = {role: set() for role in roles}
+        qualified_eligible: set[int] = set()
+        for user_id in assigned:
+            if user_id in candidate_conflicts:
+                continue
+            qualified_roles = qualifications.get(user_id, {}).get(
+                domain_id, frozenset()
+            )
+            for role in qualified_roles:
+                if role in role_coverage:
+                    role_coverage[role].add(user_id)
+                    qualified_eligible.add(user_id)
+        for role in roles:
+            if role_coverage[role]:
+                covered_role_count += 1
+
+        for user_id in qualified_eligible:
+            owner = login_key(registry[user_id]["login"])
+            for pattern in REQUIRED_CODEOWNER_PATTERNS:
+                require(
+                    owner in codeowners[pattern],
+                    f"{domain_id}: eligible reviewer {user_id} is not a CODEOWNER route",
+                )
+
+        roles_covered = all(role_coverage[role] for role in roles)
+        domain_available = len(qualified_eligible) >= minimum and roles_covered
         if domain_available:
             require(
                 domain["status"] == "active",
-                f"{domain_id}: available domain must be active",
+                f"{domain_id}: qualified domain must be active",
             )
             available += 1
+            eligible_global.update(qualified_eligible)
         else:
             require(
                 domain["status"] == "blocked-reviewer-capacity",
-                f"{domain_id}: insufficient conflict-free reviewers must block",
+                f"{domain_id}: insufficient qualified role coverage must block",
             )
             blocked += 1
 
-    codeowners = parse_codeowners(codeowners_path)
-    missing_patterns = sorted(REQUIRED_CODEOWNER_PATTERNS - set(codeowners))
-    require(
-        not missing_patterns,
-        f"CODEOWNERS missing critical patterns {missing_patterns}",
-    )
-    expected_owners = {login_key(item[0]) for item in EXPECTED_CONFLICTS.values()}
-    for pattern in REQUIRED_CODEOWNER_PATTERNS:
-        require(
-            expected_owners <= codeowners[pattern],
-            f"CODEOWNERS pattern {pattern} lacks conflict-surviving review routes",
-        )
-
-    all_available = available == len(domains)
+    all_available = available == len(domains_raw)
+    all_roles_covered = covered_role_count == required_role_count
     summary = matrix.get("summary")
     expected_summary = {
-        "domain_count": len(domains),
-        "assigned_domain_count": len(domains),
+        "domain_count": len(domains_raw),
+        "assigned_domain_count": len(domains_raw),
         "redundant_domain_count": redundant,
         "available_domain_count": available,
         "blocked_domain_count": blocked,
+        "required_role_count": required_role_count,
+        "covered_required_role_count": covered_role_count,
         "named_reviewer_count": len(assigned_global),
         "eligible_named_reviewer_count": len(eligible_global),
         "candidate_conflict_identity_count": len(candidate_conflicts),
+        "qualification_principal_count": len(qualifications),
         "all_required_reviews_available": all_available,
     }
     require(summary == expected_summary, "review summary mismatch")
@@ -546,6 +818,7 @@ def validate(
         "assignment_is_acceptance": False,
         "reviewer_routing_available": all_available,
         "candidate_specific_availability": all_available,
+        "required_role_coverage_available": all_roles_covered,
         "branch_policy_enforced": False,
         "latest_head_review_observed": False,
         "production_review_complete": False,
@@ -553,7 +826,11 @@ def validate(
     require(claims == expected_claims, "review claim boundary mismatch")
 
     conflict_logins = sorted(
-        (EXPECTED_CONFLICTS[item][0] for item in candidate_conflicts),
+        (scope_logins[item] for item in candidate_conflicts),
+        key=str.casefold,
+    )
+    qualification_logins = sorted(
+        (scope_logins[item] for item in qualifications),
         key=str.casefold,
     )
     eligible_logins = sorted(
@@ -562,10 +839,11 @@ def validate(
     )
     return {
         "schema": "trillionnium.independent-review-matrix-validation.v2",
-        "domains": len(domains),
-        "assigned_domains": len(domains),
+        "domains": len(domains_raw),
+        "assigned_domains": len(domains_raw),
         "redundant_domains": redundant,
-        "required_roles": required_roles,
+        "required_roles": required_role_count,
+        "covered_required_roles": covered_role_count,
         "named_reviewers": sorted(
             (registry[item]["login"] for item in assigned_global),
             key=str.casefold,
@@ -573,12 +851,14 @@ def validate(
         "available_domains": available,
         "blocked_domains": blocked,
         "eligible_reviewers": eligible_logins,
+        "qualification_principals": qualification_logins,
         "candidate_conflicts": conflict_logins,
         "candidate_conflict_user_ids": sorted(candidate_conflicts),
         "authorship_observed_through_head": matrix["candidate_scope"][
             "authorship_observed_through_head"
         ],
         "candidate_conflict_evidence_bound": True,
+        "role_qualification_evidence_bound": True,
         "all_required_reviews_available": all_available,
         "codeowners_redundant": True,
         "conflict_survivable": all_available,
