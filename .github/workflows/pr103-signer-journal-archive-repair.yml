@@ -1,18 +1,18 @@
-name: pr103-signer-journal-archive-repair
+name: pr103-signer-journal-archive-repair-v2
 
 on:
   push:
     branches:
       - codex/plan-v31-product-gap-wave-2026-09-07
     paths:
-      - scripts/one_shot_pr103_signer_journal_archive_repair.py
+      - scripts/one_shot_pr103_signer_journal_archive_repair_v2.py
       - .github/workflows/pr103-signer-journal-archive-repair.yml
 
 permissions:
   contents: write
 
 concurrency:
-  group: pr103-signer-journal-archive-repair
+  group: pr103-signer-journal-archive-repair-v2
   cancel-in-progress: false
 
 env:
@@ -44,7 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/one_shot_pr103_signer_journal_archive_repair.py
+          python3 scripts/one_shot_pr103_signer_journal_archive_repair_v2.py
           cargo fmt --manifest-path crates/trnm-token-crypto-provider/Cargo.toml
           git diff --check
           actual="$(git diff --name-only | sort | paste -sd, -)"
