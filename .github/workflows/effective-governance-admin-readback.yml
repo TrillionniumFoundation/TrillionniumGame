@@ -1,0 +1,168 @@
+name: effective-governance-admin-readback
+
+on:
+  push:
+    branches: [tooling/effective-governance-readback-2026-09-07]
+    paths:
+      - '.github/workflows/effective-governance-admin-readback.yml'
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+env:
+  TARGET_REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  TARGET_PR: '63'
+  EXPECTED_HEAD: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+  ADMIN_READBACK_TOKEN: ${{ secrets.GH_ADMIN_TOKEN || secrets.REPO_ADMIN_TOKEN || secrets.GITHUB_ADMIN_TOKEN || secrets.GH_READBACK_TOKEN }}
+
+jobs:
+  readback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require a configured read-back credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ADMIN_READBACK_TOKEN" || {
+            echo 'No repository administrator read-back credential is configured.' >&2
+            exit 1
+          }
+
+      - name: Capture effective server-side controls without mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/governance/responses"
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json, os, urllib.error, urllib.request
+          from pathlib import Path
+
+          repository = os.environ['TARGET_REPOSITORY']
+          expected_head = os.environ['EXPECTED_HEAD']
+          token = os.environ['ADMIN_READBACK_TOKEN']
+          root = Path(os.environ['RUNNER_TEMP']) / 'governance'
+          responses = root / 'responses'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'trillionnium-admin-readback',
+          }
+
+          def request(label: str, path: str):
+              url = f'https://api.github.com/repos/{repository}{path}'
+              req = urllib.request.Request(url, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      raw = response.read()
+                      value = {'status': response.status, 'body': json.loads(raw.decode()) if raw else None}
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  try:
+                      body = json.loads(raw.decode()) if raw else None
+                  except Exception:
+                      body = {'message': raw.decode(errors='replace')[:2000]}
+                  value = {'status': error.code, 'body': body}
+              (responses / f'{label}.json').write_text(
+                  json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n',
+                  encoding='utf-8',
+              )
+              return value
+
+          values = {
+              'repository': request('repository', ''),
+              'main': request('main', '/branches/main'),
+              'protection': request('protection', '/branches/main/protection'),
+              'rulesets': request('rulesets', '/rulesets?includes_parents=true&per_page=100'),
+              'evaluated': request('evaluated', '/rules/branches/main'),
+              'actions': request('actions', '/actions/permissions'),
+              'workflow': request('workflow', '/actions/permissions/workflow'),
+              'pull': request('pull', '/pulls/63'),
+          }
+          protection = values['protection']['body'] if values['protection']['status'] == 200 else {}
+          checks = protection.get('required_status_checks') or {}
+          review = protection.get('required_pull_request_reviews') or {}
+          contexts = set(checks.get('contexts') or [])
+          contexts.update(
+              row.get('context') for row in checks.get('checks') or []
+              if isinstance(row, dict) and row.get('context')
+          )
+          pull = values['pull']['body'] if values['pull']['status'] == 200 else {}
+          summary = {
+              'schema': 'trillionnium.effective-governance-admin-readback.v1',
+              'repository': repository,
+              'expected_head': expected_head,
+              'observed_head': ((pull.get('head') or {}).get('sha')),
+              'statuses': {key: value['status'] for key, value in values.items()},
+              'strict_required_checks': checks.get('strict') is True,
+              'merge_gate_required': 'trillionnium-game-merge-gate' in contexts,
+              'administrator_enforced': (protection.get('enforce_admins') or {}).get('enabled') is True,
+              'dismiss_stale_reviews': review.get('dismiss_stale_reviews') is True,
+              'code_owner_review': review.get('require_code_owner_reviews') is True,
+              'latest_push_approval': review.get('require_last_push_approval') is True,
+              'approving_review_count': int(review.get('required_approving_review_count') or 0),
+              'conversation_resolution': (protection.get('required_conversation_resolution') or {}).get('enabled') is True,
+              'force_push_forbidden': (protection.get('allow_force_pushes') or {}).get('enabled') is not True,
+              'deletion_forbidden': (protection.get('allow_deletions') or {}).get('enabled') is not True,
+              'ruleset_count': len(values['rulesets']['body']) if isinstance(values['rulesets']['body'], list) else 0,
+              'evaluated_rule_count': len(values['evaluated']['body']) if isinstance(values['evaluated']['body'], list) else 0,
+              'claims': {
+                  'accepted_evidence': False,
+                  'gap_closed': False,
+                  'independent_review': False,
+                  'production_ready': False,
+              },
+          }
+          summary['complete'] = bool(
+              summary['observed_head'] == expected_head
+              and values['protection']['status'] == 200
+              and values['actions']['status'] == 200
+              and values['workflow']['status'] == 200
+              and summary['strict_required_checks']
+              and summary['merge_gate_required']
+              and summary['administrator_enforced']
+              and summary['dismiss_stale_reviews']
+              and summary['code_owner_review']
+              and summary['latest_push_approval']
+              and summary['approving_review_count'] >= 1
+              and summary['conversation_resolution']
+              and summary['force_push_forbidden']
+              and summary['deletion_forbidden']
+          )
+          (root / 'summary.json').write_text(
+              json.dumps(summary, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n',
+              encoding='utf-8',
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Seal read-back packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/governance"
+          (
+            cd "$root"
+            find . -type f ! -path './SHA256SUMS' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$RUNNER_TEMP/effective-governance-admin-readback-${EXPECTED_HEAD}.tar.gz" \
+            -C "$root" .
+
+      - name: Retain read-back packet
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: effective-governance-admin-readback-${{ env.EXPECTED_HEAD }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/effective-governance-admin-readback-${{ env.EXPECTED_HEAD }}.tar.gz
+          mime_type: application/gzip
+
+      - name: Fail closed unless the effective policy is complete
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '.complete == true' "$RUNNER_TEMP/governance/summary.json" >/dev/null
