@@ -1,0 +1,1 @@
+Trigger the self-removing PR #104 receipt-budget repair workflow on this exact branch head.
