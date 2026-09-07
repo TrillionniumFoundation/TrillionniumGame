@@ -1,0 +1,178 @@
+name: outbox-reaper-gitdata-publish
+
+on:
+  push:
+    branches: [tooling/outbox-evidence-sealing-staging-2026-09-07a]
+    paths:
+      - '.github/workflows/outbox-reaper-gitdata-publish.yml'
+
+permissions:
+  contents: write
+
+env:
+  PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  patch-validate-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch exact live candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=2 origin "refs/heads/${PRODUCT_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+          git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD > "$RUNNER_TEMP/start-head"
+          git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree} > "$RUNNER_TEMP/start-tree"
+
+      - name: Apply idempotent artifact finalizer and regression
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          script = Path("scripts/ci-outbox-final-attempt-reaper.sh")
+          source = script.read_text(encoding="utf-8")
+          marker = "trnm_outbox_finalize_sealed_artifact"
+          if marker not in source:
+              pattern = re.compile(
+                  r"^(?P<indent>[ \t]*)exec[ \t]*>[ \t]*>\([^\n]*tee[^\n]*run\.log[^\n]*\)[ \t]*2>&1[ \t]*$",
+                  re.MULTILINE,
+              )
+              matches = list(pattern.finditer(source))
+              if len(matches) != 1:
+                  raise SystemExit(f"expected one run.log tee redirection, observed {len(matches)}")
+              match = matches[0]
+              indent = match.group("indent")
+              replacement = f'''{indent}trnm_outbox_finalize_sealed_artifact() {{
+          {indent}  local status=$?
+          {indent}  trap - EXIT
+          {indent}  if [[ -n "${{TRNM_OUTBOX_TEE_PID:-}}" ]]; then
+          {indent}    exec 1>&3 2>&4
+          {indent}    if ! wait "$TRNM_OUTBOX_TEE_PID"; then status=1; fi
+          {indent}  fi
+          {indent}  rm -f "$ARTIFACT_ROOT/files.sha256"
+          {indent}  if command -v sha256sum >/dev/null 2>&1; then
+          {indent}    if ! (cd "$ARTIFACT_ROOT" && \\
+          {indent}      find . -type f ! -path './files.sha256' -print0 | LC_ALL=C sort -z | \\
+          {indent}      xargs -0 sha256sum > files.sha256 && \\
+          {indent}      sha256sum --check files.sha256); then status=1; fi
+          {indent}  else
+          {indent}    if ! (cd "$ARTIFACT_ROOT" && \\
+          {indent}      find . -type f ! -path './files.sha256' -print0 | LC_ALL=C sort -z | \\
+          {indent}      xargs -0 shasum -a 256 > files.sha256 && \\
+          {indent}      shasum -a 256 -c files.sha256); then status=1; fi
+          {indent}  fi
+          {indent}  exit "$status"
+          {indent}}}
+          {indent}trap trnm_outbox_finalize_sealed_artifact EXIT
+          {indent}exec 3>&1 4>&2
+          {match.group(0)}
+          {indent}TRNM_OUTBOX_TEE_PID=$!'''
+              source = source[:match.start()] + replacement + source[match.end():]
+              script.write_text(source, encoding="utf-8")
+
+          test = Path("tests/control_plane/test_outbox_reaper_exit_sealing.py")
+          test.write_text('''from pathlib import Path
+          import unittest
+
+          ROOT = Path(__file__).resolve().parents[2]
+          SCRIPT = ROOT / "scripts/ci-outbox-final-attempt-reaper.sh"
+
+          class OutboxReaperExitSealingTests(unittest.TestCase):
+              @classmethod
+              def setUpClass(cls):
+                  cls.source = SCRIPT.read_text(encoding="utf-8")
+
+              def test_exit_trap_joins_log_writer_before_manifest(self):
+                  self.assertIn("trap trnm_outbox_finalize_sealed_artifact EXIT", self.source)
+                  self.assertIn("TRNM_OUTBOX_TEE_PID=$!", self.source)
+                  body = self.source.split("trnm_outbox_finalize_sealed_artifact()", 1)[1].split("trap trnm_outbox_finalize_sealed_artifact EXIT", 1)[0]
+                  self.assertLess(body.index("wait \"$TRNM_OUTBOX_TEE_PID\""), body.index("files.sha256"))
+
+              def test_manifest_excludes_itself_and_is_checked(self):
+                  self.assertIn("find . -type f ! -path './files.sha256'", self.source)
+                  self.assertIn("sha256sum --check files.sha256", self.source)
+                  self.assertIn("shasum -a 256 -c files.sha256", self.source)
+
+              def test_marker_is_unique(self):
+                  self.assertEqual(self.source.count("trnm_outbox_finalize_sealed_artifact()"), 1)
+
+          if __name__ == "__main__":
+              unittest.main()
+          ''', encoding="utf-8")
+          PY
+          bash -n scripts/ci-outbox-final-attempt-reaper.sh
+          python3 -m py_compile tests/control_plane/test_outbox_reaper_exit_sealing.py
+          git diff --check
+
+      - name: Run complete repository controls
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 -m unittest -v tests.control_plane.test_outbox_reaper_exit_sealing
+          python3 -m compileall -q scripts tools tests
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-evidence-index.py
+          python3 scripts/check-gap-register.py
+          python3 scripts/derive-gap-status.py
+          python3 scripts/derive-gates.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
+          python3 scripts/check-trnm-server.py
+          python3 scripts/check-rust-foundation.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/full-python.log"
+          grep -Eq '^Ran [1-9][0-9]* tests in ' "$RUNNER_TEMP/full-python.log"
+          grep -qx OK "$RUNNER_TEMP/full-python.log"
+
+      - name: Create exact Git objects and CAS-update candidate ref
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json')
+          start=$(cat "$RUNNER_TEMP/start-head")
+          current=$(curl -fsSL "${auth[@]}" "$api/git/ref/heads/${PRODUCT_BRANCH//\//%2F}" | jq -r '.object.sha')
+          test "$current" = "$start"
+          if git diff --quiet; then
+            echo 'candidate already contains the sealing repair'
+            exit 0
+          fi
+
+          create_blob() {
+            local path=$1
+            jq -Rs '{content:.,encoding:"utf-8"}' < "$path" > "$RUNNER_TEMP/blob.json"
+            curl -fsSL -X POST "${auth[@]}" "$api/git/blobs" --data-binary @"$RUNNER_TEMP/blob.json" | jq -r '.sha'
+          }
+          script_blob=$(create_blob scripts/ci-outbox-final-attempt-reaper.sh)
+          test_blob=$(create_blob tests/control_plane/test_outbox_reaper_exit_sealing.py)
+          base_tree=$(cat "$RUNNER_TEMP/start-tree")
+          jq -n --arg base "$base_tree" --arg sb "$script_blob" --arg tb "$test_blob" '{
+            base_tree:$base,
+            tree:[
+              {path:"scripts/ci-outbox-final-attempt-reaper.sh",mode:"100755",type:"blob",sha:$sb},
+              {path:"tests/control_plane/test_outbox_reaper_exit_sealing.py",mode:"100644",type:"blob",sha:$tb}
+            ]
+          }' > "$RUNNER_TEMP/tree.json"
+          tree=$(curl -fsSL -X POST "${auth[@]}" "$api/git/trees" --data-binary @"$RUNNER_TEMP/tree.json" | jq -r '.sha')
+          jq -n --arg message 'ci(evidence): seal outbox logs before manifest finalization' --arg tree "$tree" --arg parent "$start" '{message:$message,tree:$tree,parents:[$parent]}' > "$RUNNER_TEMP/commit.json"
+          commit=$(curl -fsSL -X POST "${auth[@]}" "$api/git/commits" --data-binary @"$RUNNER_TEMP/commit.json" | jq -r '.sha')
+          jq -n --arg sha "$commit" '{sha:$sha,force:false}' > "$RUNNER_TEMP/ref.json"
+          curl -fsSL -X PATCH "${auth[@]}" "$api/git/refs/heads/${PRODUCT_BRANCH//\//%2F}" --data-binary @"$RUNNER_TEMP/ref.json" >/dev/null
+          observed=$(curl -fsSL "${auth[@]}" "$api/git/ref/heads/${PRODUCT_BRANCH//\//%2F}" | jq -r '.object.sha')
+          test "$observed" = "$commit"
+          printf 'start_head=%s\nnew_head=%s\nnew_tree=%s\n' "$start" "$commit" "$tree"
