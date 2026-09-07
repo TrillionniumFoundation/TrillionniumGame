@@ -1,0 +1,86 @@
+name: reviewer-capacity-tooling-pr-cleanup
+
+on:
+  push:
+    branches: [tooling/reviewer-conflict-capacity-fix-2026-09-07]
+    paths:
+      - '.github/workflows/reviewer-capacity-tooling-pr-cleanup.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TOOLING_BRANCH: tooling/reviewer-conflict-capacity-fix-2026-09-07
+      PRODUCT_BRANCH: codex/reviewer-conflict-capacity-fix-2026-09-07
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Close only zero-credit tooling-head pull requests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json, os, urllib.request
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          tooling = os.environ['TOOLING_BRANCH']
+          product = os.environ['PRODUCT_BRANCH']
+          token = os.environ['GH_TOKEN']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'reviewer-capacity-tooling-cleanup',
+          }
+
+          def request(method: str, path: str, body=None):
+              data = None if body is None else json.dumps(body).encode('utf-8')
+              req = urllib.request.Request(
+                  f'https://api.github.com/repos/{repository}{path}',
+                  data=data,
+                  headers=headers,
+                  method=method,
+              )
+              if data is not None:
+                  req.add_header('Content-Type', 'application/json')
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  raw = response.read()
+                  return json.loads(raw.decode()) if raw else None
+
+          rows = request('GET', '/pulls?state=open&per_page=100') or []
+          closed = []
+          retained_product = []
+          for row in rows:
+              head = ((row.get('head') or {}).get('ref') or '')
+              number = int(row['number'])
+              if head == product:
+                  retained_product.append(number)
+                  continue
+              if head != tooling:
+                  continue
+              request('POST', f'/issues/{number}/comments', {
+                  'body': (
+                      'Closing this zero-credit tooling reservation after the guarded three-file '
+                      'repair was published on `codex/reviewer-conflict-capacity-fix-2026-09-07`. '
+                      'No evidence, review, gap, compatibility, production, cutover, or retirement '
+                      'credit transfers from this execution surface.'
+                  )
+              })
+              request('PATCH', f'/pulls/{number}', {'state': 'closed'})
+              closed.append(number)
+          if not retained_product:
+              raise SystemExit('product reviewer-capacity PR is not open; refusing cleanup success')
+          print(json.dumps({
+              'tooling_branch': tooling,
+              'product_branch': product,
+              'closed_tooling_prs': closed,
+              'retained_product_prs': retained_product,
+              'claim_credit': False,
+          }, sort_keys=True))
+          PY
