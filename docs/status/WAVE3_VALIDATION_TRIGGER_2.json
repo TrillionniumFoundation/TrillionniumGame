@@ -1,0 +1,15 @@
+{
+  "schema": "trillionnium.gap-closure-wave-validation-trigger.v1",
+  "plan": "v3.1",
+  "scope_candidate": "docs/status/DENOMINATOR_CLASSIFICATION_CANDIDATE.json",
+  "reviewer_capacity": "docs/status/REVIEWER_CAPACITY.json",
+  "regression": "tests/control_plane/test_gap_closure_wave.py",
+  "purpose": "ordinary exact-head and prospective-merge validation after runner-authored materialization",
+  "accepted_evidence": false,
+  "gap_closed": false,
+  "sg1_credit": false,
+  "compatibility_credit": false,
+  "production_ready": false,
+  "public_online": false,
+  "nakama_retired": false
+}
