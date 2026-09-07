@@ -1,14 +1,16 @@
-//! Bounded external-signer operation journal with verified epoch compaction.
+//! Bounded external-signer operation journal with authenticated outcomes.
 //!
-//! Requests are bound to an explicit journal epoch. Every admitted operation
-//! reserves a terminal tombstone slot. Terminal state leaves the current epoch
-//! only through a digest-chained checkpoint accepted by a trusted durable
-//! archive verifier. Provider receipt uniqueness therefore survives compaction.
+//! Every operation is bound to an immutable request and one exact provider
+//! dispatch identity. A caller cannot confirm a signing result by supplying
+//! digests alone: a trusted [`SignerOutcomeVerifier`] must authenticate the
+//! complete outcome evidence before any journal or receipt-owner mutation.
+//! Terminal state leaves an epoch only through a digest-chained checkpoint
+//! accepted by a trusted durable archive verifier.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
-use super::KeyDomain;
+use super::{KeyDomain, Signature32};
 
 pub const MAX_SIGNER_JOURNAL_CAPACITY: usize = 4_096;
 
@@ -44,6 +46,10 @@ impl SigningOperationId {
         }
         Ok(Self(value))
     }
+
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
 }
 
 impl fmt::Debug for SigningOperationId {
@@ -72,9 +78,7 @@ impl SigningRequest {
         if self.key_epoch == 0 {
             return Err(SignerJournalError::ZeroKeyEpoch);
         }
-        if self.payload_digest.iter().all(|byte| *byte == 0) {
-            return Err(SignerJournalError::ZeroDigest("payload_digest"));
-        }
+        require_nonzero_digest("payload_digest", self.payload_digest)?;
         Ok(self)
     }
 
@@ -87,13 +91,113 @@ impl SigningRequest {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SignerDispatchIdentity {
+    pub request: SigningRequest,
+    pub provider_identity_digest: [u8; 32],
+    pub provider_endpoint_digest: [u8; 32],
+    pub attempt: u32,
+}
+
+impl SignerDispatchIdentity {
+    pub fn validate(self) -> Result<Self, SignerJournalError> {
+        self.request.validate()?;
+        require_nonzero_digest(
+            "provider_identity_digest",
+            self.provider_identity_digest,
+        )?;
+        require_nonzero_digest(
+            "provider_endpoint_digest",
+            self.provider_endpoint_digest,
+        )?;
+        if self.attempt == 0 {
+            return Err(SignerJournalError::ZeroDispatchAttempt);
+        }
+        Ok(self)
+    }
+
+    pub const fn handle(self) -> SigningOperationHandle {
+        self.request.handle()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SignerOutcomeEvidence {
+    pub request: SigningRequest,
+    pub dispatch: SignerDispatchIdentity,
+    pub receipt_digest: [u8; 32],
+    pub signature: Signature32,
+    pub signature_digest: [u8; 32],
+    pub provider_evidence_digest: [u8; 32],
+}
+
+impl SignerOutcomeEvidence {
+    pub fn validate(self) -> Result<Self, SignerJournalError> {
+        self.request.validate()?;
+        self.dispatch.validate()?;
+        if self.dispatch.request != self.request {
+            return Err(SignerJournalError::OutcomeBindingMismatch(
+                "dispatch request differs from outcome request",
+            ));
+        }
+        require_nonzero_digest("receipt_digest", self.receipt_digest)?;
+        require_nonzero_digest("signature_digest", self.signature_digest)?;
+        require_nonzero_digest(
+            "provider_evidence_digest",
+            self.provider_evidence_digest,
+        )?;
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SignerOutcomeVerificationError {
+    Unauthenticated,
+    BindingMismatch,
+    SignatureRejected,
+    ProviderUnavailable,
+}
+
+impl fmt::Display for SignerOutcomeVerificationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unauthenticated => {
+                formatter.write_str("signer outcome evidence is not authenticated")
+            }
+            Self::BindingMismatch => {
+                formatter.write_str("signer outcome evidence binding does not match")
+            }
+            Self::SignatureRejected => {
+                formatter.write_str("signer outcome signature was rejected")
+            }
+            Self::ProviderUnavailable => {
+                formatter.write_str("signer outcome verifier is unavailable")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SignerOutcomeVerificationError {}
+
+pub trait SignerOutcomeVerifier: fmt::Debug + Send + Sync {
+    /// Authenticate the complete evidence object, including its immutable
+    /// request, exact provider/endpoint/attempt dispatch, provider receipt,
+    /// returned signature bytes and both retained digests.
+    fn verify_outcome(
+        &self,
+        evidence: &SignerOutcomeEvidence,
+    ) -> Result<(), SignerOutcomeVerificationError>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SigningOperationState {
     Prepared,
     Dispatched,
     Indeterminate,
     Confirmed {
         receipt_digest: [u8; 32],
+        signature: Signature32,
         signature_digest: [u8; 32],
+        provider_evidence_digest: [u8; 32],
     },
     Rejected {
         reason_digest: [u8; 32],
@@ -104,17 +208,26 @@ impl SigningOperationState {
     pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Confirmed { .. } | Self::Rejected { .. })
     }
+
+    const fn requires_dispatch(self) -> bool {
+        matches!(
+            self,
+            Self::Dispatched | Self::Indeterminate | Self::Confirmed { .. }
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SigningOperationRecord {
     pub request: SigningRequest,
+    pub dispatch: Option<SignerDispatchIdentity>,
     pub state: SigningOperationState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SigningOperationTombstone {
     pub request: SigningRequest,
+    pub dispatch: Option<SignerDispatchIdentity>,
     pub state: SigningOperationState,
     pub archive_digest: [u8; 32],
 }
@@ -137,12 +250,12 @@ pub struct SignerJournalCheckpoint {
 }
 
 pub trait SignerJournalArchiveVerifier: fmt::Debug + Send + Sync {
-    /// A durable adapter must persist and verify the complete checkpoint before
-    /// returning true. A transient signature check alone is insufficient.
+    /// A durable adapter must authenticate the complete checkpoint and the
+    /// predecessor chain before returning true. Persistence alone is not proof.
     fn verify_checkpoint(&self, checkpoint: &SignerJournalCheckpoint) -> bool;
 
     /// Return true only when the provider receipt is absent from every durable
-    /// checkpoint reachable through the supplied digest chain.
+    /// checkpoint reachable through the authenticated predecessor chain.
     fn receipt_is_absent(&self, checkpoint: &SignerJournalCheckpoint, candidate: [u8; 32]) -> bool;
 }
 
@@ -158,6 +271,7 @@ pub enum SignerJournalError {
     InvalidCapacityRelationship,
     ZeroOperationId,
     ZeroKeyEpoch,
+    ZeroDispatchAttempt,
     ZeroDigest(&'static str),
     CapacityExceeded {
         capacity: usize,
@@ -175,9 +289,12 @@ pub enum SignerJournalError {
     },
     UnknownOperation(SigningOperationId),
     ConflictingOperation(SigningOperationId),
+    DispatchMismatch(SigningOperationId),
     AlreadyDispatched(SigningOperationId),
     NotDispatched(SigningOperationId),
     IndeterminateRequiresReconciliation(SigningOperationId),
+    OutcomeBindingMismatch(&'static str),
+    OutcomeVerificationFailed(SignerOutcomeVerificationError),
     ReceiptMismatch(SigningOperationId),
     ReceiptReused {
         receipt_owner: SigningOperationId,
@@ -216,13 +333,14 @@ impl fmt::Display for SignerJournalError {
                 .write_str("signer journal active capacity cannot exceed epoch tombstone capacity"),
             Self::ZeroOperationId => formatter.write_str("signing operation id must not be zero"),
             Self::ZeroKeyEpoch => formatter.write_str("signing key epoch must be positive"),
-            Self::ZeroDigest(field) => write!(formatter, "{field} must not be the zero digest"),
-            Self::CapacityExceeded { capacity } => {
-                write!(
-                    formatter,
-                    "signer journal active set is full at capacity {capacity}"
-                )
+            Self::ZeroDispatchAttempt => {
+                formatter.write_str("signer provider attempt must be positive")
             }
+            Self::ZeroDigest(field) => write!(formatter, "{field} must not be the zero digest"),
+            Self::CapacityExceeded { capacity } => write!(
+                formatter,
+                "signer journal active set is full at capacity {capacity}"
+            ),
             Self::EpochCapacityExceeded { capacity } => write!(
                 formatter,
                 "signer journal epoch is full at terminal capacity {capacity}"
@@ -240,6 +358,9 @@ impl fmt::Display for SignerJournalError {
             Self::ConflictingOperation(_) => {
                 formatter.write_str("signing operation immutable input conflicts")
             }
+            Self::DispatchMismatch(_) => {
+                formatter.write_str("signing provider dispatch identity conflicts")
+            }
             Self::AlreadyDispatched(_) => {
                 formatter.write_str("signing operation was already dispatched")
             }
@@ -247,8 +368,14 @@ impl fmt::Display for SignerJournalError {
                 formatter.write_str("signing operation has not been dispatched")
             }
             Self::IndeterminateRequiresReconciliation(_) => formatter.write_str(
-                "signing operation may have completed and requires provider receipt reconciliation",
+                "signing operation may have completed and requires authenticated reconciliation",
             ),
+            Self::OutcomeBindingMismatch(message) => {
+                write!(formatter, "signer outcome binding mismatch: {message}")
+            }
+            Self::OutcomeVerificationFailed(error) => {
+                write!(formatter, "signer outcome verification failed: {error}")
+            }
             Self::ReceiptMismatch(_) => {
                 formatter.write_str("signing operation receipt conflicts with confirmed result")
             }
@@ -343,7 +470,7 @@ impl SignerJournal {
             .sequence
             .checked_add(1)
             .ok_or(SignerJournalError::CheckpointSequenceExhausted)?;
-        Ok(Self {
+        let value = Self {
             active_capacity,
             epoch_capacity,
             epoch: checkpoint.active_epoch,
@@ -352,7 +479,9 @@ impl SignerJournal {
             receipt_owners: BTreeMap::new(),
             checkpoint: Some(checkpoint),
             next_checkpoint_sequence,
-        })
+        };
+        value.verify_invariants()?;
+        Ok(value)
     }
 
     pub const fn active_capacity(&self) -> usize {
@@ -432,6 +561,7 @@ impl SignerJournal {
         }
         let record = SigningOperationRecord {
             request,
+            dispatch: None,
             state: SigningOperationState::Prepared,
         };
         self.records.insert(request.operation_id, record);
@@ -441,9 +571,14 @@ impl SignerJournal {
 
     pub fn dispatch(
         &mut self,
-        handle: SigningOperationHandle,
+        dispatch: SignerDispatchIdentity,
     ) -> Result<SigningOperationRecord, SignerJournalError> {
+        let dispatch = dispatch.validate()?;
+        let handle = dispatch.handle();
         let current = self.require(handle)?;
+        if current.request != dispatch.request {
+            return Err(SignerJournalError::DispatchMismatch(handle.operation_id));
+        }
         match current.state {
             SigningOperationState::Prepared => {}
             SigningOperationState::Dispatched => {
@@ -459,10 +594,12 @@ impl SignerJournal {
             }
         }
         let next = SigningOperationRecord {
+            request: current.request,
+            dispatch: Some(dispatch),
             state: SigningOperationState::Dispatched,
-            ..current
         };
         self.records.insert(handle.operation_id, next);
+        self.verify_invariants()?;
         Ok(next)
     }
 
@@ -486,91 +623,122 @@ impl SignerJournal {
             ..current
         };
         self.records.insert(handle.operation_id, next);
+        self.verify_invariants()?;
         Ok(next)
     }
 
     pub fn reconcile(
         &mut self,
-        request: SigningRequest,
-        receipt_digest: [u8; 32],
-        signature_digest: [u8; 32],
+        evidence: SignerOutcomeEvidence,
+        verifier: &dyn SignerOutcomeVerifier,
     ) -> Result<SigningOperationRecord, SignerJournalError> {
-        self.reconcile_inner(request, receipt_digest, signature_digest, None)
+        self.reconcile_inner(evidence, verifier, None)
     }
 
     pub fn reconcile_with_archive_verifier(
         &mut self,
-        request: SigningRequest,
-        receipt_digest: [u8; 32],
-        signature_digest: [u8; 32],
-        verifier: &dyn SignerJournalArchiveVerifier,
+        evidence: SignerOutcomeEvidence,
+        outcome_verifier: &dyn SignerOutcomeVerifier,
+        archive_verifier: &dyn SignerJournalArchiveVerifier,
     ) -> Result<SigningOperationRecord, SignerJournalError> {
-        self.reconcile_inner(request, receipt_digest, signature_digest, Some(verifier))
+        self.reconcile_inner(evidence, outcome_verifier, Some(archive_verifier))
     }
 
     fn reconcile_inner(
         &mut self,
-        request: SigningRequest,
-        receipt_digest: [u8; 32],
-        signature_digest: [u8; 32],
-        verifier: Option<&dyn SignerJournalArchiveVerifier>,
+        evidence: SignerOutcomeEvidence,
+        outcome_verifier: &dyn SignerOutcomeVerifier,
+        archive_verifier: Option<&dyn SignerJournalArchiveVerifier>,
     ) -> Result<SigningOperationRecord, SignerJournalError> {
-        let request = request.validate()?;
-        self.require_epoch(request.journal_epoch)?;
-        require_nonzero_digest("receipt_digest", receipt_digest)?;
-        require_nonzero_digest("signature_digest", signature_digest)?;
-        let current = self.require(request.handle())?;
-        if current.request != request {
+        let evidence = evidence.validate()?;
+        self.require_epoch(evidence.request.journal_epoch)?;
+        let current = self.require(evidence.request.handle())?;
+        if current.request != evidence.request {
             return Err(SignerJournalError::ConflictingOperation(
-                request.operation_id,
+                evidence.request.operation_id,
             ));
         }
+        if current.dispatch != Some(evidence.dispatch) {
+            return Err(SignerJournalError::DispatchMismatch(
+                evidence.request.operation_id,
+            ));
+        }
+
         match current.state {
-            SigningOperationState::Dispatched | SigningOperationState::Indeterminate => {}
-            SigningOperationState::Confirmed {
-                receipt_digest: existing_receipt,
-                signature_digest: existing_signature,
-            } => {
-                if existing_receipt == receipt_digest && existing_signature == signature_digest {
-                    return Ok(current);
-                }
-                return Err(SignerJournalError::ReceiptMismatch(request.operation_id));
-            }
             SigningOperationState::Prepared => {
-                return Err(SignerJournalError::NotDispatched(request.operation_id));
+                return Err(SignerJournalError::NotDispatched(
+                    evidence.request.operation_id,
+                ));
             }
             SigningOperationState::Rejected { .. } => {
-                return Err(SignerJournalError::Terminal(request.operation_id));
+                return Err(SignerJournalError::Terminal(
+                    evidence.request.operation_id,
+                ));
             }
+            SigningOperationState::Dispatched
+            | SigningOperationState::Indeterminate
+            | SigningOperationState::Confirmed { .. } => {}
         }
-        if let Some(receipt_owner) = self.receipt_owners.get(&receipt_digest).copied() {
-            if receipt_owner != request.operation_id {
+
+        outcome_verifier
+            .verify_outcome(&evidence)
+            .map_err(SignerJournalError::OutcomeVerificationFailed)?;
+
+        if let SigningOperationState::Confirmed {
+            receipt_digest,
+            signature,
+            signature_digest,
+            provider_evidence_digest,
+        } = current.state
+        {
+            if receipt_digest == evidence.receipt_digest
+                && signature == evidence.signature
+                && signature_digest == evidence.signature_digest
+                && provider_evidence_digest == evidence.provider_evidence_digest
+            {
+                return Ok(current);
+            }
+            return Err(SignerJournalError::ReceiptMismatch(
+                evidence.request.operation_id,
+            ));
+        }
+
+        if let Some(receipt_owner) = self
+            .receipt_owners
+            .get(&evidence.receipt_digest)
+            .copied()
+        {
+            if receipt_owner != evidence.request.operation_id {
                 return Err(SignerJournalError::ReceiptReused {
                     receipt_owner,
-                    received_for: request.operation_id,
+                    received_for: evidence.request.operation_id,
                 });
             }
         } else if let Some(checkpoint) = self.checkpoint.as_ref() {
-            let verifier = verifier.ok_or(SignerJournalError::ArchiveVerificationRequired)?;
+            let verifier = archive_verifier
+                .ok_or(SignerJournalError::ArchiveVerificationRequired)?;
             if !verifier.verify_checkpoint(checkpoint) {
                 return Err(SignerJournalError::ArchiveVerificationFailed);
             }
-            if !verifier.receipt_is_absent(checkpoint, receipt_digest) {
+            if !verifier.receipt_is_absent(checkpoint, evidence.receipt_digest) {
                 return Err(SignerJournalError::ArchivedReceiptReused {
-                    received_for: request.operation_id,
+                    received_for: evidence.request.operation_id,
                 });
             }
         }
+
         let next = SigningOperationRecord {
             state: SigningOperationState::Confirmed {
-                receipt_digest,
-                signature_digest,
+                receipt_digest: evidence.receipt_digest,
+                signature: evidence.signature,
+                signature_digest: evidence.signature_digest,
+                provider_evidence_digest: evidence.provider_evidence_digest,
             },
             ..current
         };
-        self.records.insert(request.operation_id, next);
+        self.records.insert(evidence.request.operation_id, next);
         self.receipt_owners
-            .insert(receipt_digest, request.operation_id);
+            .insert(evidence.receipt_digest, evidence.request.operation_id);
         self.verify_invariants()?;
         Ok(next)
     }
@@ -598,6 +766,7 @@ impl SignerJournal {
             ..current
         };
         self.records.insert(handle.operation_id, next);
+        self.verify_invariants()?;
         Ok(next)
     }
 
@@ -629,6 +798,7 @@ impl SignerJournal {
         }
         let tombstone = SigningOperationTombstone {
             request: current.request,
+            dispatch: current.dispatch,
             state: current.state,
             archive_digest,
         };
@@ -737,9 +907,10 @@ impl SignerJournal {
             if record.request.operation_id != *operation_id
                 || record.request.journal_epoch != self.epoch
                 || self.tombstones.contains_key(operation_id)
+                || !record_shape_valid(*record)
             {
                 return Err(SignerJournalError::InvariantViolation(
-                    "active operation identity does not bind current epoch",
+                    "active operation identity or state is malformed",
                 ));
             }
         }
@@ -748,6 +919,11 @@ impl SignerJournal {
                 || tombstone.request.journal_epoch != self.epoch
                 || !tombstone.state.is_terminal()
                 || tombstone.archive_digest.iter().all(|byte| *byte == 0)
+                || !operation_shape_valid(
+                    tombstone.request,
+                    tombstone.dispatch,
+                    tombstone.state,
+                )
             {
                 return Err(SignerJournalError::InvariantViolation(
                     "terminal tombstone is malformed",
@@ -756,14 +932,14 @@ impl SignerJournal {
         }
         let mut expected_receipts = BTreeMap::new();
         for record in self.records.values() {
-            if let SigningOperationState::Confirmed { receipt_digest, .. } = record.state {
-                expected_receipts.insert(receipt_digest, record.request.operation_id);
-            }
+            collect_receipt(&mut expected_receipts, record.request, record.state)?;
         }
         for tombstone in self.tombstones.values() {
-            if let SigningOperationState::Confirmed { receipt_digest, .. } = tombstone.state {
-                expected_receipts.insert(receipt_digest, tombstone.request.operation_id);
-            }
+            collect_receipt(
+                &mut expected_receipts,
+                tombstone.request,
+                tombstone.state,
+            )?;
         }
         if expected_receipts != self.receipt_owners {
             return Err(SignerJournalError::InvariantViolation(
@@ -776,6 +952,7 @@ impl SignerJournal {
                     "checkpoint does not bind active epoch",
                 ));
             }
+            validate_checkpoint_shape(checkpoint, self.epoch_capacity)?;
         }
         Ok(())
     }
@@ -803,14 +980,14 @@ impl SignerJournal {
     }
 
     fn require_next_epoch(&self, received: SignerJournalEpoch) -> Result<(), SignerJournalError> {
-        let expected =
-            self.epoch
-                .get()
-                .checked_add(1)
-                .ok_or(SignerJournalError::EpochNotAdvanced {
-                    current: self.epoch,
-                    received,
-                })?;
+        let expected = self
+            .epoch
+            .get()
+            .checked_add(1)
+            .ok_or(SignerJournalError::EpochNotAdvanced {
+                current: self.epoch,
+                received,
+            })?;
         if received.get() != expected {
             Err(SignerJournalError::EpochNotAdvanced {
                 current: self.epoch,
@@ -856,15 +1033,28 @@ fn validate_checkpoint_shape(
             "zero checkpoint sequence",
         ));
     }
-    require_nonzero_digest("checkpoint_digest", checkpoint.checkpoint_digest)?;
-    if checkpoint
-        .previous_checkpoint_digest
-        .is_some_and(|digest| digest.iter().all(|byte| *byte == 0))
-    {
+    match (checkpoint.sequence, checkpoint.previous_checkpoint_digest) {
+        (1, None) => {}
+        (1, Some(_)) => {
+            return Err(SignerJournalError::CheckpointInvalid(
+                "first checkpoint must not name a predecessor",
+            ));
+        }
+        (_, None) => {
+            return Err(SignerJournalError::CheckpointInvalid(
+                "successor checkpoint requires a predecessor",
+            ));
+        }
+        (_, Some(previous)) => {
+            require_nonzero_digest("previous_checkpoint_digest", previous)?;
+        }
+    }
+    if checkpoint.sequence != checkpoint.retired_epoch.get() {
         return Err(SignerJournalError::CheckpointInvalid(
-            "zero previous checkpoint digest",
+            "checkpoint sequence does not match retired epoch",
         ));
     }
+    require_nonzero_digest("checkpoint_digest", checkpoint.checkpoint_digest)?;
     let expected_epoch = checkpoint.retired_epoch.get().checked_add(1).ok_or(
         SignerJournalError::CheckpointInvalid("retired epoch overflow"),
     )?;
@@ -881,12 +1071,18 @@ fn validate_checkpoint_shape(
             "tombstones exceed epoch capacity",
         ));
     }
+
     let mut tombstones = BTreeMap::new();
     let mut expected_receipts = BTreeMap::new();
     for tombstone in &checkpoint.tombstones {
         if tombstone.request.journal_epoch != checkpoint.retired_epoch
             || !tombstone.state.is_terminal()
             || tombstone.archive_digest.iter().all(|byte| *byte == 0)
+            || !operation_shape_valid(
+                tombstone.request,
+                tombstone.dispatch,
+                tombstone.state,
+            )
             || tombstones
                 .insert(tombstone.request.operation_id, *tombstone)
                 .is_some()
@@ -895,17 +1091,13 @@ fn validate_checkpoint_shape(
                 "malformed or duplicate tombstone",
             ));
         }
-        if let SigningOperationState::Confirmed { receipt_digest, .. } = tombstone.state {
-            if expected_receipts
-                .insert(receipt_digest, tombstone.request.operation_id)
-                .is_some()
-            {
-                return Err(SignerJournalError::CheckpointInvalid(
-                    "duplicate provider receipt",
-                ));
-            }
-        }
+        collect_receipt(
+            &mut expected_receipts,
+            tombstone.request,
+            tombstone.state,
+        )?;
     }
+
     let mut actual_receipts = BTreeMap::new();
     for binding in &checkpoint.receipt_bindings {
         require_nonzero_digest("receipt_digest", binding.receipt_digest)?;
@@ -926,7 +1118,68 @@ fn validate_checkpoint_shape(
     Ok(())
 }
 
-fn require_nonzero_digest(field: &'static str, digest: [u8; 32]) -> Result<(), SignerJournalError> {
+fn record_shape_valid(record: SigningOperationRecord) -> bool {
+    operation_shape_valid(record.request, record.dispatch, record.state)
+}
+
+fn operation_shape_valid(
+    request: SigningRequest,
+    dispatch: Option<SignerDispatchIdentity>,
+    state: SigningOperationState,
+) -> bool {
+    if request.validate().is_err() {
+        return false;
+    }
+    if let Some(value) = dispatch {
+        if value.validate().is_err() || value.request != request {
+            return false;
+        }
+    }
+    if state.requires_dispatch() != dispatch.is_some() {
+        return false;
+    }
+    match state {
+        SigningOperationState::Confirmed {
+            receipt_digest,
+            signature_digest,
+            provider_evidence_digest,
+            ..
+        } => {
+            !receipt_digest.iter().all(|byte| *byte == 0)
+                && !signature_digest.iter().all(|byte| *byte == 0)
+                && !provider_evidence_digest.iter().all(|byte| *byte == 0)
+        }
+        SigningOperationState::Rejected { reason_digest } => {
+            !reason_digest.iter().all(|byte| *byte == 0)
+        }
+        SigningOperationState::Prepared
+        | SigningOperationState::Dispatched
+        | SigningOperationState::Indeterminate => true,
+    }
+}
+
+fn collect_receipt(
+    receipts: &mut BTreeMap<[u8; 32], SigningOperationId>,
+    request: SigningRequest,
+    state: SigningOperationState,
+) -> Result<(), SignerJournalError> {
+    if let SigningOperationState::Confirmed { receipt_digest, .. } = state {
+        if receipts
+            .insert(receipt_digest, request.operation_id)
+            .is_some()
+        {
+            return Err(SignerJournalError::InvariantViolation(
+                "provider receipt has multiple owners",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_nonzero_digest(
+    field: &'static str,
+    digest: [u8; 32],
+) -> Result<(), SignerJournalError> {
     if digest.iter().all(|byte| *byte == 0) {
         Err(SignerJournalError::ZeroDigest(field))
     } else {
@@ -942,11 +1195,14 @@ mod tests {
     struct ExactArchiveVerifier {
         digest: u8,
         denied_receipt: Option<[u8; 32]>,
+        require_predecessor: bool,
     }
 
     impl SignerJournalArchiveVerifier for ExactArchiveVerifier {
         fn verify_checkpoint(&self, checkpoint: &SignerJournalCheckpoint) -> bool {
             checkpoint.checkpoint_digest[0] == self.digest
+                && (!self.require_predecessor
+                    || checkpoint.previous_checkpoint_digest.is_some())
         }
 
         fn receipt_is_absent(
@@ -958,10 +1214,41 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct ExactOutcomeVerifier {
+        expected: SignerOutcomeEvidence,
+    }
+
+    impl SignerOutcomeVerifier for ExactOutcomeVerifier {
+        fn verify_outcome(
+            &self,
+            evidence: &SignerOutcomeEvidence,
+        ) -> Result<(), SignerOutcomeVerificationError> {
+            if *evidence == self.expected {
+                Ok(())
+            } else {
+                Err(SignerOutcomeVerificationError::Unauthenticated)
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct RejectOutcomeVerifier;
+
+    impl SignerOutcomeVerifier for RejectOutcomeVerifier {
+        fn verify_outcome(
+            &self,
+            _evidence: &SignerOutcomeEvidence,
+        ) -> Result<(), SignerOutcomeVerificationError> {
+            Err(SignerOutcomeVerificationError::Unauthenticated)
+        }
+    }
+
     fn verifier(digest: u8) -> ExactArchiveVerifier {
         ExactArchiveVerifier {
             digest,
             denied_receipt: None,
+            require_predecessor: false,
         }
     }
 
@@ -983,15 +1270,43 @@ mod tests {
         }
     }
 
-    fn confirmed(
+    fn dispatch(request: SigningRequest, value: u8) -> SignerDispatchIdentity {
+        SignerDispatchIdentity {
+            request,
+            provider_identity_digest: [value; 32],
+            provider_endpoint_digest: [value.wrapping_add(1); 32],
+            attempt: 1,
+        }
+    }
+
+    fn evidence(
+        dispatch: SignerDispatchIdentity,
+        receipt: u8,
+    ) -> SignerOutcomeEvidence {
+        SignerOutcomeEvidence {
+            request: dispatch.request,
+            dispatch,
+            receipt_digest: [receipt; 32],
+            signature: Signature32::new([receipt.wrapping_add(1); 32]),
+            signature_digest: [receipt.wrapping_add(2); 32],
+            provider_evidence_digest: [receipt.wrapping_add(3); 32],
+        }
+    }
+
+    fn confirm(
         journal: &mut SignerJournal,
         request: SigningRequest,
-        receipt: u8,
+        marker: u8,
     ) -> SigningOperationRecord {
         journal.prepare(request).unwrap();
-        journal.dispatch(request.handle()).unwrap();
+        let dispatch = dispatch(request, marker);
+        journal.dispatch(dispatch).unwrap();
+        let evidence = evidence(dispatch, marker.wrapping_add(10));
         journal
-            .reconcile(request, [receipt; 32], [receipt.wrapping_add(1); 32])
+            .reconcile(
+                evidence,
+                &ExactOutcomeVerifier { expected: evidence },
+            )
             .unwrap()
     }
 
@@ -1014,23 +1329,141 @@ mod tests {
     }
 
     #[test]
-    fn response_loss_forbids_a_second_signing_dispatch() {
-        let mut journal = SignerJournal::new(2).unwrap();
+    fn forged_outcome_cannot_mutate_dispatched_operation() {
+        let mut journal = SignerJournal::new(1).unwrap();
         let request = request(journal.epoch(), 1);
         journal.prepare(request).unwrap();
-        journal.dispatch(request.handle()).unwrap();
-        journal.mark_transport_lost(request.handle()).unwrap();
+        let dispatch = dispatch(request, 20);
+        let dispatched = journal.dispatch(dispatch).unwrap();
+        let authentic = evidence(dispatch, 30);
+        let mut forged = authentic;
+        forged.receipt_digest = [31; 32];
+
         assert_eq!(
-            journal.dispatch(request.handle()),
-            Err(SignerJournalError::IndeterminateRequiresReconciliation(
-                operation(1)
+            journal.reconcile(
+                forged,
+                &ExactOutcomeVerifier {
+                    expected: authentic,
+                },
+            ),
+            Err(SignerJournalError::OutcomeVerificationFailed(
+                SignerOutcomeVerificationError::Unauthenticated,
             ))
         );
-        let confirmed = journal.reconcile(request, [7; 32], [8; 32]).unwrap();
+        assert_eq!(journal.record(request.handle()).unwrap(), Some(dispatched));
+        assert_eq!(journal.receipt_binding_len(), 0);
+    }
+
+    #[test]
+    fn wrong_request_provider_endpoint_or_attempt_fails_without_mutation() {
+        let mut journal = SignerJournal::new(1).unwrap();
+        let request = request(journal.epoch(), 1);
+        journal.prepare(request).unwrap();
+        let dispatch = dispatch(request, 20);
+        let dispatched = journal.dispatch(dispatch).unwrap();
+        let authentic = evidence(dispatch, 30);
+
+        let mut wrong_request = authentic;
+        wrong_request.request.payload_digest = [99; 32];
+        let mut wrong_provider = authentic;
+        wrong_provider.dispatch.provider_identity_digest = [99; 32];
+        let mut wrong_endpoint = authentic;
+        wrong_endpoint.dispatch.provider_endpoint_digest = [99; 32];
+        let mut wrong_attempt = authentic;
+        wrong_attempt.dispatch.attempt = 2;
+
+        for candidate in [
+            wrong_request,
+            wrong_provider,
+            wrong_endpoint,
+            wrong_attempt,
+        ] {
+            assert!(matches!(
+                journal.reconcile(
+                    candidate,
+                    &ExactOutcomeVerifier {
+                        expected: authentic,
+                    },
+                ),
+                Err(SignerJournalError::ConflictingOperation(_))
+                    | Err(SignerJournalError::DispatchMismatch(_))
+                    | Err(SignerJournalError::OutcomeBindingMismatch(_))
+                    | Err(SignerJournalError::OutcomeVerificationFailed(_))
+            ));
+            assert_eq!(journal.record(request.handle()).unwrap(), Some(dispatched));
+            assert_eq!(journal.receipt_binding_len(), 0);
+        }
+    }
+
+    #[test]
+    fn signature_bytes_and_digest_are_authenticated_together() {
+        let mut journal = SignerJournal::new(1).unwrap();
+        let request = request(journal.epoch(), 1);
+        journal.prepare(request).unwrap();
+        let dispatch = dispatch(request, 20);
+        journal.dispatch(dispatch).unwrap();
+        let authentic = evidence(dispatch, 30);
+
+        let mut wrong_signature = authentic;
+        wrong_signature.signature = Signature32::new([77; 32]);
+        assert!(matches!(
+            journal.reconcile(
+                wrong_signature,
+                &ExactOutcomeVerifier {
+                    expected: authentic,
+                },
+            ),
+            Err(SignerJournalError::OutcomeVerificationFailed(_))
+        ));
+
+        let mut wrong_digest = authentic;
+        wrong_digest.signature_digest = [78; 32];
+        assert!(matches!(
+            journal.reconcile(
+                wrong_digest,
+                &ExactOutcomeVerifier {
+                    expected: authentic,
+                },
+            ),
+            Err(SignerJournalError::OutcomeVerificationFailed(_))
+        ));
+        assert_eq!(journal.receipt_binding_len(), 0);
+    }
+
+    #[test]
+    fn response_loss_forbids_redispatch_and_requires_authenticated_reconciliation() {
+        let mut journal = SignerJournal::new(1).unwrap();
+        let request = request(journal.epoch(), 1);
+        journal.prepare(request).unwrap();
+        let dispatch = dispatch(request, 20);
+        journal.dispatch(dispatch).unwrap();
+        journal.mark_transport_lost(request.handle()).unwrap();
         assert_eq!(
-            journal.reconcile(request, [7; 32], [8; 32]).unwrap(),
+            journal.dispatch(dispatch),
+            Err(SignerJournalError::IndeterminateRequiresReconciliation(
+                operation(1),
+            ))
+        );
+        let evidence = evidence(dispatch, 30);
+        let confirmed = journal
+            .reconcile(
+                evidence,
+                &ExactOutcomeVerifier { expected: evidence },
+            )
+            .unwrap();
+        assert_eq!(
+            journal
+                .reconcile(
+                    evidence,
+                    &ExactOutcomeVerifier { expected: evidence },
+                )
+                .unwrap(),
             confirmed
         );
+        assert!(matches!(
+            journal.reconcile(evidence, &RejectOutcomeVerifier),
+            Err(SignerJournalError::OutcomeVerificationFailed(_))
+        ));
     }
 
     #[test]
@@ -1038,13 +1471,30 @@ mod tests {
         let mut journal = SignerJournal::new(2).unwrap();
         let one = request(journal.epoch(), 1);
         let two = request(journal.epoch(), 2);
-        for request in [one, two] {
-            journal.prepare(request).unwrap();
-            journal.dispatch(request.handle()).unwrap();
-        }
-        journal.reconcile(one, [7; 32], [8; 32]).unwrap();
+        journal.prepare(one).unwrap();
+        journal.prepare(two).unwrap();
+        let dispatch_one = dispatch(one, 20);
+        let dispatch_two = dispatch(two, 21);
+        journal.dispatch(dispatch_one).unwrap();
+        journal.dispatch(dispatch_two).unwrap();
+        let evidence_one = evidence(dispatch_one, 30);
+        journal
+            .reconcile(
+                evidence_one,
+                &ExactOutcomeVerifier {
+                    expected: evidence_one,
+                },
+            )
+            .unwrap();
+        let mut evidence_two = evidence(dispatch_two, 31);
+        evidence_two.receipt_digest = evidence_one.receipt_digest;
         assert_eq!(
-            journal.reconcile(two, [7; 32], [9; 32]),
+            journal.reconcile(
+                evidence_two,
+                &ExactOutcomeVerifier {
+                    expected: evidence_two,
+                },
+            ),
             Err(SignerJournalError::ReceiptReused {
                 receipt_owner: operation(1),
                 received_for: operation(2),
@@ -1061,7 +1511,7 @@ mod tests {
         let mut journal = SignerJournal::with_limits(2, 2).unwrap();
         let one = request(journal.epoch(), 1);
         let two = request(journal.epoch(), 2);
-        confirmed(&mut journal, one, 7);
+        confirm(&mut journal, one, 20);
         journal.prepare(two).unwrap();
         journal
             .reject_before_dispatch(two.handle(), [4; 32])
@@ -1077,14 +1527,13 @@ mod tests {
     fn full_epoch_rejects_new_admission_but_can_advance() {
         let mut journal = SignerJournal::with_limits(1, 1).unwrap();
         let one = request(journal.epoch(), 1);
-        confirmed(&mut journal, one, 7);
+        confirm(&mut journal, one, 20);
         journal.archive_terminal(one.handle(), [10; 32]).unwrap();
         let two = request(journal.epoch(), 2);
         assert_eq!(
             journal.prepare(two),
             Err(SignerJournalError::EpochCapacityExceeded { capacity: 1 })
         );
-        assert_eq!(journal.len(), 0);
         let checkpoint = journal
             .advance_epoch(epoch(2), [12; 32], &verifier(12))
             .unwrap();
@@ -1093,62 +1542,52 @@ mod tests {
     }
 
     #[test]
-    fn operation_id_reuse_requires_new_epoch_and_old_handle_is_fenced() {
+    fn archived_receipt_replay_requires_durable_absence_proof() {
         let mut journal = SignerJournal::with_limits(1, 1).unwrap();
         let old = request(journal.epoch(), 1);
-        confirmed(&mut journal, old, 7);
+        let confirmed = confirm(&mut journal, old, 20);
+        let receipt = match confirmed.state {
+            SigningOperationState::Confirmed { receipt_digest, .. } => receipt_digest,
+            _ => panic!("confirmed helper returned non-terminal state"),
+        };
         journal.archive_terminal(old.handle(), [10; 32]).unwrap();
         journal
             .advance_epoch(epoch(2), [12; 32], &verifier(12))
             .unwrap();
-        let current = request(journal.epoch(), 1);
-        journal.prepare(current).unwrap();
-        assert_eq!(
-            journal.dispatch(old.handle()),
-            Err(SignerJournalError::EpochMismatch {
-                current: epoch(2),
-                received: epoch(1),
-            })
-        );
-        journal.dispatch(current.handle()).unwrap();
-    }
 
-    #[test]
-    fn archived_receipt_replay_requires_and_obeys_durable_absence_proof() {
-        let mut journal = SignerJournal::with_limits(1, 1).unwrap();
-        let old = request(journal.epoch(), 1);
-        confirmed(&mut journal, old, 7);
-        journal.archive_terminal(old.handle(), [10; 32]).unwrap();
-        journal
-            .advance_epoch(epoch(2), [12; 32], &verifier(12))
-            .unwrap();
         let current = request(journal.epoch(), 2);
         journal.prepare(current).unwrap();
-        journal.dispatch(current.handle()).unwrap();
+        let dispatch = dispatch(current, 21);
+        journal.dispatch(dispatch).unwrap();
+        let mut replay = evidence(dispatch, 31);
+        replay.receipt_digest = receipt;
+        let outcome_verifier = ExactOutcomeVerifier { expected: replay };
         assert_eq!(
-            journal.reconcile(current, [7; 32], [9; 32]),
+            journal.reconcile(replay, &outcome_verifier),
             Err(SignerJournalError::ArchiveVerificationRequired)
         );
         let deny = ExactArchiveVerifier {
             digest: 12,
-            denied_receipt: Some([7; 32]),
+            denied_receipt: Some(receipt),
+            require_predecessor: false,
         };
         assert_eq!(
-            journal.reconcile_with_archive_verifier(current, [7; 32], [9; 32], &deny),
+            journal.reconcile_with_archive_verifier(
+                replay,
+                &outcome_verifier,
+                &deny,
+            ),
             Err(SignerJournalError::ArchivedReceiptReused {
                 received_for: operation(2),
             })
         );
-        journal
-            .reconcile_with_archive_verifier(current, [8; 32], [9; 32], &verifier(12))
-            .unwrap();
     }
 
     #[test]
     fn checkpoint_restore_preserves_epoch_and_archive_chain() {
         let mut journal = SignerJournal::with_limits(1, 1).unwrap();
         let request = request(journal.epoch(), 1);
-        confirmed(&mut journal, request, 7);
+        confirm(&mut journal, request, 20);
         journal
             .archive_terminal(request.handle(), [10; 32])
             .unwrap();
@@ -1163,10 +1602,84 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_shape_rejects_orphan_and_first_with_predecessor() {
+        let mut journal = SignerJournal::with_limits(1, 1).unwrap();
+        let request = request(journal.epoch(), 1);
+        confirm(&mut journal, request, 20);
+        journal
+            .archive_terminal(request.handle(), [10; 32])
+            .unwrap();
+        let valid = journal.propose_checkpoint(epoch(2), [12; 32]).unwrap();
+
+        let mut first_with_predecessor = valid.clone();
+        first_with_predecessor.previous_checkpoint_digest = Some([11; 32]);
+        assert!(matches!(
+            SignerJournal::from_checkpoint(
+                1,
+                1,
+                first_with_predecessor,
+                &verifier(12),
+            ),
+            Err(SignerJournalError::CheckpointInvalid(
+                "first checkpoint must not name a predecessor",
+            ))
+        ));
+
+        let mut orphan = valid;
+        orphan.sequence = 2;
+        orphan.retired_epoch = epoch(2);
+        orphan.active_epoch = epoch(3);
+        orphan.previous_checkpoint_digest = None;
+        assert!(matches!(
+            SignerJournal::from_checkpoint(1, 1, orphan, &verifier(12)),
+            Err(SignerJournalError::CheckpointInvalid(
+                "successor checkpoint requires a predecessor",
+            ))
+        ));
+    }
+
+    #[test]
+    fn second_checkpoint_binds_authenticated_predecessor() {
+        let mut journal = SignerJournal::with_limits(1, 1).unwrap();
+        let first_request = request(journal.epoch(), 1);
+        confirm(&mut journal, first_request, 20);
+        journal
+            .archive_terminal(first_request.handle(), [10; 32])
+            .unwrap();
+        journal
+            .advance_epoch(epoch(2), [12; 32], &verifier(12))
+            .unwrap();
+
+        let second_request = request(journal.epoch(), 2);
+        journal.prepare(second_request).unwrap();
+        journal
+            .reject_before_dispatch(second_request.handle(), [4; 32])
+            .unwrap();
+        journal
+            .archive_terminal(second_request.handle(), [11; 32])
+            .unwrap();
+        let second = journal.propose_checkpoint(epoch(3), [13; 32]).unwrap();
+        assert_eq!(second.sequence, 2);
+        assert_eq!(second.previous_checkpoint_digest, Some([12; 32]));
+        assert!(verifier(13).verify_checkpoint(&second));
+        assert!(
+            !(ExactArchiveVerifier {
+                digest: 13,
+                denied_receipt: None,
+                require_predecessor: true,
+            })
+            .verify_checkpoint(&SignerJournalCheckpoint {
+                previous_checkpoint_digest: None,
+                ..second
+            })
+        );
+    }
+
+    #[test]
     fn unverified_checkpoint_fails_without_mutation() {
         let mut journal = SignerJournal::with_limits(1, 1).unwrap();
         let request = request(journal.epoch(), 1);
-        confirmed(&mut journal, request, 7);
+        confirm(&mut journal, request, 20);
         journal
             .archive_terminal(request.handle(), [10; 32])
             .unwrap();
@@ -1178,18 +1691,6 @@ mod tests {
         );
         assert_eq!(journal.epoch(), before_epoch);
         assert_eq!(journal.tombstone_len(), before_tombstones);
-    }
-
-    #[test]
-    fn epoch_advance_requires_all_active_records_to_be_terminal_and_archived() {
-        let mut journal = SignerJournal::with_limits(1, 1).unwrap();
-        let request = request(journal.epoch(), 1);
-        journal.prepare(request).unwrap();
-        assert_eq!(
-            journal.advance_epoch(epoch(2), [12; 32], &verifier(12)),
-            Err(SignerJournalError::ActiveRecordsPreventEpochAdvance)
-        );
-        assert_eq!(journal.epoch(), epoch(1));
     }
 
     #[test]
