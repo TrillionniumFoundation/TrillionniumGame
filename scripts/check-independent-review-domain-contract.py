@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -136,8 +135,9 @@ EXPECTED_DOMAINS: dict[str, dict[str, frozenset[str]]] = {
     },
 }
 
-# This is a closed-world mapping from every protected path declaration to the
-# exact CODEOWNERS rule expected to be effective under GitHub's last-match rule.
+# Closed-world declaration from each protected path to the CODEOWNERS rule that
+# owns it. The complete ordered rule file is pinned separately below, so a
+# narrower later rule cannot silently alter any subset of a protected glob.
 EXPECTED_DOMAIN_CODEOWNER_PATTERNS: dict[str, dict[str, str]] = {
     "governance": {
         ".github/**": "/.github/",
@@ -201,13 +201,63 @@ EXPECTED_DOMAIN_CODEOWNER_PATTERNS: dict[str, dict[str, str]] = {
     },
 }
 
-# Additional independently qualified owners may be added later, but these
-# candidate-conflicted routes cannot silently disappear from the effective rule.
 REQUIRED_OWNER_LOGINS = frozenset({
     "profhepta",
     "franksudoman",
     "tomasrgbsf",
 })
+
+# GitHub uses last matching rule. Therefore checking a finite set of witness
+# paths is insufficient: a later exact-file or narrow-glob rule can change a
+# subset without matching a witness. Pin the complete normalized ordered rule
+# sequence instead. Comments and blank lines remain non-semantic; every
+# effective pattern and its position are closed-world. Every rule must retain
+# all candidate-conflicted routes; additional owners gain no capacity without
+# separate candidate-bound role qualification.
+EXPECTED_CODEOWNER_PATTERN_SEQUENCE = (
+    "*",
+    "/.github/",
+    "/CURRENT_PLAN.md",
+    "/PROJECT_BOUNDARY.*",
+    "/docs/DOCUMENTATION_AUTHORITY.json",
+    "/docs/GOVERNANCE.md",
+    "/docs/TESTING_AND_EVIDENCE.md",
+    "/docs/governance/",
+    "/docs/evidence/",
+    "/docs/review/",
+    "/docs/status/",
+    "/scripts/check-plan.py",
+    "/scripts/check-status-transitions.py",
+    "/scripts/derive-gates.py",
+    "/migrations/",
+    "/database/",
+    "/crates/trnm-persistence-core/",
+    "/crates/trnm-persistence-pg/",
+    "/crates/trnm-persistence-runtime-policy/",
+    "/docs/development/SCHEMA_AUTHORITY.json",
+    "/SECURITY.md",
+    "/docs/SECURITY_AND_PRIVACY.md",
+    "/crates/trnm-token-core/",
+    "/crates/trnm-token-jwt-adapter/",
+    "/crates/trnm-token-jwt-adapter-gate/",
+    "/crates/trnm-token-jwt-adapter-gate-v2/",
+    "/crates/trnm-token-crypto-provider/",
+    "/crates/trnm-token-jwt-provider-adapter/",
+    "/crates/trnm-session-core/",
+    "/contracts/",
+    "/crates/trnm-contracts/",
+    "/crates/trnm-canonical-core/",
+    "/crates/trnm-transport-core/",
+    "/crates/trnm-realtime-wire/",
+    "/docs/COMPATIBILITY.md",
+    "/crates/trnm-presence-core/",
+    "/crates/trnm-presence-router-v2/",
+    "/runtime/",
+    "/deploy/",
+    "/compose.yaml",
+    "/docs/OPERATIONS_AND_RELEASE.md",
+)
+EXPECTED_CODEOWNERS_RULES = EXPECTED_CODEOWNER_PATTERN_SEQUENCE
 
 
 class DomainContractError(RuntimeError):
@@ -262,6 +312,7 @@ def parse_codeowners(path: Path) -> list[tuple[str, frozenset[str], int]]:
     except OSError as error:
         raise DomainContractError(f"{path}: {error}") from error
     rules: list[tuple[str, frozenset[str], int]] = []
+    seen_patterns: set[str] = set()
     for number, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -276,6 +327,11 @@ def parse_codeowners(path: Path) -> list[tuple[str, frozenset[str], int]]:
             not pattern.startswith("!") and "[" not in pattern and "]" not in pattern,
             f"CODEOWNERS line {number}: unsupported pattern syntax",
         )
+        require(
+            pattern not in seen_patterns,
+            f"CODEOWNERS line {number}: duplicate pattern",
+        )
+        seen_patterns.add(pattern)
         owners = [item[1:].casefold() for item in parts[1:] if item.startswith("@")]
         require(
             len(owners) == len(parts) - 1 and all(owners),
@@ -290,57 +346,42 @@ def parse_codeowners(path: Path) -> list[tuple[str, frozenset[str], int]]:
     return rules
 
 
-def pattern_regex(pattern: str) -> re.Pattern[str]:
-    if pattern == "*":
-        return re.compile(r"^.*$")
-    rooted = pattern.startswith("/")
-    raw = pattern[1:] if rooted else pattern
-    if raw.endswith("/"):
-        raw += "**"
-    pieces: list[str] = []
-    offset = 0
-    while offset < len(raw):
-        token = raw[offset]
-        if token == "*":
-            if offset + 1 < len(raw) and raw[offset + 1] == "*":
-                pieces.append(".*")
-                offset += 2
-            else:
-                pieces.append("[^/]*")
-                offset += 1
-        elif token == "?":
-            pieces.append("[^/]")
-            offset += 1
-        else:
-            pieces.append(re.escape(token))
-            offset += 1
-    body = "".join(pieces)
-    if not rooted and "/" not in raw:
-        return re.compile(r"^(?:.*/)?" + body + r"$")
-    return re.compile("^" + body + "$")
-
-
-def matches(pattern: str, repository_path: str) -> bool:
-    return pattern_regex(pattern).fullmatch(repository_path) is not None
-
-
-def witnesses(protected_path: str) -> tuple[str, ...]:
-    if protected_path.endswith("/**"):
-        prefix = protected_path[:-2]
-        return (
-            prefix + "__domain_contract__",
-            prefix + "nested/__domain_contract__",
-        )
-    return (protected_path,)
-
-
-def effective_rule(
+def validate_codeowners_rule_sequence(
     rules: list[tuple[str, frozenset[str], int]],
-    repository_path: str,
-) -> tuple[str, frozenset[str], int]:
-    matched = [rule for rule in rules if matches(rule[0], repository_path)]
-    require(matched, f"CODEOWNERS has no effective rule for {repository_path}")
-    return matched[-1]
+) -> None:
+    observed = tuple(pattern for pattern, _owners, _line in rules)
+    if observed != EXPECTED_CODEOWNERS_RULES:
+        common = min(len(observed), len(EXPECTED_CODEOWNERS_RULES))
+        mismatch = next(
+            (
+                index
+                for index in range(common)
+                if observed[index] != EXPECTED_CODEOWNERS_RULES[index]
+            ),
+            common,
+        )
+        expected_item = (
+            EXPECTED_CODEOWNERS_RULES[mismatch]
+            if mismatch < len(EXPECTED_CODEOWNERS_RULES)
+            else None
+        )
+        observed_item = observed[mismatch] if mismatch < len(observed) else None
+        observed_line = rules[mismatch][2] if mismatch < len(rules) else None
+        raise DomainContractError(
+            "CODEOWNERS normalized rule sequence drift: "
+            f"index={mismatch}, line={observed_line}, "
+            f"expected={expected_item!r}, observed={observed_item!r}, "
+            f"expected_count={len(EXPECTED_CODEOWNERS_RULES)}, "
+            f"observed_count={len(observed)}"
+        )
+
+    for pattern, owners, line in rules:
+        require(
+            REQUIRED_OWNER_LOGINS <= owners,
+            f"CODEOWNERS pattern {pattern} at line {line} lacks "
+            "conflict-surviving review routes; "
+            f"missing={sorted(REQUIRED_OWNER_LOGINS - owners)}",
+        )
 
 
 def effective_domain_owners(
@@ -351,6 +392,12 @@ def effective_domain_owners(
         "domain-to-CODEOWNERS domain set drift",
     )
     rules = parse_codeowners(codeowners_path)
+    validate_codeowners_rule_sequence(rules)
+    owners_by_pattern = {
+        pattern: owners
+        for pattern, owners, _line in rules
+    }
+
     result: dict[str, dict[str, frozenset[str]]] = {}
     for domain_id, expected in EXPECTED_DOMAINS.items():
         mappings = EXPECTED_DOMAIN_CODEOWNER_PATTERNS[domain_id]
@@ -360,30 +407,19 @@ def effective_domain_owners(
         )
         bound: dict[str, frozenset[str]] = {}
         for protected_path, expected_pattern in mappings.items():
-            observed_owners: frozenset[str] | None = None
-            for witness in witnesses(protected_path):
-                pattern, owners, line = effective_rule(rules, witness)
-                require(
-                    pattern == expected_pattern,
-                    f"{domain_id}: effective CODEOWNERS pattern drift for "
-                    f"{protected_path} at witness {witness}; "
-                    f"expected={expected_pattern!r}, observed={pattern!r}, line={line}",
-                )
-                require(
-                    REQUIRED_OWNER_LOGINS <= owners,
-                    f"{domain_id}: CODEOWNERS pattern {pattern} lacks "
-                    "conflict-surviving review routes; "
-                    f"missing={sorted(REQUIRED_OWNER_LOGINS - owners)}",
-                )
-                if observed_owners is None:
-                    observed_owners = owners
-                else:
-                    require(
-                        observed_owners == owners,
-                        f"{domain_id}: CODEOWNERS owners vary inside {protected_path}",
-                    )
-            assert observed_owners is not None
-            bound[protected_path] = observed_owners
+            owners = owners_by_pattern.get(expected_pattern)
+            require(
+                owners is not None,
+                f"{domain_id}: expected CODEOWNERS pattern missing: "
+                f"{expected_pattern}",
+            )
+            require(
+                REQUIRED_OWNER_LOGINS <= owners,
+                f"{domain_id}: CODEOWNERS pattern {expected_pattern} lacks "
+                "conflict-surviving review routes; "
+                f"missing={sorted(REQUIRED_OWNER_LOGINS - owners)}",
+            )
+            bound[protected_path] = owners
         result[domain_id] = bound
     return result
 
@@ -447,6 +483,7 @@ def validate(
     return {
         "domain_contract_valid": True,
         "codeowners_contract_valid": True,
+        "codeowners_rule_count": len(EXPECTED_CODEOWNERS_RULES),
         "domain_count": len(EXPECTED_DOMAINS),
         "required_role_count": role_count,
         "protected_path_assignments": path_count,
