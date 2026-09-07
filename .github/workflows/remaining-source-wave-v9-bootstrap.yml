@@ -1,4 +1,4 @@
-# layered-manifest-repin-v2
+# exact-diff-workflow-repin-v3
 name: remaining-source-wave-v9-bootstrap
 
 on:
@@ -44,11 +44,12 @@ jobs:
           test "$(git -C "$tooling" rev-parse HEAD)" = "$GITHUB_SHA"
           rewrite="$tooling/scripts/tooling/rewrite-remaining-source-wave-v7.py"
           source_workflow="$tooling/.github/workflows/remaining-source-wave-v5-bootstrap.yml"
-          repin="$tooling/tools/repin-canonical-server-wave-v9.py"
+          repin="$tooling/tools/repin-canonical-server-wave-v10.py"
           for path in \
             "$rewrite" \
             "$source_workflow" \
             "$repin" \
+            "$tooling/tools/repin-canonical-server-wave-v9.py" \
             "$tooling/tools/apply-canonical-server-authority-v5.py" \
             "$tooling/tools/apply-canonical-server-authority-v6.py" \
             "$tooling/tools/apply-canonical-server-authority-v7.py"; do
@@ -56,6 +57,7 @@ jobs:
           done
           python3 -m py_compile \
             "$rewrite" "$repin" \
+            "$tooling/tools/repin-canonical-server-wave-v9.py" \
             "$tooling/tools/apply-canonical-server-authority-v5.py" \
             "$tooling/tools/apply-canonical-server-authority-v6.py" \
             "$tooling/tools/apply-canonical-server-authority-v7.py"
@@ -82,7 +84,7 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
-          python3 "$TOOLING_ROOT/tools/repin-canonical-server-wave-v9.py" "$GITHUB_WORKSPACE/source"
+          python3 "$TOOLING_ROOT/tools/repin-canonical-server-wave-v10.py" "$GITHUB_WORKSPACE/source"
           python3 scripts/check-gap-register.py
           python3 -m unittest -v \
             tests.control_plane.test_required_workflow_source_contract \
