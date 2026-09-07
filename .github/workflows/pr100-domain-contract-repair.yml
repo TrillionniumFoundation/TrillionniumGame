@@ -1,0 +1,399 @@
+name: pr100-domain-contract-repair
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr100-domain-contract-repair-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CANDIDATE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  TARGET_BRANCH: codex/reviewer-conflict-capacity-fix-2026-09-07
+  EXPECTED_TARGET_HEAD: d6f0e0cae4bb951097ae7916e98523bbf4522058
+
+jobs:
+  repair-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Fetch exact tooling candidate without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${CANDIDATE_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin \
+            "${CANDIDATE_SHA}"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+      - name: Patch exact target in detached worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          observed="$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
+          test "$observed" = "$EXPECTED_TARGET_HEAD"
+          git fetch --no-tags --depth=1 origin "$EXPECTED_TARGET_HEAD"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$EXPECTED_TARGET_HEAD"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          validator_path = Path("scripts/check-independent-review-matrix.py")
+          tests_path = Path("tests/control_plane/test_independent_review_matrix.py")
+          matrix_path = Path("docs/review/INDEPENDENT_REVIEW_MATRIX.json")
+          owners_path = Path(".github/CODEOWNERS")
+
+          matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+          owner_patterns = []
+          for raw in owners_path.read_text(encoding="utf-8").splitlines():
+              line = raw.strip()
+              if line and not line.startswith("#"):
+                  owner_patterns.append(line.split()[0])
+
+          def covering_pattern(path: str) -> str:
+              normalized = path.lstrip("/")
+              if normalized.endswith("/**"):
+                  normalized = normalized[:-2]
+              candidates = []
+              for pattern in owner_patterns:
+                  if pattern == "*":
+                      candidates.append(pattern)
+                      continue
+                  raw = pattern.lstrip("/")
+                  if pattern.endswith("/") and normalized.startswith(raw):
+                      candidates.append(pattern)
+                  elif "*" not in pattern and normalized == raw:
+                      candidates.append(pattern)
+              if not candidates:
+                  raise SystemExit(f"no CODEOWNERS coverage for {path}")
+              return max(candidates, key=len)
+
+          specs = {}
+          for domain in matrix["domains"]:
+              specs[domain["id"]] = {
+                  "required_roles": tuple(sorted(domain["required_roles"])),
+                  "protected_paths": tuple(sorted(domain["protected_paths"])),
+                  "blocking_gaps": tuple(sorted(domain["blocking_gaps"])),
+                  "codeowner_patterns": tuple(
+                      sorted({covering_pattern(path) for path in domain["protected_paths"]})
+                  ),
+              }
+
+          def frozen(values: tuple[str, ...]) -> str:
+              return f"frozenset({values!r})"
+
+          rows = [
+              "# Canonical candidate-review contract. This mapping is independent of",
+              "# the matrix being validated: deleting or exchanging a domain, role,",
+              "# protected path, blocking gap or CODEOWNERS route is contract drift.",
+              "EXPECTED_DOMAINS: dict[str, dict[str, frozenset[str]]] = {",
+          ]
+          for domain_id in sorted(specs):
+              rows.append(f"    {domain_id!r}: {{")
+              for field in (
+                  "required_roles",
+                  "protected_paths",
+                  "blocking_gaps",
+                  "codeowner_patterns",
+              ):
+                  rows.append(f"        {field!r}: {frozen(specs[domain_id][field])},")
+              rows.append("    },")
+          rows.append("}")
+          constant = "\n".join(rows)
+
+          validator = validator_path.read_text(encoding="utf-8")
+          anchor = "\n\nclass ReviewMatrixError(RuntimeError):"
+          if "EXPECTED_DOMAINS:" in validator:
+              raise SystemExit("EXPECTED_DOMAINS already present")
+          if anchor not in validator:
+              raise SystemExit("validator constant insertion anchor missing")
+          validator = validator.replace(anchor, f"\n\n{constant}{anchor}", 1)
+
+          start = validator.index("def domain_role_map(domains: Any)")
+          end = validator.index("\n\ndef qualification_evidence", start)
+          replacement = '''def domain_role_map(domains: Any) -> dict[str, frozenset[str]]:
+              require(isinstance(domains, list) and domains, "review domains required")
+              result: dict[str, frozenset[str]] = {}
+              for index, domain in enumerate(domains):
+                  label = f"domains[{index}]"
+                  require(isinstance(domain, dict), f"{label}: object required")
+                  domain_id = domain.get("id")
+                  require(
+                      isinstance(domain_id, str)
+                      and IDENTIFIER.fullmatch(domain_id) is not None
+                      and domain_id not in result,
+                      f"{label}: invalid or duplicate domain id",
+                  )
+                  expected = EXPECTED_DOMAINS.get(domain_id)
+                  require(expected is not None, f"{label}: unknown review domain")
+                  roles = string_list(
+                      domain.get("required_roles"), f"{domain_id}.required_roles"
+                  )
+                  paths = string_list(
+                      domain.get("protected_paths"), f"{domain_id}.protected_paths"
+                  )
+                  blocking_gaps = string_list(
+                      domain.get("blocking_gaps"), f"{domain_id}.blocking_gaps"
+                  )
+                  require(
+                      all(IDENTIFIER.fullmatch(role) is not None for role in roles),
+                      f"{domain_id}: invalid role identifier",
+                  )
+                  require(
+                      frozenset(roles) == expected["required_roles"],
+                      f"{domain_id}: required roles drift",
+                  )
+                  require(
+                      frozenset(paths) == expected["protected_paths"],
+                      f"{domain_id}: protected paths drift",
+                  )
+                  require(
+                      frozenset(blocking_gaps) == expected["blocking_gaps"],
+                      f"{domain_id}: blocking gaps drift",
+                  )
+                  result[domain_id] = frozenset(roles)
+              missing = sorted(set(EXPECTED_DOMAINS) - set(result))
+              extra = sorted(set(result) - set(EXPECTED_DOMAINS))
+              require(
+                  not missing and not extra,
+                  f"review domain set mismatch: missing={missing}, extra={extra}",
+              )
+              return result
+          '''
+          # The source replacement is deliberately dedented after the literal.
+          import textwrap
+          validator = validator[:start] + textwrap.dedent(replacement) + validator[end:]
+
+          old = '''    for pattern in REQUIRED_CODEOWNER_PATTERNS:
+              require(
+                  expected_owners <= codeowners[pattern],
+                  f"CODEOWNERS pattern {pattern} lacks conflict-surviving review routes",
+              )
+
+              domain_ids: set[str] = set()
+          '''
+          old = textwrap.dedent(old)
+          new = '''    for pattern in REQUIRED_CODEOWNER_PATTERNS:
+              require(
+                  expected_owners <= codeowners[pattern],
+                  f"CODEOWNERS pattern {pattern} lacks conflict-surviving review routes",
+              )
+              for domain_id, expected in EXPECTED_DOMAINS.items():
+                  missing_domain_patterns = sorted(
+                      expected["codeowner_patterns"] - set(codeowners)
+                  )
+                  require(
+                      not missing_domain_patterns,
+                      f"{domain_id}: CODEOWNERS missing expected domain patterns "
+                      f"{missing_domain_patterns}",
+                  )
+                  for pattern in expected["codeowner_patterns"]:
+                      require(
+                          expected_owners <= codeowners[pattern],
+                          f"{domain_id}: CODEOWNERS pattern {pattern} lacks "
+                          "conflict-surviving review routes",
+                      )
+
+              domain_ids: set[str] = set()
+          '''
+          new = textwrap.dedent(new)
+          if old not in validator:
+              raise SystemExit("CODEOWNERS contract anchor missing")
+          validator = validator.replace(old, new, 1)
+
+          old = '''            for pattern in REQUIRED_CODEOWNER_PATTERNS:
+                          require(
+                              owner in codeowners[pattern],
+                              f"{domain_id}: eligible reviewer {user_id} is not a CODEOWNER route",
+                          )
+          '''
+          old = textwrap.dedent(old)
+          new = '''            for pattern in EXPECTED_DOMAINS[domain_id]["codeowner_patterns"]:
+                          require(
+                              owner in codeowners[pattern],
+                              f"{domain_id}: eligible reviewer {user_id} is not a CODEOWNER route",
+                          )
+          '''
+          new = textwrap.dedent(new)
+          if old not in validator:
+              raise SystemExit("eligible CODEOWNERS anchor missing")
+          validator = validator.replace(old, new, 1)
+          validator_path.write_text(validator, encoding="utf-8")
+
+          tests = tests_path.read_text(encoding="utf-8")
+          marker = '\n\nif __name__ == "__main__":\n'
+          if marker not in tests:
+              raise SystemExit("test insertion anchor missing")
+          additions = r'''
+              @staticmethod
+              def recompute_declared_summary(value) -> None:
+                  domains = value["domains"]
+                  assigned = {
+                      reviewer
+                      for domain in domains
+                      for reviewer in domain["assigned_reviewer_ids"]
+                  }
+                  available = sum(domain["status"] == "active" for domain in domains)
+                  blocked = sum(
+                      domain["status"] == "blocked-reviewer-capacity"
+                      for domain in domains
+                  )
+                  required_roles = sum(len(domain["required_roles"]) for domain in domains)
+                  value["summary"].update(
+                      domain_count=len(domains),
+                      assigned_domain_count=len(domains),
+                      redundant_domain_count=len(domains),
+                      available_domain_count=available,
+                      blocked_domain_count=blocked,
+                      required_role_count=required_roles,
+                      covered_required_role_count=0,
+                      named_reviewer_count=len(assigned),
+                      eligible_named_reviewer_count=0,
+                      candidate_conflict_identity_count=len(
+                          value["candidate_scope"]["conflict_principals"]
+                      ),
+                      qualification_principal_count=len(
+                          value["candidate_scope"]["qualification_principals"]
+                      ),
+                      all_required_reviews_available=available == len(domains),
+                  )
+                  value["claim_boundary"].update(
+                      reviewer_routing_available=available == len(domains),
+                      candidate_specific_availability=available == len(domains),
+                      required_role_coverage_available=False,
+                  )
+
+              def test_entire_review_domain_cannot_be_removed(self) -> None:
+                  def change(value):
+                      value["domains"] = [
+                          domain
+                          for domain in value["domains"]
+                          if domain["id"] != "security-cryptography"
+                      ]
+                      self.recompute_declared_summary(value)
+
+                  self.invalid(change, "review domain set mismatch")
+
+              def test_required_role_contract_cannot_shrink(self) -> None:
+                  def change(value):
+                      target = next(
+                          row
+                          for row in value["domains"]
+                          if row["id"] == "security-cryptography"
+                      )
+                      target["required_roles"].remove(
+                          "independent-cryptography-reviewer"
+                      )
+                      self.recompute_declared_summary(value)
+
+                  self.invalid(change, "required roles drift")
+
+              def test_protected_path_contract_cannot_shrink(self) -> None:
+                  def change(value):
+                      target = next(
+                          row
+                          for row in value["domains"]
+                          if row["id"] == "database-data-integrity"
+                      )
+                      target["protected_paths"].remove("migrations/**")
+                      self.recompute_declared_summary(value)
+
+                  self.invalid(change, "protected paths drift")
+
+              def test_protected_path_contract_cannot_be_exchanged(self) -> None:
+                  def change(value):
+                      target = next(
+                          row
+                          for row in value["domains"]
+                          if row["id"] == "database-data-integrity"
+                      )
+                      target["protected_paths"][0] = "crates/trnm-token-core/**"
+                      self.recompute_declared_summary(value)
+
+                  self.invalid(change, "protected paths drift")
+
+              def test_blocking_gap_contract_cannot_shrink(self) -> None:
+                  def change(value):
+                      target = next(
+                          row
+                          for row in value["domains"]
+                          if row["id"] == "database-data-integrity"
+                      )
+                      target["blocking_gaps"].remove("GAP-P0-DATA-001")
+                      self.recompute_declared_summary(value)
+
+                  self.invalid(change, "blocking gaps drift")
+
+              def test_blocking_gap_contract_cannot_be_exchanged(self) -> None:
+                  def change(value):
+                      target = next(
+                          row
+                          for row in value["domains"]
+                          if row["id"] == "database-data-integrity"
+                      )
+                      target["blocking_gaps"][0] = "GAP-P0-CRYPTO-001"
+                      self.recompute_declared_summary(value)
+
+                  self.invalid(change, "blocking gaps drift")
+
+              def test_domain_specific_codeowner_mapping_is_required(self) -> None:
+                  checker = module()
+                  with tempfile.TemporaryDirectory() as directory:
+                      matrix, gaps, owners = self.fixture(directory)
+                      text = owners.read_text(encoding="utf-8")
+                      text = "\n".join(
+                          line
+                          for line in text.splitlines()
+                          if not line.startswith(
+                              "/docs/development/SCHEMA_AUTHORITY.json "
+                          )
+                      ) + "\n"
+                      owners.write_text(text, encoding="utf-8")
+                      with self.assertRaisesRegex(
+                          checker.ReviewMatrixError,
+                          "CODEOWNERS missing expected domain patterns",
+                      ):
+                          checker.validate(matrix, gaps, owners)
+          '''
+          additions = textwrap.dedent(additions)
+          # Methods must remain inside the existing unittest class.
+          additions = textwrap.indent(additions, "    ")
+          tests = tests.replace(marker, "\n" + additions + marker, 1)
+          tests_path.write_text(tests, encoding="utf-8")
+          PY
+      - name: Execute focused and full Python controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q scripts tests/control_plane
+          python3 scripts/check-independent-review-matrix.py
+          python3 -m unittest discover -s tests/control_plane \
+            -p 'test_independent_review_matrix.py' -v
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --check
+      - name: Commit exact target repair
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/check-independent-review-matrix.py \
+            tests/control_plane/test_independent_review_matrix.py
+          test -n "$(git diff --cached --name-only)"
+          git commit -m 'fix(governance): pin immutable review-domain contract'
+          git remote set-url origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${CANDIDATE_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
