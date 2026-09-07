@@ -1,0 +1,170 @@
+name: closure-stage-finalize
+
+on:
+  push:
+    branches: [tooling/outbox-evidence-sealing-staging-2026-09-07a]
+    paths:
+      - '.github/workflows/closure-stage-finalize.yml'
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+      SOURCE_BRANCH: codex/remaining-source-blockers-wave-v5-2026-09-07
+      STAGING_BRANCH: tooling/outbox-evidence-sealing-staging-2026-09-07a
+    steps:
+      - name: Wait for sibling publishers and collect live state
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          headers=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json')
+          required=(
+            outbox-reaper-gitdata-publish
+            remaining-source-wave-v5-rebase
+          )
+          deadline=$((SECONDS + 9000))
+          while :; do
+            curl -fsSL "${headers[@]}" "$api/actions/runs?branch=${STAGING_BRANCH//\//%2F}&per_page=100" > "$RUNNER_TEMP/runs.json"
+            pending=0
+            for name in "${required[@]}"; do
+              row=$(jq -c --arg name "$name" '[.workflow_runs[] | select(.name==$name)] | sort_by(.run_attempt,.id) | last // {}' "$RUNNER_TEMP/runs.json")
+              id=$(jq -r '.id // empty' <<<"$row")
+              status=$(jq -r '.status // "missing"' <<<"$row")
+              conclusion=$(jq -r '.conclusion // ""' <<<"$row")
+              printf '%s id=%s status=%s conclusion=%s\n' "$name" "$id" "$status" "$conclusion"
+              if [ -z "$id" ] || [ "$status" != completed ]; then pending=1; fi
+            done
+            if [ "$pending" = 0 ]; then break; fi
+            if [ "$SECONDS" -ge "$deadline" ]; then echo 'publisher wait expired' >&2; break; fi
+            sleep 30
+          done
+
+          product=$(curl -fsSL "${headers[@]}" "$api/git/ref/heads/${PRODUCT_BRANCH//\//%2F}" | jq -r '.object.sha')
+          product_tree=$(curl -fsSL "${headers[@]}" "$api/git/commits/$product" | jq -r '.tree.sha')
+          source_code=$(curl -sS -o "$RUNNER_TEMP/source-ref.json" -w '%{http_code}' "${headers[@]}" "$api/git/ref/heads/${SOURCE_BRANCH//\//%2F}")
+          if [ "$source_code" = 200 ]; then
+            source=$(jq -r '.object.sha' "$RUNNER_TEMP/source-ref.json")
+            source_tree=$(curl -fsSL "${headers[@]}" "$api/git/commits/$source" | jq -r '.tree.sha')
+          else
+            source=''; source_tree=''
+          fi
+
+          encoded=$(python3 - <<PY
+          import urllib.parse
+          print(urllib.parse.quote('${GITHUB_REPOSITORY_OWNER}:${SOURCE_BRANCH}', safe=''))
+          PY
+          )
+          curl -fsSL "${headers[@]}" "$api/pulls?state=open&head=$encoded" > "$RUNNER_TEMP/source-prs.json"
+          source_pr=$(jq -r '.[0].number // empty' "$RUNNER_TEMP/source-prs.json")
+
+          script=$(curl -fsSL "${headers[@]}" "$api/contents/scripts/ci-outbox-final-attempt-reaper.sh?ref=$product" | jq -r '.content' | tr -d '\n' | base64 -d)
+          if grep -q 'trnm_outbox_finalize_sealed_artifact' <<<"$script"; then sealed=true; else sealed=false; fi
+
+          curl -fsSL "${headers[@]}" "$api/pulls/63" > "$RUNNER_TEMP/pr63.json"
+          base=$(jq -r '.base.sha' "$RUNNER_TEMP/pr63.json")
+          merge=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/pull/63/merge | awk '{print $1}')
+          if [ -n "$merge" ]; then
+            merge_obj=$(curl -fsSL "${headers[@]}" "$api/git/commits/$merge")
+            merge_tree=$(jq -r '.tree.sha' <<<"$merge_obj")
+            merge_parents=$(jq -r '[.parents[].sha] | join(",")' <<<"$merge_obj")
+          else
+            merge_tree=''; merge_parents=''
+          fi
+
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg observed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg product_branch "$PRODUCT_BRANCH" --arg product_head "$product" --arg product_tree "$product_tree" \
+            --arg source_branch "$SOURCE_BRANCH" --arg source_head "$source" --arg source_tree "$source_tree" --arg source_pr "$source_pr" \
+            --arg base "$base" --arg merge "$merge" --arg merge_tree "$merge_tree" --arg merge_parents "$merge_parents" \
+            --argjson outbox_sealed "$sealed" \
+            --slurpfile runs "$RUNNER_TEMP/runs.json" \
+            '{schema:"trillionnium.closure-stage-final-status.v1",repository:$repository,observed_at:$observed_at,
+              product:{branch:$product_branch,head:$product_head,tree:$product_tree,pr:63,base:$base,actual_merge:$merge,merge_tree:$merge_tree,merge_parents:$merge_parents},
+              cumulative_source:{branch:$source_branch,head:$source_head,tree:$source_tree,pr:($source_pr|if .=="" then null else tonumber end)},
+              outbox_artifact_sealing_present:$outbox_sealed,
+              staging_runs:$runs[0].workflow_runs,
+              formal_claims:{accepted_evidence:false,all_gaps_closed:false,production_ready:false,public_online:false,nakama_retired:false}}' > "$RUNNER_TEMP/status.json"
+          cat "$RUNNER_TEMP/status.json"
+
+      - name: Request review and refresh exact PR identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          headers=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json')
+          source_pr=$(jq -r '.cumulative_source.pr // empty' "$RUNNER_TEMP/status.json")
+          if [ -n "$source_pr" ]; then
+            jq -n '{reviewers:["Tomasrgbsf"]}' > "$RUNNER_TEMP/review.json"
+            curl -sS -X POST "${headers[@]}" "$api/pulls/$source_pr/requested_reviewers" --data-binary @"$RUNNER_TEMP/review.json" >/dev/null || true
+          fi
+          jq -n '{reviewers:["Tomasrgbsf"]}' > "$RUNNER_TEMP/review.json"
+          curl -sS -X POST "${headers[@]}" "$api/pulls/63/requested_reviewers" --data-binary @"$RUNNER_TEMP/review.json" >/dev/null || true
+
+          product=$(jq -r '.product.head' "$RUNNER_TEMP/status.json")
+          tree=$(jq -r '.product.tree' "$RUNNER_TEMP/status.json")
+          base=$(jq -r '.product.base' "$RUNNER_TEMP/status.json")
+          merge=$(jq -r '.product.actual_merge' "$RUNNER_TEMP/status.json")
+          merge_tree=$(jq -r '.product.merge_tree' "$RUNNER_TEMP/status.json")
+          parents=$(jq -r '.product.merge_parents' "$RUNNER_TEMP/status.json")
+          body=$(cat <<EOF
+          ## Exact Plan v3.1 integration identity
+
+          - base commit: \`$base\`
+          - head commit: \`$product\`
+          - head tree: \`$tree\`
+          - actual prospective merge: \`$merge\`
+          - prospective merge tree: \`$merge_tree\`
+          - ordered merge parents: \`$parents\`
+
+          PR #63 remains the singular Draft main-target integration candidate. Older-head workflow, artifact and review results do not transfer.
+
+          ## Current closure boundary
+
+          Repository-controlled source and evidence-sealing work remains subject to exact-head and actual-merge execution, retained-byte admission and conflict-free independent review. All 18 registered gaps and all 92 close criteria remain non-shrinkable. D0-D8/global SG1, KMS/HSM, complete Nakama surfaces, multi-node/HA/PITR/capacity/endurance, migration/canary/cutover/retirement and any other unaccepted criteria remain mandatory.
+
+          \`\`\`text
+          accepted_evidence=false
+          gap_closed=false
+          production_ready=false
+          public_online=false
+          nakama_retired=false
+          \`\`\`
+
+          Keep Draft. No self-approval, self-merge, force push, administrator bypass, production deployment, cutover or retirement is authorized.
+          EOF
+          )
+          jq -n --arg body "$body" '{body:$body,draft:true}' > "$RUNNER_TEMP/pr.json"
+          curl -fsSL -X PATCH "${headers[@]}" "$api/pulls/63" --data-binary @"$RUNNER_TEMP/pr.json" >/dev/null
+
+      - name: Persist zero-credit reconciliation status
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          headers=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json')
+          path='tooling/outbox-evidence-sealing/final-status.json'
+          current=$(curl -sS "${headers[@]}" "$api/contents/$path?ref=${STAGING_BRANCH//\//%2F}")
+          sha=$(jq -r '.sha // empty' <<<"$current")
+          content=$(base64 -w0 < "$RUNNER_TEMP/status.json")
+          jq -n --arg message 'tooling: persist closure stage reconciliation status' --arg content "$content" --arg branch "$STAGING_BRANCH" --arg sha "$sha" '
+            {message:$message,content:$content,branch:$branch} + (if $sha=="" then {} else {sha:$sha} end)' > "$RUNNER_TEMP/write.json"
+          curl -fsSL -X PUT "${headers[@]}" "$api/contents/$path" --data-binary @"$RUNNER_TEMP/write.json" >/dev/null
+
+      - name: Reject incomplete repository-controlled closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(jq -r '.outbox_artifact_sealing_present' "$RUNNER_TEMP/status.json")" = true
+          test -n "$(jq -r '.cumulative_source.head' "$RUNNER_TEMP/status.json")"
+          test -n "$(jq -r '.cumulative_source.pr // empty' "$RUNNER_TEMP/status.json")"
+          echo 'Repository-controlled staging prerequisites present; formal external and product closure remains separate.'
