@@ -25,7 +25,7 @@ The module owns:
 
 It does not own network transport, identity-provider issuance, durable revocation storage, cluster membership, cross-node fanout, reconnect orchestration, or actual socket termination.
 
-## Architecture
+## Architecture and dependencies
 
 `PresenceRouter` remains the connection-generation route state machine. `SessionRouteRegistry` composes it with:
 
@@ -112,10 +112,16 @@ The focused corpus covers:
 
 The isolated workspace must also execute in the stable aggregate gate. Empty discovery, skipped mandatory tests, warnings, stale-head results, and local-only execution receive no evidence credit.
 
-## Operations and evidence
+## Operations
 
 Adapters must expose bounded cardinalities, generation mismatch rejection, revocation fanout, reconnect outcomes, capacity saturation, and invariant failures without high-cardinality labels. Readiness, drain behavior, durable revocation replay, and recovery must be specified before production use.
 
 Evidence must bind the exact repository, source commit/tree, prospective merge object, workflow/run/job/attempt, environment, assertions, retained artifact digests, limitations, expiry, and independent review.
+
+## Compatibility and evidence
+
+This source candidate preserves deterministic in-process route semantics only. Durable revocation replay, live socket closure, distributed fanout, reconnect recovery, Nakama differential evidence, production capacity/endurance, and conflict-free specialist acceptance remain outside this module boundary. No local source or CI result may be transferred as proof of those external properties.
+
+## Known gaps and exit criteria
 
 Blocking gaps include `GAP-P0-SERVER-001`, `GAP-P1-IDENTITY-001`, `GAP-P0-CI-001`, and `GAP-P1-REVIEW-001`. Durable session-store integration, actual socket closure, distributed fanout, reconnect recovery, differential compatibility, capacity/endurance, and conflict-free specialist review remain required.
