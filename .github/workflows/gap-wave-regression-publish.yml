@@ -1,0 +1,178 @@
+name: gap-wave-regression-publish
+
+on:
+  push:
+    branches:
+      - tooling/gap-closure-audit-2026-09-07
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: gap-wave-regression-publish
+  cancel-in-progress: true
+
+env:
+  TARGET_BRANCH: tooling/outbox-evidence-sealing-assets-2026-09-07a
+
+jobs:
+  publish-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Wait for the materialized current review tree
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          for _ in $(seq 1 40); do
+            git -C "$GITHUB_WORKSPACE" fetch --no-tags origin \
+              "refs/heads/$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH" || true
+            git -C "$GITHUB_WORKSPACE" checkout -B "$TARGET_BRANCH" \
+              "refs/remotes/origin/$TARGET_BRANCH" || true
+            if [[ -f "$GITHUB_WORKSPACE/docs/status/DENOMINATOR_CLASSIFICATION_CANDIDATE.json" \
+               && -f "$GITHUB_WORKSPACE/docs/status/REVIEWER_CAPACITY.json" \
+               && -f "$GITHUB_WORKSPACE/docs/status/WAVE3_BLOCKERS.json" ]]; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo 'materialized wave files did not appear' >&2
+          exit 1
+
+      - name: Install hostile regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tests/control_plane
+          cat > tests/control_plane/test_gap_closure_wave.py <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import unittest
+          from pathlib import Path
+
+          ROOT = Path(__file__).resolve().parents[2]
+          INDEX = ROOT / "docs/status/DENOMINATOR_CLASSIFICATION_CANDIDATE.json"
+          CAPACITY = ROOT / "docs/status/REVIEWER_CAPACITY.json"
+          WAVE = ROOT / "docs/status/WAVE3_BLOCKERS.json"
+
+
+          def load(path: Path) -> dict:
+              return json.loads(path.read_text(encoding="utf-8"))
+
+
+          class GapClosureWaveTests(unittest.TestCase):
+              def test_denominator_candidate_is_complete_but_zero_credit(self) -> None:
+                  value = load(INDEX)
+                  self.assertEqual(value["schema"],
+                                   "trillionnium.denominator-classification-candidate.v1")
+                  self.assertEqual(value["family_count"], 14)
+                  self.assertEqual(value["leaf_count"], 10_173)
+                  self.assertEqual(value["unclassified_count"], 0)
+                  for key in ("accepted", "gap_closed", "sg1_credit",
+                              "compatibility_credit", "production_ready",
+                              "public_online", "nakama_retired"):
+                      self.assertIs(value[key], False, key)
+
+              def test_every_family_bundle_is_digest_bound_and_complete(self) -> None:
+                  value = load(INDEX)
+                  observed = 0
+                  for family in value["families"]:
+                      path = ROOT / family["review_bundle"]
+                      raw = path.read_bytes()
+                      self.assertEqual(hashlib.sha256(raw).hexdigest(), family["sha256"])
+                      bundle = json.loads(raw)
+                      self.assertEqual(bundle["leaf_count"], len(bundle["rows"]))
+                      self.assertEqual(bundle["unclassified_count"], 0)
+                      self.assertIs(bundle["accepted"], False)
+                      self.assertIs(bundle["sg1_credit"], False)
+                      self.assertIs(bundle["compatibility_credit"], False)
+                      self.assertIs(bundle["production_ready"], False)
+                      for row in bundle["rows"]:
+                          self.assertEqual(len(row), 4)
+                          self.assertTrue(all(isinstance(item, str) and item for item in row))
+                          self.assertNotEqual(row[2], "unclassified")
+                      observed += bundle["leaf_count"]
+                  self.assertEqual(observed, 10_173)
+
+              def test_reviewer_capacity_excludes_conflicted_mutators(self) -> None:
+                  value = load(CAPACITY)
+                  self.assertEqual(value["policy_minimum_eligible_reviewers"], 2)
+                  self.assertEqual(value["eligible_conflict_free_reviewers"],
+                                   ["Tomasrgbsf"])
+                  self.assertEqual(value["eligible_reviewer_count"], 1)
+                  self.assertIs(value["capacity_satisfied"], False)
+                  self.assertEqual(len(value["domains"]), 6)
+                  for domain in value["domains"]:
+                      self.assertEqual(domain["status"], "blocked-reviewer-capacity")
+                      self.assertIs(domain["accepted"], False)
+
+              def test_wave_does_not_promote_external_or_independent_facts(self) -> None:
+                  value = load(WAVE)
+                  self.assertEqual(value["scope"]["families"], 14)
+                  self.assertEqual(value["scope"]["leaves"], 10_173)
+                  self.assertEqual(value["scope"]["unclassified"], 0)
+                  self.assertIs(value["scope"]["accepted"], False)
+                  self.assertIs(value["reviewer_capacity"]["satisfied"], False)
+                  for key in ("accepted_evidence", "all_gaps_closed",
+                              "production_ready", "public_online", "nakama_retired"):
+                      self.assertIs(value[key], False, key)
+
+              def test_formal_authorities_are_not_generated_sidecars(self) -> None:
+                  gaps = load(ROOT / "docs/status/GAP_REGISTER.json")
+                  evidence = load(ROOT / "docs/evidence/index.json")
+                  serialized = json.dumps({"gaps": gaps, "evidence": evidence}, sort_keys=True)
+                  self.assertNotIn("DENOMINATOR_CLASSIFICATION_CANDIDATE.json", serialized)
+                  self.assertNotIn("REVIEWER_CAPACITY.json", serialized)
+                  self.assertNotIn("WAVE3_BLOCKERS.json", serialized)
+
+
+          if __name__ == "__main__":
+              unittest.main()
+          PY
+          python3 -m unittest tests.control_plane.test_gap_closure_wave -v
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 scripts/check-plan.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/derive-gates.py
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
+          git diff --check
+
+      - name: Publish fast-forward regression commit
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name 'Qian QI'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git add tests/control_plane/test_gap_closure_wave.py
+          if git diff --cached --quiet; then
+            echo 'regression already present'
+            exit 0
+          fi
+          current=$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | awk '{print $1}')
+          test "$current" = "$(git rev-parse HEAD)"
+          git commit -m 'test: lock conservative scope and reviewer blocker truth' >/dev/null
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+
+      - name: Report failure without credit
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/93/comments" \
+            --raw-field body="The hostile gap-wave regression publisher failed on tooling run ${GITHUB_RUN_ID}. No evidence, gap, SG1, compatibility or production credit was granted. Inspect this run before any admission."
