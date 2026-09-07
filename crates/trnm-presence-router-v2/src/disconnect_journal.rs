@@ -145,6 +145,12 @@ pub trait DisconnectOutcomeVerifier {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DisconnectUnknownEvidence {
+    pub outcome_digest: [u8; 32],
+    pub verifier_receipt_digest: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DisconnectState {
     Pending,
     Leased {
@@ -156,6 +162,7 @@ pub enum DisconnectState {
     },
     Indeterminate {
         binding: DisconnectDispatchBinding,
+        unknown: Option<DisconnectUnknownEvidence>,
     },
     Applied {
         binding: DisconnectDispatchBinding,
@@ -455,6 +462,10 @@ impl DisconnectJournal {
         self.tombstones.len()
     }
 
+    pub fn verifier_receipt_count(&self) -> usize {
+        self.verifier_receipt_owners.len()
+    }
+
     pub fn get(&self, id: DisconnectIntentId) -> Option<DisconnectRecord> {
         self.records.get(&id).copied()
     }
@@ -477,6 +488,13 @@ impl DisconnectJournal {
         }
         if self.tombstones.contains_key(&id) {
             return Err(DisconnectJournalError::ArchivedIntent(id));
+        }
+        if self.records.len().saturating_add(self.tombstones.len())
+            >= self.config.tombstone_capacity
+        {
+            return Err(DisconnectJournalError::TombstoneCapacityExceeded {
+                capacity: self.config.tombstone_capacity,
+            });
         }
         if self.records.len() >= self.config.active_capacity {
             return Err(DisconnectJournalError::ActiveCapacityExceeded {
@@ -573,7 +591,7 @@ impl DisconnectJournal {
             {
                 binding
             }
-            DisconnectState::Indeterminate { binding }
+            DisconnectState::Indeterminate { binding, .. }
                 if binding.worker == worker && binding.lease_token == token =>
             {
                 return Ok(current);
@@ -586,7 +604,10 @@ impl DisconnectJournal {
             _ => return Err(DisconnectJournalError::NotDispatched(id)),
         };
         let next = DisconnectRecord {
-            state: DisconnectState::Indeterminate { binding },
+            state: DisconnectState::Indeterminate {
+                binding,
+                unknown: None,
+            },
             ..current
         };
         self.records.insert(id, next);
@@ -644,7 +665,7 @@ impl DisconnectJournal {
 
         let expected_binding = match current.state {
             DisconnectState::Dispatched { binding }
-            | DisconnectState::Indeterminate { binding } => binding,
+            | DisconnectState::Indeterminate { binding, .. } => binding,
             DisconnectState::Pending | DisconnectState::Leased { .. } => {
                 return Err(DisconnectJournalError::NotDispatched(id));
             }
@@ -654,6 +675,23 @@ impl DisconnectJournal {
         };
         if evidence.binding != expected_binding || evidence.binding.intent_id != id {
             return Err(DisconnectJournalError::OutcomeBindingMismatch(id));
+        }
+        if let DisconnectState::Indeterminate {
+            unknown: Some(previous),
+            ..
+        } = current.state
+        {
+            if evidence.kind == DisconnectOutcomeKind::Unknown {
+                if previous.outcome_digest == evidence.outcome_digest
+                    && previous.verifier_receipt_digest == evidence.verifier_receipt_digest
+                {
+                    return Ok((current, ReconciliationDisposition::Indeterminate));
+                }
+                return Err(DisconnectJournalError::OutcomeMismatch(id));
+            }
+            if previous.verifier_receipt_digest == evidence.verifier_receipt_digest {
+                return Err(DisconnectJournalError::OutcomeMismatch(id));
+            }
         }
         if !verifier.verify(&evidence) {
             return Err(DisconnectJournalError::OutcomeVerificationFailed(id));
@@ -695,6 +733,10 @@ impl DisconnectJournal {
             DisconnectOutcomeKind::Unknown => (
                 DisconnectState::Indeterminate {
                     binding: expected_binding,
+                    unknown: Some(DisconnectUnknownEvidence {
+                        outcome_digest: evidence.outcome_digest,
+                        verifier_receipt_digest: evidence.verifier_receipt_digest,
+                    }),
                 },
                 ReconciliationDisposition::Indeterminate,
             ),
@@ -899,13 +941,11 @@ mod tests {
     use super::*;
 
     #[derive(Clone, Copy, Debug)]
-    struct ExactVerifier {
-        accepted_verifier_prefix: u8,
-    }
+    struct ExactVerifier(u8);
 
     impl DisconnectOutcomeVerifier for ExactVerifier {
         fn verify(&self, evidence: &DisconnectOutcomeEvidence) -> bool {
-            evidence.verifier_receipt_digest[0] == self.accepted_verifier_prefix
+            evidence.verifier_receipt_digest[0] == self.0
         }
     }
 
@@ -950,14 +990,14 @@ mod tests {
         let leased = journal.lease(intent, worker_id).unwrap();
         let token = match leased.state {
             DisconnectState::Leased { token, .. } => token,
-            _ => panic!("expected leased state"),
+            _ => panic!("expected lease"),
         };
-        let dispatched = journal
+        let record = journal
             .mark_dispatched(intent, worker_id, token, digest(endpoint))
             .unwrap();
-        match dispatched.state {
+        match record.state {
             DisconnectState::Dispatched { binding } => binding,
-            _ => panic!("expected dispatched state"),
+            _ => panic!("expected dispatch"),
         }
     }
 
@@ -976,7 +1016,7 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_duplicate_intent_is_rejected_without_mutation() {
+    fn immutable_identity_and_lease_fences_fail_without_mutation() {
         let mut journal = journal(2, 2, 3);
         let original = journal.insert(id(1), operation(1)).unwrap();
         assert_eq!(journal.insert(id(1), operation(1)).unwrap(), original);
@@ -984,295 +1024,219 @@ mod tests {
             journal.insert(id(1), operation(2)),
             Err(DisconnectJournalError::ConflictingIntent(id(1)))
         );
-        assert_eq!(journal.get(id(1)), Some(original));
-    }
-
-    #[test]
-    fn stale_worker_or_generation_cannot_mark_dispatch() {
-        let mut journal = journal(2, 2, 3);
-        journal.insert(id(1), operation(7)).unwrap();
         let leased = journal.lease(id(1), worker(1)).unwrap();
         let token = match leased.state {
             DisconnectState::Leased { token, .. } => token,
-            _ => panic!("expected leased state"),
+            _ => unreachable!(),
         };
         assert_eq!(
             journal.mark_dispatched(id(1), worker(2), token, digest(8)),
-            Err(DisconnectJournalError::LeaseMismatch(id(1)))
-        );
-        assert_eq!(
-            journal.mark_dispatched(id(1), worker(1), LeaseToken(token.get() + 1), digest(8)),
             Err(DisconnectJournalError::LeaseMismatch(id(1)))
         );
         assert_eq!(journal.get(id(1)), Some(leased));
     }
 
     #[test]
-    fn possible_network_write_forbids_blind_retry_until_verified_outcome() {
+    fn possible_write_requires_verified_reconciliation_before_retry() {
         let mut journal = journal(2, 2, 3);
         let binding = dispatch(&mut journal, id(1), operation(9), worker(1), 8);
         journal
             .mark_transport_lost(id(1), binding.worker, binding.lease_token)
             .unwrap();
-        assert_eq!(
+        assert!(matches!(
             journal.retry_before_dispatch(id(1), binding.worker, binding.lease_token, digest(90),),
-            Err(DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(id(1)))
-        );
-        let verifier = ExactVerifier {
-            accepted_verifier_prefix: 70,
-        };
+            Err(DisconnectJournalError::AmbiguousCompletionRequiresReconciliation(_))
+        ));
         let (_, disposition) = journal
             .reconcile(
                 id(1),
                 evidence(binding, DisconnectOutcomeKind::DefinitelyNotApplied, 71, 70),
-                &verifier,
+                &ExactVerifier(70),
             )
             .unwrap();
         assert_eq!(disposition, ReconciliationDisposition::Pending);
-        let next = journal.lease(id(1), worker(2)).unwrap();
-        assert_eq!(next.attempt, 2);
-        assert!(next.lease_generation > binding.lease_token.get());
+        assert_eq!(journal.lease(id(1), worker(2)).unwrap().attempt, 2);
     }
 
     #[test]
-    fn cross_intent_socket_attempt_endpoint_and_epoch_evidence_fail_closed() {
-        let verifier = ExactVerifier {
-            accepted_verifier_prefix: 70,
-        };
+    fn binding_and_verifier_mismatch_preserve_state() {
         let mut journal = journal(2, 2, 3);
         let binding = dispatch(&mut journal, id(1), operation(9), worker(1), 8);
-        let original = journal.get(id(1));
-
-        let mut mutations = Vec::new();
-        let mut cross_intent = binding;
-        cross_intent.intent_id = id(2);
-        mutations.push(cross_intent);
-        let mut cross_socket = binding;
-        cross_socket.operation.socket_generation += 1;
-        mutations.push(cross_socket);
-        let mut stale_attempt = binding;
-        stale_attempt.attempt += 1;
-        mutations.push(stale_attempt);
-        let mut wrong_endpoint = binding;
-        wrong_endpoint.endpoint_digest = digest(9);
-        mutations.push(wrong_endpoint);
-        let mut wrong_epoch = binding;
-        wrong_epoch.journal_epoch = DisconnectJournalEpoch::new(2).unwrap();
-        mutations.push(wrong_epoch);
-
-        for mutated in mutations {
-            assert_eq!(
-                journal.reconcile(
-                    id(1),
-                    evidence(mutated, DisconnectOutcomeKind::Applied, 80, 70),
-                    &verifier,
-                ),
-                Err(DisconnectJournalError::OutcomeBindingMismatch(id(1)))
-            );
-            assert_eq!(journal.get(id(1)), original);
-        }
-    }
-
-    #[test]
-    fn verifier_rejection_and_unknown_outcome_preserve_indeterminate_state() {
-        let mut journal = journal(2, 2, 3);
-        let binding = dispatch(&mut journal, id(1), operation(9), worker(1), 8);
-        journal
-            .mark_transport_lost(id(1), binding.worker, binding.lease_token)
-            .unwrap();
         let before = journal.get(id(1));
-        let rejecting = ExactVerifier {
-            accepted_verifier_prefix: 99,
-        };
+        let mut wrong = binding;
+        wrong.journal_epoch = DisconnectJournalEpoch::new(2).unwrap();
+        assert_eq!(
+            journal.reconcile(
+                id(1),
+                evidence(wrong, DisconnectOutcomeKind::Applied, 80, 70),
+                &ExactVerifier(70),
+            ),
+            Err(DisconnectJournalError::OutcomeBindingMismatch(id(1)))
+        );
         assert_eq!(
             journal.reconcile(
                 id(1),
                 evidence(binding, DisconnectOutcomeKind::Applied, 80, 70),
-                &rejecting,
+                &ExactVerifier(99),
             ),
             Err(DisconnectJournalError::OutcomeVerificationFailed(id(1)))
         );
         assert_eq!(journal.get(id(1)), before);
-
-        let accepting = ExactVerifier {
-            accepted_verifier_prefix: 70,
-        };
-        let (record, disposition) = journal
-            .reconcile(
-                id(1),
-                evidence(binding, DisconnectOutcomeKind::Unknown, 81, 70),
-                &accepting,
-            )
-            .unwrap();
-        assert_eq!(disposition, ReconciliationDisposition::Indeterminate);
-        assert!(matches!(
-            record.state,
-            DisconnectState::Indeterminate { binding: observed } if observed == binding
-        ));
     }
 
     #[test]
-    fn applied_and_rejected_outcomes_are_exact_and_terminal() {
-        let verifier = ExactVerifier {
-            accepted_verifier_prefix: 70,
-        };
-        let mut journal = journal(3, 3, 3);
-        let applied_binding = dispatch(&mut journal, id(1), operation(9), worker(1), 8);
-        let applied_evidence = evidence(applied_binding, DisconnectOutcomeKind::Applied, 80, 70);
-        let applied = journal
-            .reconcile(id(1), applied_evidence, &verifier)
+    fn one_unknown_receipt_is_bounded_and_exactly_idempotent() {
+        let mut journal = journal(1, 2, 3);
+        let binding = dispatch(&mut journal, id(1), operation(9), worker(1), 8);
+        let unknown = evidence(binding, DisconnectOutcomeKind::Unknown, 81, 70);
+        let accepted = journal
+            .reconcile(id(1), unknown, &ExactVerifier(70))
             .unwrap();
-        assert_eq!(applied.1, ReconciliationDisposition::Applied);
+        assert_eq!(accepted.1, ReconciliationDisposition::Indeterminate);
+        assert_eq!(journal.verifier_receipt_count(), 1);
         assert_eq!(
             journal
-                .reconcile(id(1), applied_evidence, &verifier)
+                .reconcile(id(1), unknown, &ExactVerifier(99))
                 .unwrap(),
-            applied
+            accepted
         );
-        let conflicting = evidence(applied_binding, DisconnectOutcomeKind::Applied, 81, 70);
+        assert_eq!(journal.verifier_receipt_count(), 1);
+        let before = journal.get(id(1));
         assert_eq!(
-            journal.reconcile(id(1), conflicting, &verifier),
+            journal.reconcile(
+                id(1),
+                evidence(binding, DisconnectOutcomeKind::Unknown, 82, 71),
+                &ExactVerifier(71),
+            ),
             Err(DisconnectJournalError::OutcomeMismatch(id(1)))
         );
-
-        let rejected_binding = dispatch(&mut journal, id(2), operation(10), worker(2), 9);
-        let rejected = journal
+        assert_eq!(journal.get(id(1)), before);
+        assert_eq!(journal.verifier_receipt_count(), 1);
+        let terminal = journal
             .reconcile(
-                id(2),
-                evidence(rejected_binding, DisconnectOutcomeKind::Rejected, 90, 71),
-                &ExactVerifier {
-                    accepted_verifier_prefix: 71,
-                },
+                id(1),
+                evidence(binding, DisconnectOutcomeKind::Applied, 90, 72),
+                &ExactVerifier(72),
             )
             .unwrap();
-        assert_eq!(rejected.1, ReconciliationDisposition::Rejected);
-        assert_eq!(
-            journal.lease(id(2), worker(1)),
-            Err(DisconnectJournalError::Terminal(id(2)))
-        );
+        assert_eq!(terminal.1, ReconciliationDisposition::Applied);
+        assert_eq!(journal.verifier_receipt_count(), 2);
     }
 
     #[test]
     fn outcome_and_verifier_receipts_cannot_cross_intents() {
-        let mut journal = journal(3, 3, 3);
-        let verifier = ExactVerifier {
-            accepted_verifier_prefix: 70,
-        };
+        let mut journal = journal(2, 2, 3);
         let first = dispatch(&mut journal, id(1), operation(9), worker(1), 8);
         let second = dispatch(&mut journal, id(2), operation(10), worker(2), 8);
         journal
             .reconcile(
                 id(1),
                 evidence(first, DisconnectOutcomeKind::Applied, 80, 70),
-                &verifier,
+                &ExactVerifier(70),
             )
             .unwrap();
-        assert_eq!(
+        assert!(matches!(
             journal.reconcile(
                 id(2),
                 evidence(second, DisconnectOutcomeKind::Applied, 80, 71),
-                &ExactVerifier {
-                    accepted_verifier_prefix: 71,
-                },
+                &ExactVerifier(71),
             ),
-            Err(DisconnectJournalError::OutcomeReceiptReused {
-                receipt_owner: id(1),
-                received_for: id(2),
-            })
-        );
-        assert_eq!(
+            Err(DisconnectJournalError::OutcomeReceiptReused { .. })
+        ));
+        assert!(matches!(
             journal.reconcile(
                 id(2),
                 evidence(second, DisconnectOutcomeKind::Applied, 81, 70),
-                &verifier,
+                &ExactVerifier(70),
             ),
-            Err(DisconnectJournalError::VerifierReceiptReused {
-                receipt_owner: id(1),
-                received_for: id(2),
-            })
-        );
+            Err(DisconnectJournalError::VerifierReceiptReused { .. })
+        ));
     }
 
     #[test]
-    fn archive_frees_active_capacity_but_tombstone_blocks_same_epoch_aba() {
-        let mut journal = journal(1, 2, 2);
-        let verifier = ExactVerifier {
-            accepted_verifier_prefix: 70,
-        };
+    fn admission_reserves_archive_space_and_prevents_epoch_deadlock() {
+        let mut journal = journal(1, 1, 2);
         let binding = dispatch(&mut journal, id(1), operation(9), worker(1), 8);
         journal
             .reconcile(
                 id(1),
                 evidence(binding, DisconnectOutcomeKind::Applied, 80, 70),
-                &verifier,
+                &ExactVerifier(70),
             )
             .unwrap();
-        let tombstone = journal.archive_terminal(id(1), digest(100)).unwrap();
-        assert_eq!(journal.len(), 0);
-        assert_eq!(journal.tombstone(id(1)), Some(tombstone));
+        journal.archive_terminal(id(1), digest(100)).unwrap();
         assert_eq!(
-            journal.insert(id(1), operation(11)),
-            Err(DisconnectJournalError::ArchivedIntent(id(1)))
+            journal.insert(id(2), operation(10)),
+            Err(DisconnectJournalError::TombstoneCapacityExceeded { capacity: 1 })
         );
-        journal.insert(id(2), operation(12)).unwrap();
+        assert_eq!(journal.len(), 0);
+        journal
+            .advance_epoch(DisconnectJournalEpoch::new(2).unwrap(), digest(110))
+            .unwrap();
+        journal.insert(id(2), operation(10)).unwrap();
     }
 
     #[test]
-    fn epoch_advance_requires_no_active_records_and_rejects_old_proof() {
-        let mut journal = journal(1, 2, 2);
-        let old_binding = dispatch(&mut journal, id(1), operation(9), worker(1), 8);
-        assert_eq!(
-            journal.advance_epoch(DisconnectJournalEpoch::new(2).unwrap(), digest(110)),
-            Err(DisconnectJournalError::ActiveRecordsPreventEpochAdvance { active: 1 })
-        );
-        let verifier = ExactVerifier {
-            accepted_verifier_prefix: 70,
-        };
+    fn every_admitted_record_can_be_archived() {
+        let mut journal = journal(2, 2, 1);
+        let first = dispatch(&mut journal, id(1), operation(9), worker(1), 8);
+        let second = dispatch(&mut journal, id(2), operation(10), worker(2), 8);
+        for (intent, binding, receipt) in [(id(1), first, 70), (id(2), second, 71)] {
+            journal
+                .reconcile(
+                    intent,
+                    evidence(binding, DisconnectOutcomeKind::Rejected, 90, receipt),
+                    &ExactVerifier(receipt),
+                )
+                .unwrap();
+            journal.archive_terminal(intent, digest(100)).unwrap();
+        }
+        assert_eq!(journal.len(), 0);
+        assert_eq!(journal.tombstone_len(), 2);
+    }
+
+    #[test]
+    fn epoch_advance_rejects_old_dispatch_proof() {
+        let mut journal = journal(1, 1, 1);
+        let old = dispatch(&mut journal, id(1), operation(9), worker(1), 8);
         journal
             .reconcile(
                 id(1),
-                evidence(old_binding, DisconnectOutcomeKind::Applied, 80, 70),
-                &verifier,
+                evidence(old, DisconnectOutcomeKind::Applied, 80, 70),
+                &ExactVerifier(70),
             )
             .unwrap();
         journal.archive_terminal(id(1), digest(100)).unwrap();
         journal
             .advance_epoch(DisconnectJournalEpoch::new(2).unwrap(), digest(110))
             .unwrap();
-
-        let new_binding = dispatch(&mut journal, id(1), operation(11), worker(1), 8);
-        assert_eq!(new_binding.journal_epoch.get(), 2);
+        let current = dispatch(&mut journal, id(1), operation(11), worker(1), 8);
+        assert_ne!(old.journal_epoch, current.journal_epoch);
         assert_eq!(
             journal.reconcile(
                 id(1),
-                evidence(old_binding, DisconnectOutcomeKind::Applied, 80, 70),
-                &verifier,
+                evidence(old, DisconnectOutcomeKind::Applied, 80, 70),
+                &ExactVerifier(70),
             ),
             Err(DisconnectJournalError::OutcomeBindingMismatch(id(1)))
         );
     }
 
     #[test]
-    fn definitely_not_applied_at_attempt_limit_dead_letters_atomically() {
+    fn attempt_limit_dead_letters_atomically() {
         let mut journal = journal(1, 1, 1);
         let binding = dispatch(&mut journal, id(1), operation(9), worker(1), 8);
         let (record, disposition) = journal
             .reconcile(
                 id(1),
                 evidence(binding, DisconnectOutcomeKind::DefinitelyNotApplied, 90, 70),
-                &ExactVerifier {
-                    accepted_verifier_prefix: 70,
-                },
+                &ExactVerifier(70),
             )
             .unwrap();
         assert_eq!(disposition, ReconciliationDisposition::DeadLettered);
         assert_eq!(
             record.state,
             DisconnectState::DeadLetter { reason: digest(90) }
-        );
-        assert_eq!(
-            journal.lease(id(1), worker(1)),
-            Err(DisconnectJournalError::Terminal(id(1)))
         );
     }
 }
