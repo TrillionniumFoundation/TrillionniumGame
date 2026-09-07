@@ -1,0 +1,143 @@
+name: pr113-integrator-expression-repair
+
+on:
+  push:
+    branches:
+      - ops/trusted-world-v13k-publisher-plan-v31-2026-09-08
+    paths:
+      - .github/workflows/pr113-integrator-expression-repair.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr113-integrator-expression-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      TARGET_BRANCH: ops/trusted-world-v13k-publisher-plan-v31-2026-09-08
+    steps:
+      - name: Fetch exact branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          observed="$(git -C "$GITHUB_WORKSPACE" ls-remote origin \
+            "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
+          test "$observed" = "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+
+      - name: Make generated expressions literal until integration runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          integrator = Path('.github/workflows/pr113-trusted-world-integrator.yml')
+          fixer = Path('.github/workflows/pr113-integrator-expression-repair.yml')
+          text = integrator.read_text(encoding='utf-8')
+
+          start_marker = '          concurrency_old = """concurrency:\n'
+          end_marker = (
+              '          workflow = workflow.replace('
+              'concurrency_old, concurrency_new, 1)\n'
+          )
+          start = text.find(start_marker)
+          end_start = text.find(end_marker, start)
+          if start < 0 or end_start < 0:
+              raise SystemExit('integrator concurrency patch anchor drift')
+          end = end_start + len(end_marker)
+          replacement = '''          ref_expression = "$" + "{{ github.ref }}"
+          event_expression = "$" + "{{ github.event_name }}"
+          concurrency_old = (
+              "concurrency:\\n"
+              f"  group: world-command-deployed-runtime-v1-{ref_expression}\\n"
+              "  cancel-in-progress: true\\n"
+          )
+          concurrency_new = (
+              "concurrency:\\n"
+              f"  group: world-command-deployed-runtime-v1-{event_expression}-{ref_expression}\\n"
+              "  cancel-in-progress: false\\n"
+          )
+          if workflow.count(concurrency_old) != 1:
+              raise SystemExit('workflow concurrency anchor drift')
+          workflow = workflow.replace(concurrency_old, concurrency_new, 1)
+'''
+          text = text[:start] + replacement + text[end:]
+
+          token_expression = '$' + '{{ github.token }}'
+          secret_expression = '$' + '{{ secrets.TRNM_WORLD_ENV_IMPORT_TOKEN }}'
+          token_line = '                GITHUB_TOKEN: ' + token_expression
+          secret_line = (
+              '                TRNM_WORLD_IMPORT_TOKEN: ' + secret_expression
+          )
+          if text.count(token_line) != 2:
+              raise SystemExit('generated GITHUB_TOKEN expression count drift')
+          if text.count(secret_line) != 1:
+              raise SystemExit('generated World secret expression count drift')
+          text = text.replace(
+              token_line,
+              '                GITHUB_TOKEN: __GITHUB_TOKEN__',
+          )
+          text = text.replace(
+              secret_line,
+              '                TRNM_WORLD_IMPORT_TOKEN: __WORLD_SECRET__',
+          )
+
+          appendix_anchor = (
+              "          '''\n"
+              "          if '  verify-world-publication-request:' in workflow:\n"
+          )
+          if text.count(appendix_anchor) != 1:
+              raise SystemExit('appendix rehydration anchor drift')
+          appendix_replacement = '''          \'\'\'
+          appendix = appendix.replace(
+              "__GITHUB_TOKEN__", "$" + "{{ github.token }}"
+          ).replace(
+              "__WORLD_SECRET__",
+              "$" + "{{ secrets.TRNM_WORLD_ENV_IMPORT_TOKEN }}",
+          )
+          if '  verify-world-publication-request:' in workflow:
+'''
+          text = text.replace(
+              appendix_anchor,
+              appendix_replacement,
+              1,
+          )
+          integrator.write_text(text, encoding='utf-8')
+          fixer.unlink()
+          PY
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/pr113-trusted-world-integrator.yml').read_text()
+          assert text.count('${{ github.token }}') == 1
+          assert '${{ secrets.TRNM_WORLD_ENV_IMPORT_TOKEN }}' not in text
+          assert 'ref_expression = "$" + "{{ github.ref }}"' in text
+          assert 'appendix = appendix.replace(' in text
+          PY
+          git diff --check
+
+      - name: Commit exact repair and trigger integrator
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config user.name trillionnium-governance-bot
+          git config user.email trillionnium-governance-bot@users.noreply.github.com
+          git add -A
+          git commit -m "fix(tooling): preserve generated workflow expressions"
+          repaired="$(git rev-parse HEAD)"
+          observed="$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
+          test "$observed" = "$GITHUB_SHA"
+          git push origin "${repaired}:refs/heads/${TARGET_BRANCH}"
