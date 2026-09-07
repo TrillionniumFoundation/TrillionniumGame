@@ -1,0 +1,286 @@
+name: effective-governance-readback
+
+on:
+  push:
+    branches: [tooling/effective-governance-readback-2026-09-07]
+    paths:
+      - '.github/workflows/effective-governance-readback.yml'
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  readback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TARGET_REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      TARGET_PR: '63'
+      EXPECTED_HEAD: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+      GH_READBACK_TOKEN: ${{ secrets.TRNM_GITHUB_ADMIN_TOKEN || github.token }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Fetch exact tooling source without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Capture REST, evaluated-rule and GraphQL state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p run/governance-readback/responses
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          repository = os.environ['TARGET_REPOSITORY']
+          owner, name = repository.split('/', 1)
+          pr_number = int(os.environ['TARGET_PR'])
+          expected_head = os.environ['EXPECTED_HEAD']
+          token = os.environ['GH_READBACK_TOKEN']
+          root = Path('run/governance-readback')
+          responses = root / 'responses'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'trillionnium-effective-governance-readback',
+          }
+
+          def request_json(label: str, url: str, *, data: bytes | None = None) -> dict:
+              request = urllib.request.Request(url, data=data, headers=headers)
+              if data is not None:
+                  request.add_header('Content-Type', 'application/json')
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      raw = response.read()
+                      value = json.loads(raw.decode('utf-8')) if raw else None
+                      result = {'status': response.status, 'body': value}
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  try:
+                      value = json.loads(raw.decode('utf-8')) if raw else None
+                  except Exception:
+                      value = {'message': raw.decode('utf-8', errors='replace')[:4000]}
+                  result = {'status': error.code, 'body': value}
+              except Exception as error:
+                  result = {'status': 0, 'body': {'message': f'{type(error).__name__}: {error}'}}
+              (responses / f'{label}.json').write_text(
+                  json.dumps(result, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n',
+                  encoding='utf-8',
+              )
+              return result
+
+          api = f'https://api.github.com/repos/{repository}'
+          calls = {
+              'repository': f'{api}',
+              'main-branch': f'{api}/branches/main',
+              'main-protection': f'{api}/branches/main/protection',
+              'main-evaluated-rules': f'{api}/rules/branches/main',
+              'rulesets': f'{api}/rulesets?includes_parents=true&per_page=100',
+              'actions-permissions': f'{api}/actions/permissions',
+              'workflow-permissions': f'{api}/actions/permissions/workflow',
+              'pull-request': f'{api}/pulls/{pr_number}',
+              'reviews': f'{api}/pulls/{pr_number}/reviews?per_page=100',
+              'review-comments': f'{api}/pulls/{pr_number}/comments?per_page=100',
+              'requested-reviewers': f'{api}/pulls/{pr_number}/requested_reviewers',
+              'collaborators': f'{api}/collaborators?affiliation=all&per_page=100',
+          }
+          values = {label: request_json(label, url) for label, url in calls.items()}
+
+          commits = []
+          for page in range(1, 6):
+              row = request_json(
+                  f'pull-commits-{page}',
+                  f'{api}/pulls/{pr_number}/commits?per_page=100&page={page}',
+              )
+              if row['status'] != 200 or not isinstance(row['body'], list):
+                  break
+              commits.extend(row['body'])
+              if len(row['body']) < 100:
+                  break
+
+          query = '''query($owner:String!,$name:String!,$number:Int!){
+            repository(owner:$owner,name:$name){
+              branchProtectionRules(first:100){nodes{
+                id pattern allowsDeletions allowsForcePushes dismissesStaleReviews
+                isAdminEnforced requiredApprovingReviewCount requiredStatusCheckContexts
+                requiresApprovingReviews requiresCodeOwnerReviews requiresCommitSignatures
+                requiresConversationResolution requiresLinearHistory requiresStatusChecks
+                requiresStrictStatusChecks restrictsPushes restrictsReviewDismissals
+                bypassForcePushAllowances(first:100){nodes{actor{__typename ... on User{login} ... on Team{slug} ... on App{slug}}}}
+                bypassPullRequestAllowances(first:100){nodes{actor{__typename ... on User{login} ... on Team{slug} ... on App{slug}}}}
+                pushAllowances(first:100){nodes{actor{__typename ... on User{login} ... on Team{slug} ... on App{slug}}}}
+                reviewDismissalAllowances(first:100){nodes{actor{__typename ... on User{login} ... on Team{slug} ... on App{slug}}}}
+              }}
+              pullRequest(number:$number){
+                baseRefOid headRefOid mergeable mergeStateStatus reviewDecision
+                reviewThreads(first:100){nodes{isResolved isOutdated}}
+              }
+            }
+          }'''
+          graphql = request_json(
+              'graphql',
+              'https://api.github.com/graphql',
+              data=json.dumps(
+                  {'query': query, 'variables': {'owner': owner, 'name': name, 'number': pr_number}},
+                  separators=(',', ':'),
+              ).encode('utf-8'),
+          )
+
+          pr = values['pull-request']['body'] if values['pull-request']['status'] == 200 else {}
+          branch = values['main-branch']['body'] if values['main-branch']['status'] == 200 else {}
+          protection = values['main-protection']['body'] if values['main-protection']['status'] == 200 else {}
+          rulesets = values['rulesets']['body'] if values['rulesets']['status'] == 200 else []
+          evaluated = values['main-evaluated-rules']['body'] if values['main-evaluated-rules']['status'] == 200 else []
+          graph_repository = (((graphql.get('body') or {}).get('data') or {}).get('repository') or {})
+          graph_rules = ((graph_repository.get('branchProtectionRules') or {}).get('nodes') or [])
+          graph_pr = graph_repository.get('pullRequest') or {}
+          main_rules = [rule for rule in graph_rules if rule.get('pattern') == 'main']
+
+          checks = protection.get('required_status_checks') or {}
+          review = protection.get('required_pull_request_reviews') or {}
+          contexts = set(checks.get('contexts') or [])
+          contexts.update(
+              item.get('context') for item in (checks.get('checks') or [])
+              if isinstance(item, dict) and item.get('context')
+          )
+          classic_ready = bool(
+              values['main-protection']['status'] == 200
+              and checks.get('strict') is True
+              and 'trillionnium-game-merge-gate' in contexts
+              and (protection.get('enforce_admins') or {}).get('enabled') is True
+              and review.get('dismiss_stale_reviews') is True
+              and review.get('require_code_owner_reviews') is True
+              and review.get('require_last_push_approval') is True
+              and int(review.get('required_approving_review_count') or 0) >= 1
+              and (protection.get('required_conversation_resolution') or {}).get('enabled') is True
+              and (protection.get('allow_force_pushes') or {}).get('enabled') is not True
+              and (protection.get('allow_deletions') or {}).get('enabled') is not True
+          )
+          graph_ready = any(
+              rule.get('isAdminEnforced') is True
+              and rule.get('allowsForcePushes') is False
+              and rule.get('allowsDeletions') is False
+              and rule.get('dismissesStaleReviews') is True
+              and rule.get('requiresApprovingReviews') is True
+              and int(rule.get('requiredApprovingReviewCount') or 0) >= 1
+              and rule.get('requiresCodeOwnerReviews') is True
+              and rule.get('requiresConversationResolution') is True
+              and rule.get('requiresStatusChecks') is True
+              and rule.get('requiresStrictStatusChecks') is True
+              and 'trillionnium-game-merge-gate' in set(rule.get('requiredStatusCheckContexts') or [])
+              and not ((rule.get('bypassForcePushAllowances') or {}).get('nodes') or [])
+              and not ((rule.get('bypassPullRequestAllowances') or {}).get('nodes') or [])
+              for rule in main_rules
+          )
+
+          conflicts = {'profhepta', 'franksudoman'}
+          for commit in commits:
+              for key in ('author', 'committer'):
+                  login = ((commit.get(key) or {}).get('login') or '').lower()
+                  if login:
+                      conflicts.add(login)
+          collaborators = values['collaborators']['body'] if values['collaborators']['status'] == 200 else []
+          eligible = []
+          for person in collaborators if isinstance(collaborators, list) else []:
+              login = (person.get('login') or '').lower()
+              permission = person.get('role_name') or person.get('permissions') or {}
+              if login and login not in conflicts and person.get('type') != 'Bot':
+                  eligible.append({'login': person.get('login'), 'permission': permission})
+
+          threads = ((graph_pr.get('reviewThreads') or {}).get('nodes') or [])
+          summary = {
+              'schema': 'trillionnium.effective-governance-readback.v1',
+              'repository': repository,
+              'pull_request': pr_number,
+              'expected_head': expected_head,
+              'observed_head': ((pr.get('head') or {}).get('sha')),
+              'observed_base': ((pr.get('base') or {}).get('sha')),
+              'main_sha': ((branch.get('commit') or {}).get('sha')),
+              'main_protected_summary': branch.get('protected') is True,
+              'rest_statuses': {label: value['status'] for label, value in values.items()},
+              'graphql_status': graphql.get('status'),
+              'classic_protection_complete': classic_ready,
+              'graphql_protection_complete': graph_ready,
+              'effective_protection_complete': classic_ready or graph_ready,
+              'ruleset_count': len(rulesets) if isinstance(rulesets, list) else 0,
+              'evaluated_rule_count': len(evaluated) if isinstance(evaluated, list) else 0,
+              'graphql_main_rule_count': len(main_rules),
+              'graphql_review_decision': graph_pr.get('reviewDecision'),
+              'graphql_merge_state': graph_pr.get('mergeStateStatus'),
+              'unresolved_current_threads': sum(
+                  not node.get('isResolved') and not node.get('isOutdated')
+                  for node in threads if isinstance(node, dict)
+              ),
+              'conflict_identities': sorted(conflicts),
+              'eligible_conflict_free_collaborators': eligible,
+              'eligible_conflict_free_collaborator_count': len(eligible),
+              'claims': {
+                  'accepted_evidence': False,
+                  'gap_closed': False,
+                  'independent_review': False,
+                  'production_ready': False,
+              },
+          }
+          if summary['observed_head'] != expected_head:
+              summary['identity_error'] = 'PR head moved during governance read-back'
+              summary['effective_protection_complete'] = False
+          (root / 'summary.json').write_text(
+              json.dumps(summary, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n',
+              encoding='utf-8',
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Seal governance packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd run/governance-readback
+            find . -type f ! -path './SHA256SUMS' -print0 \
+              | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf run/effective-governance-readback-${EXPECTED_HEAD}.tar.gz \
+            -C run/governance-readback .
+
+      - name: Retain governance read-back packet
+        id: packet
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: effective-governance-readback-${{ env.EXPECTED_HEAD }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/effective-governance-readback-${{ env.EXPECTED_HEAD }}.tar.gz
+          mime_type: application/gzip
+
+      - name: Verify receipt and fail closed when policy is unreadable or incomplete
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.packet.outputs.artifact_id }}'
+          test '${{ steps.packet.outputs.sha256 }}' != ''
+          test '${{ steps.packet.outputs.size_bytes }}' -gt 0
+          jq -e '
+            .observed_head == .expected_head and
+            .effective_protection_complete == true and
+            .unresolved_current_threads == 0
+          ' run/governance-readback/summary.json >/dev/null
