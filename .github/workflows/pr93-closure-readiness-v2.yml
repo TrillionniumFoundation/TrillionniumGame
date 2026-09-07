@@ -1,0 +1,343 @@
+name: pr93-closure-readiness-v2
+
+on:
+  push:
+    branches:
+      - tooling/gap-closure-audit-2026-09-07
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: pr93-closure-readiness-v2
+  cancel-in-progress: true
+
+jobs:
+  retain-readiness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PR_NUMBER: "93"
+    steps:
+      - name: Bind and settle the current PR object
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          pr=$(gh api "repos/$repo/pulls/$PR_NUMBER")
+          head=$(jq -r .head.sha <<<"$pr")
+          base=$(jq -r .base.sha <<<"$pr")
+          merge=$(jq -r .merge_commit_sha <<<"$pr")
+          branch=$(jq -r .head.ref <<<"$pr")
+          test "$(jq -r .state <<<"$pr")" = open
+          test "$(jq -r .draft <<<"$pr")" = true
+          printf 'head=%s\nbase=%s\nmerge=%s\nbranch=%s\n' \
+            "$head" "$base" "$merge" "$branch" >> "$GITHUB_OUTPUT"
+
+          for _ in $(seq 1 100); do
+            gh api --paginate "repos/$repo/actions/runs?head_sha=$head&per_page=100" \
+              | jq -s '[.[].workflow_runs[]] | unique_by(.id)' \
+              > "$RUNNER_TEMP/workflow-runs.json"
+            active=$(jq '[.[] | select(.status != "completed")] | length' \
+              "$RUNNER_TEMP/workflow-runs.json")
+            [[ "$active" -eq 0 ]] && break
+            sleep 12
+          done
+
+      - name: Fetch exact head, base and GitHub merge object
+        shell: bash
+        env:
+          HEAD_SHA: ${{ steps.identity.outputs.head }}
+          BASE_SHA: ${{ steps.identity.outputs.base }}
+          MERGE_SHA: ${{ steps.identity.outputs.merge }}
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags origin \
+            "$HEAD_SHA" "$BASE_SHA" "$MERGE_SHA" \
+            "refs/pull/$PR_NUMBER/merge"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$HEAD_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$HEAD_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD^{tree})" = \
+            "$(git -C "$GITHUB_WORKSPACE" rev-parse $MERGE_SHA^{tree})"
+
+      - name: Validate exact source and build closure-readiness packet
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.identity.outputs.head }}
+          BASE_SHA: ${{ steps.identity.outputs.base }}
+          MERGE_SHA: ${{ steps.identity.outputs.merge }}
+        run: |
+          set -euo pipefail
+          packet="$RUNNER_TEMP/pr93-closure-readiness"
+          mkdir -p "$packet/api/runs" "$packet/source" "$packet/validation"
+          cp "$RUNNER_TEMP/workflow-runs.json" "$packet/api/workflow-runs.json"
+
+          python3 -m compileall -q scripts tools tests \
+            2>&1 | tee "$packet/validation/compileall.log"
+          python3 -m unittest discover -s tests -p 'test_*.py' -v \
+            2>&1 | tee "$packet/validation/python-tests.log"
+          for command in \
+            'python3 scripts/check-plan.py' \
+            'python3 scripts/check-status-transitions.py' \
+            'python3 scripts/derive-gates.py' \
+            'python3 scripts/check-documentation-authority.py' \
+            'python3 scripts/check-workflow-action-policy.py' \
+            'python3 scripts/check-repository-hygiene.py'; do
+            name=$(sed 's/[^A-Za-z0-9_.-]/_/g' <<<"$command")
+            bash -lc "$command" 2>&1 | tee "$packet/validation/$name.log"
+          done
+
+          jq -r '.[].id' "$packet/api/workflow-runs.json" | while read -r run_id; do
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" \
+              | jq -s '[.[].jobs[]] | unique_by(.id)' \
+              > "$packet/api/runs/jobs-$run_id.json"
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" \
+              | jq -s '[.[].artifacts[]] | unique_by(.id)' \
+              > "$packet/api/runs/artifacts-$run_id.json"
+          done
+
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
+            > "$packet/api/pull-request.json"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" \
+            > "$packet/api/reviews.json"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/requested_reviewers" \
+            > "$packet/api/requested-reviewers.json"
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?per_page=100" \
+            > "$packet/api/check-runs.json"
+          gh api "repos/$GITHUB_REPOSITORY/branches/main" \
+            > "$packet/api/main-branch-summary.json"
+
+          set +e
+          curl -sS -o "$packet/api/main-protection.json" \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/branches/main/protection" \
+            > "$packet/api/main-protection.http-status"
+          curl -sS -o "$packet/api/rulesets.json" \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/rulesets?includes_parents=true&per_page=100" \
+            > "$packet/api/rulesets.http-status"
+          gh api graphql \
+            -f owner="${GITHUB_REPOSITORY%/*}" \
+            -f name="${GITHUB_REPOSITORY#*/}" \
+            -F number="$PR_NUMBER" \
+            -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewDecision mergeStateStatus isDraft reviewThreads(first:100){nodes{id isResolved isOutdated path comments(first:20){nodes{author{login}body createdAt}}}}}}}' \
+            > "$packet/api/review-threads.json"
+          graphql_status=$?
+          set -e
+          printf '%s\n' "$graphql_status" > "$packet/api/review-threads.exit-status"
+
+          git show -s --format=raw "$HEAD_SHA" > "$packet/source/head-commit.txt"
+          git show -s --format=raw "$BASE_SHA" > "$packet/source/base-commit.txt"
+          git show -s --format=raw "$MERGE_SHA" > "$packet/source/merge-commit.txt"
+          git ls-tree -r "$HEAD_SHA" > "$packet/source/head-tree.txt"
+          git ls-tree -r "$MERGE_SHA" > "$packet/source/merge-tree.txt"
+          git diff --stat "$BASE_SHA" "$HEAD_SHA" > "$packet/source/diff-stat.txt"
+          git diff --name-status "$BASE_SHA" "$HEAD_SHA" \
+            > "$packet/source/diff-name-status.txt"
+          git archive --format=tar.gz -o "$packet/source/exact-head.tar.gz" "$HEAD_SHA"
+
+          cp docs/status/GAP_REGISTER.json "$packet/gap-register.json"
+          cp docs/status/PRODUCT_GATES.json "$packet/product-gates.json"
+          cp docs/evidence/index.json "$packet/evidence-index.json"
+          for optional in \
+            docs/status/DENOMINATOR_CLASSIFICATION_CANDIDATE.json \
+            docs/status/REVIEWER_CAPACITY.json \
+            docs/status/WAVE3_BLOCKERS.json; do
+            [[ -f "$optional" ]] && cp "$optional" "$packet/$(basename "$optional")"
+          done
+
+          python3 - "$packet" "$GITHUB_REPOSITORY" "$BASE_SHA" "$HEAD_SHA" "$MERGE_SHA" <<'PY'
+          from __future__ import annotations
+          import hashlib, json, re, sys
+          from collections import Counter
+          from pathlib import Path
+
+          packet=Path(sys.argv[1]); repo,base,head,merge=sys.argv[2:]
+          def load(name): return json.loads((packet/name).read_text())
+          gaps=load('gap-register.json').get('gaps',[])
+          evidence=load('evidence-index.json')
+          runs=load('api/workflow-runs.json')
+          checks=load('api/check-runs.json').get('check_runs',[])
+          reviews=load('api/reviews.json')
+          protection_status=(packet/'api/main-protection.http-status').read_text().strip()
+          ruleset_status=(packet/'api/rulesets.http-status').read_text().strip()
+          run_counts=Counter((r.get('status'),r.get('conclusion')) for r in runs)
+          review_counts=Counter(r.get('state','UNKNOWN') for r in reviews)
+          artifact_count=0
+          for path in (packet/'api/runs').glob('artifacts-*.json'):
+              artifact_count += len(json.loads(path.read_text()))
+          accepted_count=evidence.get('accepted_entry_count')
+          if type(accepted_count) is not int:
+              accepted_count=sum(1 for r in evidence.get('entries',[]) if r.get('status')=='accepted')
+
+          def bucket(text):
+              value=text.lower()
+              result=[]
+              if re.search(r'independent|review|codeowner|conversation',value): result.append('independent-review')
+              if re.search(r'protection|ruleset|bypass|force push|deletion|direct push|administrator',value): result.append('github-governance')
+              if re.search(r'accepted evidence|artifact|digest|indexed|retained|freshness',value): result.append('evidence-admission')
+              if re.search(r'kms|hsm|multi-node|ha\b|pitr|rpo|rto|capacity|endurance|canary|cutover|retirement|production',value): result.append('real-environment')
+              if not result: result.append('source-or-execution')
+              return sorted(set(result))
+
+          matrix=[]; aggregate=Counter()
+          for gap in gaps:
+              criteria=[]
+              for index,text in enumerate(gap.get('close_criteria',[]),1):
+                  buckets=bucket(text)
+                  aggregate.update(buckets)
+                  criteria.append({'number':index,'text':text,'blocker_classes':buckets})
+              matrix.append({
+                  'id':gap.get('id'),'severity':gap.get('severity'),
+                  'category':gap.get('category'),'formal_status':gap.get('status'),
+                  'external_dependency':gap.get('external_dependency'),
+                  'evidence_ids':gap.get('evidence_ids',[]),
+                  'required_evidence_types':gap.get('required_evidence_types',[]),
+                  'criteria':criteria,
+              })
+          classification={}
+          candidate=packet/'DENOMINATOR_CLASSIFICATION_CANDIDATE.json'
+          if candidate.exists():
+              c=json.loads(candidate.read_text())
+              classification={k:c.get(k) for k in ('family_count','leaf_count','unclassified_count','accepted','sg1_credit')}
+          capacity={}
+          cap=packet/'REVIEWER_CAPACITY.json'
+          if cap.exists():
+              c=json.loads(cap.read_text())
+              capacity={k:c.get(k) for k in ('policy_minimum_eligible_reviewers','eligible_reviewer_count','capacity_satisfied')}
+          summary={
+              'schema':'trillionnium.pr93-closure-readiness.v2',
+              'repository':repo,'pr':93,'base':base,'head':head,'merge':merge,
+              'formal':{
+                  'gap_count':len(gaps),
+                  'closed_gap_count':sum(g.get('status')=='closed' for g in gaps),
+                  'close_criteria_count':sum(len(g.get('close_criteria',[])) for g in gaps),
+                  'accepted_evidence_count':accepted_count,
+              },
+              'execution':{
+                  'workflow_run_count':len(runs),
+                  'successful_runs':sum(r.get('status')=='completed' and r.get('conclusion')=='success' for r in runs),
+                  'active_runs':sum(r.get('status')!='completed' for r in runs),
+                  'failed_runs':sum(r.get('conclusion') in ('failure','timed_out','action_required','startup_failure') for r in runs),
+                  'check_run_count':len(checks),
+                  'failed_checks':sum(c.get('conclusion') in ('failure','timed_out','action_required','startup_failure') for c in checks),
+                  'artifact_count':artifact_count,
+              },
+              'reviews':dict(sorted(review_counts.items())),
+              'governance_readback':{
+                  'branch_summary_available':True,
+                  'full_protection_http_status':protection_status,
+                  'rulesets_http_status':ruleset_status,
+                  'independent_acceptance_required':True,
+              },
+              'denominator_classification_candidate':classification,
+              'reviewer_capacity':capacity,
+              'criterion_blocker_class_counts':dict(sorted(aggregate.items())),
+              'gaps':matrix,
+              'claim_boundary':{
+                  'accepted_evidence':False,'all_gaps_closed':False,
+                  'sg1_credit':False,'compatibility_credit':False,
+                  'production_ready':False,'public_online':False,
+                  'nakama_retired':False,
+              },
+          }
+          (packet/'readiness.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          lines=[
+              '# PR #93 closure readiness', '',
+              f'- repository: `{repo}`', f'- base: `{base}`', f'- head: `{head}`', f'- merge: `{merge}`',
+              f'- formal gaps closed: `{summary["formal"]["closed_gap_count"]}/{summary["formal"]["gap_count"]}`',
+              f'- close criteria: `{summary["formal"]["close_criteria_count"]}`',
+              f'- accepted evidence: `{accepted_count}`',
+              f'- exact-head runs: `{summary["execution"]["workflow_run_count"]}`; success `{summary["execution"]["successful_runs"]}`; active `{summary["execution"]["active_runs"]}`; failed `{summary["execution"]["failed_runs"]}`',
+              f'- retained artifact metadata rows: `{artifact_count}`',
+              f'- full protection readback HTTP status: `{protection_status}`',
+              '', '## Criterion blocker classes', '',
+          ]
+          for key,value in sorted(aggregate.items()): lines.append(f'- {key}: `{value}`')
+          lines += ['', '## Claim boundary', '', '```text',
+                    'accepted_evidence=false','all_gaps_closed=false','sg1_credit=false',
+                    'compatibility_credit=false','production_ready=false','public_online=false',
+                    'nakama_retired=false','```','']
+          (packet/'readiness.md').write_text('\n'.join(lines))
+
+          members=[]
+          for path in sorted(p for p in packet.rglob('*') if p.is_file() and p.name not in ('files.sha256','packet-manifest.json')):
+              raw=path.read_bytes()
+              members.append({'path':path.relative_to(packet).as_posix(),'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()})
+          manifest={'schema':'trillionnium.pr93-closure-readiness-packet.v2','repository':repo,'pr':93,'base':base,'head':head,'merge':merge,'members':members,'accepted_evidence':False,'gap_closed':False,'production_ready':False}
+          (packet/'packet-manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          PY
+
+          (
+            cd "$packet"
+            find . -type f ! -path './files.sha256' -print0 \
+              | LC_ALL=C sort -z | xargs -0 sha256sum > files.sha256
+            sha256sum --check files.sha256
+          )
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 \
+            --numeric-owner -C "$RUNNER_TEMP" -czf \
+            "$GITHUB_WORKSPACE/pr93-closure-readiness-v2.tar.gz" \
+            pr93-closure-readiness
+          sha256sum "$GITHUB_WORKSPACE/pr93-closure-readiness-v2.tar.gz" \
+            > "$GITHUB_WORKSPACE/pr93-closure-readiness-v2.tar.gz.sha256"
+          cp "$packet/readiness.json" "$GITHUB_WORKSPACE/pr93-closure-readiness-v2.json"
+          cp "$packet/readiness.md" "$GITHUB_WORKSPACE/pr93-closure-readiness-v2.md"
+
+      - name: Retain exact closure-readiness packet
+        id: upload
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: pr93-closure-readiness-v2-${{ steps.identity.outputs.head }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: pr93-closure-readiness-v2.tar.gz
+          mime_type: application/gzip
+
+      - name: Verify receipt and post exact locator
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.identity.outputs.head }}
+          BASE_SHA: ${{ steps.identity.outputs.base }}
+          MERGE_SHA: ${{ steps.identity.outputs.merge }}
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.upload.outputs.artifact_id }}'
+          test -n '${{ steps.upload.outputs.sha256 }}'
+          test '${{ steps.upload.outputs.size_bytes }}' -gt 0
+          digest=$(cut -d' ' -f1 pr93-closure-readiness-v2.tar.gz.sha256)
+          summary=$(jq -c '{formal,execution,reviews,governance_readback,denominator_classification_candidate,reviewer_capacity,criterion_blocker_class_counts,claim_boundary}' pr93-closure-readiness-v2.json)
+          body=$(cat <<EOF
+          PR #93 exact closure-readiness packet v2 for head \`$HEAD_SHA\`, base \`$BASE_SHA\`, merge \`$MERGE_SHA\`:
+
+          - producer run: \`$GITHUB_RUN_ID\` attempt \`$GITHUB_RUN_ATTEMPT\`
+          - artifact ID: \`${{ steps.upload.outputs.artifact_id }}\`
+          - native receipt SHA-256: \`${{ steps.upload.outputs.sha256 }}\`
+          - packet SHA-256: \`$digest\`
+          - packet bytes: \`${{ steps.upload.outputs.size_bytes }}\`
+
+          \`\`\`json
+          $summary
+          \`\`\`
+
+          This is a zero-credit evidence candidate. Independent retained-byte verification, specialist decisions, global SG1 acceptance, effective governance readback and real-environment qualification remain mandatory.
+          EOF
+          )
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/$PR_NUMBER/comments" --raw-field body="$body"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/7/comments" --raw-field body="$body"
