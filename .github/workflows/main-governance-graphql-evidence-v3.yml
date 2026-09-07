@@ -1,0 +1,166 @@
+name: main-governance-graphql-evidence-v3
+
+on:
+  push:
+    branches: [tooling/gap-closure-audit-2026-09-07]
+    paths:
+      - '.github/workflows/main-governance-graphql-evidence-v3.yml'
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+env:
+  CANDIDATE_HEAD: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+  CANDIDATE_TREE: 9d3ae2fadb2684f095855ecf16307376b55a440f
+  BASE_HEAD: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
+  PROSPECTIVE_MERGE: 6965f95d03031156edc92cc862bd979ff87e9edb
+
+jobs:
+  collect-retain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Collect exact GraphQL governance and PR readback
+        id: collect
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"; owner="${repo%/*}"; name="${repo#*/}"
+          packet="$RUNNER_TEMP/governance-v3"
+          mkdir -p "$packet"
+          set +e
+          gh api graphql -f owner="$owner" -f name="$name" \
+            -f query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id nameWithOwner defaultBranchRef{name target{... on Commit{oid}}} branchProtectionRules(first:100){totalCount nodes{id pattern allowsDeletions allowsForcePushes dismissesStaleReviews isAdminEnforced requiredApprovingReviewCount requiredStatusCheckContexts requiresApprovingReviews requiresCodeOwnerReviews requiresCommitSignatures requiresConversationResolution requiresLinearHistory requiresStatusChecks requiresStrictStatusChecks restrictsPushes restrictsReviewDismissals bypassForcePushAllowances(first:100){totalCount nodes{actor{__typename ... on User{login} ... on Team{slug organization{login}} ... on App{slug}}}} bypassPullRequestAllowances(first:100){totalCount nodes{actor{__typename ... on User{login} ... on Team{slug organization{login}} ... on App{slug}}}} pushAllowances(first:100){totalCount nodes{actor{__typename ... on User{login} ... on Team{slug organization{login}} ... on App{slug}}}} reviewDismissalAllowances(first:100){totalCount nodes{actor{__typename ... on User{login} ... on Team{slug organization{login}} ... on App{slug}}}}}}}}' \
+            > "$packet/branch-protection.json" 2> "$packet/branch-protection.stderr"
+          protection_exit=$?
+          gh api graphql -f owner="$owner" -f name="$name" -F pr=63 \
+            -f query='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){id number state isDraft mergeable mergeStateStatus reviewDecision baseRefName baseRefOid headRefName headRefOid reviewThreads(first:100){totalCount nodes{id isResolved isOutdated path line comments(first:20){totalCount nodes{author{login} body createdAt}}}} reviews(first:100){totalCount nodes{author{login} state submittedAt commit{oid}}}}}}}' \
+            > "$packet/pr63-topology.json" 2> "$packet/pr63-topology.stderr"
+          topology_exit=$?
+          set -e
+          printf '%s\n' "$protection_exit" > "$packet/branch-protection.exit-status"
+          printf '%s\n' "$topology_exit" > "$packet/pr63-topology.exit-status"
+          gh api "repos/$repo/branches/main" > "$packet/main-branch-summary.json"
+          gh api "repos/$repo/pulls/63" > "$packet/pr63.json"
+          test "$(jq -r .head.sha "$packet/pr63.json")" = "$CANDIDATE_HEAD"
+          test "$(jq -r .base.sha "$packet/pr63.json")" = "$BASE_HEAD"
+          test "$(jq -r .merge_commit_sha "$packet/pr63.json")" = "$PROSPECTIVE_MERGE"
+          for ref in main "$CANDIDATE_HEAD"; do
+            safe=$(tr '/:' '__' <<<"$ref")
+            for path in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
+              target="$packet/codeowners-$safe-$(tr '/' '_' <<<"$path")"
+              status=$(curl -sS -o "$target" -w '%{http_code}' \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H 'Accept: application/vnd.github.raw+json' \
+                "https://api.github.com/repos/$repo/contents/$path?ref=$ref")
+              printf '%s\n' "$status" > "$target.http-status"
+            done
+          done
+          python3 - "$packet" "$repo" <<'PY'
+          import hashlib,json,sys
+          from pathlib import Path
+          packet=Path(sys.argv[1]); repo=sys.argv[2]
+          def read_json(name):
+              try: return json.loads((packet/name).read_text())
+              except Exception: return None
+          protection=read_json('branch-protection.json')
+          topology=read_json('pr63-topology.json')
+          rules=[]
+          if protection:
+              rules=((((protection.get('data') or {}).get('repository') or {}).get('branchProtectionRules') or {}).get('nodes') or [])
+          main_rules=[r for r in rules if r.get('pattern')=='main']
+          pr=(((topology or {}).get('data') or {}).get('repository') or {}).get('pullRequest') or {}
+          threads=((pr.get('reviewThreads') or {}).get('nodes') or [])
+          reviews=((pr.get('reviews') or {}).get('nodes') or [])
+          readback={
+            'schema':'trillionnium.main-governance-graphql-readback.v3',
+            'repository':repo,
+            'candidate':{
+              'head':'88c02a417c7b0c64f27dc9f49e0b5e6317150964',
+              'tree':'9d3ae2fadb2684f095855ecf16307376b55a440f',
+              'base':'d66c1b5b614a2a7b682c233fe2e7a19939b6976b',
+              'prospective_merge':'6965f95d03031156edc92cc862bd979ff87e9edb'},
+            'branch_protection_query_exit':int((packet/'branch-protection.exit-status').read_text()),
+            'review_topology_query_exit':int((packet/'pr63-topology.exit-status').read_text()),
+            'main_rule_count':len(main_rules),'main_rules':main_rules,
+            'pr63':{
+              'state':pr.get('state'),'isDraft':pr.get('isDraft'),'mergeable':pr.get('mergeable'),
+              'mergeStateStatus':pr.get('mergeStateStatus'),'reviewDecision':pr.get('reviewDecision'),
+              'headRefOid':pr.get('headRefOid'),'baseRefOid':pr.get('baseRefOid'),
+              'thread_count':len(threads),
+              'unresolved_current_threads':sum(not t.get('isResolved') and not t.get('isOutdated') for t in threads),
+              'reviews':reviews},
+            'negative_enforcement_rehearsal_executed':False,
+            'admin_rest_readback_available':False,
+            'independent_governance_acceptance_required':True,
+            'accepted_evidence':False,'gap_closed':False,'production_ready':False}
+          (packet/'readback.json').write_text(json.dumps(readback,sort_keys=True,indent=2)+'\n')
+          members=[]
+          for path in sorted(p for p in packet.rglob('*') if p.is_file() and p.name not in ('files.sha256','manifest.json')):
+              raw=path.read_bytes(); members.append({'path':path.relative_to(packet).as_posix(),'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()})
+          (packet/'manifest.json').write_text(json.dumps({'schema':'trillionnium.main-governance-graphql-packet.v3','repository':repo,'members':members,'accepted_evidence':False,'gap_closed':False,'production_ready':False},sort_keys=True,indent=2)+'\n')
+          PY
+          (cd "$packet" && find . -type f ! -path './files.sha256' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > files.sha256 && sha256sum --check files.sha256)
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -C "$RUNNER_TEMP" -czf "$GITHUB_WORKSPACE/main-governance-graphql-v3.tar.gz" governance-v3
+          sha256sum "$GITHUB_WORKSPACE/main-governance-graphql-v3.tar.gz" > "$GITHUB_WORKSPACE/main-governance-graphql-v3.tar.gz.sha256"
+          cp "$packet/readback.json" "$GITHUB_WORKSPACE/main-governance-graphql-readback-v3.json"
+
+      - name: Install exact candidate native uploader and transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/source"
+          git -C "$RUNNER_TEMP/source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$RUNNER_TEMP/source" fetch --no-tags --depth=1 origin "$CANDIDATE_HEAD"
+          git -C "$RUNNER_TEMP/source" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/source" rev-parse HEAD)" = "$CANDIDATE_HEAD"
+          test "$(git -C "$RUNNER_TEMP/source" rev-parse HEAD^{tree})" = "$CANDIDATE_TREE"
+          mkdir -p "$GITHUB_WORKSPACE/.github" "$GITHUB_WORKSPACE/scripts"
+          cp -a "$RUNNER_TEMP/source/.github/actions" "$GITHUB_WORKSPACE/.github/"
+          cp "$RUNNER_TEMP/source/scripts/upload-actions-artifact.py" "$GITHUB_WORKSPACE/scripts/"
+
+      - name: Retain exact governance GraphQL packet
+        id: upload
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: main-governance-graphql-v3-${{ env.CANDIDATE_HEAD }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: main-governance-graphql-v3.tar.gz
+          mime_type: application/gzip
+
+      - name: Publish locator and limitations
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.upload.outputs.artifact_id }}'
+          test -n '${{ steps.upload.outputs.sha256 }}'
+          test '${{ steps.upload.outputs.size_bytes }}' -gt 0
+          packet_digest=$(cut -d' ' -f1 main-governance-graphql-v3.tar.gz.sha256)
+          readback=$(jq -c . main-governance-graphql-readback-v3.json)
+          body=$(cat <<EOF
+          Exact candidate governance GraphQL evidence candidate:
+
+          - candidate: \`$CANDIDATE_HEAD\`, tree \`$CANDIDATE_TREE\`
+          - base: \`$BASE_HEAD\`
+          - prospective merge: \`$PROSPECTIVE_MERGE\`
+          - run: \`$GITHUB_RUN_ID\`, attempt \`$GITHUB_RUN_ATTEMPT\`
+          - artifact: \`${{ steps.upload.outputs.artifact_id }}\`
+          - native receipt SHA-256: \`${{ steps.upload.outputs.sha256 }}\`
+          - packet SHA-256: \`$packet_digest\`
+
+          \`\`\`json
+          $readback
+          \`\`\`
+
+          This read-only packet does not replace the missing administrator REST readback or negative enforcement rehearsal, and grants no governance, evidence, gap, compatibility or production credit without conflict-free acceptance.
+          EOF
+          )
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/7/comments" --raw-field body="$body"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/63/comments" --raw-field body="$body"
