@@ -1,0 +1,56 @@
+{
+  "schema": "trillionnium.world-publication-request.v1",
+  "request_id": "world-v13k-2026-09-08",
+  "source": {
+    "repository": "TrillionniumFoundation/TrillionniumGame",
+    "qualification_run_id": 33452853784,
+    "qualification_job_id": 99686384472,
+    "artifact_id": 9780499701,
+    "artifact_zip_sha256": "456a181bdc8f8aa248229b044db9eec4f52572ea3b20bca6492907db58d64ef5",
+    "source_world_head": "5605cfb8861aa923f69ff032ddbff7d035bccb0c",
+    "source_world_tree": "928f43b328e5347b07357e41481df1c7e097adca",
+    "qualification_control_head": "68e9631b3fc3f75f332497f8d0551608bf0e1413",
+    "source_patch_sha256": "ba49dba1e7fbf842f146ac399647e188faafcfbd5ce3ad17425ef88850e0199f",
+    "candidate_archive_sha256": "4c703f428f9a54262a6c0c1340028d08d7883f25ef437c1d7e221a280f53f071",
+    "manifest_sha256": "44cf59478b28e8fde793ca0d705ba3634216a5d388ce7264e74cd0319c41ff6f",
+    "identity_sha256": "d05b375af8d0d8317a2e6e58b75a594949729203499f6677b43f1ea36ff31110",
+    "qualified_tree": "5e613185f5a2abda42df371f3755e73667717309"
+  },
+  "importer": {
+    "repository": "TrillionniumFoundation/Trillionnium-World",
+    "commit": "d8ab3164cbd573e642d98fbfb626fe551574c7e5",
+    "path": "scripts/import-qualified-world-v13k.py",
+    "git_blob_sha1": "5c21773242423b083f87ee0924474754646065d0"
+  },
+  "target": {
+    "repository": "TrillionniumFoundation/Trillionnium-World",
+    "branch": "fix/world-plan-v4-development-closure-20260831",
+    "expected_head": "010370c540a3a17e871b4b5349fc01ffe9502553",
+    "write_count": 73,
+    "deletion_count": 2,
+    "required_deletions": [
+      "trillionnium/crates/trnm-game-server/build.rs",
+      "trillionnium/crates/trnm-game-server/src/lib.rs.in"
+    ],
+    "force_update_allowed": false,
+    "default_branch_write_allowed": false
+  },
+  "execution": {
+    "trusted_workflow_ref": "refs/heads/main",
+    "protected_environment": "world-source-publication",
+    "environment_secret": "TRNM_WORLD_ENV_IMPORT_TOKEN",
+    "candidate_controlled_code_allowed": false,
+    "exact_main_sha_dispatch_input_required": true,
+    "independent_environment_approval_required": true,
+    "final_parent_tree_and_path_readback_required": true
+  },
+  "claims": {
+    "request_is_publication": false,
+    "source_candidate": true,
+    "accepted_evidence": false,
+    "gap_closed": false,
+    "deployment_authorized": false,
+    "production_ready": false,
+    "public_online": false
+  }
+}
