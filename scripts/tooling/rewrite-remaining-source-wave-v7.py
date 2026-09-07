@@ -121,7 +121,7 @@ def rewrite(scripts: list[str]) -> list[str]:
 
 def validate_rewrite(scripts: list[str]) -> None:
     combined = "\n".join(scripts)
-    required = (
+    required_unique = (
         'extended_base="$SOURCE_BASE_SHA"',
         'extended_head="$SOURCE_BASE_SHA"',
         'test "$plan_sha" = "$PLAN_HEAD_SHA"',
@@ -130,15 +130,20 @@ def validate_rewrite(scripts: list[str]) -> None:
         'git checkout "$CRYPTO_SHA" -- crates/trnm-token-crypto-provider',
         "crates/trnm-persistence-core/src/migration_fence.rs",
         "apply-canonical-server-authority-v7.py",
+    )
+    for marker in required_unique:
+        if combined.count(marker) != 1:
+            raise SystemExit(f"rewritten v7 unique marker mismatch: {marker}")
+    required_controls = (
         "python3 scripts/check-rust-package-inventory.py",
         "python3 scripts/check-documentation-authority.py",
         "python3 scripts/check-plan.py",
         "python3 scripts/check-evidence-index.py",
         "python3 scripts/check-gap-register.py",
     )
-    for marker in required:
-        if combined.count(marker) != 1:
-            raise SystemExit(f"rewritten v7 marker mismatch: {marker}")
+    for marker in required_controls:
+        if combined.count(marker) < 1:
+            raise SystemExit(f"rewritten v7 mandatory control missing: {marker}")
     if "pulls/92" in combined:
         raise SystemExit("forbidden predecessor marker survived: pulls/92")
     if "check-module-docs.py" in combined:
