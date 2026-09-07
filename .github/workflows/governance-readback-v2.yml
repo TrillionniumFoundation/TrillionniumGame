@@ -15,6 +15,7 @@ env:
   TARGET_REPOSITORY: TrillionniumFoundation/TrillionniumGame
   TARGET_PR: '63'
   TARGET_HEAD: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+  TARGET_TREE: 9d3ae2fadb2684f095855ecf16307376b55a440f
   TARGET_BASE: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
   ADMIN_TOKEN: ${{ secrets.TRNM_GITHUB_ADMIN_TOKEN || secrets.TRNM_GITHUB_GOVERNANCE_TOKEN || secrets.GH_ADMIN_TOKEN }}
 
@@ -23,21 +24,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Fetch exact tooling and target source
+      - name: Fetch exact target source
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$GITHUB_WORKSPACE/tooling" "$GITHUB_WORKSPACE/source"
-          git init "$GITHUB_WORKSPACE/tooling"
-          git -C "$GITHUB_WORKSPACE/tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
-          git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
+          rm -rf "$GITHUB_WORKSPACE/source"
           git init "$GITHUB_WORKSPACE/source"
           git -C "$GITHUB_WORKSPACE/source" remote add origin "https://github.com/${TARGET_REPOSITORY}.git"
           git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin "$TARGET_HEAD"
           git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$TARGET_HEAD"
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = 9d3ae2fadb2684f095855ecf16307376b55a440f
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$TARGET_TREE"
 
       - name: Capture server-side protection and review state
         id: capture
@@ -48,13 +45,19 @@ jobs:
           mkdir -p run/governance-readback
           python3 - <<'PY'
           from __future__ import annotations
-          import json, os, pathlib, urllib.error, urllib.request
+
+          import json
+          import os
+          import pathlib
+          import urllib.error
+          import urllib.request
 
           root = pathlib.Path('run/governance-readback')
           repository = os.environ['TARGET_REPOSITORY']
           owner, name = repository.split('/', 1)
           pr_number = int(os.environ['TARGET_PR'])
           expected_head = os.environ['TARGET_HEAD']
+          expected_tree = os.environ['TARGET_TREE']
           expected_base = os.environ['TARGET_BASE']
           token = os.environ.get('ADMIN_TOKEN', '')
           api = f'https://api.github.com/repos/{repository}'
@@ -67,57 +70,80 @@ jobs:
               headers['Authorization'] = f'Bearer {token}'
 
           def request_json(url: str, *, method: str = 'GET', body=None):
-              data = None if body is None else json.dumps(body, separators=(',', ':')).encode('utf-8')
-              request = urllib.request.Request(url, data=data, method=method, headers=headers)
+              data = None if body is None else json.dumps(
+                  body, separators=(',', ':'), sort_keys=True
+              ).encode('utf-8')
+              request = urllib.request.Request(
+                  url, data=data, method=method, headers=headers
+              )
               try:
                   with urllib.request.urlopen(request, timeout=30) as response:
                       raw = response.read()
                       value = json.loads(raw.decode('utf-8')) if raw else None
-                      return {'status': response.status, 'headers': {
-                          'x-oauth-scopes': response.headers.get('x-oauth-scopes'),
-                          'x-accepted-oauth-scopes': response.headers.get('x-accepted-oauth-scopes'),
-                      }, 'body': value}
+                      return {'status': response.status, 'body': value}
               except urllib.error.HTTPError as error:
                   raw = error.read()
                   try:
                       value = json.loads(raw.decode('utf-8')) if raw else None
                   except Exception:
-                      value = {'message': raw.decode('utf-8', errors='replace')[:1000]}
-                  return {'status': error.code, 'headers': {
-                      'x-oauth-scopes': error.headers.get('x-oauth-scopes'),
-                      'x-accepted-oauth-scopes': error.headers.get('x-accepted-oauth-scopes'),
-                  }, 'body': value}
+                      value = {
+                          'message': raw.decode(
+                              'utf-8', errors='replace'
+                          )[:1000]
+                      }
+                  return {'status': error.code, 'body': value}
 
           endpoints = {
               'repository': request_json(api),
               'main_branch': request_json(api + '/branches/main'),
               'main_protection': request_json(api + '/branches/main/protection'),
-              'rulesets': request_json(api + '/rulesets?includes_parents=true&per_page=100'),
+              'rulesets': request_json(
+                  api + '/rulesets?includes_parents=true&per_page=100'
+              ),
               'pull_request': request_json(api + f'/pulls/{pr_number}'),
-              'reviews': request_json(api + f'/pulls/{pr_number}/reviews?per_page=100'),
-              'comments': request_json(api + f'/issues/{pr_number}/comments?per_page=100'),
-              'codeowners': request_json(api + '/contents/.github/CODEOWNERS?ref=' + expected_head),
+              'reviews': request_json(
+                  api + f'/pulls/{pr_number}/reviews?per_page=100'
+              ),
+              'comments': request_json(
+                  api + f'/issues/{pr_number}/comments?per_page=100'
+              ),
+              'codeowners': request_json(
+                  api + '/contents/.github/CODEOWNERS?ref=' + expected_head
+              ),
           }
+
           ruleset_rows = endpoints['rulesets'].get('body')
           detailed_rulesets = []
-          if endpoints['rulesets']['status'] == 200 and isinstance(ruleset_rows, list):
+          if endpoints['rulesets']['status'] == 200 and isinstance(
+              ruleset_rows, list
+          ):
               for row in ruleset_rows:
-                  identifier = row.get('id')
+                  identifier = row.get('id') if isinstance(row, dict) else None
                   if isinstance(identifier, int):
-                      detailed_rulesets.append(request_json(api + f'/rulesets/{identifier}'))
+                      detailed_rulesets.append(
+                          request_json(api + f'/rulesets/{identifier}')
+                      )
           endpoints['ruleset_details'] = detailed_rulesets
 
-          graphql = None
+          graphql = {
+              'status': 0,
+              'body': {'message': 'administration token unavailable'},
+          }
           if token:
               query = '''query($owner:String!,$name:String!,$pr:Int!){
                 repository(owner:$owner,name:$name){
                   branchProtectionRules(first:100){nodes{
                     id pattern isAdminEnforced allowsForcePushes allowsDeletions
-                    requiresApprovingReviews requiredApprovingReviewCount dismissesStaleReviews
-                    requiresCodeOwnerReviews requiresConversationResolution requiresStrictStatusChecks
+                    requiresApprovingReviews requiredApprovingReviewCount
+                    dismissesStaleReviews requiresCodeOwnerReviews
+                    requiresConversationResolution requiresStrictStatusChecks
                     requiredStatusCheckContexts
-                    bypassPullRequestAllowances(first:100){nodes{actor{__typename ... on User{login} ... on Team{slug} ... on App{slug}}}}
-                    bypassForcePushAllowances(first:100){nodes{actor{__typename ... on User{login} ... on Team{slug} ... on App{slug}}}}
+                    bypassPullRequestAllowances(first:100){nodes{
+                      actor{__typename ... on User{login} ... on Team{slug} ... on App{slug}}
+                    }}
+                    bypassForcePushAllowances(first:100){nodes{
+                      actor{__typename ... on User{login} ... on Team{slug} ... on App{slug}}
+                    }}
                   }}
                   pullRequest(number:$pr){
                     headRefOid baseRefOid reviewDecision mergeStateStatus isDraft
@@ -126,62 +152,130 @@ jobs:
                 }
               }'''
               graphql = request_json(
-                  'https://api.github.com/graphql', method='POST',
-                  body={'query': query, 'variables': {'owner': owner, 'name': name, 'pr': pr_number}},
+                  'https://api.github.com/graphql',
+                  method='POST',
+                  body={
+                      'query': query,
+                      'variables': {
+                          'owner': owner,
+                          'name': name,
+                          'pr': pr_number,
+                      },
+                  },
               )
-          endpoints['graphql'] = graphql or {'status': 0, 'body': {'message': 'administration token unavailable'}}
+          endpoints['graphql'] = graphql
 
-          pr = endpoints['pull_request'].get('body') if endpoints['pull_request']['status'] == 200 else {}
-          head = ((pr or {}).get('head') or {}).get('sha')
-          base = ((pr or {}).get('base') or {}).get('sha')
-          protection = endpoints['main_protection'].get('body') if endpoints['main_protection']['status'] == 200 else {}
-          reviews = (protection or {}).get('required_pull_request_reviews') or {}
-          checks = (protection or {}).get('required_status_checks') or {}
+          pr = (
+              endpoints['pull_request'].get('body')
+              if endpoints['pull_request']['status'] == 200
+              else {}
+          ) or {}
+          head = (pr.get('head') or {}).get('sha')
+          tree = None
+          if head == expected_head:
+              tree_result = request_json(api + '/git/commits/' + expected_head)
+              endpoints['target_commit'] = tree_result
+              if tree_result['status'] == 200:
+                  tree = ((tree_result.get('body') or {}).get('tree') or {}).get('sha')
+          base = (pr.get('base') or {}).get('sha')
+
+          protection = (
+              endpoints['main_protection'].get('body')
+              if endpoints['main_protection']['status'] == 200
+              else {}
+          ) or {}
+          reviews = protection.get('required_pull_request_reviews') or {}
+          checks = protection.get('required_status_checks') or {}
           contexts = list(checks.get('contexts') or [])
           contexts.extend(
-              item.get('context') for item in checks.get('checks') or []
-              if isinstance(item, dict) and isinstance(item.get('context'), str)
+              item.get('context')
+              for item in checks.get('checks') or []
+              if isinstance(item, dict)
+              and isinstance(item.get('context'), str)
           )
           contexts = sorted(set(contexts))
+
           ruleset_bypass = []
           for result in detailed_rulesets:
               body = result.get('body')
               if not isinstance(body, dict):
                   continue
-              for actor in body.get('bypass_actors') or []:
-                  ruleset_bypass.append(actor)
+              ruleset_bypass.extend(body.get('bypass_actors') or [])
 
           evaluation = {
               'administration_token_present': bool(token),
-              'target_identity_matches': head == expected_head and base == expected_base,
-              'main_protection_readable': endpoints['main_protection']['status'] == 200,
-              'main_is_protected': bool((endpoints['main_branch'].get('body') or {}).get('protected')),
+              'target_identity_matches': (
+                  head == expected_head
+                  and tree == expected_tree
+                  and base == expected_base
+              ),
+              'main_protection_readable': (
+                  endpoints['main_protection']['status'] == 200
+              ),
+              'main_is_protected': bool(
+                  (endpoints['main_branch'].get('body') or {}).get('protected')
+              ),
               'strict_status_checks': checks.get('strict') is True,
-              'aggregate_gate_required': 'trillionnium-game-merge-gate' in contexts,
-              'administrator_enforcement': bool(((protection or {}).get('enforce_admins') or {}).get('enabled')),
-              'force_push_forbidden': not bool(((protection or {}).get('allow_force_pushes') or {}).get('enabled')),
-              'deletion_forbidden': not bool(((protection or {}).get('allow_deletions') or {}).get('enabled')),
-              'approval_required': int(reviews.get('required_approving_review_count') or 0) >= 1,
-              'stale_approvals_dismissed': reviews.get('dismiss_stale_reviews') is True,
-              'codeowner_review_required': reviews.get('require_code_owner_reviews') is True,
-              'latest_push_approval_required': reviews.get('require_last_push_approval') is True,
-              'conversation_resolution_required': bool(((protection or {}).get('required_conversation_resolution') or {}).get('enabled')),
+              'aggregate_gate_required': (
+                  'trillionnium-game-merge-gate' in contexts
+              ),
+              'administrator_enforcement': bool(
+                  (protection.get('enforce_admins') or {}).get('enabled')
+              ),
+              'force_push_forbidden': not bool(
+                  (protection.get('allow_force_pushes') or {}).get('enabled')
+              ),
+              'deletion_forbidden': not bool(
+                  (protection.get('allow_deletions') or {}).get('enabled')
+              ),
+              'approval_required': int(
+                  reviews.get('required_approving_review_count') or 0
+              ) >= 1,
+              'stale_approvals_dismissed': (
+                  reviews.get('dismiss_stale_reviews') is True
+              ),
+              'codeowner_review_required': (
+                  reviews.get('require_code_owner_reviews') is True
+              ),
+              'latest_push_approval_required': (
+                  reviews.get('require_last_push_approval') is True
+              ),
+              'conversation_resolution_required': bool(
+                  (protection.get('required_conversation_resolution') or {}).get(
+                      'enabled'
+                  )
+              ),
               'rulesets_readable': endpoints['rulesets']['status'] == 200,
               'ruleset_bypass_actor_count': len(ruleset_bypass),
           }
           required = [
-              'administration_token_present', 'target_identity_matches', 'main_protection_readable',
-              'main_is_protected', 'strict_status_checks', 'aggregate_gate_required',
-              'administrator_enforcement', 'force_push_forbidden', 'deletion_forbidden',
-              'approval_required', 'stale_approvals_dismissed', 'codeowner_review_required',
-              'latest_push_approval_required', 'conversation_resolution_required', 'rulesets_readable',
+              'administration_token_present',
+              'target_identity_matches',
+              'main_protection_readable',
+              'main_is_protected',
+              'strict_status_checks',
+              'aggregate_gate_required',
+              'administrator_enforcement',
+              'force_push_forbidden',
+              'deletion_forbidden',
+              'approval_required',
+              'stale_approvals_dismissed',
+              'codeowner_review_required',
+              'latest_push_approval_required',
+              'conversation_resolution_required',
+              'rulesets_readable',
           ]
           complete = all(evaluation.get(key) is True for key in required)
           accepted = complete and len(ruleset_bypass) == 0
           packet = {
               'schema': 'trillionnium.github-governance-readback.v2',
               'repository': repository,
-              'target': {'pull_request': pr_number, 'base': expected_base, 'head': expected_head},
+              'target': {
+                  'pull_request': pr_number,
+                  'base': expected_base,
+                  'head': expected_head,
+                  'tree': expected_tree,
+              },
               'producer': {
                   'workflow_repository': os.environ.get('GITHUB_REPOSITORY'),
                   'workflow_sha': os.environ.get('GITHUB_SHA'),
@@ -204,32 +298,46 @@ jobs:
               ],
           }
           (root / 'governance-readback.json').write_text(
-              json.dumps(packet, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+              json.dumps(packet, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
           )
           (root / 'result.env').write_text(
               f'readback_complete={str(complete).lower()}\n'
               f'configuration_matches_required_minimum={str(accepted).lower()}\n',
               encoding='utf-8',
           )
-          print(json.dumps({'evaluation': evaluation, 'complete': complete, 'accepted': accepted}, sort_keys=True))
+          print(
+              json.dumps(
+                  {
+                      'evaluation': evaluation,
+                      'complete': complete,
+                      'accepted': accepted,
+                  },
+                  sort_keys=True,
+              )
+          )
           PY
           (
             cd run/governance-readback
             sha256sum governance-readback.json result.env > SHA256SUMS
             sha256sum --check SHA256SUMS
           )
-          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
             -czf run/governance-readback-${TARGET_HEAD}.tar.gz \
-            -C run/governance-readback governance-readback.json result.env SHA256SUMS
+            -C run/governance-readback \
+            governance-readback.json result.env SHA256SUMS
 
       - name: Retain governance readback packet
         id: packet
         if: always()
-        uses: ./source/.github/actions/upload-evidence
-        with:
-          name: governance-readback-${{ env.TARGET_HEAD }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: source/run/governance-readback-${{ env.TARGET_HEAD }}.tar.gz
-          mime_type: application/gzip
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 source/scripts/upload-actions-artifact.py \
+            "governance-readback-${TARGET_HEAD}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "source/run/governance-readback-${TARGET_HEAD}.tar.gz" \
+            --mime-type application/gzip
 
       - name: Verify retained receipt and fail closed on incomplete readback
         if: always()
@@ -239,5 +347,7 @@ jobs:
           test -n '${{ steps.packet.outputs.artifact_id }}'
           test -n '${{ steps.packet.outputs.sha256 }}'
           test '${{ steps.packet.outputs.size_bytes }}' -gt 0
-          grep -qx 'readback_complete=true' source/run/governance-readback/result.env
-          grep -qx 'configuration_matches_required_minimum=true' source/run/governance-readback/result.env
+          grep -qx 'readback_complete=true' \
+            source/run/governance-readback/result.env
+          grep -qx 'configuration_matches_required_minimum=true' \
+            source/run/governance-readback/result.env
