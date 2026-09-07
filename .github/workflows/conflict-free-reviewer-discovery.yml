@@ -1,0 +1,229 @@
+name: conflict-free-reviewer-discovery
+
+on:
+  push:
+    branches: [tooling/gap-closure-audit-2026-09-07]
+    paths:
+      - '.github/workflows/conflict-free-reviewer-discovery.yml'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      TARGET_PR: '63'
+      EXPECTED_HEAD: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+      COMMAND_ISSUE: '7'
+    steps:
+      - name: Discover and request eligible reviewers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/reviewers"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          repository = os.environ['TARGET_REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          target_pr = int(os.environ['TARGET_PR'])
+          expected_head = os.environ['EXPECTED_HEAD']
+          root = f'https://api.github.com/repos/{repository}'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'Content-Type': 'application/json',
+              'User-Agent': 'trillionnium-conflict-free-reviewer-discovery',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+
+          def call(method: str, path: str, body=None, allowed=()):
+              raw = None if body is None else json.dumps(body, separators=(',', ':')).encode()
+              request = urllib.request.Request(root + path, data=raw, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      payload = response.read()
+                      return response.status, json.loads(payload.decode()) if payload else None
+              except urllib.error.HTTPError as error:
+                  payload = error.read().decode('utf-8', errors='replace')
+                  if error.code in allowed:
+                      try:
+                          value = json.loads(payload) if payload else None
+                      except Exception:
+                          value = {'message': payload[:1000]}
+                      return error.code, value
+                  raise SystemExit(f'{method} {path}: HTTP {error.code}: {payload[:2000]}')
+
+          _, pull = call('GET', f'/pulls/{target_pr}')
+          if pull['head']['sha'] != expected_head:
+              raise SystemExit('target head drift')
+          _, commits = call('GET', f'/pulls/{target_pr}/commits?per_page=100')
+          page = 2
+          while len(commits) == 100:
+              _, more = call('GET', f'/pulls/{target_pr}/commits?per_page=100&page={page}')
+              if not more:
+                  break
+              commits.extend(more)
+              if len(more) < 100:
+                  break
+              page += 1
+
+          conflicts = {
+              str((pull.get('user') or {}).get('login') or '').lower(),
+              'profhepta',
+              'franksudoman',
+          }
+          for row in commits:
+              for key in ('author', 'committer'):
+                  login = str((row.get(key) or {}).get('login') or '').lower()
+                  if login:
+                      conflicts.add(login)
+          conflicts.discard('')
+
+          codeowners = []
+          for path in ('/.github/CODEOWNERS', '/CODEOWNERS', '/docs/CODEOWNERS'):
+              status, value = call('GET', '/contents' + path + '?ref=' + expected_head, allowed=(404,))
+              if status != 200:
+                  continue
+              import base64
+              text = base64.b64decode(value['content']).decode('utf-8', errors='replace')
+              for token_value in text.replace('\t', ' ').split():
+                  if token_value.startswith('@') and '/' not in token_value:
+                      codeowners.append(token_value[1:])
+              break
+
+          status, collaborators = call('GET', '/collaborators?per_page=100&affiliation=all', allowed=(403,))
+          if status != 200:
+              collaborators = []
+          candidates = []
+          observed = {}
+          for user in collaborators:
+              login = str(user.get('login') or '')
+              lower = login.lower()
+              if not login or lower in conflicts or user.get('type') == 'Bot' or lower.endswith('[bot]'):
+                  continue
+              _, permission = call('GET', f'/collaborators/{urllib.parse.quote(login)}/permission')
+              level = permission.get('permission')
+              observed[login] = level
+              if level in {'write', 'maintain', 'admin'}:
+                  candidates.append(login)
+
+          priority = []
+          for login in codeowners + candidates:
+              if login in candidates and login not in priority:
+                  priority.append(login)
+          selected = priority[:5]
+          if selected:
+              call('POST', f'/pulls/{target_pr}/requested_reviewers', {'reviewers': selected}, allowed=(422,))
+
+          _, reviews = call('GET', f'/pulls/{target_pr}/reviews?per_page=100')
+          latest = {}
+          for row in reviews:
+              login = str((row.get('user') or {}).get('login') or '').lower()
+              if not login:
+                  continue
+              old = latest.get(login)
+              if old is None or str(old.get('submitted_at') or '') <= str(row.get('submitted_at') or ''):
+                  latest[login] = row
+          approvals = [
+              row for login, row in latest.items()
+              if login not in conflicts
+              and row.get('state') == 'APPROVED'
+              and row.get('commit_id') == expected_head
+              and str((row.get('user') or {}).get('type') or '').lower() != 'bot'
+          ]
+          value = {
+              'schema': 'trillionnium.conflict-free-reviewer-capacity.v1',
+              'repository': repository,
+              'pull_request': target_pr,
+              'head': expected_head,
+              'conflicted_logins': sorted(conflicts),
+              'codeowner_candidates': sorted(set(codeowners)),
+              'eligible_collaborator_permissions': observed,
+              'selected_reviewers': selected,
+              'qualifying_current_head_approvals': [
+                  (row.get('user') or {}).get('login') for row in approvals
+              ],
+              'minimum_required_by_program': 2,
+              'capacity_satisfied': len(candidates) >= 2,
+              'approval_satisfied': len(approvals) >= 2,
+              'accepted': False,
+              'gap_closed': False,
+              'limitations': [
+                  'Review requests do not count as decisions.',
+                  'Repository permission does not establish specialist competence.',
+                  'The candidate author and every commit author/committer are excluded.',
+              ],
+          }
+          target = Path(os.environ['RUNNER_TEMP']) / 'reviewers' / 'reviewer-capacity.json'
+          target.write_text(json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n')
+
+          body = '\n'.join([
+              '<!-- TRNM-CONFLICT-FREE-REVIEWER-CAPACITY -->',
+              '## Current-head conflict-free reviewer capacity',
+              '',
+              f"Exact head: `{expected_head}`",
+              f"Eligible collaborators found: `{len(candidates)}`",
+              f"Reviewers requested: `{', '.join(selected) if selected else 'none'}`",
+              f"Qualifying current-head approvals: `{len(approvals)}`",
+              f"Program minimum: `2`",
+              '',
+              'Requests are not approvals. Authors, committers, administrators whose mutations are under review, and bots remain ineligible for independent acceptance.',
+          ])
+          for issue in (str(target_pr), os.environ['COMMAND_ISSUE']):
+              _, comments = call('GET', f'/issues/{issue}/comments?per_page=100')
+              existing = next(
+                  (row for row in reversed(comments) if '<!-- TRNM-CONFLICT-FREE-REVIEWER-CAPACITY -->' in (row.get('body') or '')),
+                  None,
+              )
+              if existing:
+                  call('PATCH', f"/issues/comments/{existing['id']}", {'body': body})
+              else:
+                  call('POST', f'/issues/{issue}/comments', {'body': body})
+          print(json.dumps(value, sort_keys=True))
+          PY
+
+      - name: Fetch current source for uploader
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin \
+            "https://github.com/${TARGET_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin "$EXPECTED_HEAD"
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+          sha256sum "$RUNNER_TEMP/reviewers/reviewer-capacity.json" \
+            > "$RUNNER_TEMP/reviewers/SHA256SUMS"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$RUNNER_TEMP/reviewer-capacity.tar.gz" \
+            -C "$RUNNER_TEMP/reviewers" reviewer-capacity.json SHA256SUMS
+
+      - name: Retain reviewer-capacity packet
+        id: retained
+        uses: ./source/.github/actions/upload-evidence
+        with:
+          name: reviewer-capacity-${{ env.EXPECTED_HEAD }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/reviewer-capacity.tar.gz
+          mime_type: application/gzip
+
+      - name: Verify receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.retained.outputs.artifact_id }}'
+          test -n '${{ steps.retained.outputs.sha256 }}'
+          test '${{ steps.retained.outputs.size_bytes }}' -gt 0
