@@ -1,0 +1,186 @@
+name: governance-admin-readback-rehearsal
+
+on:
+  push:
+    branches: [tooling/gap-closure-audit-2026-09-07]
+    paths:
+      - '.github/workflows/governance-admin-readback-rehearsal.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  EXPECTED_CANDIDATE: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+  EXPECTED_TREE: 9d3ae2fadb2684f095855ecf16307376b55a440f
+  EXPECTED_MAIN: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
+  ADMIN_TOKEN: ${{ secrets.TRNM_GITHUB_ADMIN_TOKEN || secrets.GH_ADMIN_TOKEN || secrets.GITHUB_ADMIN_TOKEN || secrets.ADMIN_TOKEN }}
+
+jobs:
+  readback-and-rehearsal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch exact candidate source without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ADMIN_TOKEN" || { echo 'No configured admin token secret is available.' >&2; exit 78; }
+          rm -rf "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin "$EXPECTED_CANDIDATE"
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$EXPECTED_CANDIDATE"
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+
+      - name: Read effective main protection and rulesets
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          set +x
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${ADMIN_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          mkdir -p run/governance
+          curl -fsS "${auth[@]}" "$api/branches/main/protection" > run/governance/main-protection.raw.json
+          curl -fsS "${auth[@]}" "$api/rulesets?includes_parents=true&per_page=100" > run/governance/rulesets.raw.json
+          curl -fsS "${auth[@]}" "$api/rules/branches/main" > run/governance/main-rules.raw.json
+          jq -e '
+            .required_status_checks.strict == true and
+            ((.required_status_checks.contexts // []) + ((.required_status_checks.checks // []) | map(.context))) | index("trillionnium-game-merge-gate") != null and
+            .required_pull_request_reviews.dismiss_stale_reviews == true and
+            .required_pull_request_reviews.require_code_owner_reviews == true and
+            .required_pull_request_reviews.require_last_push_approval == true and
+            (.required_pull_request_reviews.required_approving_review_count // 0) >= 1 and
+            .enforce_admins.enabled == true and
+            .required_conversation_resolution.enabled == true and
+            .allow_force_pushes.enabled == false and
+            .allow_deletions.enabled == false
+          ' run/governance/main-protection.raw.json >/dev/null
+          jq '{
+            schema:"trillionnium.github-governance-readback.v1",
+            repository:env.GITHUB_REPOSITORY,
+            observed_at:now|todateiso8601,
+            main:env.EXPECTED_MAIN,
+            candidate:env.EXPECTED_CANDIDATE,
+            candidate_tree:env.EXPECTED_TREE,
+            protection:{
+              required_status_checks:.required_status_checks,
+              required_pull_request_reviews:.required_pull_request_reviews,
+              enforce_admins:.enforce_admins,
+              restrictions:.restrictions,
+              required_linear_history:.required_linear_history,
+              allow_force_pushes:.allow_force_pushes,
+              allow_deletions:.allow_deletions,
+              required_conversation_resolution:.required_conversation_resolution,
+              lock_branch:.lock_branch
+            },
+            claims:{independently_accepted:false,gap_closed:false,production_ready:false}
+          }' run/governance/main-protection.raw.json > run/governance/main-protection.json
+          jq -e 'type == "array"' run/governance/rulesets.raw.json >/dev/null
+          jq -e 'type == "array"' run/governance/main-rules.raw.json >/dev/null
+
+      - name: Perform safe equivalent-policy negative rehearsal
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          set +x
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer ${ADMIN_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
+          target="trnm-governance-target-${GITHUB_RUN_ID}"
+          source_branch="trnm-governance-source-${GITHUB_RUN_ID}"
+          cleanup() {
+            set +e
+            curl -sS -o /dev/null -X DELETE "${auth[@]}" "$api/branches/$target/protection"
+            curl -sS -o /dev/null -X DELETE "${auth[@]}" "$api/git/refs/heads/$source_branch"
+            curl -sS -o /dev/null -X DELETE "${auth[@]}" "$api/git/refs/heads/$target"
+          }
+          trap cleanup EXIT
+          create_ref() {
+            curl -fsS -X POST "${auth[@]}" "$api/git/refs" \
+              -d "$(jq -nc --arg ref "refs/heads/$1" --arg sha "$EXPECTED_MAIN" '{ref:$ref,sha:$sha}')" >/dev/null
+          }
+          create_ref "$target"
+          create_ref "$source_branch"
+          protection=$(jq -nc '{
+            required_status_checks:{strict:true,contexts:["trillionnium-game-merge-gate"]},
+            enforce_admins:true,
+            required_pull_request_reviews:{
+              dismissal_restrictions:{},
+              dismiss_stale_reviews:true,
+              require_code_owner_reviews:true,
+              required_approving_review_count:1,
+              require_last_push_approval:true,
+              bypass_pull_request_allowances:{users:[],teams:[],apps:[]}
+            },
+            restrictions:null,
+            required_linear_history:true,
+            allow_force_pushes:false,
+            allow_deletions:false,
+            block_creations:false,
+            required_conversation_resolution:true,
+            lock_branch:false,
+            allow_fork_syncing:false
+          }')
+          curl -fsS -X PUT "${auth[@]}" "$api/branches/$target/protection" -d "$protection" \
+            > run/governance/rehearsal-protection.json
+          content=$(printf 'negative rehearsal %s\n' "$GITHUB_RUN_ID" | base64 -w0)
+          create=$(jq -nc --arg message 'test: harmless governance negative rehearsal' --arg content "$content" --arg branch "$source_branch" '{message:$message,content:$content,branch:$branch}')
+          curl -fsS -X PUT "${auth[@]}" "$api/contents/governance-rehearsal-${GITHUB_RUN_ID}.txt" -d "$create" \
+            > run/governance/rehearsal-source-commit.json
+          source_sha=$(jq -r '.commit.sha' run/governance/rehearsal-source-commit.json)
+          pr=$(jq -nc --arg title 'test: protected-merge negative rehearsal' --arg head "$source_branch" --arg base "$target" '{title:$title,head:$head,base:$base,body:"Harmless temporary governance negative rehearsal; never merge into main.",draft:false}')
+          curl -fsS -X POST "${auth[@]}" "$api/pulls" -d "$pr" > run/governance/rehearsal-pr.json
+          pr_number=$(jq -r '.number' run/governance/rehearsal-pr.json)
+          set +e
+          merge_code=$(curl -sS -o run/governance/rehearsal-merge-response.json -w '%{http_code}' -X PUT "${auth[@]}" \
+            "$api/pulls/$pr_number/merge" -d "$(jq -nc --arg sha "$source_sha" '{sha:$sha,merge_method:"squash"}')")
+          direct_code=$(curl -sS -o run/governance/rehearsal-direct-response.json -w '%{http_code}' -X PATCH "${auth[@]}" \
+            "$api/git/refs/heads/$target" -d "$(jq -nc --arg sha "$source_sha" '{sha:$sha,force:false}')")
+          force_code=$(curl -sS -o run/governance/rehearsal-force-response.json -w '%{http_code}' -X PATCH "${auth[@]}" \
+            "$api/git/refs/heads/$target" -d "$(jq -nc --arg sha "$source_sha" '{sha:$sha,force:true}')")
+          delete_code=$(curl -sS -o run/governance/rehearsal-delete-response.json -w '%{http_code}' -X DELETE "${auth[@]}" \
+            "$api/git/refs/heads/$target")
+          set -e
+          test "$merge_code" != 200
+          test "$direct_code" != 200
+          test "$force_code" != 200
+          test "$delete_code" != 204
+          curl -fsS -X PATCH "${auth[@]}" "$api/pulls/$pr_number" -d '{"state":"closed"}' >/dev/null
+          jq -n \
+            --arg target "$target" --arg source "$source_branch" --argjson pr "$pr_number" \
+            --arg merge_code "$merge_code" --arg direct_code "$direct_code" \
+            --arg force_code "$force_code" --arg delete_code "$delete_code" \
+            '{schema:"trillionnium.governance-negative-rehearsal.v1",target:$target,source:$source,pr:$pr,merge_http:($merge_code|tonumber),direct_update_http:($direct_code|tonumber),force_update_http:($force_code|tonumber),delete_http:($delete_code|tonumber),main_untouched:true,independently_accepted:false,gap_closed:false}' \
+            > run/governance/negative-rehearsal.json
+          test "$(curl -fsS "${auth[@]}" "$api/git/ref/heads/main" | jq -r '.object.sha')" = "$EXPECTED_MAIN"
+
+      - name: Seal governance packet
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cp .github/CODEOWNERS run/governance/CODEOWNERS
+          cp docs/governance/MAIN_RULESET_DESIRED.json run/governance/MAIN_RULESET_DESIRED.json
+          cp docs/governance/REQUIRED_CHECKS.json run/governance/REQUIRED_CHECKS.json
+          (cd run/governance && find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum --check SHA256SUMS)
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf run/governance-readback-${EXPECTED_CANDIDATE}.tar.gz -C run/governance .
+
+      - name: Retain governance packet
+        id: governance-packet
+        uses: ./source/.github/actions/upload-evidence
+        with:
+          name: governance-readback-${{ env.EXPECTED_CANDIDATE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: source/run/governance-readback-${{ env.EXPECTED_CANDIDATE }}.tar.gz
+          mime_type: application/gzip
+
+      - name: Verify retained receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.governance-packet.outputs.artifact_id }}'
+          test -n '${{ steps.governance-packet.outputs.sha256 }}'
+          test '${{ steps.governance-packet.outputs.size_bytes }}' -gt 0
