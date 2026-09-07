@@ -1,0 +1,335 @@
+name: storage-nakama-live-differential
+
+on:
+  push:
+    branches: [tooling/gap-closure-audit-2026-09-07]
+    paths:
+      - '.github/workflows/storage-nakama-live-differential.yml'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TARGET_REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      TARGET_HEAD: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+      TARGET_TREE: 9d3ae2fadb2684f095855ecf16307376b55a440f
+      TARGET_MERGE: 6965f95d03031156edc92cc862bd979ff87e9edb
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/source"
+          git init "$GITHUB_WORKSPACE/source"
+          git -C "$GITHUB_WORKSPACE/source" remote add origin \
+            "https://github.com/${TARGET_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin "$TARGET_HEAD"
+          git -C "$GITHUB_WORKSPACE/source" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$TARGET_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$TARGET_TREE"
+
+      - name: Resolve digest-pinned Nakama and PostgreSQL images
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > "$RUNNER_TEMP/images.env"
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          candidates = []
+          for path in Path('.').rglob('*.json'):
+              if any(part in {'.git', 'target', 'run'} for part in path.parts):
+                  continue
+              try:
+                  value = json.loads(path.read_text(encoding='utf-8'))
+              except Exception:
+                  continue
+              stack = [value]
+              while stack:
+                  item = stack.pop()
+                  if isinstance(item, dict):
+                      stack.extend(item.values())
+                  elif isinstance(item, list):
+                      stack.extend(item)
+                  elif isinstance(item, str) and '@sha256:' in item:
+                      candidates.append((path.as_posix(), item))
+
+          nakama = [value for _, value in candidates if 'heroiclabs/nakama' in value.lower()]
+          postgres = [value for _, value in candidates if 'postgres' in value.lower() and 'cockroach' not in value.lower()]
+          if not nakama:
+              raise SystemExit('no digest-pinned heroiclabs/nakama image in exact source')
+          if not postgres:
+              raise SystemExit('no digest-pinned PostgreSQL image in exact source')
+          print('NAKAMA_IMAGE=' + sorted(set(nakama))[0])
+          print('POSTGRES_IMAGE=' + sorted(set(postgres))[0])
+          PY
+          cat "$RUNNER_TEMP/images.env"
+          source "$RUNNER_TEMP/images.env"
+          test "$NAKAMA_IMAGE" != "$POSTGRES_IMAGE"
+          docker pull "$POSTGRES_IMAGE"
+          docker pull "$NAKAMA_IMAGE"
+          docker image inspect "$POSTGRES_IMAGE" --format '{{json .RepoDigests}}' > "$RUNNER_TEMP/postgres-repodigests.json"
+          docker image inspect "$NAKAMA_IMAGE" --format '{{json .RepoDigests}}' > "$RUNNER_TEMP/nakama-repodigests.json"
+
+      - name: Execute Rust storage suites
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          cargo fmt --manifest-path crates/trnm-storage-nakama-version/Cargo.toml -- --check
+          cargo test --manifest-path crates/trnm-storage-nakama-version/Cargo.toml --all-targets --locked
+          cargo clippy --manifest-path crates/trnm-storage-nakama-version/Cargo.toml --all-targets --locked -- -D warnings
+          cargo test --package trnm-storage-core --all-targets --locked
+          cargo clippy --package trnm-storage-core --all-targets --locked -- -D warnings
+
+      - name: Start digest-pinned upstream Nakama
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/images.env"
+          docker rm -f trnm-storage-nakama trnm-storage-postgres >/dev/null 2>&1 || true
+          docker run -d --name trnm-storage-postgres --network host \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=localdb -e POSTGRES_DB=nakama \
+            "$POSTGRES_IMAGE" -c fsync=on -c synchronous_commit=on
+          ready=false
+          for _ in $(seq 1 120); do
+            if docker exec -e PGPASSWORD=localdb trnm-storage-postgres \
+              pg_isready -h 127.0.0.1 -p 5432 -U postgres -d nakama >/dev/null 2>&1; then
+              ready=true; break
+            fi
+            sleep 1
+          done
+          test "$ready" = true
+          database='postgres:localdb@127.0.0.1:5432/nakama?sslmode=disable'
+          docker run --rm --network host "$NAKAMA_IMAGE" migrate up \
+            --database.address "$database"
+          docker run -d --name trnm-storage-nakama --network host "$NAKAMA_IMAGE" \
+            --database.address "$database" \
+            --logger.level INFO \
+            --session.token_expiry_sec 3600
+          ready=false
+          for _ in $(seq 1 180); do
+            if curl -fsS http://127.0.0.1:7350/healthcheck >/dev/null; then
+              ready=true; break
+            fi
+            if [[ "$(docker inspect -f '{{.State.Running}}' trnm-storage-nakama 2>/dev/null || true)" != true ]]; then
+              docker logs trnm-storage-nakama >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$ready" = true
+
+      - name: Run exact storage version and OCC differential
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          mkdir -p run/storage-differential
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import base64
+          import hashlib
+          import json
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          root = 'http://127.0.0.1:7350'
+          basic = base64.b64encode(b'defaultkey:').decode()
+
+          def request(method, path, body=None, token=None, allow_error=False):
+              data = None if body is None else json.dumps(body, separators=(',', ':')).encode()
+              headers = {'Content-Type': 'application/json'}
+              if token:
+                  headers['Authorization'] = 'Bearer ' + token
+              else:
+                  headers['Authorization'] = 'Basic ' + basic
+              call = urllib.request.Request(root + path, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(call, timeout=20) as response:
+                      raw = response.read()
+                      value = json.loads(raw.decode()) if raw else None
+                      return response.status, value
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  try:
+                      value = json.loads(raw.decode()) if raw else None
+                  except Exception:
+                      value = {'raw_sha256': hashlib.sha256(raw).hexdigest()}
+                  if allow_error:
+                      return error.code, value
+                  raise
+
+          status, auth = request(
+              'POST',
+              '/v2/account/authenticate/custom?create=true&username=trnm_storage_diff',
+              {'id': 'trnm-storage-diff-current-head'},
+          )
+          if status != 200 or not auth.get('token'):
+              raise SystemExit('custom authentication failed')
+          token = auth['token']
+          payload = token.split('.')[1] + '=' * (-len(token.split('.')[1]) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          user_id = claims['uid'] if 'uid' in claims else claims['sub']
+
+          observations = []
+          def write(key, value, version_marker=None, allow_error=False):
+              row = {
+                  'collection': 'trnm_storage_differential',
+                  'key': key,
+                  'value': value,
+                  'permission_read': 2,
+                  'permission_write': 1,
+              }
+              if version_marker is not None:
+                  row['version'] = version_marker
+              code, body = request('PUT', '/v2/storage', {'objects': [row]}, token, allow_error)
+              ack = ((body or {}).get('acks') or [{}])[0]
+              observations.append({
+                  'operation': 'write', 'key': key, 'value_sha256': hashlib.sha256(value.encode()).hexdigest(),
+                  'requested_version': version_marker, 'http_status': code,
+                  'returned_version': ack.get('version'),
+                  'error_code': (body or {}).get('code'),
+              })
+              return code, body, ack.get('version')
+
+          values = ['{}', '{"a":1}', '{"a":1,"b":[true,null,"x"]}', '{ "whitespace" : true }']
+          versions = []
+          for index, value in enumerate(values):
+              code, body, version = write(f'vector-{index}', value)
+              if code != 200:
+                  raise SystemExit('unconditional write failed')
+              expected = hashlib.md5(value.encode()).hexdigest()
+              if version != expected:
+                  raise SystemExit(f'exact-byte version mismatch: {version} != {expected}')
+              versions.append(version)
+
+          code, _, first = write('occ', '{"generation":1}', '*')
+          if code != 200:
+              raise SystemExit('create-only write on absent object failed')
+          code, body, _ = write('occ', '{"generation":2}', '*', allow_error=True)
+          if 200 <= code < 300:
+              raise SystemExit('create-only write unexpectedly replaced existing object')
+          code, _, second = write('occ', '{"generation":2}', first)
+          if code != 200 or second != hashlib.md5(b'{"generation":2}').hexdigest():
+              raise SystemExit('exact-version update failed')
+          code, body, _ = write('occ', '{"generation":3}', first, allow_error=True)
+          if 200 <= code < 300:
+              raise SystemExit('stale exact-version update unexpectedly succeeded')
+          code, _, third = write('occ', '{"generation":3}')
+          if code != 200 or third != hashlib.md5(b'{"generation":3}').hexdigest():
+              raise SystemExit('empty-version unconditional update failed')
+
+          code, read = request('POST', '/v2/storage', {
+              'object_ids': [{
+                  'collection': 'trnm_storage_differential',
+                  'key': 'occ',
+                  'user_id': user_id,
+              }],
+          }, token)
+          objects = (read or {}).get('objects') or []
+          if code != 200 or len(objects) != 1:
+              raise SystemExit('storage read failed')
+          if objects[0].get('version') != third or objects[0].get('value') != '{"generation":3}':
+              raise SystemExit('storage read version/value mismatch')
+          observations.append({
+              'operation': 'read', 'key': 'occ', 'http_status': code,
+              'returned_version': objects[0].get('version'),
+              'value_sha256': hashlib.sha256(objects[0].get('value', '').encode()).hexdigest(),
+          })
+
+          packet = {
+              'schema': 'trillionnium.storage-nakama-live-differential.v1',
+              'repository': 'TrillionniumFoundation/TrillionniumGame',
+              'head': '88c02a417c7b0c64f27dc9f49e0b5e6317150964',
+              'tree': '9d3ae2fadb2684f095855ecf16307376b55a440f',
+              'prospective_merge': '6965f95d03031156edc92cc862bd979ff87e9edb',
+              'user_id_sha256': hashlib.sha256(user_id.encode()).hexdigest(),
+              'observations': observations,
+              'claims': {
+                  'source_candidate': True,
+                  'accepted_evidence': False,
+                  'gap_closed': False,
+                  'production_ready': False,
+              },
+              'limitations': [
+                  'This run compares the current Rust storage unit surfaces with one digest-pinned Nakama live server.',
+                  'It does not prove full ACL, batch atomicity, pagination, database migration, load, HA, or every SDK profile.',
+                  'Independent storage/compatibility review remains required.',
+              ],
+          }
+          Path('run/storage-differential/result.json').write_text(
+              json.dumps(packet, sort_keys=True, separators=(',', ':')) + '\n'
+          )
+          PY
+          cp "$RUNNER_TEMP/nakama-repodigests.json" run/storage-differential/
+          cp "$RUNNER_TEMP/postgres-repodigests.json" run/storage-differential/
+          docker logs trnm-storage-nakama > run/storage-differential/nakama.log 2>&1
+          docker logs trnm-storage-postgres > run/storage-differential/postgres.log 2>&1
+          (
+            cd run/storage-differential
+            find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf run/storage-nakama-live-differential-${TARGET_HEAD}.tar.gz \
+            -C run/storage-differential .
+
+      - name: Retain storage differential packet
+        id: retained
+        uses: ./source/.github/actions/upload-evidence
+        with:
+          name: storage-nakama-live-differential-${{ env.TARGET_HEAD }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: source/run/storage-nakama-live-differential-${{ env.TARGET_HEAD }}.tar.gz
+          mime_type: application/gzip
+
+      - name: Publish bounded review handoff
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.retained.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.retained.outputs.sha256 }}
+          ARTIFACT_SIZE: ${{ steps.retained.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_ID"
+          test -n "$ARTIFACT_SHA256"
+          test "$ARTIFACT_SIZE" -gt 0
+          body=$(cat <<EOF
+          ## Current-head Storage/Nakama live differential candidate
+
+          Exact head: \`$TARGET_HEAD\`  
+          Exact tree: \`$TARGET_TREE\`  
+          Prospective merge: \`$TARGET_MERGE\`  
+          Run: \`$GITHUB_RUN_ID\` / attempt \`$GITHUB_RUN_ATTEMPT\`  
+          Artifact: \`$ARTIFACT_ID\` / \`$ARTIFACT_SHA256\` / \`$ARTIFACT_SIZE\` bytes
+
+          The packet executes digest-pinned upstream Nakama and PostgreSQL, exact-byte MD5 version vectors, empty/\`*\`/exact/stale OCC cases, readback, and current Rust storage tests. It remains a candidate pending independent storage/compatibility review and does not grant production or full-compatibility credit.
+          EOF
+          )
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$TARGET_REPOSITORY/issues/63/comments" \
+            -d "$(jq -n --arg body "$body" '{body:$body}')" >/dev/null
+
+      - name: Cleanup containers
+        if: always()
+        shell: bash
+        run: docker rm -f trnm-storage-nakama trnm-storage-postgres >/dev/null 2>&1 || true
