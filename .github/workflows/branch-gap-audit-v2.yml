@@ -1,0 +1,123 @@
+name: branch-gap-audit-v2
+
+on:
+  push:
+    branches:
+      - tooling/gap-closure-audit-2026-09-07
+    paths:
+      - .github/workflows/branch-gap-audit-v2.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: branch-gap-audit-v2
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch complete repository refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --force --no-tags origin \
+            '+refs/heads/*:refs/remotes/origin/*'
+
+      - name: Report unabsorbed product-source branches
+        shell: bash
+        env:
+          BASE: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+          PR100: 8789a698d40089dc8e7e678e78cc685dc429b807
+          PR103: f68755411ae9a62edb81d7ec2f31777a49c23242
+          PR104: 9ea84be22f57ec5b37336c8691c54e6ef58b073d
+          PR113: f12c6bb51845ed26a1a0238846f6424d7486d5b8
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import subprocess
+
+          roots = [os.environ[name] for name in ("BASE", "PR100", "PR103", "PR104", "PR113")]
+
+          def git(*args: str, check: bool = True) -> str:
+              result = subprocess.run(
+                  ["git", *args], text=True, stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE, check=False,
+              )
+              if check and result.returncode:
+                  raise RuntimeError(result.stderr.strip())
+              return result.stdout.strip()
+
+          refs = git("for-each-ref", "--format=%(refname:short)", "refs/remotes/origin").splitlines()
+          rows = []
+          for ref in refs:
+              if ref == "origin/HEAD":
+                  continue
+              branch = ref.removeprefix("origin/")
+              if not branch.startswith(("codex/", "feature/", "fix/")):
+                  continue
+              if branch in {
+                  "codex/branch-evidence-closure-2026-09-02",
+                  "codex/reviewer-conflict-capacity-fix-2026-09-07",
+                  "codex/plan-v31-product-gap-wave-2026-09-07",
+                  "codex/realtime-recovery-wave-2026-09-07",
+              }:
+                  continue
+              tip = git("rev-parse", ref)
+              absorbed_by = []
+              for root in roots:
+                  if subprocess.run(
+                      ["git", "merge-base", "--is-ancestor", tip, root],
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                  ).returncode == 0:
+                      absorbed_by.append(root)
+              if absorbed_by:
+                  continue
+              contains_base = subprocess.run(
+                  ["git", "merge-base", "--is-ancestor", os.environ["BASE"], tip],
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+              ).returncode == 0
+              merge_base = git("merge-base", os.environ["BASE"], tip)
+              files = git("diff", "--name-only", f"{merge_base}..{tip}").splitlines()
+              commits = git("rev-list", "--count", f"{merge_base}..{tip}")
+              unique_vs_roots = git("rev-list", "--count", tip, *[f"^{root}" for root in roots])
+              rows.append({
+                  "branch": branch,
+                  "tip": tip,
+                  "tree": git("show", "-s", "--format=%T", tip),
+                  "committed_at": git("show", "-s", "--format=%cI", tip),
+                  "subject": git("show", "-s", "--format=%s", tip),
+                  "merge_base": merge_base,
+                  "contains_plan_v31_base": contains_base,
+                  "commits_from_merge_base": int(commits),
+                  "commits_not_in_any_active_root": int(unique_vs_roots),
+                  "changed_file_count": len(files),
+                  "changed_files": files[:80],
+                  "changed_files_truncated": len(files) > 80,
+              })
+          rows.sort(
+              key=lambda row: (
+                  row["contains_plan_v31_base"],
+                  row["commits_not_in_any_active_root"],
+                  row["committed_at"],
+              ),
+              reverse=True,
+          )
+          print(json.dumps({
+              "schema": "trillionnium.unabsorbed-product-branches.v1",
+              "active_roots": roots,
+              "candidate_count": len(rows),
+              "candidates": rows,
+          }, sort_keys=True, indent=2))
+          PY
