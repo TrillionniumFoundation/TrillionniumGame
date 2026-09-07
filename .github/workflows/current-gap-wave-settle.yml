@@ -1,0 +1,105 @@
+name: current-gap-wave-settle
+
+on:
+  push:
+    branches:
+      - tooling/gap-closure-audit-2026-09-07
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: current-gap-wave-settle
+  cancel-in-progress: true
+
+jobs:
+  settle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PR_NUMBER: "93"
+    steps:
+      - name: Settle current exact-head workflow family
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          pr=$(gh api "repos/$repo/pulls/$PR_NUMBER")
+          head=$(jq -r .head.sha <<<"$pr")
+          base=$(jq -r .base.sha <<<"$pr")
+          draft=$(jq -r .draft <<<"$pr")
+          state=$(jq -r .state <<<"$pr")
+          test "$state" = open
+          test "$draft" = true
+
+          settle_once() {
+            gh api --paginate "repos/$repo/actions/runs?head_sha=$head&per_page=100" \
+              | jq -s '[.[].workflow_runs[]] | unique_by(.id)' > "$RUNNER_TEMP/runs.json"
+            jq '[.[] | select(.status != "completed")] | length' "$RUNNER_TEMP/runs.json"
+          }
+
+          for _ in $(seq 1 80); do
+            active=$(settle_once)
+            if [[ "$active" -eq 0 ]]; then break; fi
+            sleep 15
+          done
+
+          # One bounded rerun for real failures; never rerun cancelled/skipped
+          # outcomes into a success claim and never touch older heads.
+          jq -r '.[] | select(.status == "completed" and .conclusion == "failure" and .run_attempt < 2) | .id' \
+            "$RUNNER_TEMP/runs.json" | while read -r run_id; do
+              gh api -X POST "repos/$repo/actions/runs/$run_id/rerun-failed-jobs" || true
+            done
+
+          for _ in $(seq 1 80); do
+            active=$(settle_once)
+            if [[ "$active" -eq 0 ]]; then break; fi
+            sleep 15
+          done
+
+          gh api --paginate -H 'Accept: application/vnd.github+json' \
+            "repos/$repo/commits/$head/check-runs?per_page=100" \
+            | jq -s '[.[].check_runs[]] | unique_by(.id)' > "$RUNNER_TEMP/checks.json"
+          success=$(jq '[.[] | select(.status == "completed" and .conclusion == "success")] | length' "$RUNNER_TEMP/runs.json")
+          failed=$(jq '[.[] | select(.status == "completed" and .conclusion == "failure")] | length' "$RUNNER_TEMP/runs.json")
+          cancelled=$(jq '[.[] | select(.status == "completed" and .conclusion == "cancelled")] | length' "$RUNNER_TEMP/runs.json")
+          skipped=$(jq '[.[] | select(.status == "completed" and .conclusion == "skipped")] | length' "$RUNNER_TEMP/runs.json")
+          active=$(jq '[.[] | select(.status != "completed")] | length' "$RUNNER_TEMP/runs.json")
+          check_failed=$(jq '[.[] | select(.status == "completed" and (.conclusion | IN("failure","timed_out","action_required","startup_failure")))] | length' "$RUNNER_TEMP/checks.json")
+          check_active=$(jq '[.[] | select(.status != "completed")] | length' "$RUNNER_TEMP/checks.json")
+
+          jq -n \
+            --arg head "$head" --arg base "$base" \
+            --argjson success "$success" --argjson failed "$failed" \
+            --argjson cancelled "$cancelled" --argjson skipped "$skipped" \
+            --argjson active "$active" --argjson check_failed "$check_failed" \
+            --argjson check_active "$check_active" \
+            '{schema:"trillionnium.current-gap-wave-settlement.v1",pr:93,base:$base,head:$head,runs:{success:$success,failed:$failed,cancelled:$cancelled,skipped:$skipped,active:$active},checks:{failed:$check_failed,active:$check_active},accepted_evidence:false,gap_closed:false,production_ready:false}' \
+            > "$RUNNER_TEMP/settlement.json"
+
+          body=$(cat <<EOF
+          Exact PR #93 gap-wave settlement for \`$head\` (base \`$base\`):
+
+          \`\`\`json
+          $(cat "$RUNNER_TEMP/settlement.json")
+          \`\`\`
+
+          This is execution state only. It does not manufacture independent review, evidence admission, SG1, compatibility, governance-readback, production, cutover or retirement credit.
+          EOF
+          )
+          gh api -X POST "repos/$repo/issues/$PR_NUMBER/comments" --raw-field body="$body"
+          gh api -X POST "repos/$repo/issues/7/comments" --raw-field body="$body"
+          gh api -X POST "repos/$repo/pulls/$PR_NUMBER/requested_reviewers" \
+            -f reviewers[]=Tomasrgbsf || true
+
+          test "$active" -eq 0
+          test "$failed" -eq 0
+          test "$check_active" -eq 0
+          test "$check_failed" -eq 0
