@@ -1,0 +1,90 @@
+name: remaining-source-wave-v8-bootstrap
+
+on:
+  push:
+    branches: [tooling/remaining-source-wave-v2-2026-09-06]
+    paths:
+      - '.github/workflows/remaining-source-wave-v8-bootstrap.yml'
+      - '.github/workflows/remaining-source-wave-v5-bootstrap.yml'
+      - 'scripts/tooling/rewrite-remaining-source-wave-v8.py'
+      - 'tools/apply-canonical-server-authority-v5.py'
+      - 'tools/apply-canonical-server-authority-v6.py'
+      - 'tools/apply-canonical-server-authority-v7.py'
+      - 'tools/apply-canonical-server-authority-v8.py'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: remaining-source-wave-v8-bootstrap
+  cancel-in-progress: true
+
+jobs:
+  replay-validate-publish:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      SOURCE_BASE_SHA: 7deee4377cff401854647151842c582f038feef1
+      PLAN_HEAD_SHA: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+      OUTBOX_SHA: 4ce383a55d76a8b2b05827c5017b36f9789c02bd
+      SESSION_SHA: 0d0f246a131902403202afcd28103f22af30c8a9
+      REALTIME_SHA: 4a72ecdb9341faa9c5211b3479f58d075f75a7ba
+      CRYPTO_SHA: 72b63dcca4de879f04771b3987f8d4964756cf56
+      MIGRATION_SHA: 35f992f79fd4878e20de2db46c1641fae9b77562
+      SERVER_SHA: 9ef64a8b93b52808bbbde0acaf74c382e6b4b15f
+      HARDENING_SHA: f3e9476ff8b6d781b61ad35c135041eddddcfcff
+      PRODUCT_BRANCH: codex/remaining-source-blockers-wave-v8-2026-09-07
+      GH_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Derive, validate and publish exact v8 product
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/heads/${PRODUCT_BRANCH}")"
+
+          tooling="$RUNNER_TEMP/tooling-bootstrap"
+          rm -rf "$tooling" "$GITHUB_WORKSPACE/source"
+          git init "$tooling"
+          git -C "$tooling" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$tooling" checkout --detach FETCH_HEAD
+          test "$(git -C "$tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+
+          rewrite="$tooling/scripts/tooling/rewrite-remaining-source-wave-v8.py"
+          source_workflow="$tooling/.github/workflows/remaining-source-wave-v5-bootstrap.yml"
+          test -f "$rewrite"
+          test -f "$source_workflow"
+          for version in 5 6 7 8; do
+            test -f "$tooling/tools/apply-canonical-server-authority-v${version}.py"
+          done
+
+          python3 -m py_compile \
+            "$rewrite" \
+            "$tooling/tools/apply-canonical-server-authority-v5.py" \
+            "$tooling/tools/apply-canonical-server-authority-v6.py" \
+            "$tooling/tools/apply-canonical-server-authority-v7.py" \
+            "$tooling/tools/apply-canonical-server-authority-v8.py"
+          python3 "$rewrite" "$source_workflow" "$RUNNER_TEMP"
+          for number in 1 2 3 4 5 6 7; do
+            bash -n "$RUNNER_TEMP/v8-${number}.sh"
+          done
+
+          bash "$RUNNER_TEMP/v8-1.sh"
+          set -a
+          source "$GITHUB_ENV"
+          set +a
+          test "$PLAN_SHA" = "$PLAN_HEAD_SHA"
+          test "$PLAN_REF" = codex/branch-evidence-closure-2026-09-02
+
+          bash "$RUNNER_TEMP/v8-2.sh"
+          for number in 3 4 5 6 7; do
+            (
+              cd "$GITHUB_WORKSPACE/source"
+              bash "$RUNNER_TEMP/v8-${number}.sh"
+            )
+          done
+
+          echo 'exact v8 cumulative source-wave trigger: 2026-09-07'
