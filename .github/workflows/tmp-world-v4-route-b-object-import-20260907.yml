@@ -1,0 +1,257 @@
+name: temporary World V4 Route B exact blob import
+
+on:
+  push:
+    branches:
+      - ops/world-v4-route-b-object-import-20260907
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: tmp-world-v4-route-b-object-import-20260907
+  cancel-in-progress: false
+
+jobs:
+  import-exact-unreferenced-blobs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      EXPECTED_ARTIFACT_SHA256: 456a181bdc8f8aa248229b044db9eec4f52572ea3b20bca6492907db58d64ef5
+      EXPECTED_WORLD_HEAD: 2ccea7cf6b6950dc8268cd317f52a660a242edc7
+      GAME_ARTIFACT_ID: "9780499701"
+      GAME_GITHUB_TOKEN: ${{ github.token }}
+      TOKEN_TRNM_WORLD_ROUTE_B: ${{ secrets.TRNM_WORLD_ROUTE_B_TOKEN }}
+      TOKEN_TRNM_WORLD: ${{ secrets.TRNM_WORLD_GITHUB_TOKEN }}
+      TOKEN_WORLD: ${{ secrets.WORLD_GITHUB_TOKEN }}
+      TOKEN_TRNM_GOVERNANCE: ${{ secrets.TRNM_GOVERNANCE_TOKEN }}
+      TOKEN_GOVERNANCE: ${{ secrets.GOVERNANCE_TOKEN }}
+      TOKEN_TRNM: ${{ secrets.TRNM_GITHUB_TOKEN }}
+      TOKEN_TRILLIONNIUM: ${{ secrets.TRILLIONNIUM_GITHUB_TOKEN }}
+      TOKEN_CROSS_REPO: ${{ secrets.CROSS_REPO_TOKEN }}
+      TOKEN_ORG: ${{ secrets.ORG_GITHUB_TOKEN }}
+      TOKEN_GH_PAT: ${{ secrets.GH_PAT }}
+      TOKEN_GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
+      TOKEN_PAT: ${{ secrets.PAT }}
+      TOKEN_BOT: ${{ secrets.BOT_TOKEN }}
+      TOKEN_RELEASE: ${{ secrets.RELEASE_TOKEN }}
+      TOKEN_HEPTA_GOVERNANCE: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}
+      APP_TRNM_ID: ${{ secrets.TRNM_GITHUB_APP_ID }}
+      APP_TRNM_KEY: ${{ secrets.TRNM_GITHUB_APP_PRIVATE_KEY }}
+      APP_GOV_ID: ${{ secrets.GOVERNANCE_APP_ID }}
+      APP_GOV_KEY: ${{ secrets.GOVERNANCE_APP_PRIVATE_KEY }}
+      APP_TRNM_GOV_ID: ${{ secrets.TRNM_GOVERNANCE_APP_ID }}
+      APP_TRNM_GOV_KEY: ${{ secrets.TRNM_GOVERNANCE_APP_PRIVATE_KEY }}
+      APP_WORLD_ID: ${{ secrets.WORLD_GITHUB_APP_ID }}
+      APP_WORLD_KEY: ${{ secrets.WORLD_GITHUB_APP_PRIVATE_KEY }}
+      APP_GENERIC_ID: ${{ secrets.GITHUB_APP_ID }}
+      APP_GENERIC_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+      APP_BOT_ID: ${{ secrets.TRNM_BOT_APP_ID }}
+      APP_BOT_KEY: ${{ secrets.TRNM_BOT_APP_PRIVATE_KEY }}
+    steps:
+      - name: Checkout immutable control branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run repository admission preflight
+        shell: bash
+        run: bash scripts/project-preflight.sh
+
+      - name: Download and verify immutable qualification artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer ${GAME_GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/TrillionniumFoundation/TrillionniumGame/actions/artifacts/${GAME_ARTIFACT_ID}/zip" \
+            -o /tmp/world-v13k-qualified.zip
+          actual="$(sha256sum /tmp/world-v13k-qualified.zip | awk '{print $1}')"
+          test "${actual}" = "${EXPECTED_ARTIFACT_SHA256}"
+          rm -rf /tmp/world-v13k /tmp/world-v13k-tree
+          mkdir -p /tmp/world-v13k /tmp/world-v13k-tree
+          unzip -q /tmp/world-v13k-qualified.zip -d /tmp/world-v13k
+          archive="$(find /tmp/world-v13k -type f -name 'world-v13k-candidate-tree.tar.gz' -print -quit)"
+          test -n "${archive}"
+          tar -xzf "${archive}" -C /tmp/world-v13k-tree
+
+      - name: Import four exact unreferenced World blobs
+        id: import
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/import_world_blobs.py <<'PY'
+          from __future__ import annotations
+          import base64, datetime as dt, hashlib, json, os, pathlib, subprocess, tempfile
+          import urllib.error, urllib.parse, urllib.request
+
+          API = "https://api.github.com"
+          WORLD = "TrillionniumFoundation/Trillionnium-World"
+          BRANCH = "fix/world-plan-v4-development-closure-20260831"
+          EXPECTED_HEAD = os.environ["EXPECTED_WORLD_HEAD"]
+          ROOT = pathlib.Path("/tmp/world-v13k-tree")
+          TARGETS = {
+              "trillionnium/crates/trnm-game-server/src/lib_parts/actor_runtime/part_01.rs": "5830b02dbf526928b5974dd4af1b31b392e078af",
+              "trillionnium/crates/trnm-game-server/src/lib_parts/actor_runtime/part_02.rs": "ea5882d69173eb53f6ccff039531cef61294b36d",
+              "trillionnium/crates/trnm-game-server/src/lib_parts/terminal_recovery/part_01.rs": "2eea5b04b93d79eb3148159f722c0153a50960aa",
+              "trillionnium/crates/trnm-game-server/src/lib_parts/terminal_recovery/part_02.rs": "0f16f77506b7af6c4023cfc0e9594cba9647dcca",
+          }
+
+          def git_blob(data: bytes) -> str:
+              return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+
+          def api(token: str, method: str, url: str, payload=None, bearer=True):
+              body = None if payload is None else json.dumps(payload).encode()
+              headers = {
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "User-Agent": "trnm-world-route-b-object-import-v1",
+              }
+              if token:
+                  headers["Authorization"] = ("Bearer " if bearer else "token ") + token
+              if body is not None:
+                  headers["Content-Type"] = "application/json"
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(req, timeout=90) as response:
+                      raw = response.read()
+                      return response.status, json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as error:
+                  raw = error.read().decode("utf-8", "replace")[:1000]
+                  return error.code, {"message": raw}
+
+          def b64url(data: bytes) -> str:
+              return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+          def app_token(app_id: str, private_key: str):
+              if not app_id.strip() or "BEGIN" not in private_key:
+                  return None
+              now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+              header = b64url(json.dumps({"alg":"RS256","typ":"JWT"}, separators=(",", ":")).encode())
+              payload = b64url(json.dumps({"iat":now-60,"exp":now+480,"iss":app_id.strip()}, separators=(",", ":")).encode())
+              signing = f"{header}.{payload}".encode()
+              with tempfile.NamedTemporaryFile("w", delete=False) as key:
+                  key.write(private_key)
+                  key_path = key.name
+              try:
+                  signature = subprocess.check_output(
+                      ["openssl", "dgst", "-sha256", "-sign", key_path], input=signing
+                  )
+              finally:
+                  pathlib.Path(key_path).unlink(missing_ok=True)
+              jwt = f"{header}.{payload}.{b64url(signature)}"
+              status, install = api(jwt, "GET", f"{API}/repos/{WORLD}/installation")
+              if status != 200:
+                  return None
+              status, issued = api(
+                  jwt, "POST", f"{API}/app/installations/{install['id']}/access_tokens",
+                  {"repositories":["Trillionnium-World"], "permissions":{"contents":"write"}},
+              )
+              return issued.get("token") if status == 201 else None
+
+          candidates = []
+          for name, value in sorted(os.environ.items()):
+              if name.startswith("TOKEN_") and value.strip():
+                  candidates.append((name, value.strip()))
+          for prefix in ("APP_TRNM", "APP_GOV", "APP_TRNM_GOV", "APP_WORLD", "APP_GENERIC", "APP_BOT"):
+              token = app_token(os.environ.get(prefix + "_ID", ""), os.environ.get(prefix + "_KEY", ""))
+              if token:
+                  candidates.append((prefix, token))
+          # The source repository token is tested last. It normally has no World write scope.
+          candidates.append(("GAME_GITHUB_TOKEN", os.environ["GAME_GITHUB_TOKEN"]))
+
+          selected = None
+          probes = []
+          for label, token in candidates:
+              status, repo = api(token, "GET", f"{API}/repos/{WORLD}")
+              push = status == 200 and bool((repo.get("permissions") or {}).get("push"))
+              probes.append({"source":label, "http":status, "push":push})
+              if push:
+                  selected = (label, token)
+                  break
+          if selected is None:
+              pathlib.Path("route-b-receipt.json").write_text(json.dumps({
+                  "schema":"trnm.world.route-b.receipt.v3",
+                  "status":"NO_WORLD_WRITE_TOKEN",
+                  "credential_probes":probes,
+                  "candidate_ref_updated":False,
+                  "production_authorization":"not_granted",
+              }, indent=2) + "\n")
+              raise SystemExit("no existing secret or App credential has push permission to World")
+
+          label, token = selected
+          quoted = urllib.parse.quote(BRANCH, safe="")
+          status, branch = api(token, "GET", f"{API}/repos/{WORLD}/branches/{quoted}")
+          if status != 200 or branch["commit"]["sha"] != EXPECTED_HEAD:
+              raise SystemExit("World candidate head drifted before object import")
+
+          prepared = []
+          for rel, expected in TARGETS.items():
+              matches = [p for p in ROOT.rglob(pathlib.Path(rel).name) if str(p).endswith(rel)]
+              if len(matches) != 1:
+                  raise SystemExit(f"artifact path resolution failed for {rel}: {len(matches)} matches")
+              data = matches[0].read_bytes()
+              actual = git_blob(data)
+              if actual != expected:
+                  raise SystemExit(f"qualified Git blob mismatch for {rel}: {actual} != {expected}")
+              prepared.append((rel, expected, data))
+
+          results = []
+          for rel, expected, data in prepared:
+              status, existing = api(token, "GET", f"{API}/repos/{WORLD}/git/blobs/{expected}")
+              created = False
+              if status == 200:
+                  decoded = base64.b64decode(existing["content"].replace("\n", ""), validate=True)
+                  if decoded != data:
+                      raise SystemExit(f"existing object bytes differ for {rel}")
+              elif status == 404:
+                  status, response = api(token, "POST", f"{API}/repos/{WORLD}/git/blobs", {
+                      "content": base64.b64encode(data).decode(), "encoding":"base64"
+                  })
+                  if status != 201 or response.get("sha") != expected:
+                      raise SystemExit(f"GitHub returned non-qualified object for {rel}")
+                  created = True
+              else:
+                  raise SystemExit(f"object preflight failed for {rel}: HTTP {status}")
+              status, fetched = api(token, "GET", f"{API}/repos/{WORLD}/git/blobs/{expected}")
+              if status != 200:
+                  raise SystemExit(f"object readback failed for {rel}")
+              decoded = base64.b64decode(fetched["content"].replace("\n", ""), validate=True)
+              if decoded != data:
+                  raise SystemExit(f"object readback bytes differ for {rel}")
+              results.append({"path":rel,"sha":expected,"bytes":len(data),"created":created})
+
+          status, after = api(token, "GET", f"{API}/repos/{WORLD}/branches/{quoted}")
+          if status != 200 or after["commit"]["sha"] != EXPECTED_HEAD:
+              raise SystemExit("World candidate ref changed during unreferenced object import")
+
+          receipt = {
+              "schema":"trnm.world.route-b.receipt.v3",
+              "status":"PASS",
+              "credential_source":label,
+              "credential_probes":probes,
+              "head_before":EXPECTED_HEAD,
+              "head_after":EXPECTED_HEAD,
+              "objects":results,
+              "object_count":len(results),
+              "tree_created":False,
+              "commit_created":False,
+              "candidate_ref_updated":False,
+              "production_authorization":"not_granted",
+          }
+          pathlib.Path("route-b-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          print(json.dumps(receipt, indent=2))
+          PY
+          python3 /tmp/import_world_blobs.py
+
+      - name: Upload redacted Route B receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-v4-route-b-object-import-receipt
+          path: route-b-receipt.json
+          if-no-files-found: warn
+          retention-days: 7
