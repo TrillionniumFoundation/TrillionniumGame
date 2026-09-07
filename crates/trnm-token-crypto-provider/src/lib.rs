@@ -326,8 +326,8 @@ mod key_epoch;
 mod signer_journal;
 
 pub use key_epoch::{
-    KeyEpoch, KeyEpochError, KeyEpochRecord, KeyEpochRegistry as OperationalKeyEpochRegistry,
-    KeyEpochState, KeyId,
+    KeyEpoch, KeyEpochArchiveCheckpoint, KeyEpochArchiveVerifier, KeyEpochError, KeyEpochRecord,
+    KeyEpochRegistry as OperationalKeyEpochRegistry, KeyEpochState, KeyId,
 };
 pub use signer_journal::{
     SignerJournal, SignerJournalError, SigningOperationId, SigningOperationRecord,

@@ -20,7 +20,7 @@ The module's current maturity is `source-candidate`. Promotion requires exact-ca
 - select one exact active signing epoch and one exact requested verification epoch;
 - bound active records, verification overlap and audit growth;
 - revoke immediately and monotonically;
-- retire only revoked or verification-expired records while preserving the epoch high-watermark;
+- retire and externally archive revoked or verification-expired records while preserving the epoch/time high-watermarks;
 - expose bounded handle-free lifecycle status and health.
 
 Non-goals: this crate does not define JWT format, implement HS256, expose raw production keys, persist schedules, distribute rotation state between nodes, or substitute a real KMS/HSM deployment.
@@ -52,7 +52,7 @@ Public Rust types, serialized fields, configuration keys, database predicates, a
 - configured records are limited to eight per domain and audit events to 256;
 - status and health expose counts and epoch numbers, never handles, tokens or credentials.
 
-The in-memory registry is a deterministic source component, not a production lifecycle database. A durable adapter must atomically store revision, high-watermarks, windows, revocations, retirements and audit receipts before this boundary can be shared by multiple nodes.
+The operational registry remains deterministic and bounded. Terminal operational records leave memory only through a digest-chained `KeyEpochArchiveCheckpoint` accepted by a trusted `KeyEpochArchiveVerifier`. The checkpoint carries the global highest epoch, last lifecycle time, authority-loss state, retained verification window and exact archived records. New key IDs after archival require an external absence proof, and archived verification requests return an explicit durable-archive requirement instead of falling back. A durable adapter must atomically persist and verify this checkpoint before the window is restored on another node.
 
 ## Correctness and failure model
 
@@ -74,7 +74,7 @@ cargo test --manifest-path crates/trnm-token-crypto-provider/Cargo.toml --all-ta
 cargo clippy --manifest-path crates/trnm-token-crypto-provider/Cargo.toml --all-targets --locked -- -D warnings
 ```
 
-The unit corpus covers all six domains, non-overlapping sign windows, bounded verification overlap, exact-epoch no-fallback, emergency revoke, retirement, revision/clock/audit exhaustion atomicity and debug redaction.
+The unit corpus covers all six domains, non-overlapping sign windows, bounded verification overlap, exact-epoch no-fallback, emergency revoke, retirement, full-window terminal archival, capacity-full compromise recovery, archived key-ID rejection, checkpoint restore, revision/clock/audit exhaustion atomicity and debug redaction.
 
 This isolated workspace is explicitly registered in package authority and must execute in the stable aggregate merge gate. Empty discovery, skipped mandatory tests, warnings, older-head results, local-only execution and self-review do not earn remote verification or claim credit.
 
