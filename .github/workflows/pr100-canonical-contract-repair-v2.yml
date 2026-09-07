@@ -110,7 +110,7 @@ jobs:
           expected=".github/workflows/plan-contract.yml,.github/workflows/pr100-canonical-contract-repair-v2.yml,.github/workflows/prospective-merge-gate.yml,docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json,scripts/check-independent-review-domain-contract.py,scripts/check-independent-review-matrix.py,scripts/check-plan.py,scripts/one_shot_pr100_canonical_contract_repair.py,tests/control_plane/test_independent_review_domain_integration.py"
           test "$actual" = "$expected"
 
-      - name: Execute canonical governance controls
+      - name: Validate and form unpushed final tree
         shell: bash
         run: |
           set -euo pipefail
@@ -134,17 +134,18 @@ jobs:
           rm -f \
             scripts/one_shot_pr100_canonical_contract_repair.py \
             .github/workflows/pr100-canonical-contract-repair-v2.yml
-          python3 -m unittest discover -s tests -p 'test_*.py'
-          git diff --check
-
-      - name: Commit exact tested repair without force
-        shell: bash
-        run: |
-          set -euo pipefail
           git config user.name trillionnium-governance-bot
           git config user.email trillionnium-governance-bot@users.noreply.github.com
           git add -A
           git commit -m "fix(governance): bind canonical review-domain ownership"
+          test -z "$(git status --porcelain)"
+          python3 -m unittest discover -s tests -p 'test_*.py'
+          git diff --check HEAD^
+
+      - name: Publish exact tested final tree without force
+        shell: bash
+        run: |
+          set -euo pipefail
           observed="$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
           test "$observed" = "$GITHUB_SHA"
           git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
