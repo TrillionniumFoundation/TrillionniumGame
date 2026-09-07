@@ -10,15 +10,19 @@ permissions:
   contents: write
 
 env:
-  TARGET_BASE: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
-  TARGET_TREE: 9d3ae2fadb2684f095855ecf16307376b55a440f
+  EXPECTED_BASE: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+  EXPECTED_BASE_TREE: 9d3ae2fadb2684f095855ecf16307376b55a440f
   PRODUCT_BRANCH: codex/reviewer-conflict-capacity-fix-2026-09-07
+  PATCH_BLOB: 487bfef0a31a1a440eb93ee322dd8f071e07f389
   PATCH_SHA256: ae35363804785a48d44397b21033ed385e069be1c1379d2f27480bd2a6145345
-  GITHUB_TOKEN: ${{ github.token }}
+  CHECKER_BLOB: 35a120bac05b9e5e791fcabdbdc38a17b3ad53f0
+  MATRIX_BLOB: 2a11ec9876f3c8837ec6141e0686912036be59e5
+  TEST_BLOB: 23d1b4bddc00d46201e4702a781dd42424f98401
+  GH_TOKEN: ${{ github.token }}
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
-  validate-publish:
+  validate-and-publish:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -26,87 +30,112 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$GITHUB_WORKSPACE/tooling" "$GITHUB_WORKSPACE/source"
-          git init "$GITHUB_WORKSPACE/tooling"
-          git -C "$GITHUB_WORKSPACE/tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "$GITHUB_WORKSPACE/tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
-          git -C "$GITHUB_WORKSPACE/tooling" checkout --detach FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+          tooling="$RUNNER_TEMP/tooling"
+          source="$RUNNER_TEMP/source"
+          rm -rf "$tooling" "$source"
+          git init "$tooling"
+          git -C "$tooling" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$tooling" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$tooling" checkout --detach FETCH_HEAD
+          test "$(git -C "$tooling" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$tooling" hash-object tooling/reviewer-capacity-fix/reviewer-capacity.patch.gz)" = "$PATCH_BLOB"
 
-          git init "$GITHUB_WORKSPACE/source"
-          git -C "$GITHUB_WORKSPACE/source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "$GITHUB_WORKSPACE/source" fetch --no-tags --depth=1 origin "$TARGET_BASE"
-          git -C "$GITHUB_WORKSPACE/source" checkout -b "$PRODUCT_BRANCH" FETCH_HEAD
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" = "$TARGET_BASE"
-          test "$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD^{tree})" = "$TARGET_TREE"
+          git init "$source"
+          git -C "$source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$source" fetch --no-tags --depth=1 origin "$EXPECTED_BASE"
+          git -C "$source" checkout -b "$PRODUCT_BRANCH" FETCH_HEAD
+          test "$(git -C "$source" rev-parse HEAD)" = "$EXPECTED_BASE"
+          test "$(git -C "$source" rev-parse HEAD^{tree})" = "$EXPECTED_BASE_TREE"
 
-      - name: Apply exact digest-bound repair
+      - name: Apply the digest-bound three-file repair
         shell: bash
-        working-directory: source
         run: |
           set -euo pipefail
-          payload="$GITHUB_WORKSPACE/tooling/tooling/reviewer-capacity-fix/reviewer-capacity.patch.gz.b64"
-          test -s "$payload"
-          base64 -d "$payload" > "$RUNNER_TEMP/reviewer-capacity.patch.gz"
-          gzip -dc "$RUNNER_TEMP/reviewer-capacity.patch.gz" > "$RUNNER_TEMP/reviewer-capacity.patch"
-          test "$(sha256sum "$RUNNER_TEMP/reviewer-capacity.patch" | cut -d' ' -f1)" = "$PATCH_SHA256"
-          git apply --check "$RUNNER_TEMP/reviewer-capacity.patch"
-          git apply "$RUNNER_TEMP/reviewer-capacity.patch"
+          tooling="$RUNNER_TEMP/tooling"
+          source="$RUNNER_TEMP/source"
+          gzip -dc "$tooling/tooling/reviewer-capacity-fix/reviewer-capacity.patch.gz" > "$RUNNER_TEMP/reviewer-capacity.patch"
+          printf '%s  %s\n' "$PATCH_SHA256" "$RUNNER_TEMP/reviewer-capacity.patch" | sha256sum --check -
+          git -C "$source" apply --check "$RUNNER_TEMP/reviewer-capacity.patch"
+          git -C "$source" apply "$RUNNER_TEMP/reviewer-capacity.patch"
           expected=$(cat <<'EOF'
           docs/review/INDEPENDENT_REVIEW_MATRIX.json
           scripts/check-independent-review-matrix.py
           tests/control_plane/test_independent_review_matrix.py
           EOF
           )
-          test "$(git diff --name-only | LC_ALL=C sort)" = "$expected"
-          git diff --check
-          test "$(python3 scripts/check-independent-review-matrix.py | jq -r .status)" = blocked-reviewer-capacity
+          test "$(git -C "$source" diff --name-only | LC_ALL=C sort)" = "$expected"
+          test "$(git -C "$source" hash-object scripts/check-independent-review-matrix.py)" = "$CHECKER_BLOB"
+          test "$(git -C "$source" hash-object docs/review/INDEPENDENT_REVIEW_MATRIX.json)" = "$MATRIX_BLOB"
+          test "$(git -C "$source" hash-object tests/control_plane/test_independent_review_matrix.py)" = "$TEST_BLOB"
+          git -C "$source" diff --check
 
-      - name: Execute complete control corpus
+      - name: Execute targeted and complete control-plane regression
         shell: bash
-        working-directory: source
+        working-directory: ${{ runner.temp }}/source
         run: |
           set -euo pipefail
           python3 -m compileall -q scripts tools tests
+          python3 scripts/check-independent-review-matrix.py | tee "$RUNNER_TEMP/reviewer-matrix.json"
+          jq -e '
+            .status == "blocked-reviewer-capacity" and
+            .available_domains == 0 and
+            .blocked_domains == 6 and
+            .eligible_reviewers == [] and
+            .all_required_reviews_available == false
+          ' "$RUNNER_TEMP/reviewer-matrix.json" >/dev/null
           python3 -m unittest -v tests.control_plane.test_independent_review_matrix
-          python3 scripts/check-documentation-authority.py
-          python3 scripts/check-plan.py
-          python3 scripts/check-evidence-index.py
-          python3 scripts/check-gap-register.py
-          python3 scripts/derive-gap-status.py
-          python3 scripts/derive-gates.py
-          python3 scripts/check-status-transitions.py
-          python3 scripts/check-workflow-action-policy.py
-          python3 scripts/check-repository-hygiene.py
-          python3 scripts/check-trnm-server.py
-          python3 scripts/check-rust-foundation.py
-          python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/full-python.log"
-          grep -Eq '^Ran [1-9][0-9]* tests in ' "$RUNNER_TEMP/full-python.log"
+          for script in \
+            check-documentation-authority.py \
+            check-plan.py \
+            check-evidence-index.py \
+            check-gap-register.py \
+            derive-gap-status.py \
+            derive-gates.py \
+            check-status-transitions.py \
+            check-workflow-action-policy.py \
+            check-repository-hygiene.py \
+            check-trnm-server.py \
+            check-rust-foundation.py; do
+            python3 "scripts/$script"
+          done
+          python3 -m unittest discover -s tests -p 'test_*.py' -v \
+            2>&1 | tee "$RUNNER_TEMP/full-python.log"
+          grep -q '^Ran 601 tests in ' "$RUNNER_TEMP/full-python.log"
           grep -qx OK "$RUNNER_TEMP/full-python.log"
-          expected=$(cat <<'EOF'
+          git diff --check
+          test "$(git diff --name-only | LC_ALL=C sort)" = "$(cat <<'EOF'
           docs/review/INDEPENDENT_REVIEW_MATRIX.json
           scripts/check-independent-review-matrix.py
           tests/control_plane/test_independent_review_matrix.py
           EOF
-          )
-          test "$(git diff --name-only | LC_ALL=C sort)" = "$expected"
-          git diff --check
+          )"
 
-      - name: Publish exact tested source candidate
+      - name: Publish exact tested product branch
         shell: bash
-        working-directory: source
+        working-directory: ${{ runner.temp }}/source
         run: |
           set -euo pipefail
-          git config user.name 'Qian QI'
-          git config user.email '102159240+ProfHepta@users.noreply.github.com'
-          git add docs/review/INDEPENDENT_REVIEW_MATRIX.json \
+          remote=$(git ls-remote origin "refs/heads/${PRODUCT_BRANCH}" | awk '{print $1}')
+          if [[ -n "$remote" && "$remote" != "$EXPECTED_BASE" ]]; then
+            printf 'product branch already moved: %s\n' "$remote" >&2
+            exit 1
+          fi
+          git config user.name "Qian QI"
+          git config user.email "102159240+ProfHepta@users.noreply.github.com"
+          git add \
+            docs/review/INDEPENDENT_REVIEW_MATRIX.json \
             scripts/check-independent-review-matrix.py \
             tests/control_plane/test_independent_review_matrix.py
+          test "$(git diff --cached --name-only | LC_ALL=C sort)" = "$(cat <<'EOF'
+          docs/review/INDEPENDENT_REVIEW_MATRIX.json
+          scripts/check-independent-review-matrix.py
+          tests/control_plane/test_independent_review_matrix.py
+          EOF
+          )"
           git diff --cached --check
-          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = 3
-          git commit -m 'fix(governance): compute conflict-free reviewer capacity'
-          auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
-          git -c http.extraheader="AUTHORIZATION: basic ${auth}" \
+          git commit -m "fix(governance): make reviewer capacity candidate-aware"
+          auth_header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic ${auth_header}" \
             push origin "HEAD:refs/heads/${PRODUCT_BRANCH}"
           printf 'product_head=%s\nproduct_tree=%s\n' \
             "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})"
