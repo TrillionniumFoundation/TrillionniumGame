@@ -1,0 +1,152 @@
+name: governance-negative-rehearsal-v2
+
+on:
+  push:
+    branches: [tooling/governance-negative-rehearsal-v2-2026-09-07]
+    paths:
+      - '.github/workflows/governance-negative-rehearsal-v2.yml'
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  observe-close-clean:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REHEARSAL_BRANCH: tooling/governance-negative-rehearsal-v2-2026-09-07
+      EXPECTED_MAIN: d66c1b5b614a2a7b682c233fe2e7a19939b6976b
+    steps:
+      - name: Observe ordinary protection, record result and clean the disposable surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json, os, time, urllib.error, urllib.parse, urllib.request
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          owner, name = repository.split('/', 1)
+          api = f'https://api.github.com/repos/{repository}'
+          token = os.environ['GH_TOKEN']
+          branch = os.environ['REHEARSAL_BRANCH']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'trillionnium-governance-negative-rehearsal-v2',
+          }
+
+          def call(url, method='GET', body=None):
+              data = None if body is None else json.dumps(body).encode('utf-8')
+              request = urllib.request.Request(url, data=data, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      raw = response.read()
+                      return response.status, json.loads(raw.decode('utf-8')) if raw else None
+              except urllib.error.HTTPError as error:
+                  raw = error.read()
+                  try:
+                      value = json.loads(raw.decode('utf-8')) if raw else None
+                  except Exception:
+                      value = {'message': raw.decode('utf-8', errors='replace')[:1000]}
+                  return error.code, value
+
+          code, pulls = call(
+              api + '/pulls?state=open&head=' + urllib.parse.quote(owner + ':' + branch) + '&per_page=10'
+          )
+          if code != 200 or not isinstance(pulls, list) or len(pulls) != 1:
+              raise SystemExit(f'expected one disposable PR, HTTP={code}, count={len(pulls) if isinstance(pulls,list) else None}')
+          pr = pulls[0]
+          number = int(pr['number'])
+          head = pr['head']['sha']
+          base_before = pr['base']['sha']
+
+          latest_checks = []
+          required_gate = []
+          for _ in range(150):
+              ccode, checks = call(api + f'/commits/{head}/check-runs?per_page=100')
+              if ccode == 200 and isinstance(checks, dict):
+                  by_key = {}
+                  for row in sorted(checks.get('check_runs', []), key=lambda item: int(item.get('id') or 0), reverse=True):
+                      key = (row.get('name'), (row.get('app') or {}).get('id'))
+                      by_key.setdefault(key, row)
+                  latest_checks = list(by_key.values())
+                  required_gate = [row for row in latest_checks if row.get('name') == 'trillionnium-game-merge-gate']
+                  active = [row for row in latest_checks if row.get('status') != 'completed']
+                  if required_gate and not active:
+                      break
+              time.sleep(5)
+
+          pcode, final_pr = call(api + f'/pulls/{number}')
+          rcode, reviews = call(api + f'/pulls/{number}/reviews?per_page=100')
+          reviews = reviews if rcode == 200 and isinstance(reviews, list) else []
+          approvals = [row for row in reviews if row.get('state') == 'APPROVED']
+          gate_success = bool(required_gate) and all(
+              row.get('status') == 'completed' and row.get('conclusion') == 'success'
+              for row in required_gate
+          )
+          mergeable_state = (final_pr or {}).get('mergeable_state') if pcode == 200 else None
+          blocked = mergeable_state in {'blocked', 'unstable', 'dirty', 'draft'}
+          base_after = ((final_pr or {}).get('base') or {}).get('sha') if pcode == 200 else None
+          main_unchanged = base_before == base_after == os.environ['EXPECTED_MAIN']
+          packet = {
+              'schema': 'trillionnium.governance-negative-rehearsal.v2',
+              'pull_request': number,
+              'head': head,
+              'base_before': base_before,
+              'base_after': base_after,
+              'main_unchanged': main_unchanged,
+              'mergeable': (final_pr or {}).get('mergeable'),
+              'mergeable_state': mergeable_state,
+              'required_gate': [
+                  {'id': row.get('id'), 'status': row.get('status'), 'conclusion': row.get('conclusion')}
+                  for row in required_gate
+              ],
+              'approval_count': len(approvals),
+              'observed_blocked_without_approval': blocked and len(approvals) == 0,
+              'ordinary_merge_called': False,
+              'administrator_bypass_called': False,
+              'claims': {
+                  'independently_accepted': False,
+                  'gap_closed': False,
+                  'production_ready': False,
+              },
+          }
+          marker = '<!-- TRNM-GOVERNANCE-NEGATIVE-REHEARSAL-V2 -->'
+          body = '\n'.join([
+              marker,
+              '## Harmless governance negative rehearsal v2',
+              '',
+              f'- disposable PR: `#{number}`',
+              f'- head: `{head}`',
+              f'- base before/after: `{base_before}` / `{base_after}`',
+              f'- `main` unchanged: `{str(main_unchanged).lower()}`',
+              f'- required aggregate present/success: `{str(bool(required_gate)).lower()}` / `{str(gate_success).lower()}`',
+              f'- approval count: `{len(approvals)}`',
+              f'- GitHub mergeable state: `{mergeable_state}`',
+              f'- observed blocked without approval: `{str(packet["observed_blocked_without_approval"]).lower()}`',
+              '',
+              'No merge endpoint, auto-merge, administrator bypass, force push, direct main update or production action was invoked. The disposable PR is closed and its branch deleted after this observation.',
+              '',
+              '```json', json.dumps(packet, indent=2, sort_keys=True), '```',
+          ])
+          call(api + '/issues/7/comments', method='POST', body={'body': body})
+          call(api + f'/pulls/{number}', method='PATCH', body={'state': 'closed'})
+          delete_code, delete_body = call(
+              api + '/git/refs/heads/' + urllib.parse.quote(branch, safe=''), method='DELETE'
+          )
+          packet['cleanup'] = {'close_requested': True, 'delete_status': delete_code, 'delete_body': delete_body}
+          print(json.dumps(packet, sort_keys=True))
+          if not packet['observed_blocked_without_approval']:
+              raise SystemExit('GitHub did not expose a blocked missing-review state')
+          if not main_unchanged:
+              raise SystemExit('main moved during negative rehearsal')
+          if delete_code not in (204, 422, 404):
+              raise SystemExit(f'branch cleanup failed: HTTP {delete_code}')
+          PY
