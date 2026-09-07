@@ -50,16 +50,23 @@ class IndependentReviewMatrixTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         result = json.loads(completed.stdout)
-        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["status"], "blocked-reviewer-capacity")
         self.assertEqual(result["assigned_domains"], 6)
         self.assertEqual(result["redundant_domains"], 6)
         self.assertEqual(
             result["named_reviewers"],
             ["Franksudoman", "ProfHepta", "Tomasrgbsf"],
         )
-        self.assertTrue(result["all_required_reviews_available"])
+        self.assertFalse(result["all_required_reviews_available"])
+        self.assertEqual(result["available_domains"], 0)
+        self.assertEqual(result["blocked_domains"], 6)
+        self.assertEqual(result["eligible_reviewers"], [])
+        self.assertEqual(
+            result["candidate_conflicts"],
+            ["Franksudoman", "ProfHepta", "Tomasrgbsf"],
+        )
         self.assertTrue(result["codeowners_redundant"])
-        self.assertTrue(result["conflict_survivable"])
+        self.assertFalse(result["conflict_survivable"])
         self.assertFalse(result["branch_policy_enforced"])
         self.assertFalse(result["claim_boundary"]["matrix_presence_is_review"])
         self.assertFalse(result["claim_boundary"]["assignment_is_acceptance"])
@@ -67,16 +74,23 @@ class IndependentReviewMatrixTests(unittest.TestCase):
             result["claim_boundary"]["administrative_enforcement_still_required"]
         )
 
-    def test_current_matrix_retains_two_reviewers_after_any_one_conflict(self) -> None:
+    def test_current_matrix_fails_closed_when_every_named_reviewer_is_conflicted(self) -> None:
         matrix = json.loads(MATRIX.read_text(encoding="utf-8"))
         minimum = matrix["policy"]["minimum_redundant_reviewers_per_domain"]
         self.assertEqual(minimum, 2)
-        self.assertTrue(matrix["summary"]["all_required_reviews_available"])
+        self.assertFalse(matrix["summary"]["all_required_reviews_available"])
         self.assertEqual(matrix["summary"]["assigned_domain_count"], 6)
         self.assertEqual(matrix["summary"]["redundant_domain_count"], 6)
+        self.assertEqual(matrix["summary"]["available_domain_count"], 0)
+        self.assertEqual(matrix["summary"]["blocked_domain_count"], 6)
+        self.assertEqual(matrix["summary"]["eligible_named_reviewer_count"], 0)
         self.assertEqual(matrix["summary"]["named_reviewer_count"], 3)
+        self.assertEqual(
+            set(matrix["candidate_scope"]["conflict_identities"]),
+            {"ProfHepta", "Franksudoman", "Tomasrgbsf"},
+        )
         for domain in matrix["domains"]:
-            self.assertEqual(domain["status"], "active")
+            self.assertEqual(domain["status"], "blocked-reviewer-capacity")
             self.assertEqual(len(domain["assigned_reviewers"]), 3)
             required = set(domain["required_roles"])
             identities = {
@@ -97,7 +111,7 @@ class IndependentReviewMatrixTests(unittest.TestCase):
                 self.assertEqual(covered, required)
             for reviewer in domain["assigned_reviewers"]:
                 self.assertEqual(set(reviewer["roles"]), required)
-                self.assertEqual(reviewer["conflicts"], [])
+                self.assertIn("candidate-author", reviewer["conflicts"])
 
     def test_single_reviewer_domain_is_rejected(self) -> None:
         module = load_module()
@@ -127,22 +141,37 @@ class IndependentReviewMatrixTests(unittest.TestCase):
             self.mutate_matrix(matrix, reduce_to_two)
             with self.assertRaisesRegex(
                 module.ReviewMatrixError,
-                "losing conflicted reviewer .* leaves fewer than 2 eligible reviewers",
+                "losing assigned reviewer .* leaves fewer than 2 routing assignments",
             ):
                 module.validate(matrix, gaps, codeowners)
 
-    def test_unresolved_static_conflict_is_rejected(self) -> None:
+    def test_unknown_conflict_type_is_rejected(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
             matrix, gaps, codeowners = self.fixture(directory)
             self.mutate_matrix(
                 matrix,
                 lambda value: value["domains"][0]["assigned_reviewers"][0].update(
-                    conflicts=["candidate-author"]
+                    conflicts=["candidate-author", "unregistered-conflict"]
                 ),
             )
             with self.assertRaisesRegex(
-                module.ReviewMatrixError, "unresolved static conflicts"
+                module.ReviewMatrixError, "invalid conflicts"
+            ):
+                module.validate(matrix, gaps, codeowners)
+
+    def test_candidate_author_cannot_be_hidden_as_conflict_free(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            matrix, gaps, codeowners = self.fixture(directory)
+            self.mutate_matrix(
+                matrix,
+                lambda value: value["domains"][0]["assigned_reviewers"][0].update(
+                    conflicts=[]
+                ),
+            )
+            with self.assertRaisesRegex(
+                module.ReviewMatrixError, "must be explicitly conflicted"
             ):
                 module.validate(matrix, gaps, codeowners)
 
@@ -188,6 +217,21 @@ class IndependentReviewMatrixTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 module.ReviewMatrixError, "candidate conflict rules drift"
+            ):
+                module.validate(matrix, gaps, codeowners)
+
+    def test_false_available_summary_is_rejected(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            matrix, gaps, codeowners = self.fixture(directory)
+            self.mutate_matrix(
+                matrix,
+                lambda value: value["summary"].update(
+                    all_required_reviews_available=True
+                ),
+            )
+            with self.assertRaisesRegex(
+                module.ReviewMatrixError, "review availability summary mismatch"
             ):
                 module.validate(matrix, gaps, codeowners)
 
