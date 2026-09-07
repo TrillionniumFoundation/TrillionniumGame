@@ -1,0 +1,233 @@
+name: tmp-world-r18-external-exact-head
+
+on:
+  push:
+    branches:
+      - chore/game-world-r18-external-qualification-20260908
+    paths:
+      - .github/workflows/tmp-world-r18-external-exact-head.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tmp-world-r18-external-exact-head
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_HEAD: ae74bfb86e16f4585bce311df23d49d123b8b0d3
+  RUST_TOOLCHAIN: "1.98.0"
+  RUSTUP_TOOLCHAIN: "1.98.0"
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  RUST_TEST_THREADS: "1"
+
+jobs:
+  static-and-rust:
+    name: relay/world-r18-static-rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout control repository without retained credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout exact World candidate without retained credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ env.WORLD_REPOSITORY }}
+          ref: ${{ env.WORLD_HEAD }}
+          path: trillionnium-world
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify exact World identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C trillionnium-world rev-parse HEAD)" = "${WORLD_HEAD}"
+          test -z "$(git -C trillionnium-world status --porcelain=v1)"
+          mkdir -p evidence/static-rust
+          printf '%s\n' \
+            "world_repository=${WORLD_REPOSITORY}" \
+            "world_head=$(git -C trillionnium-world rev-parse HEAD)" \
+            "world_tree=$(git -C trillionnium-world rev-parse 'HEAD^{tree}')" \
+            "control_repository=${GITHUB_REPOSITORY}" \
+            "control_head=${GITHUB_SHA}" \
+            "run_id=${GITHUB_RUN_ID}" \
+            "run_attempt=${GITHUB_RUN_ATTEMPT}" \
+            > evidence/static-rust/identity.txt
+
+      - name: Install native dependencies and pinned Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            jq ripgrep pkg-config libasound2-dev libudev-dev libx11-dev \
+            libxi-dev libxkbcommon-dev libwayland-dev
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${RUST_TOOLCHAIN}"
+          rustc --version --verbose | tee evidence/static-rust/rustc-version.txt
+          cargo --version --verbose | tee evidence/static-rust/cargo-version.txt
+
+      - name: Run World source and governance-static gates
+        shell: bash
+        working-directory: trillionnium-world
+        run: |
+          set -euo pipefail
+          {
+            bash scripts/project-preflight.sh --audit
+            bash scripts/check-trnm-game-server-direct-source.sh
+            bash scripts/check_trnm_game_product.sh
+            bash scripts/check_trnm_authority_boundary.sh
+            bash scripts/check-trnm-world-authority-boundary.sh full
+            bash scripts/test-trnm-world-authority-boundary-negative.sh
+            bash scripts/check_trnm_runtime_configuration.sh
+            bash scripts/check-trnm-settlement-transaction-boundary.sh
+            bash scripts/check_trnm_settlement_transaction_boundary.sh
+            python3 scripts/check-trnm-world-documentation.py
+            python3 scripts/test-trnm-world-documentation-negative.py
+            python3 scripts/check-trnm-world-ci-integrity.py
+            python3 scripts/test-trnm-world-ci-integrity.py
+            python3 scripts/check-trnm-world-transition-conformance.py
+            python3 scripts/test-trnm-world-transition-conformance.py
+            python3 scripts/check-trnm-settlement-lock-order.py
+            python3 scripts/test-trnm-settlement-lock-order.py
+          } 2>&1 | tee ../evidence/static-rust/static-gates.log
+
+      - name: Run World Rust 1.98.0 matrix
+        shell: bash
+        working-directory: trillionnium-world
+        run: |
+          set -euo pipefail
+          {
+            cargo metadata --manifest-path trillionnium/Cargo.toml --locked --no-deps --format-version 1 >/dev/null
+            cargo fmt --manifest-path trillionnium/Cargo.toml --all -- --check
+            cargo test --manifest-path trillionnium/Cargo.toml \
+              -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
+              --all-targets --locked
+            cargo test --manifest-path trillionnium/contracts/trnm-world-transition-v1/Cargo.toml --locked
+            cargo clippy --manifest-path trillionnium/Cargo.toml \
+              -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
+              --all-targets --locked -- -D warnings
+            cargo clippy --manifest-path trillionnium/contracts/trnm-world-transition-v1/Cargo.toml \
+              --all-targets --locked -- -D warnings
+          } 2>&1 | tee ../evidence/static-rust/rust-matrix.log
+
+      - name: Seal static and Rust evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C trillionnium-world rev-parse HEAD)" = "${WORLD_HEAD}"
+          test -z "$(git -C trillionnium-world status --porcelain=v1)"
+          find evidence/static-rust -type f ! -name SHA256SUMS -print0 \
+            | sort -z | xargs -0 sha256sum > evidence/static-rust/SHA256SUMS
+
+      - name: Upload static and Rust evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-r18-static-rust-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: evidence/static-rust/**
+          if-no-files-found: error
+          retention-days: 30
+
+  postgres:
+    name: relay/world-r18-postgres
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    services:
+      postgres:
+        image: postgres:16.4-alpine
+        env:
+          POSTGRES_USER: trnm
+          POSTGRES_PASSWORD: trnm
+          POSTGRES_DB: trnm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trnm -d trnm"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://trnm:trnm@127.0.0.1:5432/trnm
+      TRNM_REQUIRE_SETTLEMENT_DATABASE_TEST: "1"
+    steps:
+      - name: Checkout control repository without retained credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout exact World candidate without retained credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ env.WORLD_REPOSITORY }}
+          ref: ${{ env.WORLD_HEAD }}
+          path: trillionnium-world
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify exact World identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C trillionnium-world rev-parse HEAD)" = "${WORLD_HEAD}"
+          test -z "$(git -C trillionnium-world status --porcelain=v1)"
+          mkdir -p evidence/postgres
+          printf '%s\n' \
+            "world_repository=${WORLD_REPOSITORY}" \
+            "world_head=$(git -C trillionnium-world rev-parse HEAD)" \
+            "world_tree=$(git -C trillionnium-world rev-parse 'HEAD^{tree}')" \
+            "postgres_image=postgres:16.4-alpine" \
+            "control_repository=${GITHUB_REPOSITORY}" \
+            "control_head=${GITHUB_SHA}" \
+            "run_id=${GITHUB_RUN_ID}" \
+            "run_attempt=${GITHUB_RUN_ATTEMPT}" \
+            > evidence/postgres/identity.txt
+
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup default "${RUST_TOOLCHAIN}"
+          rustc --version --verbose | tee evidence/postgres/rustc-version.txt
+          cargo --version --verbose | tee evidence/postgres/cargo-version.txt
+
+      - name: Run required World PostgreSQL settlement matrix
+        shell: bash
+        working-directory: trillionnium-world
+        run: |
+          set -euo pipefail
+          {
+            cargo test --manifest-path trillionnium/Cargo.toml \
+              -p trnm-game-server --all-targets --locked -- --nocapture
+          } 2>&1 | tee ../evidence/postgres/postgres-matrix.log
+
+      - name: Seal PostgreSQL evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C trillionnium-world rev-parse HEAD)" = "${WORLD_HEAD}"
+          test -z "$(git -C trillionnium-world status --porcelain=v1)"
+          find evidence/postgres -type f ! -name SHA256SUMS -print0 \
+            | sort -z | xargs -0 sha256sum > evidence/postgres/SHA256SUMS
+
+      - name: Upload PostgreSQL evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-r18-postgres-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: evidence/postgres/**
+          if-no-files-found: error
+          retention-days: 30
