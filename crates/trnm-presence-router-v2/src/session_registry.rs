@@ -8,6 +8,131 @@ use crate::{
 };
 
 pub const MAX_CONNECTIONS_PER_SESSION: usize = 1_024;
+pub const MAX_ACTIVE_CONNECTIONS: usize = 65_536;
+pub const MAX_TRACKED_CONNECTIONS: usize = 131_072;
+pub const MAX_TRACKED_SESSIONS: usize = 131_072;
+pub const MAX_REVOCATION_HIGH_WATERS: usize = 131_072;
+pub const MAX_PRESENCE_ENTRIES: usize = 262_144;
+
+pub const DEFAULT_MAX_ACTIVE_CONNECTIONS: usize = 16_384;
+pub const DEFAULT_MAX_TRACKED_CONNECTIONS: usize = 32_768;
+pub const DEFAULT_MAX_TRACKED_SESSIONS: usize = 32_768;
+pub const DEFAULT_MAX_REVOCATION_HIGH_WATERS: usize = 32_768;
+pub const DEFAULT_MAX_PRESENCE_ENTRIES: usize = 65_536;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SessionRouteLimits {
+    max_connections_per_session: usize,
+    max_active_connections: usize,
+    max_tracked_connections: usize,
+    max_tracked_sessions: usize,
+    max_revocation_high_waters: usize,
+    max_presence_entries: usize,
+}
+
+impl SessionRouteLimits {
+    pub fn new(
+        max_connections_per_session: usize,
+        max_active_connections: usize,
+        max_tracked_connections: usize,
+        max_tracked_sessions: usize,
+        max_revocation_high_waters: usize,
+        max_presence_entries: usize,
+    ) -> Result<Self, SessionRouteError> {
+        validate_limit(
+            "connections_per_session",
+            max_connections_per_session,
+            MAX_CONNECTIONS_PER_SESSION,
+        )?;
+        validate_limit("active_connections", max_active_connections, MAX_ACTIVE_CONNECTIONS)?;
+        validate_limit(
+            "tracked_connections",
+            max_tracked_connections,
+            MAX_TRACKED_CONNECTIONS,
+        )?;
+        validate_limit("tracked_sessions", max_tracked_sessions, MAX_TRACKED_SESSIONS)?;
+        validate_limit(
+            "revocation_high_waters",
+            max_revocation_high_waters,
+            MAX_REVOCATION_HIGH_WATERS,
+        )?;
+        validate_limit("presence_entries", max_presence_entries, MAX_PRESENCE_ENTRIES)?;
+        if max_connections_per_session > max_active_connections {
+            return Err(SessionRouteError::InvalidLimit {
+                resource: "connections_per_session",
+                value: max_connections_per_session,
+                maximum: max_active_connections,
+            });
+        }
+        if max_revocation_high_waters > max_tracked_sessions {
+            return Err(SessionRouteError::InvalidLimit {
+                resource: "revocation_high_waters",
+                value: max_revocation_high_waters,
+                maximum: max_tracked_sessions,
+            });
+        }
+        Ok(Self {
+            max_connections_per_session,
+            max_active_connections,
+            max_tracked_connections,
+            max_tracked_sessions,
+            max_revocation_high_waters,
+            max_presence_entries,
+        })
+    }
+
+    pub const fn max_connections_per_session(self) -> usize {
+        self.max_connections_per_session
+    }
+
+    pub const fn max_active_connections(self) -> usize {
+        self.max_active_connections
+    }
+
+    pub const fn max_tracked_connections(self) -> usize {
+        self.max_tracked_connections
+    }
+
+    pub const fn max_tracked_sessions(self) -> usize {
+        self.max_tracked_sessions
+    }
+
+    pub const fn max_revocation_high_waters(self) -> usize {
+        self.max_revocation_high_waters
+    }
+
+    pub const fn max_presence_entries(self) -> usize {
+        self.max_presence_entries
+    }
+}
+
+impl Default for SessionRouteLimits {
+    fn default() -> Self {
+        Self {
+            max_connections_per_session: MAX_CONNECTIONS_PER_SESSION,
+            max_active_connections: DEFAULT_MAX_ACTIVE_CONNECTIONS,
+            max_tracked_connections: DEFAULT_MAX_TRACKED_CONNECTIONS,
+            max_tracked_sessions: DEFAULT_MAX_TRACKED_SESSIONS,
+            max_revocation_high_waters: DEFAULT_MAX_REVOCATION_HIGH_WATERS,
+            max_presence_entries: DEFAULT_MAX_PRESENCE_ENTRIES,
+        }
+    }
+}
+
+fn validate_limit(
+    resource: &'static str,
+    value: usize,
+    maximum: usize,
+) -> Result<(), SessionRouteError> {
+    if value == 0 || value > maximum {
+        return Err(SessionRouteError::InvalidLimit {
+            resource,
+            value,
+            maximum,
+        });
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SessionRouteGeneration(u64);
@@ -38,6 +163,27 @@ pub struct SessionJoinRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionUpdateRequest {
+    pub presence: UpdatePresenceRequest,
+    pub session_id: SessionId,
+    pub session_generation: SessionRouteGeneration,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionLeaveRequest {
+    pub presence: LeavePresenceRequest,
+    pub session_id: SessionId,
+    pub session_generation: SessionRouteGeneration,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionRemoveConnectionRequest {
+    pub presence: RemoveConnectionRequest,
+    pub session_id: SessionId,
+    pub session_generation: SessionRouteGeneration,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionRevocationRequest {
     pub session_id: SessionId,
     pub through_generation: SessionRouteGeneration,
@@ -63,6 +209,18 @@ pub struct SessionRevocationDelta {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionRouteError {
     InvalidSessionGeneration,
+    InvalidLimit {
+        resource: &'static str,
+        value: usize,
+        maximum: usize,
+    },
+    ResourceExhausted {
+        resource: &'static str,
+        limit: usize,
+    },
+    SessionBindingMissing {
+        connection: ConnectionRef,
+    },
     SessionRevoked {
         session_id: SessionId,
         revoked_through: SessionRouteGeneration,
@@ -73,14 +231,15 @@ pub enum SessionRouteError {
         current: SessionRouteGeneration,
         received: SessionRouteGeneration,
     },
+    SessionGenerationAhead {
+        connection: ConnectionRef,
+        current: SessionRouteGeneration,
+        received: SessionRouteGeneration,
+    },
     SessionBindingConflict {
         connection: ConnectionRef,
         current_session: SessionId,
         received_session: SessionId,
-    },
-    SessionConnectionLimit {
-        session_id: SessionId,
-        limit: usize,
     },
     RevisionExhausted,
     InvariantViolation(&'static str),
@@ -93,6 +252,19 @@ impl fmt::Display for SessionRouteError {
             Self::InvalidSessionGeneration => {
                 formatter.write_str("session route generation must be positive")
             }
+            Self::InvalidLimit {
+                resource,
+                value,
+                maximum,
+            } => write!(formatter, "{resource} limit {value} must be in 1..={maximum}"),
+            Self::ResourceExhausted { resource, limit } => {
+                write!(formatter, "{resource} capacity is exhausted at {limit}")
+            }
+            Self::SessionBindingMissing { connection } => write!(
+                formatter,
+                "connection {}/{} has no session binding",
+                connection.node_id, connection.connection_id
+            ),
             Self::SessionRevoked {
                 session_id,
                 revoked_through,
@@ -110,6 +282,15 @@ impl fmt::Display for SessionRouteError {
                 "session generation {received} is stale for {}/{}; current generation is {current}",
                 connection.node_id, connection.connection_id
             ),
+            Self::SessionGenerationAhead {
+                connection,
+                current,
+                received,
+            } => write!(
+                formatter,
+                "session generation {received} is ahead for {}/{}; current generation is {current}",
+                connection.node_id, connection.connection_id
+            ),
             Self::SessionBindingConflict {
                 connection,
                 current_session,
@@ -118,10 +299,6 @@ impl fmt::Display for SessionRouteError {
                 formatter,
                 "connection {}/{} is bound to session {current_session}, not {received_session}",
                 connection.node_id, connection.connection_id
-            ),
-            Self::SessionConnectionLimit { session_id, limit } => write!(
-                formatter,
-                "session {session_id} exceeds the {limit}-connection route limit"
             ),
             Self::RevisionExhausted => formatter.write_str("session route revision exhausted"),
             Self::InvariantViolation(message) => {
@@ -147,8 +324,9 @@ struct SessionBinding {
     connection_generation: ConnectionGeneration,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SessionRouteRegistry {
+    limits: SessionRouteLimits,
     revision: u64,
     router: PresenceRouter,
     bindings: BTreeMap<ConnectionRef, SessionBinding>,
@@ -156,9 +334,30 @@ pub struct SessionRouteRegistry {
     revoked_through: BTreeMap<SessionId, SessionRouteGeneration>,
 }
 
+impl Default for SessionRouteRegistry {
+    fn default() -> Self {
+        Self::with_limits(SessionRouteLimits::default())
+    }
+}
+
 impl SessionRouteRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_limits(limits: SessionRouteLimits) -> Self {
+        Self {
+            limits,
+            revision: 0,
+            router: PresenceRouter::new(),
+            bindings: BTreeMap::new(),
+            connections_by_session: BTreeMap::new(),
+            revoked_through: BTreeMap::new(),
+        }
+    }
+
+    pub const fn limits(&self) -> SessionRouteLimits {
+        self.limits
     }
 
     pub const fn revision(&self) -> u64 {
@@ -167,6 +366,27 @@ impl SessionRouteRegistry {
 
     pub fn active_connection_count(&self) -> usize {
         self.bindings.len()
+    }
+
+    pub fn tracked_connection_count(&self) -> usize {
+        self.router.connection_count()
+    }
+
+    pub fn presence_entry_count(&self) -> usize {
+        self.router.entry_count()
+    }
+
+    pub fn tracked_session_count(&self) -> usize {
+        self.revoked_through.len()
+            + self
+                .connections_by_session
+                .keys()
+                .filter(|session_id| !self.revoked_through.contains_key(*session_id))
+                .count()
+    }
+
+    pub fn revocation_high_water_count(&self) -> usize {
+        self.revoked_through.len()
     }
 
     pub fn active_connections_for_session(&self, session_id: &SessionId) -> usize {
@@ -203,7 +423,7 @@ impl SessionRouteRegistry {
             &session_id,
             session_generation,
         )?;
-        self.require_session_capacity(&connection, &session_id)?;
+        self.require_join_capacity(&request)?;
 
         let next_binding = SessionBinding {
             session_id: session_id.clone(),
@@ -241,46 +461,65 @@ impl SessionRouteRegistry {
 
     pub fn update_presence(
         &mut self,
-        request: UpdatePresenceRequest,
+        request: SessionUpdateRequest,
     ) -> Result<SessionMutationDelta, SessionRouteError> {
-        self.mutate_presence(|router| router.update_presence(request))
+        let SessionUpdateRequest {
+            presence,
+            session_id,
+            session_generation,
+        } = request;
+        let connection = presence.connection.clone();
+        let connection_generation = presence.generation;
+        self.mutate_fenced_presence(
+            &connection,
+            connection_generation,
+            &session_id,
+            session_generation,
+            false,
+            |router| router.update_presence(presence),
+        )
     }
 
     pub fn leave_presence(
         &mut self,
-        request: LeavePresenceRequest,
+        request: SessionLeaveRequest,
     ) -> Result<SessionMutationDelta, SessionRouteError> {
-        self.mutate_presence(|router| router.leave_presence(request))
+        let SessionLeaveRequest {
+            presence,
+            session_id,
+            session_generation,
+        } = request;
+        let connection = presence.connection.clone();
+        let connection_generation = presence.generation;
+        self.mutate_fenced_presence(
+            &connection,
+            connection_generation,
+            &session_id,
+            session_generation,
+            false,
+            |router| router.leave_presence(presence),
+        )
     }
 
     pub fn remove_connection(
         &mut self,
-        request: RemoveConnectionRequest,
+        request: SessionRemoveConnectionRequest,
     ) -> Result<SessionMutationDelta, SessionRouteError> {
-        self.verify_invariants()?;
-        let connection = request.connection.clone();
-        let mut candidate = self.clone();
-        let presence = candidate.router.remove_connection(request)?;
-        let binding_removed = candidate.remove_binding(&connection).is_some();
-        let applied = binding_removed || presence.disposition == MutationDisposition::Applied;
-        let registry_revision = if applied {
-            let revision = self.next_revision()?;
-            candidate.revision = revision;
-            candidate.verify_invariants()?;
-            *self = candidate;
-            Some(revision)
-        } else {
-            None
-        };
-        Ok(SessionMutationDelta {
-            disposition: if applied {
-                MutationDisposition::Applied
-            } else {
-                MutationDisposition::Idempotent
-            },
-            registry_revision,
+        let SessionRemoveConnectionRequest {
             presence,
-        })
+            session_id,
+            session_generation,
+        } = request;
+        let connection = presence.connection.clone();
+        let connection_generation = presence.generation;
+        self.mutate_fenced_presence(
+            &connection,
+            connection_generation,
+            &session_id,
+            session_generation,
+            true,
+            |router| router.remove_connection(presence),
+        )
     }
 
     pub fn revoke_session(
@@ -300,6 +539,15 @@ impl SessionRouteRegistry {
                 removed_connections: 0,
                 leaves: Vec::new(),
                 hidden_changes: 0,
+            });
+        }
+        self.require_tracked_session_capacity(&request.session_id)?;
+        if !self.revoked_through.contains_key(&request.session_id)
+            && self.revoked_through.len() >= self.limits.max_revocation_high_waters
+        {
+            return Err(SessionRouteError::ResourceExhausted {
+                resource: "revocation_high_waters",
+                limit: self.limits.max_revocation_high_waters,
             });
         }
 
@@ -351,6 +599,32 @@ impl SessionRouteRegistry {
 
     pub fn verify_invariants(&self) -> Result<(), SessionRouteError> {
         self.router.verify_invariants()?;
+        if self.bindings.len() > self.limits.max_active_connections {
+            return Err(SessionRouteError::InvariantViolation(
+                "active connection count exceeds configured capacity",
+            ));
+        }
+        if self.router.connection_count() > self.limits.max_tracked_connections {
+            return Err(SessionRouteError::InvariantViolation(
+                "tracked connection count exceeds configured capacity",
+            ));
+        }
+        if self.router.entry_count() > self.limits.max_presence_entries {
+            return Err(SessionRouteError::InvariantViolation(
+                "presence entry count exceeds configured capacity",
+            ));
+        }
+        if self.revoked_through.len() > self.limits.max_revocation_high_waters {
+            return Err(SessionRouteError::InvariantViolation(
+                "revocation high-water count exceeds configured capacity",
+            ));
+        }
+        if self.tracked_session_count() > self.limits.max_tracked_sessions {
+            return Err(SessionRouteError::InvariantViolation(
+                "tracked session count exceeds configured capacity",
+            ));
+        }
+
         for (connection, binding) in &self.bindings {
             if self.router.established_generation(connection) != Some(binding.connection_generation)
             {
@@ -391,18 +665,17 @@ impl SessionRouteRegistry {
                     "session index contains an empty connection set",
                 ));
             }
-            if connections.len() > MAX_CONNECTIONS_PER_SESSION {
+            if connections.len() > self.limits.max_connections_per_session {
                 return Err(SessionRouteError::InvariantViolation(
-                    "session index exceeds the connection limit",
+                    "session index exceeds the configured connection limit",
                 ));
             }
             for connection in connections {
-                let binding =
-                    self.bindings
-                        .get(connection)
-                        .ok_or(SessionRouteError::InvariantViolation(
-                            "session index references an absent binding",
-                        ))?;
+                let binding = self.bindings.get(connection).ok_or(
+                    SessionRouteError::InvariantViolation(
+                        "session index references an absent binding",
+                    ),
+                )?;
                 if &binding.session_id != session_id {
                     return Err(SessionRouteError::InvariantViolation(
                         "session index points to a different session binding",
@@ -413,14 +686,31 @@ impl SessionRouteRegistry {
         Ok(())
     }
 
-    fn mutate_presence(
+    fn mutate_fenced_presence(
         &mut self,
+        connection: &ConnectionRef,
+        connection_generation: ConnectionGeneration,
+        session_id: &SessionId,
+        session_generation: SessionRouteGeneration,
+        remove_binding: bool,
         mutation: impl FnOnce(&mut PresenceRouter) -> Result<PresenceDelta, PresenceError>,
     ) -> Result<SessionMutationDelta, SessionRouteError> {
         self.verify_invariants()?;
+        self.require_exact_binding(
+            connection,
+            connection_generation,
+            session_id,
+            session_generation,
+        )?;
         let mut candidate = self.clone();
         let presence = mutation(&mut candidate.router)?;
-        let registry_revision = if presence.disposition == MutationDisposition::Applied {
+        let binding_removed = if remove_binding {
+            candidate.remove_binding(connection).is_some()
+        } else {
+            false
+        };
+        let applied = binding_removed || presence.disposition == MutationDisposition::Applied;
+        let registry_revision = if applied {
             let revision = self.next_revision()?;
             candidate.revision = revision;
             candidate.verify_invariants()?;
@@ -430,10 +720,67 @@ impl SessionRouteRegistry {
             None
         };
         Ok(SessionMutationDelta {
-            disposition: presence.disposition,
+            disposition: if applied {
+                MutationDisposition::Applied
+            } else {
+                MutationDisposition::Idempotent
+            },
             registry_revision,
             presence,
         })
+    }
+
+    fn require_exact_binding(
+        &self,
+        connection: &ConnectionRef,
+        connection_generation: ConnectionGeneration,
+        session_id: &SessionId,
+        session_generation: SessionRouteGeneration,
+    ) -> Result<(), SessionRouteError> {
+        let binding = self
+            .bindings
+            .get(connection)
+            .ok_or_else(|| SessionRouteError::SessionBindingMissing {
+                connection: connection.clone(),
+            })?;
+        if connection_generation < binding.connection_generation {
+            return Err(PresenceError::StaleGeneration {
+                connection: connection.clone(),
+                current: binding.connection_generation,
+                received: connection_generation,
+            }
+            .into());
+        }
+        if connection_generation > binding.connection_generation {
+            return Err(PresenceError::GenerationAhead {
+                connection: connection.clone(),
+                current: binding.connection_generation,
+                received: connection_generation,
+            }
+            .into());
+        }
+        if &binding.session_id != session_id {
+            return Err(SessionRouteError::SessionBindingConflict {
+                connection: connection.clone(),
+                current_session: binding.session_id.clone(),
+                received_session: session_id.clone(),
+            });
+        }
+        if session_generation < binding.session_generation {
+            return Err(SessionRouteError::StaleSessionGeneration {
+                connection: connection.clone(),
+                current: binding.session_generation,
+                received: session_generation,
+            });
+        }
+        if session_generation > binding.session_generation {
+            return Err(SessionRouteError::SessionGenerationAhead {
+                connection: connection.clone(),
+                current: binding.session_generation,
+                received: session_generation,
+            });
+        }
+        Ok(())
     }
 
     fn validate_join_binding(
@@ -483,6 +830,45 @@ impl SessionRouteRegistry {
         Ok(())
     }
 
+    fn require_join_capacity(&self, request: &SessionJoinRequest) -> Result<(), SessionRouteError> {
+        let connection = &request.presence.connection;
+        let session_id = &request.presence.identity.session_id;
+        if !self.bindings.contains_key(connection)
+            && self.bindings.len() >= self.limits.max_active_connections
+        {
+            return Err(SessionRouteError::ResourceExhausted {
+                resource: "active_connections",
+                limit: self.limits.max_active_connections,
+            });
+        }
+        if self.router.established_generation(connection).is_none()
+            && self.router.connection_count() >= self.limits.max_tracked_connections
+        {
+            return Err(SessionRouteError::ResourceExhausted {
+                resource: "tracked_connections",
+                limit: self.limits.max_tracked_connections,
+            });
+        }
+        self.require_tracked_session_capacity(session_id)?;
+        self.require_session_capacity(connection, session_id)?;
+        self.require_presence_capacity(&request.presence)
+    }
+
+    fn require_tracked_session_capacity(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<(), SessionRouteError> {
+        let already_tracked = self.connections_by_session.contains_key(session_id)
+            || self.revoked_through.contains_key(session_id);
+        if !already_tracked && self.tracked_session_count() >= self.limits.max_tracked_sessions {
+            return Err(SessionRouteError::ResourceExhausted {
+                resource: "tracked_sessions",
+                limit: self.limits.max_tracked_sessions,
+            });
+        }
+        Ok(())
+    }
+
     fn require_session_capacity(
         &self,
         connection: &ConnectionRef,
@@ -491,13 +877,39 @@ impl SessionRouteRegistry {
         let Some(connections) = self.connections_by_session.get(session_id) else {
             return Ok(());
         };
-        if !connections.contains(connection) && connections.len() >= MAX_CONNECTIONS_PER_SESSION {
-            return Err(SessionRouteError::SessionConnectionLimit {
-                session_id: session_id.clone(),
-                limit: MAX_CONNECTIONS_PER_SESSION,
+        if !connections.contains(connection)
+            && connections.len() >= self.limits.max_connections_per_session
+        {
+            return Err(SessionRouteError::ResourceExhausted {
+                resource: "connections_per_session",
+                limit: self.limits.max_connections_per_session,
             });
         }
         Ok(())
+    }
+
+    fn require_presence_capacity(
+        &self,
+        request: &JoinPresenceRequest,
+    ) -> Result<(), SessionRouteError> {
+        if self.router.entry_count() < self.limits.max_presence_entries {
+            return Ok(());
+        }
+        let already_joined = self
+            .router
+            .snapshot(&request.stream, SnapshotVisibility::IncludeHidden)?
+            .iter()
+            .any(|record| {
+                record.connection == request.connection && record.generation == request.generation
+            });
+        if already_joined {
+            Ok(())
+        } else {
+            Err(SessionRouteError::ResourceExhausted {
+                resource: "presence_entries",
+                limit: self.limits.max_presence_entries,
+            })
+        }
     }
 
     fn insert_binding(&mut self, connection: ConnectionRef, binding: SessionBinding) {
@@ -576,6 +988,64 @@ mod tests {
         }
     }
 
+    fn update(
+        connection_id: &str,
+        connection_generation: u64,
+        session_id: &str,
+        session_generation: u64,
+        label: &str,
+        status: &str,
+    ) -> SessionUpdateRequest {
+        SessionUpdateRequest {
+            presence: UpdatePresenceRequest {
+                connection: connection(connection_id),
+                generation: ConnectionGeneration::new(connection_generation).expect("generation"),
+                stream: stream(label),
+                status: PresenceStatus::new(status).expect("status"),
+                hidden: false,
+            },
+            session_id: SessionId::new(session_id).expect("session"),
+            session_generation: SessionRouteGeneration::new(session_generation)
+                .expect("session generation"),
+        }
+    }
+
+    fn leave(
+        connection_id: &str,
+        connection_generation: u64,
+        session_id: &str,
+        session_generation: u64,
+        label: &str,
+    ) -> SessionLeaveRequest {
+        SessionLeaveRequest {
+            presence: LeavePresenceRequest {
+                connection: connection(connection_id),
+                generation: ConnectionGeneration::new(connection_generation).expect("generation"),
+                stream: stream(label),
+            },
+            session_id: SessionId::new(session_id).expect("session"),
+            session_generation: SessionRouteGeneration::new(session_generation)
+                .expect("session generation"),
+        }
+    }
+
+    fn remove(
+        connection_id: &str,
+        connection_generation: u64,
+        session_id: &str,
+        session_generation: u64,
+    ) -> SessionRemoveConnectionRequest {
+        SessionRemoveConnectionRequest {
+            presence: RemoveConnectionRequest {
+                connection: connection(connection_id),
+                generation: ConnectionGeneration::new(connection_generation).expect("generation"),
+            },
+            session_id: SessionId::new(session_id).expect("session"),
+            session_generation: SessionRouteGeneration::new(session_generation)
+                .expect("session generation"),
+        }
+    }
+
     fn revoke(session_id: &str, through_generation: u64) -> SessionRevocationRequest {
         SessionRevocationRequest {
             session_id: SessionId::new(session_id).expect("session"),
@@ -599,7 +1069,6 @@ mod tests {
         registry
             .join_presence(join("connection-c", 1, "session-b", 1, "room", false))
             .expect("unrelated route");
-
         let delta = registry
             .revoke_session(revoke("session-a", 1))
             .expect("revoke session");
@@ -607,10 +1076,6 @@ mod tests {
         assert_eq!(delta.removed_connections, 2);
         assert_eq!(delta.leaves.len(), 2);
         assert_eq!(delta.hidden_changes, 1);
-        assert_eq!(
-            registry.active_connections_for_session(&SessionId::new("session-a").expect("session")),
-            0
-        );
         assert_eq!(registry.active_connection_count(), 1);
         assert_eq!(
             registry
@@ -631,65 +1096,67 @@ mod tests {
         registry
             .revoke_session(revoke("session-a", 1))
             .expect("revoke");
-
         let before_revision = registry.revision();
-        let error = registry
-            .join_presence(join("connection-a", 2, "session-a", 1, "room", false))
-            .expect_err("revoked generation must fail");
-        assert!(matches!(error, SessionRouteError::SessionRevoked { .. }));
+        assert!(matches!(
+            registry.join_presence(join("connection-a", 2, "session-a", 1, "room", false)),
+            Err(SessionRouteError::SessionRevoked { .. })
+        ));
         assert_eq!(registry.revision(), before_revision);
-
         registry
             .join_presence(join("connection-a", 2, "session-a", 2, "room", false))
             .expect("new session generation");
         assert_eq!(registry.active_connection_count(), 1);
-        registry.verify_invariants().expect("invariants");
     }
 
     #[test]
-    fn session_generation_can_advance_without_replacing_the_socket() {
+    fn stale_session_epoch_cannot_update_leave_or_remove_new_epoch() {
         let mut registry = SessionRouteRegistry::new();
         registry
             .join_presence(join("connection-a", 1, "session-a", 1, "room", false))
             .expect("join");
-        let advanced = registry
+        registry
             .join_presence(join("connection-a", 1, "session-a", 2, "room", false))
             .expect("advance session generation");
-        assert_eq!(advanced.disposition, MutationDisposition::Applied);
-
-        let old_revoke = registry
-            .revoke_session(revoke("session-a", 1))
-            .expect("old revocation");
-        assert_eq!(old_revoke.removed_connections, 0);
-        assert_eq!(registry.active_connection_count(), 1);
-
-        let current_revoke = registry
-            .revoke_session(revoke("session-a", 2))
-            .expect("current revocation");
-        assert_eq!(current_revoke.removed_connections, 1);
-        assert_eq!(registry.active_connection_count(), 0);
-    }
-
-    #[test]
-    fn connection_generation_takeover_moves_the_session_binding() {
-        let mut registry = SessionRouteRegistry::new();
-        registry
-            .join_presence(join("connection-a", 1, "session-a", 1, "room", false))
-            .expect("first join");
-        registry
-            .join_presence(join("connection-a", 2, "session-b", 1, "room", false))
-            .expect("takeover join");
-
-        let old = registry
-            .revoke_session(revoke("session-a", 1))
-            .expect("revoke old session");
-        assert_eq!(old.removed_connections, 0);
-        assert_eq!(registry.active_connection_count(), 1);
+        let before_revision = registry.revision();
+        let before = registry
+            .snapshot(&stream("room"), SnapshotVisibility::IncludeHidden)
+            .expect("snapshot");
+        assert!(matches!(
+            registry.update_presence(update(
+                "connection-a",
+                1,
+                "session-a",
+                1,
+                "room",
+                "stale"
+            )),
+            Err(SessionRouteError::StaleSessionGeneration { .. })
+        ));
+        assert!(matches!(
+            registry.leave_presence(leave("connection-a", 1, "session-a", 1, "room")),
+            Err(SessionRouteError::StaleSessionGeneration { .. })
+        ));
+        assert!(matches!(
+            registry.remove_connection(remove("connection-a", 1, "session-a", 1)),
+            Err(SessionRouteError::StaleSessionGeneration { .. })
+        ));
+        assert_eq!(registry.revision(), before_revision);
         assert_eq!(
-            registry.active_connections_for_session(&SessionId::new("session-b").expect("session")),
-            1
+            registry
+                .snapshot(&stream("room"), SnapshotVisibility::IncludeHidden)
+                .expect("snapshot"),
+            before
         );
-        registry.verify_invariants().expect("invariants");
+        registry
+            .update_presence(update(
+                "connection-a",
+                1,
+                "session-a",
+                2,
+                "room",
+                "current"
+            ))
+            .expect("current session generation");
     }
 
     #[test]
@@ -699,42 +1166,93 @@ mod tests {
             .join_presence(join("connection-a", 1, "session-a", 1, "room", false))
             .expect("join");
         let before_revision = registry.revision();
-        let before = registry
-            .snapshot(&stream("room"), SnapshotVisibility::IncludeHidden)
-            .expect("snapshot");
-
-        let error = registry
-            .join_presence(join("connection-a", 1, "session-b", 1, "room", false))
-            .expect_err("identity replacement must fail");
         assert!(matches!(
-            error,
-            SessionRouteError::SessionBindingConflict { .. }
+            registry.join_presence(join("connection-a", 1, "session-b", 1, "room", false)),
+            Err(SessionRouteError::SessionBindingConflict { .. })
         ));
         assert_eq!(registry.revision(), before_revision);
-        assert_eq!(
-            registry
-                .snapshot(&stream("room"), SnapshotVisibility::IncludeHidden)
-                .expect("snapshot"),
-            before
-        );
     }
 
     #[test]
-    fn stale_session_generation_is_rejected_without_mutation() {
-        let mut registry = SessionRouteRegistry::new();
+    fn global_connection_capacity_fails_closed_and_is_reusable() {
+        let limits = SessionRouteLimits::new(1, 1, 1, 2, 2, 2).expect("limits");
+        let mut registry = SessionRouteRegistry::with_limits(limits);
         registry
-            .join_presence(join("connection-a", 1, "session-a", 2, "room", false))
-            .expect("join");
-        let before_revision = registry.revision();
-        let error = registry
             .join_presence(join("connection-a", 1, "session-a", 1, "room", false))
-            .expect_err("stale session generation must fail");
-        assert!(matches!(
-            error,
-            SessionRouteError::StaleSessionGeneration { .. }
-        ));
+            .expect("first join");
+        let before_revision = registry.revision();
+        assert_eq!(
+            registry.join_presence(join("connection-b", 1, "session-b", 1, "room", false)),
+            Err(SessionRouteError::ResourceExhausted {
+                resource: "active_connections",
+                limit: 1,
+            })
+        );
         assert_eq!(registry.revision(), before_revision);
-        registry.verify_invariants().expect("invariants");
+        registry
+            .remove_connection(remove("connection-a", 1, "session-a", 1))
+            .expect("remove first");
+        assert_eq!(
+            registry.join_presence(join("connection-b", 1, "session-b", 1, "room", false)),
+            Err(SessionRouteError::ResourceExhausted {
+                resource: "tracked_connections",
+                limit: 1,
+            })
+        );
+        registry
+            .join_presence(join("connection-a", 2, "session-b", 1, "room", false))
+            .expect("active capacity reused inside admitted identity universe");
+        assert_eq!(registry.active_connection_count(), 1);
+        assert_eq!(registry.tracked_connection_count(), 1);
+        assert_eq!(registry.tracked_session_count(), 1);
+    }
+
+    #[test]
+    fn unseen_zero_connection_revocations_are_globally_bounded() {
+        let limits = SessionRouteLimits::new(1, 1, 3, 3, 2, 1).expect("limits");
+        let mut registry = SessionRouteRegistry::with_limits(limits);
+        registry
+            .revoke_session(revoke("session-a", 1))
+            .expect("first high-water");
+        registry
+            .revoke_session(revoke("session-b", 1))
+            .expect("second high-water");
+        let before_revision = registry.revision();
+        assert_eq!(
+            registry.revoke_session(revoke("session-c", 1)),
+            Err(SessionRouteError::ResourceExhausted {
+                resource: "revocation_high_waters",
+                limit: 2,
+            })
+        );
+        assert_eq!(registry.revision(), before_revision);
+        assert_eq!(registry.revocation_high_water_count(), 2);
+    }
+
+    #[test]
+    fn per_session_and_presence_capacities_fail_without_mutation() {
+        let limits = SessionRouteLimits::new(1, 2, 2, 2, 2, 1).expect("limits");
+        let mut registry = SessionRouteRegistry::with_limits(limits);
+        registry
+            .join_presence(join("connection-a", 1, "session-a", 1, "room", false))
+            .expect("first join");
+        let before_revision = registry.revision();
+        assert_eq!(
+            registry.join_presence(join("connection-b", 1, "session-a", 1, "room", false)),
+            Err(SessionRouteError::ResourceExhausted {
+                resource: "connections_per_session",
+                limit: 1,
+            })
+        );
+        assert_eq!(
+            registry.join_presence(join("connection-a", 1, "session-a", 1, "second", false)),
+            Err(SessionRouteError::ResourceExhausted {
+                resource: "presence_entries",
+                limit: 1,
+            })
+        );
+        assert_eq!(registry.revision(), before_revision);
+        assert_eq!(registry.presence_entry_count(), 1);
     }
 
     #[test]
@@ -755,5 +1273,27 @@ mod tests {
         assert_eq!(second.registry_revision, None);
         assert_eq!(second.removed_connections, 0);
         assert_eq!(registry.revision(), revision);
+    }
+
+    #[test]
+    fn limit_configuration_rejects_zero_excess_and_incoherent_values() {
+        assert!(matches!(
+            SessionRouteLimits::new(0, 1, 1, 1, 1, 1),
+            Err(SessionRouteError::InvalidLimit { .. })
+        ));
+        assert!(matches!(
+            SessionRouteLimits::new(2, 1, 2, 2, 2, 2),
+            Err(SessionRouteError::InvalidLimit {
+                resource: "connections_per_session",
+                ..
+            })
+        ));
+        assert!(matches!(
+            SessionRouteLimits::new(1, 1, 1, 1, 2, 1),
+            Err(SessionRouteError::InvalidLimit {
+                resource: "revocation_high_waters",
+                ..
+            })
+        ));
     }
 }

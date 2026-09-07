@@ -1,9 +1,9 @@
 //! Explicit cryptographic key-domain separation.
 //!
-//! The wrapper reuses the crate's canonical [`KeyDomain`] enum, so
-//! provider keys cannot be silently reclassified through a second,
-//! divergent domain vocabulary. It stores only opaque key IDs and
-//! delegates lifecycle transitions to the bounded epoch registry.
+//! The wrapper reuses the crate's canonical [`KeyDomain`] enum, so provider
+//! keys cannot be silently reclassified through a divergent vocabulary. It
+//! stores opaque key IDs and delegates bounded lifecycle transitions to the
+//! operational epoch registry.
 
 use std::fmt;
 
@@ -25,10 +25,7 @@ impl DomainBoundKeyId {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KeyDomainError {
-    DomainMismatch {
-        expected: KeyDomain,
-        received: KeyDomain,
-    },
+    DomainMismatch { expected: KeyDomain, received: KeyDomain },
     Lifecycle(KeyEpochError),
 }
 
@@ -61,15 +58,31 @@ pub struct DomainKeyEpochRegistry {
 impl DomainKeyEpochRegistry {
     #[must_use]
     pub fn new(domain: KeyDomain) -> Self {
-        Self {
-            domain,
-            inner: KeyEpochRegistry::new(),
-        }
+        Self { domain, inner: KeyEpochRegistry::new() }
+    }
+
+    pub fn with_capacity(domain: KeyDomain, capacity: usize) -> Result<Self, KeyDomainError> {
+        Ok(Self { domain, inner: KeyEpochRegistry::with_capacity(capacity)? })
     }
 
     #[must_use]
     pub const fn domain(&self) -> KeyDomain {
         self.domain
+    }
+
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 
     pub fn initialize(
@@ -79,9 +92,7 @@ impl DomainKeyEpochRegistry {
         activated_at_unix_seconds: i64,
     ) -> Result<KeyEpochRecord, KeyDomainError> {
         self.require_domain(key)?;
-        Ok(self
-            .inner
-            .initialize(epoch, key.key_id, activated_at_unix_seconds)?)
+        Ok(self.inner.initialize(epoch, key.key_id, activated_at_unix_seconds)?)
     }
 
     pub fn rotate(
@@ -100,8 +111,25 @@ impl DomainKeyEpochRegistry {
         )?)
     }
 
-    pub fn active_signer(&self) -> Result<KeyEpochRecord, KeyDomainError> {
-        Ok(self.inner.active_signer()?)
+    pub fn install_after_revocation(
+        &mut self,
+        next_epoch: KeyEpoch,
+        next_key: DomainBoundKeyId,
+        activated_at_unix_seconds: i64,
+    ) -> Result<KeyEpochRecord, KeyDomainError> {
+        self.require_domain(next_key)?;
+        Ok(self.inner.install_after_revocation(
+            next_epoch,
+            next_key.key_id,
+            activated_at_unix_seconds,
+        )?)
+    }
+
+    pub fn active_signer_at(
+        &self,
+        now_unix_seconds: i64,
+    ) -> Result<KeyEpochRecord, KeyDomainError> {
+        Ok(self.inner.active_signer_at(now_unix_seconds)?)
     }
 
     pub fn verification_key(
@@ -140,10 +168,7 @@ impl DomainKeyEpochRegistry {
 mod tests {
     use super::*;
 
-    fn epoch(value: u64) -> KeyEpoch {
-        KeyEpoch::new(value).unwrap()
-    }
-
+    fn epoch(value: u64) -> KeyEpoch { KeyEpoch::new(value).unwrap() }
     fn key(domain: KeyDomain, value: u8) -> DomainBoundKeyId {
         DomainBoundKeyId::new(domain, KeyId::new([value; 16]).unwrap())
     }
@@ -159,17 +184,16 @@ mod tests {
             })
         );
         assert!(matches!(
-            registry.active_signer(),
+            registry.active_signer_at(10),
             Err(KeyDomainError::Lifecycle(KeyEpochError::NoActiveSigner))
         ));
+        assert!(registry.is_empty());
     }
 
     #[test]
     fn cross_domain_rotation_does_not_retire_current_signer() {
         let mut registry = DomainKeyEpochRegistry::new(KeyDomain::Socket);
-        registry
-            .initialize(epoch(1), key(KeyDomain::Socket, 1), 10)
-            .unwrap();
+        registry.initialize(epoch(1), key(KeyDomain::Socket, 1), 10).unwrap();
         assert_eq!(
             registry.rotate(epoch(2), key(KeyDomain::Authority, 2), 20, 30),
             Err(KeyDomainError::DomainMismatch {
@@ -177,22 +201,31 @@ mod tests {
                 received: KeyDomain::Authority,
             })
         );
-        assert_eq!(registry.active_signer().unwrap().epoch, epoch(1));
+        assert_eq!(registry.active_signer_at(20).unwrap().epoch, epoch(1));
     }
 
     #[test]
-    fn same_domain_rotation_preserves_lifecycle_contract() {
+    fn same_domain_rotation_preserves_activation_and_overlap_contract() {
         let mut registry = DomainKeyEpochRegistry::new(KeyDomain::Authority);
-        registry
-            .initialize(epoch(7), key(KeyDomain::Authority, 7), 100)
-            .unwrap();
-        registry
-            .rotate(epoch(8), key(KeyDomain::Authority, 8), 200, 300)
-            .unwrap();
-        assert_eq!(registry.active_signer().unwrap().epoch, epoch(8));
+        registry.initialize(epoch(7), key(KeyDomain::Authority, 7), 100).unwrap();
+        registry.rotate(epoch(8), key(KeyDomain::Authority, 8), 200, 300).unwrap();
+        assert_eq!(registry.active_signer_at(200).unwrap().epoch, epoch(8));
+        assert_eq!(registry.verification_key(epoch(7), 300).unwrap().epoch, epoch(7));
+    }
+
+    #[test]
+    fn revoked_domain_can_only_install_a_same_domain_successor() {
+        let mut registry = DomainKeyEpochRegistry::new(KeyDomain::Console);
+        registry.initialize(epoch(1), key(KeyDomain::Console, 1), 10).unwrap();
+        registry.revoke(epoch(1), 20).unwrap();
         assert_eq!(
-            registry.verification_key(epoch(7), 300).unwrap().epoch,
-            epoch(7)
+            registry.install_after_revocation(epoch(2), key(KeyDomain::RuntimeHttp, 2), 21),
+            Err(KeyDomainError::DomainMismatch {
+                expected: KeyDomain::Console,
+                received: KeyDomain::RuntimeHttp,
+            })
         );
+        registry.install_after_revocation(epoch(2), key(KeyDomain::Console, 2), 21).unwrap();
+        assert_eq!(registry.active_signer_at(21).unwrap().epoch, epoch(2));
     }
 }

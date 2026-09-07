@@ -8,28 +8,26 @@ Owner role: `realtime-distributed-systems`
 
 ## Status and authority
 
-This document is the current module-level engineering contract for `trnm-presence-router-v2`. Its authority is limited to the module boundary described here: **extended route, connection ownership, and session-revocation candidate**. Source presence, a passing unit suite, or this document alone does not establish compatibility, durability, security, operational, or production acceptance.
-
-The module's current maturity is `integration-candidate`. Promotion requires exact-candidate execution, retained evidence, and the independent reviews required by the linked gaps.
+This document is the current module-level engineering contract for `trnm-presence-router-v2`. Its authority is limited to deterministic in-process presence, connection ownership, session-generation fencing, and bounded revocation fanout. Source presence or a passing unit suite does not establish distributed delivery, durable revocation, Nakama compatibility, or production acceptance.
 
 ## Responsibilities
 
-The module owns deterministic in-process primitives for:
+The module owns:
 
-- route deltas and visibility changes;
-- connection-generation ownership fencing;
-- session-generation binding for every active connection;
+- deterministic route deltas and hidden/visible transitions;
+- exact connection-generation ownership fencing;
+- exact session ID and session-generation binding for every mutating operation;
 - monotonic per-session revocation high-water;
-- atomic removal of every connection at or below a revoked session generation;
-- stale-session and stale-connection re-entry rejection;
-- bounded per-session connection indexing;
-- black-box vector behavior and explicit aggregate-gate integration.
+- atomic removal of all bound connections at or below a revoked session generation;
+- stale session and connection re-entry rejection;
+- finite admitted universes for active connections, tracked connection identities, tracked sessions, revocation high-waters, presence entries, and per-session fanout;
+- fail-closed invariant checking before and after staged mutations.
 
-Non-goals: It does not own a network runtime, cluster membership, durable registry, cross-node fanout, provider token validation, or production socket transport. A caller must durably establish the session revocation before using it to terminate live transports.
+It does not own network transport, identity-provider issuance, durable revocation storage, cluster membership, cross-node fanout, reconnect orchestration, or actual socket termination.
 
-## Architecture and dependencies
+## Architecture
 
-`PresenceRouter` remains the connection-generation route state machine. `SessionRouteRegistry` composes it with two additional indexes:
+`PresenceRouter` remains the connection-generation route state machine. `SessionRouteRegistry` composes it with:
 
 ```text
 connection -> session ID, session generation, connection generation
@@ -37,39 +35,59 @@ session ID -> bounded active connection set
 session ID -> monotonic revoked-through generation
 ```
 
-Every mutating registry operation applies to a cloned candidate and commits only after route and index invariants pass. Session revocation therefore either removes the complete eligible connection set and advances the high-water, or leaves the prior state unchanged. A revocation through generation `N` cannot remove a connection already rebound to generation `N+1`, and generation `N` cannot rejoin after the high-water is recorded.
+Every applied registry mutation is executed against a cloned candidate and committed only after route, index, generation, and configured-capacity invariants pass. The complete state is finite; cloning cost is therefore bounded by the configured admitted universe rather than historical unbounded input.
 
-Dependency direction is reviewed as part of package authority. This module must not introduce hidden global state, untracked background work, unbounded queues, or transport/database coupling outside the declared lifecycle.
+`PresenceRouter` retains connection-generation high-water state after route removal. `SessionRouteRegistry` consequently has separate active-connection and tracked-connection limits. Removing a connection releases active capacity, while a new connection identity is still rejected once the tracked-connection universe is full. Reusing the same admitted identity requires a strictly newer connection generation.
+
+Revocation high-waters are security state and are not opportunistically evicted. Their configured hard limit is a finite admitted-session universe. Deployments requiring compaction must first establish a durable external generation floor and add a separately reviewed compaction protocol; this source candidate deliberately fails closed instead of deleting a fence.
 
 ## Public contracts
 
-Route ownership changes are generation-fenced, bounded, deterministic, and observable through stable deltas.
+`SessionJoinRequest` binds a `JoinPresenceRequest` to a positive `SessionRouteGeneration`.
 
-`SessionJoinRequest` binds a presence join to one positive `SessionRouteGeneration`. For one unchanged connection generation, the session identity cannot change and the session generation cannot regress. A higher connection generation may establish a new identity, while the old connection generation remains fenced.
+The other mutation paths are deliberately session-fenced wrappers:
 
-`SessionRevocationRequest` advances one session's revoked-through generation. It removes all currently indexed connections whose session generation is less than or equal to that value. Repeating the same or an older revocation is exactly idempotent. The default source bound is `MAX_CONNECTIONS_PER_SESSION = 1024`.
+- `SessionUpdateRequest`;
+- `SessionLeaveRequest`;
+- `SessionRemoveConnectionRequest`.
 
-Public Rust types, serialized fields, configuration keys, database predicates, and externally observable error classes are change-controlled. A breaking change requires an explicit migration or compatibility decision and updated tests in the same candidate.
+Each wrapper carries the expected session ID and exact session generation in addition to the exact connection generation. A delayed operation from session generation `N` cannot mutate, leave, or disconnect a connection already rebound in place to generation `N+1`.
+
+`SessionRevocationRequest` advances one session's revoked-through generation. It removes all indexed connections whose session generation is less than or equal to that value. Repeating the same or an older revocation is exactly idempotent. A newer bound generation survives.
+
+`SessionRouteLimits::new` validates six positive finite limits and rejects values above repository hard maxima:
+
+```text
+connections per session
+active connections
+tracked connection identities
+tracked sessions
+revocation high-waters
+presence entries
+```
+
+Default and hard maxima are exported as constants. Resource exhaustion is a stable, no-mutation error. Public serialized fields, configuration mappings, and externally observable error classes are change-controlled.
 
 ## Correctness and failure model
 
-Stale owners cannot update current routes; duplicate deltas are idempotent; stale session generations cannot rejoin; a revocation cannot partially remove a session; and queue/memory use is bounded by the declared wrapper limits.
-
 The registry verifies that:
 
-- every active connection binding matches the router's exact connection generation and identity;
-- every binding appears in exactly the corresponding session index;
-- no session index is empty or exceeds its connection limit;
-- no active binding is at or below its session revocation high-water;
+- every active binding matches the router's exact connection generation and identity;
+- every binding appears in exactly its session index;
+- no session index is empty or above its configured fanout limit;
+- no active binding is at or below its revocation high-water;
+- active, tracked, session, revocation, and presence cardinalities stay within configured limits;
 - all underlying presence invariants remain valid.
 
-All inputs, loops, retries, batches, queues, allocations, and shutdown paths are bounded. Unexpected states fail closed. Duplicate, stale, timeout, cancellation, restart, and partial-failure behavior must be represented in deterministic tests where applicable.
+Capacity checks run before cloning or allocating a candidate. Rejected stale, conflicting, ahead-of-current, revoked, or exhausted operations leave route state, indexes, revisions, and deltas unchanged.
+
+The implementation is an in-memory state machine. Process restart, durable replay, cross-node ordering, and network partitions remain adapter-level obligations.
 
 ## Security and privacy
 
-Route and presence visibility require authenticated project/session context. Cross-project state leakage is forbidden. Revocation high-water is an enforcement input, not proof that an identity provider or durable session store issued the revocation.
+Route mutation requires authenticated project/session context supplied by a trusted adapter. Session generation is an authorization fence, not a user-controlled counter. Cross-project state leakage is forbidden.
 
-Secrets, raw tokens, user payloads, receipts, and provider credentials are not logged or used as metric labels. Any new cryptographic, parser, unsafe, native, or externally reachable boundary requires the appropriate threat, fuzz, and independent review.
+Secrets, raw tokens, user payloads, receipts, and provider credentials must not appear in logs or metric labels. Revocation high-water is an enforcement input; it is not proof that a durable identity authority issued the revocation.
 
 ## Build and test
 
@@ -79,31 +97,25 @@ cargo test --manifest-path crates/trnm-presence-router-v2/Cargo.toml --all-targe
 cargo clippy --manifest-path crates/trnm-presence-router-v2/Cargo.toml --all-targets --locked -- -D warnings
 ```
 
-The session-revocation corpus covers multi-connection visible/hidden removal, stale re-entry, newer-generation survival, same-socket session-generation advance, connection-generation takeover, identity conflict, stale generation rejection, exact duplicate revocation, and invariant preservation.
+The focused corpus covers:
 
-This isolated workspace is explicitly registered in package authority and must execute in the stable aggregate merge gate. Empty discovery, skipped mandatory tests, warnings, older-head results, and local-only execution do not earn remote verification or claim credit.
+- visible and hidden multi-connection revocation;
+- stale re-entry and newer-generation survival;
+- stale update, leave, and remove after in-place generation advance;
+- connection/session identity conflicts;
+- exact duplicate revocation;
+- active and tracked connection saturation;
+- unique zero-connection revocation exhaustion;
+- per-session and presence-entry exhaustion;
+- no mutation on rejection and safe active-capacity reuse inside the admitted identity universe;
+- invalid or incoherent limit configuration.
 
-Focused vectors and live/fault/differential suites are required when this module's behavior crosses protocol, database, security, realtime, or operational boundaries.
+The isolated workspace must also execute in the stable aggregate gate. Empty discovery, skipped mandatory tests, warnings, stale-head results, and local-only execution receive no evidence credit.
 
-## Operations
+## Operations and evidence
 
-Future adapters must expose owner, connection generation, session generation, revocation high-water, route count, stale rejection, disconnect fanout, reconnect, and queue saturation.
+Adapters must expose bounded cardinalities, generation mismatch rejection, revocation fanout, reconnect outcomes, capacity saturation, and invariant failures without high-cardinality labels. Readiness, drain behavior, durable revocation replay, and recovery must be specified before production use.
 
-The owning adapter or process must define readiness impact, drain behavior, metrics, alerts, capacity limits, and failure recovery before the module can be part of a production profile.
+Evidence must bind the exact repository, source commit/tree, prospective merge object, workflow/run/job/attempt, environment, assertions, retained artifact digests, limitations, expiry, and independent review.
 
-## Compatibility and evidence
-
-Durable session issuance/revocation, live WebSocket closure, reconnect cursor, network runtime, multi-node fault evidence, Nakama differential, and independent review remain open. The source registry does not claim that a real socket was closed or that a remote node observed the revocation.
-
-Evidence must bind the exact repository, source commit, tree, workflow/run/job/attempt, environment, commands, assertions, retained artifact digests, limitations, expiry, and independent review decision.
-
-## Known gaps and exit criteria
-
-Blocking gaps:
-
-- `GAP-P0-SERVER-001`
-- `GAP-P1-IDENTITY-001`
-- `GAP-P0-CI-001`
-- `GAP-P1-REVIEW-001`
-
-Exit requires every applicable close criterion in `docs/status/GAP_REGISTER.json`, exact-head and prospective-merge execution, and conflict-free independent review. Durable session-store integration, actual socket-disconnect execution, distributed fanout, reconnect recovery, and production capacity/endurance remain separate gates.
+Blocking gaps include `GAP-P0-SERVER-001`, `GAP-P1-IDENTITY-001`, `GAP-P0-CI-001`, and `GAP-P1-REVIEW-001`. Durable session-store integration, actual socket closure, distributed fanout, reconnect recovery, differential compatibility, capacity/endurance, and conflict-free specialist review remain required.

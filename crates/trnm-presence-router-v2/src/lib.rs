@@ -15,8 +15,13 @@ mod types;
 
 pub use router::{MutationDisposition, PresenceDelta, PresenceError, PresenceRouter};
 pub use session_registry::{
-    SessionJoinRequest, SessionMutationDelta, SessionRevocationDelta, SessionRevocationRequest,
-    SessionRouteError, SessionRouteGeneration, SessionRouteRegistry, MAX_CONNECTIONS_PER_SESSION,
+    SessionJoinRequest, SessionLeaveRequest, SessionMutationDelta, SessionRemoveConnectionRequest,
+    SessionRevocationDelta, SessionRevocationRequest, SessionRouteError, SessionRouteGeneration,
+    SessionRouteLimits, SessionRouteRegistry, SessionUpdateRequest, DEFAULT_MAX_ACTIVE_CONNECTIONS,
+    DEFAULT_MAX_PRESENCE_ENTRIES, DEFAULT_MAX_REVOCATION_HIGH_WATERS,
+    DEFAULT_MAX_TRACKED_CONNECTIONS, DEFAULT_MAX_TRACKED_SESSIONS, MAX_ACTIVE_CONNECTIONS,
+    MAX_CONNECTIONS_PER_SESSION, MAX_PRESENCE_ENTRIES, MAX_REVOCATION_HIGH_WATERS,
+    MAX_TRACKED_CONNECTIONS, MAX_TRACKED_SESSIONS,
 };
 pub use types::{
     ConnectionGeneration, ConnectionId, ConnectionRef, JoinPresenceRequest, LeavePresenceRequest,
