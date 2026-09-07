@@ -1,0 +1,181 @@
+name: source-wave-v5-admission-guard
+
+on:
+  push:
+    branches: [tooling/outbox-evidence-sealing-staging-2026-09-07a]
+    paths:
+      - '.github/workflows/source-wave-v5-admission-guard.yml'
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+jobs:
+  audit-and-admit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_BRANCH: codex/remaining-source-blockers-wave-v5-2026-09-07
+      PRODUCT_BRANCH: codex/branch-evidence-closure-2026-09-02
+      STAGING_BRANCH: tooling/outbox-evidence-sealing-staging-2026-09-07a
+    steps:
+      - name: Resolve source PR and exact identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          headers=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json')
+          deadline=$((SECONDS + 5400))
+          while :; do
+            code=$(curl -sS -o "$RUNNER_TEMP/ref.json" -w '%{http_code}' "${headers[@]}" "$api/git/ref/heads/${SOURCE_BRANCH//\//%2F}")
+            if [ "$code" = 200 ]; then break; fi
+            if [ "$SECONDS" -ge "$deadline" ]; then echo 'source branch not published' >&2; exit 1; fi
+            sleep 30
+          done
+          head=$(jq -r '.object.sha' "$RUNNER_TEMP/ref.json")
+          tree=$(curl -fsSL "${headers[@]}" "$api/git/commits/$head" | jq -r '.tree.sha')
+          product=$(curl -fsSL "${headers[@]}" "$api/git/ref/heads/${PRODUCT_BRANCH//\//%2F}" | jq -r '.object.sha')
+          encoded=$(python3 - <<PY
+          import urllib.parse
+          print(urllib.parse.quote('${GITHUB_REPOSITORY_OWNER}:${SOURCE_BRANCH}', safe=''))
+          PY
+          )
+          prs=$(curl -fsSL "${headers[@]}" "$api/pulls?state=open&head=$encoded")
+          number=$(jq -r '.[0].number // empty' <<<"$prs")
+          test -n "$number"
+          base=$(jq -r '.[0].base.ref' <<<"$prs")
+          base_sha=$(jq -r '.[0].base.sha' <<<"$prs")
+          test "$base" = "$PRODUCT_BRANCH"
+          test "$base_sha" = "$product"
+          printf '%s\n' "$number" > "$RUNNER_TEMP/pr-number"
+          printf '%s\n' "$head" > "$RUNNER_TEMP/head"
+          printf '%s\n' "$tree" > "$RUNNER_TEMP/tree"
+          printf '%s\n' "$product" > "$RUNNER_TEMP/product"
+
+      - name: Settle exact-head CI and artifact custody
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          headers=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json')
+          head=$(cat "$RUNNER_TEMP/head")
+          deadline=$((SECONDS + 3600))
+          while :; do
+            curl -fsSL "${headers[@]}" "$api/actions/runs?head_sha=$head&per_page=100" > "$RUNNER_TEMP/runs.json"
+            jq '[.workflow_runs | group_by(.workflow_id)[] | sort_by(.run_attempt,.id) | last]' "$RUNNER_TEMP/runs.json" > "$RUNNER_TEMP/latest-runs.json"
+            active=$(jq '[.[] | select(.status!="completed")] | length' "$RUNNER_TEMP/latest-runs.json")
+            if [ "$active" = 0 ]; then break; fi
+            if [ "$SECONDS" -ge "$deadline" ]; then break; fi
+            sleep 30
+          done
+          total=$(jq 'length' "$RUNNER_TEMP/latest-runs.json")
+          success=$(jq '[.[] | select(.status=="completed" and .conclusion=="success")] | length' "$RUNNER_TEMP/latest-runs.json")
+          active=$(jq '[.[] | select(.status!="completed")] | length' "$RUNNER_TEMP/latest-runs.json")
+          failed=$(jq '[.[] | select(.status=="completed" and .conclusion!="success")] | length' "$RUNNER_TEMP/latest-runs.json")
+          aggregate=$(jq '[.[] | select(.name=="trillionnium-game-merge-gate" and .status=="completed" and .conclusion=="success")] | length' "$RUNNER_TEMP/latest-runs.json")
+          prospective=$(jq '[.[] | select(.name=="prospective-merge-gate" and .status=="completed" and .conclusion=="success")] | length' "$RUNNER_TEMP/latest-runs.json")
+          artifact_runs=0
+          while IFS= read -r id; do
+            count=$(curl -fsSL "${headers[@]}" "$api/actions/runs/$id/artifacts?per_page=100" | jq '[.artifacts[] | select(.expired==false and .size_in_bytes>0)] | length')
+            if [ "$count" -gt 0 ]; then artifact_runs=$((artifact_runs+1)); fi
+          done < <(jq -r '.[] | select(.status=="completed" and .conclusion=="success") | .id' "$RUNNER_TEMP/latest-runs.json")
+          jq -n --argjson total "$total" --argjson success "$success" --argjson active "$active" --argjson failed "$failed" --argjson aggregate "$aggregate" --argjson prospective "$prospective" --argjson artifact_runs "$artifact_runs" \
+            '{total:$total,success:$success,active:$active,failed:$failed,aggregate_success:$aggregate,prospective_success:$prospective,successful_runs_with_artifacts:$artifact_runs}' > "$RUNNER_TEMP/ci.json"
+          cat "$RUNNER_TEMP/ci.json"
+
+      - name: Read current human review and unresolved threads
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          headers=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json')
+          number=$(cat "$RUNNER_TEMP/pr-number")
+          head=$(cat "$RUNNER_TEMP/head")
+          curl -fsSL "${headers[@]}" "$api/pulls/$number" > "$RUNNER_TEMP/pr.json"
+          author=$(jq -r '.user.login | ascii_downcase' "$RUNNER_TEMP/pr.json")
+          curl -fsSL "${headers[@]}" "$api/pulls/$number/reviews?per_page=100" > "$RUNNER_TEMP/reviews.json"
+          jq --arg head "$head" --arg author "$author" '
+            map(select((.user.type|ascii_downcase)!="bot" and (.user.login|ascii_downcase)!=$author))
+            | sort_by(.submitted_at,.id)
+            | group_by(.user.login|ascii_downcase)
+            | map(last)
+            | {approvals:[.[]|select(.state=="APPROVED" and .commit_id==$head)], changes:[.[]|select(.state=="CHANGES_REQUESTED" and .commit_id==$head)]}' \
+            "$RUNNER_TEMP/reviews.json" > "$RUNNER_TEMP/review-state.json"
+
+          owner=${GITHUB_REPOSITORY_OWNER}
+          repo=${GITHUB_REPOSITORY#*/}
+          query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved isOutdated}}}}}'
+          jq -n --arg query "$query" --arg owner "$owner" --arg repo "$repo" --argjson number "$number" '{query:$query,variables:{owner:$owner,repo:$repo,number:$number}}' > "$RUNNER_TEMP/graphql.json"
+          curl -fsSL -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/json' https://api.github.com/graphql --data-binary @"$RUNNER_TEMP/graphql.json" > "$RUNNER_TEMP/threads.json"
+          unresolved=$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false and .isOutdated==false)] | length' "$RUNNER_TEMP/threads.json")
+          approvals=$(jq '.approvals|length' "$RUNNER_TEMP/review-state.json")
+          changes=$(jq '.changes|length' "$RUNNER_TEMP/review-state.json")
+          jq -n --argjson approvals "$approvals" --argjson changes "$changes" --argjson unresolved "$unresolved" '{current_approvals:$approvals,current_changes_requested:$changes,current_unresolved_threads:$unresolved}' > "$RUNNER_TEMP/human.json"
+          cat "$RUNNER_TEMP/human.json"
+
+      - name: Mark review-ready or perform ordinary exact-SHA admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          headers=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json')
+          number=$(cat "$RUNNER_TEMP/pr-number")
+          head=$(cat "$RUNNER_TEMP/head")
+          ci_green=false
+          if [ "$(jq -r '.active' "$RUNNER_TEMP/ci.json")" = 0 ] \
+            && [ "$(jq -r '.failed' "$RUNNER_TEMP/ci.json")" = 0 ] \
+            && [ "$(jq -r '.aggregate_success' "$RUNNER_TEMP/ci.json")" -ge 1 ] \
+            && [ "$(jq -r '.prospective_success' "$RUNNER_TEMP/ci.json")" -ge 1 ] \
+            && [ "$(jq -r '.successful_runs_with_artifacts' "$RUNNER_TEMP/ci.json")" -ge 1 ]; then ci_green=true; fi
+          approvals=$(jq -r '.current_approvals' "$RUNNER_TEMP/human.json")
+          changes=$(jq -r '.current_changes_requested' "$RUNNER_TEMP/human.json")
+          threads=$(jq -r '.current_unresolved_threads' "$RUNNER_TEMP/human.json")
+
+          jq -n '{reviewers:["Tomasrgbsf"]}' > "$RUNNER_TEMP/request.json"
+          curl -sS -X POST "${headers[@]}" "$api/pulls/$number/requested_reviewers" --data-binary @"$RUNNER_TEMP/request.json" >/dev/null || true
+          if [ "$ci_green" = true ] && [ "$changes" = 0 ]; then
+            curl -fsSL -X PATCH "${headers[@]}" "$api/pulls/$number" -d '{"draft":false}' >/dev/null
+          fi
+
+          merged=false
+          if [ "$ci_green" = true ] && [ "$approvals" -ge 1 ] && [ "$changes" = 0 ] && [ "$threads" = 0 ]; then
+            current_head=$(curl -fsSL "${headers[@]}" "$api/pulls/$number" | jq -r '.head.sha')
+            test "$current_head" = "$head"
+            jq -n --arg sha "$head" --arg title 'feat: admit full remaining Plan v3.1 source wave' '{sha:$sha,merge_method:"squash",commit_title:$title}' > "$RUNNER_TEMP/merge.json"
+            result=$(curl -fsSL -X PUT "${headers[@]}" "$api/pulls/$number/merge" --data-binary @"$RUNNER_TEMP/merge.json")
+            test "$(jq -r '.merged' <<<"$result")" = true
+            merged=true
+          fi
+          jq -n --argjson ci_green "$ci_green" --argjson approvals "$approvals" --argjson changes "$changes" --argjson threads "$threads" --argjson merged "$merged" \
+            '{ci_green:$ci_green,current_approvals:$approvals,current_changes_requested:$changes,current_unresolved_threads:$threads,merged:$merged}' > "$RUNNER_TEMP/admission.json"
+          cat "$RUNNER_TEMP/admission.json"
+
+      - name: Persist exact blocker state
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          headers=(-H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json')
+          number=$(cat "$RUNNER_TEMP/pr-number")
+          head=$(cat "$RUNNER_TEMP/head")
+          tree=$(cat "$RUNNER_TEMP/tree")
+          product=$(cat "$RUNNER_TEMP/product")
+          jq -n --arg observed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson pr "$number" --arg head "$head" --arg tree "$tree" --arg product "$product" --slurpfile ci "$RUNNER_TEMP/ci.json" --slurpfile human "$RUNNER_TEMP/human.json" --slurpfile admission "$RUNNER_TEMP/admission.json" \
+            '{schema:"trillionnium.source-wave-admission-status.v1",observed_at:$observed_at,pr:$pr,head:$head,tree:$tree,product_parent:$product,ci:$ci[0],human:$human[0],admission:$admission[0],claims:{accepted_evidence:false,gap_closed:false,production_ready:false}}' > "$RUNNER_TEMP/status.json"
+          path='tooling/outbox-evidence-sealing/source-wave-v5-admission.json'
+          existing=$(curl -sS "${headers[@]}" "$api/contents/$path?ref=${STAGING_BRANCH//\//%2F}")
+          sha=$(jq -r '.sha // empty' <<<"$existing")
+          content=$(base64 -w0 < "$RUNNER_TEMP/status.json")
+          jq -n --arg message 'tooling: persist guarded source-wave admission result' --arg content "$content" --arg branch "$STAGING_BRANCH" --arg sha "$sha" '{message:$message,content:$content,branch:$branch} + (if $sha=="" then {} else {sha:$sha} end)' > "$RUNNER_TEMP/write.json"
+          curl -fsSL -X PUT "${headers[@]}" "$api/contents/$path" --data-binary @"$RUNNER_TEMP/write.json" >/dev/null
+
+      - name: Reject non-admitted result as formal closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(jq -r '.merged' "$RUNNER_TEMP/admission.json")" != true ]; then
+            echo 'Source wave is not admitted: exact CI, artifacts, independent approval, or thread resolution remains open.' >&2
+            exit 1
+          fi
