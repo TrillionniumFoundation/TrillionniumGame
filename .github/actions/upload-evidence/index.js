@@ -16,10 +16,13 @@ for (const key of [
 const artifactPath = path.isAbsolute(process.env.INPUT_PATH)
   ? path.normalize(process.env.INPUT_PATH)
   : path.resolve(process.env.GITHUB_WORKSPACE, process.env.INPUT_PATH);
-const uploader = path.join(
-  process.env.GITHUB_WORKSPACE,
-  'scripts/upload-actions-artifact.py',
-);
+
+// Resolve the uploader from the checked-out repository that owns this action,
+// not from GITHUB_WORKSPACE. Callers may intentionally materialize an exact
+// source or tooling commit under a nested directory before invoking the action.
+const repositoryRoot = path.resolve(__dirname, '..', '..', '..');
+const uploader = path.join(repositoryRoot, 'scripts', 'upload-actions-artifact.py');
+
 const env = {...process.env};
 delete env.GITHUB_TOKEN;
 delete env.GH_TOKEN;
