@@ -1,0 +1,60 @@
+name: architecture-source-export-one-shot
+
+on:
+  push:
+    branches:
+      - codex/architecture-gap-closure-2026-09-08
+    paths:
+      - .github/workflows/architecture-source-export-one-shot.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: architecture-source-export-one-shot
+  cancel-in-progress: false
+
+jobs:
+  export-exact-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Fetch exact branch head without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
+          test "$GITHUB_REF_NAME" = 'codex/architecture-gap-closure-2026-09-08'
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+      - name: Create bounded deterministic source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/trillionnium-game-source-${GITHUB_SHA}.tar.gz"
+          tar \
+            --sort=name \
+            --mtime='@0' \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            --exclude=.git \
+            -cf - \
+            -C "$GITHUB_WORKSPACE" . \
+            | gzip -n > "$archive"
+          test -s "$archive"
+          test "$(stat -c %s "$archive")" -le 67108864
+          sha256sum "$archive"
+          printf 'SOURCE_ARCHIVE=%s\n' "$archive" >> "$GITHUB_ENV"
+      - name: Upload exact source archive
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: architecture-source-${{ github.sha }}
+          path: ${{ env.SOURCE_ARCHIVE }}
+          mime_type: application/gzip
