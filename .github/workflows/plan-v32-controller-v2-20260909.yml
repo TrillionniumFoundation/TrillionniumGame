@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: plan-v32-final-controller
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   final-source-convergence:
@@ -38,7 +38,10 @@ jobs:
           git -C "$GITHUB_WORKSPACE/controller" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE/controller" checkout --detach FETCH_HEAD
           test -f "$GITHUB_WORKSPACE/controller/tools/plan_v32_converge.py"
-          python3 -m py_compile "$GITHUB_WORKSPACE/controller/tools/plan_v32_converge.py"
+          test -f "$GITHUB_WORKSPACE/controller/tools/finalize_plan_v32_contracts.py"
+          python3 -m py_compile \
+            "$GITHUB_WORKSPACE/controller/tools/plan_v32_converge.py" \
+            "$GITHUB_WORKSPACE/controller/tools/finalize_plan_v32_contracts.py"
 
           git init "$GITHUB_WORKSPACE/provider"
           git -C "$GITHUB_WORKSPACE/provider" remote add origin \
@@ -95,6 +98,8 @@ jobs:
             python3 "$GITHUB_WORKSPACE/provider/tools/compose_crypto_provider.py" \
               "$GITHUB_WORKSPACE/target"
           fi
+          python3 "$GITHUB_WORKSPACE/controller/tools/finalize_plan_v32_contracts.py" \
+            "$GITHUB_WORKSPACE/target"
           git -C "$GITHUB_WORKSPACE/target" diff --check
 
       - name: Resolve exact dependencies
@@ -127,6 +132,7 @@ jobs:
           fi
           python3 scripts/check-documentation-authority.py
           python3 scripts/check-plan.py
+          python3 scripts/check-rust-foundation.py
           python3 scripts/check-rust-package-inventory.py
           python3 scripts/check-trnm-server.py
           python3 -m compileall -q scripts tools tests
