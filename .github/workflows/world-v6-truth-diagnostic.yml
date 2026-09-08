@@ -1,0 +1,107 @@
+name: world-v6-truth-diagnostic
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: world-v6-truth-diagnostic-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_HEAD_SHA: d0eb45783db1273dfbd9a8f3c72c281381c2e29b
+  RUSTUP_TOOLCHAIN: '1.98.1'
+
+jobs:
+  diagnose:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'ops/world-v6-external-qualification-20260909'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact World head
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf world
+          git init world
+          git -C world remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C world fetch --no-tags --depth=1 origin "${WORLD_HEAD_SHA}"
+          git -C world checkout --detach FETCH_HEAD
+          test "$(git -C world rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+
+      - name: Run truth gate and capture bounded diagnostic
+        id: truth
+        shell: bash
+        run: |
+          set +e
+          (cd world && bash scripts/run-trnm-world-v6-qualification-v2.sh truth) > "$RUNNER_TEMP/world-truth.log" 2>&1
+          rc=$?
+          python3 - "$RUNNER_TEMP/world-truth.log" "$RUNNER_TEMP/world-truth-tail.txt" <<'PY'
+          import pathlib, re, sys
+          source = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8', errors='replace')
+          source = re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]', '', source)
+          lines = source.splitlines()[-120:]
+          text = '\n'.join(lines)
+          if len(text) > 12000:
+              text = text[-12000:]
+          pathlib.Path(sys.argv[2]).write_text(text + '\n', encoding='utf-8')
+          PY
+          printf 'rc=%s\n' "$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish diagnostic in temporary PR body
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TRUTH_RC: ${{ steps.truth.outputs.rc }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/world-truth-tail.txt" <<'PY'
+          import json, os, pathlib, urllib.request
+          repo = os.environ['GITHUB_REPOSITORY']
+          pr = os.environ['PR_NUMBER']
+          token = os.environ['GH_TOKEN']
+          rc = os.environ['TRUTH_RC']
+          api = f'https://api.github.com/repos/{repo}/pulls/{pr}'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'world-v6-truth-diagnostic',
+          }
+          request = urllib.request.Request(api, headers=headers)
+          with urllib.request.urlopen(request, timeout=30) as response:
+              current = json.load(response)
+          body = current.get('body') or ''
+          start = '<!-- world-v6-truth-diagnostic:start -->'
+          end = '<!-- world-v6-truth-diagnostic:end -->'
+          if start in body and end in body:
+              body = body[:body.index(start)].rstrip() + '\n\n' + body[body.index(end)+len(end):].lstrip()
+          tail = pathlib.Path(os.sys.argv[1]).read_text(encoding='utf-8', errors='replace')
+          block = (
+              f'{start}\n## Automated World truth diagnostic\n\n'
+              f'Exact World head: `{os.environ["WORLD_HEAD_SHA"]}`  \n'
+              f'Exit code: `{rc}`\n\n```text\n{tail}\n```\n{end}'
+          )
+          body = body.rstrip() + '\n\n' + block + '\n'
+          data = json.dumps({'body': body}).encode('utf-8')
+          patch = urllib.request.Request(api, data=data, headers=headers, method='PATCH')
+          with urllib.request.urlopen(patch, timeout=30) as response:
+              json.load(response)
+          PY
+
+      - name: Enforce truth result
+        env:
+          TRUTH_RC: ${{ steps.truth.outputs.rc }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$TRUTH_RC" = 0
