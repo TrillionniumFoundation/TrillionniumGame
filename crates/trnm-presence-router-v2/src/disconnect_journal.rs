@@ -12,6 +12,8 @@ use std::fmt;
 pub const MAX_DISCONNECT_ACTIVE_RECORDS: usize = 65_536;
 pub const MAX_DISCONNECT_TOMBSTONES: usize = 262_144;
 pub const MAX_DISCONNECT_ATTEMPTS: u32 = 1_024;
+pub const DISCONNECT_VERIFIER_RECEIPTS_PER_ATTEMPT: usize = 2;
+pub const MAX_DISCONNECT_VERIFIER_RECEIPTS: usize = 262_144;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DisconnectJournalId([u8; 16]);
@@ -232,7 +234,28 @@ impl DisconnectJournalConfig {
                 maximum: MAX_DISCONNECT_ATTEMPTS,
             });
         }
+        let receipt_capacity = self.verifier_receipt_capacity()?;
+        if receipt_capacity > MAX_DISCONNECT_VERIFIER_RECEIPTS {
+            return Err(DisconnectJournalError::CapacityTooLarge {
+                field: "verifier_receipt_capacity",
+                received: receipt_capacity,
+                maximum: MAX_DISCONNECT_VERIFIER_RECEIPTS,
+            });
+        }
         Ok(self)
+    }
+
+    fn verifier_receipts_per_intent(self) -> Result<usize, DisconnectJournalError> {
+        usize::try_from(self.max_attempts)
+            .ok()
+            .and_then(|attempts| attempts.checked_mul(DISCONNECT_VERIFIER_RECEIPTS_PER_ATTEMPT))
+            .ok_or(DisconnectJournalError::VerifierReceiptBudgetOverflow)
+    }
+
+    fn verifier_receipt_capacity(self) -> Result<usize, DisconnectJournalError> {
+        self.tombstone_capacity
+            .checked_mul(self.verifier_receipts_per_intent()?)
+            .ok_or(DisconnectJournalError::VerifierReceiptBudgetOverflow)
     }
 }
 
@@ -289,6 +312,12 @@ pub enum DisconnectJournalError {
         receipt_owner: DisconnectIntentId,
         received_for: DisconnectIntentId,
     },
+    VerifierReceiptBudgetOverflow,
+    VerifierReceiptCapacityExceeded {
+        capacity: usize,
+    },
+    VerifierReceiptReservationMissing(DisconnectIntentId),
+    InvariantViolation(&'static str),
     Terminal(DisconnectIntentId),
     NotTerminal(DisconnectIntentId),
     LeaseGenerationExhausted,
@@ -394,6 +423,24 @@ impl fmt::Display for DisconnectJournalError {
                 receipt_owner.get(),
                 received_for.get()
             ),
+            Self::VerifierReceiptBudgetOverflow => {
+                formatter.write_str("disconnect verifier receipt budget overflow")
+            }
+            Self::VerifierReceiptCapacityExceeded { capacity } => write!(
+                formatter,
+                "disconnect verifier receipt budget is full at capacity {capacity}"
+            ),
+            Self::VerifierReceiptReservationMissing(id) => write!(
+                formatter,
+                "disconnect intent {} has no verifier receipt reservation",
+                id.get()
+            ),
+            Self::InvariantViolation(message) => {
+                write!(
+                    formatter,
+                    "disconnect journal invariant violation: {message}"
+                )
+            }
             Self::Terminal(id) => write!(formatter, "disconnect intent {} is terminal", id.get()),
             Self::NotTerminal(id) => write!(
                 formatter,
@@ -427,17 +474,23 @@ pub struct DisconnectJournal {
     tombstones: BTreeMap<DisconnectIntentId, DisconnectArchiveTombstone>,
     outcome_receipt_owners: BTreeMap<[u8; 32], DisconnectIntentId>,
     verifier_receipt_owners: BTreeMap<[u8; 32], DisconnectIntentId>,
+    verifier_receipt_reservations: BTreeMap<DisconnectIntentId, usize>,
+    verifier_receipt_capacity: usize,
     last_epoch_checkpoint: Option<[u8; 32]>,
 }
 
 impl DisconnectJournal {
     pub fn new(config: DisconnectJournalConfig) -> Result<Self, DisconnectJournalError> {
+        let config = config.validate()?;
+        let verifier_receipt_capacity = config.verifier_receipt_capacity()?;
         Ok(Self {
-            config: config.validate()?,
+            config,
             records: BTreeMap::new(),
             tombstones: BTreeMap::new(),
             outcome_receipt_owners: BTreeMap::new(),
             verifier_receipt_owners: BTreeMap::new(),
+            verifier_receipt_reservations: BTreeMap::new(),
+            verifier_receipt_capacity,
             last_epoch_checkpoint: None,
         })
     }
@@ -464,6 +517,14 @@ impl DisconnectJournal {
 
     pub fn verifier_receipt_count(&self) -> usize {
         self.verifier_receipt_owners.len()
+    }
+
+    pub const fn verifier_receipt_capacity(&self) -> usize {
+        self.verifier_receipt_capacity
+    }
+
+    pub fn verifier_receipt_reserved(&self) -> usize {
+        self.verifier_receipt_reservations.values().copied().sum()
     }
 
     pub fn get(&self, id: DisconnectIntentId) -> Option<DisconnectRecord> {
@@ -496,6 +557,7 @@ impl DisconnectJournal {
                 capacity: self.config.tombstone_capacity,
             });
         }
+        let verifier_receipt_reservation = self.require_new_receipt_reservation()?;
         if self.records.len() >= self.config.active_capacity {
             return Err(DisconnectJournalError::ActiveCapacityExceeded {
                 capacity: self.config.active_capacity,
@@ -509,6 +571,8 @@ impl DisconnectJournal {
             state: DisconnectState::Pending,
         };
         self.records.insert(id, record);
+        self.verifier_receipt_reservations
+            .insert(id, verifier_receipt_reservation);
         Ok(record)
     }
 
@@ -742,6 +806,7 @@ impl DisconnectJournal {
             ),
         };
 
+        self.consume_receipt_reservation(id)?;
         self.verifier_receipt_owners
             .insert(evidence.verifier_receipt_digest, id);
         if evidence.kind == DisconnectOutcomeKind::Applied {
@@ -777,6 +842,11 @@ impl DisconnectJournal {
                 return Err(DisconnectJournalError::NotTerminal(id));
             }
         };
+        if !self.verifier_receipt_reservations.contains_key(&id) {
+            return Err(DisconnectJournalError::VerifierReceiptReservationMissing(
+                id,
+            ));
+        }
         let tombstone = DisconnectArchiveTombstone {
             journal_id: self.config.journal_id,
             journal_epoch: self.config.epoch,
@@ -786,6 +856,7 @@ impl DisconnectJournal {
             archive_digest,
         };
         self.records.remove(&id);
+        self.verifier_receipt_reservations.remove(&id);
         self.tombstones.insert(id, tombstone);
         Ok(tombstone)
     }
@@ -801,6 +872,11 @@ impl DisconnectJournal {
                 active: self.records.len(),
             });
         }
+        if !self.verifier_receipt_reservations.is_empty() {
+            return Err(DisconnectJournalError::InvariantViolation(
+                "receipt reservations remain without active records",
+            ));
+        }
         if next_epoch <= self.config.epoch {
             return Err(DisconnectJournalError::NonIncreasingJournalEpoch {
                 current: self.config.epoch,
@@ -811,7 +887,45 @@ impl DisconnectJournal {
         self.tombstones.clear();
         self.outcome_receipt_owners.clear();
         self.verifier_receipt_owners.clear();
+        self.verifier_receipt_reservations.clear();
         self.last_epoch_checkpoint = Some(checkpoint_digest);
+        Ok(())
+    }
+
+    fn require_new_receipt_reservation(&self) -> Result<usize, DisconnectJournalError> {
+        let reservation = self.config.verifier_receipts_per_intent()?;
+        let reserved = self
+            .verifier_receipt_reservations
+            .values()
+            .try_fold(0usize, |total, value| total.checked_add(*value))
+            .ok_or(DisconnectJournalError::VerifierReceiptBudgetOverflow)?;
+        let projected = self
+            .verifier_receipt_owners
+            .len()
+            .checked_add(reserved)
+            .and_then(|used| used.checked_add(reservation))
+            .ok_or(DisconnectJournalError::VerifierReceiptBudgetOverflow)?;
+        if projected > self.verifier_receipt_capacity {
+            return Err(DisconnectJournalError::VerifierReceiptCapacityExceeded {
+                capacity: self.verifier_receipt_capacity,
+            });
+        }
+        Ok(reservation)
+    }
+
+    fn consume_receipt_reservation(
+        &mut self,
+        id: DisconnectIntentId,
+    ) -> Result<(), DisconnectJournalError> {
+        let remaining = self.verifier_receipt_reservations.get_mut(&id).ok_or(
+            DisconnectJournalError::VerifierReceiptReservationMissing(id),
+        )?;
+        if *remaining == 0 {
+            return Err(DisconnectJournalError::VerifierReceiptCapacityExceeded {
+                capacity: self.verifier_receipt_capacity,
+            });
+        }
+        *remaining -= 1;
         Ok(())
     }
 
@@ -837,12 +951,10 @@ impl DisconnectJournal {
         receipt: [u8; 32],
     ) -> Result<(), DisconnectJournalError> {
         if let Some(owner) = self.verifier_receipt_owners.get(&receipt).copied() {
-            if owner != id {
-                return Err(DisconnectJournalError::VerifierReceiptReused {
-                    receipt_owner: owner,
-                    received_for: id,
-                });
-            }
+            return Err(DisconnectJournalError::VerifierReceiptReused {
+                receipt_owner: owner,
+                received_for: id,
+            });
         }
         Ok(())
     }
@@ -1220,6 +1332,105 @@ mod tests {
             ),
             Err(DisconnectJournalError::OutcomeBindingMismatch(id(1)))
         );
+    }
+
+    #[test]
+    fn aggregate_verifier_receipt_budget_is_checked_and_epoch_scoped() {
+        let unsafe_config = DisconnectJournalConfig {
+            journal_id: DisconnectJournalId::new([7; 16]).unwrap(),
+            epoch: DisconnectJournalEpoch::new(1).unwrap(),
+            active_capacity: 1,
+            tombstone_capacity: MAX_DISCONNECT_VERIFIER_RECEIPTS / 2 + 1,
+            max_attempts: 1,
+        };
+        assert!(matches!(
+            DisconnectJournal::new(unsafe_config),
+            Err(DisconnectJournalError::CapacityTooLarge {
+                field: "verifier_receipt_capacity",
+                ..
+            })
+        ));
+
+        let mut journal = journal(1, 2, 1);
+        assert_eq!(journal.verifier_receipt_capacity(), 4);
+        for (intent, receipt) in [(id(1), 70), (id(2), 80)] {
+            let binding = dispatch(&mut journal, intent, operation(intent.get()), worker(1), 8);
+            journal
+                .reconcile(
+                    intent,
+                    evidence(binding, DisconnectOutcomeKind::Unknown, receipt, receipt),
+                    &ExactVerifier(receipt),
+                )
+                .unwrap();
+            journal
+                .reconcile(
+                    intent,
+                    evidence(
+                        binding,
+                        DisconnectOutcomeKind::Applied,
+                        receipt + 1,
+                        receipt + 1,
+                    ),
+                    &ExactVerifier(receipt + 1),
+                )
+                .unwrap();
+            journal
+                .archive_terminal(intent, digest(receipt + 2))
+                .unwrap();
+        }
+        assert_eq!(journal.verifier_receipt_count(), 4);
+        assert_eq!(journal.verifier_receipt_reserved(), 0);
+        let before_tombstones = journal.tombstone_len();
+        assert_eq!(
+            journal.insert(id(3), operation(3)),
+            Err(DisconnectJournalError::TombstoneCapacityExceeded { capacity: 2 })
+        );
+        assert_eq!(journal.len(), 0);
+        assert_eq!(journal.tombstone_len(), before_tombstones);
+        assert_eq!(journal.verifier_receipt_count(), 4);
+        journal
+            .advance_epoch(DisconnectJournalEpoch::new(2).unwrap(), digest(110))
+            .unwrap();
+        assert_eq!(journal.verifier_receipt_count(), 0);
+        journal.insert(id(3), operation(3)).unwrap();
+        assert_eq!(journal.verifier_receipt_reserved(), 2);
+    }
+
+    #[test]
+    fn verifier_receipt_reuse_by_same_intent_is_not_a_new_reconciliation() {
+        let mut journal = journal(1, 1, 2);
+        let first = dispatch(&mut journal, id(1), operation(9), worker(1), 8);
+        journal
+            .reconcile(
+                id(1),
+                evidence(first, DisconnectOutcomeKind::DefinitelyNotApplied, 71, 70),
+                &ExactVerifier(70),
+            )
+            .unwrap();
+        let leased = journal.lease(id(1), worker(2)).unwrap();
+        let token = match leased.state {
+            DisconnectState::Leased { token, .. } => token,
+            _ => unreachable!(),
+        };
+        let second = journal
+            .mark_dispatched(id(1), worker(2), token, digest(8))
+            .unwrap();
+        let binding = match second.state {
+            DisconnectState::Dispatched { binding } => binding,
+            _ => unreachable!(),
+        };
+        let before = journal.get(id(1));
+        let reserved = journal.verifier_receipt_reserved();
+        assert!(matches!(
+            journal.reconcile(
+                id(1),
+                evidence(binding, DisconnectOutcomeKind::Applied, 90, 70),
+                &ExactVerifier(70),
+            ),
+            Err(DisconnectJournalError::VerifierReceiptReused { .. })
+        ));
+        assert_eq!(journal.get(id(1)), before);
+        assert_eq!(journal.verifier_receipt_reserved(), reserved);
     }
 
     #[test]

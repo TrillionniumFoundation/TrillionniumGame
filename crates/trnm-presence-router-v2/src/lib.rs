@@ -28,7 +28,8 @@ pub use disconnect_journal::{
     DisconnectOperation, DisconnectOutcomeEvidence, DisconnectOutcomeKind,
     DisconnectOutcomeVerifier, DisconnectRecord, DisconnectState, DisconnectUnknownEvidence,
     LeaseToken, ReconciliationDisposition, RetryDisposition, WorkerId,
-    MAX_DISCONNECT_ACTIVE_RECORDS, MAX_DISCONNECT_ATTEMPTS, MAX_DISCONNECT_TOMBSTONES,
+    DISCONNECT_VERIFIER_RECEIPTS_PER_ATTEMPT, MAX_DISCONNECT_ACTIVE_RECORDS,
+    MAX_DISCONNECT_ATTEMPTS, MAX_DISCONNECT_TOMBSTONES, MAX_DISCONNECT_VERIFIER_RECEIPTS,
 };
 pub use reconnect_cursor::{
     ReconnectCursor, ReconnectCursorAuthenticator, ReconnectEvent, ReconnectIdentity,
