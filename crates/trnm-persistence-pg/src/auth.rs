@@ -96,10 +96,10 @@ impl AccessTokenVerifier {
         self.validate_header(header_segment)?;
         self.verify_signature(header_segment, payload_segment, signature_segment)?;
 
-        let payload_bytes = base64url::decode(payload_segment, MAX_PAYLOAD_BYTES)
-            .map_err(|_| unauthenticated())?;
-        let claims = json::parse(&payload_bytes, JsonLimits::default())
-            .map_err(|_| unauthenticated())?;
+        let payload_bytes =
+            base64url::decode(payload_segment, MAX_PAYLOAD_BYTES).map_err(|_| unauthenticated())?;
+        let claims =
+            json::parse(&payload_bytes, JsonLimits::default()).map_err(|_| unauthenticated())?;
         let claims = claims.as_object().ok_or_else(unauthenticated)?;
         self.validate_claims(claims, now_unix_seconds)
     }
@@ -137,8 +137,8 @@ impl AccessTokenVerifier {
         payload_segment: &str,
         signature_segment: &str,
     ) -> Result<(), DomainError> {
-        let signature = base64url::decode(signature_segment, SIGNATURE_BYTES)
-            .map_err(|_| unauthenticated())?;
+        let signature =
+            base64url::decode(signature_segment, SIGNATURE_BYTES).map_err(|_| unauthenticated())?;
         if signature.len() != SIGNATURE_BYTES {
             return Err(unauthenticated());
         }
@@ -184,16 +184,15 @@ impl AccessTokenVerifier {
         {
             return Err(unauthenticated());
         }
-        let lifetime = u64::try_from(expires_at_unix_seconds - issued_at)
-            .map_err(|_| unauthenticated())?;
+        let lifetime =
+            u64::try_from(expires_at_unix_seconds - issued_at).map_err(|_| unauthenticated())?;
         if lifetime > MAX_ACCESS_TOKEN_LIFETIME_SECONDS {
             return Err(unauthenticated());
         }
 
         let user = UserId::new(parse_lower_hex::<16>(claim_string(claims, "sub")?)?);
         let access_token_id = parse_lower_hex::<16>(claim_string(claims, "jti")?)?;
-        let family =
-            SessionFamilyId::new(parse_lower_hex::<16>(claim_string(claims, "sid")?)?);
+        let family = SessionFamilyId::new(parse_lower_hex::<16>(claim_string(claims, "sid")?)?);
         let generation = claim_unsigned(claims, "sgn")?;
         if user.is_zero() || family.is_zero() || access_token_id.iter().all(|byte| *byte == 0) {
             return Err(unauthenticated());
@@ -315,7 +314,10 @@ fn audience_contains(value: Option<&JsonValue>, required: &str) -> Result<bool, 
             let mut seen = BTreeSet::new();
             let mut matched = false;
             for value in values {
-                let value = value.as_str().filter(|value| !value.is_empty()).ok_or_else(unauthenticated)?;
+                let value = value
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(unauthenticated)?;
                 if !seen.insert(value) {
                     return Err(unauthenticated());
                 }
