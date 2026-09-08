@@ -26,6 +26,9 @@ def manifests(root: Path)->None:
         s=re.sub(r"(?ms)^\[lints(?:\.[^\]]+)?\]\n.*?(?=^\[|\Z)","",s)
         wr(p,s.rstrip()+"\n\n[lints]\nworkspace = true")
         (p.parent/"Cargo.lock").unlink(missing_ok=True)
+        readme=p.parent/"README.md"
+        if readme.exists():
+            wr(readme,rd(readme).replace("Workspace class: `root`  \n","Workspace class: `root`\n"))
 
 def authority(root: Path)->None:
     p=root/"docs/development/RUST_PACKAGE_AUTHORITY.json"; v=jobj(p); v["last_reviewed_at"]="2026-09-09"
