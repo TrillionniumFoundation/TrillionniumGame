@@ -41,6 +41,7 @@ python3 -m py_compile \
   "$CONTROLLER/tools/plan_v32_converge.py" \
   "$CONTROLLER/tools/finalize_plan_v32_contracts.py" \
   "$CONTROLLER/tools/finalize_plan_v32_regressions.py" \
+  "$CONTROLLER/tools/finalize_plan_v32_regressions_v2.py" \
   "$PROVIDER/tools/compose_crypto_provider.py"
 
 previous=''
@@ -73,6 +74,7 @@ PY
 python3 "$PROVIDER/tools/compose_crypto_provider.py" "$TARGET"
 python3 "$CONTROLLER/tools/finalize_plan_v32_contracts.py" "$TARGET"
 python3 "$CONTROLLER/tools/finalize_plan_v32_regressions.py" "$TARGET"
+python3 "$CONTROLLER/tools/finalize_plan_v32_regressions_v2.py" "$TARGET"
 git -C "$TARGET" diff --check
 git -C "$TARGET" add -A
 
