@@ -1,0 +1,293 @@
+name: gap-closure-ledger
+
+on:
+  push:
+    branches:
+      - codex/gap-closure-ledger-2026-09-08
+    paths:
+      - .github/workflows/gap-closure-ledger.yml
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  ledger:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
+      TARGET_PR: '116'
+    steps:
+      - name: Wait for a stable target head and fetch it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          previous=''
+          stable=0
+          deadline=$((SECONDS + 5400))
+          while (( SECONDS < deadline )); do
+            head=$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "${api}/git/ref/heads/${TARGET_BRANCH//\//%2F}" | jq -r '.object.sha')
+            if [[ "$head" == "$previous" ]]; then
+              stable=$((stable + 1))
+            else
+              previous="$head"
+              stable=0
+            fi
+            if (( stable >= 6 )); then
+              printf '%s\n' "$head" > "$RUNNER_TEMP/head.txt"
+              break
+            fi
+            sleep 20
+          done
+          test -s "$RUNNER_TEMP/head.txt"
+          head=$(cat "$RUNNER_TEMP/head.txt")
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$head"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$head"
+          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+
+      - name: Collect GitHub execution, review and governance facts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(cat "$RUNNER_TEMP/head.txt")
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          mkdir -p "$RUNNER_TEMP/facts"
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "${api}/pulls/${TARGET_PR}" > "$RUNNER_TEMP/facts/pr.json"
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "${api}/pulls/${TARGET_PR}/reviews?per_page=100" > "$RUNNER_TEMP/facts/reviews.json"
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "${api}/actions/runs?head_sha=${head}&per_page=100" > "$RUNNER_TEMP/facts/runs.json"
+          for endpoint in branches/main/protection rulesets; do
+            name=${endpoint//\//-}
+            code=$(curl --silent --show-error --output "$RUNNER_TEMP/facts/${name}.json" --write-out '%{http_code}' \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "${api}/${endpoint}")
+            printf '%s\n' "$code" > "$RUNNER_TEMP/facts/${name}.status"
+          done
+
+      - name: Derive the non-inflating gap ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          HEAD_SHA=$(cat "$RUNNER_TEMP/head.txt") python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          from pathlib import Path
+          from typing import Any
+
+          root=Path('.')
+          facts=Path(os.environ['RUNNER_TEMP'],'facts')
+          head=os.environ['HEAD_SHA']
+          tree=os.popen('git rev-parse HEAD^{tree}').read().strip()
+
+          gaps=json.loads(Path('docs/status/GAP_REGISTER.json').read_text(encoding='utf-8'))['gaps']
+          evidence=json.loads(Path('docs/evidence/index.json').read_text(encoding='utf-8'))
+          reviews=json.loads((facts/'reviews.json').read_text(encoding='utf-8'))
+          runs=json.loads((facts/'runs.json').read_text(encoding='utf-8')).get('workflow_runs',[])
+          pr=json.loads((facts/'pr.json').read_text(encoding='utf-8'))
+          protection_status=(facts/'branches-main-protection.status').read_text().strip()
+          rulesets_status=(facts/'rulesets.status').read_text().strip()
+          protection=None
+          rulesets=None
+          if protection_status=='200':
+              protection=json.loads((facts/'branches-main-protection.json').read_text())
+          if rulesets_status=='200':
+              rulesets=json.loads((facts/'rulesets.json').read_text())
+
+          approved=[]
+          for review in reviews:
+              if review.get('state')!='APPROVED':
+                  continue
+              commit=review.get('commit_id')
+              approved.append({
+                  'id':review.get('id'),
+                  'user':(review.get('user') or {}).get('login'),
+                  'user_id':(review.get('user') or {}).get('id'),
+                  'commit_id':commit,
+                  'current_head':commit==head,
+                  'submitted_at':review.get('submitted_at'),
+              })
+
+          current_success=[]
+          current_non_success=[]
+          for run in runs:
+              if run.get('head_sha')!=head:
+                  continue
+              row={
+                  'id':run.get('id'),
+                  'name':run.get('name'),
+                  'path':run.get('path'),
+                  'event':run.get('event'),
+                  'status':run.get('status'),
+                  'conclusion':run.get('conclusion'),
+                  'attempt':run.get('run_attempt'),
+              }
+              if run.get('status')=='completed' and run.get('conclusion')=='success':
+                  current_success.append(row)
+              else:
+                  current_non_success.append(row)
+
+          entries=[]
+          for gap in gaps:
+              external=gap.get('external_dependency')
+              evidence_ids=gap.get('evidence_ids') or []
+              source_status=gap.get('status')
+              has_current_approval=any(row['current_head'] for row in approved)
+              # This ledger deliberately never infers domain qualification from a
+              # generic PR approval. It records only the weaker current-head fact.
+              closeable_by_repository_alone=(external is None)
+              entry={
+                  'id':gap['id'],
+                  'severity':gap['severity'],
+                  'category':gap['category'],
+                  'register_status':source_status,
+                  'close_criteria_count':len(gap.get('close_criteria') or []),
+                  'required_evidence_types':gap.get('required_evidence_types') or [],
+                  'indexed_evidence_ids':evidence_ids,
+                  'external_dependency':external,
+                  'repository_controlled_source_candidate':source_status in {
+                      'source-candidate','locally-verified','remote-verified','independently-reviewed','closed'
+                  },
+                  'current_head_workflow_success_count':len(current_success),
+                  'current_head_workflow_non_success_count':len(current_non_success),
+                  'generic_current_head_approval_observed':has_current_approval,
+                  'qualified_independent_domain_acceptance_observed':False,
+                  'external_fact_accepted':False if external else None,
+                  'may_auto_close':False,
+                  'derived_closed':False,
+                  'blocking_reason':None,
+              }
+              if external:
+                  entry['blocking_reason']='external dependency is not independently accepted'
+              elif not evidence_ids:
+                  entry['blocking_reason']='gap has no indexed accepted evidence IDs'
+              elif not has_current_approval:
+                  entry['blocking_reason']='no current-head approval is observed; domain qualification remains separately unproven'
+              else:
+                  entry['blocking_reason']='generic approval cannot prove required domain qualification and evidence acceptance'
+              entries.append(entry)
+
+          accepted_entries=[]
+          def walk(value:Any):
+              if isinstance(value,dict):
+                  if value.get('accepted') is True or value.get('status')=='accepted':
+                      accepted_entries.append(value)
+                  for item in value.values(): walk(item)
+              elif isinstance(value,list):
+                  for item in value: walk(item)
+          walk(evidence)
+
+          ledger={
+              'schema':'trillionnium.gap-closure-ledger.v1',
+              'repository':'TrillionniumFoundation/TrillionniumGame',
+              'candidate':{
+                  'pull_request':116,
+                  'head':head,
+                  'tree':tree,
+                  'pr_head_matches':pr.get('head',{}).get('sha')==head,
+                  'base':pr.get('base',{}).get('sha'),
+                  'draft':pr.get('draft'),
+                  'mergeable':pr.get('mergeable'),
+              },
+              'execution':{
+                  'current_head_successful_runs':len(current_success),
+                  'current_head_non_successful_runs':len(current_non_success),
+                  'successful_runs':sorted(current_success,key=lambda r:(r.get('name') or '',r.get('id') or 0)),
+                  'non_successful_runs':sorted(current_non_success,key=lambda r:(r.get('name') or '',r.get('id') or 0)),
+              },
+              'review':{
+                  'approved_reviews':approved,
+                  'qualified_independent_domain_acceptance_count':0,
+                  'qualification_reason':'Repository APIs expose approvals but do not prove the role qualifications/conflict-free evidence decisions required by the gap contract.',
+              },
+              'governance':{
+                  'branch_protection_http_status':protection_status,
+                  'rulesets_http_status':rulesets_status,
+                  'branch_protection_readback':protection,
+                  'rulesets_readback':rulesets,
+                  'independent_admin_acceptance':False,
+              },
+              'evidence':{
+                  'accepted_entry_candidates_found_by_shape':len(accepted_entries),
+                  'accepted_entry_count_used_for_closure':0,
+                  'reason':'Shape matches are not used without exact-object admission and independent review binding.',
+              },
+              'gaps':entries,
+              'summary':{
+                  'registered_gap_count':len(entries),
+                  'derived_closed_count':0,
+                  'repository_source_candidate_count':sum(1 for e in entries if e['repository_controlled_source_candidate']),
+                  'external_dependency_count':sum(1 for e in entries if e['external_dependency']),
+                  'all_gaps_closed':False,
+                  'production_ready':False,
+                  'public_online':False,
+                  'cutover_authorized':False,
+                  'nakama_retired':False,
+              },
+          }
+          out=Path(os.environ['RUNNER_TEMP'],'gap-closure-ledger.json')
+          out.write_text(json.dumps(ledger,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          PY
+          python3 -m json.tool "$RUNNER_TEMP/gap-closure-ledger.json" >/dev/null
+          cat "$RUNNER_TEMP/gap-closure-ledger.json"
+
+      - name: Post ledger to the candidate PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ledger=$(cat "$RUNNER_TEMP/gap-closure-ledger.json")
+          body=$(jq -n --arg ledger "$ledger" '{body:("## Gap closure ledger\n\n```json\n"+$ledger+"\n```\n\nThis is a fail-closed derivation. It intentionally does not turn a generic approval, successful workflow, administrator permission, or source file into independent domain acceptance. No gap is promoted without its exact accepted evidence." )}')
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+            -d "$body" >/dev/null
+
+      - name: Delete ledger transport branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/delete"
+          git -C "$RUNNER_TEMP/delete" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$RUNNER_TEMP/delete" push origin --delete codex/gap-closure-ledger-2026-09-08 >/dev/null 2>&1 || true
