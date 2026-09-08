@@ -153,6 +153,37 @@ def has_stable_human_environment_reviewer(rule: Any) -> bool:
     )
 
 
+
+def meaningful_success_steps(job: Any) -> list[dict[str, Any]]:
+    if not isinstance(job, dict):
+        return []
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        return []
+    return [
+        step for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("name"), str)
+        and step["name"] not in {"Set up job", "Complete job"}
+        and not step["name"].startswith("Post ")
+        and step.get("status") == "completed"
+        and step.get("conclusion") == "success"
+    ]
+
+
+def environment_has_stable_human_reviewer(value: Any, name: str) -> bool:
+    if (
+        not isinstance(value, dict)
+        or value.get("name") != name
+        or value.get("prevent_self_review") is not True
+    ):
+        return False
+    rules = value.get("protection_rules")
+    return isinstance(rules, list) and any(
+        has_stable_human_environment_reviewer(rule) for rule in rules
+    )
+
+
 class PacketTarget:
     def __init__(self, writer: "PacketWriter", name: str):
         self.writer = writer
@@ -453,6 +484,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         "job_id": None,
         "run_attempt": None,
     }
+    canonical_paths: dict[str, str] = {}
     if isinstance(selected_merge_gate, dict):
         details = selected_merge_gate.get("details_url")
         match = DETAILS_URL.fullmatch(details) if isinstance(details, str) else None
@@ -462,12 +494,12 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
             canonical_ids.update(
                 {"check_run_id": check_id, "run_id": run_id, "job_id": job_id}
             )
-            identity_paths = {
+            canonical_paths = {
                 "required_check_detail": f"/repos/{REPO}/check-runs/{check_id}",
                 "required_workflow_run": f"/repos/{REPO}/actions/runs/{run_id}",
                 "required_workflow": f"/repos/{REPO}/actions/workflows/{REQUIRED_WORKFLOW_ID}",
             }
-            for key, path in identity_paths.items():
+            for key, path in canonical_paths.items():
                 reads[key] = api.get(path)
                 values[key] = retain(output, key, path, reads[key])
             run_attempt = (
@@ -482,16 +514,21 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
                     f"/repos/{REPO}/actions/runs/{run_id}/attempts/"
                     f"{run_attempt}/jobs?per_page=100"
                 )
+                canonical_paths[key] = path
                 reads[key] = api.get(path)
                 values[key] = retain(output, key, path, reads[key])
 
     stability_paths = {
+        "actor": paths["actor"],
+        "repository": paths["repository"],
         "branch": paths["branch"],
+        "main_checks": paths["main_checks"],
         "protection": paths["protection"],
         "rulesets": paths["rulesets"],
         "actions": paths["actions"],
         "workflow_permissions": paths["workflow_permissions"],
         "environments": paths["environments"],
+        "actor_permission": permission_path,
     }
     stability_paths.update(
         {
@@ -505,6 +542,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
             for name, key in environment_keys.items()
         }
     )
+    stability_paths.update(canonical_paths)
     stability_pairs: dict[str, str] = {}
     for source_key, path in stability_paths.items():
         stable_key = f"{source_key}_stable"
@@ -517,11 +555,16 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
     actor_permission = values["actor_permission"] if isinstance(values["actor_permission"], dict) else {}
     review = nested(protection, "required_pull_request_reviews", default={})
     required = nested(protection, "required_status_checks", default={})
+    required_check_rows = (
+        required.get("checks") if isinstance(required, dict) else None
+    )
+    if not isinstance(required_check_rows, list):
+        required_check_rows = []
     context_present = any(
         isinstance(item, dict)
         and item.get("context") == REQUIRED_CHECK
         and item.get("app_id") == REQUIRED_CHECK_APP_ID
-        for item in (required.get("checks", []) if isinstance(required, dict) else [])
+        for item in required_check_rows
     )
     check_rows = checks.get("check_runs", []) if isinstance(checks, dict) else []
     if not isinstance(check_rows, list):
@@ -543,20 +586,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         ),
         None,
     )
-    selected_steps = (
-        selected_job.get("steps", []) if isinstance(selected_job, dict) else []
-    )
-    if not isinstance(selected_steps, list):
-        selected_steps = []
-    effective_success_steps = [
-        step for step in selected_steps
-        if isinstance(step, dict)
-        and isinstance(step.get("name"), str)
-        and step["name"] not in {"Set up job", "Complete job"}
-        and not step["name"].startswith("Post ")
-        and step.get("status") == "completed"
-        and step.get("conclusion") == "success"
-    ]
+    effective_success_steps = meaningful_success_steps(selected_job)
     canonical_check_identity = (
         isinstance(latest_merge_gate, dict)
         and isinstance(canonical_check, dict)
@@ -568,6 +598,11 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         and canonical_check.get("details_url") == latest_merge_gate.get("details_url")
         and canonical_check.get("status") == "completed"
         and canonical_check.get("conclusion") == "success"
+        and isinstance(canonical_run, dict)
+        and type(canonical_run.get("check_suite_id")) is int
+        and canonical_run["check_suite_id"] > 0
+        and nested(canonical_check, "check_suite", "id")
+        == canonical_run["check_suite_id"]
     )
     canonical_run_identity = (
         isinstance(canonical_run, dict)
@@ -578,6 +613,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         and canonical_run.get("event") == "push"
         and canonical_run.get("head_branch") == BRANCH
         and canonical_run.get("head_sha") == expected_main
+        and nested(canonical_run, "head_commit", "id") == expected_main
         and canonical_run.get("run_attempt") == canonical_ids["run_attempt"]
         and canonical_run.get("status") == "completed"
         and canonical_run.get("conclusion") == "success"
@@ -592,6 +628,9 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         and canonical_workflow.get("state") == "active"
     )
     jobs_read = reads.get("required_workflow_jobs")
+    canonical_check_run_url = (
+        f"{ORIGIN}/repos/{REPO}/check-runs/{canonical_ids['check_run_id']}"
+    )
     canonical_job_evidence = (
         isinstance(canonical_jobs, dict)
         and type(canonical_jobs.get("total_count")) is int
@@ -601,20 +640,55 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         and not has_next_page(jobs_read[1])
         and all(
             isinstance(job, dict)
+            and type(job.get("id")) is int
+            and job["id"] > 0
+            and job.get("run_id") == canonical_ids["run_id"]
+            and job.get("run_attempt") == canonical_ids["run_attempt"]
+            and job.get("head_sha") == expected_main
             and job.get("status") == "completed"
             and job.get("conclusion") == "success"
+            and bool(meaningful_success_steps(job))
             for job in canonical_job_rows
         )
         and isinstance(selected_job, dict)
-        and selected_job.get("run_id") == canonical_ids["run_id"]
+        and selected_job.get("id") == canonical_ids["job_id"]
+        and selected_job.get("check_run_url") == canonical_check_run_url
         and bool(effective_success_steps)
     )
-    policy_surface_stable = bool(stability_pairs) and all(
-        reads[stable_key][0] == 200 and values[stable_key] == values[source_key]
-        for source_key, stable_key in stability_pairs.items()
+    required_stability_keys = {
+        "actor",
+        "repository",
+        "branch",
+        "main_checks",
+        "protection",
+        "rulesets",
+        "actions",
+        "workflow_permissions",
+        "environments",
+        "actor_permission",
+        "required_check_detail",
+        "required_workflow_run",
+        "required_workflow",
+        "required_workflow_jobs",
+        *ruleset_keys.values(),
+        *environment_keys.values(),
+    }
+    decision_surface_stable = (
+        set(stability_pairs) == required_stability_keys
+        and all(
+            reads[stable_key][0] == 200
+            and values[stable_key] == values[source_key]
+            for source_key, stable_key in stability_pairs.items()
+        )
     )
+    policy_surface_stable = decision_surface_stable
+    environment_rows = nested(
+        values["environments"], "environments", default=None
+    )
+    if not isinstance(environment_rows, list):
+        environment_rows = []
     environment_names = {
-        row.get("name") for row in nested(values["environments"], "environments", default=[])
+        row.get("name") for row in environment_rows
         if isinstance(row, dict) and isinstance(row.get("name"), str)
     }
     bypass = review.get("bypass_pull_request_allowances") if isinstance(review, dict) else None
@@ -645,13 +719,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         for key in ruleset_keys.values()
     )
     protected_environments = all(
-        isinstance(values[key], dict)
-        and values[key].get("name") == name
-        and values[key].get("prevent_self_review") is True
-        and any(
-            has_stable_human_environment_reviewer(rule)
-            for rule in values[key].get("protection_rules", [])
-        )
+        environment_has_stable_human_reviewer(values.get(key), name)
         for name, key in environment_keys.items()
     )
 
@@ -660,7 +728,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         "authenticated_human_admin": (
             isinstance(actor, dict) and actor.get("type") == "User"
             and type(actor.get("id")) is int and actor["id"] > 0
-            and actor_permission.get("permission") in {"admin", "maintain"}
+            and actor_permission.get("permission") == "admin"
         ),
         "repository_identity": (
             isinstance(repository, dict) and repository.get("id") == REPO_ID
@@ -684,6 +752,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
             canonical_run_identity and canonical_workflow_identity
         ),
         "canonical_required_workflow_job_evidence": canonical_job_evidence,
+        "decision_surface_stable": decision_surface_stable,
         "policy_surface_stable": policy_surface_stable,
         "strict_required_check": isinstance(required, dict) and required.get("strict") is True and context_present,
         "admins_enforced": enabled(protection, "enforce_admins"),
@@ -716,7 +785,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
             and isinstance(values["environments"], dict)
             and isinstance(values["environments"].get("environments"), list)
             and type(values["environments"].get("total_count")) is int
-            and values["environments"].get("total_count") == len(values["environments"]["environments"])
+            and values["environments"].get("total_count") == len(environment_rows)
             and not has_next_page(reads["environments"][1])
             and all(reads[key][0] == 200 for key in environment_keys.values())
         ),
@@ -739,7 +808,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
             "workflow_path": REQUIRED_WORKFLOW_PATH,
             **canonical_ids,
         },
-        "stable_policy_surface": sorted(stability_pairs),
+        "stable_decision_surface": sorted(stability_pairs),
         "http_status": {key: status for key, (status, _, _) in reads.items()},
         "assertions": assertions, "all_required_assertions": complete,
         "claims": {"governance_readback_complete": complete, "negative_rehearsal_accepted": False,

@@ -76,6 +76,7 @@ def values():
             "id": 1, "name": MODULE.REQUIRED_CHECK,
             "head_sha": "a" * 40,
             "details_url": details_url,
+            "check_suite": {"id": 20},
             "app": {"id": MODULE.REQUIRED_CHECK_APP_ID},
             "status": "completed", "conclusion": "success",
         }]},
@@ -83,6 +84,7 @@ def values():
             "id": 1, "name": MODULE.REQUIRED_CHECK,
             "head_sha": "a" * 40,
             "details_url": details_url,
+            "check_suite": {"id": 20},
             "app": {"id": MODULE.REQUIRED_CHECK_APP_ID},
             "status": "completed", "conclusion": "success",
         },
@@ -94,6 +96,8 @@ def values():
             "event": "push",
             "head_branch": "main",
             "head_sha": "a" * 40,
+            "head_commit": {"id": "a" * 40},
+            "check_suite_id": 20,
             "run_attempt": 1,
             "status": "completed",
             "conclusion": "success",
@@ -110,6 +114,9 @@ def values():
             "jobs": [{
                 "id": 1,
                 "run_id": 10,
+                "run_attempt": 1,
+                "head_sha": "a" * 40,
+                "check_run_url": f"{MODULE.ORIGIN}/repos/{MODULE.REPO}/check-runs/1",
                 "status": "completed",
                 "conclusion": "success",
                 "steps": [
@@ -337,7 +344,13 @@ class Tests(unittest.TestCase):
 
 
     def test_duplicate_keys_and_nonfinite_json_fail_closed(self):
-        for payload in (b'{"x":1,"x":2}', b'{"x":NaN}', b'{"x":Infinity}'):
+        for payload in (
+            b'{"x":1,"x":2}',
+            b'{"x":{"y":1,"y":2}}',
+            b'{"x":NaN}',
+            b'{"x":Infinity}',
+            b'{"x":-Infinity}',
+        ):
             with self.subTest(payload=payload):
                 response = Response(payload)
                 with self.assertRaises(MODULE.ReadbackError):
@@ -426,7 +439,7 @@ class Tests(unittest.TestCase):
             self.assertFalse(result["assertions"]["policy_surface_stable"])
             self.assertFalse(result["all_required_assertions"])
 
-    def test_maintainer_can_capture_read_only_administration_surface(self):
+    def test_non_admin_cannot_capture_administration_evidence(self):
         data = values()
         data["actor_permission"]["permission"] = "maintain"
         with tempfile.TemporaryDirectory() as directory:
@@ -434,8 +447,162 @@ class Tests(unittest.TestCase):
                 FakeApi(data), Path(directory) / "packet",
                 "a" * 40, ["governance-audit"],
             )
-            self.assertTrue(result["assertions"]["authenticated_human_admin"])
-            self.assertTrue(result["all_required_assertions"])
+            self.assertFalse(result["assertions"]["authenticated_human_admin"])
+            self.assertFalse(result["all_required_assertions"])
+
+
+    def test_entire_decision_surface_is_reread_and_drift_rejected(self):
+        targets = (
+            "main_checks",
+            "actor_permission",
+            "required_check_detail",
+            "required_workflow_run",
+            "required_workflow_jobs",
+        )
+        for target in targets:
+            with self.subTest(target=target):
+                class DriftingApi(FakeApi):
+                    def __init__(self, data):
+                        super().__init__(data)
+                        self.counts = {}
+
+                    def get(self, path):
+                        result = super().get(path)
+                        key = self.key_for(path)
+                        self.counts[key] = self.counts.get(key, 0) + 1
+                        if key == target and self.counts[key] == 2:
+                            if key == "main_checks":
+                                result[2]["total_count"] += 1
+                            elif key == "actor_permission":
+                                result[2]["permission"] = "write"
+                            elif key == "required_check_detail":
+                                result[2]["conclusion"] = "failure"
+                            elif key == "required_workflow_run":
+                                result[2]["run_attempt"] = 2
+                            elif key == "required_workflow_jobs":
+                                result[2]["jobs"][0]["conclusion"] = "failure"
+                        return result
+
+                with tempfile.TemporaryDirectory() as directory:
+                    result = MODULE.capture(
+                        DriftingApi(values()), Path(directory) / "packet",
+                        "a" * 40, ["governance-audit"],
+                    )
+                    self.assertFalse(
+                        result["assertions"]["decision_surface_stable"]
+                    )
+                    self.assertFalse(result["all_required_assertions"])
+
+    def test_same_actions_app_same_name_other_workflow_is_rejected(self):
+        data = values()
+        impostor_url = f"https://github.com/{MODULE.REPO}/actions/runs/20/job/2"
+        data["main_checks"] = {
+            "total_count": 2,
+            "check_runs": [
+                data["main_checks"]["check_runs"][0],
+                {
+                    "id": 2,
+                    "name": MODULE.REQUIRED_CHECK,
+                    "head_sha": "a" * 40,
+                    "details_url": impostor_url,
+                    "check_suite": {"id": 30},
+                    "app": {"id": MODULE.REQUIRED_CHECK_APP_ID},
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            result = MODULE.capture(
+                FakeApi(data), Path(directory) / "packet",
+                "a" * 40, ["governance-audit"],
+            )
+            self.assertTrue(
+                result["assertions"]["successful_exact_main_merge_gate"]
+            )
+            self.assertFalse(
+                result["assertions"]["canonical_required_check_identity"]
+            )
+            self.assertFalse(
+                result["assertions"]["canonical_required_workflow_identity"]
+            )
+            self.assertFalse(result["all_required_assertions"])
+
+    def test_event_attempt_job_and_every_job_step_set_are_closed_world(self):
+        cases = []
+        manual = values()
+        manual["required_workflow_run"]["event"] = "workflow_dispatch"
+        cases.append((manual, "canonical_required_workflow_identity"))
+        failed = values()
+        failed["required_workflow_run"]["conclusion"] = "failure"
+        cases.append((failed, "canonical_required_workflow_identity"))
+        moved = values()
+        moved["required_workflow_jobs"]["jobs"][0]["check_run_url"] = (
+            f"{MODULE.ORIGIN}/repos/{MODULE.REPO}/check-runs/999"
+        )
+        cases.append((moved, "canonical_required_workflow_job_evidence"))
+        selected_empty = values()
+        selected_empty["required_workflow_jobs"]["jobs"][0]["steps"] = [
+            {"name": "Set up job", "status": "completed", "conclusion": "success"},
+            {"name": "Complete job", "status": "completed", "conclusion": "success"},
+        ]
+        cases.append((selected_empty, "canonical_required_workflow_job_evidence"))
+        extra_empty = values()
+        extra_empty["required_workflow_jobs"]["total_count"] = 2
+        extra_empty["required_workflow_jobs"]["jobs"].append({
+            "id": 2,
+            "run_id": 10,
+            "run_attempt": 1,
+            "head_sha": "a" * 40,
+            "check_run_url": f"{MODULE.ORIGIN}/repos/{MODULE.REPO}/check-runs/2",
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [
+                {"name": "Set up job", "status": "completed", "conclusion": "success"},
+                {"name": "Complete job", "status": "completed", "conclusion": "success"},
+            ],
+        })
+        cases.append((extra_empty, "canonical_required_workflow_job_evidence"))
+        for data, assertion in cases:
+            with self.subTest(assertion=assertion), tempfile.TemporaryDirectory() as directory:
+                result = MODULE.capture(
+                    FakeApi(data), Path(directory) / "packet",
+                    "a" * 40, ["governance-audit"],
+                )
+                self.assertFalse(result["assertions"][assertion])
+                self.assertFalse(result["all_required_assertions"])
+
+    def test_unexpected_governance_shapes_are_retained_false_not_exceptions(self):
+        cases = []
+        check_shape = values()
+        check_shape["protection"]["required_status_checks"]["checks"] = None
+        cases.append((check_shape, "strict_required_check"))
+        environment_collection = values()
+        environment_collection["environments"]["environments"] = None
+        cases.append((environment_collection, "environments_read_back"))
+        environment_detail = values()
+        environment_detail["environment"]["protection_rules"] = None
+        cases.append((environment_detail, "required_environments_have_reviewers"))
+        for data, assertion in cases:
+            with self.subTest(assertion=assertion), tempfile.TemporaryDirectory() as directory:
+                result = MODULE.capture(
+                    FakeApi(data), Path(directory) / "packet",
+                    "a" * 40, ["governance-audit"],
+                )
+                self.assertFalse(result["assertions"][assertion])
+                self.assertFalse(result["all_required_assertions"])
+
+    def test_ruleset_null_and_non_list_bypass_never_mean_empty(self):
+        for bypass in (None, {}, "none"):
+            with self.subTest(bypass=bypass), tempfile.TemporaryDirectory() as directory:
+                data = values()
+                data["ruleset_17"]["bypass_actors"] = bypass
+                result = MODULE.capture(
+                    FakeApi(data), Path(directory) / "packet",
+                    "a" * 40, ["governance-audit"],
+                )
+                self.assertFalse(result["assertions"]["ruleset_bypass_empty"])
+                self.assertFalse(result["all_required_assertions"])
 
 
 if __name__ == "__main__": unittest.main()
