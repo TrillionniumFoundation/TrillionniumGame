@@ -1,0 +1,201 @@
+name: exact-head-qualification-20260909
+
+on:
+  push:
+    branches:
+      - codex/exact-head-qualification-2026-09-09
+    paths:
+      - .github/workflows/exact-head-qualification-20260909.yml
+      - tools/qualify_exact_head.py
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: exact-head-qualification-controller
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
+      TARGET_PR: "116"
+      PACKET: run/qualification/required-workflows.json
+    steps:
+      - name: Fetch qualifier and wait for a frozen PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/controller" "$GITHUB_WORKSPACE/target"
+          git init "$GITHUB_WORKSPACE/controller"
+          git -C "$GITHUB_WORKSPACE/controller" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/controller" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/controller" checkout --detach FETCH_HEAD
+
+          previous=''
+          stable=0
+          for _ in $(seq 1 30); do
+            branch_sha=$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
+            pr_sha=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${TARGET_PR}" --jq '.head.sha')
+            if [[ -n "$branch_sha" && "$branch_sha" == "$pr_sha" && "$branch_sha" == "$previous" ]]; then
+              stable=$((stable + 1))
+            else
+              previous=$branch_sha
+              stable=1
+            fi
+            if [[ "$stable" -ge 4 ]]; then
+              break
+            fi
+            sleep 30
+          done
+          test "$stable" -ge 4
+          printf '%s\n' "$previous" > "$RUNNER_TEMP/frozen-head"
+
+      - name: Clone exact frozen candidate and prepare bounded qualifier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(cat "$RUNNER_TEMP/frozen-head")
+          git init "$GITHUB_WORKSPACE/target"
+          git -C "$GITHUB_WORKSPACE/target" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/target" fetch --no-tags --depth=1 origin "$head"
+          git -C "$GITHUB_WORKSPACE/target" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/target" rev-parse HEAD)" = "$head"
+          test -f "$GITHUB_WORKSPACE/target/scripts/check-workspace-convergence.py"
+          test -f "$GITHUB_WORKSPACE/target/scripts/check-single-server-authority.py"
+          cp "$GITHUB_WORKSPACE/controller/tools/qualify_exact_head.py" \
+            "$RUNNER_TEMP/qualify_exact_head.py"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, re
+          path = Path(os.environ['RUNNER_TEMP']) / 'qualify_exact_head.py'
+          text = path.read_text(encoding='utf-8')
+          text, count = re.subn(
+              r'\n        # Failed dispatched runs are re-run.*?\n        time\.sleep\(args\.poll_seconds\)',
+              '\n        time.sleep(args.poll_seconds)',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit('bounded rerun block was not found')
+          path.write_text(text, encoding='utf-8')
+          PY
+          python3 -m py_compile "$RUNNER_TEMP/qualify_exact_head.py"
+
+      - name: Dispatch missing workflows and require nonempty exact-head success
+        working-directory: target
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(cat "$RUNNER_TEMP/frozen-head")
+          mkdir -p "$(dirname "$PACKET")"
+          set +e
+          python3 "$RUNNER_TEMP/qualify_exact_head.py" \
+            --root . \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref "$TARGET_BRANCH" \
+            --head "$head" \
+            --pr "$TARGET_PR" \
+            --output "$PACKET" \
+            --timeout-seconds 6000 \
+            --poll-seconds 30 \
+            2>&1 | tee "$RUNNER_TEMP/qualification.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          test -s "$PACKET" || {
+            jq -n \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg head "$head" \
+              --arg error "qualifier exited before packet generation" \
+              '{schema:"trillionnium.required-workflow-exact-head-candidate.v1",repository:$repository,head_sha:$head,error:$error,claims:{exact_head_execution_complete:false,independent_acceptance:false,accepted_evidence:false,gap_closed:false,production_ready:false}}' \
+              > "$PACKET"
+          }
+          sha256sum "$PACKET" > "$PACKET.sha256"
+          exit "$rc"
+
+      - name: Emit bounded retained packet in the native job log
+        if: always()
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$PACKET"
+          test -s "$PACKET.sha256"
+          archive="$RUNNER_TEMP/exact-head-qualification.tar.gz"
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+            -czf "$archive" -C "$(dirname "$PACKET")" \
+            "$(basename "$PACKET")" "$(basename "$PACKET").sha256"
+          test -s "$archive"
+          if [[ -x scripts/emit-actions-log-artifact.py ]]; then
+            python3 scripts/emit-actions-log-artifact.py \
+              "$archive" \
+              --name "exact-head-qualification-$(cat "$RUNNER_TEMP/frozen-head")-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              --max-bytes 8388608 \
+              --metadata-json "$RUNNER_TEMP/qualification-envelope.json"
+          else
+            printf 'QUALIFICATION_PACKET_SHA256=%s\n' "$(sha256sum "$archive" | awk '{print $1}')"
+            base64 -w 0 "$archive"
+            printf '\n'
+          fi
+
+      - name: Publish exact result to the stacked PR
+        if: always()
+        working-directory: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(cat "$RUNNER_TEMP/frozen-head")
+          complete=$(jq -r '.claims.exact_head_execution_complete // false' "$PACKET")
+          required=$(jq -r '.required_workflow_count // 0' "$PACKET")
+          selected=$(jq -r '.selected_success_count // 0' "$PACKET")
+          unresolved=$(jq -c '.unresolved // {"packet":"not-generated"}' "$PACKET")
+          digest=$(sha256sum "$PACKET" | awk '{print $1}')
+          body=$(cat <<EOF
+          Exact-head qualification controller result:
+
+          \`\`\`text
+          head=$head
+          required_workflows=$required
+          nonempty_terminal_success=$selected
+          exact_head_execution_complete=$complete
+          packet_sha256=$digest
+          independent_acceptance=false
+          accepted_evidence=false
+          gap_closed=false
+          \`\`\`
+
+          Unresolved workflow state: \`$unresolved\`
+
+          This packet is execution evidence candidate only. Prospective-merge identity, conflict-free review, evidence admission and post-merge main evidence remain separate conditions.
+          EOF
+          )
+          gh api --method POST \
+            "/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+            -f body="$body" >/dev/null
+
+      - name: Delete qualification controller branch on complete execution
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C "$GITHUB_WORKSPACE/target" push origin \
+            --delete codex/exact-head-qualification-2026-09-09
