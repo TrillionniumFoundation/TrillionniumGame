@@ -29,13 +29,15 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout -B "$TARGET_BRANCH" FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
 
-      - name: Apply deterministic control registration repair
+      - name: Apply deterministic repair and materialize final tree
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/codex-pr114-control-registration-repair.py
+          rm -f scripts/codex-pr114-control-registration-repair.py
+          rm -f .github/workflows/codex-pr114-control-registration-repair.yml
 
-      - name: Execute complete Python and control contract
+      - name: Execute complete Python and control contract on final tree
         shell: bash
         run: |
           set -euo pipefail
@@ -44,15 +46,13 @@ jobs:
           python3 scripts/check-plan.py
           python3 scripts/check-rust-server-slice.py
 
-      - name: Remove repair-only tooling and publish product control commit
+      - name: Publish validated product control commit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_BRANCH: codex/server-composition-root-v2-2026-09-06
         run: |
           set -euo pipefail
-          rm -f scripts/codex-pr114-control-registration-repair.py
-          rm -f .github/workflows/codex-pr114-control-registration-repair.yml
           git config user.name "ProfHepta"
           git config user.email "102159240+ProfHepta@users.noreply.github.com"
           git add -A
