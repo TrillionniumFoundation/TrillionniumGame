@@ -1,0 +1,188 @@
+name: final-convergence-verification-20260909
+
+on:
+  push:
+    branches:
+      - codex/final-convergence-transport-2026-09-09
+    paths:
+      - .github/workflows/final-convergence-verification-20260909.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: final-convergence-verification-20260909
+  cancel-in-progress: false
+
+jobs:
+  verify-and-publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
+    steps:
+      - name: Fetch latest target candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/target"
+          git init "$GITHUB_WORKSPACE/target"
+          git -C "$GITHUB_WORKSPACE/target" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/target" fetch --no-tags origin \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/target" checkout -b "$TARGET_BRANCH" \
+            "refs/remotes/origin/${TARGET_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/target" rev-parse HEAD > "$RUNNER_TEMP/original-head"
+          git -C "$GITHUB_WORKSPACE/target" rev-parse HEAD^{tree} > "$RUNNER_TEMP/original-tree"
+
+      - name: Require completed source convergence
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e .github/workflows/architecture-source-export-one-shot.yml
+          test ! -e .github/workflows/architecture-test-name-one-shot.yml
+          test -x scripts/check-production-crypto-paths.py
+          test -x scripts/check-workspace-convergence.py
+          python3 scripts/check-production-crypto-paths.py
+          python3 scripts/check-workspace-convergence.py
+
+      - name: Run complete repeatable validation
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-production-crypto-paths.py
+          python3 scripts/check-workspace-convergence.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -q
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in \
+            crates/trnm-token-jwt-adapter-gate/Cargo.toml \
+            crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
+            cargo fmt --manifest-path "$manifest" -- --check
+            cargo test --manifest-path "$manifest" --all-targets --locked
+            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
+          done
+          (
+            cd runtime
+            test -z "$(gofmt -l .)"
+            go test ./... -count=1
+            go test -race ./... -count=1
+            go vet ./...
+          )
+
+      - name: Bind convergence state without promoting external facts
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import subprocess
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          root = Path('.')
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+          status = {
+              'schema': 'trillionnium.architecture-convergence-status.v1',
+              'project_id': 'trillionnium-game',
+              'plan_version': 3,
+              'observed_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
+              'source_identity': {
+                  'repository': 'TrillionniumFoundation/TrillionniumGame',
+                  'branch': 'codex/architecture-gap-closure-2026-09-08',
+                  'commit': head,
+                  'tree': tree,
+              },
+              'repository_controlled_results': {
+                  'temporary_source_export_workflow_absent': True,
+                  'active_process_private_crypto_helpers_absent': True,
+                  'long_lived_rust_workspace_converged': True,
+                  'root_workspace_package_count': 19,
+                  'temporary_isolated_gate_count': 2,
+                  'control_plane_passed': True,
+                  'rust_workspace_all_targets_passed': True,
+                  'rust_strict_clippy_passed': True,
+                  'go_test_race_vet_passed': True,
+              },
+              'external_and_product_facts': {
+                  'conflict_free_specialist_review_accepted': False,
+                  'administrative_no_bypass_packet_accepted': False,
+                  'all_denominator_family_locks_accepted': False,
+                  'global_sg1_acceptance': False,
+                  'complete_nakama_surface_implemented': False,
+                  'production_kms_hsm_accepted': False,
+                  'multi_node_ha_pitr_endurance_accepted': False,
+                  'shadow_canary_cutover_retirement_accepted': False,
+              },
+              'claims': {
+                  'source_convergence_verified': True,
+                  'accepted_evidence': False,
+                  'all_gaps_closed': False,
+                  'production_ready': False,
+                  'public_online': False,
+                  'cutover_authorized': False,
+                  'nakama_retired': False,
+              },
+          }
+          path = root / 'docs/status/ARCHITECTURE_CONVERGENCE_STATUS.json'
+          path.write_text(json.dumps(status, indent=2) + '\n', encoding='utf-8')
+
+          authority_path = root / 'docs/DOCUMENTATION_AUTHORITY.json'
+          authority = json.loads(authority_path.read_text(encoding='utf-8'))
+          relative = 'docs/status/ARCHITECTURE_CONVERGENCE_STATUS.json'
+          documents = authority['machine_control_documents']
+          if relative not in documents:
+              anchor = 'docs/status/CURRENT_STATE.json'
+              documents.insert(documents.index(anchor) + 1, relative)
+          authority_path.write_text(json.dumps(authority, indent=2) + '\n', encoding='utf-8')
+          PY
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          git diff --check
+
+      - name: Publish verified status as a fast-forward
+        working-directory: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          original=$(cat "$RUNNER_TEMP/original-head")
+          test "$(git rev-parse HEAD)" = "$original"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/DOCUMENTATION_AUTHORITY.json \
+            docs/status/ARCHITECTURE_CONVERGENCE_STATUS.json
+          git commit -m 'status: bind verified architecture convergence without claim promotion'
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+
+      - name: Delete all completed transport branches
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for branch in \
+            codex/architecture-convergence-transport-2026-09-08 \
+            codex/workspace-convergence-transport-2026-09-09 \
+            codex/final-convergence-transport-2026-09-09; do
+            git -C "$GITHUB_WORKSPACE/target" push origin --delete "$branch" || true
+          done
