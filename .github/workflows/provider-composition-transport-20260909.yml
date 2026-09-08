@@ -1,0 +1,201 @@
+name: provider-composition-transport-20260909
+
+on:
+  push:
+    branches:
+      - codex/provider-composition-transport-2026-09-09
+    paths:
+      - .github/workflows/provider-composition-transport-20260909.yml
+      - tools/compose_crypto_provider.py
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: provider-composition-transport-20260909
+  cancel-in-progress: false
+
+jobs:
+  compose-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
+      TARGET_PR: "116"
+    steps:
+      - name: Fetch migration tool and wait for source convergence stability
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/controller" "$GITHUB_WORKSPACE/target"
+          git init "$GITHUB_WORKSPACE/controller"
+          git -C "$GITHUB_WORKSPACE/controller" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/controller" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/controller" checkout --detach FETCH_HEAD
+          python3 -m py_compile "$GITHUB_WORKSPACE/controller/tools/compose_crypto_provider.py"
+
+          previous=''
+          stable=0
+          for _ in $(seq 1 30); do
+            current=$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
+            test -n "$current"
+            if [[ "$current" == "$previous" ]]; then
+              stable=$((stable + 1))
+            else
+              previous=$current
+              stable=1
+            fi
+            if [[ "$stable" -ge 4 ]]; then break; fi
+            sleep 30
+          done
+          test "$stable" -ge 4
+          printf '%s\n' "$previous" > "$RUNNER_TEMP/original-head"
+
+      - name: Clone latest target and require prior convergence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(cat "$RUNNER_TEMP/original-head")
+          git init "$GITHUB_WORKSPACE/target"
+          git -C "$GITHUB_WORKSPACE/target" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/target" fetch --no-tags origin "$head"
+          git -C "$GITHUB_WORKSPACE/target" checkout -b "$TARGET_BRANCH" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/target" rev-parse HEAD)" = "$head"
+          test -x "$GITHUB_WORKSPACE/target/scripts/check-workspace-convergence.py"
+          test -x "$GITHUB_WORKSPACE/target/scripts/check-single-server-authority.py"
+          test -x "$GITHUB_WORKSPACE/target/scripts/check-jwt-rustcrypto-backend.py"
+
+      - name: Compose active authentication through the opaque provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/controller/tools/compose_crypto_provider.py" \
+            "$GITHUB_WORKSPACE/target"
+          git -C "$GITHUB_WORKSPACE/target" diff --check
+
+      - name: Resolve dependencies and run focused security tests
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/provider.log") 2>&1
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          cargo fmt --all -- --check
+          python3 scripts/check-auth-provider-composition.py
+          cargo test -p trnm-token-crypto-provider --all-targets --locked
+          cargo clippy -p trnm-token-crypto-provider --all-targets --locked -- -D warnings
+          cargo test -p trnm-token-jwt-provider-adapter --all-targets --locked
+          cargo clippy -p trnm-token-jwt-provider-adapter --all-targets --locked -- -D warnings
+          cargo test -p trnm-persistence-pg --all-targets --locked
+          cargo clippy -p trnm-persistence-pg --all-targets --locked -- -D warnings
+          cargo test -p trnm-server --all-targets --locked
+          cargo clippy -p trnm-server --all-targets --locked -- -D warnings
+
+      - name: Run complete control-plane, Rust and Go corpus
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/full.log") 2>&1
+          python3 scripts/check-production-crypto-paths.py
+          python3 scripts/check-jwt-rustcrypto-backend.py
+          python3 scripts/check-auth-provider-composition.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-single-server-authority.py
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-trnm-server.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -q
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in \
+            crates/trnm-token-jwt-adapter-gate/Cargo.toml \
+            crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
+            cargo test --manifest-path "$manifest" --all-targets --locked
+            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
+          done
+          (
+            cd runtime
+            test -z "$(gofmt -l .)"
+            go test ./... -count=1
+            go test -race ./... -count=1
+            go vet ./...
+          )
+          git diff --check
+
+      - name: Publish only a normal tested fast-forward
+        working-directory: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          original=$(cat "$RUNNER_TEMP/original-head")
+          remote=$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
+          test "$remote" = "$original"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          test -n "$(git diff --cached --name-only)"
+          git commit -m 'security: compose active access authentication through opaque provider'
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          git rev-parse HEAD > "$RUNNER_TEMP/published-head"
+
+      - name: Record source result on the stacked PR
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(cat "$RUNNER_TEMP/published-head")
+          gh api --method POST \
+            "/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+            -f body="Opaque-provider composition source passed full validation at \`$head\`. Production KMS/HSM acceptance, independent cryptographic review and exact-head evidence admission remain false and were not synthesized." >/dev/null
+
+      - name: Record bounded failure diagnostics
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          original=$(cat "$RUNNER_TEMP/original-head" 2>/dev/null || printf unknown)
+          {
+            printf 'Opaque-provider composition failed closed; target was not force-updated.\n\n```text\nhead=%s\n' "$original"
+            for name in provider full; do
+              file="$RUNNER_TEMP/${name}.log"
+              if [[ -f "$file" ]]; then
+                printf '\n=== %s tail ===\n' "$name"
+                tail -n 80 "$file"
+              fi
+            done
+            printf '\n```\n'
+          } > "$RUNNER_TEMP/provider-failure.md"
+          gh api --method POST \
+            "/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+            -f body="$(tail -c 60000 "$RUNNER_TEMP/provider-failure.md")" >/dev/null
+
+      - name: Delete provider transport branch after success
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C "$GITHUB_WORKSPACE/target" push origin \
+            --delete codex/provider-composition-transport-2026-09-09
