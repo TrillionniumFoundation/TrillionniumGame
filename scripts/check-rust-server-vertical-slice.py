@@ -79,7 +79,7 @@ def main() -> int:
 
         required_source = (
             "#![forbid(unsafe_code)]",
-            "sync_channel(queue_capacity)",
+            "sync_channel::<QueuedConnection>(queue_capacity)",
             "set_read_timeout(Some(config.read_timeout))",
             "set_write_timeout(Some(config.write_timeout))",
             "PgRepository",
