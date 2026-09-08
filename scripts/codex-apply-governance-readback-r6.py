@@ -1,8 +1,0 @@
-#!/usr/bin/env python3
-"""One-shot source repair; expands an exact embedded reviewed patch."""
-import base64
-import zlib
-
-PAYLOAD = 'c-q}pOOM+&5Wf3YFzUflW6R#Qhhke72(ZbiMGG`NIR-&Xl+BnXRg&6WqsV{n4E468O}3j;b+9FB=9?$yqrQ2yDy&)Ug<5fSPx6a9YW4kWKA*qIb9o`|$Vtu)LNO<_T3W~ULJD^whUZKe;<Ohz=zDGyQwfI`EZwu@L=r6}Pn<R}pv^L)&w%8PQtXL1=h`^(2RzPZRu?AW6yK4JUkd}97?C@>N?7g+!<S%9TLD;?Wov3#n~L*G5X~I7u8)E%fT5K$TGCuH#aCXcf~74iZDDC2w(<`^JC4RELmhu~Ay<h`g*t44!ez@JK|{+Fq#<YmSIQG%A$8OiCS#zEDU=8o&Pa7x?!qRs6!U5$ve`f?|1N~#DQ#b#_{BDQOr?ZL*#hB(p4n|_1;uyU^$x+lTd#X^sC>_4!F$3eS+ADi;%ZMZ(}uL~7NpfCLXoRDV&VANhEao1-j%<(mLj<fGc%Dh?8=$q4{dU*&KzV2B>rhE24^M|O^!S{*<e8eQ%DXO_xI5A!f18os(fxT{-Dh%llp;v)O#CvtWUGidbYb`th7@e#=_cSKUVmstE;plM`o#l)<e@gtm@qsYkRYc29=)F>s#;Q41xNU$7)Z7H(Kuh-&R1ysjSM0Y5?kU3-~p5T<z}X`}c(#RAiN}aiR<5LYRgTd9@)ow;s|kVLAEpV!_L|kHUpP4YsVn+JMMjY9JEq-3+i&!XH`UfR!|iX&AIulNp9G%=m<($pwKy0mB<^DYKRX+cZ<d4~2;kg4?O!7VSV8O$%s_t}p7b_4WPud@aXd20|~3Y^2^*q|YpSsRS!8D0^kuSHJe6d%%bv3~Y~*xXa}Q84|cZN+5|eM~Wx;{>;pY8?5UG^+7>CC{^stDaE}WQ0n=ILKX`p974vp5=QeGOH<(^h5?7Utj1(k8nzscE->*F%k5FSZsAfRGDn4lv&u&}WAQY!TxQX2Q^`a^^l%KSHSSR1O)kQB?8M=}BU;;}RDge!dZ-0SnPc#adJruRn=2hZu8W+TFp3*p)QW~;fEah7aE5dq#}#}(c`pAn8+dy_qVSGleMVd}+!hjdTkRuic-ety>5#Vxw-m<hgkZ<5ZAlT`C2zqG=ygP1lbeA$w1zje8A%Av<{><A)iAO)I$(-zAcZ;wyB>>PU-O@j&gJ%YwPLx555gUbJs3K#kcEEv3DD#w!24i6iV=-u7Y@*>a-*#dGF2}u;HSP@{nJ?gReLh)ulG-BS32V-wpQw@H69@NGSP7UdJo$SE4Jyi`2x1zInRXT@q3P6D$HE&zy^NHT*3$j6-n#IC;INU-|znV^=({zYm66XWP_GRjxf5~dy5Hu_|9pZiO32@IDENq7mUjXEFj;KAJ*e<w?XIQiWM-Mg56MZVq28c_8pUUBG#&9gJ#a#0J`@JIBfS{T=+t3wTb5-N=cip>%vDhAA0(z=&&S*r>PL-$yuk+{;-3z12UN;zb-Y|hWbh?3(^qEYf>3*Ka0EE=e5VE?_Y|V1^W'
-source = zlib.decompress(base64.b85decode(PAYLOAD))
-exec(compile(source, "codex-apply-governance-readback-r6.py", "exec"), {})

@@ -673,13 +673,27 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         *ruleset_keys.values(),
         *environment_keys.values(),
     }
+    paginated_stability_keys = {
+        "main_checks", "rulesets", "environments", "required_workflow_jobs"
+    }
+    decision_surface_pagination_stable = (
+        paginated_stability_keys.issubset(stability_pairs)
+        and all(
+            not has_next_page(reads[source_key][1])
+            and not has_next_page(reads[stability_pairs[source_key]][1])
+            for source_key in paginated_stability_keys
+        )
+    )
     decision_surface_stable = (
         set(stability_pairs) == required_stability_keys
         and all(
             reads[stable_key][0] == 200
             and values[stable_key] == values[source_key]
+            and has_next_page(reads[stable_key][1])
+            == has_next_page(reads[source_key][1])
             for source_key, stable_key in stability_pairs.items()
         )
+        and decision_surface_pagination_stable
     )
     policy_surface_stable = decision_surface_stable
     environment_rows = nested(
@@ -753,6 +767,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         ),
         "canonical_required_workflow_job_evidence": canonical_job_evidence,
         "decision_surface_stable": decision_surface_stable,
+        "decision_surface_pagination_stable": decision_surface_pagination_stable,
         "policy_surface_stable": policy_surface_stable,
         "strict_required_check": isinstance(required, dict) and required.get("strict") is True and context_present,
         "admins_enforced": enabled(protection, "enforce_admins"),

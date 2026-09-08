@@ -605,4 +605,41 @@ class Tests(unittest.TestCase):
                 self.assertFalse(result["all_required_assertions"])
 
 
+    def test_second_snapshot_pagination_drift_is_rejected(self):
+        class PaginationDriftApi(FakeApi):
+            def __init__(self, data, drifting_key):
+                super().__init__(data)
+                self.drifting_key = drifting_key
+                self.counts = {}
+
+            def get(self, path):
+                result = super().get(path)
+                key = self.key_for(path)
+                self.counts[key] = self.counts.get(key, 0) + 1
+                if key == self.drifting_key and self.counts[key] == 2:
+                    result[1]["link"] = (
+                        '<https://api.github.com/next>; rel="next"'
+                    )
+                return result
+
+        for drifting_key in (
+            "main_checks",
+            "rulesets",
+            "environments",
+            "required_workflow_jobs",
+        ):
+            with self.subTest(key=drifting_key), tempfile.TemporaryDirectory() as directory:
+                result = MODULE.capture(
+                    PaginationDriftApi(values(), drifting_key),
+                    Path(directory) / "packet",
+                    "a" * 40,
+                    ["governance-audit"],
+                )
+                self.assertFalse(
+                    result["assertions"]["decision_surface_pagination_stable"]
+                )
+                self.assertFalse(result["assertions"]["decision_surface_stable"])
+                self.assertFalse(result["all_required_assertions"])
+
+
 if __name__ == "__main__": unittest.main()
