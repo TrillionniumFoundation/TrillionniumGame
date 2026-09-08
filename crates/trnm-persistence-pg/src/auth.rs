@@ -529,7 +529,10 @@ mod tests {
         let value = format!("{}.{}", "44".repeat(16), "s".repeat(48));
         let parsed = parse_refresh_credential(&value).unwrap();
         assert_eq!(parsed.id, RefreshTokenId::new([0x44; 16]));
-        assert_eq!(parsed.digest.as_bytes(), &sha256_digest(value.as_bytes()).unwrap());
+        assert_eq!(
+            parsed.digest.as_bytes(),
+            &sha256_digest(value.as_bytes()).unwrap()
+        );
 
         for invalid in [
             "",
