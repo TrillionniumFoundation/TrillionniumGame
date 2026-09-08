@@ -1,0 +1,160 @@
+name: architecture-apply-convergence-transport
+
+on:
+  push:
+    branches:
+      - codex/architecture-convergence-transport-2026-09-08
+    paths:
+      - .github/workflows/architecture-apply-convergence-transport.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: architecture-apply-convergence-transport
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  GOTOOLCHAIN: auto
+  TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
+  TARGET_BASE_SHA: 01c3026611e8d33ad4825b57f201d1591139e261
+  PATCH_SHA256: 94db5065745ab30d65c3a81904bbf631879d3022cd49938acd94bdb8a4430f55
+  PATCH_XZ_SHA256: c1109fce31944d617c7a2c63a9b6734647da88ec2f7543d39fd75d577a11bfd4
+
+jobs:
+  apply-validate-and-publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Fetch exact transport head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
+          test "$GITHUB_REF_NAME" = 'codex/architecture-convergence-transport-2026-09-08'
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=20 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" show -s --format='transport_commit=%H%ntransport_tree=%T'
+
+      - name: Reconstruct and authenticate exact convergence patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mapfile -t parts < <(find .github/patches -maxdepth 1 -type f -name 'convergence.part-*' -print | sort)
+          test "${#parts[@]}" -eq 8
+          cat "${parts[@]}" > "$RUNNER_TEMP/convergence.patch.xz.b64"
+          base64 --decode "$RUNNER_TEMP/convergence.patch.xz.b64" > "$RUNNER_TEMP/convergence.patch.xz"
+          test "$(sha256sum "$RUNNER_TEMP/convergence.patch.xz" | cut -d' ' -f1)" = "$PATCH_XZ_SHA256"
+          xz -dc "$RUNNER_TEMP/convergence.patch.xz" > "$RUNNER_TEMP/convergence.patch"
+          test "$(sha256sum "$RUNNER_TEMP/convergence.patch" | cut -d' ' -f1)" = "$PATCH_SHA256"
+          test -s "$RUNNER_TEMP/convergence.patch"
+
+      - name: Bind and check out the unchanged target candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin \
+            "refs/heads/${TARGET_BRANCH}:refs/remotes/origin/convergence-target"
+          actual=$(git rev-parse refs/remotes/origin/convergence-target)
+          test "$actual" = "$TARGET_BASE_SHA"
+          git checkout --detach refs/remotes/origin/convergence-target
+          test "$(git rev-parse HEAD)" = "$TARGET_BASE_SHA"
+          git show -s --format='target_commit=%H%ntarget_tree=%T'
+
+      - name: Apply exact convergence patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git apply --index --3way "$RUNNER_TEMP/convergence.patch"
+          git diff --cached --check
+          test ! -e .github/workflows/architecture-source-export-one-shot.yml
+          test ! -e crates/trnm-token-jwt-adapter-gate
+          test ! -e crates/trnm-token-jwt-adapter-gate-v2
+          test "$(find . -name Cargo.lock -not -path './.git/*' | sort)" = './Cargo.lock'
+
+      - name: Install exact Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Regenerate single lockfile and format unified workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo generate-lockfile
+          cargo fmt --all
+          git add -A
+          git diff --cached --check
+          test "$(find . -name Cargo.lock -not -path './.git/*' | sort)" = './Cargo.lock'
+
+      - name: Validate control plane and complete Python corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' > "$RUNNER_TEMP/python-tests.log" 2>&1 || {
+            tail -n 600 "$RUNNER_TEMP/python-tests.log" >&2
+            exit 1
+          }
+          tail -n 60 "$RUNNER_TEMP/python-tests.log"
+
+      - name: Test and strictly lint unified Rust workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Validate Go migration input
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          files=$(find runtime -type f -name '*.go' -print | sort)
+          test -n "$files"
+          unformatted=$(printf '%s\n' "$files" | xargs gofmt -l)
+          test -z "$unformatted" || { printf '%s\n' "$unformatted" >&2; exit 1; }
+          cd runtime
+          go test ./... -count=1
+          go test -race ./... -count=1
+          go vet ./...
+
+      - name: Commit validated convergence tree and fast-forward target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git add -A
+          git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'architecture: converge workspace crypto and server authority'
+          validated=$(git rev-parse HEAD)
+          git push origin "${validated}:refs/heads/${TARGET_BRANCH}"
+          printf 'validated_commit=%s\n' "$validated"
+          printf 'validated_tree=%s\n' "$(git rev-parse HEAD^{tree})"
