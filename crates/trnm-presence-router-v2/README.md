@@ -8,7 +8,7 @@ Owner role: `realtime-distributed-systems`
 
 ## Status and authority
 
-This document is the current module-level engineering contract for `trnm-presence-router-v2`. Its authority is limited to deterministic in-process presence, connection ownership, session-generation fencing, and bounded revocation fanout. Source presence or a passing unit suite does not establish distributed delivery, durable revocation, Nakama compatibility, or production acceptance.
+This document is the current module-level engineering contract for `trnm-presence-router-v2`. Its authority is limited to deterministic in-process presence, connection ownership, session-generation fencing, bounded revocation fanout, connection-actor admission, authenticated reconnect cursors and receipt-reconciled disconnect effects. Source presence or a passing unit suite does not establish distributed delivery, durable revocation, Nakama compatibility, or production acceptance.
 
 ## Responsibilities
 
@@ -21,6 +21,9 @@ The module owns:
 - atomic removal of all bound connections at or below a revoked session generation;
 - stale session and connection re-entry rejection;
 - finite admitted universes for active connections, tracked connection identities, tracked sessions, revocation high-waters, presence entries, and per-session fanout;
+- bounded actor queues, frame bytes, pending requests and aggregate payload memory;
+- generation-bound asynchronous request handles and authenticated reconnect cursors;
+- receipt-reconciled disconnect effects with archive and epoch-wide verifier-receipt reservations;
 - fail-closed invariant checking before and after staged mutations.
 
 It does not own network transport, identity-provider issuance, durable revocation storage, cluster membership, cross-node fanout, reconnect orchestration, or actual socket termination.
@@ -40,6 +43,16 @@ Every applied registry mutation is executed against a cloned candidate and commi
 `PresenceRouter` retains connection-generation high-water state after route removal. `SessionRouteRegistry` consequently has separate active-connection and tracked-connection limits. Removing a connection releases active capacity, while a new connection identity is still rejected once the tracked-connection universe is full. Reusing the same admitted identity requires a strictly newer connection generation. Capacity admission computes the checked post-replacement inventory, so a higher generation that atomically retires old streams or an exclusively owned old session is accepted when it does not increase the bounded state.
 
 Revocation and connection high-waters are never opportunistically evicted. Long-lived deployments may compact only through a quiescent namespace rollover: every mutation carries the active `SessionRouteNamespace`; a trusted verifier must accept a proof binding the current registry/router revisions, retained cardinalities, a durable checkpoint digest and a producer-barrier digest; active bindings and presence entries must be zero. The rollover advances the namespace monotonically, emits a restartable `SessionRouteCheckpoint`, resets the bounded high-water window, and permanently rejects delayed messages from retired namespaces.
+
+### Bounded recovery layers
+
+`ConnectionActor` independently bounds frame admission, queued egress and pending request state. Every asynchronous response, cancellation and completion requires the exact live `RequestHandle`; numeric correlation reuse cannot let a delayed callback mutate a later admission. Drain preserves only the finite request set admitted before its fence.
+
+`ReconnectJournal` authenticates each cursor and requires one exact journal, stream, session-generation and producer-epoch identity. Replay is contiguous and bounded; expired, ahead, tampered, wrong-key and retired-generation cursors fail closed.
+
+`DisconnectJournal` binds every possible transport write to one immutable dispatch identity. After delivery becomes ambiguous, retry is forbidden until a trusted verifier accepts a typed exact outcome. One `Unknown` result may be retained and replayed exactly; a distinct second unknown fails without mutation. Admission reserves archive capacity and the worst-case verifier-receipt allowance. Each accepted receipt consumes one reservation before either record or owner-map mutation; terminal archive releases unused reservation, and epoch advance clears the finite namespace only after all active records have left.
+
+`DisconnectJournalConfig` rejects zero, excessive and arithmetically unsafe limits. Construction checks the complete `tombstone_capacity × max_attempts × receipts_per_attempt` product against the repository hard cap. Production reconnect authenticators and outcome verifiers must authenticate the complete typed identity; a caller boolean or nonzero digest is never proof.
 
 ## Public contracts
 
@@ -111,19 +124,22 @@ The focused corpus covers:
 - full-capacity same-connection generation takeover and multi-stream-to-one replacement;
 - exclusive-session replacement without false tracked-session exhaustion;
 - verified quiescent namespace rollover, restart restore and stale-namespace rejection;
-- invalid, incoherent or unverified limit/rollover configuration.
+- invalid, incoherent or unverified limit/rollover configuration;
+- stale actor callbacks after correlation reuse and during drain;
+- authenticated reconnect replay and cross-identity cursor rejection;
+- bounded unknown outcomes, archive reservation, receipt-budget saturation and epoch recovery.
 
 The isolated workspace must also execute in the stable aggregate gate. Empty discovery, skipped mandatory tests, warnings, stale-head results, and local-only execution receive no evidence credit.
 
 ## Operations
 
-Adapters must expose bounded cardinalities, generation mismatch rejection, revocation fanout, reconnect outcomes, capacity saturation, and invariant failures without high-cardinality labels. Readiness, drain behavior, durable revocation replay, and recovery must be specified before production use.
+Adapters must expose bounded cardinalities, generation mismatch rejection, revocation fanout, actor saturation, cursor rejection, disconnect reconciliation outcomes, receipt-budget saturation, reconnect outcomes, capacity saturation, and invariant failures without high-cardinality labels. Readiness, drain behavior, durable revocation replay, production verifier behavior, authenticated epoch rollover, and recovery must be specified before production use.
 
 Evidence must bind the exact repository, source commit/tree, prospective merge object, workflow/run/job/attempt, environment, assertions, retained artifact digests, limitations, expiry, and independent review.
 
 ## Compatibility and evidence
 
-This source candidate preserves deterministic in-process route semantics only. Durable revocation replay, live socket closure, distributed fanout, reconnect recovery, Nakama differential evidence, production capacity/endurance, and conflict-free specialist acceptance remain outside this module boundary. No local source or CI result may be transferred as proof of those external properties.
+This source candidate preserves deterministic in-process route and recovery semantics only. Durable revocation replay, live socket closure, distributed fanout, reconnect transport, durable receipt/checkpoint persistence, Nakama differential evidence, production capacity/endurance, and conflict-free specialist acceptance remain outside this module boundary. No local source or CI result may be transferred as proof of those external properties.
 
 ## Known gaps and exit criteria
 
