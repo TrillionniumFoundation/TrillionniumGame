@@ -28,6 +28,7 @@ jobs:
     env:
       TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
       TARGET_PR: "116"
+      PLAN_V32_MODE: validate
     steps:
       - name: Fetch exact controller source
         env:
