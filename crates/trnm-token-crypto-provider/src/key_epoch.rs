@@ -1,8 +1,8 @@
-//! Bounded monotonic operational key-epoch lifecycle.
+//! Bounded monotonic operational key-epoch lifecycle with verified archive rollover.
 //!
-//! The registry stores opaque key identifiers only. It enforces a finite
-//! admitted epoch universe, monotonic activation time, anti-rollback,
-//! terminal revocation and exact epoch lookup.
+//! The registry stores opaque key identifiers only. Terminal records may leave
+//! the operational window only through an externally verified, digest-chained
+//! checkpoint. New key identifiers are checked against that durable archive.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -64,6 +64,31 @@ pub struct KeyEpochRecord {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyEpochArchiveCheckpoint {
+    pub sequence: u64,
+    pub previous_archive_digest: Option<[u8; 32]>,
+    pub archive_digest: [u8; 32],
+    pub highest_epoch: KeyEpoch,
+    pub last_lifecycle_time: i64,
+    pub authority_lost_epoch: Option<KeyEpoch>,
+    pub active: Option<KeyEpoch>,
+    pub retained_records: Vec<KeyEpochRecord>,
+    pub archived_records: Vec<KeyEpochRecord>,
+}
+
+pub trait KeyEpochArchiveVerifier: fmt::Debug + Send + Sync {
+    /// Authenticate the complete checkpoint. For sequence > 1 this includes
+    /// resolving `previous_archive_digest` and proving that the carried
+    /// `highest_epoch`, `last_lifecycle_time`, and `authority_lost_epoch`
+    /// witnesses do not roll back or detach from the predecessor chain.
+    fn verify_checkpoint(&self, checkpoint: &KeyEpochArchiveCheckpoint) -> bool;
+
+    /// Prove absence across the complete authenticated archive chain, not only
+    /// the records retained in the current operational window.
+    fn key_id_is_absent(&self, checkpoint: &KeyEpochArchiveCheckpoint, candidate: KeyId) -> bool;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KeyEpochError {
     ZeroEpoch,
     ZeroKeyId,
@@ -78,6 +103,10 @@ pub enum KeyEpochError {
     AlreadyInitialized,
     NotInitialized,
     EpochNotFound(KeyEpoch),
+    EpochArchived {
+        epoch: KeyEpoch,
+        archive_digest: [u8; 32],
+    },
     NonContiguousRotation {
         current: KeyEpoch,
         received: KeyEpoch,
@@ -103,6 +132,13 @@ pub enum KeyEpochError {
     },
     ReplacementRequiresRevokedEpoch(KeyEpoch),
     EpochTerminal(KeyEpoch),
+    ZeroArchiveDigest,
+    NoTerminalEpochs,
+    ArchiveVerificationRequired,
+    ArchiveVerificationFailed,
+    CheckpointInvalid(&'static str),
+    CheckpointVerificationFailed,
+    ArchiveSequenceExhausted,
 }
 
 impl fmt::Display for KeyEpochError {
@@ -128,6 +164,11 @@ impl fmt::Display for KeyEpochError {
             Self::EpochNotFound(epoch) => {
                 write!(formatter, "key epoch {} is not registered", epoch.get())
             }
+            Self::EpochArchived { epoch, .. } => write!(
+                formatter,
+                "key epoch {} requires durable archive verification",
+                epoch.get()
+            ),
             Self::NonContiguousRotation { current, received } => write!(
                 formatter,
                 "key rotation must advance exactly one epoch from {} to {}, not {}",
@@ -180,6 +221,26 @@ impl fmt::Display for KeyEpochError {
             Self::EpochTerminal(epoch) => {
                 write!(formatter, "key epoch {} is terminal", epoch.get())
             }
+            Self::ZeroArchiveDigest => {
+                formatter.write_str("key epoch archive digest must not be zero")
+            }
+            Self::NoTerminalEpochs => {
+                formatter.write_str("key epoch archive has no terminal records")
+            }
+            Self::ArchiveVerificationRequired => formatter
+                .write_str("new key identity requires verification against the durable archive"),
+            Self::ArchiveVerificationFailed => {
+                formatter.write_str("key epoch archive verification failed")
+            }
+            Self::CheckpointInvalid(message) => {
+                write!(formatter, "key epoch checkpoint invalid: {message}")
+            }
+            Self::CheckpointVerificationFailed => {
+                formatter.write_str("key epoch checkpoint was not accepted")
+            }
+            Self::ArchiveSequenceExhausted => {
+                formatter.write_str("key epoch archive sequence exhausted")
+            }
         }
     }
 }
@@ -192,6 +253,11 @@ pub struct KeyEpochRegistry {
     active: Option<KeyEpoch>,
     records: BTreeMap<KeyEpoch, KeyEpochRecord>,
     used_key_ids: BTreeSet<KeyId>,
+    highest_epoch: Option<KeyEpoch>,
+    last_lifecycle_time: Option<i64>,
+    authority_lost_epoch: Option<KeyEpoch>,
+    checkpoint: Option<KeyEpochArchiveCheckpoint>,
+    next_archive_sequence: u64,
 }
 
 impl Default for KeyEpochRegistry {
@@ -201,6 +267,11 @@ impl Default for KeyEpochRegistry {
             active: None,
             records: BTreeMap::new(),
             used_key_ids: BTreeSet::new(),
+            highest_epoch: None,
+            last_lifecycle_time: None,
+            authority_lost_epoch: None,
+            checkpoint: None,
+            next_archive_sequence: 1,
         }
     }
 }
@@ -211,20 +282,43 @@ impl KeyEpochRegistry {
     }
 
     pub fn with_capacity(capacity: usize) -> Result<Self, KeyEpochError> {
-        if capacity == 0 {
-            return Err(KeyEpochError::ZeroCapacity);
+        validate_capacity(capacity)?;
+        Ok(Self {
+            capacity,
+            ..Self::default()
+        })
+    }
+
+    pub fn from_checkpoint(
+        capacity: usize,
+        checkpoint: KeyEpochArchiveCheckpoint,
+        verifier: &dyn KeyEpochArchiveVerifier,
+    ) -> Result<Self, KeyEpochError> {
+        validate_capacity(capacity)?;
+        validate_checkpoint_shape(&checkpoint, capacity)?;
+        if !verifier.verify_checkpoint(&checkpoint) {
+            return Err(KeyEpochError::CheckpointVerificationFailed);
         }
-        if capacity > MAX_OPERATIONAL_KEY_EPOCHS {
-            return Err(KeyEpochError::CapacityTooLarge {
-                received: capacity,
-                maximum: MAX_OPERATIONAL_KEY_EPOCHS,
-            });
+        let next_archive_sequence = checkpoint
+            .sequence
+            .checked_add(1)
+            .ok_or(KeyEpochError::ArchiveSequenceExhausted)?;
+        let mut records = BTreeMap::new();
+        let mut used_key_ids = BTreeSet::new();
+        for record in &checkpoint.retained_records {
+            records.insert(record.epoch, *record);
+            used_key_ids.insert(record.key_id);
         }
         Ok(Self {
             capacity,
-            active: None,
-            records: BTreeMap::new(),
-            used_key_ids: BTreeSet::new(),
+            active: checkpoint.active,
+            records,
+            used_key_ids,
+            highest_epoch: Some(checkpoint.highest_epoch),
+            last_lifecycle_time: Some(checkpoint.last_lifecycle_time),
+            authority_lost_epoch: checkpoint.authority_lost_epoch,
+            checkpoint: Some(checkpoint),
+            next_archive_sequence,
         })
     }
 
@@ -240,13 +334,25 @@ impl KeyEpochRegistry {
         self.records.is_empty()
     }
 
+    pub const fn highest_epoch(&self) -> Option<KeyEpoch> {
+        self.highest_epoch
+    }
+
+    pub const fn last_lifecycle_time(&self) -> Option<i64> {
+        self.last_lifecycle_time
+    }
+
+    pub fn checkpoint(&self) -> Option<&KeyEpochArchiveCheckpoint> {
+        self.checkpoint.as_ref()
+    }
+
     pub fn initialize(
         &mut self,
         epoch: KeyEpoch,
         key_id: KeyId,
         activated_at_unix_seconds: i64,
     ) -> Result<KeyEpochRecord, KeyEpochError> {
-        if !self.records.is_empty() || self.active.is_some() {
+        if self.highest_epoch.is_some() || self.active.is_some() || !self.records.is_empty() {
             return Err(KeyEpochError::AlreadyInitialized);
         }
         self.require_capacity()?;
@@ -259,6 +365,9 @@ impl KeyEpochRegistry {
         self.records.insert(epoch, record);
         self.used_key_ids.insert(key_id);
         self.active = Some(epoch);
+        self.highest_epoch = Some(epoch);
+        self.last_lifecycle_time = Some(activated_at_unix_seconds);
+        self.authority_lost_epoch = None;
         Ok(record)
     }
 
@@ -281,13 +390,55 @@ impl KeyEpochRegistry {
         activated_at_unix_seconds: i64,
         previous_retire_after_unix_seconds: i64,
     ) -> Result<KeyEpochRecord, KeyEpochError> {
-        let current = self.active_record()?;
-        self.validate_next_epoch(
-            current.epoch,
-            current.activated_at_unix_seconds,
+        self.rotate_inner(
             next_epoch,
             next_key_id,
             activated_at_unix_seconds,
+            previous_retire_after_unix_seconds,
+            None,
+        )
+    }
+
+    pub fn rotate_with_archive_verifier(
+        &mut self,
+        next_epoch: KeyEpoch,
+        next_key_id: KeyId,
+        activated_at_unix_seconds: i64,
+        previous_retire_after_unix_seconds: i64,
+        verifier: &dyn KeyEpochArchiveVerifier,
+    ) -> Result<KeyEpochRecord, KeyEpochError> {
+        self.rotate_inner(
+            next_epoch,
+            next_key_id,
+            activated_at_unix_seconds,
+            previous_retire_after_unix_seconds,
+            Some(verifier),
+        )
+    }
+
+    fn rotate_inner(
+        &mut self,
+        next_epoch: KeyEpoch,
+        next_key_id: KeyId,
+        activated_at_unix_seconds: i64,
+        previous_retire_after_unix_seconds: i64,
+        verifier: Option<&dyn KeyEpochArchiveVerifier>,
+    ) -> Result<KeyEpochRecord, KeyEpochError> {
+        let current = self.active_record()?;
+        let highest = self.highest_epoch.ok_or(KeyEpochError::NotInitialized)?;
+        if current.epoch != highest {
+            return Err(KeyEpochError::CheckpointInvalid(
+                "active epoch is not the monotonic high-water",
+            ));
+        }
+        self.validate_next_epoch(
+            highest,
+            self.last_lifecycle_time
+                .ok_or(KeyEpochError::NotInitialized)?,
+            next_epoch,
+            next_key_id,
+            activated_at_unix_seconds,
+            verifier,
         )?;
         if previous_retire_after_unix_seconds <= activated_at_unix_seconds {
             return Err(KeyEpochError::InvalidOverlap);
@@ -308,6 +459,9 @@ impl KeyEpochRegistry {
         self.records.insert(next_epoch, next);
         self.used_key_ids.insert(next_key_id);
         self.active = Some(next_epoch);
+        self.highest_epoch = Some(next_epoch);
+        self.last_lifecycle_time = Some(activated_at_unix_seconds);
+        self.authority_lost_epoch = None;
         Ok(next)
     }
 
@@ -317,31 +471,51 @@ impl KeyEpochRegistry {
         next_key_id: KeyId,
         activated_at_unix_seconds: i64,
     ) -> Result<KeyEpochRecord, KeyEpochError> {
-        if self.active.is_some() {
-            return Err(KeyEpochError::AlreadyInitialized);
-        }
-        let highest = self
-            .records
-            .iter()
-            .next_back()
-            .map(|(_, record)| *record)
-            .ok_or(KeyEpochError::NotInitialized)?;
-        let revoked_at = match highest.state {
-            KeyEpochState::Revoked {
-                revoked_at_unix_seconds,
-            } => revoked_at_unix_seconds,
-            _ => {
-                return Err(KeyEpochError::ReplacementRequiresRevokedEpoch(
-                    highest.epoch,
-                ))
-            }
-        };
-        self.validate_next_epoch(
-            highest.epoch,
-            revoked_at.max(highest.activated_at_unix_seconds),
+        self.install_after_revocation_inner(
             next_epoch,
             next_key_id,
             activated_at_unix_seconds,
+            None,
+        )
+    }
+
+    pub fn install_after_revocation_with_archive_verifier(
+        &mut self,
+        next_epoch: KeyEpoch,
+        next_key_id: KeyId,
+        activated_at_unix_seconds: i64,
+        verifier: &dyn KeyEpochArchiveVerifier,
+    ) -> Result<KeyEpochRecord, KeyEpochError> {
+        self.install_after_revocation_inner(
+            next_epoch,
+            next_key_id,
+            activated_at_unix_seconds,
+            Some(verifier),
+        )
+    }
+
+    fn install_after_revocation_inner(
+        &mut self,
+        next_epoch: KeyEpoch,
+        next_key_id: KeyId,
+        activated_at_unix_seconds: i64,
+        verifier: Option<&dyn KeyEpochArchiveVerifier>,
+    ) -> Result<KeyEpochRecord, KeyEpochError> {
+        if self.active.is_some() {
+            return Err(KeyEpochError::AlreadyInitialized);
+        }
+        let highest = self.highest_epoch.ok_or(KeyEpochError::NotInitialized)?;
+        if self.authority_lost_epoch != Some(highest) {
+            return Err(KeyEpochError::ReplacementRequiresRevokedEpoch(highest));
+        }
+        self.validate_next_epoch(
+            highest,
+            self.last_lifecycle_time
+                .ok_or(KeyEpochError::NotInitialized)?,
+            next_epoch,
+            next_key_id,
+            activated_at_unix_seconds,
+            verifier,
         )?;
         let next = KeyEpochRecord {
             epoch: next_epoch,
@@ -352,6 +526,9 @@ impl KeyEpochRegistry {
         self.records.insert(next_epoch, next);
         self.used_key_ids.insert(next_key_id);
         self.active = Some(next_epoch);
+        self.highest_epoch = Some(next_epoch);
+        self.last_lifecycle_time = Some(activated_at_unix_seconds);
+        self.authority_lost_epoch = None;
         Ok(next)
     }
 
@@ -360,11 +537,22 @@ impl KeyEpochRegistry {
         epoch: KeyEpoch,
         now_unix_seconds: i64,
     ) -> Result<KeyEpochRecord, KeyEpochError> {
-        let record = self
-            .records
-            .get(&epoch)
-            .copied()
-            .ok_or(KeyEpochError::EpochNotFound(epoch))?;
+        let record = match self.records.get(&epoch).copied() {
+            Some(record) => record,
+            None => {
+                if let (Some(checkpoint), Some(highest)) =
+                    (self.checkpoint.as_ref(), self.highest_epoch)
+                {
+                    if epoch <= highest {
+                        return Err(KeyEpochError::EpochArchived {
+                            epoch,
+                            archive_digest: checkpoint.archive_digest,
+                        });
+                    }
+                }
+                return Err(KeyEpochError::EpochNotFound(epoch));
+            }
+        };
         if now_unix_seconds < record.activated_at_unix_seconds {
             return Err(KeyEpochError::SignerNotYetActive {
                 epoch,
@@ -386,6 +574,7 @@ impl KeyEpochRegistry {
 
     pub fn retire_expired(&mut self, now_unix_seconds: i64) -> usize {
         let mut changed = 0;
+        let mut latest_terminal_time = self.last_lifecycle_time;
         for record in self.records.values_mut() {
             if let KeyEpochState::VerifyOnly {
                 retire_after_unix_seconds,
@@ -395,10 +584,16 @@ impl KeyEpochRegistry {
                     record.state = KeyEpochState::Retired {
                         retired_at_unix_seconds: retire_after_unix_seconds,
                     };
+                    latest_terminal_time = Some(
+                        latest_terminal_time.map_or(retire_after_unix_seconds, |value| {
+                            value.max(retire_after_unix_seconds)
+                        }),
+                    );
                     changed += 1;
                 }
             }
         }
+        self.last_lifecycle_time = latest_terminal_time;
         changed
     }
 
@@ -431,10 +626,80 @@ impl KeyEpochRegistry {
             ..current
         };
         self.records.insert(epoch, next);
+        self.last_lifecycle_time = Some(
+            self.last_lifecycle_time
+                .map_or(revoked_at_unix_seconds, |value| {
+                    value.max(revoked_at_unix_seconds)
+                }),
+        );
         if self.active == Some(epoch) {
             self.active = None;
+            self.authority_lost_epoch = Some(epoch);
         }
         Ok(next)
+    }
+
+    pub fn archive_terminal(
+        &mut self,
+        archive_digest: [u8; 32],
+        verifier: &dyn KeyEpochArchiveVerifier,
+    ) -> Result<KeyEpochArchiveCheckpoint, KeyEpochError> {
+        if archive_digest.iter().all(|byte| *byte == 0) {
+            return Err(KeyEpochError::ZeroArchiveDigest);
+        }
+        let archived_records: Vec<_> = self
+            .records
+            .values()
+            .copied()
+            .filter(|record| {
+                matches!(
+                    record.state,
+                    KeyEpochState::Retired { .. } | KeyEpochState::Revoked { .. }
+                )
+            })
+            .collect();
+        if archived_records.is_empty() {
+            return Err(KeyEpochError::NoTerminalEpochs);
+        }
+        let retained_records: Vec<_> = self
+            .records
+            .values()
+            .copied()
+            .filter(|record| {
+                matches!(
+                    record.state,
+                    KeyEpochState::Active | KeyEpochState::VerifyOnly { .. }
+                )
+            })
+            .collect();
+        let checkpoint = KeyEpochArchiveCheckpoint {
+            sequence: self.next_archive_sequence,
+            previous_archive_digest: self.checkpoint.as_ref().map(|value| value.archive_digest),
+            archive_digest,
+            highest_epoch: self.highest_epoch.ok_or(KeyEpochError::NotInitialized)?,
+            last_lifecycle_time: self
+                .last_lifecycle_time
+                .ok_or(KeyEpochError::NotInitialized)?,
+            authority_lost_epoch: self.authority_lost_epoch,
+            active: self.active,
+            retained_records,
+            archived_records,
+        };
+        validate_checkpoint_shape(&checkpoint, self.capacity)?;
+        if !verifier.verify_checkpoint(&checkpoint) {
+            return Err(KeyEpochError::ArchiveVerificationFailed);
+        }
+        let next_archive_sequence = self
+            .next_archive_sequence
+            .checked_add(1)
+            .ok_or(KeyEpochError::ArchiveSequenceExhausted)?;
+        for record in &checkpoint.archived_records {
+            self.records.remove(&record.epoch);
+            self.used_key_ids.remove(&record.key_id);
+        }
+        self.checkpoint = Some(checkpoint.clone());
+        self.next_archive_sequence = next_archive_sequence;
+        Ok(checkpoint)
     }
 
     pub fn record(&self, epoch: KeyEpoch) -> Option<KeyEpochRecord> {
@@ -461,6 +726,7 @@ impl KeyEpochRegistry {
         next_epoch: KeyEpoch,
         next_key_id: KeyId,
         activated_at_unix_seconds: i64,
+        verifier: Option<&dyn KeyEpochArchiveVerifier>,
     ) -> Result<(), KeyEpochError> {
         let expected =
             current_epoch
@@ -478,6 +744,15 @@ impl KeyEpochRegistry {
         }
         if self.used_key_ids.contains(&next_key_id) {
             return Err(KeyEpochError::KeyIdReused(next_key_id));
+        }
+        if let Some(checkpoint) = self.checkpoint.as_ref() {
+            let verifier = verifier.ok_or(KeyEpochError::ArchiveVerificationRequired)?;
+            if !verifier.verify_checkpoint(checkpoint) {
+                return Err(KeyEpochError::ArchiveVerificationFailed);
+            }
+            if !verifier.key_id_is_absent(checkpoint, next_key_id) {
+                return Err(KeyEpochError::KeyIdReused(next_key_id));
+            }
         }
         if activated_at_unix_seconds <= previous_time {
             return Err(KeyEpochError::ActivationTimeRegression {
@@ -499,15 +774,380 @@ impl KeyEpochRegistry {
     }
 }
 
+fn validate_capacity(capacity: usize) -> Result<(), KeyEpochError> {
+    if capacity == 0 {
+        return Err(KeyEpochError::ZeroCapacity);
+    }
+    if capacity > MAX_OPERATIONAL_KEY_EPOCHS {
+        return Err(KeyEpochError::CapacityTooLarge {
+            received: capacity,
+            maximum: MAX_OPERATIONAL_KEY_EPOCHS,
+        });
+    }
+    Ok(())
+}
+
+fn validate_checkpoint_shape(
+    checkpoint: &KeyEpochArchiveCheckpoint,
+    capacity: usize,
+) -> Result<(), KeyEpochError> {
+    if checkpoint.sequence == 0 {
+        return Err(KeyEpochError::CheckpointInvalid("zero archive sequence"));
+    }
+    if checkpoint.archive_digest.iter().all(|byte| *byte == 0) {
+        return Err(KeyEpochError::ZeroArchiveDigest);
+    }
+    if checkpoint.archived_records.is_empty() {
+        return Err(KeyEpochError::NoTerminalEpochs);
+    }
+    if checkpoint.retained_records.len() > capacity {
+        return Err(KeyEpochError::CheckpointInvalid(
+            "retained records exceed operational capacity",
+        ));
+    }
+    let mut epochs = BTreeSet::new();
+    let mut key_ids = BTreeSet::new();
+    for record in &checkpoint.archived_records {
+        let terminal_time = match record.state {
+            KeyEpochState::Retired {
+                retired_at_unix_seconds,
+            } => retired_at_unix_seconds,
+            KeyEpochState::Revoked {
+                revoked_at_unix_seconds,
+            } => revoked_at_unix_seconds,
+            KeyEpochState::Active | KeyEpochState::VerifyOnly { .. } => {
+                return Err(KeyEpochError::CheckpointInvalid(
+                    "archive contains nonterminal record",
+                ));
+            }
+        };
+        if terminal_time < record.activated_at_unix_seconds {
+            return Err(KeyEpochError::CheckpointInvalid(
+                "terminal lifecycle time precedes activation",
+            ));
+        }
+        if terminal_time > checkpoint.last_lifecycle_time {
+            return Err(KeyEpochError::CheckpointInvalid(
+                "terminal lifecycle time exceeds the checkpoint high-water",
+            ));
+        }
+        if !epochs.insert(record.epoch) || !key_ids.insert(record.key_id) {
+            return Err(KeyEpochError::CheckpointInvalid(
+                "duplicate archived epoch or key id",
+            ));
+        }
+    }
+    let mut active_record_count = 0_usize;
+    for record in &checkpoint.retained_records {
+        match record.state {
+            KeyEpochState::Active => {
+                active_record_count =
+                    active_record_count
+                        .checked_add(1)
+                        .ok_or(KeyEpochError::CheckpointInvalid(
+                            "active record count overflow",
+                        ))?;
+            }
+            KeyEpochState::VerifyOnly {
+                retire_after_unix_seconds,
+            } => {
+                if retire_after_unix_seconds <= record.activated_at_unix_seconds {
+                    return Err(KeyEpochError::CheckpointInvalid(
+                        "verify-only retirement does not follow activation",
+                    ));
+                }
+            }
+            KeyEpochState::Retired { .. } | KeyEpochState::Revoked { .. } => {
+                return Err(KeyEpochError::CheckpointInvalid(
+                    "retained set contains terminal record",
+                ));
+            }
+        }
+        if !epochs.insert(record.epoch) || !key_ids.insert(record.key_id) {
+            return Err(KeyEpochError::CheckpointInvalid(
+                "duplicate retained epoch or key id",
+            ));
+        }
+    }
+    let highest_in_batch = epochs
+        .iter()
+        .next_back()
+        .copied()
+        .ok_or(KeyEpochError::CheckpointInvalid("empty checkpoint"))?;
+    if highest_in_batch > checkpoint.highest_epoch {
+        return Err(KeyEpochError::CheckpointInvalid(
+            "checkpoint record exceeds the monotonic high-water",
+        ));
+    }
+
+    let predecessor_authenticated = match (checkpoint.sequence, checkpoint.previous_archive_digest)
+    {
+        (1, None) => false,
+        (1, Some(_)) => {
+            return Err(KeyEpochError::CheckpointInvalid(
+                "first checkpoint cannot name a predecessor",
+            ));
+        }
+        (_, Some(digest)) if digest.iter().any(|byte| *byte != 0) => true,
+        (_, Some(_)) => {
+            return Err(KeyEpochError::CheckpointInvalid(
+                "predecessor archive digest must not be zero",
+            ));
+        }
+        (_, None) => {
+            return Err(KeyEpochError::CheckpointInvalid(
+                "chained checkpoint requires a predecessor digest",
+            ));
+        }
+    };
+    if highest_in_batch < checkpoint.highest_epoch && !predecessor_authenticated {
+        return Err(KeyEpochError::CheckpointInvalid(
+            "historical high-water requires an authenticated predecessor",
+        ));
+    }
+
+    if checkpoint
+        .retained_records
+        .iter()
+        .chain(checkpoint.archived_records.iter())
+        .any(|record| record.activated_at_unix_seconds > checkpoint.last_lifecycle_time)
+    {
+        return Err(KeyEpochError::CheckpointInvalid(
+            "lifecycle time precedes an activation",
+        ));
+    }
+    match checkpoint.active {
+        Some(_) if active_record_count != 1 => {
+            return Err(KeyEpochError::CheckpointInvalid(
+                "active checkpoint must retain exactly one active record",
+            ));
+        }
+        None if active_record_count != 0 => {
+            return Err(KeyEpochError::CheckpointInvalid(
+                "authority-loss checkpoint cannot retain an active record",
+            ));
+        }
+        Some(_) | None => {}
+    }
+    match checkpoint.active {
+        Some(active) => {
+            if active != checkpoint.highest_epoch
+                || checkpoint.authority_lost_epoch.is_some()
+                || !checkpoint
+                    .retained_records
+                    .iter()
+                    .any(|record| record.epoch == active && record.state == KeyEpochState::Active)
+            {
+                return Err(KeyEpochError::CheckpointInvalid(
+                    "active epoch binding is inconsistent",
+                ));
+            }
+        }
+        None => {
+            let highest_revoked_in_batch = checkpoint.archived_records.iter().any(|record| {
+                record.epoch == checkpoint.highest_epoch
+                    && matches!(record.state, KeyEpochState::Revoked { .. })
+            });
+            if checkpoint.authority_lost_epoch != Some(checkpoint.highest_epoch)
+                || (!highest_revoked_in_batch && !predecessor_authenticated)
+            {
+                return Err(KeyEpochError::CheckpointInvalid(
+                    "authority-loss checkpoint is inconsistent",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[derive(Debug)]
+    struct ExactArchiveVerifier {
+        digest: u8,
+        denied_key: Option<KeyId>,
+    }
+
+    impl KeyEpochArchiveVerifier for ExactArchiveVerifier {
+        fn verify_checkpoint(&self, checkpoint: &KeyEpochArchiveCheckpoint) -> bool {
+            checkpoint.archive_digest[0] == self.digest
+        }
+
+        fn key_id_is_absent(
+            &self,
+            _checkpoint: &KeyEpochArchiveCheckpoint,
+            candidate: KeyId,
+        ) -> bool {
+            self.denied_key != Some(candidate)
+        }
+    }
+
+    fn verifier(digest: u8) -> ExactArchiveVerifier {
+        ExactArchiveVerifier {
+            digest,
+            denied_key: None,
+        }
+    }
+
+    #[derive(Debug)]
+    struct PanicArchiveVerifier;
+
+    impl KeyEpochArchiveVerifier for PanicArchiveVerifier {
+        fn verify_checkpoint(&self, _checkpoint: &KeyEpochArchiveCheckpoint) -> bool {
+            panic!("invalid checkpoint reached the external verifier")
+        }
+
+        fn key_id_is_absent(
+            &self,
+            _checkpoint: &KeyEpochArchiveCheckpoint,
+            _candidate: KeyId,
+        ) -> bool {
+            panic!("invalid checkpoint reached the archive absence verifier")
+        }
+    }
+
+    #[derive(Debug)]
+    struct ChainedArchiveVerifier {
+        digest: u8,
+        predecessor: KeyEpochArchiveCheckpoint,
+    }
+
+    impl KeyEpochArchiveVerifier for ChainedArchiveVerifier {
+        fn verify_checkpoint(&self, checkpoint: &KeyEpochArchiveCheckpoint) -> bool {
+            checkpoint.archive_digest[0] == self.digest
+                && checkpoint.sequence == self.predecessor.sequence + 1
+                && checkpoint.previous_archive_digest == Some(self.predecessor.archive_digest)
+                && checkpoint.highest_epoch >= self.predecessor.highest_epoch
+                && checkpoint.last_lifecycle_time >= self.predecessor.last_lifecycle_time
+                && match checkpoint.active {
+                    Some(active) => {
+                        active == checkpoint.highest_epoch
+                            && checkpoint.authority_lost_epoch.is_none()
+                    }
+                    None => {
+                        checkpoint.authority_lost_epoch == Some(checkpoint.highest_epoch)
+                            && (checkpoint.highest_epoch > self.predecessor.highest_epoch
+                                || self.predecessor.authority_lost_epoch
+                                    == Some(checkpoint.highest_epoch))
+                    }
+                }
+        }
+
+        fn key_id_is_absent(
+            &self,
+            checkpoint: &KeyEpochArchiveCheckpoint,
+            candidate: KeyId,
+        ) -> bool {
+            self.verify_checkpoint(checkpoint)
+                && self
+                    .predecessor
+                    .retained_records
+                    .iter()
+                    .chain(self.predecessor.archived_records.iter())
+                    .chain(checkpoint.retained_records.iter())
+                    .chain(checkpoint.archived_records.iter())
+                    .all(|record| record.key_id != candidate)
+        }
+    }
+
     fn epoch(value: u64) -> KeyEpoch {
         KeyEpoch::new(value).unwrap()
     }
+
     fn key(value: u8) -> KeyId {
         KeyId::new([value; 16]).unwrap()
+    }
+
+    fn valid_shape_checkpoint() -> KeyEpochArchiveCheckpoint {
+        KeyEpochArchiveCheckpoint {
+            sequence: 1,
+            previous_archive_digest: None,
+            archive_digest: [31; 32],
+            highest_epoch: epoch(3),
+            last_lifecycle_time: 30,
+            authority_lost_epoch: None,
+            active: Some(epoch(3)),
+            retained_records: vec![
+                KeyEpochRecord {
+                    epoch: epoch(2),
+                    key_id: key(2),
+                    state: KeyEpochState::VerifyOnly {
+                        retire_after_unix_seconds: 100,
+                    },
+                    activated_at_unix_seconds: 20,
+                },
+                KeyEpochRecord {
+                    epoch: epoch(3),
+                    key_id: key(3),
+                    state: KeyEpochState::Active,
+                    activated_at_unix_seconds: 30,
+                },
+            ],
+            archived_records: vec![KeyEpochRecord {
+                epoch: epoch(1),
+                key_id: key(1),
+                state: KeyEpochState::Retired {
+                    retired_at_unix_seconds: 25,
+                },
+                activated_at_unix_seconds: 10,
+            }],
+        }
+    }
+
+    #[test]
+    fn checkpoint_shape_rejects_active_and_lifecycle_forgery_before_verifier() {
+        let mut cases = Vec::new();
+
+        let mut dual_active = valid_shape_checkpoint();
+        dual_active.retained_records[0].state = KeyEpochState::Active;
+        cases.push(dual_active);
+
+        let mut authority_loss_with_active = valid_shape_checkpoint();
+        authority_loss_with_active.active = None;
+        authority_loss_with_active.authority_lost_epoch = Some(epoch(3));
+        cases.push(authority_loss_with_active);
+
+        let mut active_not_highest = valid_shape_checkpoint();
+        active_not_highest.active = Some(epoch(2));
+        cases.push(active_not_highest);
+
+        let mut verify_only_before_activation = valid_shape_checkpoint();
+        verify_only_before_activation.retained_records[0].state = KeyEpochState::VerifyOnly {
+            retire_after_unix_seconds: 19,
+        };
+        cases.push(verify_only_before_activation);
+
+        let mut terminal_after_high_water = valid_shape_checkpoint();
+        terminal_after_high_water.archived_records[0].state = KeyEpochState::Retired {
+            retired_at_unix_seconds: 31,
+        };
+        cases.push(terminal_after_high_water);
+
+        let mut terminal_before_activation = valid_shape_checkpoint();
+        terminal_before_activation.archived_records[0].state = KeyEpochState::Revoked {
+            revoked_at_unix_seconds: 9,
+        };
+        cases.push(terminal_before_activation);
+
+        for candidate in cases {
+            assert!(matches!(
+                KeyEpochRegistry::from_checkpoint(3, candidate, &PanicArchiveVerifier),
+                Err(KeyEpochError::CheckpointInvalid(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn checkpoint_shape_accepts_one_active_and_future_verify_window() {
+        let checkpoint = valid_shape_checkpoint();
+        let restored = KeyEpochRegistry::from_checkpoint(3, checkpoint, &verifier(31)).unwrap();
+        assert_eq!(restored.active_signer_at(30).unwrap().epoch, epoch(3));
+        assert_eq!(
+            restored.verification_key(epoch(2), 50).unwrap().epoch,
+            epoch(2)
+        );
     }
 
     #[test]
@@ -583,21 +1223,110 @@ mod tests {
             .install_after_revocation(epoch(4), key(4), 21)
             .unwrap();
         assert_eq!(registry.active_signer_at(21).unwrap().epoch, epoch(4));
+    }
+
+    #[test]
+    fn terminal_archive_reopens_rotation_without_epoch_or_key_rollback() {
+        let mut registry = KeyEpochRegistry::with_capacity(2).unwrap();
+        registry.initialize(epoch(1), key(1), 10).unwrap();
+        registry.rotate(epoch(2), key(2), 20, 30).unwrap();
+        assert_eq!(registry.retire_expired(31), 1);
+        let checkpoint = registry.archive_terminal([7; 32], &verifier(7)).unwrap();
+        assert_eq!(checkpoint.archived_records.len(), 1);
+        assert_eq!(registry.len(), 1);
+        assert!(matches!(
+            registry.rotate(epoch(3), key(3), 40, 50),
+            Err(KeyEpochError::ArchiveVerificationRequired)
+        ));
+        registry
+            .rotate_with_archive_verifier(epoch(3), key(3), 40, 50, &verifier(7))
+            .unwrap();
+        assert_eq!(registry.active_signer_at(40).unwrap().epoch, epoch(3));
+        assert!(matches!(
+            registry.verification_key(epoch(1), 40),
+            Err(KeyEpochError::EpochArchived { .. })
+        ));
+    }
+
+    #[test]
+    fn capacity_full_active_compromise_can_recover_after_verified_archive() {
+        let mut registry = KeyEpochRegistry::with_capacity(2).unwrap();
+        registry.initialize(epoch(1), key(1), 10).unwrap();
+        registry.rotate(epoch(2), key(2), 20, 30).unwrap();
+        registry.retire_expired(31);
+        registry.revoke(epoch(2), 40).unwrap();
+        assert_eq!(registry.len(), 2);
+        registry.archive_terminal([8; 32], &verifier(8)).unwrap();
+        assert_eq!(registry.len(), 0);
+        registry
+            .install_after_revocation_with_archive_verifier(epoch(3), key(3), 41, &verifier(8))
+            .unwrap();
+        assert_eq!(registry.active_signer_at(41).unwrap().epoch, epoch(3));
+    }
+
+    #[test]
+    fn archived_key_id_reuse_is_rejected_without_mutation() {
+        let mut registry = KeyEpochRegistry::with_capacity(2).unwrap();
+        registry.initialize(epoch(1), key(1), 10).unwrap();
+        registry.rotate(epoch(2), key(2), 20, 30).unwrap();
+        registry.retire_expired(31);
+        registry.archive_terminal([9; 32], &verifier(9)).unwrap();
+        let denied = ExactArchiveVerifier {
+            digest: 9,
+            denied_key: Some(key(1)),
+        };
+        let before = registry.len();
+        assert!(matches!(
+            registry.rotate_with_archive_verifier(epoch(3), key(1), 40, 50, &denied),
+            Err(KeyEpochError::KeyIdReused(_))
+        ));
+        assert_eq!(registry.len(), before);
+        assert_eq!(registry.highest_epoch(), Some(epoch(2)));
+    }
+
+    #[test]
+    fn checkpoint_restore_preserves_high_water_and_active_window() {
+        let mut registry = KeyEpochRegistry::with_capacity(2).unwrap();
+        registry.initialize(epoch(1), key(1), 10).unwrap();
+        registry.rotate(epoch(2), key(2), 20, 30).unwrap();
+        registry.retire_expired(31);
+        let checkpoint = registry.archive_terminal([10; 32], &verifier(10)).unwrap();
+        let mut restored =
+            KeyEpochRegistry::from_checkpoint(2, checkpoint.clone(), &verifier(10)).unwrap();
+        assert_eq!(restored.active_signer_at(31).unwrap().epoch, epoch(2));
+        assert_eq!(restored.checkpoint(), Some(&checkpoint));
+        restored
+            .rotate_with_archive_verifier(epoch(3), key(3), 40, 50, &verifier(10))
+            .unwrap();
+    }
+
+    #[test]
+    fn unverified_archive_and_restore_fail_without_mutation() {
+        let mut registry = KeyEpochRegistry::with_capacity(2).unwrap();
+        registry.initialize(epoch(1), key(1), 10).unwrap();
+        registry.rotate(epoch(2), key(2), 20, 30).unwrap();
+        registry.retire_expired(31);
+        let before = registry.len();
         assert_eq!(
-            registry.verification_key(epoch(3), 21),
-            Err(KeyEpochError::EpochRevoked(epoch(3)))
+            registry.archive_terminal([11; 32], &verifier(12)),
+            Err(KeyEpochError::ArchiveVerificationFailed)
+        );
+        assert_eq!(registry.len(), before);
+        let checkpoint = registry.archive_terminal([11; 32], &verifier(11)).unwrap();
+        assert_eq!(
+            KeyEpochRegistry::from_checkpoint(2, checkpoint, &verifier(12)).unwrap_err(),
+            KeyEpochError::CheckpointVerificationFailed
         );
     }
 
     #[test]
-    fn rollback_skip_and_key_reuse_are_rejected_without_mutation() {
+    fn rollback_skip_and_local_key_reuse_are_rejected_without_mutation() {
         let mut registry = KeyEpochRegistry::new();
         registry.initialize(epoch(3), key(3), 10).unwrap();
         assert!(matches!(
             registry.rotate(epoch(5), key(5), 20, 30),
             Err(KeyEpochError::NonContiguousRotation { .. })
         ));
-        assert_eq!(registry.active_signer_at(20).unwrap().epoch, epoch(3));
         assert!(matches!(
             registry.rotate(epoch(4), key(3), 20, 30),
             Err(KeyEpochError::KeyIdReused(_))
@@ -606,16 +1335,83 @@ mod tests {
     }
 
     #[test]
-    fn expired_overlap_can_be_retired_deterministically() {
-        let mut registry = KeyEpochRegistry::new();
+    fn successive_archives_carry_historical_authority_loss() {
+        let mut registry = KeyEpochRegistry::with_capacity(2).unwrap();
         registry.initialize(epoch(1), key(1), 10).unwrap();
-        registry.rotate(epoch(2), key(2), 20, 30).unwrap();
-        assert_eq!(registry.retire_expired(30), 0);
-        assert_eq!(registry.retire_expired(31), 1);
+        registry.rotate(epoch(2), key(2), 20, 100).unwrap();
+        registry.revoke(epoch(2), 30).unwrap();
+
+        let first = registry.archive_terminal([21; 32], &verifier(21)).unwrap();
+        assert_eq!(first.highest_epoch, epoch(2));
+        assert_eq!(first.authority_lost_epoch, Some(epoch(2)));
+        assert_eq!(registry.retire_expired(101), 1);
+
+        let chain = ChainedArchiveVerifier {
+            digest: 22,
+            predecessor: first.clone(),
+        };
+        let second = registry.archive_terminal([22; 32], &chain).unwrap();
+        assert_eq!(second.previous_archive_digest, Some(first.archive_digest));
+        assert_eq!(second.highest_epoch, epoch(2));
+        assert_eq!(second.authority_lost_epoch, Some(epoch(2)));
+        assert_eq!(second.archived_records.len(), 1);
+        assert_eq!(second.archived_records[0].epoch, epoch(1));
+        assert!(second.retained_records.is_empty());
+        assert!(registry.is_empty());
+        assert_eq!(
+            registry.active_signer_at(101),
+            Err(KeyEpochError::NoActiveSigner)
+        );
+
+        let mut restored = KeyEpochRegistry::from_checkpoint(2, second.clone(), &chain).unwrap();
+        assert_eq!(restored.highest_epoch(), Some(epoch(2)));
+        assert_eq!(
+            restored.active_signer_at(101),
+            Err(KeyEpochError::NoActiveSigner)
+        );
         assert!(matches!(
-            registry.record(epoch(1)).unwrap().state,
-            KeyEpochState::Retired { .. }
+            restored.verification_key(epoch(1), 101),
+            Err(KeyEpochError::EpochArchived { .. })
         ));
+        assert!(matches!(
+            restored.verification_key(epoch(2), 101),
+            Err(KeyEpochError::EpochArchived { .. })
+        ));
+        restored
+            .install_after_revocation_with_archive_verifier(epoch(3), key(3), 102, &chain)
+            .unwrap();
+        assert_eq!(restored.active_signer_at(102).unwrap().epoch, epoch(3));
+    }
+
+    #[test]
+    fn restored_predecessor_can_archive_older_overlap_without_chain_forgery() {
+        let mut registry = KeyEpochRegistry::with_capacity(2).unwrap();
+        registry.initialize(epoch(1), key(1), 10).unwrap();
+        registry.rotate(epoch(2), key(2), 20, 100).unwrap();
+        registry.revoke(epoch(2), 30).unwrap();
+        let first = registry.archive_terminal([23; 32], &verifier(23)).unwrap();
+
+        let mut restored =
+            KeyEpochRegistry::from_checkpoint(2, first.clone(), &verifier(23)).unwrap();
+        assert_eq!(restored.retire_expired(101), 1);
+        let chain = ChainedArchiveVerifier {
+            digest: 24,
+            predecessor: first,
+        };
+        let second = restored.archive_terminal([24; 32], &chain).unwrap();
+        let restored_again = KeyEpochRegistry::from_checkpoint(2, second.clone(), &chain).unwrap();
+        assert_eq!(restored_again.highest_epoch(), Some(epoch(2)));
+        assert_eq!(
+            restored_again.active_signer_at(101),
+            Err(KeyEpochError::NoActiveSigner)
+        );
+
+        let mut forged = second;
+        forged.previous_archive_digest = Some([99; 32]);
+        assert_eq!(
+            KeyEpochRegistry::from_checkpoint(2, forged, &chain).unwrap_err(),
+            KeyEpochError::CheckpointVerificationFailed
+        );
     }
 
     #[test]
@@ -626,8 +1422,10 @@ mod tests {
         ));
         assert!(matches!(
             KeyEpochRegistry::with_capacity(MAX_OPERATIONAL_KEY_EPOCHS + 1),
-            Err(KeyEpochError::CapacityTooLarge { received, maximum: MAX_OPERATIONAL_KEY_EPOCHS })
-                if received == MAX_OPERATIONAL_KEY_EPOCHS + 1
+            Err(KeyEpochError::CapacityTooLarge {
+                received,
+                maximum: MAX_OPERATIONAL_KEY_EPOCHS
+            }) if received == MAX_OPERATIONAL_KEY_EPOCHS + 1
         ));
     }
 }

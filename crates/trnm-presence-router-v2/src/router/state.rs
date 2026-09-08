@@ -43,6 +43,13 @@ impl PresenceRouter {
         self.connections.len()
     }
 
+    pub fn entry_count_for_connection(
+        &self,
+        connection: &ConnectionRef,
+    ) -> Result<usize, PresenceError> {
+        Ok(self.records_for_connection(connection)?.len())
+    }
+
     pub fn established_generation(
         &self,
         connection: &ConnectionRef,
