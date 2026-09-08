@@ -47,4 +47,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: bash "$GITHUB_WORKSPACE/controller/tools/run_plan_v32_convergence.sh"
+        run: |
+          set +e
+          bash "$GITHUB_WORKSPACE/controller/tools/run_plan_v32_convergence.sh"
+          status=$?
+          set -e
+          if [[ "$status" -ne 0 ]]; then
+            printf '\n=== exact-head fixed-point diagnostic ===\n'
+            git -C "$GITHUB_WORKSPACE/target" status --short || true
+            printf '\n=== unstaged paths ===\n'
+            git -C "$GITHUB_WORKSPACE/target" diff --name-status || true
+            printf '\n=== staged paths ===\n'
+            git -C "$GITHUB_WORKSPACE/target" diff --cached --name-status || true
+            printf '\n=== staged summary ===\n'
+            git -C "$GITHUB_WORKSPACE/target" diff --cached --stat || true
+            exit "$status"
+          fi
