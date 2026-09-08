@@ -1,0 +1,304 @@
+name: independent-review-packets
+
+on:
+  push:
+    branches:
+      - codex/independent-review-packets-2026-09-08
+    paths:
+      - .github/workflows/independent-review-packets.yml
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  packets:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
+      TARGET_PR: '116'
+    steps:
+      - name: Fetch a stable exact candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          previous=''
+          stable=0
+          deadline=$((SECONDS + 3600))
+          while (( SECONDS < deadline )); do
+            head=$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "${api}/git/ref/heads/${TARGET_BRANCH//\//%2F}" | jq -r '.object.sha')
+            if [[ "$head" == "$previous" ]]; then stable=$((stable+1)); else previous="$head"; stable=0; fi
+            if (( stable >= 6 )); then printf '%s\n' "$head" > "$RUNNER_TEMP/head.txt"; break; fi
+            sleep 20
+          done
+          test -s "$RUNNER_TEMP/head.txt"
+          head=$(cat "$RUNNER_TEMP/head.txt")
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$head"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$head"
+          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T%nparents=%P'
+
+      - name: Capture read-only GitHub facts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          root="$RUNNER_TEMP/github-facts"
+          mkdir -p "$root"
+          for item in \
+            "pulls/${TARGET_PR}:pull-request" \
+            "pulls/${TARGET_PR}/reviews?per_page=100:reviews" \
+            "pulls/${TARGET_PR}/comments?per_page=100:review-comments" \
+            "issues/${TARGET_PR}/comments?per_page=100:issue-comments" \
+            "branches/main:main-branch" \
+            "branches/main/protection:main-protection" \
+            "rulesets:rulesets" \
+            "actions/runs?head_sha=$(cat "$RUNNER_TEMP/head.txt")&per_page=100:workflow-runs"
+          do
+            endpoint=${item%%:*}
+            name=${item##*:}
+            code=$(curl --silent --show-error --output "$root/${name}.json" --write-out '%{http_code}' \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "${api}/${endpoint}")
+            printf '%s\n' "$code" > "$root/${name}.status"
+          done
+
+      - name: Run non-destructive source validation and capture logs
+        id: validation
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$RUNNER_TEMP/validation"
+          run_check() {
+            local name=$1; shift
+            set +e
+            "$@" >"$RUNNER_TEMP/validation/${name}.log" 2>&1
+            rc=$?
+            set -e
+            printf '%s\n' "$rc" >"$RUNNER_TEMP/validation/${name}.exit"
+          }
+          run_check documentation python3 scripts/check-documentation-authority.py
+          run_check plan python3 scripts/check-plan.py
+          run_check package-inventory python3 scripts/check-rust-package-inventory.py
+          run_check server-source python3 scripts/check-trnm-server.py
+          run_check workflow-policy python3 scripts/check-workflow-action-policy.py
+          run_check python-tests python3 -m unittest discover -s tests -p 'test_*.py' -v
+          run_check rust-metadata cargo metadata --locked --no-deps --format-version 1
+          run_check rust-tests cargo test --workspace --all-targets --locked
+          run_check rust-clippy cargo clippy --workspace --all-targets --locked -- -D warnings
+          run_check go-tests bash -lc 'cd runtime && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...'
+          find "$RUNNER_TEMP/validation" -type f -maxdepth 1 -print0 | sort -z | xargs -0 sha256sum \
+            > "$RUNNER_TEMP/validation/SHA256SUMS"
+          cat "$RUNNER_TEMP/validation"/*.exit
+
+      - name: Build deterministic domain review packets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          HEAD_SHA=$(cat "$RUNNER_TEMP/head.txt") TREE_SHA=$(git rev-parse HEAD^{tree}) python3 - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+
+          root=Path('.')
+          out=Path(os.environ['RUNNER_TEMP'],'review-packets')
+          out.mkdir(parents=True,exist_ok=True)
+          facts=Path(os.environ['RUNNER_TEMP'],'github-facts')
+          validation=Path(os.environ['RUNNER_TEMP'],'validation')
+          head=os.environ['HEAD_SHA']; tree=os.environ['TREE_SHA']
+
+          lanes={
+            'governance-evidence-release':[
+              '.github/CODEOWNERS','.github/PULL_REQUEST_TEMPLATE.md','.github/workflows',
+              'CURRENT_PLAN.md','PROJECT_BOUNDARY.md','PROJECT_BOUNDARY.json',
+              'docs/GOVERNANCE.md','docs/TESTING_AND_EVIDENCE.md','docs/DOCUMENTATION_AUTHORITY.json',
+              'docs/governance','docs/evidence','docs/review','docs/status',
+              'scripts/check-plan.py','scripts/check-status-transitions.py','scripts/derive-gates.py',
+              'scripts/evidence_admission.py','tests/control_plane',
+            ],
+            'security-cryptography-identity':[
+              'SECURITY.md','docs/SECURITY_AND_PRIVACY.md','docs/development/CRYPTO_PATH_AUTHORITY.json',
+              'crates/trnm-token-core','crates/trnm-token-jwt-adapter',
+              'crates/trnm-token-crypto-provider','crates/trnm-token-jwt-provider-adapter',
+              'crates/trnm-session-core','crates/trnm-persistence-pg/src/auth.rs',
+              'contracts/security','contracts/token',
+            ],
+            'database-data-integrity':[
+              'migrations','database/schema/v2','docs/development/SCHEMA_AUTHORITY.json',
+              'crates/trnm-persistence-core','crates/trnm-persistence-pg',
+              'crates/trnm-persistence-runtime-policy','docs/OPERATIONS_AND_RELEASE.md',
+              'scripts/ci-pgwire-backup-restore.sh','scripts/ci-pgwire-vertical-slice.sh',
+            ],
+            'protocol-sdk-storage':[
+              'contracts','crates/trnm-contracts','crates/trnm-canonical-core',
+              'crates/trnm-transport-core','crates/trnm-realtime-wire',
+              'crates/trnm-storage-core','crates/trnm-storage-nakama-version',
+              'docs/COMPATIBILITY.md','manifests/upstream',
+            ],
+            'realtime-distributed':[
+              'crates/trnm-authority-core','crates/trnm-presence-core',
+              'crates/trnm-presence-router-v2','crates/trnm-server',
+              'runtime/internal/worldtransition','docs/ARCHITECTURE.md',
+            ],
+            'sre-performance-recovery':[
+              'deploy','compose.yaml','docs/OPERATIONS_AND_RELEASE.md','docs/ROADMAP.md',
+              '.github/workflows','scripts','config/database-test-images.json',
+            ],
+            'denominator-oracle-sg1':[
+              'docs/development/PARITY_DENOMINATORS.json',
+              'docs/development/DENOMINATOR_CLASSIFICATION_RULES.json',
+              'docs/development/UPSTREAM_BASELINE.json','manifests/upstream','oracle',
+              'tools/denominator','docs/COMPATIBILITY.md','docs/TESTING_AND_EVIDENCE.md',
+            ],
+            'whole-candidate-source':[],
+          }
+
+          excluded_parts={'.git','target','node_modules','run'}
+          def include_path(src:Path,dst:Path):
+              if not src.exists(): return
+              if src.is_file():
+                  dst.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(src,dst); return
+              for path in sorted(src.rglob('*')):
+                  rel=path.relative_to(src)
+                  if any(part in excluded_parts for part in rel.parts): continue
+                  target=dst/rel
+                  if path.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                  elif path.is_file():
+                      target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(path,target)
+
+          for lane,paths in lanes.items():
+              lane_root=out/lane
+              source_root=lane_root/'source'
+              if lane=='whole-candidate-source':
+                  for child in sorted(root.iterdir()):
+                      if child.name in excluded_parts: continue
+                      include_path(child,source_root/child.name)
+              else:
+                  for value in paths:
+                      include_path(root/value,source_root/value)
+
+              github_root=lane_root/'github-facts'; github_root.mkdir(parents=True,exist_ok=True)
+              for path in sorted(facts.iterdir()): shutil.copy2(path,github_root/path.name)
+              validation_root=lane_root/'validation'; validation_root.mkdir(parents=True,exist_ok=True)
+              for path in sorted(validation.iterdir()): shutil.copy2(path,validation_root/path.name)
+
+              files=[]
+              for path in sorted(lane_root.rglob('*')):
+                  if not path.is_file() or path.name=='SHA256SUMS': continue
+                  digest=hashlib.sha256(path.read_bytes()).hexdigest()
+                  files.append(f'{digest}  {path.relative_to(lane_root).as_posix()}')
+              (lane_root/'SHA256SUMS').write_text('\n'.join(files)+'\n',encoding='utf-8')
+              manifest={
+                'schema':'trillionnium.independent-review-packet.v1',
+                'lane':lane,
+                'repository':'TrillionniumFoundation/TrillionniumGame',
+                'candidate':{'pull_request':116,'head':head,'tree':tree},
+                'reviewer_requirements':{
+                  'stable_identity':True,'qualification_evidence':True,
+                  'conflict_declaration':True,'independent_download_and_digest_verification':True,
+                  'decision_values':['accept','reject','needs-changes'],
+                  'head_change_invalidates':True,
+                },
+                'required_decision_fields':[
+                  'reviewer_identity','qualification_evidence','conflict_declaration',
+                  'candidate_tuple','artifact_digest','methods_and_commands',
+                  'positive_assertions','negative_assertions','limitations','expiry','verdict'
+                ],
+                'claims':{
+                  'packet_generated':True,'independent_acceptance':False,
+                  'accepted_evidence':False,'gap_closed':False,'production_ready':False,
+                },
+              }
+              (lane_root/'REVIEW_MANIFEST.json').write_text(json.dumps(manifest,indent=2)+'\n')
+              # Reseal after manifest creation.
+              files=[]
+              for path in sorted(lane_root.rglob('*')):
+                  if not path.is_file() or path.name=='SHA256SUMS': continue
+                  files.append(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(lane_root).as_posix()}')
+              (lane_root/'SHA256SUMS').write_text('\n'.join(files)+'\n',encoding='utf-8')
+          PY
+
+          mkdir -p "$RUNNER_TEMP/review-archives"
+          for lane in "$RUNNER_TEMP/review-packets"/*; do
+            name=$(basename "$lane")
+            archive="$RUNNER_TEMP/review-archives/${name}.tar.gz"
+            tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+              -cf - -C "$lane" . | gzip -n > "$archive"
+            test -s "$archive"
+            sha256sum "$archive" >> "$RUNNER_TEMP/review-archives/SHA256SUMS"
+          done
+          cat "$RUNNER_TEMP/review-archives/SHA256SUMS"
+
+      - name: Upload each bounded review packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          head=$(cat "$RUNNER_TEMP/head.txt")
+          : > "$RUNNER_TEMP/artifact-receipts.jsonl"
+          for archive in "$RUNNER_TEMP/review-archives"/*.tar.gz; do
+            name=$(basename "$archive" .tar.gz)
+            python3 scripts/upload-actions-artifact.py \
+              "independent-review-${name}-${head}" "$archive" \
+              --mime-type application/gzip \
+              | tail -n 1 >> "$RUNNER_TEMP/artifact-receipts.jsonl"
+          done
+          jq -s . "$RUNNER_TEMP/artifact-receipts.jsonl" > "$RUNNER_TEMP/artifact-receipts.json"
+          cat "$RUNNER_TEMP/artifact-receipts.json"
+
+      - name: Publish reviewer-facing receipts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(cat "$RUNNER_TEMP/head.txt")
+          tree=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD^{tree})
+          receipts=$(cat "$RUNNER_TEMP/artifact-receipts.json")
+          sums=$(cat "$RUNNER_TEMP/review-archives/SHA256SUMS")
+          body=$(jq -n --arg head "$head" --arg tree "$tree" --arg receipts "$receipts" --arg sums "$sums" \
+            '{body:("## Independent review packets\n\n```text\nhead "+$head+"\ntree "+$tree+"\n```\n\nEight role-specific packets were generated from the same exact source object. Each packet contains the source subset, complete read-only GitHub facts, validation logs, a decision template and inner SHA-256 inventory.\n\nArtifact receipts:\n```json\n"+$receipts+"\n```\n\nOuter archive digests:\n```text\n"+$sums+"\n```\n\nPacket generation is not review. A qualified conflict-free principal must independently download, verify and issue an exact-object verdict.\n\n```text\nindependent_acceptance=false\naccepted_evidence=false\nall_gaps_closed=false\n```" )}')
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+            -d "$body" >/dev/null
+
+      - name: Delete packet transport branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/delete"
+          git -C "$RUNNER_TEMP/delete" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$RUNNER_TEMP/delete" push origin --delete codex/independent-review-packets-2026-09-08 >/dev/null 2>&1 || true
