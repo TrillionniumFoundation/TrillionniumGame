@@ -63,7 +63,7 @@ def validate() -> dict[str, object]:
         "ServerConfig::from_environment(arguments)",
         "Command::Migrate",
         "PgRepository",
-        "sync_channel(queue_capacity)",
+        "sync_channel::<QueuedConnection>(queue_capacity)",
         "set_read_timeout(Some(config.read_timeout))",
         "set_write_timeout(Some(config.write_timeout))",
         "RetryingRepository",
