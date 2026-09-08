@@ -1,7 +1,7 @@
 # Roadmap
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-08
+Revision: 2026-09-01
 
 The machine execution queue is `docs/roadmap/NEXT_MILESTONE.json`. The blocker-first architecture overlay is `docs/roadmap/ARCHITECTURE_CLOSURE.json`. This document explains sequencing and team boundaries; it does not override machine status.
 
