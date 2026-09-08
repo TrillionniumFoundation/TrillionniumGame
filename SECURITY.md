@@ -50,6 +50,8 @@ Configuration objects that can carry database URLs, administrative tokens, sessi
 
 Operator messages for configuration validation, migration completion and process startup must be static, low-cardinality strings. They must not interpolate configuration fields or values derived from secret-bearing configuration. Detailed non-secret operational state belongs in separately typed, explicitly allow-listed telemetry whose fields are reviewed and tested. A scanner suppression or a claim that a value is “normally redacted” is not a substitute for removing the dataflow.
 
+This contract applies uniformly to the layered `trnm-server` composition root, the temporary `trnm-persistence-pg` server compatibility binary, the outbox worker and every live/process harness that asserts their output. A second executable entrypoint must not retain an older redacted-`Debug` or configuration-derived output contract after the primary entrypoint is hardened.
+
 ## Disclosure and remediation
 
 The response owner coordinates containment, affected-key/session/data identification, fixes, regression tests, release/advisory preparation and notification. Public disclosure timing should allow users to mitigate while avoiding unnecessary delay. If a report reveals a credential, production access or personal data, the credential/data incident process takes precedence over ordinary code review.
