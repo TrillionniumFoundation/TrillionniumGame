@@ -134,6 +134,7 @@ export TRNM_SERVER_READ_TIMEOUT_MS=5000
 export TRNM_SERVER_WRITE_TIMEOUT_MS=10000
 
 "$binary" check-config > "$evidence/check-config.log" 2>&1
+grep -qx 'trnm-server configuration valid' "$evidence/check-config.log"
 if grep -F 'trnm_live_password' "$evidence/check-config.log"; then
   echo 'database credential leaked by check-config' >&2
   exit 1
@@ -143,7 +144,7 @@ if grep -F "$admin_token" "$evidence/check-config.log"; then
   exit 1
 fi
 "$binary" migrate > "$evidence/migrate.log" 2>&1
-grep -F "migration profile=${profile} applied=true table_count=10" "$evidence/migrate.log"
+grep -qx 'trnm-server migration completed' "$evidence/migrate.log"
 
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \

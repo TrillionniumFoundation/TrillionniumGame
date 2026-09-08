@@ -31,6 +31,8 @@ const TEST_FAIL_BEFORE_DELIVERY_EXIT_CODE: i32 = 71;
 const DATABASE_RETRY_MAX_ATTEMPTS: u8 = 5;
 const DATABASE_RETRY_INITIAL_BACKOFF_MS: u64 = 5;
 const DATABASE_RETRY_MAX_BACKOFF_MS: u64 = 100;
+const CONFIGURATION_VALID_MESSAGE: &str = "trnm-outbox-worker configuration valid";
+const STARTUP_MESSAGE: &str = "trnm-outbox-worker source candidate started";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
@@ -445,7 +447,7 @@ fn run() -> Result<(), WorkerError> {
     let (command, config) = WorkerConfig::from_environment(&arguments)?;
     match command {
         Command::CheckConfig => {
-            println!("trnm-outbox-worker configuration: {config:?}");
+            println!("{CONFIGURATION_VALID_MESSAGE}");
             Ok(())
         }
         Command::RunOnce => {
@@ -463,12 +465,7 @@ fn serve(config: &WorkerConfig) -> Result<(), WorkerError> {
     let pool = build_pool(config)?;
     let sink = SpoolSink::new(config.spool_directory.clone())?;
     let mut consecutive_database_failures = 0_u32;
-    eprintln!(
-        "trnm-outbox-worker source candidate started profile={} node={} batch_size={}",
-        config.database_profile.metadata_value(),
-        encode_hex(config.node.as_bytes()),
-        config.batch_size,
-    );
+    eprintln!("{STARTUP_MESSAGE}");
     loop {
         if stop_requested(config.stop_file.as_deref())? {
             eprintln!("trnm-outbox-worker source candidate stopped");
@@ -1160,6 +1157,20 @@ mod tests {
             value.kind = kind;
             let record = String::from_utf8(spool_record(&value)).unwrap();
             assert!(record.contains(&format!("\"kind\":\"{name}\"")));
+        }
+    }
+}
+
+#[cfg(test)]
+mod operator_message_tests {
+    use super::{CONFIGURATION_VALID_MESSAGE, STARTUP_MESSAGE};
+
+    #[test]
+    fn outbox_operator_messages_are_static_and_secret_free() {
+        for message in [CONFIGURATION_VALID_MESSAGE, STARTUP_MESSAGE] {
+            for forbidden in ["url", "profile", "node", "batch", "key", "token"] {
+                assert!(!message.contains(forbidden));
+            }
         }
     }
 }

@@ -18,6 +18,7 @@ use super::websocket;
 const MAX_CONNECTION_WORKERS: usize = 32;
 const QUEUED_CONNECTIONS_PER_WORKER: usize = 16;
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const STARTUP_MESSAGE: &str = "trnm-server source candidate started";
 
 pub fn serve<R>(config: &ServerConfig, repository: R) -> Result<(), ServerError>
 where
@@ -68,14 +69,7 @@ where
         );
     }
 
-    eprintln!(
-        "trnm-server source candidate listening on {} grpc_bind={:?} profile={} workers={} queue_capacity={}",
-        config.bind,
-        config.grpc_bind,
-        config.database_profile.metadata_value(),
-        worker_count,
-        queue_capacity,
-    );
+    eprintln!("{STARTUP_MESSAGE}");
 
     let accept_result = accept_loop(&listener, &sender, config, &draining, &worker_failed);
     draining.begin();

@@ -27,11 +27,10 @@ export TRNM_SERVER_SCHEMA_SOURCE_COMMIT=0000000000000000000000000000000000000000
 export TRNM_SERVER_ADMIN_TOKEN=0123456789abcdef0123456789abcdef
 
 "$binary" check-config >"$run_root/check-config.out" 2>"$run_root/check-config.err"
-grep -q 'trnm-server configuration: ServerConfig' "$run_root/check-config.out"
-grep -q 'database_url: "<redacted>"' "$run_root/check-config.out"
-grep -q 'admin_token: "<redacted>"' "$run_root/check-config.out"
-! grep -q 'smoke-password' "$run_root/check-config.out"
-! grep -q 'smoke-password' "$run_root/check-config.err"
+grep -qx 'trnm-server configuration valid' "$run_root/check-config.out"
+test ! -s "$run_root/check-config.err"
+! grep -Eq 'ServerConfig|database_url|admin_token|postgresql://|smoke-password' "$run_root/check-config.out"
+! grep -Eq 'ServerConfig|database_url|admin_token|postgresql://|smoke-password' "$run_root/check-config.err"
 
 set +e
 env -u TRNM_SERVER_DATABASE_URL "$binary" check-config \
