@@ -1,0 +1,1 @@
+Trigger normal pull-request qualification on the unchanged repaired product tree.
