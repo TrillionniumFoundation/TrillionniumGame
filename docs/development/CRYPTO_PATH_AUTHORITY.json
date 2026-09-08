@@ -1,0 +1,115 @@
+{
+  "schema": "trillionnium.crypto-path-authority.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "revision": "2026-09-08",
+  "claim_rule": "A reviewed primitive on one active path does not approve the complete token, key-lifecycle, durable-digest or production security boundary. Every production binary and cryptographic operation must be classified separately.",
+  "approved_primitive_providers": [
+    {
+      "id": "PROVIDER-OPENSSL-HMAC-SHA256",
+      "package": "openssl",
+      "version": "0.10.81",
+      "operations": [
+        "HMAC-SHA256 verify for the current database-backed access-token path",
+        "SHA-256 digest for the current refresh-token credential path",
+        "constant-time fixed-length authenticator comparison"
+      ],
+      "source_paths": [
+        "crates/trnm-persistence-pg/src/auth.rs"
+      ],
+      "profile": "source-candidate-software-provider",
+      "production_approval": false,
+      "independent_security_acceptance": false
+    }
+  ],
+  "provider_contracts": [
+    {
+      "id": "CONTRACT-HS256-OPAQUE-PROVIDER",
+      "paths": [
+        "crates/trnm-token-crypto-provider",
+        "crates/trnm-token-jwt-provider-adapter"
+      ],
+      "status": "source-candidate-not-yet-composed-into-production-server",
+      "required_next_step": "Compose an accepted software or remote-key implementation through this boundary without exposing raw key bytes to protocol or persistence handlers."
+    }
+  ],
+  "path_classifications": [
+    {
+      "id": "CRYPTO-PATH-ACTIVE-ACCESS-AUTH",
+      "classification": "active-server-authentication-source-candidate",
+      "entrypoints": [
+        "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
+        "crates/trnm-server/src/main.rs"
+      ],
+      "implementation": "crates/trnm-persistence-pg/src/auth.rs",
+      "primitive_provider": "PROVIDER-OPENSSL-HMAC-SHA256",
+      "private_primitive_reachable": false,
+      "gap_links": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P1-CRYPTO-002",
+        "GAP-P0-SERVER-001"
+      ],
+      "claim_credit": false
+    },
+    {
+      "id": "CRYPTO-PATH-ACTIVE-OUTBOX-DIGEST",
+      "classification": "active-durable-spool-source-blocker",
+      "entrypoints": [
+        "crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs"
+      ],
+      "implementation": "trnm_token_jwt_adapter::sha256_digest",
+      "primitive_provider": null,
+      "private_primitive_reachable": true,
+      "required_remediation": "Move spool receipts, retry jitter and failure-reason digests to a reviewed digest provider without changing durable bytes or receipt identities.",
+      "gap_links": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P1-OUTBOX-001"
+      ],
+      "claim_credit": false
+    },
+    {
+      "id": "CRYPTO-PATH-COMPATIBILITY-REFERENCE",
+      "classification": "non-production-compatibility-reference-pending-quarantine",
+      "entrypoints": [
+        "crates/trnm-token-jwt-adapter",
+        "crates/trnm-token-jwt-adapter-gate",
+        "crates/trnm-token-jwt-adapter-gate-v2"
+      ],
+      "implementation": "private SHA-256, HMAC-SHA256, base64url, JSON and equality implementation retained for differential migration",
+      "primitive_provider": null,
+      "private_primitive_reachable": true,
+      "required_remediation": "Run old/new/Nakama three-way differential, disable all production features and then remove or retain only a non-shipping fixture with explicit expiry.",
+      "gap_links": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P1-CRYPTO-002",
+        "GAP-P1-REVIEW-001"
+      ],
+      "claim_credit": false
+    }
+  ],
+  "production_requirements": [
+    "Access, refresh, Console, runtime HTTP, socket and authority key domains are separate.",
+    "Protocol, domain and persistence handlers receive opaque operations or key references, never production raw key bytes.",
+    "Unknown or malformed key epochs never fall back to the legacy route.",
+    "Remote provider deadlines and cancellation occur outside mutable database transactions.",
+    "Rotation, verification-only grace, emergency revoke and node convergence are rehearsed.",
+    "No private hash, MAC, signature, cipher, random or constant-time primitive is reachable from any production binary.",
+    "Dependency identity, checksums, license, SBOM, advisories, malformed corpus, fuzzing and independent security decisions are retained."
+  ],
+  "exit_criteria": [
+    "CRYPTO-PATH-ACTIVE-ACCESS-AUTH is composed through the opaque provider contract.",
+    "CRYPTO-PATH-ACTIVE-OUTBOX-DIGEST uses a reviewed provider with byte-stable regression evidence.",
+    "The compatibility reference is non-shipping or removed after accepted three-way differential evidence.",
+    "Production KMS, HSM or approved secret-manager profiles pass rotation, revoke, permission, timeout, cancellation and audit tests.",
+    "Independent cryptography and application-security reviewers accept the exact source, dependency and evidence objects."
+  ],
+  "summary": {
+    "classified_paths": 3,
+    "active_access_auth_private_primitive_reachable": false,
+    "all_active_crypto_paths_reviewed_provider_backed": false,
+    "production_key_provider_accepted": false,
+    "private_compatibility_implementation_removed": false,
+    "gap_closed": false,
+    "production_ready": false
+  }
+}
