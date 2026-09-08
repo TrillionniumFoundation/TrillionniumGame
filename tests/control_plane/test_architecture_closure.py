@@ -8,6 +8,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 PLAN = ROOT / "docs/roadmap/ARCHITECTURE_CLOSURE.json"
 GAPS = ROOT / "docs/status/GAP_REGISTER.json"
+AUTH_SOURCE = ROOT / "crates/trnm-persistence-pg/src/auth.rs"
 
 
 def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -75,6 +76,16 @@ class ArchitectureClosureTest(unittest.TestCase):
         security = next(row for row in phases if row["id"] == "AC-1")
         self.assertIn("GAP-P0-CRYPTO-001", security["gap_links"])
         self.assertIn("GAP-P1-CRYPTO-002", security["gap_links"])
+
+    def test_active_server_auth_uses_reviewed_crypto_boundary(self) -> None:
+        production = AUTH_SOURCE.read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
+        self.assertIn("PKey::hmac", production)
+        self.assertIn("Signer::new(MessageDigest::sha256()", production)
+        self.assertIn("memcmp::eq", production)
+        self.assertIn("hash(MessageDigest::sha256()", production)
+        self.assertNotIn("KeyRing", production)
+        self.assertNotIn("sha256_digest", production)
+        self.assertNotIn("constant_time_eq", production)
 
     def test_external_facts_cannot_be_auto_closed(self) -> None:
         blockers = self.plan["external_blockers"]
