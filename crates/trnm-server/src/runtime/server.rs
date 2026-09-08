@@ -19,6 +19,7 @@ use super::websocket;
 const MAX_CONNECTION_WORKERS: usize = 32;
 const QUEUED_CONNECTIONS_PER_WORKER: usize = 16;
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const STARTUP_MESSAGE: &str = "trnm-server source candidate started";
 
 #[derive(Debug)]
 struct QueuedConnection {
@@ -120,14 +121,7 @@ where
         );
     }
 
-    eprintln!(
-        "trnm-server source candidate listening on {} grpc_bind={:?} profile={} workers={} queue_capacity={}",
-        config.bind,
-        config.grpc_bind,
-        config.database_profile.metadata_value(),
-        worker_count,
-        queue_capacity,
-    );
+    eprintln!("{STARTUP_MESSAGE}");
 
     let accept_result = accept_loop(
         &listener,
@@ -380,6 +374,14 @@ mod tests {
     use std::net::{TcpListener as TestTcpListener, TcpStream as TestTcpStream};
 
     use super::*;
+
+    #[test]
+    fn startup_message_is_static_and_configuration_free() {
+        assert_eq!(STARTUP_MESSAGE, "trnm-server source candidate started");
+        for forbidden in ["bind", "profile", "worker", "queue", "key", "token"] {
+            assert!(!STARTUP_MESSAGE.contains(forbidden));
+        }
+    }
 
     #[test]
     fn connection_parse_failure_has_no_internal_reason() {
