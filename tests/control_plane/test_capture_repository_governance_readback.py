@@ -50,9 +50,9 @@ def values():
         "actor_permission": {"permission": "admin"},
         "repository": {"id": MODULE.REPO_ID, "full_name": MODULE.REPO, "default_branch": "main", "archived": False},
         "branch": {"name": "main", "protected": True, "commit": {"sha": "a" * 40}},
-        "main_checks": {"total_count": 1, "check_runs": [{"name": MODULE.REQUIRED_CHECK, "status": "completed", "conclusion": "success"}]},
+        "main_checks": {"total_count": 1, "check_runs": [{"id": 1, "name": MODULE.REQUIRED_CHECK, "app": {"id": MODULE.REQUIRED_CHECK_APP_ID}, "status": "completed", "conclusion": "success"}]},
         "protection": {
-            "required_status_checks": {"strict": True, "contexts": [MODULE.REQUIRED_CHECK]},
+            "required_status_checks": {"strict": True, "contexts": [MODULE.REQUIRED_CHECK], "checks": [{"context": MODULE.REQUIRED_CHECK, "app_id": MODULE.REQUIRED_CHECK_APP_ID}]},
             "enforce_admins": {"enabled": True},
             "required_pull_request_reviews": {"dismiss_stale_reviews": True, "require_code_owner_reviews": True,
                 "require_last_push_approval": True, "required_approving_review_count": 1,
@@ -64,8 +64,8 @@ def values():
         "rulesets": [{"id": 17}], "ruleset_17": {"id": 17, "bypass_actors": []},
         "actions": {"enabled": True},
         "workflow_permissions": {"default_workflow_permissions": "read", "can_approve_pull_request_reviews": False},
-        "environments": {"environments": [{"name": "governance-audit"}]},
-        "environment": {"name": "governance-audit", "protection_rules": [
+        "environments": {"total_count": 1, "environments": [{"name": "governance-audit"}]},
+        "environment": {"name": "governance-audit", "prevent_self_review": True, "protection_rules": [
             {"type": "required_reviewers", "reviewers": [{"type": "User", "reviewer": {"id": 99}}]}]},
     }
 
@@ -168,6 +168,84 @@ class Tests(unittest.TestCase):
             output = Path(directory) / "packet"; output.mkdir(); (output / "existing").write_text("x")
             with self.assertRaises(MODULE.ReadbackError):
                 MODULE.capture(FakeApi(values()), output, "a" * 40, ["governance-audit"])
+
+
+    def test_latest_trusted_merge_gate_attempt_controls_result(self):
+        data = values()
+        data["main_checks"] = {
+            "total_count": 3,
+            "check_runs": [
+                {"id": 1, "name": MODULE.REQUIRED_CHECK,
+                 "app": {"id": MODULE.REQUIRED_CHECK_APP_ID},
+                 "status": "completed", "conclusion": "success"},
+                {"id": 2, "name": MODULE.REQUIRED_CHECK,
+                 "app": {"id": MODULE.REQUIRED_CHECK_APP_ID},
+                 "status": "completed", "conclusion": "failure"},
+                {"id": 3, "name": MODULE.REQUIRED_CHECK,
+                 "app": {"id": 999},
+                 "status": "completed", "conclusion": "success"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            result = MODULE.capture(
+                FakeApi(data), Path(directory) / "packet",
+                "a" * 40, ["governance-audit"],
+            )
+            self.assertFalse(result["assertions"]["successful_exact_main_merge_gate"])
+
+    def test_packet_writer_rejects_directory_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "packet"
+            writer = MODULE.prepare(output)
+            MODULE.write(writer / "one.json", b"safe\n")
+            output.rename(Path(directory) / "moved")
+            output.mkdir()
+            with self.assertRaises(MODULE.ReadbackError):
+                writer.iterdir()
+            writer.close()
+
+    def test_packet_writer_rejects_member_mutation_and_injection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "packet"
+            writer = MODULE.prepare(output)
+            MODULE.write(writer / "one.json", b"safe\n")
+            (output / "one.json").write_bytes(b"evil\n")
+            with self.assertRaises(MODULE.ReadbackError):
+                writer.read_verified("one.json")
+            writer.close()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "packet"
+            writer = MODULE.prepare(output)
+            MODULE.write(writer / "one.json", b"safe\n")
+            (output / "injected").write_text("x")
+            with self.assertRaises(MODULE.ReadbackError):
+                writer.iterdir()
+            writer.close()
+
+    def test_packet_writer_rejects_symlinked_ancestor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real = root / "real"
+            real.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            with self.assertRaises(MODULE.ReadbackError):
+                MODULE.prepare(alias / "packet")
+
+
+    def test_packet_writer_rechecks_members_when_sealing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "packet"
+            writer = MODULE.prepare(output)
+            MODULE.write(writer / "one.json", b"safe\n")
+            manifest = "".join(
+                f"{record['sha256']}  {name}\n"
+                for name, record in sorted(writer.records.items())
+            ).encode()
+            (output / "one.json").write_bytes(b"evil\n")
+            with self.assertRaises(MODULE.ReadbackError):
+                MODULE.write(writer / "SHA256SUMS", manifest)
+            writer.close()
 
 
 if __name__ == "__main__": unittest.main()

@@ -19,6 +19,7 @@ REPO = "TrillionniumFoundation/TrillionniumGame"
 REPO_ID = 1323087470
 BRANCH = "main"
 REQUIRED_CHECK = "trillionnium-game-merge-gate"
+REQUIRED_CHECK_APP_ID = 15368
 TOKEN_ENV = "TRNM_GITHUB_ADMIN_AUDIT_TOKEN"
 MAX_BYTES = 2 * 1024 * 1024
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -112,29 +113,210 @@ def has_next_page(headers: dict[str, str]) -> bool:
     return 'rel="next"' in headers.get("link", "").lower()
 
 
-def write(path: Path, data: bytes) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags, 0o600)
-    try:
-        with os.fdopen(descriptor, "wb", closefd=False) as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-    finally:
-        os.close(descriptor)
+class PacketTarget:
+    def __init__(self, writer: "PacketWriter", name: str):
+        self.writer = writer
+        self.name = name
 
 
-def prepare(path: Path) -> Path:
-    path = path.expanduser().absolute()
-    if path.exists():
-        if path.is_symlink() or not path.is_dir() or any(path.iterdir()):
-            raise ReadbackError("output must be a real empty directory")
-    else:
-        path.mkdir(mode=0o700, parents=True)
-    return path
+class PacketMember:
+    def __init__(self, writer: "PacketWriter", name: str):
+        self.writer = writer
+        self.name = name
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, PacketMember):
+            return NotImplemented
+        return self.name < other.name
+
+    def read_bytes(self) -> bytes:
+        return self.writer.read_verified(self.name)
 
 
-def retain(output: Path, key: str, path: str, result: tuple[int, dict[str, str], Any]) -> Any:
+class PacketWriter:
+    NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+    CHUNK = 64 * 1024
+
+    def __init__(self, path: Path):
+        required = ("O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC")
+        if os.name != "posix" or any(not hasattr(os, name) for name in required):
+            raise ReadbackError("descriptor-relative packet custody is unavailable")
+        absolute = path.expanduser()
+        if not absolute.is_absolute():
+            absolute = Path.cwd() / absolute
+        absolute = absolute.absolute()
+        parts = absolute.parts
+        if not parts or parts[0] != "/" or len(parts) == 1:
+            raise ReadbackError("output must name a non-root directory")
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        descriptor = os.open("/", flags)
+        try:
+            for component in parts[1:]:
+                if component in {"", ".", ".."}:
+                    raise ReadbackError("output path contains a noncanonical component")
+                try:
+                    child = os.open(component, flags, dir_fd=descriptor)
+                except FileNotFoundError:
+                    os.mkdir(component, 0o700, dir_fd=descriptor)
+                    child = os.open(component, flags, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+            if os.listdir(descriptor):
+                raise ReadbackError("output must be a real empty directory")
+            self.path = absolute
+            self.descriptor = descriptor
+            self.directory_identity = os.fstat(descriptor)
+            self.records: dict[str, dict[str, int | str]] = {}
+            self.closed = False
+        except OSError as error:
+            os.close(descriptor)
+            raise ReadbackError("output directory could not be securely opened") from error
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def __truediv__(self, name: str) -> PacketTarget:
+        return PacketTarget(self, name)
+
+    def _require_open(self) -> None:
+        if self.closed:
+            raise ReadbackError("packet writer is closed")
+
+    def _check_directory_identity(self) -> None:
+        self._require_open()
+        current = os.fstat(self.descriptor)
+        try:
+            named = os.stat(self.path, follow_symlinks=False)
+        except OSError as error:
+            raise ReadbackError("output directory identity is unavailable") from error
+        expected = self.directory_identity
+        if not os.path.isdir(self.path) or (
+            current.st_dev, current.st_ino, named.st_dev, named.st_ino
+        ) != (expected.st_dev, expected.st_ino, expected.st_dev, expected.st_ino):
+            raise ReadbackError("output directory identity changed")
+
+    @staticmethod
+    def _identity(stat_result: os.stat_result) -> tuple[int, ...]:
+        return (
+            stat_result.st_dev,
+            stat_result.st_ino,
+            stat_result.st_mode,
+            stat_result.st_nlink,
+            stat_result.st_size,
+            stat_result.st_mtime_ns,
+            stat_result.st_ctime_ns,
+        )
+
+    def write(self, name: str, data: bytes) -> None:
+        self._check_directory_identity()
+        if not self.NAME.fullmatch(name) or name in self.records:
+            raise ReadbackError("packet member name is invalid or duplicated")
+        if name == "SHA256SUMS":
+            for member in sorted(self.records):
+                self._read_verified(member, allow_manifest=False)
+            expected = "".join(
+                f"{record['sha256']}  {member}\n"
+                for member, record in sorted(self.records.items())
+            ).encode()
+            if data != expected:
+                raise ReadbackError("SHA256SUMS does not match verified packet members")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+        descriptor = os.open(name, flags, 0o600, dir_fd=self.descriptor)
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise ReadbackError("packet member write made no progress")
+                view = view[written:]
+            os.fsync(descriptor)
+            stat_result = os.fstat(descriptor)
+            if stat_result.st_size != len(data):
+                raise ReadbackError("packet member size changed during write")
+            self.records[name] = {
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+                "dev": stat_result.st_dev,
+                "ino": stat_result.st_ino,
+                "mode": stat_result.st_mode,
+                "nlink": stat_result.st_nlink,
+                "mtime_ns": stat_result.st_mtime_ns,
+                "ctime_ns": stat_result.st_ctime_ns,
+            }
+        finally:
+            os.close(descriptor)
+        if name == "SHA256SUMS":
+            self._check_exact_member_set()
+            for member in sorted(self.records):
+                self._read_verified(member, allow_manifest=True)
+            os.fsync(self.descriptor)
+            self.close()
+
+    def _check_exact_member_set(self) -> None:
+        self._check_directory_identity()
+        if set(os.listdir(self.descriptor)) != set(self.records):
+            raise ReadbackError("packet directory contains an untracked member")
+
+    def iterdir(self) -> list[PacketMember]:
+        self._check_exact_member_set()
+        return [PacketMember(self, name) for name in self.records]
+
+    def read_verified(self, name: str) -> bytes:
+        return self._read_verified(name, allow_manifest=False)
+
+    def _read_verified(self, name: str, *, allow_manifest: bool) -> bytes:
+        self._check_exact_member_set()
+        record = self.records.get(name)
+        if record is None or (name == "SHA256SUMS" and not allow_manifest):
+            raise ReadbackError("packet member is not available for sealing")
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(name, flags, dir_fd=self.descriptor)
+        try:
+            before = os.fstat(descriptor)
+            expected_identity = (
+                record["dev"], record["ino"], record["mode"], record["nlink"],
+                record["size"], record["mtime_ns"], record["ctime_ns"],
+            )
+            if self._identity(before) != expected_identity:
+                raise ReadbackError("packet member identity changed before sealing")
+            remaining = int(record["size"]) + 1
+            chunks: list[bytes] = []
+            while remaining:
+                chunk = os.read(descriptor, min(self.CHUNK, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            after = os.fstat(descriptor)
+            if self._identity(after) != expected_identity:
+                raise ReadbackError("packet member identity changed during sealing")
+            if len(data) != record["size"] or hashlib.sha256(data).hexdigest() != record["sha256"]:
+                raise ReadbackError("packet member bytes changed before sealing")
+            return data
+        finally:
+            os.close(descriptor)
+
+    def close(self) -> None:
+        if not getattr(self, "closed", True):
+            os.close(self.descriptor)
+            self.closed = True
+
+    def __del__(self) -> None:
+        self.close()
+
+
+def write(path: PacketTarget, data: bytes) -> None:
+    if not isinstance(path, PacketTarget):
+        raise ReadbackError("packet writes must use a pinned directory descriptor")
+    path.writer.write(path.name, data)
+
+
+def prepare(path: Path) -> PacketWriter:
+    return PacketWriter(path)
+
+
+def retain(output: PacketWriter, key: str, path: str, result: tuple[int, dict[str, str], Any]) -> Any:
     status, headers, value = result
     body = json.dumps(value, sort_keys=True, indent=2).encode() + b"\n"
     write(output / f"{key}.json", body)
@@ -209,12 +391,21 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
     actor_permission = values["actor_permission"] if isinstance(values["actor_permission"], dict) else {}
     review = nested(protection, "required_pull_request_reviews", default={})
     required = nested(protection, "required_status_checks", default={})
-    context_present = REQUIRED_CHECK in (required.get("contexts", []) if isinstance(required, dict) else [])
-    context_present |= any(
-        isinstance(item, dict) and item.get("context") == REQUIRED_CHECK
+    context_present = any(
+        isinstance(item, dict)
+        and item.get("context") == REQUIRED_CHECK
+        and item.get("app_id") == REQUIRED_CHECK_APP_ID
         for item in (required.get("checks", []) if isinstance(required, dict) else [])
     )
     check_rows = checks.get("check_runs", []) if isinstance(checks, dict) else []
+    merge_gate_rows = [
+        row for row in check_rows
+        if isinstance(row, dict)
+        and row.get("name") == REQUIRED_CHECK
+        and nested(row, "app", "id") == REQUIRED_CHECK_APP_ID
+        and isinstance(row.get("id"), int)
+    ]
+    latest_merge_gate = max(merge_gate_rows, key=lambda row: row["id"], default=None)
     environment_names = {
         row.get("name") for row in nested(values["environments"], "environments", default=[])
         if isinstance(row, dict) and isinstance(row.get("name"), str)
@@ -232,6 +423,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
     protected_environments = all(
         isinstance(values[key], dict)
         and values[key].get("name") == name
+        and values[key].get("prevent_self_review") is True
         and any(
             isinstance(rule, dict) and rule.get("type") == "required_reviewers" and rule.get("reviewers")
             for rule in values[key].get("protection_rules", [])
@@ -258,10 +450,10 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
             and checks.get("total_count") == len(check_rows)
             and not has_next_page(reads["main_checks"][1])
         ),
-        "successful_exact_main_merge_gate": any(
-            isinstance(row, dict) and row.get("name") == REQUIRED_CHECK
-            and row.get("status") == "completed" and row.get("conclusion") == "success"
-            for row in check_rows
+        "successful_exact_main_merge_gate": (
+            isinstance(latest_merge_gate, dict)
+            and latest_merge_gate.get("status") == "completed"
+            and latest_merge_gate.get("conclusion") == "success"
         ),
         "strict_required_check": isinstance(required, dict) and required.get("strict") is True and context_present,
         "admins_enforced": enabled(protection, "enforce_admins"),
@@ -289,6 +481,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
             reads["environments"][0] == 200
             and isinstance(values["environments"], dict)
             and isinstance(values["environments"].get("environments"), list)
+            and values["environments"].get("total_count") == len(values["environments"]["environments"])
             and not has_next_page(reads["environments"][1])
             and all(reads[key][0] == 200 for key in environment_keys.values())
         ),
