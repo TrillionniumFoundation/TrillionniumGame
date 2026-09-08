@@ -1,3 +1,4 @@
+# rerun after idempotency repair
 name: plan-v32-fixed-point-diagnostic-20260909
 
 on:
