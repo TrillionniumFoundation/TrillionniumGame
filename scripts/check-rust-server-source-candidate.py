@@ -135,7 +135,7 @@ def main() -> int:
             "typed CLI": "ServerConfig::from_environment(arguments)",
             "migration command": "Command::Migrate",
             "PostgreSQL composition": "PgRepository",
-            "bounded queue": "sync_channel(queue_capacity)",
+            "bounded queue": "sync_channel::<QueuedConnection>(queue_capacity)",
             "bounded reads": "set_read_timeout(Some(config.read_timeout))",
             "bounded writes": "set_write_timeout(Some(config.write_timeout))",
             "health route": '"/healthz"',
