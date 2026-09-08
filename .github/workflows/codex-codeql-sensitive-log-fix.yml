@@ -19,7 +19,7 @@ jobs:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: '1'
     steps:
-      - name: Fetch immutable target head
+      - name: Fetch helper and immutable target head
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -29,141 +29,28 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE"
           git init "$GITHUB_WORKSPACE"
           git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git -C "$GITHUB_WORKSPACE" -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic" fetch --no-tags origin "$GITHUB_SHA" "$TARGET_SHA"
+          git -C "$GITHUB_WORKSPACE" show "$GITHUB_SHA:scripts/codex-codeql-sensitive-log-fix.py" > /tmp/codex-codeql-sensitive-log-fix.py
           remote_head="$(git -C "$GITHUB_WORKSPACE" -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic" ls-remote origin "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
           test "$remote_head" = "$TARGET_SHA"
-          git -C "$GITHUB_WORKSPACE" -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic" fetch --no-tags --depth=1 origin "$TARGET_SHA"
-          git -C "$GITHUB_WORKSPACE" checkout -B "$TARGET_BRANCH" FETCH_HEAD
+          git -C "$GITHUB_WORKSPACE" checkout -B "$TARGET_BRANCH" "$TARGET_SHA"
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$TARGET_SHA"
           git -C "$GITHUB_WORKSPACE" config user.name "ProfHepta"
           git -C "$GITHUB_WORKSPACE" config user.email "102159240+ProfHepta@users.noreply.github.com"
 
-      - name: Replace configuration-derived log sinks with static operator messages
+      - name: Apply exact logging repair
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          root = Path.cwd()
-          runtime_mod = root / "crates/trnm-server/src/runtime/mod.rs"
-          server = root / "crates/trnm-server/src/runtime/server.rs"
-
-          def replace_once(text: str, old: str, new: str, label: str) -> str:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
-              return text.replace(old, new, 1)
-
-          mod_text = runtime_mod.read_text(encoding="utf-8")
-          mod_text = replace_once(
-              mod_text,
-              "use config::{Command, ServerConfig};\npub use error::ServerError;\n",
-              "use config::{Command, ServerConfig};\npub use error::ServerError;\n\nconst CONFIGURATION_VALID_MESSAGE: &str = \"trnm-server configuration valid\";\nconst MIGRATION_COMPLETE_MESSAGE: &str = \"trnm-server migration completed\";\n",
-              "operator message constants",
-          )
-          mod_text = replace_once(
-              mod_text,
-              '''        Command::CheckConfig => {
-            println!("trnm-server configuration: {config:?}");
-            Ok(())
-        }
-''',
-              '''        Command::CheckConfig => {
-            println!("{CONFIGURATION_VALID_MESSAGE}");
-            Ok(())
-        }
-''',
-              "configuration debug sink",
-          )
-          mod_text = replace_once(
-              mod_text,
-              '''        Command::Migrate => {
-            let report = schema::migrate(&config)?;
-            println!(
-                "migration profile={} applied={} table_count={}",
-                report.profile.metadata_value(),
-                report.migration_applied,
-                report.table_count,
-            );
-            Ok(())
-        }
-''',
-              '''        Command::Migrate => {
-            schema::migrate(&config)?;
-            println!("{MIGRATION_COMPLETE_MESSAGE}");
-            Ok(())
-        }
-''',
-              "migration derived sink",
-          )
-          mod_text += '''
-#[cfg(test)]
-mod operator_message_tests {
-    use super::{CONFIGURATION_VALID_MESSAGE, MIGRATION_COMPLETE_MESSAGE};
-
-    #[test]
-    fn operator_messages_are_static_and_secret_free() {
-        for message in [CONFIGURATION_VALID_MESSAGE, MIGRATION_COMPLETE_MESSAGE] {
-            assert!(!message.contains("key"));
-            assert!(!message.contains("token"));
-            assert!(!message.contains("database"));
-            assert!(!message.contains("profile"));
-        }
-    }
-}
-'''
-          runtime_mod.write_text(mod_text, encoding="utf-8")
-
-          server_text = server.read_text(encoding="utf-8")
-          server_text = replace_once(
-              server_text,
-              "const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);\n",
-              "const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);\nconst STARTUP_MESSAGE: &str = \"trnm-server source candidate started\";\n",
-              "startup message constant",
-          )
-          server_text = replace_once(
-              server_text,
-              '''    eprintln!(
-        "trnm-server source candidate listening on {} grpc_bind={:?} profile={} workers={} queue_capacity={}",
-        config.bind,
-        config.grpc_bind,
-        config.database_profile.metadata_value(),
-        worker_count,
-        queue_capacity,
-    );
-''',
-              '''    eprintln!("{STARTUP_MESSAGE}");
-''',
-              "startup configuration sink",
-          )
-          server_text = replace_once(
-              server_text,
-              '''    #[test]
-    fn connection_parse_failure_has_no_internal_reason() {
-''',
-              '''    #[test]
-    fn startup_message_is_static_and_configuration_free() {
-        assert_eq!(STARTUP_MESSAGE, "trnm-server source candidate started");
-        for forbidden in ["bind", "profile", "worker", "queue", "key", "token"] {
-            assert!(!STARTUP_MESSAGE.contains(forbidden));
-        }
-    }
-
-    #[test]
-    fn connection_parse_failure_has_no_internal_reason() {
-''',
-              "startup message regression",
-          )
-          server.write_text(server_text, encoding="utf-8")
-          PY
+          python3 /tmp/codex-codeql-sensitive-log-fix.py
           mapfile -t changed < <(git diff --name-only | sort)
           test "${#changed[@]}" -eq 2
           test "${changed[0]}" = "crates/trnm-server/src/runtime/mod.rs"
           test "${changed[1]}" = "crates/trnm-server/src/runtime/server.rs"
           git diff --check
-          ! grep -F 'configuration: {config:?}' crates/trnm-server/src/runtime/mod.rs
-          ! grep -F 'migration profile=' crates/trnm-server/src/runtime/mod.rs
-          ! grep -F 'grpc_bind={:?}' crates/trnm-server/src/runtime/server.rs
+          test "$(grep -Fc 'configuration: {config:?}' crates/trnm-server/src/runtime/mod.rs)" -eq 0
+          test "$(grep -Fc 'migration profile=' crates/trnm-server/src/runtime/mod.rs)" -eq 0
+          test "$(grep -Fc 'grpc_bind={:?}' crates/trnm-server/src/runtime/server.rs)" -eq 0
 
       - name: Validate control-plane source contracts
         shell: bash
