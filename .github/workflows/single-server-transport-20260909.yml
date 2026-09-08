@@ -1,0 +1,330 @@
+name: single-server-transport-20260909
+
+on:
+  push:
+    branches:
+      - codex/single-server-transport-2026-09-09
+    paths:
+      - .github/workflows/single-server-transport-20260909.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: single-server-transport-20260909
+  cancel-in-progress: false
+
+jobs:
+  converge:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
+    steps:
+      - name: Fetch current target candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/target"
+          git init "$GITHUB_WORKSPACE/target"
+          git -C "$GITHUB_WORKSPACE/target" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/target" fetch --no-tags origin \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/target" checkout -b "$TARGET_BRANCH" \
+            "refs/remotes/origin/${TARGET_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/target" rev-parse HEAD > "$RUNNER_TEMP/original-head"
+
+      - name: Establish one default trnm-server authority
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import re
+          import textwrap
+          from pathlib import Path
+          from typing import Any
+
+          root = Path('.')
+          canonical_manifest_path = root / 'crates/trnm-server/Cargo.toml'
+          canonical_manifest = canonical_manifest_path.read_text(encoding='utf-8')
+          canonical_manifest = canonical_manifest.replace(
+              'name = "trnm-server-composition-candidate"',
+              'name = "trnm-server"',
+          )
+          canonical_manifest_path.write_text(canonical_manifest, encoding='utf-8')
+
+          pg_manifest_path = root / 'crates/trnm-persistence-pg/Cargo.toml'
+          pg_manifest = pg_manifest_path.read_text(encoding='utf-8')
+          if 'autobins = false' not in pg_manifest:
+              pg_manifest = pg_manifest.replace(
+                  'name = "trnm-persistence-pg"\n',
+                  'name = "trnm-persistence-pg"\nautobins = false\n',
+                  1,
+              )
+          if 'diagnostic-compat-server = []' not in pg_manifest:
+              if '[features]\n' not in pg_manifest:
+                  raise SystemExit('persistence feature anchor missing')
+              pg_manifest = pg_manifest.replace(
+                  '[features]\n',
+                  '[features]\ndiagnostic-compat-server = []\n',
+                  1,
+              )
+          if '[[bin]]' in pg_manifest:
+              raise SystemExit('persistence manifest already has explicit bins; manual merge required')
+          bin_blocks = []
+          for source in sorted((root / 'crates/trnm-persistence-pg/src/bin').glob('*.rs')):
+              stem = source.stem
+              relative = source.relative_to(root / 'crates/trnm-persistence-pg').as_posix()
+              if stem == 'trnm-server':
+                  bin_blocks.append(
+                      '\n[[bin]]\n'
+                      'name = "trnm-pg-compat-server"\n'
+                      f'path = "{relative}"\n'
+                      'required-features = ["diagnostic-compat-server"]\n'
+                  )
+              else:
+                  bin_blocks.append(
+                      '\n[[bin]]\n'
+                      f'name = "{stem}"\n'
+                      f'path = "{relative}"\n'
+                  )
+          if not bin_blocks:
+              raise SystemExit('no persistence binaries discovered')
+          pg_manifest_path.write_text(pg_manifest.rstrip() + '\n' + ''.join(bin_blocks), encoding='utf-8')
+
+          text_suffixes = {'.md', '.json', '.py', '.sh', '.yml', '.yaml', '.toml', '.rs', '.txt'}
+          for path in root.rglob('*'):
+              if not path.is_file() or path.suffix.lower() not in text_suffixes:
+                  continue
+              if '.git' in path.parts:
+                  continue
+              try:
+                  text = path.read_text(encoding='utf-8')
+              except UnicodeDecodeError:
+                  continue
+              original = text
+              text = text.replace('trnm-server-composition-candidate', 'trnm-server')
+              text = text.replace(
+                  'crates/trnm-persistence-pg/Cargo.toml::trnm-server',
+                  'crates/trnm-server/Cargo.toml::trnm-server',
+              )
+              # Exact command forms for the old database-package target.
+              replacements = {
+                  'cargo test --package trnm-persistence-pg --bin trnm-server':
+                      'cargo test --package trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server',
+                  'cargo test -p trnm-persistence-pg --locked --bin trnm-server':
+                      'cargo test -p trnm-persistence-pg --features diagnostic-compat-server --locked --bin trnm-pg-compat-server',
+                  'cargo test -p trnm-persistence-pg --bin trnm-server':
+                      'cargo test -p trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server',
+                  'cargo build --package trnm-persistence-pg --bin trnm-server':
+                      'cargo build --package trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server',
+                  'cargo run --package trnm-persistence-pg --bin trnm-server':
+                      'cargo run --package trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server',
+              }
+              for old, new in replacements.items():
+                  text = text.replace(old, new)
+              if path.as_posix().startswith('crates/trnm-persistence-pg/'):
+                  text = text.replace('CARGO_BIN_EXE_trnm-server', 'CARGO_BIN_EXE_trnm-pg-compat-server')
+              if text != original:
+                  path.write_text(text, encoding='utf-8')
+
+          architecture_path = root / 'docs/ARCHITECTURE.md'
+          architecture = architecture_path.read_text(encoding='utf-8')
+          architecture = architecture.replace(
+              '`crates/trnm-persistence-pg/src/bin/trnm-server.rs` is the current canonical database-backed integration slice and the server binary named by the machine package authority;',
+              '`crates/trnm-server` is the only package allowed to publish the default `trnm-server` process and owns the canonical composition root;',
+          )
+          architecture = architecture.replace(
+              '`crates/trnm-server` is a dependency-bounded foundation executable used to keep process/ingress/core contracts independently buildable.',
+              '`crates/trnm-persistence-pg/src/bin/trnm-server.rs` is retained only as the feature-gated `trnm-pg-compat-server` diagnostic and compatibility harness.',
+          )
+          architecture_path.write_text(architecture, encoding='utf-8')
+
+          development_path = root / 'docs/DEVELOPMENT.md'
+          development = development_path.read_text(encoding='utf-8')
+          development = development.replace(
+              'The database-backed server candidate is `crates/trnm-persistence-pg/src/bin/trnm-server.rs`. The standalone `crates/trnm-server` executable is a foundation candidate, not a second production authority.',
+              'The only default server binary is `crates/trnm-server`::`trnm-server`. The database-backed source at `crates/trnm-persistence-pg/src/bin/trnm-server.rs` builds only as the explicit `diagnostic-compat-server` feature target `trnm-pg-compat-server`.',
+          )
+          development_path.write_text(development, encoding='utf-8')
+
+          def rewrite_machine(value: Any) -> Any:
+              if isinstance(value, str):
+                  value = value.replace('trnm-server-composition-candidate', 'trnm-server')
+                  value = value.replace(
+                      'crates/trnm-persistence-pg/Cargo.toml::trnm-server',
+                      'crates/trnm-server/Cargo.toml::trnm-server',
+                  )
+                  return value
+              if isinstance(value, list):
+                  return [rewrite_machine(item) for item in value]
+              if isinstance(value, dict):
+                  return {key: rewrite_machine(item) for key, item in value.items()}
+              return value
+
+          for relative in (
+              'docs/status/CURRENT_STATE.json',
+              'docs/status/COMPONENT_DOCUMENTATION.json',
+              'docs/development/RUST_PACKAGE_AUTHORITY.json',
+              'docs/status/IMPLEMENTATION_INVENTORY.json',
+              'docs/roadmap/ARCHITECTURE_CLOSURE.json',
+          ):
+              path = root / relative
+              if path.exists():
+                  payload = rewrite_machine(json.loads(path.read_text(encoding='utf-8')))
+                  path.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
+
+          checker_path = root / 'scripts/check-single-server-authority.py'
+          checker_path.write_text(textwrap.dedent('''\
+          #!/usr/bin/env python3
+          from __future__ import annotations
+
+          import json
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          ROOT = Path(__file__).resolve().parents[1]
+
+          def require(condition: bool, message: str) -> None:
+              if not condition:
+                  raise SystemExit(message)
+
+          metadata = json.loads(subprocess.check_output(
+              ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+              cwd=ROOT,
+              text=True,
+          ))
+          owners = []
+          compat = []
+          for package in metadata["packages"]:
+              for target in package["targets"]:
+                  if "bin" not in target["kind"]:
+                      continue
+                  if target["name"] == "trnm-server":
+                      owners.append(package["name"])
+                  if target["name"] == "trnm-pg-compat-server":
+                      compat.append((package["name"], target.get("required-features", [])))
+          require(owners == ["trnm-server"], f"default trnm-server owners must be exactly one: {owners}")
+          require(compat == [("trnm-persistence-pg", ["diagnostic-compat-server"])], f"compat server target is invalid: {compat}")
+          canonical = tomllib.loads((ROOT / "crates/trnm-server/Cargo.toml").read_text(encoding="utf-8"))
+          require(canonical["bin"][0]["name"] == "trnm-server", "canonical binary name is stale")
+          persistence = tomllib.loads((ROOT / "crates/trnm-persistence-pg/Cargo.toml").read_text(encoding="utf-8"))
+          require(persistence["package"].get("autobins") is False, "persistence autobins must be disabled")
+          require("diagnostic-compat-server" in persistence["features"], "compat feature is missing")
+          print("single server authority validation passed")
+          '''), encoding='utf-8')
+          checker_path.chmod(0o755)
+
+          test_path = root / 'tests/control_plane/test_single_server_authority.py'
+          test_path.write_text(textwrap.dedent('''\
+          from __future__ import annotations
+
+          import subprocess
+          import unittest
+          from pathlib import Path
+
+          ROOT = Path(__file__).resolve().parents[2]
+
+          class SingleServerAuthorityTest(unittest.TestCase):
+              def test_repository_checker(self) -> None:
+                  subprocess.run(
+                      ["python3", "scripts/check-single-server-authority.py"],
+                      cwd=ROOT,
+                      check=True,
+                  )
+
+          if __name__ == "__main__":
+              unittest.main()
+          '''), encoding='utf-8')
+
+          merge_gate_path = root / '.github/workflows/trillionnium-game-merge-gate.yml'
+          merge_gate = merge_gate_path.read_text(encoding='utf-8')
+          anchor = (
+              '      - name: Validate Rust server source contract\n'
+              '        run: python3 scripts/check-trnm-server.py\n'
+          )
+          step = (
+              '      - name: Validate unique server composition authority\n'
+              '        run: python3 scripts/check-single-server-authority.py\n'
+          )
+          if step not in merge_gate:
+              if anchor not in merge_gate:
+                  raise SystemExit('server authority merge-gate anchor missing')
+              merge_gate = merge_gate.replace(anchor, anchor + step, 1)
+          compile_anchor = '            scripts/check-trnm-server.py\n'
+          compile_line = '            scripts/check-single-server-authority.py\n'
+          if compile_line not in merge_gate:
+              if compile_anchor not in merge_gate:
+                  raise SystemExit('server authority compile anchor missing')
+              merge_gate = merge_gate.replace(compile_anchor, compile_anchor + compile_line, 1)
+          merge_gate_path.write_text(merge_gate, encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Validate all source and command consumers
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          cargo metadata --format-version 1 --no-deps >/dev/null
+          python3 scripts/check-single-server-authority.py
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-trnm-server.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -q
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test -p trnm-persistence-pg --features diagnostic-compat-server \
+            --bin trnm-pg-compat-server --locked
+          cargo clippy -p trnm-persistence-pg --features diagnostic-compat-server \
+            --bin trnm-pg-compat-server --locked -- -D warnings
+          bash scripts/check-rust-server-process.sh
+          (
+            cd runtime
+            test -z "$(gofmt -l .)"
+            go test ./... -count=1
+            go test -race ./... -count=1
+            go vet ./...
+          )
+          git diff --check
+
+      - name: Publish only after full validation
+        working-directory: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          original=$(cat "$RUNNER_TEMP/original-head")
+          test "$(git rev-parse HEAD)" = "$original"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          test -n "$(git diff --cached --name-only)"
+          git commit -m 'architecture: establish one default trnm-server authority'
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+
+      - name: Delete transport branch after successful publication
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C "$GITHUB_WORKSPACE/target" push origin \
+            --delete codex/single-server-transport-2026-09-09
