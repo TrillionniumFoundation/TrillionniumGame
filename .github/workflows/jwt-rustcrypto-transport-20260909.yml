@@ -1,0 +1,384 @@
+name: jwt-rustcrypto-transport-20260909
+
+on:
+  push:
+    branches:
+      - codex/jwt-rustcrypto-transport-2026-09-09
+    paths:
+      - .github/workflows/jwt-rustcrypto-transport-20260909.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: jwt-rustcrypto-transport-20260909
+  cancel-in-progress: false
+
+jobs:
+  replace-private-primitives:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
+    steps:
+      - name: Fetch current target branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/target"
+          git init "$GITHUB_WORKSPACE/target"
+          git -C "$GITHUB_WORKSPACE/target" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/target" fetch --no-tags origin \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/target" checkout -b "$TARGET_BRANCH" \
+            "refs/remotes/origin/${TARGET_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/target" rev-parse HEAD > "$RUNNER_TEMP/original-head"
+
+      - name: Replace private JWT primitives without changing the public adapter API
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import re
+          import textwrap
+          from pathlib import Path
+
+          root = Path('.')
+          adapter = root / 'crates/trnm-token-jwt-adapter'
+
+          manifest_path = adapter / 'Cargo.toml'
+          manifest = manifest_path.read_text(encoding='utf-8')
+          if '[dependencies]' not in manifest:
+              anchor = '\n[lib]\n'
+              if anchor not in manifest:
+                  raise SystemExit('JWT adapter lib anchor missing')
+              dependencies = (
+                  '\n[dependencies]\n'
+                  'hmac = "=0.13.0"\n'
+                  'sha2 = "=0.11.0"\n'
+                  'subtle = "=2.6.1"\n'
+              )
+              manifest = manifest.replace(anchor, dependencies + anchor, 1)
+          else:
+              for line in (
+                  'hmac = "=0.13.0"',
+                  'sha2 = "=0.11.0"',
+                  'subtle = "=2.6.1"',
+              ):
+                  if line not in manifest:
+                      manifest = manifest.replace('[dependencies]\n', '[dependencies]\n' + line + '\n', 1)
+          manifest = manifest.replace(
+              'description = "Strict dependency-free HS256 legacy and key-epoch JWT adapter"',
+              'description = "Strict RustCrypto-backed HS256 legacy and key-epoch JWT adapter"',
+          )
+          manifest_path.write_text(manifest, encoding='utf-8')
+
+          for name in ('trnm-token-jwt-adapter-gate', 'trnm-token-jwt-adapter-gate-v2'):
+              path = root / 'crates' / name / 'Cargo.toml'
+              gate = path.read_text(encoding='utf-8')
+              if '[dependencies]' not in gate:
+                  anchor = '\n[lib]\n'
+                  if anchor not in gate:
+                      raise SystemExit(f'{name}: lib anchor missing')
+                  gate = gate.replace(
+                      anchor,
+                      '\n[dependencies]\nhmac = "=0.13.0"\nsha2 = "=0.11.0"\nsubtle = "=2.6.1"\n' + anchor,
+                      1,
+                  )
+              else:
+                  for line in (
+                      'hmac = "=0.13.0"',
+                      'sha2 = "=0.11.0"',
+                      'subtle = "=2.6.1"',
+                  ):
+                      if line not in gate:
+                          gate = gate.replace('[dependencies]\n', '[dependencies]\n' + line + '\n', 1)
+              path.write_text(gate, encoding='utf-8')
+
+          sha_path = adapter / 'src/sha256.rs'
+          sha_path.write_text(textwrap.dedent('''\
+          use hmac::{Hmac, Mac};
+          use sha2::{Digest, Sha256};
+          use subtle::ConstantTimeEq;
+
+          type HmacSha256 = Hmac<Sha256>;
+
+          #[must_use]
+          pub fn digest(input: &[u8]) -> [u8; 32] {
+              let output = Sha256::digest(input);
+              let mut result = [0_u8; 32];
+              result.copy_from_slice(&output);
+              result
+          }
+
+          #[must_use]
+          pub fn hmac_sha256(key: &[u8], chunks: &[&[u8]]) -> [u8; 32] {
+              let mut mac = HmacSha256::new_from_slice(key)
+                  .expect("HMAC-SHA256 accepts every key length");
+              for chunk in chunks {
+                  mac.update(chunk);
+              }
+              let output = mac.finalize().into_bytes();
+              let mut result = [0_u8; 32];
+              result.copy_from_slice(&output);
+              result
+          }
+
+          #[must_use]
+          pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+              left.len() == right.len() && bool::from(left.ct_eq(right))
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn decode_hex(value: &str) -> Vec<u8> {
+                  value
+                      .as_bytes()
+                      .chunks_exact(2)
+                      .map(|pair| {
+                          let high = (pair[0] as char).to_digit(16).expect("hex") as u8;
+                          let low = (pair[1] as char).to_digit(16).expect("hex") as u8;
+                          (high << 4) | low
+                      })
+                      .collect()
+              }
+
+              #[test]
+              fn sha256_known_answer() {
+                  assert_eq!(
+                      digest(b"abc").as_slice(),
+                      decode_hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+                  );
+              }
+
+              #[test]
+              fn hmac_sha256_rfc_4231_case_one() {
+                  assert_eq!(
+                      hmac_sha256(&[0x0b; 20], &[b"Hi There"]).as_slice(),
+                      decode_hex("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+                  );
+              }
+
+              #[test]
+              fn comparison_rejects_full_width_length_differences() {
+                  for delta in [1_usize, 255, 256, 257, 512] {
+                      let left = vec![0_u8; 32];
+                      let right = vec![0_u8; 32 + delta];
+                      assert!(!constant_time_eq(&left, &right));
+                      assert!(!constant_time_eq(&right, &left));
+                  }
+                  assert!(constant_time_eq(&[7; 32], &[7; 32]));
+                  assert!(!constant_time_eq(&[7; 32], &[8; 32]));
+              }
+          }
+          '''), encoding='utf-8')
+
+          for readme_path in (
+              adapter / 'README.md',
+              root / 'docs/SECURITY_AND_PRIVACY.md',
+              root / 'SECURITY.md',
+          ):
+              if readme_path.exists():
+                  text = readme_path.read_text(encoding='utf-8')
+                  text = text.replace('dependency-free HS256', 'RustCrypto-backed HS256')
+                  text = text.replace('private SHA-256, HMAC-SHA256 and equality code', 'reviewed RustCrypto SHA-256, HMAC-SHA256 and subtle comparison primitives')
+                  readme_path.write_text(text, encoding='utf-8')
+
+          authority_path = root / 'docs/development/CRYPTO_PATH_AUTHORITY.json'
+          authority = json.loads(authority_path.read_text(encoding='utf-8'))
+          providers = authority['approved_primitive_providers']
+          provider_id = 'PROVIDER-RUSTCRYPTO-JWT'
+          if not any(row['id'] == provider_id for row in providers):
+              providers.append({
+                  'id': provider_id,
+                  'packages': [
+                      {'name': 'hmac', 'version': '0.13.0'},
+                      {'name': 'sha2', 'version': '0.11.0'},
+                      {'name': 'subtle', 'version': '2.6.1'},
+                  ],
+                  'operations': [
+                      'SHA-256 digest',
+                      'HMAC-SHA256 issue and verification',
+                      'constant-time equal-length byte comparison',
+                  ],
+                  'source_paths': ['crates/trnm-token-jwt-adapter/src/sha256.rs'],
+                  'profile': 'compatibility-adapter-reviewed-library-source-candidate',
+                  'production_approval': False,
+                  'independent_security_acceptance': False,
+              })
+          rows = {row['id']: row for row in authority['path_classifications']}
+          reference = rows['CRYPTO-PATH-COMPATIBILITY-REFERENCE']
+          reference.update({
+              'classification': 'non-production-compatibility-adapter-reviewed-library-source-candidate',
+              'implementation': 'strict compatibility adapter backed by RustCrypto hmac/sha2 and subtle primitives',
+              'primitive_provider': provider_id,
+              'private_primitive_reachable': False,
+              'required_acceptance': 'Retain three-way Nakama differential, malformed-token/fuzz corpus, dependency provenance and independent cryptographic review.',
+          })
+          reference.pop('required_remediation', None)
+          authority['summary']['private_compatibility_implementation_removed'] = True
+          authority['summary']['production_key_provider_accepted'] = False
+          authority['summary']['gap_closed'] = False
+          authority['summary']['production_ready'] = False
+          authority_path.write_text(json.dumps(authority, indent=2) + '\n', encoding='utf-8')
+
+          checker_path = root / 'scripts/check-jwt-rustcrypto-backend.py'
+          checker_path.write_text(textwrap.dedent('''\
+          #!/usr/bin/env python3
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          ROOT = Path(__file__).resolve().parents[1]
+          MANIFESTS = [
+              ROOT / "crates/trnm-token-jwt-adapter/Cargo.toml",
+              ROOT / "crates/trnm-token-jwt-adapter-gate/Cargo.toml",
+              ROOT / "crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml",
+          ]
+          SOURCE = ROOT / "crates/trnm-token-jwt-adapter/src/sha256.rs"
+          AUTHORITY = ROOT / "docs/development/CRYPTO_PATH_AUTHORITY.json"
+
+          def require(condition: bool, message: str) -> None:
+              if not condition:
+                  raise SystemExit(message)
+
+          for manifest in MANIFESTS:
+              text = manifest.read_text(encoding="utf-8")
+              for dependency in ("hmac", "sha2", "subtle"):
+                  require(f"{dependency} =" in text, f"{manifest}: missing {dependency}")
+          source = SOURCE.read_text(encoding="utf-8")
+          for required in ("Hmac<Sha256>", "Sha256::digest", "ConstantTimeEq", ".ct_eq("):
+              require(required in source, f"JWT backend missing {required}")
+          for forbidden in ("K256", "ROUND_CONSTANTS", "wrapping_add", "rotate_right"):
+              require(forbidden not in source, f"private SHA implementation marker remains: {forbidden}")
+          authority = json.loads(AUTHORITY.read_text(encoding="utf-8"))
+          rows = {row["id"]: row for row in authority["path_classifications"]}
+          row = rows["CRYPTO-PATH-COMPATIBILITY-REFERENCE"]
+          require(row["private_primitive_reachable"] is False, "crypto authority is stale")
+          require(row["primitive_provider"] == "PROVIDER-RUSTCRYPTO-JWT", "crypto provider authority is stale")
+          require(authority["summary"]["gap_closed"] is False, "library migration cannot self-close review")
+          print("JWT RustCrypto backend validation passed")
+          '''), encoding='utf-8')
+          checker_path.chmod(0o755)
+
+          test_path = root / 'tests/control_plane/test_jwt_rustcrypto_backend.py'
+          test_path.write_text(textwrap.dedent('''\
+          from __future__ import annotations
+
+          import subprocess
+          import unittest
+          from pathlib import Path
+
+          ROOT = Path(__file__).resolve().parents[2]
+
+          class JwtRustCryptoBackendTest(unittest.TestCase):
+              def test_repository_checker(self) -> None:
+                  subprocess.run(
+                      ["python3", "scripts/check-jwt-rustcrypto-backend.py"],
+                      cwd=ROOT,
+                      check=True,
+                  )
+
+          if __name__ == "__main__":
+              unittest.main()
+          '''), encoding='utf-8')
+
+          merge_gate_path = root / '.github/workflows/trillionnium-game-merge-gate.yml'
+          merge_gate = merge_gate_path.read_text(encoding='utf-8')
+          anchor = (
+              '      - name: Validate production cryptographic paths\n'
+              '        run: python3 scripts/check-production-crypto-paths.py\n'
+          )
+          if anchor not in merge_gate:
+              anchor = (
+                  '      - name: Validate Rust server source contract\n'
+                  '        run: python3 scripts/check-trnm-server.py\n'
+              )
+          step = (
+              '      - name: Validate JWT RustCrypto backend\n'
+              '        run: python3 scripts/check-jwt-rustcrypto-backend.py\n'
+          )
+          if step not in merge_gate:
+              if anchor not in merge_gate:
+                  raise SystemExit('JWT merge-gate anchor missing')
+              merge_gate = merge_gate.replace(anchor, anchor + step, 1)
+          compile_anchor = '            scripts/check-trnm-server.py\n'
+          compile_line = '            scripts/check-jwt-rustcrypto-backend.py\n'
+          if compile_line not in merge_gate:
+              if compile_anchor not in merge_gate:
+                  raise SystemExit('JWT compile anchor missing')
+              merge_gate = merge_gate.replace(compile_anchor, compile_anchor + compile_line, 1)
+          merge_gate_path.write_text(merge_gate, encoding='utf-8')
+          PY
+          git diff --check
+          python3 scripts/check-jwt-rustcrypto-backend.py
+
+      - name: Resolve lockfiles and execute exact compatibility corpus
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          cargo test --manifest-path crates/trnm-token-jwt-adapter/Cargo.toml --all-targets
+          cargo clippy --manifest-path crates/trnm-token-jwt-adapter/Cargo.toml --all-targets -- -D warnings
+          for manifest in \
+            crates/trnm-token-jwt-adapter-gate/Cargo.toml \
+            crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
+            cargo test --manifest-path "$manifest" --all-targets
+            cargo clippy --manifest-path "$manifest" --all-targets -- -D warnings
+          done
+          cargo fmt --all
+          cargo fmt --all -- --check
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-jwt-rustcrypto-backend.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -q
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          (
+            cd runtime
+            test -z "$(gofmt -l .)"
+            go test ./... -count=1
+            go test -race ./... -count=1
+            go vet ./...
+          )
+          git diff --check
+
+      - name: Publish tested source as a normal fast-forward
+        working-directory: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          original=$(cat "$RUNNER_TEMP/original-head")
+          test "$(git rev-parse HEAD)" = "$original"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          test -n "$(git diff --cached --name-only)"
+          git commit -m 'security: replace private JWT primitives with RustCrypto'
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+
+      - name: Delete transport branch after successful publication
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C "$GITHUB_WORKSPACE/target" push origin \
+            --delete codex/jwt-rustcrypto-transport-2026-09-09
