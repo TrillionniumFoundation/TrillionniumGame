@@ -42,7 +42,8 @@ class CryptoPathAuthorityTest(unittest.TestCase):
             self.documentation_authority["machine_control_documents"],
         )
         summary = self.authority["summary"]
-        self.assertFalse(summary["all_active_crypto_paths_reviewed_provider_backed"])
+        self.assertTrue(summary["classified_active_paths_use_reviewed_primitives"])
+        self.assertFalse(summary["all_production_crypto_paths_classified_and_accepted"])
         self.assertFalse(summary["production_key_provider_accepted"])
         self.assertFalse(summary["private_compatibility_implementation_removed"])
         self.assertFalse(summary["gap_closed"])
@@ -51,6 +52,7 @@ class CryptoPathAuthorityTest(unittest.TestCase):
     def test_access_authentication_path_uses_openssl_and_not_private_mac(self) -> None:
         row = self.paths["CRYPTO-PATH-ACTIVE-ACCESS-AUTH"]
         self.assertFalse(row["private_primitive_reachable"])
+        self.assertEqual(row["primitive_provider"], "PROVIDER-OPENSSL-SOFTWARE-CRYPTO")
         production = ACCESS_AUTH.read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
         self.assertIn("PKey::hmac", production)
         self.assertIn("Signer::new(MessageDigest::sha256()", production)
@@ -59,13 +61,17 @@ class CryptoPathAuthorityTest(unittest.TestCase):
         for forbidden in ("KeyRing", "SecretKey", "sha256_digest", "constant_time_eq"):
             self.assertNotIn(forbidden, production)
 
-    def test_unmigrated_outbox_digest_is_explicitly_blocking(self) -> None:
+    def test_outbox_digest_uses_openssl_without_private_hash_or_comparator(self) -> None:
         row = self.paths["CRYPTO-PATH-ACTIVE-OUTBOX-DIGEST"]
-        self.assertTrue(row["private_primitive_reachable"])
-        self.assertIsNone(row["primitive_provider"])
+        self.assertFalse(row["private_primitive_reachable"])
+        self.assertEqual(row["primitive_provider"], "PROVIDER-OPENSSL-SOFTWARE-CRYPTO")
         source = OUTBOX_WORKER.read_text(encoding="utf-8")
-        self.assertIn("trnm_token_jwt_adapter::sha256_digest", source)
-        self.assertIn("fn constant_time_eq", source)
+        self.assertIn("hash(MessageDigest::sha256()", source)
+        self.assertIn("memcmp::eq", source)
+        self.assertIn("fn sha256_delivery", source)
+        self.assertIn("fn sha256_worker", source)
+        self.assertNotIn("trnm_token_jwt_adapter::sha256_digest", source)
+        self.assertNotIn("fn constant_time_eq", source)
         self.assertIn("GAP-P0-CRYPTO-001", row["gap_links"])
         self.assertIn("GAP-P1-OUTBOX-001", row["gap_links"])
 
