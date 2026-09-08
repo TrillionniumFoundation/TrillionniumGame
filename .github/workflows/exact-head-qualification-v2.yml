@@ -1,0 +1,203 @@
+name: exact-head-qualification-v2
+
+on:
+  push:
+    branches:
+      - codex/exact-head-qualification-v2-2026-09-08
+    paths:
+      - .github/workflows/exact-head-qualification-v2.yml
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: exact-head-qualification-v2
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    env:
+      TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
+      TARGET_PR: '116'
+    steps:
+      - name: Wait for complete source convergence invariants
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          deadline=$((SECONDS+10800))
+          while (( SECONDS < deadline )); do
+            head=$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "${api}/git/ref/heads/${TARGET_BRANCH//\//%2F}" | jq -r '.object.sha')
+            rm -rf "$RUNNER_TEMP/probe"
+            git init "$RUNNER_TEMP/probe" >/dev/null
+            git -C "$RUNNER_TEMP/probe" remote add origin \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            if git -C "$RUNNER_TEMP/probe" fetch --no-tags --depth=1 origin "$head" >/dev/null 2>&1; then
+              git -C "$RUNNER_TEMP/probe" checkout --detach FETCH_HEAD >/dev/null 2>&1
+              if HEAD_SHA="$head" python3 - <<'PY'
+          from pathlib import Path
+          import re, tomllib, os
+          root=Path(os.environ['RUNNER_TEMP'],'probe')
+          manifests=sorted(root.glob('crates/*/Cargo.toml'))
+          if not manifests: raise SystemExit(1)
+          cargo=(root/'Cargo.toml').read_text(encoding='utf-8')
+          workspace=tomllib.loads(cargo)['workspace']
+          members={str(root/path) for path in workspace.get('members',[]) for path in [Path(path)/'Cargo.toml']}
+          actual={str(path) for path in manifests}
+          if members!=actual: raise SystemExit(1)
+          if workspace.get('exclude'): raise SystemExit(1)
+          if any('[workspace]' in p.read_text(encoding='utf-8') for p in manifests): raise SystemExit(1)
+          if any(p.parent.joinpath('Cargo.lock').exists() for p in manifests): raise SystemExit(1)
+          if not (root/'Cargo.lock').is_file(): raise SystemExit(1)
+          server=(root/'crates/trnm-server/Cargo.toml').read_text(encoding='utf-8')
+          if 'name = "trnm-server"' not in server: raise SystemExit(1)
+          if (root/'crates/trnm-persistence-pg/src/bin/trnm-server.rs').exists(): raise SystemExit(1)
+          if not (root/'crates/trnm-persistence-pg/src/bin/trnm-pg-compat-server.rs').is_file(): raise SystemExit(1)
+          crypto=(root/'crates/trnm-token-jwt-adapter/src/sha256.rs').read_text(encoding='utf-8')
+          for marker in ('use hmac::{Hmac, Mac};','use sha2::{Digest, Sha256};','use subtle::ConstantTimeEq;'):
+              if marker not in crypto: raise SystemExit(1)
+          if 'ROUND_CONSTANTS' in crypto or 'fn compress' in crypto: raise SystemExit(1)
+          auth=(root/'crates/trnm-persistence-pg/src/auth.rs').read_text(encoding='utf-8').split('#[cfg(test)]',1)[0]
+          if 'trnm_token_jwt_provider_adapter' not in auth or 'impl Hs256Provider' not in auth: raise SystemExit(1)
+          outbox=(root/'crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs').read_text(encoding='utf-8')
+          if 'trnm_token_jwt_adapter::sha256_digest' in outbox or 'fn constant_time_eq' in outbox: raise SystemExit(1)
+          if any((root/'.github/workflows').glob('*one-shot*.yml')): raise SystemExit(1)
+          if any((root/'.github/workflows').glob('*one-shot*.yaml')): raise SystemExit(1)
+          PY
+              then
+                printf '%s\n' "$head" > "$RUNNER_TEMP/head.txt"
+                break
+              fi
+            fi
+            sleep 30
+          done
+          test -s "$RUNNER_TEMP/head.txt"
+          head=$(cat "$RUNNER_TEMP/head.txt")
+          pr_head=$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "${api}/pulls/${TARGET_PR}" | jq -r '.head.sha')
+          test "$pr_head" = "$head"
+          rm -rf "$GITHUB_WORKSPACE"
+          mv "$RUNNER_TEMP/probe" "$GITHUB_WORKSPACE"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$head"
+          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T%nparents=%P'
+
+      - name: Wait for the closed exact-head native workflow collection
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          head=$(cat "$RUNNER_TEMP/head.txt")
+          mkdir -p run/exact-head-v2
+          set +e
+          output=$(python3 scripts/check-required-workflow-runs.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --head-sha "$head" \
+            --current-run-id "$GITHUB_RUN_ID" \
+            --manifest docs/governance/REQUIRED_WORKFLOWS_V1.json \
+            --timeout-seconds 9000 \
+            --poll-seconds 15 \
+            --stable-polls 3 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$output" | tee run/exact-head-v2/collector.log
+          if (( rc != 0 )); then
+            exit "$rc"
+          fi
+          receipt=$(printf '%s\n' "$output" | tail -n 1)
+          printf '%s\n' "$receipt" | jq -e 'type=="array" and length>0' >/dev/null
+          tree=$(git rev-parse HEAD^{tree})
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg head "$head" \
+            --arg tree "$tree" \
+            --arg orchestrator_run "$GITHUB_RUN_ID" \
+            --arg orchestrator_attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson workflows "$receipt" \
+            '{schema:"trillionnium.exact-head-qualification-v2.v1",repository:$repository,head:$head,tree:$tree,orchestrator_run:$orchestrator_run,orchestrator_attempt:$orchestrator_attempt,workflows:$workflows,claims:{native_workflow_collection_terminal_success:true,independent_acceptance:false,accepted_evidence:false,gap_closed:false,production_ready:false}}' \
+            > run/exact-head-v2/report.json
+          (
+            cd run/exact-head-v2
+            sha256sum collector.log report.json > SHA256SUMS
+            tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+              -cf - collector.log report.json SHA256SUMS | gzip -n > ../exact-head-v2.tar.gz
+          )
+
+      - name: Upload exact-head execution candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          head=$(cat "$RUNNER_TEMP/head.txt")
+          python3 scripts/upload-actions-artifact.py \
+            "exact-head-qualification-v2-${head}" \
+            run/exact-head-v2.tar.gz --mime-type application/gzip \
+            | tail -n 1 > "$RUNNER_TEMP/artifact.json"
+          cat "$RUNNER_TEMP/artifact.json"
+
+      - name: Publish qualification result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(cat "$RUNNER_TEMP/head.txt")
+          tree=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD^{tree})
+          artifact=$(cat "$RUNNER_TEMP/artifact.json")
+          count=$(jq '.workflows|length' "$GITHUB_WORKSPACE/run/exact-head-v2/report.json")
+          body=$(jq -n --arg head "$head" --arg tree "$tree" --arg artifact "$artifact" --arg count "$count" \
+            '{body:("## Exact-head qualification v2\n\n```text\nhead "+$head+"\ntree "+$tree+"\nterminal-success workflow records "+$count+"\n```\n\nArtifact receipt:\n```json\n"+$artifact+"\n```\n\nThe source invariants and closed native workflow collection are satisfied for this exact head. This is still execution evidence, not conflict-free specialist acceptance or production authority.\n\n```text\nindependent_acceptance=false\naccepted_evidence=false\nall_gaps_closed=false\nproduction_ready=false\n```" )}')
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+            -d "$body" >/dev/null
+
+      - name: Publish failure diagnostics
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$GITHUB_WORKSPACE/run/exact-head-v2/collector.log"
+          [[ -s "$log" ]] || echo 'source convergence invariant or PR identity did not settle before the deadline' > "$RUNNER_TEMP/failure.log"
+          [[ -s "$log" ]] && cp "$log" "$RUNNER_TEMP/failure.log"
+          tail -c 50000 "$RUNNER_TEMP/failure.log" > "$RUNNER_TEMP/tail.log"
+          body=$(python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          text=Path(os.environ['RUNNER_TEMP'],'tail.log').read_text(encoding='utf-8',errors='replace')
+          print(json.dumps({'body':'Exact-head qualification v2 failed closed. No workflow or gap has been credited.\n\n```text\n'+text+'\n```'}))
+          PY
+          )
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+            -d "$body" >/dev/null
+
+      - name: Delete qualifier branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C "$GITHUB_WORKSPACE" push origin --delete codex/exact-head-qualification-v2-2026-09-08 >/dev/null 2>&1 || true
