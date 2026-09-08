@@ -55,8 +55,15 @@ def update_overlay(root: Path) -> None:
     removals = overlay.get("remove_workflow_ids", [])
     additions = overlay.get("add_workflows", [])
     base_rows = base.get("workflows", [])
-    require(isinstance(removals, list) and isinstance(additions, list) and isinstance(base_rows, list), "workflow arrays invalid")
-    overlay["composed_external_workflow_count"] = len(base_rows) - len(removals) + len(additions)
+    require(
+        isinstance(removals, list)
+        and isinstance(additions, list)
+        and isinstance(base_rows, list),
+        "workflow arrays invalid",
+    )
+    overlay["composed_external_workflow_count"] = (
+        len(base_rows) - len(removals) + len(additions)
+    )
     payload = dict(overlay)
     payload.pop("overlay_sha256", None)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -87,10 +94,43 @@ def update_server_tests(root: Path) -> None:
     write(path, text)
 
 
+def update_auth_contract(root: Path) -> None:
+    path = root / "crates/trnm-persistence-pg/src/auth.rs"
+    text = read(path)
+    old = '''                if issuer.is_empty()
+                    || audience.is_empty()
+                    || issuer.len() > 512
+                    || audience.len() > 512
+                    || epoch == 0
+                    || key.domain != KeyDomain::AccessToken
+                    || key.epoch != Some(epoch)
+                {
+                    return Err(configuration_error("access_token_profile_invalid"));
+                }
+'''
+    new = '''                validate_configuration(&issuer, &audience, epoch)?;
+                if key.domain != KeyDomain::AccessToken || key.epoch != Some(epoch) {
+                    return Err(configuration_error("access_token_profile_invalid"));
+                }
+'''
+    require(old in text or new in text, "provider configuration block missing")
+    text = text.replace(old, new, 1)
+    text = text.replace(
+        'assert!(debug.contains("<redacted>"));',
+        'assert!(debug.contains("<redacted-key-handle>"));',
+        1,
+    )
+    require('assert!(debug.contains("<opaque-provider>"));' in text, "opaque provider debug assertion missing")
+    require('assert!(debug.contains("<redacted-key-handle>"));' in text, "redacted key-reference assertion missing")
+    require('assert!(!debug.contains("0123456789abcdef"));' in text, "raw key rejection assertion missing")
+    write(path, text)
+
+
 def run(root: Path) -> None:
     require((root / ".git").is_dir(), "Git working tree required")
     update_overlay(root)
     update_server_tests(root)
+    update_auth_contract(root)
 
 
 if __name__ == "__main__":
