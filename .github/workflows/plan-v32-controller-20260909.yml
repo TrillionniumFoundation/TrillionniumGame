@@ -1,0 +1,275 @@
+name: plan-v32-controller-20260909
+
+on:
+  push:
+    branches:
+      - codex/plan-v32-controller-2026-09-09
+    paths:
+      - .github/workflows/plan-v32-controller-20260909.yml
+      - tools/plan_v32_converge.py
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: plan-v32-final-controller
+  cancel-in-progress: false
+
+jobs:
+  converge-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
+      CONTROLLER_BRANCH: codex/plan-v32-controller-2026-09-09
+      TARGET_PR: "116"
+    steps:
+      - name: Fetch controller source and wait for target stability
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/controller" "$GITHUB_WORKSPACE/target"
+          git init "$GITHUB_WORKSPACE/controller"
+          git -C "$GITHUB_WORKSPACE/controller" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/controller" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/controller" checkout --detach FETCH_HEAD
+          test -f "$GITHUB_WORKSPACE/controller/tools/plan_v32_converge.py"
+          python3 -m py_compile "$GITHUB_WORKSPACE/controller/tools/plan_v32_converge.py"
+
+          previous=''
+          stable=0
+          for _ in $(seq 1 20); do
+            current=$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
+            test -n "$current"
+            if [[ "$current" == "$previous" ]]; then
+              stable=$((stable + 1))
+            else
+              previous=$current
+              stable=1
+            fi
+            if [[ "$stable" -ge 3 ]]; then
+              break
+            fi
+            sleep 30
+          done
+          test "$stable" -ge 3
+          printf '%s\n' "$previous" > "$RUNNER_TEMP/stable-head"
+
+      - name: Clone the stable target candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=$(cat "$RUNNER_TEMP/stable-head")
+          git init "$GITHUB_WORKSPACE/target"
+          git -C "$GITHUB_WORKSPACE/target" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/target" fetch --no-tags origin \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          git -C "$GITHUB_WORKSPACE/target" checkout -b "$TARGET_BRANCH" \
+            "refs/remotes/origin/${TARGET_BRANCH}"
+          test "$(git -C "$GITHUB_WORKSPACE/target" rev-parse HEAD)" = "$expected"
+          git -C "$GITHUB_WORKSPACE/target" rev-parse HEAD > "$RUNNER_TEMP/original-head"
+          git -C "$GITHUB_WORKSPACE/target" rev-parse HEAD^{tree} > "$RUNNER_TEMP/original-tree"
+
+      - name: Apply all repository-controlled Plan v3.2 convergence changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/controller/tools/plan_v32_converge.py" \
+            "$GITHUB_WORKSPACE/target"
+          git -C "$GITHUB_WORKSPACE/target" diff --check
+          git -C "$GITHUB_WORKSPACE/target" status --short | tee "$RUNNER_TEMP/changed-files.txt"
+          test -s "$RUNNER_TEMP/changed-files.txt"
+
+      - name: Install exact Rust toolchain and resolve reviewed dependencies
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          rustc --version --verbose
+          cargo --version --verbose
+          cargo generate-lockfile
+          for manifest in \
+            crates/trnm-token-jwt-adapter-gate/Cargo.toml \
+            crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
+            cargo generate-lockfile --manifest-path "$manifest"
+          done
+          cargo metadata --format-version 1 --no-deps > "$RUNNER_TEMP/cargo-metadata.json"
+
+      - name: Validate architecture and control-plane contracts
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/control-plane.log") 2>&1
+          python3 scripts/check-production-crypto-paths.py
+          python3 scripts/check-jwt-rustcrypto-backend.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-single-server-authority.py
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-trnm-server.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -q
+
+      - name: Format, test and strictly lint all Rust targets
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/rust.log") 2>&1
+          cargo fmt --all
+          for manifest in \
+            crates/trnm-token-jwt-adapter-gate/Cargo.toml \
+            crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
+            cargo fmt --manifest-path "$manifest"
+          done
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in \
+            crates/trnm-token-jwt-adapter-gate/Cargo.toml \
+            crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
+            cargo fmt --manifest-path "$manifest" -- --check
+            cargo test --manifest-path "$manifest" --all-targets --locked
+            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
+          done
+          cargo test -p trnm-persistence-pg --features diagnostic-compat-server \
+            --bin trnm-pg-compat-server --locked
+          cargo clippy -p trnm-persistence-pg --features diagnostic-compat-server \
+            --bin trnm-pg-compat-server --locked -- -D warnings
+
+      - name: Test, race and vet the Go migration input
+        working-directory: target/runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/go.log") 2>&1
+          test -z "$(gofmt -l .)"
+          go test ./... -count=1
+          go test -race ./... -count=1
+          go vet ./...
+
+      - name: Run process and focused compatibility smoke
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/process.log") 2>&1
+          bash scripts/check-rust-server-process.sh
+          cargo test -p trnm-token-jwt-adapter --all-targets --locked
+          cargo test -p trnm-token-jwt-provider-adapter --all-targets --locked
+          cargo test -p trnm-token-crypto-provider --all-targets --locked
+          cargo test -p trnm-persistence-pg --lib --locked
+          git diff --check
+
+      - name: Commit and publish with a normal fast-forward only
+        working-directory: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          original=$(cat "$RUNNER_TEMP/original-head")
+          remote=$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
+          test "$remote" = "$original"
+          test "$(git rev-parse HEAD)" = "$original"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          test -n "$(git diff --cached --name-only)"
+          git commit -m 'architecture: converge Plan v3.2 repository-controlled blockers'
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          git rev-parse HEAD > "$RUNNER_TEMP/published-head"
+          git rev-parse HEAD^{tree} > "$RUNNER_TEMP/published-tree"
+
+      - name: Comment exact successful source identity on the stacked PR
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=$(cat "$RUNNER_TEMP/published-head")
+          tree=$(cat "$RUNNER_TEMP/published-tree")
+          body=$(cat <<EOF
+          Plan v3.2 repository-controlled convergence completed through a fail-closed runner transaction.
+
+          \`\`\`text
+          source_head=$head
+          source_tree=$tree
+          control_plane=true
+          rust_all_targets=true
+          strict_clippy=true
+          go_test_race_vet=true
+          source_convergence_candidate=true
+          accepted_evidence=false
+          independent_acceptance=false
+          all_gaps_closed=false
+          production_ready=false
+          \`\`\`
+
+          The remaining blockers are independent-human, administration-readback, complete-product, production-infrastructure and endurance/cutover facts. This execution does not synthesize them.
+          EOF
+          )
+          gh api --method POST \
+            "/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+            -f body="$body" >/dev/null
+
+      - name: Preserve bounded failure diagnostics on the PR
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          original=$(cat "$RUNNER_TEMP/original-head" 2>/dev/null || printf unknown)
+          {
+            printf 'Plan v3.2 controller failed closed; target branch was not force-updated.\n\n'
+            printf '```text\noriginal_head=%s\n' "$original"
+            for log in control-plane rust go process; do
+              file="$RUNNER_TEMP/${log}.log"
+              if [[ -f "$file" ]]; then
+                printf '\n=== %s tail ===\n' "$log"
+                tail -n 80 "$file"
+              fi
+            done
+            printf '\n```\n'
+          } > "$RUNNER_TEMP/failure-comment.md"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path(__import__('os').environ['RUNNER_TEMP']) / 'failure-comment.md'
+          text = path.read_text(encoding='utf-8', errors='replace')
+          path.write_text(text[-60000:], encoding='utf-8')
+          PY
+          gh api --method POST \
+            "/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+            -f body="$(cat "$RUNNER_TEMP/failure-comment.md")" >/dev/null
+
+      - name: Delete controller and superseded transport branches
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for branch in \
+            codex/architecture-convergence-transport-2026-09-08 \
+            codex/workspace-convergence-transport-2026-09-09 \
+            codex/final-convergence-transport-2026-09-09 \
+            codex/jwt-rustcrypto-transport-2026-09-09 \
+            codex/single-server-transport-2026-09-09 \
+            codex/plan-v32-controller-2026-09-09; do
+            git -C "$GITHUB_WORKSPACE/target" push origin --delete "$branch" || true
+          done
