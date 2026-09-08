@@ -320,3 +320,20 @@ mod tests {
         ));
     }
 }
+
+mod key_domain;
+mod key_epoch;
+mod signer_journal;
+
+pub use key_epoch::{
+    KeyEpoch, KeyEpochArchiveCheckpoint, KeyEpochArchiveVerifier, KeyEpochError, KeyEpochRecord,
+    KeyEpochRegistry as OperationalKeyEpochRegistry, KeyEpochState, KeyId,
+};
+pub use signer_journal::{
+    SignerDispatchIdentity, SignerJournal, SignerJournalArchiveVerifier, SignerJournalCheckpoint,
+    SignerJournalEpoch, SignerJournalError, SignerOutcomeEvidence, SignerOutcomeVerificationError,
+    SignerOutcomeVerifier, SignerReceiptBinding, SigningOperationHandle, SigningOperationId,
+    SigningOperationRecord, SigningOperationState, SigningOperationTombstone, SigningRequest,
+};
+
+pub use key_domain::{DomainBoundKeyId, DomainKeyEpochRegistry, KeyDomainError};
