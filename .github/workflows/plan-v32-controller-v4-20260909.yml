@@ -9,6 +9,7 @@ on:
       - tools/plan_v32_converge.py
       - tools/finalize_plan_v32_contracts.py
       - tools/finalize_plan_v32_regressions.py
+      - tools/finalize_plan_v32_regressions_v2.py
       - tools/run_plan_v32_convergence.sh
 
 permissions:
