@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -97,24 +98,14 @@ def update_server_tests(root: Path) -> None:
 def update_auth_contract(root: Path) -> None:
     path = root / "crates/trnm-persistence-pg/src/auth.rs"
     text = read(path)
-    old = '''                if issuer.is_empty()
-                    || audience.is_empty()
-                    || issuer.len() > 512
-                    || audience.len() > 512
-                    || epoch == 0
-                    || key.domain != KeyDomain::AccessToken
-                    || key.epoch != Some(epoch)
-                {
-                    return Err(configuration_error("access_token_profile_invalid"));
-                }
-'''
-    new = '''                validate_configuration(&issuer, &audience, epoch)?;
-                if key.domain != KeyDomain::AccessToken || key.epoch != Some(epoch) {
-                    return Err(configuration_error("access_token_profile_invalid"));
-                }
-'''
-    require(old in text or new in text, "provider configuration block missing")
-    text = text.replace(old, new, 1)
+    text, removed = re.subn(
+        r"\nfn validate_configuration\(issuer: &str, audience: &str, epoch: u32\) -> Result<\(\), DomainError> \{.*?\n\}\n\n(?=fn claim_string)",
+        "\n",
+        text,
+        count=1,
+        flags=re.S,
+    )
+    require(removed in (0, 1), "unexpected validation helper multiplicity")
     text = text.replace(
         'assert!(debug.contains("<redacted>"));',
         'assert!(debug.contains("<redacted-key-handle>"));',
