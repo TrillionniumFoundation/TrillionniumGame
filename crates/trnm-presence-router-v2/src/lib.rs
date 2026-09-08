@@ -8,7 +8,8 @@
 //! high-water. Connection actors, authenticated replay cursors and reconciled
 //! disconnect effects are independently bounded and fail closed across
 //! response loss, reconnect, drain and stale-generation attempts. Disconnect
-//! admission also reserves a checked epoch-wide verifier-receipt budget, so
+//! admission also reserves a checked epoch-wide verifier-receipt budget; each
+//! accepted receipt consumes its reservation before owner-map mutation, so
 //! retries cannot multiply retained evidence beyond the configured hard cap.
 
 mod connection_actor;
