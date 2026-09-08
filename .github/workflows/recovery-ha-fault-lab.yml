@@ -1,0 +1,321 @@
+name: recovery-ha-fault-lab
+
+on:
+  push:
+    branches:
+      - codex/recovery-ha-fault-lab-2026-09-08
+    paths:
+      - .github/workflows/recovery-ha-fault-lab.yml
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  recovery-ha:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
+      TARGET_PR: '116'
+    steps:
+      - name: Fetch stable exact candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          previous=''; stable=0; deadline=$((SECONDS+1800))
+          while (( SECONDS < deadline )); do
+            head=$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "${api}/git/ref/heads/${TARGET_BRANCH//\//%2F}" | jq -r '.object.sha')
+            if [[ "$head" == "$previous" ]]; then stable=$((stable+1)); else previous="$head"; stable=0; fi
+            if (( stable >= 3 )); then printf '%s\n' "$head" > "$RUNNER_TEMP/head.txt"; break; fi
+            sleep 20
+          done
+          test -s "$RUNNER_TEMP/head.txt"
+          head=$(cat "$RUNNER_TEMP/head.txt")
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$head"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$head"
+
+      - name: Resolve immutable database images
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          value=json.loads(Path('config/database-test-images.json').read_text())
+          strings=[]
+          def walk(v):
+              if isinstance(v,str): strings.append(v)
+              elif isinstance(v,dict):
+                  for x in v.values(): walk(x)
+              elif isinstance(v,list):
+                  for x in v: walk(x)
+          walk(value)
+          def choose(pattern):
+              candidates=[s for s in strings if re.search(pattern,s,re.I) and '@sha256:' in s]
+              if not candidates:
+                  raise SystemExit(f'no immutable image for {pattern}')
+              candidates.sort()
+              return candidates[0]
+          Path(os.environ['RUNNER_TEMP'],'postgres-image.txt').write_text(choose(r'postgres')+'\n')
+          Path(os.environ['RUNNER_TEMP'],'cockroach-image.txt').write_text(choose(r'cockroach')+'\n')
+          PY
+          echo "postgres=$(cat "$RUNNER_TEMP/postgres-image.txt")"
+          echo "cockroach=$(cat "$RUNNER_TEMP/cockroach-image.txt")"
+
+      - name: Execute PostgreSQL point-in-time recovery
+        id: pitr
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          root="$RUNNER_TEMP/pitr"
+          mkdir -p "$root/archive" "$root/basebackup" "$root/restore" "$root/logs"
+          image=$(cat "$RUNNER_TEMP/postgres-image.txt")
+          docker pull "$image" >"$root/logs/pull.log" 2>&1 || exit $?
+          docker rm -f trnm-pitr-primary trnm-pitr-restore >/dev/null 2>&1 || true
+          docker run -d --name trnm-pitr-primary \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=trnm \
+            -v "$root/archive:/archive" \
+            -v "$root/basebackup:/backup" \
+            "$image" \
+            postgres \
+              -c wal_level=replica \
+              -c archive_mode=on \
+              -c archive_timeout=1s \
+              -c "archive_command=test ! -f /archive/%f && cp %p /archive/%f" \
+            >"$root/logs/start-primary.log" 2>&1 || exit $?
+          for _ in $(seq 1 120); do
+            docker exec trnm-pitr-primary pg_isready -U postgres -d trnm >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec trnm-pitr-primary pg_isready -U postgres -d trnm >"$root/logs/ready-primary.log" 2>&1 || exit $?
+          docker exec trnm-pitr-primary psql -v ON_ERROR_STOP=1 -U postgres -d trnm \
+            -c 'CREATE TABLE pitr_probe(id integer PRIMARY KEY, label text NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp()); INSERT INTO pitr_probe(id,label) VALUES (1,''before-base-backup''); CHECKPOINT;' \
+            >"$root/logs/setup.log" 2>&1 || exit $?
+          docker exec trnm-pitr-primary bash -lc 'rm -rf /backup/base && pg_basebackup -U postgres -D /backup/base -Fp -Xs -P --checkpoint=fast' \
+            >"$root/logs/basebackup.log" 2>&1 || exit $?
+          docker exec trnm-pitr-primary psql -At -v ON_ERROR_STOP=1 -U postgres -d trnm \
+            -c "INSERT INTO pitr_probe(id,label) VALUES (2,'before-target'); SELECT clock_timestamp();" \
+            >"$root/target-time.txt" 2>"$root/logs/target-time.err" || exit $?
+          target_time=$(tail -n 1 "$root/target-time.txt")
+          sleep 2
+          docker exec trnm-pitr-primary psql -v ON_ERROR_STOP=1 -U postgres -d trnm \
+            -c "INSERT INTO pitr_probe(id,label) VALUES (3,'after-target'); SELECT pg_switch_wal(); CHECKPOINT; SELECT pg_switch_wal();" \
+            >"$root/logs/post-target.log" 2>&1 || exit $?
+          sleep 3
+          docker logs trnm-pitr-primary >"$root/logs/primary-container.log" 2>&1
+          docker stop -t 10 trnm-pitr-primary >"$root/logs/stop-primary.log" 2>&1 || exit $?
+
+          cp -a "$root/basebackup/base/." "$root/restore/" || exit $?
+          rm -f "$root/restore/standby.signal"
+          cat >> "$root/restore/postgresql.auto.conf" <<EOF
+          restore_command = 'cp /archive/%f %p'
+          recovery_target_time = '${target_time}'
+          recovery_target_action = 'promote'
+          EOF
+          touch "$root/restore/recovery.signal"
+          sudo chown -R 999:999 "$root/restore" "$root/archive"
+          start_ns=$(date +%s%N)
+          docker run -d --name trnm-pitr-restore \
+            -e PGDATA=/var/lib/postgresql/data \
+            -v "$root/restore:/var/lib/postgresql/data" \
+            -v "$root/archive:/archive:ro" \
+            "$image" >"$root/logs/start-restore.log" 2>&1 || exit $?
+          for _ in $(seq 1 180); do
+            docker exec trnm-pitr-restore pg_isready -U postgres -d trnm >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec trnm-pitr-restore pg_isready -U postgres -d trnm >"$root/logs/ready-restore.log" 2>&1 || exit $?
+          end_ns=$(date +%s%N)
+          rto_ms=$(( (end_ns-start_ns)/1000000 ))
+          docker exec trnm-pitr-restore psql -At -v ON_ERROR_STOP=1 -U postgres -d trnm \
+            -c 'SELECT id||'':''||label FROM pitr_probe ORDER BY id;' \
+            >"$root/restored-rows.txt" 2>"$root/logs/query.err" || exit $?
+          grep -Fxq '1:before-base-backup' "$root/restored-rows.txt" || exit 1
+          grep -Fxq '2:before-target' "$root/restored-rows.txt" || exit 1
+          ! grep -q '^3:' "$root/restored-rows.txt" || exit 1
+          docker exec trnm-pitr-restore psql -At -U postgres -d trnm -c 'SELECT pg_is_in_recovery();' \
+            >"$root/recovery-state.txt" 2>&1 || exit $?
+          grep -Fxq 'f' "$root/recovery-state.txt" || exit 1
+          docker logs trnm-pitr-restore >"$root/logs/restore-container.log" 2>&1
+          python3 - "$target_time" "$rto_ms" "$(cat "$RUNNER_TEMP/head.txt")" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(__import__('os').environ['RUNNER_TEMP'],'pitr')
+          value={
+            'schema':'trillionnium.postgresql-pitr-fault-lab.v1',
+            'candidate_head':sys.argv[3],
+            'target_time':sys.argv[1],
+            'restore_ready_milliseconds':int(sys.argv[2]),
+            'before_base_backup_present':True,
+            'before_target_present':True,
+            'after_target_absent':True,
+            'promoted_out_of_recovery':True,
+            'claims':{
+              'real_postgresql_processes':True,'wal_archive_replayed':True,
+              'production_environment':False,'approved_rpo_rto':False,
+              'independent_acceptance':False,'gap_closed':False,'production_ready':False,
+            },
+          }
+          (root/'summary.json').write_text(json.dumps(value,indent=2)+'\n')
+          PY
+          find "$root" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$root/SHA256SUMS"
+          docker rm -f trnm-pitr-primary trnm-pitr-restore >/dev/null 2>&1 || true
+
+      - name: Execute three-node CockroachDB node-loss recovery
+        id: cockroach
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          root="$RUNNER_TEMP/cockroach-ha"
+          mkdir -p "$root/logs"
+          image=$(cat "$RUNNER_TEMP/cockroach-image.txt")
+          docker pull "$image" >"$root/logs/pull.log" 2>&1 || exit $?
+          docker rm -f trnm-crdb-1 trnm-crdb-2 trnm-crdb-3 >/dev/null 2>&1 || true
+          docker network rm trnm-crdb-net >/dev/null 2>&1 || true
+          docker network create trnm-crdb-net >"$root/logs/network.log" 2>&1 || exit $?
+          for node in 1 2 3; do
+            docker volume rm "trnm-crdb-${node}-data" >/dev/null 2>&1 || true
+            docker volume create "trnm-crdb-${node}-data" >/dev/null || exit $?
+            docker run -d --name "trnm-crdb-${node}" --hostname "crdb-${node}" \
+              --network trnm-crdb-net \
+              -v "trnm-crdb-${node}-data:/cockroach/cockroach-data" \
+              "$image" start --insecure \
+                --listen-addr=0.0.0.0:26257 \
+                --advertise-addr="crdb-${node}:26257" \
+                --http-addr=0.0.0.0:8080 \
+                --join=crdb-1:26257,crdb-2:26257,crdb-3:26257 \
+              >"$root/logs/start-${node}.log" 2>&1 || exit $?
+          done
+          sleep 5
+          docker exec trnm-crdb-1 cockroach init --insecure --host=crdb-1:26257 \
+            >"$root/logs/init.log" 2>&1 || exit $?
+          for _ in $(seq 1 120); do
+            docker exec trnm-crdb-2 cockroach sql --insecure --host=crdb-2:26257 -e 'SELECT 1' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec trnm-crdb-1 cockroach sql --insecure --host=crdb-1:26257 --set=errexit=true \
+            -e "CREATE DATABASE trnm; CREATE TABLE trnm.ha_probe(id INT8 PRIMARY KEY, label STRING NOT NULL); INSERT INTO trnm.ha_probe VALUES (1,'before-node-loss');" \
+            >"$root/logs/setup.log" 2>&1 || exit $?
+          before=$(date +%s%N)
+          docker stop -t 1 trnm-crdb-1 >"$root/logs/stop-node-1.log" 2>&1 || exit $?
+          recovered=0
+          for _ in $(seq 1 120); do
+            if docker exec trnm-crdb-2 cockroach sql --insecure --host=crdb-2:26257 --database=trnm --set=errexit=true \
+                -e "SELECT count(*) FROM ha_probe; INSERT INTO ha_probe VALUES (2,'during-node-loss') ON CONFLICT DO NOTHING;" \
+                >"$root/logs/during-loss.log" 2>&1; then
+              recovered=1; break
+            fi
+            sleep 1
+          done
+          [[ "$recovered" == 1 ]] || exit 1
+          after=$(date +%s%N)
+          failover_ms=$(( (after-before)/1000000 ))
+          docker start trnm-crdb-1 >"$root/logs/restart-node-1.log" 2>&1 || exit $?
+          for _ in $(seq 1 120); do
+            docker exec trnm-crdb-1 cockroach sql --insecure --host=crdb-1:26257 --database=trnm -e 'SELECT count(*) FROM ha_probe' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec trnm-crdb-1 cockroach sql --insecure --host=crdb-1:26257 --database=trnm --format=tsv \
+            -e 'SELECT id,label FROM ha_probe ORDER BY id' >"$root/final-rows.tsv" 2>"$root/logs/final-query.err" || exit $?
+          grep -q 'before-node-loss' "$root/final-rows.tsv" || exit 1
+          grep -q 'during-node-loss' "$root/final-rows.tsv" || exit 1
+          for node in 1 2 3; do docker logs "trnm-crdb-${node}" >"$root/logs/node-${node}.log" 2>&1; done
+          python3 - "$failover_ms" "$(cat "$RUNNER_TEMP/head.txt")" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(__import__('os').environ['RUNNER_TEMP'],'cockroach-ha')
+          value={
+            'schema':'trillionnium.cockroach-three-node-fault-lab.v1',
+            'candidate_head':sys.argv[2],
+            'node_loss_write_recovery_milliseconds':int(sys.argv[1]),
+            'pre_loss_row_preserved':True,
+            'write_during_loss_preserved_after_restart':True,
+            'node_rejoined':True,
+            'claims':{
+              'real_three_node_processes':True,'single_node_loss_exercised':True,
+              'tls_enabled':False,'production_environment':False,
+              'partition_matrix_complete':False,'approved_rpo_rto':False,
+              'independent_acceptance':False,'gap_closed':False,'production_ready':False,
+            },
+          }
+          (root/'summary.json').write_text(json.dumps(value,indent=2)+'\n')
+          PY
+          find "$root" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$root/SHA256SUMS"
+          docker rm -f trnm-crdb-1 trnm-crdb-2 trnm-crdb-3 >/dev/null 2>&1 || true
+          docker network rm trnm-crdb-net >/dev/null 2>&1 || true
+          for node in 1 2 3; do docker volume rm "trnm-crdb-${node}-data" >/dev/null 2>&1 || true; done
+
+      - name: Package and upload any completed fault evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          head=$(cat "$RUNNER_TEMP/head.txt")
+          mkdir -p "$RUNNER_TEMP/receipts"
+          : > "$RUNNER_TEMP/receipts/artifacts.jsonl"
+          for name in pitr cockroach-ha; do
+            source="$RUNNER_TEMP/$name"
+            [[ -s "$source/summary.json" ]] || continue
+            archive="$RUNNER_TEMP/${name}.tar.gz"
+            tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+              -cf - -C "$source" . | gzip -n > "$archive"
+            python3 scripts/upload-actions-artifact.py \
+              "${name}-fault-lab-${head}" "$archive" --mime-type application/gzip \
+              | tail -n 1 >> "$RUNNER_TEMP/receipts/artifacts.jsonl"
+          done
+          jq -s . "$RUNNER_TEMP/receipts/artifacts.jsonl" > "$RUNNER_TEMP/receipts/artifacts.json"
+          pitr_outcome='${{ steps.pitr.outcome }}'
+          cockroach_outcome='${{ steps.cockroach.outcome }}'
+          jq -n --arg head "$head" --arg pitr "$pitr_outcome" --arg cockroach "$cockroach_outcome" \
+            --slurpfile artifacts "$RUNNER_TEMP/receipts/artifacts.json" \
+            '{schema:"trillionnium.recovery-ha-fault-campaign.v1",candidate_head:$head,postgresql_pitr_outcome:$pitr,cockroach_three_node_outcome:$cockroach,artifacts:($artifacts[0] // []),claims:{production_environment:false,independent_acceptance:false,gap_closed:false,production_ready:false}}' \
+            > "$RUNNER_TEMP/receipts/campaign.json"
+          cat "$RUNNER_TEMP/receipts/campaign.json"
+          jq -e '.postgresql_pitr_outcome=="success" and .cockroach_three_node_outcome=="success"' \
+            "$RUNNER_TEMP/receipts/campaign.json" >/dev/null
+
+      - name: Publish fault-lab result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result='{"schema":"trillionnium.recovery-ha-fault-campaign.v1","status":"packet-step-not-reached","claims":{"gap_closed":false}}'
+          [[ -s "$RUNNER_TEMP/receipts/campaign.json" ]] && result=$(cat "$RUNNER_TEMP/receipts/campaign.json")
+          body=$(jq -n --arg result "$result" '{body:("## Recovery and HA fault campaign\n\n```json\n"+$result+"\n```\n\nSuccessful jobs are real disposable-process evidence bound to the candidate head. They are not production PITR/HA acceptance, do not establish approved RPO/RTO, and do not replace independent SRE/database review." )}')
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+            -d "$body" >/dev/null
+
+      - name: Delete fault-lab transport branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/delete"
+          git -C "$RUNNER_TEMP/delete" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$RUNNER_TEMP/delete" push origin --delete codex/recovery-ha-fault-lab-2026-09-08 >/dev/null 2>&1 || true
