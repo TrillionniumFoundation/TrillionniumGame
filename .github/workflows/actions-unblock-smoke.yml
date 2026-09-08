@@ -17,7 +17,10 @@ concurrency:
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
-  WORLD_PR_NUMBER: '104'
+  WORLD_BASE_SHA: 0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
+  WORLD_HEAD_SHA: df4a6f74e71d1e28af41f32ba82874745f01eef9
+  WORLD_MERGE_REF: refs/pull/104/merge
+  WORLD_MERGE_SHA: e19321b6a7ea220314e2af0b59119d2909c1f84e
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_TERM_COLOR: never
@@ -41,69 +44,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          printf 'repository=%s\nsha=%s\nref=%s\nevent=%s\nrun_id=%s\n' \
-            "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_REF" \
-            "$GITHUB_EVENT_NAME" "$GITHUB_RUN_ID"
+          printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+          printf 'sha=%s\n' "$GITHUB_SHA"
+          printf 'ref=%s\n' "$GITHUB_REF"
+          printf 'event=%s\n' "$GITHUB_EVENT_NAME"
+          printf 'run_id=%s\n' "$GITHUB_RUN_ID"
           test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
           test -n "$GITHUB_SHA"
           test -n "$GITHUB_RUN_ID"
 
-  freeze_world_tuple:
-    name: freeze-world-pr-104-tuple
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    outputs:
-      base_sha: ${{ steps.freeze.outputs.base_sha }}
-      head_sha: ${{ steps.freeze.outputs.head_sha }}
-      head_tree: ${{ steps.freeze.outputs.head_tree }}
-      merge_sha: ${{ steps.freeze.outputs.merge_sha }}
-      merge_tree: ${{ steps.freeze.outputs.merge_tree }}
-    steps:
-      - id: freeze
-        name: Fetch PR refs and freeze one immutable tuple
-        shell: bash
-        run: |
-          set -euo pipefail
-          repo="$RUNNER_TEMP/world-tuple"
-          rm -rf "$repo"
-          git init "$repo"
-          git -C "$repo" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
-          git -C "$repo" fetch --no-tags --depth=2 origin \
-            '+refs/heads/main:refs/remotes/origin/main' \
-            "+refs/pull/${WORLD_PR_NUMBER}/head:refs/remotes/origin/pr-head" \
-            "+refs/pull/${WORLD_PR_NUMBER}/merge:refs/remotes/origin/pr-merge"
-          base_sha="$(git -C "$repo" rev-parse refs/remotes/origin/main)"
-          head_sha="$(git -C "$repo" rev-parse refs/remotes/origin/pr-head)"
-          merge_sha="$(git -C "$repo" rev-parse refs/remotes/origin/pr-merge)"
-          head_tree="$(git -C "$repo" rev-parse "${head_sha}^{tree}")"
-          merge_tree="$(git -C "$repo" rev-parse "${merge_sha}^{tree}")"
-          test "$(git -C "$repo" rev-parse "${merge_sha}^1")" = "$base_sha"
-          test "$(git -C "$repo" rev-parse "${merge_sha}^2")" = "$head_sha"
-          {
-            printf 'base_sha=%s\n' "$base_sha"
-            printf 'head_sha=%s\n' "$head_sha"
-            printf 'head_tree=%s\n' "$head_tree"
-            printf 'merge_sha=%s\n' "$merge_sha"
-            printf 'merge_tree=%s\n' "$merge_tree"
-          } | tee -a "$GITHUB_OUTPUT"
-          printf 'world_repository=%s\nworld_pr=%s\nproduction_authorization=not_granted\n' \
-            "$WORLD_REPOSITORY" "$WORLD_PR_NUMBER"
-
   external-world-v6:
     name: external-world-v6 (${{ matrix.scope }})
-    needs: freeze_world_tuple
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
-        scope: [truth, source, postgres, package]
-    env:
-      WORLD_BASE_SHA: ${{ needs.freeze_world_tuple.outputs.base_sha }}
-      WORLD_HEAD_SHA: ${{ needs.freeze_world_tuple.outputs.head_sha }}
-      WORLD_HEAD_TREE: ${{ needs.freeze_world_tuple.outputs.head_tree }}
-      WORLD_MERGE_SHA: ${{ needs.freeze_world_tuple.outputs.merge_sha }}
-      WORLD_MERGE_TREE: ${{ needs.freeze_world_tuple.outputs.merge_tree }}
+        scope:
+          - truth
+          - source
+          - postgres
+          - package
     services:
       postgres:
         image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
@@ -119,7 +80,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - name: Fetch and verify frozen World objects
+      - name: Fetch and verify exact World objects
         shell: bash
         run: |
           set -euo pipefail
@@ -132,16 +93,16 @@ jobs:
           git -C "$head_dir" checkout --detach FETCH_HEAD
           git init "$merge_dir"
           git -C "$merge_dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
-          git -C "$merge_dir" fetch --no-tags --depth=2 origin "$WORLD_MERGE_SHA"
+          git -C "$merge_dir" fetch --no-tags --depth=2 origin "$WORLD_MERGE_REF"
           git -C "$merge_dir" checkout --detach FETCH_HEAD
           test "$(git -C "$head_dir" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
-          test "$(git -C "$head_dir" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
           test "$(git -C "$merge_dir" rev-parse HEAD)" = "$WORLD_MERGE_SHA"
-          test "$(git -C "$merge_dir" rev-parse 'HEAD^{tree}')" = "$WORLD_MERGE_TREE"
           test "$(git -C "$merge_dir" rev-parse HEAD^1)" = "$WORLD_BASE_SHA"
           test "$(git -C "$merge_dir" rev-parse HEAD^2)" = "$WORLD_HEAD_SHA"
           test -z "$(git -C "$head_dir" status --porcelain=v1 --untracked-files=no)"
           test -z "$(git -C "$merge_dir" status --porcelain=v1 --untracked-files=no)"
+          git -C "$head_dir" show -s --format='world_head_commit=%H%nworld_head_tree=%T'
+          git -C "$merge_dir" show -s --format='world_merge_commit=%H%nworld_merge_tree=%T%nworld_merge_parents=%P'
 
       - name: Install pinned World toolchain
         if: ${{ matrix.scope != 'truth' }}
@@ -158,52 +119,38 @@ jobs:
           cargo --version --verbose
           psql --version
 
-      - name: Qualify frozen World head
+      - name: Qualify exact World head
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/world-head"
           bash scripts/run-trnm-world-v6-qualification-v2.sh "${{ matrix.scope }}"
 
-      - name: Qualify frozen World prospective merge
+      - name: Qualify actual World prospective merge
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/world-merge"
           bash scripts/run-trnm-world-v6-qualification-v2.sh "${{ matrix.scope }}"
 
-      - name: Assemble immutable evidence
+      - name: Emit immutable external qualification attestation
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          out="$GITHUB_WORKSPACE/external-evidence/${{ matrix.scope }}"
-          mkdir -p "$out/head" "$out/merge"
-          for pair in \
-            "$RUNNER_TEMP/world-head:$out/head" \
-            "$RUNNER_TEMP/world-merge:$out/merge"; do
-            root="${pair%%:*}"
-            dest="${pair#*:}"
-            source="$root/run/world-v6-v2/${{ matrix.scope }}"
-            test ! -d "$source" || cp -R "$source/." "$dest/"
+          printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
+          printf 'world_base_sha=%s\n' "$WORLD_BASE_SHA"
+          printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
+          printf 'world_merge_sha=%s\n' "$WORLD_MERGE_SHA"
+          printf 'scope=%s\n' "${{ matrix.scope }}"
+          printf 'external_runner_repository=%s\n' "$GITHUB_REPOSITORY"
+          printf 'external_runner_commit=%s\n' "$GITHUB_SHA"
+          printf 'external_runner_run_id=%s\n' "$GITHUB_RUN_ID"
+          printf 'production_authorization=not_granted\n'
+          for root in "$RUNNER_TEMP/world-head" "$RUNNER_TEMP/world-merge"; do
+            if test -d "$root/run/world-v6-v2/${{ matrix.scope }}"; then
+              find "$root/run/world-v6-v2/${{ matrix.scope }}" -type f -print0 \
+                | sort -z \
+                | xargs -0 -r sha256sum
+            fi
           done
-          {
-            printf 'world_repository=%s\nworld_pr=%s\n' "$WORLD_REPOSITORY" "$WORLD_PR_NUMBER"
-            printf 'world_base_sha=%s\nworld_head_sha=%s\nworld_head_tree=%s\n' \
-              "$WORLD_BASE_SHA" "$WORLD_HEAD_SHA" "$WORLD_HEAD_TREE"
-            printf 'world_merge_sha=%s\nworld_merge_tree=%s\nscope=%s\n' \
-              "$WORLD_MERGE_SHA" "$WORLD_MERGE_TREE" "${{ matrix.scope }}"
-            printf 'external_runner_repository=%s\nexternal_runner_commit=%s\nexternal_runner_run_id=%s\n' \
-              "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_RUN_ID"
-            printf 'production_authorization=not_granted\n'
-          } > "$out/attestation.txt"
-          find "$out" -type f -print0 | sort -z | xargs -0 -r sha256sum > "$out/SHA256SUMS"
-
-      - name: Upload immutable evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: external-world-v6-${{ matrix.scope }}-${{ needs.freeze_world_tuple.outputs.head_sha }}-${{ needs.freeze_world_tuple.outputs.merge_sha }}-${{ github.run_attempt }}
-          path: external-evidence/${{ matrix.scope }}/**
-          if-no-files-found: warn
-          retention-days: 30
