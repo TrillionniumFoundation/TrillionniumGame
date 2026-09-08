@@ -155,8 +155,50 @@ git config user.email 41898282+github-actions[bot]@users.noreply.github.com
 git add -A
 git diff --cached --check
 git commit -m 'architecture: finalize Plan v3.2 source convergence'
-git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
 head=$(git rev-parse HEAD)
+tree=$(git rev-parse 'HEAD^{tree}')
+
+bundle_dir="$RUNNER_TEMP/plan-v32-verified"
+rm -rf "$bundle_dir"
+mkdir -p "$bundle_dir"
+git archive --format=tar HEAD | gzip -n > "$bundle_dir/source.tar.gz"
+git format-patch -1 --stdout --binary --full-index > "$bundle_dir/candidate.patch"
+git diff-tree --no-commit-id --name-status -r HEAD > "$bundle_dir/name-status.txt"
+python3 - <<PY > "$bundle_dir/metadata.json"
+import json
+print(json.dumps({
+  "schema": "trillionnium.plan-v32-verified-candidate.v1",
+  "repository": "${GITHUB_REPOSITORY}",
+  "target_branch": "${TARGET_BRANCH}",
+  "base_commit": "${original}",
+  "candidate_commit_local": "${head}",
+  "candidate_tree": "${tree}",
+  "controller_commit": "${GITHUB_SHA}",
+  "run_id": "${GITHUB_RUN_ID}",
+  "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+  "control_plane_passed": True,
+  "python_tests": 666,
+  "rust_workspace_all_targets_passed": True,
+  "rust_strict_clippy_passed": True,
+  "isolated_gate_tests_and_clippy_passed": True,
+  "diagnostic_server_tests_and_clippy_passed": True,
+  "process_smoke_passed": True,
+  "go_test_race_vet_passed": True,
+  "independent_acceptance": False,
+  "all_gaps_closed": False,
+  "production_ready": False
+}, sort_keys=True, indent=2))
+PY
+(
+  cd "$bundle_dir"
+  sha256sum source.tar.gz candidate.patch name-status.txt metadata.json > SHA256SUMS
+)
+bundle="$RUNNER_TEMP/plan-v32-verified-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz"
+tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+  -czf "$bundle" -C "$bundle_dir" .
+python3 scripts/upload-actions-artifact.py \
+  "plan-v32-verified-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  "$bundle" --mime-type application/gzip
 trap - ERR
 gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
-  -f body="Plan v3.2 deterministic source convergence passed complete control-plane/Python, Rust all-target strict Clippy/process, and Go race/vet at \`$head\`. Independent acceptance, complete product parity, production infrastructure and all-gap closure remain separate false facts." >/dev/null
+  -f body="Plan v3.2 candidate tree \`${tree}\` passed complete control-plane/Python, Rust all-target strict Clippy/process, and Go race/vet. The exact source archive and binary patch were retained as artifact \`plan-v32-verified-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\`; connector publication is required because the Actions token cannot update workflow files. Independent acceptance, complete product parity, production infrastructure and all-gap closure remain false." >/dev/null
