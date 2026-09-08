@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 AUTHORITY = ROOT / "docs/development/CRYPTO_PATH_AUTHORITY.json"
 DOCUMENTATION_AUTHORITY = ROOT / "docs/DOCUMENTATION_AUTHORITY.json"
 ACCESS_AUTH = ROOT / "crates/trnm-persistence-pg/src/auth.rs"
+PERSISTENCE_MANIFEST = ROOT / "crates/trnm-persistence-pg/Cargo.toml"
 ADMIN_APP = ROOT / "crates/trnm-persistence-pg/src/bin/trnm_server/app.rs"
 OUTBOX_WORKER = ROOT / "crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs"
 
@@ -44,6 +45,7 @@ class CryptoPathAuthorityTest(unittest.TestCase):
         )
         summary = self.authority["summary"]
         self.assertEqual(summary["classified_paths"], len(self.paths))
+        self.assertTrue(summary["active_access_opaque_provider_composed"])
         self.assertTrue(summary["classified_active_paths_use_reviewed_primitives"])
         self.assertFalse(summary["active_access_auth_private_primitive_reachable"])
         self.assertFalse(summary["active_admin_auth_private_primitive_reachable"])
@@ -54,16 +56,27 @@ class CryptoPathAuthorityTest(unittest.TestCase):
         self.assertFalse(summary["gap_closed"])
         self.assertFalse(summary["production_ready"])
 
-    def test_access_authentication_path_uses_openssl_and_not_private_mac(self) -> None:
+    def test_access_authentication_composes_opaque_provider_and_resolver(self) -> None:
         row = self.paths["CRYPTO-PATH-ACTIVE-ACCESS-AUTH"]
+        self.assertTrue(row["opaque_provider_composed"])
         self.assertFalse(row["private_primitive_reachable"])
+        self.assertEqual(row["provider_contract"], "CONTRACT-HS256-OPAQUE-PROVIDER")
         self.assertEqual(row["primitive_provider"], "PROVIDER-OPENSSL-SOFTWARE-CRYPTO")
         production = ACCESS_AUTH.read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
-        self.assertIn("PKey::hmac", production)
-        self.assertIn("Signer::new(MessageDigest::sha256()", production)
-        self.assertIn("memcmp::eq", production)
-        self.assertIn("hash(MessageDigest::sha256()", production)
-        self.assertIn("fn sha256_digest", production)
+        manifest = PERSISTENCE_MANIFEST.read_text(encoding="utf-8")
+        for required in (
+            "Arc<dyn Hs256Provider>",
+            "Arc<dyn KeyResolver>",
+            "AuthenticationProfile",
+            "authenticate(",
+            "from_provider(",
+            "impl Hs256Provider for OpenSslHs256Provider",
+            "PKey::hmac",
+            "memcmp::eq",
+        ):
+            self.assertIn(required, production)
+        self.assertIn("trnm-token-crypto-provider", manifest)
+        self.assertIn("trnm-token-jwt-provider-adapter", manifest)
         for forbidden in (
             "KeyRing",
             "SecretKey",
