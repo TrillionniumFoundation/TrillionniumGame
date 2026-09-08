@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 AUTHORITY = ROOT / "docs/development/CRYPTO_PATH_AUTHORITY.json"
 DOCUMENTATION_AUTHORITY = ROOT / "docs/DOCUMENTATION_AUTHORITY.json"
 ACCESS_AUTH = ROOT / "crates/trnm-persistence-pg/src/auth.rs"
+ADMIN_APP = ROOT / "crates/trnm-persistence-pg/src/bin/trnm_server/app.rs"
 OUTBOX_WORKER = ROOT / "crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs"
 
 
@@ -42,7 +43,11 @@ class CryptoPathAuthorityTest(unittest.TestCase):
             self.documentation_authority["machine_control_documents"],
         )
         summary = self.authority["summary"]
+        self.assertEqual(summary["classified_paths"], len(self.paths))
         self.assertTrue(summary["classified_active_paths_use_reviewed_primitives"])
+        self.assertFalse(summary["active_access_auth_private_primitive_reachable"])
+        self.assertFalse(summary["active_admin_auth_private_primitive_reachable"])
+        self.assertFalse(summary["active_outbox_digest_private_primitive_reachable"])
         self.assertFalse(summary["all_production_crypto_paths_classified_and_accepted"])
         self.assertFalse(summary["production_key_provider_accepted"])
         self.assertFalse(summary["private_compatibility_implementation_removed"])
@@ -59,8 +64,24 @@ class CryptoPathAuthorityTest(unittest.TestCase):
         self.assertIn("memcmp::eq", production)
         self.assertIn("hash(MessageDigest::sha256()", production)
         self.assertIn("fn sha256_digest", production)
-        for forbidden in ("KeyRing", "SecretKey", "trnm_token_jwt_adapter::sha256_digest", "constant_time_eq"):
+        for forbidden in (
+            "KeyRing",
+            "SecretKey",
+            "trnm_token_jwt_adapter::sha256_digest",
+            "constant_time_eq",
+        ):
             self.assertNotIn(forbidden, production)
+
+    def test_administrator_token_comparison_uses_openssl(self) -> None:
+        row = self.paths["CRYPTO-PATH-ACTIVE-ADMIN-AUTH"]
+        self.assertFalse(row["private_primitive_reachable"])
+        self.assertEqual(row["primitive_provider"], "PROVIDER-OPENSSL-SOFTWARE-CRYPTO")
+        source = ADMIN_APP.read_text(encoding="utf-8")
+        self.assertIn("use openssl::memcmp", source)
+        self.assertIn("fn secure_token_eq", source)
+        self.assertIn("memcmp::eq(left, right)", source)
+        self.assertIn("admin_token_comparison_rejects_a_256_byte_length_delta", source)
+        self.assertNotIn("fn constant_time_eq", source)
 
     def test_outbox_digest_uses_openssl_without_private_hash_or_comparator(self) -> None:
         row = self.paths["CRYPTO-PATH-ACTIVE-OUTBOX-DIGEST"]
