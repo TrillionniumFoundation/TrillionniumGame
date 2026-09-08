@@ -69,6 +69,8 @@ class GitHubApi:
             response = self.opener.open(request, timeout=self.timeout)
         except urllib.error.HTTPError as error:
             response = error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise ReadbackError(f"GitHub API transport failed for {path}: {error}") from error
         try:
             status = int(response.getcode())
             body = response.read(MAX_BYTES + 1)
@@ -104,6 +106,10 @@ def nested(value: Any, *keys: str, default: Any = None) -> Any:
             return default
         current = current[key]
     return current
+
+
+def has_next_page(headers: dict[str, str]) -> bool:
+    return 'rel="next"' in headers.get("link", "").lower()
 
 
 def write(path: Path, data: bytes) -> None:
@@ -146,6 +152,8 @@ def retain(output: Path, key: str, path: str, result: tuple[int, dict[str, str],
 def capture(api: Any, output_path: Path, expected_main: str, environments: list[str]) -> dict[str, Any]:
     if not SHA.fullmatch(expected_main):
         raise ReadbackError("expected main must be a lowercase 40-character SHA")
+    if not environments:
+        raise ReadbackError("at least one protected environment must be named")
     if any(not name or "/" in name or name in {".", ".."} for name in environments):
         raise ReadbackError("environment names must be canonical single components")
     environments = list(dict.fromkeys(environments))
@@ -176,27 +184,29 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
     reads["actor_permission"] = api.get(permission_path)
     values["actor_permission"] = retain(output, "actor_permission", permission_path, reads["actor_permission"])
 
-    ruleset_keys: list[str] = []
+    ruleset_keys: dict[int, str] = {}
     rulesets = values["rulesets"] if isinstance(values["rulesets"], list) else []
     for row in rulesets:
         if not isinstance(row, dict) or not isinstance(row.get("id"), int):
             continue
-        key = f"ruleset_{row['id']}"
-        path = f"/repos/{REPO}/rulesets/{row['id']}"
+        ruleset_id = row["id"]
+        key = f"ruleset_{ruleset_id}"
+        path = f"/repos/{REPO}/rulesets/{ruleset_id}"
         reads[key] = api.get(path)
         values[key] = retain(output, key, path, reads[key])
-        ruleset_keys.append(key)
+        ruleset_keys[ruleset_id] = key
 
-    environment_keys: list[str] = []
+    environment_keys: dict[str, str] = {}
     for name in environments:
         key = "environment_" + hashlib.sha256(name.encode()).hexdigest()[:16]
         path = f"/repos/{REPO}/environments/{urllib.parse.quote(name, safe='')}"
         reads[key] = api.get(path)
         values[key] = retain(output, key, path, reads[key])
-        environment_keys.append(key)
+        environment_keys[name] = key
 
     repository, branch, checks = values["repository"], values["branch"], values["main_checks"]
     protection, actions, workflow = values["protection"], values["actions"], values["workflow_permissions"]
+    actor_permission = values["actor_permission"] if isinstance(values["actor_permission"], dict) else {}
     review = nested(protection, "required_pull_request_reviews", default={})
     required = nested(protection, "required_status_checks", default={})
     context_present = REQUIRED_CHECK in (required.get("contexts", []) if isinstance(required, dict) else [])
@@ -211,18 +221,30 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
     }
     bypass = review.get("bypass_pull_request_allowances", {}) if isinstance(review, dict) else None
     branch_bypass_empty = isinstance(bypass, dict) and all(value in (None, [], {}) for value in bypass.values())
-    ruleset_bypass_empty = all(values[key].get("bypass_actors") in (None, []) for key in ruleset_keys)
-    protected_environments = all(any(
-        isinstance(rule, dict) and rule.get("type") == "required_reviewers" and rule.get("reviewers")
-        for rule in values[key].get("protection_rules", [])
-    ) for key in environment_keys)
+    ruleset_details_valid = all(
+        isinstance(values[key], dict) and values[key].get("id") == ruleset_id
+        for ruleset_id, key in ruleset_keys.items()
+    )
+    ruleset_bypass_empty = all(
+        isinstance(values[key], dict) and values[key].get("bypass_actors") in (None, [])
+        for key in ruleset_keys.values()
+    )
+    protected_environments = all(
+        isinstance(values[key], dict)
+        and values[key].get("name") == name
+        and any(
+            isinstance(rule, dict) and rule.get("type") == "required_reviewers" and rule.get("reviewers")
+            for rule in values[key].get("protection_rules", [])
+        )
+        for name, key in environment_keys.items()
+    )
 
     assertions = {
         "all_reads_http_200": all(status == 200 for status, _, _ in reads.values()),
         "authenticated_human_admin": (
             isinstance(actor, dict) and actor.get("type") == "User"
             and isinstance(actor.get("id"), int)
-            and values["actor_permission"].get("permission") == "admin"
+            and actor_permission.get("permission") == "admin"
         ),
         "repository_identity": (
             isinstance(repository, dict) and repository.get("id") == REPO_ID
@@ -234,6 +256,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         "main_check_collection_complete": (
             isinstance(checks, dict) and isinstance(checks.get("total_count"), int)
             and checks.get("total_count") == len(check_rows)
+            and not has_next_page(reads["main_checks"][1])
         ),
         "successful_exact_main_merge_gate": any(
             isinstance(row, dict) and row.get("name") == REQUIRED_CHECK
@@ -254,9 +277,21 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         "actions_enabled": isinstance(actions, dict) and actions.get("enabled") is True,
         "workflow_permissions_read_only": isinstance(workflow, dict) and workflow.get("default_workflow_permissions") == "read",
         "actions_cannot_approve": isinstance(workflow, dict) and workflow.get("can_approve_pull_request_reviews") is False,
-        "rulesets_read_back": reads["rulesets"][0] == 200 and all(reads[key][0] == 200 for key in ruleset_keys),
+        "rulesets_read_back": (
+            reads["rulesets"][0] == 200
+            and isinstance(values["rulesets"], list)
+            and not has_next_page(reads["rulesets"][1])
+            and all(reads[key][0] == 200 for key in ruleset_keys.values())
+            and ruleset_details_valid
+        ),
         "ruleset_bypass_empty": ruleset_bypass_empty,
-        "environments_read_back": reads["environments"][0] == 200 and all(reads[key][0] == 200 for key in environment_keys),
+        "environments_read_back": (
+            reads["environments"][0] == 200
+            and isinstance(values["environments"], dict)
+            and isinstance(values["environments"].get("environments"), list)
+            and not has_next_page(reads["environments"][1])
+            and all(reads[key][0] == 200 for key in environment_keys.values())
+        ),
         "required_environments_present": set(environments).issubset(environment_names),
         "required_environments_have_reviewers": protected_environments,
     }
@@ -266,11 +301,11 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         "repository": REPO, "repository_id": REPO_ID, "branch": BRANCH,
         "expected_main": expected_main, "required_check": REQUIRED_CHECK,
         "authenticated_actor": {"id": actor.get("id"), "login": login, "type": actor.get("type"),
-                                "repository_permission": values["actor_permission"].get("permission")},
+                                "repository_permission": actor_permission.get("permission")},
         "read_only": True, "mutation_methods_used": [],
         "required_environments": environments,
         "observed_environment_names": sorted(environment_names),
-        "ruleset_ids": [row["id"] for row in rulesets if isinstance(row, dict) and isinstance(row.get("id"), int)],
+        "ruleset_ids": sorted(ruleset_keys),
         "http_status": {key: status for key, (status, _, _) in reads.items()},
         "assertions": assertions, "all_required_assertions": complete,
         "claims": {"governance_readback_complete": complete, "negative_rehearsal_accepted": False,
@@ -293,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-main", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--required-environment", action="append", default=[])
+    parser.add_argument("--required-environment", action="append", required=True)
     parser.add_argument("--timeout-seconds", type=float, default=30.0)
     args = parser.parse_args(argv)
     try:

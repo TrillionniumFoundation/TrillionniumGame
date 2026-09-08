@@ -21,8 +21,8 @@ SPEC.loader.exec_module(MODULE)
 
 
 class FakeApi:
-    def __init__(self, values, statuses=None):
-        self.values, self.statuses, self.paths = values, statuses or {}, []
+    def __init__(self, values, statuses=None, headers=None):
+        self.values, self.statuses, self.headers, self.paths = values, statuses or {}, headers or {}, []
 
     def get(self, path):
         self.paths.append(path)
@@ -40,7 +40,8 @@ class FakeApi:
             f"/repos/{MODULE.REPO}/environments/governance-audit": "environment",
             f"/repos/{MODULE.REPO}/collaborators/independent-admin/permission": "actor_permission",
         }[path]
-        return self.statuses.get(key, 200), {"x-github-request-id": key}, self.values.get(key, {})
+        headers = {"x-github-request-id": key, **self.headers.get(key, {})}
+        return self.statuses.get(key, 200), headers, self.values.get(key, {})
 
 
 def values():
@@ -112,6 +113,12 @@ class Tests(unittest.TestCase):
             self.assertFalse(result["assertions"]["admins_enforced"])
             self.assertFalse(result["assertions"]["ruleset_bypass_empty"])
             self.assertFalse(result["assertions"]["required_environments_have_reviewers"])
+        with tempfile.TemporaryDirectory() as directory:
+            paged = MODULE.capture(
+                FakeApi(values(), headers={"rulesets": {"link": '<next>; rel="next"'}}),
+                Path(directory) / "packet", "a" * 40, ["governance-audit"],
+            )
+            self.assertFalse(paged["assertions"]["rulesets_read_back"])
 
     def test_actor_main_and_check_collection_are_exact(self):
         data = values()
@@ -120,7 +127,7 @@ class Tests(unittest.TestCase):
         data["branch"]["commit"]["sha"] = "b" * 40
         data["main_checks"]["total_count"] = 2
         with tempfile.TemporaryDirectory() as directory:
-            result = MODULE.capture(FakeApi(data), Path(directory) / "packet", "a" * 40, [])
+            result = MODULE.capture(FakeApi(data), Path(directory) / "packet", "a" * 40, ["governance-audit"])
             for key in ("authenticated_human_admin", "main_identity", "main_check_collection_complete"):
                 self.assertFalse(result["assertions"][key])
 
@@ -136,6 +143,11 @@ class Tests(unittest.TestCase):
         self.assertTrue(response.closed)
         with self.assertRaises(MODULE.ReadbackError): MODULE.GitHubApi("x" * 32, opener=Opener(Response(b"x" * (MODULE.MAX_BYTES + 1)))).get(f"/repos/{MODULE.REPO}")
         with self.assertRaises(MODULE.ReadbackError): api.get("/orgs/TrillionniumFoundation")
+        class FailedOpener:
+            def open(self, request, timeout):
+                raise __import__("urllib.error", fromlist=["URLError"]).URLError("offline")
+        with self.assertRaises(MODULE.ReadbackError):
+            MODULE.GitHubApi("x" * 32, opener=FailedOpener()).get(f"/repos/{MODULE.REPO}")
 
     def test_redirects_and_unsafe_inputs_are_rejected(self):
         handler = MODULE.NoRedirect()
@@ -145,7 +157,9 @@ class Tests(unittest.TestCase):
                 handler.redirect_request(request, None, code, "redirect", {}, "https://example.invalid")
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(MODULE.ReadbackError):
-                MODULE.capture(FakeApi(values()), Path(directory) / "one", "bad", [])
+                MODULE.capture(FakeApi(values()), Path(directory) / "zero", "a" * 40, [])
+            with self.assertRaises(MODULE.ReadbackError):
+                MODULE.capture(FakeApi(values()), Path(directory) / "one", "bad", ["governance-audit"])
             with self.assertRaises(MODULE.ReadbackError):
                 MODULE.capture(FakeApi(values()), Path(directory) / "two", "a" * 40, ["../bad"])
 
@@ -153,7 +167,7 @@ class Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "packet"; output.mkdir(); (output / "existing").write_text("x")
             with self.assertRaises(MODULE.ReadbackError):
-                MODULE.capture(FakeApi(values()), output, "a" * 40, [])
+                MODULE.capture(FakeApi(values()), output, "a" * 40, ["governance-audit"])
 
 
 if __name__ == "__main__": unittest.main()
