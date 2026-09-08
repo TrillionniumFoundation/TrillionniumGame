@@ -19,7 +19,12 @@ const MINIMUM_KEY_BYTES: usize = 16;
 const MAXIMUM_KEY_BYTES: usize = 4_096;
 const SIGNATURE_BYTES: usize = 32;
 const CLOCK_SKEW_SECONDS: i64 = 30;
-const MAX_ACCESS_TOKEN_LIFETIME_SECONDS: u64 = 15 * 60;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AccessTokenPolicy {
+    allow_legacy_without_key_id: bool,
+    max_lifetime_seconds: Option<u64>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SessionPrincipal {
@@ -41,6 +46,7 @@ pub struct AccessTokenVerifier {
     audience: String,
     epoch: u32,
     key: Vec<u8>,
+    policy: AccessTokenPolicy,
 }
 
 impl AccessTokenVerifier {
@@ -64,6 +70,10 @@ impl AccessTokenVerifier {
             audience,
             epoch,
             key,
+            policy: AccessTokenPolicy {
+                allow_legacy_without_key_id: false,
+                max_lifetime_seconds: Some(15 * 60),
+            },
         })
     }
 
@@ -125,8 +135,10 @@ impl AccessTokenVerifier {
             }
         }
         let expected_key_id = format!("{EPOCH_KEY_ID_PREFIX}{}", self.epoch);
-        if header.get("kid").and_then(JsonValue::as_str) != Some(expected_key_id.as_str()) {
-            return Err(unauthenticated());
+        match header.get("kid").and_then(JsonValue::as_str) {
+            Some(value) if value == expected_key_id => {}
+            None if self.policy.allow_legacy_without_key_id => {}
+            _ => return Err(unauthenticated()),
         }
         Ok(())
     }
@@ -186,7 +198,11 @@ impl AccessTokenVerifier {
         }
         let lifetime =
             u64::try_from(expires_at_unix_seconds - issued_at).map_err(|_| unauthenticated())?;
-        if lifetime > MAX_ACCESS_TOKEN_LIFETIME_SECONDS {
+        if self
+            .policy
+            .max_lifetime_seconds
+            .is_some_and(|maximum| lifetime > maximum)
+        {
             return Err(unauthenticated());
         }
 
@@ -246,12 +262,16 @@ pub fn parse_refresh_credential(value: &str) -> Result<ParsedRefreshCredential, 
     {
         return Err(unauthenticated());
     }
-    let digest = hash(MessageDigest::sha256(), value.as_bytes()).map_err(|_| unauthenticated())?;
-    let digest: [u8; 32] = digest.as_ref().try_into().map_err(|_| unauthenticated())?;
+    let digest = sha256_digest(value.as_bytes())?;
     Ok(ParsedRefreshCredential {
         id: RefreshTokenId::new(parse_lower_hex::<16>(id)?),
         digest: Digest32::new(digest),
     })
+}
+
+fn sha256_digest(input: &[u8]) -> Result<[u8; 32], DomainError> {
+    let digest = hash(MessageDigest::sha256(), input).map_err(|_| unauthenticated())?;
+    digest.as_ref().try_into().map_err(|_| unauthenticated())
 }
 
 fn compact_segments(token: &str) -> Result<(&str, &str, &str), DomainError> {
@@ -398,7 +418,7 @@ mod tests {
             required_issuer: Some(ISSUER.to_owned()),
             required_audience: Some(AUDIENCE.to_owned()),
             allow_legacy_without_key_id: false,
-            max_lifetime_seconds: Some(MAX_ACCESS_TOKEN_LIFETIME_SECONDS),
+            max_lifetime_seconds: Some(15 * 60),
             ..VerificationProfile::default()
         };
         key_ring.issue_active_epoch(claims, &profile).unwrap()
@@ -415,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn openssl_hmac_verifier_yields_session_principal() {
+    fn strict_epoch_access_token_yields_session_principal() {
         let token = issue(&claims());
         let principal = verifier()
             .verify_bearer(Some(&format!("Bearer {token}")), 1_100)
@@ -509,8 +529,7 @@ mod tests {
         let value = format!("{}.{}", "44".repeat(16), "s".repeat(48));
         let parsed = parse_refresh_credential(&value).unwrap();
         assert_eq!(parsed.id, RefreshTokenId::new([0x44; 16]));
-        let expected = hash(MessageDigest::sha256(), value.as_bytes()).unwrap();
-        assert_eq!(parsed.digest.as_bytes(), expected.as_ref());
+        assert_eq!(parsed.digest.as_bytes(), &sha256_digest(value.as_bytes()).unwrap());
 
         for invalid in [
             "",
