@@ -1,0 +1,154 @@
+name: codex-plan-v31-consolidation-r2
+
+on:
+  push:
+    branches:
+      - codex/plan-v31-consolidation-r2-2026-09-08
+
+permissions:
+  contents: write
+
+jobs:
+  consolidate:
+    if: github.repository == 'TrillionniumFoundation/TrillionniumGame'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      TARGET_BRANCH: codex/plan-v31-consolidation-r2-2026-09-08
+      BASE_SHA: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+      GOVERNANCE_SHA: 68e5aa5f1e28f256fc8bc0e7598993cce4324824
+      PRODUCT_SHA: b373e672056f920af259266235a2962ac638a3a0
+      REALTIME_SHA: 6ba29fb87dc89a1f6c080e2ba08383caa67cabc7
+      SERVER_SHA: a98d2459d8345f4719ba1c08b97d3fd3495c53bb
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: '1'
+      GOTOOLCHAIN: auto
+    steps:
+      - name: Fetch exact reviewed source objects
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git -C "$GITHUB_WORKSPACE" -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic" \
+            fetch --no-tags origin \
+              "$GITHUB_SHA" "$BASE_SHA" "$GOVERNANCE_SHA" "$PRODUCT_SHA" "$REALTIME_SHA" "$SERVER_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$TARGET_BRANCH" "$GITHUB_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          for sha in "$BASE_SHA" "$GOVERNANCE_SHA" "$PRODUCT_SHA" "$REALTIME_SHA" "$SERVER_SHA"; do
+            test "$(git -C "$GITHUB_WORKSPACE" cat-file -t "$sha")" = commit
+          done
+          git config user.name "ProfHepta"
+          git config user.email "102159240+ProfHepta@users.noreply.github.com"
+
+      - name: Merge exact heads in dependency order
+        shell: bash
+        env:
+          GIT_MERGE_AUTOEDIT: no
+        run: |
+          set -euo pipefail
+          test "$(git merge-base "$BASE_SHA" "$GOVERNANCE_SHA")" = "$BASE_SHA"
+          test "$(git merge-base "$BASE_SHA" "$PRODUCT_SHA")" = "$BASE_SHA"
+          git merge --no-ff --no-edit "$GOVERNANCE_SHA" -m "merge(consolidation): governance 68e5aa5"
+          git merge --no-ff --no-edit "$PRODUCT_SHA" -m "merge(consolidation): product b373e67"
+          git merge --no-ff --no-edit "$REALTIME_SHA" -m "merge(consolidation): realtime 6ba29fb"
+          git merge --no-ff --no-edit "$SERVER_SHA" -m "merge(consolidation): server a98d245"
+          for sha in "$BASE_SHA" "$GOVERNANCE_SHA" "$PRODUCT_SHA" "$REALTIME_SHA" "$SERVER_SHA"; do
+            git merge-base --is-ancestor "$sha" HEAD
+          done
+          test -z "$(git status --porcelain)"
+
+      - name: Materialize final source-only tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/codex-plan-v31-consolidation-r2.yml
+          git add -A
+          test -n "$(git status --porcelain)"
+          git diff --cached --check
+
+      - name: Validate complete control and Python corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 scripts/check-plan.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 scripts/check-repository-hygiene.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-trnm-server.py
+
+      - name: Install exact Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Validate root Rust workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Validate every isolated Rust workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifests=(
+            crates/trnm-token-jwt-adapter/Cargo.toml
+            crates/trnm-token-jwt-adapter-gate/Cargo.toml
+            crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml
+            crates/trnm-presence-router-v2/Cargo.toml
+            crates/trnm-server/Cargo.toml
+            crates/trnm-persistence-runtime-policy/Cargo.toml
+            crates/trnm-realtime-wire/Cargo.toml
+            crates/trnm-storage-nakama-version/Cargo.toml
+            crates/trnm-token-crypto-provider/Cargo.toml
+            crates/trnm-token-jwt-provider-adapter/Cargo.toml
+          )
+          for manifest in "${manifests[@]}"; do
+            test -f "$manifest"
+            cargo fmt --manifest-path "$manifest" -- --check
+            cargo test --manifest-path "$manifest" --all-targets --locked
+            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
+          done
+
+      - name: Validate legacy Go migration input
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=$(find runtime -type f -name '*.go' -print | sort)
+          test -n "$files"
+          unformatted=$(printf '%s\n' "$files" | xargs gofmt -l)
+          test -z "$unformatted" || { printf '%s\n' "$unformatted" >&2; exit 1; }
+          cd runtime
+          go test ./... -count=1
+          go test -race ./... -count=1
+          go vet ./...
+
+      - name: Publish non-force source-only consolidation head
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git commit -m "chore(consolidation): remove one-shot workflow"
+          final_head="$(git rev-parse HEAD)"
+          final_tree="$(git rev-parse HEAD^{tree})"
+          for sha in "$GOVERNANCE_SHA" "$PRODUCT_SHA" "$REALTIME_SHA" "$SERVER_SHA"; do
+            git merge-base --is-ancestor "$sha" "$final_head"
+          done
+          test -z "$(git status --porcelain)"
+          printf 'final_head=%s\nfinal_tree=%s\n' "$final_head" "$final_tree"
+          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic" \
+            push origin "HEAD:refs/heads/$TARGET_BRANCH"
