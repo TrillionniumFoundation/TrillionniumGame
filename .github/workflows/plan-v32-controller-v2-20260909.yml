@@ -62,7 +62,7 @@ jobs:
           previous=''
           stable=0
           for _ in $(seq 1 30); do
-            current=$(git ls-remote "$GITHUB_WORKSPACE/controller"/origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
+            current=$(git -C "$GITHUB_WORKSPACE/controller" ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
             test -n "$current"
             if [[ "$current" == "$previous" ]]; then
               stable=$((stable + 1))
