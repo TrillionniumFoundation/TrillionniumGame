@@ -84,7 +84,7 @@ jobs:
       - name: Strict lint
         run: cargo clippy --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked -- -D warnings
       - name: Typed configuration smoke
-        run: cargo run --quiet --manifest-path crates/trnm-server/Cargo.toml --locked --bin trnm-server-foundation -- check-config
+        run: cargo run --quiet --manifest-path crates/trnm-server/Cargo.toml --locked --bin trnm-server-composition-candidate -- check-config
 
   no-credit-boundary:
     runs-on: ubuntu-24.04
