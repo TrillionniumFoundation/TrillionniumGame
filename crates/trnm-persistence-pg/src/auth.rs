@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_boundary_is_visible_and_key_material_stays_redacted() {
+    fn verifier_debug_redacts_key_material() {
         let verifier = verifier();
         let debug = format!("{verifier:?}");
         assert!(debug.contains("openssl-software-source-candidate"));
