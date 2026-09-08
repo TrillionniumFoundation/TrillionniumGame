@@ -51,8 +51,18 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
-          mapfile -t parts < <(find .github/patches -maxdepth 1 -type f -name 'convergence.part-*' -print | sort)
-          test "${#parts[@]}" -eq 8
+          parts=(
+            .github/patches/convergence.part-00
+            .github/patches/convergence.part-01
+            .github/patches/convergence.part-02
+            .github/patches/convergence.part-03
+            .github/patches/convergence.part-04
+            .github/patches/convergence.part-05
+            .github/patches/convergence.part-06
+            .github/patches/convergence.tail-07a
+            .github/patches/convergence.tail-07b
+          )
+          for part in "${parts[@]}"; do test -s "$part"; sha256sum "$part"; done
           cat "${parts[@]}" > "$RUNNER_TEMP/convergence.patch.xz.b64"
           base64 --decode "$RUNNER_TEMP/convergence.patch.xz.b64" > "$RUNNER_TEMP/convergence.patch.xz"
           test "$(sha256sum "$RUNNER_TEMP/convergence.patch.xz" | cut -d' ' -f1)" = "$PATCH_XZ_SHA256"
