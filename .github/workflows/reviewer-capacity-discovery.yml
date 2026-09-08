@@ -1,0 +1,131 @@
+name: reviewer-capacity-discovery
+
+on:
+  push:
+    branches:
+      - codex/reviewer-capacity-discovery-2026-09-08
+    paths:
+      - .github/workflows/reviewer-capacity-discovery.yml
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  discover:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      TARGET_PR: '116'
+    steps:
+      - name: Read collaborators and request only non-conflicted principals
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          mkdir -p "$RUNNER_TEMP/reviewer-capacity"
+          code=$(curl --silent --show-error \
+            --output "$RUNNER_TEMP/reviewer-capacity/collaborators.json" \
+            --write-out '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "${api}/collaborators?affiliation=all&per_page=100")
+          if [[ "$code" != 200 ]]; then
+            jq -n \
+              --arg code "$code" \
+              '{schema:"trillionnium.reviewer-capacity-readback.v1",readback_access:false,http_status:$code,candidates:[],requested:[],claims:{reviewer_capacity_complete:false,independent_acceptance:false,gap_closed:false}}' \
+              > "$RUNNER_TEMP/reviewer-capacity/result.json"
+          else
+            python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'],'reviewer-capacity')
+          rows=json.loads((root/'collaborators.json').read_text())
+          conflicts={102159240,273670192,273673612}
+          candidates=[]
+          for row in rows:
+              permissions=row.get('permissions') or {}
+              eligible_permission=any(permissions.get(key) is True for key in ('push','maintain','admin'))
+              if row.get('id') in conflicts or not eligible_permission or row.get('type')!='User':
+                  continue
+              candidates.append({
+                  'login':row.get('login'),
+                  'id':row.get('id'),
+                  'permissions':permissions,
+                  'qualification_status':'unproven',
+                  'conflict_status':'no_known_repository-authorship-or-admin-mutation-conflict; declaration-required',
+              })
+          result={
+              'schema':'trillionnium.reviewer-capacity-readback.v1',
+              'readback_access':True,
+              'observed_collaborator_count':len(rows),
+              'known_conflict_user_ids':sorted(conflicts),
+              'candidates':candidates,
+              'requested':[],
+              'claims':{
+                  'reviewer_capacity_complete':False,
+                  'qualification_proven':False,
+                  'independent_acceptance':False,
+                  'gap_closed':False,
+              },
+          }
+          (root/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+          PY
+            mapfile -t reviewers < <(jq -r '.candidates[].login | select(type=="string" and length>0)' "$RUNNER_TEMP/reviewer-capacity/result.json")
+            if (( ${#reviewers[@]} > 0 )); then
+              payload=$(printf '%s\n' "${reviewers[@]}" | jq -R . | jq -s '{reviewers:.}')
+              request_code=$(curl --silent --show-error \
+                --output "$RUNNER_TEMP/reviewer-capacity/request-response.json" \
+                --write-out '%{http_code}' \
+                -X POST \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'X-GitHub-Api-Version: 2022-11-28' \
+                "${api}/pulls/${TARGET_PR}/requested_reviewers" \
+                -d "$payload")
+              if [[ "$request_code" == 201 ]]; then
+                jq --argjson requested "$(printf '%s\n' "${reviewers[@]}" | jq -R . | jq -s .)" \
+                  '.requested=$requested' "$RUNNER_TEMP/reviewer-capacity/result.json" \
+                  > "$RUNNER_TEMP/reviewer-capacity/result.tmp"
+                mv "$RUNNER_TEMP/reviewer-capacity/result.tmp" "$RUNNER_TEMP/reviewer-capacity/result.json"
+              else
+                jq --arg code "$request_code" '.request_http_status=$code' \
+                  "$RUNNER_TEMP/reviewer-capacity/result.json" \
+                  > "$RUNNER_TEMP/reviewer-capacity/result.tmp"
+                mv "$RUNNER_TEMP/reviewer-capacity/result.tmp" "$RUNNER_TEMP/reviewer-capacity/result.json"
+              fi
+            fi
+          fi
+          cat "$RUNNER_TEMP/reviewer-capacity/result.json"
+
+      - name: Post conflict-safe capacity result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result=$(cat "$RUNNER_TEMP/reviewer-capacity/result.json")
+          body=$(jq -n --arg result "$result" '{body:("## Reviewer capacity read-back\n\n```json\n"+$result+"\n```\n\nAny requested account must still submit candidate-bound qualification evidence, a conflict declaration and an explicit domain decision. A request is not acceptance. If the connector cannot read collaborators, the capacity gap remains externally blocked.\n\n```text\nqualification_proven=false\nindependent_acceptance=false\nreview_gap_closed=false\n```")}')
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+            -d "$body" >/dev/null
+
+      - name: Delete discovery branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/delete"
+          git -C "$RUNNER_TEMP/delete" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$RUNNER_TEMP/delete" push origin --delete codex/reviewer-capacity-discovery-2026-09-08 >/dev/null 2>&1 || true
