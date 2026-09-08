@@ -83,8 +83,9 @@ class ArchitectureClosureTest(unittest.TestCase):
         self.assertIn("Signer::new(MessageDigest::sha256()", production)
         self.assertIn("memcmp::eq", production)
         self.assertIn("hash(MessageDigest::sha256()", production)
+        self.assertIn("fn sha256_digest", production)
         self.assertNotIn("KeyRing", production)
-        self.assertNotIn("sha256_digest", production)
+        self.assertNotIn("trnm_token_jwt_adapter::sha256_digest", production)
         self.assertNotIn("constant_time_eq", production)
 
     def test_external_facts_cannot_be_auto_closed(self) -> None:
