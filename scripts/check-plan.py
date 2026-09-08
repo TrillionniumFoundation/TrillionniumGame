@@ -136,6 +136,8 @@ def validate_files() -> None:
         "scripts/check-schema-authority.py",
         "scripts/check-rust-package-inventory.py",
         "scripts/read-backlog.py",
+        "scripts/check-independent-review-domain-contract.py",
+        "scripts/check-independent-review-matrix.py",
     ]
     missing = [path for path in required if not (ROOT / path).is_file()]
     require(not missing, "missing required files: " + ", ".join(missing))
@@ -471,6 +473,8 @@ def main() -> int:
         validate_backlog(parity_ids, gate_ids)
         validate_evidence_schema()
         validate_identity_and_claims()
+        run_child("scripts/check-independent-review-domain-contract.py")
+        run_child("scripts/check-independent-review-matrix.py")
         run_child("scripts/check-documentation-authority.py")
         run_child("scripts/check-status-transitions.py")
         run_child("scripts/derive-gates.py")
