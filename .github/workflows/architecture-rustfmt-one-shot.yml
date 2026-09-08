@@ -1,0 +1,58 @@
+name: architecture-rustfmt-one-shot
+
+on:
+  push:
+    branches:
+      - codex/architecture-gap-closure-2026-09-08
+    paths:
+      - .github/workflows/architecture-rustfmt-one-shot.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: architecture-rustfmt-one-shot
+  cancel-in-progress: false
+
+jobs:
+  format-auth:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Fetch exact branch head without external actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
+          test "$GITHUB_REF_NAME" = 'codex/architecture-gap-closure-2026-09-08'
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Format and constrain the generated change
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt
+          rustup override set 1.85.1
+          cargo fmt --all
+          git diff --check
+          changed="$(git diff --name-only)"
+          test "$changed" = 'crates/trnm-persistence-pg/src/auth.rs'
+      - name: Commit formatted source to this feature branch only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-persistence-pg/src/auth.rs
+          git commit -m 'style(auth): apply Rust 1.85.1 formatting'
+          git push origin HEAD:refs/heads/codex/architecture-gap-closure-2026-09-08
