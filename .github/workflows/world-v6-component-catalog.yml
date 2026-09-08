@@ -1,0 +1,44 @@
+name: world-v6-component-catalog
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-v6-component-catalog-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  component-catalog:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'ops/world-v6-external-qualification-20260909'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Resolve and fetch live World PR head
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote=https://github.com/TrillionniumFoundation/Trillionnium-World.git
+          head_sha="$(git ls-remote "$remote" refs/heads/fix/world-convergence-v6-20260908 | awk '{print $1}')"
+          test -n "$head_sha"
+          git init world
+          git -C world remote add origin "$remote"
+          git -C world fetch --no-tags --depth=1 origin "$head_sha"
+          git -C world checkout --detach FETCH_HEAD
+          test "$(git -C world rev-parse HEAD)" = "$head_sha"
+          printf 'WORLD_HEAD_SHA=%s\n' "$head_sha" >> "$GITHUB_ENV"
+          printf 'head=%s\ntree=%s\n' "$head_sha" "$(git -C world rev-parse 'HEAD^{tree}')"
+      - name: Compile and run component catalogue gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            world/scripts/check-trnm-world-component-catalog.py \
+            world/scripts/test-trnm-world-component-catalog.py
+          cd world
+          python3 scripts/check-trnm-world-component-catalog.py
+          python3 scripts/test-trnm-world-component-catalog.py
