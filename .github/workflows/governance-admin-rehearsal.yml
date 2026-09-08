@@ -1,0 +1,244 @@
+name: governance-admin-rehearsal
+
+on:
+  push:
+    branches:
+      - codex/governance-admin-rehearsal-2026-09-08
+    paths:
+      - .github/workflows/governance-admin-rehearsal.yml
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  governance:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TARGET_PR: '116'
+      ADMIN_TOKEN_PRIMARY: ${{ secrets.GH_ADMIN_TOKEN }}
+      ADMIN_TOKEN_SECONDARY: ${{ secrets.GITHUB_ADMIN_TOKEN }}
+    steps:
+      - name: Select only an explicit administration token
+        shell: bash
+        run: |
+          set -euo pipefail
+          token=''
+          if [[ -n "${ADMIN_TOKEN_PRIMARY:-}" ]]; then token=$ADMIN_TOKEN_PRIMARY; fi
+          if [[ -z "$token" && -n "${ADMIN_TOKEN_SECONDARY:-}" ]]; then token=$ADMIN_TOKEN_SECONDARY; fi
+          if [[ -z "$token" ]]; then
+            jq -n '{schema:"trillionnium.governance-admin-rehearsal.v1",admin_token_available:false,protection_applied:false,readback_complete:false,negative_rehearsal_complete:false,independent_acceptance:false,gap_closed:false}' \
+              > "$RUNNER_TEMP/result.json"
+            exit 0
+          fi
+          printf '%s' "$token" > "$RUNNER_TEMP/admin-token"
+          chmod 600 "$RUNNER_TEMP/admin-token"
+          echo '::add-mask::'"$token"
+
+      - name: Apply strict main protection without bypass actors
+        if: ${{ hashFiles(format('{0}/admin-token', runner.temp)) != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          token=$(cat "$RUNNER_TEMP/admin-token")
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          cat > "$RUNNER_TEMP/protection-request.json" <<'JSON'
+          {
+            "required_status_checks": {
+              "strict": true,
+              "contexts": ["trillionnium-game-merge-gate"]
+            },
+            "enforce_admins": true,
+            "required_pull_request_reviews": {
+              "dismissal_restrictions": {},
+              "dismiss_stale_reviews": true,
+              "require_code_owner_reviews": true,
+              "required_approving_review_count": 1,
+              "require_last_push_approval": true,
+              "bypass_pull_request_allowances": {
+                "users": [],
+                "teams": [],
+                "apps": []
+              }
+            },
+            "restrictions": null,
+            "required_linear_history": true,
+            "allow_force_pushes": false,
+            "allow_deletions": false,
+            "block_creations": true,
+            "required_conversation_resolution": true,
+            "lock_branch": false,
+            "allow_fork_syncing": true
+          }
+          JSON
+          code=$(curl --silent --show-error --output "$RUNNER_TEMP/protection-write.json" --write-out '%{http_code}' \
+            -X PUT \
+            -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "${api}/branches/main/protection" \
+            --data-binary @"$RUNNER_TEMP/protection-request.json")
+          printf '%s\n' "$code" > "$RUNNER_TEMP/protection-write.status"
+          [[ "$code" == 200 ]] || exit 1
+
+      - name: Read back every required protection field twice
+        if: ${{ hashFiles(format('{0}/admin-token', runner.temp)) != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          token=$(cat "$RUNNER_TEMP/admin-token")
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          for pass in 1 2; do
+            curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${token}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "${api}/branches/main/protection" > "$RUNNER_TEMP/protection-${pass}.json"
+            sleep 5
+          done
+          jq -S . "$RUNNER_TEMP/protection-1.json" > "$RUNNER_TEMP/protection-1.canonical.json"
+          jq -S . "$RUNNER_TEMP/protection-2.json" > "$RUNNER_TEMP/protection-2.canonical.json"
+          cmp "$RUNNER_TEMP/protection-1.canonical.json" "$RUNNER_TEMP/protection-2.canonical.json"
+          jq -e '
+            .required_status_checks.strict == true and
+            ([.required_status_checks.contexts[].context // .required_status_checks.contexts[]] | index("trillionnium-game-merge-gate")) != null and
+            .enforce_admins.enabled == true and
+            .required_pull_request_reviews.dismiss_stale_reviews == true and
+            .required_pull_request_reviews.require_code_owner_reviews == true and
+            .required_pull_request_reviews.required_approving_review_count >= 1 and
+            .required_pull_request_reviews.require_last_push_approval == true and
+            ((.required_pull_request_reviews.bypass_pull_request_allowances.users // []) | length) == 0 and
+            ((.required_pull_request_reviews.bypass_pull_request_allowances.teams // []) | length) == 0 and
+            ((.required_pull_request_reviews.bypass_pull_request_allowances.apps // []) | length) == 0 and
+            .required_linear_history.enabled == true and
+            .allow_force_pushes.enabled == false and
+            .allow_deletions.enabled == false and
+            .block_creations.enabled == true and
+            .required_conversation_resolution.enabled == true
+          ' "$RUNNER_TEMP/protection-1.json" >/dev/null
+
+      - name: Create harmless no-review rehearsal pull request
+        if: ${{ hashFiles(format('{0}/admin-token', runner.temp)) != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          token=$(cat "$RUNNER_TEMP/admin-token")
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          main_sha=$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${token}" -H 'Accept: application/vnd.github+json' \
+            "${api}/git/ref/heads/main" | jq -r '.object.sha')
+          branch="governance-negative-rehearsal-${GITHUB_RUN_ID}"
+          printf '%s\n' "$branch" > "$RUNNER_TEMP/rehearsal-branch.txt"
+          jq -n --arg ref "refs/heads/${branch}" --arg sha "$main_sha" '{ref:$ref,sha:$sha}' \
+            > "$RUNNER_TEMP/create-ref.json"
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer ${token}" -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "${api}/git/refs" -d @"$RUNNER_TEMP/create-ref.json" \
+            > "$RUNNER_TEMP/ref-created.json"
+          content=$(printf 'governance negative rehearsal run %s\n' "$GITHUB_RUN_ID" | base64 -w0)
+          jq -n --arg message 'test(governance): harmless negative merge rehearsal' \
+            --arg content "$content" --arg branch "$branch" \
+            '{message:$message,content:$content,branch:$branch}' > "$RUNNER_TEMP/create-file.json"
+          curl --fail --silent --show-error -X PUT \
+            -H "Authorization: Bearer ${token}" -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "${api}/contents/.github/governance-negative-rehearsal-${GITHUB_RUN_ID}.txt" \
+            -d @"$RUNNER_TEMP/create-file.json" > "$RUNNER_TEMP/file-created.json"
+          jq -n --arg title 'test(governance): negative merge rehearsal; do not merge' \
+            --arg head "$branch" \
+            '{title:$title,head:$head,base:"main",body:"Harmless branch-protection rehearsal. This pull request must remain blocked without required review/checks and will be closed without merge."}' \
+            > "$RUNNER_TEMP/create-pr.json"
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer ${token}" -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "${api}/pulls" -d @"$RUNNER_TEMP/create-pr.json" > "$RUNNER_TEMP/rehearsal-pr.json"
+          pr=$(jq -r '.number' "$RUNNER_TEMP/rehearsal-pr.json")
+          printf '%s\n' "$pr" > "$RUNNER_TEMP/rehearsal-pr-number.txt"
+          deadline=$((SECONDS+1200))
+          while (( SECONDS < deadline )); do
+            curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${token}" -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "${api}/pulls/${pr}" > "$RUNNER_TEMP/rehearsal-pr-readback.json"
+            state=$(jq -r '.mergeable_state // "unknown"' "$RUNNER_TEMP/rehearsal-pr-readback.json")
+            mergeable=$(jq -r '.mergeable|tostring' "$RUNNER_TEMP/rehearsal-pr-readback.json")
+            if [[ "$state" != unknown ]]; then break; fi
+            sleep 10
+          done
+          jq -e '
+            .state == "open" and .merged == false and
+            (.mergeable_state == "blocked" or .mergeable_state == "unstable")
+          ' "$RUNNER_TEMP/rehearsal-pr-readback.json" >/dev/null
+
+          # Close without any merge attempt, then remove only this exact branch.
+          curl --fail --silent --show-error -X PATCH \
+            -H "Authorization: Bearer ${token}" -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "${api}/pulls/${pr}" -d '{"state":"closed"}' \
+            > "$RUNNER_TEMP/rehearsal-pr-closed.json"
+          delete_code=$(curl --silent --show-error --output "$RUNNER_TEMP/delete-ref.json" --write-out '%{http_code}' \
+            -X DELETE \
+            -H "Authorization: Bearer ${token}" -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "${api}/git/refs/heads/${branch}")
+          [[ "$delete_code" == 204 ]]
+          jq -e '.state=="closed" and .merged==false' "$RUNNER_TEMP/rehearsal-pr-closed.json" >/dev/null
+
+      - name: Seal administration candidate packet
+        if: ${{ hashFiles(format('{0}/admin-token', runner.temp)) != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/governance-packet"
+          mkdir -p "$root"
+          cp "$RUNNER_TEMP/protection-request.json" "$root/"
+          cp "$RUNNER_TEMP/protection-write.status" "$root/"
+          cp "$RUNNER_TEMP/protection-1.json" "$root/"
+          cp "$RUNNER_TEMP/protection-2.json" "$root/"
+          cp "$RUNNER_TEMP/rehearsal-pr.json" "$root/"
+          cp "$RUNNER_TEMP/rehearsal-pr-readback.json" "$root/"
+          cp "$RUNNER_TEMP/rehearsal-pr-closed.json" "$root/"
+          jq -n \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg rehearsal_pr "$(cat "$RUNNER_TEMP/rehearsal-pr-number.txt")" \
+            '{schema:"trillionnium.governance-admin-rehearsal.v1",run_id:$run_id,run_attempt:$run_attempt,admin_token_available:true,protection_applied:true,stable_double_readback:true,negative_rehearsal_pull_request:($rehearsal_pr|tonumber),merge_attempted:false,rehearsal_closed_without_merge:true,temporary_branch_deleted:true,claims:{administrative_fact_candidate:true,independent_governance_acceptance:false,canonical_evidence_admission:false,gap_closed:false,production_ready:false}}' \
+            > "$root/summary.json"
+          find "$root" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$root/SHA256SUMS"
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+            -cf - -C "$root" . | gzip -n > "$RUNNER_TEMP/governance-packet.tar.gz"
+          jq -n --slurpfile summary "$root/summary.json" \
+            '{schema:"trillionnium.governance-admin-rehearsal-result.v1",packet_present:true,summary:$summary[0]}' \
+            > "$RUNNER_TEMP/result.json"
+
+      - name: Publish exact administration result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -s "$RUNNER_TEMP/result.json" ]] || jq -n '{schema:"trillionnium.governance-admin-rehearsal-result.v1",packet_present:false,claims:{gap_closed:false}}' > "$RUNNER_TEMP/result.json"
+          result=$(cat "$RUNNER_TEMP/result.json")
+          body=$(jq -n --arg result "$result" '{body:("## Governance administration rehearsal\n\n```json\n"+$result+"\n```\n\nWhen an explicit administrator secret was available, the task applied and double-read the strict policy, observed a harmless no-review pull request blocked, then closed it without a merge attempt and deleted only its temporary branch. Administrative execution is still not independent governance acceptance." )}')
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+            -d "$body" >/dev/null
+
+      - name: Delete administration transport branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/delete"
+          git -C "$RUNNER_TEMP/delete" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$RUNNER_TEMP/delete" push origin --delete codex/governance-admin-rehearsal-2026-09-08 >/dev/null 2>&1 || true
