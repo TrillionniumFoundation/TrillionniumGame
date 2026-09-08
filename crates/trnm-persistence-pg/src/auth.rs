@@ -286,9 +286,7 @@ impl OpenSslHs256Provider {
             .update(exact_signing_input)
             .map_err(|_| ProviderError::Internal)?;
         let signature = signer.sign_to_vec().map_err(|_| ProviderError::Internal)?;
-        let signature: [u8; 32] = signature
-            .try_into()
-            .map_err(|_| ProviderError::Internal)?;
+        let signature: [u8; 32] = signature.try_into().map_err(|_| ProviderError::Internal)?;
         Ok(Signature32::new(signature))
     }
 }
