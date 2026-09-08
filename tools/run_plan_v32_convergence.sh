@@ -6,6 +6,11 @@ set -Eeuo pipefail
 : "${GH_TOKEN:?}"
 TARGET_BRANCH=${TARGET_BRANCH:-codex/architecture-gap-closure-2026-09-08}
 TARGET_PR=${TARGET_PR:-116}
+PLAN_V32_MODE=${PLAN_V32_MODE:-stage}
+case "$PLAN_V32_MODE" in
+  stage|validate) ;;
+  *) printf 'unsupported PLAN_V32_MODE=%s\n' "$PLAN_V32_MODE" >&2; exit 2 ;;
+esac
 CONTROLLER="$GITHUB_WORKSPACE/controller"
 PROVIDER="$GITHUB_WORKSPACE/provider"
 TARGET="$GITHUB_WORKSPACE/target"
@@ -16,7 +21,7 @@ report_failure() {
   trap - ERR
   original=$(cat "$ORIGINAL_FILE" 2>/dev/null || printf unknown)
   {
-    printf 'Plan v3.2 convergence failed closed; target was not force-updated.\n\n```text\nhead=%s\n' "$original"
+    printf 'Plan v3.2 convergence failed closed; target was not force-updated.\n\n```text\nmode=%s\nhead=%s\n' "$PLAN_V32_MODE" "$original"
     for name in control rust go; do
       file="$RUNNER_TEMP/${name}.log"
       if [[ -f "$file" ]]; then
@@ -90,8 +95,6 @@ for path in sorted(root.rglob("*.rs")):
         raise SystemExit(f"unable to add hmac::KeyInit import: {path}")
     path.write_text(updated, encoding="utf-8")
     changed.append(path.as_posix())
-if not changed:
-    raise SystemExit("no generated HMAC source required KeyInit repair")
 print({"hmac_key_init_imports": changed})
 PY
 git -C "$TARGET" diff --check
@@ -154,51 +157,87 @@ git config user.name github-actions[bot]
 git config user.email 41898282+github-actions[bot]@users.noreply.github.com
 git add -A
 git diff --cached --check
-git commit -m 'architecture: finalize Plan v3.2 source convergence'
+
+if [[ "$PLAN_V32_MODE" == validate ]]; then
+  git diff --quiet
+  git diff --cached --quiet
+  head=$(git rev-parse HEAD)
+  tree=$(git rev-parse 'HEAD^{tree}')
+  trap - ERR
+  gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+    -f body="Plan v3.2 exact target qualification passed at source head \`${head}\` and tree \`${tree}\`: complete control-plane/Python, Rust root and isolated all-target strict Clippy/process, diagnostic compatibility server, and Go race/vet. This proves remote verification only; independent acceptance, complete Nakama parity, production infrastructure and all-gap closure remain separate facts." >/dev/null
+  exit 0
+fi
+
+staging="docs/internal/plan-v32-workflow-staging"
+rm -rf "$staging"
+mkdir -p "$staging/files"
+python3 - <<'PY'
+from __future__ import annotations
+import hashlib
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+root = Path.cwd()
+staging = root / "docs/internal/plan-v32-workflow-staging"
+output = subprocess.check_output(
+    ["git", "diff", "--name-status", "HEAD", "--", ".github/workflows"],
+    text=True,
+).splitlines()
+entries = []
+for raw in output:
+    fields = raw.split("\t")
+    status = fields[0]
+    if status.startswith(("R", "C")) or len(fields) != 2:
+        raise SystemExit(f"unsupported workflow diff row: {raw}")
+    path = fields[1]
+    if not path.startswith(".github/workflows/"):
+        raise SystemExit(f"workflow path escaped scope: {path}")
+    row = {"status": status, "path": path}
+    if status != "D":
+        source = root / path
+        if not source.is_file():
+            raise SystemExit(f"generated workflow is missing: {path}")
+        payload = source.read_bytes()
+        destination = staging / "files" / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        row["sha256"] = hashlib.sha256(payload).hexdigest()
+        row["bytes"] = len(payload)
+    entries.append(row)
+if not entries:
+    raise SystemExit("expected generated workflow changes were absent")
+manifest = {
+    "schema": "trillionnium.plan-v32-workflow-staging.v1",
+    "target_branch": "codex/architecture-gap-closure-2026-09-08",
+    "base_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+    "entries": entries,
+    "claim_boundary": {
+        "staging_is_acceptance": False,
+        "all_gaps_closed": False,
+        "production_ready": False,
+    },
+}
+(staging / "manifest.json").write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+print(json.dumps(manifest, sort_keys=True))
+PY
+
+git restore --source=HEAD --staged --worktree -- .github/workflows
+git add -A
+git diff --cached --check
+if git diff --cached --name-only | grep -q '^\.github/workflows/'; then
+  printf 'workflow path remained in source-stage commit\n' >&2
+  exit 1
+fi
+git commit -m 'architecture: stage fully verified Plan v3.2 convergence'
+git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
 head=$(git rev-parse HEAD)
 tree=$(git rev-parse 'HEAD^{tree}')
-
-bundle_dir="$RUNNER_TEMP/plan-v32-verified"
-rm -rf "$bundle_dir"
-mkdir -p "$bundle_dir"
-git archive --format=tar HEAD | gzip -n > "$bundle_dir/source.tar.gz"
-git format-patch -1 --stdout --binary --full-index > "$bundle_dir/candidate.patch"
-git diff-tree --no-commit-id --name-status -r HEAD > "$bundle_dir/name-status.txt"
-python3 - <<PY > "$bundle_dir/metadata.json"
-import json
-print(json.dumps({
-  "schema": "trillionnium.plan-v32-verified-candidate.v1",
-  "repository": "${GITHUB_REPOSITORY}",
-  "target_branch": "${TARGET_BRANCH}",
-  "base_commit": "${original}",
-  "candidate_commit_local": "${head}",
-  "candidate_tree": "${tree}",
-  "controller_commit": "${GITHUB_SHA}",
-  "run_id": "${GITHUB_RUN_ID}",
-  "run_attempt": "${GITHUB_RUN_ATTEMPT}",
-  "control_plane_passed": True,
-  "python_tests": 666,
-  "rust_workspace_all_targets_passed": True,
-  "rust_strict_clippy_passed": True,
-  "isolated_gate_tests_and_clippy_passed": True,
-  "diagnostic_server_tests_and_clippy_passed": True,
-  "process_smoke_passed": True,
-  "go_test_race_vet_passed": True,
-  "independent_acceptance": False,
-  "all_gaps_closed": False,
-  "production_ready": False
-}, sort_keys=True, indent=2))
-PY
-(
-  cd "$bundle_dir"
-  sha256sum source.tar.gz candidate.patch name-status.txt metadata.json > SHA256SUMS
-)
-bundle="$RUNNER_TEMP/plan-v32-verified-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz"
-tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
-  -czf "$bundle" -C "$bundle_dir" .
-python3 scripts/upload-actions-artifact.py \
-  "plan-v32-verified-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-  "$bundle" --mime-type application/gzip
 trap - ERR
 gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
-  -f body="Plan v3.2 candidate tree \`${tree}\` passed complete control-plane/Python, Rust all-target strict Clippy/process, and Go race/vet. The exact source archive and binary patch were retained as artifact \`plan-v32-verified-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\`; connector publication is required because the Actions token cannot update workflow files. Independent acceptance, complete product parity, production infrastructure and all-gap closure remain false." >/dev/null
+  -f body="Plan v3.2 source convergence passed complete control-plane/Python, Rust all-target strict Clippy/process, diagnostic compatibility server, and Go race/vet, then fast-forwarded the non-workflow source stage to \`${head}\` (tree \`${tree}\`). Exact generated workflow bytes are staged under \`${staging}\` for connector publication; final exact-head qualification is still required after those bytes replace the active workflow paths. Independent acceptance and all-gap closure remain false." >/dev/null
