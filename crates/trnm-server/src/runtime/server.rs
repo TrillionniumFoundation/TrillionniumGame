@@ -1,6 +1,7 @@
+use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -19,6 +20,54 @@ const MAX_CONNECTION_WORKERS: usize = 32;
 const QUEUED_CONNECTIONS_PER_WORKER: usize = 16;
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+#[derive(Debug)]
+struct QueuedConnection {
+    id: u64,
+    stream: TcpStream,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ConnectionRegistry {
+    next_id: Arc<AtomicU64>,
+    streams: Arc<Mutex<BTreeMap<u64, TcpStream>>>,
+}
+
+impl ConnectionRegistry {
+    fn register(&self, stream: &TcpStream) -> Result<u64, ServerError> {
+        let previous = self
+            .next_id
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| ServerError::Configuration("connection_id_exhausted"))?;
+        let id = previous + 1;
+        let retained = stream.try_clone()?;
+        self.streams
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, retained);
+        Ok(id)
+    }
+
+    fn remove(&self, id: u64) {
+        self.streams
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
+    }
+
+    fn shutdown_all(&self) -> usize {
+        let streams = self
+            .streams
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for stream in streams.values() {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+        streams.len()
+    }
+}
+
 pub fn serve<R>(config: &ServerConfig, repository: R) -> Result<(), ServerError>
 where
     R: Repository + BudgetedRepository + InflightCancellation + Clone + Send + 'static,
@@ -26,8 +75,9 @@ where
     let listener = TcpListener::bind(config.bind)?;
     listener.set_nonblocking(true)?;
     let (worker_count, queue_capacity) = connection_policy(config.database_pool.max_size);
-    let (sender, receiver) = sync_channel(queue_capacity);
+    let (sender, receiver) = sync_channel::<QueuedConnection>(queue_capacity);
     let receiver = Arc::new(Mutex::new(receiver));
+    let connections = ConnectionRegistry::default();
     let draining = SharedDrain::default();
     let worker_failed = Arc::new(AtomicBool::new(false));
     let metrics = SharedAppMetrics::default();
@@ -46,6 +96,7 @@ where
         let worker_draining = draining.clone();
         let worker_failed = Arc::clone(&worker_failed);
         let worker_metrics = metrics.clone();
+        let worker_connections = connections.clone();
         workers.push(
             thread::Builder::new()
                 .name(format!("trnm-connection-{worker_index}"))
@@ -58,6 +109,7 @@ where
                             worker_receiver,
                             worker_drain_for_loop,
                             worker_metrics,
+                            worker_connections,
                         );
                     }));
                     if result.is_err() {
@@ -77,8 +129,21 @@ where
         queue_capacity,
     );
 
-    let accept_result = accept_loop(&listener, &sender, config, &draining, &worker_failed);
+    let accept_result = accept_loop(
+        &listener,
+        &sender,
+        config,
+        &draining,
+        &worker_failed,
+        &connections,
+    );
     draining.begin();
+    let closed_connections = connections.shutdown_all();
+    if closed_connections > 0 {
+        eprintln!(
+            "trnm-server closed {closed_connections} queued or active connections during drain"
+        );
+    }
     let cancelled_operations = repository.cancel_inflight();
     if cancelled_operations > 0 {
         eprintln!(
@@ -97,10 +162,11 @@ where
 
 fn accept_loop(
     listener: &TcpListener,
-    sender: &SyncSender<TcpStream>,
+    sender: &SyncSender<QueuedConnection>,
     config: &ServerConfig,
     draining: &SharedDrain,
     worker_failed: &AtomicBool,
+    connections: &ConnectionRegistry,
 ) -> Result<(), ServerError> {
     loop {
         if worker_failed.load(Ordering::Acquire) {
@@ -111,22 +177,27 @@ fn accept_loop(
             return Ok(());
         }
         match listener.accept() {
-            Ok((stream, _peer)) => match sender.try_send(stream) {
-                Ok(()) => {}
-                Err(TrySendError::Full(mut stream)) => {
-                    configure_connection(&stream, config)?;
-                    write_response(&mut stream, &overloaded());
-                    let _ = stream.shutdown(Shutdown::Both);
+            Ok((stream, _peer)) => {
+                let id = connections.register(&stream)?;
+                match sender.try_send(QueuedConnection { id, stream }) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(mut connection)) => {
+                        connections.remove(connection.id);
+                        configure_connection(&connection.stream, config)?;
+                        write_response(&mut connection.stream, &overloaded());
+                        let _ = connection.stream.shutdown(Shutdown::Both);
+                    }
+                    Err(TrySendError::Disconnected(mut connection)) => {
+                        connections.remove(connection.id);
+                        write_response(&mut connection.stream, &unavailable());
+                        let _ = connection.stream.shutdown(Shutdown::Both);
+                        draining.begin();
+                        return Err(ServerError::Configuration(
+                            "connection_worker_queue_disconnected",
+                        ));
+                    }
                 }
-                Err(TrySendError::Disconnected(mut stream)) => {
-                    write_response(&mut stream, &unavailable());
-                    let _ = stream.shutdown(Shutdown::Both);
-                    draining.begin();
-                    return Err(ServerError::Configuration(
-                        "connection_worker_queue_disconnected",
-                    ));
-                }
-            },
+            }
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 thread::sleep(ACCEPT_POLL_INTERVAL);
             }
@@ -139,9 +210,10 @@ fn accept_loop(
 fn worker_loop<R>(
     config: ServerConfig,
     repository: RetryingRepository<R>,
-    receiver: Arc<Mutex<Receiver<TcpStream>>>,
+    receiver: Arc<Mutex<Receiver<QueuedConnection>>>,
     draining: SharedDrain,
     metrics: SharedAppMetrics,
+    connections: ConnectionRegistry,
 ) where
     R: BudgetedRepository,
 {
@@ -165,15 +237,17 @@ fn worker_loop<R>(
         }
     }
 
-    while let Some(mut stream) = receive_connection(&receiver) {
-        if let Err(error) = handle_connection(&mut stream, &mut app, &config, &draining) {
+    while let Some(mut connection) = receive_connection(&receiver) {
+        if let Err(error) = handle_connection(&mut connection.stream, &mut app, &config, &draining)
+        {
             eprintln!("trnm-server connection failed: {error}");
         }
-        let _ = stream.shutdown(Shutdown::Both);
+        let _ = connection.stream.shutdown(Shutdown::Both);
+        connections.remove(connection.id);
     }
 }
 
-fn receive_connection(receiver: &Mutex<Receiver<TcpStream>>) -> Option<TcpStream> {
+fn receive_connection(receiver: &Mutex<Receiver<QueuedConnection>>) -> Option<QueuedConnection> {
     let guard = receiver
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -302,6 +376,8 @@ fn draining_response() -> Response {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::io::Read;
+    use std::net::{TcpListener as TestTcpListener, TcpStream as TestTcpStream};
 
     use super::*;
 
@@ -329,6 +405,23 @@ mod tests {
         assert!(request_rejected_while_draining(&mutation));
         assert!(!request_rejected_while_draining(&metrics));
         assert!(is_readiness(&readiness));
+    }
+
+    #[test]
+    fn drain_registry_actively_closes_registered_idle_connection() {
+        let listener = TestTcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TestTcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let registry = ConnectionRegistry::default();
+        let id = registry.register(&server).unwrap();
+        assert_eq!(registry.shutdown_all(), 1);
+        let mut byte = [0_u8; 1];
+        assert!(matches!(client.read(&mut byte), Ok(0) | Err(_)));
+        registry.remove(id);
+        assert_eq!(registry.shutdown_all(), 0);
     }
 
     #[test]

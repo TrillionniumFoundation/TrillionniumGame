@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::str;
+use std::time::Instant;
 
 use super::error::{InputError, ServerError};
 
@@ -84,9 +85,16 @@ impl Response {
 }
 
 pub fn read_request(stream: &mut TcpStream, maximum: usize) -> Result<Request, ServerError> {
+    let timeout = stream.read_timeout()?.ok_or(ServerError::Configuration(
+        "connection_read_timeout_required",
+    ))?;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or(ServerError::Configuration("http_request_deadline_overflow"))?;
     let mut input = Vec::with_capacity(4096);
     let mut buffer = [0_u8; 4096];
     loop {
+        set_remaining_read_timeout(stream, deadline)?;
         let read = stream.read(&mut buffer)?;
         if read == 0 {
             return Err(InputError::new("http_request_incomplete").into());
@@ -117,6 +125,15 @@ pub fn read_request(stream: &mut TcpStream, maximum: usize) -> Result<Request, S
             return Err(InputError::new("http_headers_too_large").into());
         }
     }
+}
+
+fn set_remaining_read_timeout(stream: &TcpStream, deadline: Instant) -> Result<(), ServerError> {
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|value| !value.is_zero())
+        .ok_or_else(|| InputError::new("http_request_deadline_exceeded"))?;
+    stream.set_read_timeout(Some(remaining))?;
+    Ok(())
 }
 
 pub fn parse_request_bytes(input: &[u8], maximum: usize) -> Result<Request, InputError> {
@@ -272,6 +289,10 @@ const fn reason_phrase(status: u16) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{TcpListener, TcpStream as TestTcpStream};
+    use std::thread;
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -296,6 +317,37 @@ mod tests {
         for value in cases {
             assert!(parse_request_bytes(value, 4096).is_err(), "{value:?}");
         }
+    }
+
+    #[test]
+    fn slow_drip_cannot_extend_total_request_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TestTcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_millis(120)))
+            .unwrap();
+        let writer = thread::spawn(move || {
+            for byte in b"GET / HTTP/1.1\r\n\r\n" {
+                if client.write_all(&[*byte]).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(40));
+            }
+        });
+        let started = Instant::now();
+        let result = read_request(&mut server, 4096);
+        assert!(match result {
+            Err(ServerError::Input(_)) => true,
+            Err(ServerError::Io(error)) => matches!(
+                error.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ),
+            _ => false,
+        });
+        assert!(started.elapsed() < Duration::from_millis(500));
+        drop(server);
+        writer.join().unwrap();
     }
 
     #[test]

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::str;
+use std::time::Instant;
 
 use trnm_realtime_wire::{
     decode_authority_command, decode_client_frame, encode_authority_response, encode_server_frame,
@@ -49,7 +50,7 @@ pub fn serve_once<R: Repository>(
             write_close_code(stream, 1001)?;
             return Ok(());
         }
-        let frame = match read_client_frame_exact(stream, maximum_payload) {
+        let frame = match read_client_frame_from_stream(stream, maximum_payload) {
             Ok(value) => value,
             Err(FrameReadError::Protocol) => {
                 let _ = write_close_code(stream, 1002);
@@ -225,6 +226,48 @@ fn header_has_token(value: &str, expected: &str) -> bool {
 enum FrameReadError {
     Io(io::Error),
     Protocol,
+}
+
+struct DeadlineReader<'a> {
+    stream: &'a mut TcpStream,
+    deadline: Instant,
+}
+
+impl Read for DeadlineReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let remaining = self
+            .deadline
+            .checked_duration_since(Instant::now())
+            .filter(|value| !value.is_zero())
+            .ok_or_else(|| {
+                io::Error::new(ErrorKind::TimedOut, "websocket frame deadline exceeded")
+            })?;
+        self.stream.set_read_timeout(Some(remaining))?;
+        self.stream.read(buffer)
+    }
+}
+
+fn read_client_frame_from_stream(
+    stream: &mut TcpStream,
+    maximum_payload: usize,
+) -> Result<ClientFrame, FrameReadError> {
+    let timeout = stream
+        .read_timeout()
+        .map_err(FrameReadError::Io)?
+        .ok_or_else(|| {
+            FrameReadError::Io(io::Error::new(
+                ErrorKind::InvalidInput,
+                "websocket read timeout is required",
+            ))
+        })?;
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        FrameReadError::Io(io::Error::new(
+            ErrorKind::InvalidInput,
+            "websocket frame deadline overflow",
+        ))
+    })?;
+    let mut reader = DeadlineReader { stream, deadline };
+    read_client_frame_exact(&mut reader, maximum_payload)
 }
 
 fn read_client_frame_exact(
@@ -754,6 +797,29 @@ mod tests {
             read_client_frame_exact(&mut Cursor::new(oversized), 4),
             Err(FrameReadError::Protocol)
         ));
+    }
+
+    #[test]
+    fn slow_drip_cannot_extend_total_frame_deadline() {
+        let (mut client, mut server) = socket_pair(Duration::from_millis(120));
+        let frame = masked_text(b"slow-frame");
+        let writer = thread::spawn(move || {
+            for byte in frame {
+                if std::io::Write::write_all(&mut client, &[byte]).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(40));
+            }
+        });
+        let started = Instant::now();
+        assert!(matches!(
+            read_client_frame_from_stream(&mut server, 4096),
+            Err(FrameReadError::Io(ref error))
+                if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock)
+        ));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        drop(server);
+        writer.join().unwrap();
     }
 
     #[test]
