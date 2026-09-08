@@ -22,6 +22,8 @@ env:
   TARGET_BASE_SHA: 01c3026611e8d33ad4825b57f201d1591139e261
   PATCH_SHA256: 94db5065745ab30d65c3a81904bbf631879d3022cd49938acd94bdb8a4430f55
   PATCH_XZ_SHA256: c1109fce31944d617c7a2c63a9b6734647da88ec2f7543d39fd75d577a11bfd4
+  CORRECTION_SHA256: 7fb25715048ecc226bcc8430b57c952cbc53a74270d3c3c462276520dafd48d6
+  CORRECTION_XZ_SHA256: da3c41f66902cdeb9e62da3dd51daeadeed561a0301ed1184b883a6395c899fd
 
 jobs:
   apply-validate-and-publish:
@@ -46,7 +48,7 @@ jobs:
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='transport_commit=%H%ntransport_tree=%T'
 
-      - name: Reconstruct and authenticate exact convergence patch
+      - name: Reconstruct and authenticate exact convergence patches
         shell: bash
         run: |
           set -euo pipefail
@@ -70,6 +72,18 @@ jobs:
           test "$(sha256sum "$RUNNER_TEMP/convergence.patch" | cut -d' ' -f1)" = "$PATCH_SHA256"
           test -s "$RUNNER_TEMP/convergence.patch"
 
+          corrections=(
+            .github/patches/correction-01.part-00
+            .github/patches/correction-01.part-01
+          )
+          for part in "${corrections[@]}"; do test -s "$part"; sha256sum "$part"; done
+          cat "${corrections[@]}" > "$RUNNER_TEMP/correction-01.patch.xz.b64"
+          base64 --decode "$RUNNER_TEMP/correction-01.patch.xz.b64" > "$RUNNER_TEMP/correction-01.patch.xz"
+          test "$(sha256sum "$RUNNER_TEMP/correction-01.patch.xz" | cut -d' ' -f1)" = "$CORRECTION_XZ_SHA256"
+          xz -dc "$RUNNER_TEMP/correction-01.patch.xz" > "$RUNNER_TEMP/correction-01.patch"
+          test "$(sha256sum "$RUNNER_TEMP/correction-01.patch" | cut -d' ' -f1)" = "$CORRECTION_SHA256"
+          test -s "$RUNNER_TEMP/correction-01.patch"
+
       - name: Bind and check out the unchanged target candidate
         shell: bash
         run: |
@@ -83,12 +97,13 @@ jobs:
           test "$(git rev-parse HEAD)" = "$TARGET_BASE_SHA"
           git show -s --format='target_commit=%H%ntarget_tree=%T'
 
-      - name: Apply exact convergence patch
+      - name: Apply exact convergence patches
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           git apply --index --3way "$RUNNER_TEMP/convergence.patch"
+          git apply --index --3way "$RUNNER_TEMP/correction-01.patch"
           git diff --cached --check
           test ! -e .github/workflows/architecture-source-export-one-shot.yml
           test ! -e crates/trnm-token-jwt-adapter-gate
