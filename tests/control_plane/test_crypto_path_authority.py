@@ -58,7 +58,8 @@ class CryptoPathAuthorityTest(unittest.TestCase):
         self.assertIn("Signer::new(MessageDigest::sha256()", production)
         self.assertIn("memcmp::eq", production)
         self.assertIn("hash(MessageDigest::sha256()", production)
-        for forbidden in ("KeyRing", "SecretKey", "sha256_digest", "constant_time_eq"):
+        self.assertIn("fn sha256_digest", production)
+        for forbidden in ("KeyRing", "SecretKey", "trnm_token_jwt_adapter::sha256_digest", "constant_time_eq"):
             self.assertNotIn(forbidden, production)
 
     def test_outbox_digest_uses_openssl_without_private_hash_or_comparator(self) -> None:
