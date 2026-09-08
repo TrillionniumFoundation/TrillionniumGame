@@ -89,6 +89,6 @@ jobs:
       - name: Strict lint standalone codec
         run: cargo clippy --manifest-path crates/trnm-realtime-wire/Cargo.toml --all-targets --locked -- -D warnings
       - name: Test integrated server target
-        run: cargo test --package trnm-persistence-pg --bin trnm-server --locked
+        run: cargo test --package trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server --locked
       - name: Strict lint integrated server target
-        run: cargo clippy --package trnm-persistence-pg --bin trnm-server --locked -- -D warnings
+        run: cargo clippy --package trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server --locked -- -D warnings
