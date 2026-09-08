@@ -1,0 +1,504 @@
+name: crypto-provider-composition-transport
+
+on:
+  push:
+    branches:
+      - codex/crypto-provider-composition-transport-2026-09-08
+    paths:
+      - .github/workflows/crypto-provider-composition-transport.yml
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: architecture-source-mutations
+  cancel-in-progress: false
+
+jobs:
+  compose:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
+    steps:
+      - name: Wait for structural convergence and fetch exact target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          deadline=$((SECONDS + 5400))
+          while (( SECONDS < deadline )); do
+            head=$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "${api}/git/ref/heads/${TARGET_BRANCH//\//%2F}" | jq -r '.object.sha')
+            gate=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "${api}/contents/crates/trnm-token-jwt-adapter-gate/Cargo.toml?ref=${head}")
+            compat=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "${api}/contents/crates/trnm-persistence-pg/src/bin/trnm-pg-compat-server.rs?ref=${head}")
+            if [[ "$gate" == 404 && "$compat" == 200 ]]; then
+              printf '%s\n' "$head" > "$RUNNER_TEMP/target-before.txt"
+              break
+            fi
+            sleep 20
+          done
+          test -s "$RUNNER_TEMP/target-before.txt"
+          head=$(cat "$RUNNER_TEMP/target-before.txt")
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$head"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$head"
+
+      - name: Compose active access verification through opaque provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path=Path('crates/trnm-persistence-pg/src/auth.rs')
+          text=path.read_text(encoding='utf-8')
+          start=text.index('pub struct AccessTokenVerifier')
+          end=text.index('pub fn parse_refresh_credential')
+          replacement=r'''#[derive(Debug)]
+struct SingleEpochResolver {
+    expected_epoch: u32,
+    key: KeyReference,
+}
+
+impl KeyResolver for SingleEpochResolver {
+    fn resolve(
+        &self,
+        domain: KeyDomain,
+        route: ProviderTokenRoute,
+    ) -> Result<KeyReference, AuthenticationError> {
+        if domain != KeyDomain::AccessToken {
+            return Err(AuthenticationError::UnknownKey);
+        }
+        match route {
+            ProviderTokenRoute::Epoch(epoch) if epoch == self.expected_epoch => {
+                Ok(self.key.clone())
+            }
+            ProviderTokenRoute::Legacy | ProviderTokenRoute::Epoch(_) => {
+                Err(AuthenticationError::UnknownKey)
+            }
+        }
+    }
+}
+
+struct OpenSslHs256Provider {
+    key_reference: KeyReference,
+    key: Vec<u8>,
+}
+
+impl fmt::Debug for OpenSslHs256Provider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OpenSslHs256Provider")
+            .field("key_reference", &self.key_reference)
+            .field("key_material", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Drop for OpenSslHs256Provider {
+    fn drop(&mut self) {
+        self.key.fill(0);
+    }
+}
+
+impl Hs256Provider for OpenSslHs256Provider {
+    fn sign(
+        &self,
+        key: &KeyReference,
+        exact_signing_input: &[u8],
+    ) -> Result<Signature32, ProviderError> {
+        if key != &self.key_reference {
+            return Err(ProviderError::KeyUnavailable);
+        }
+        let key = PKey::hmac(&self.key).map_err(|_| ProviderError::Internal)?;
+        let mut signer =
+            Signer::new(MessageDigest::sha256(), &key).map_err(|_| ProviderError::Internal)?;
+        signer
+            .update(exact_signing_input)
+            .map_err(|_| ProviderError::Internal)?;
+        let signature = signer.sign_to_vec().map_err(|_| ProviderError::Internal)?;
+        let signature: [u8; SIGNATURE_BYTES] =
+            signature.try_into().map_err(|_| ProviderError::Internal)?;
+        Ok(Signature32::new(signature))
+    }
+
+    fn verify(
+        &self,
+        key: &KeyReference,
+        exact_signing_input: &[u8],
+        signature: &Signature32,
+    ) -> Result<VerificationDecision, ProviderError> {
+        let expected = self.sign(key, exact_signing_input)?;
+        Ok(if memcmp::eq(signature.as_bytes(), expected.as_bytes()) {
+            VerificationDecision::Accepted
+        } else {
+            VerificationDecision::Rejected
+        })
+    }
+}
+
+pub struct AccessTokenVerifier {
+    issuer: String,
+    audience: String,
+    epoch: u32,
+    resolver: SingleEpochResolver,
+    provider: OpenSslHs256Provider,
+}
+
+impl AccessTokenVerifier {
+    pub fn from_epoch_key(
+        issuer: String,
+        audience: String,
+        epoch: u32,
+        key: Vec<u8>,
+    ) -> Result<Self, DomainError> {
+        if issuer.is_empty()
+            || audience.is_empty()
+            || issuer.len() > 512
+            || audience.len() > 512
+            || epoch == 0
+            || !(MINIMUM_KEY_BYTES..=MAXIMUM_KEY_BYTES).contains(&key.len())
+        {
+            return Err(configuration_error("access_token_profile_invalid"));
+        }
+        let reference = KeyReference::new(
+            KeyDomain::AccessToken,
+            KeyHandle::new(format!("software://access-token/epoch-{epoch}"))
+                .map_err(|_| configuration_error("access_token_profile_invalid"))?,
+            Some(epoch),
+        )
+        .map_err(|_| configuration_error("access_token_profile_invalid"))?;
+        Ok(Self {
+            issuer,
+            audience,
+            epoch,
+            resolver: SingleEpochResolver {
+                expected_epoch: epoch,
+                key: reference.clone(),
+            },
+            provider: OpenSslHs256Provider {
+                key_reference: reference,
+                key,
+            },
+        })
+    }
+
+    pub fn verify_bearer(
+        &self,
+        authorization: Option<&str>,
+        now_unix_seconds: i64,
+    ) -> Result<SessionPrincipal, DomainError> {
+        let token = authorization
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .filter(|value| {
+                !value.is_empty()
+                    && !value
+                        .bytes()
+                        .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+            })
+            .ok_or_else(unauthenticated)?;
+        self.verify_compact_token(token, now_unix_seconds)
+    }
+
+    fn verify_compact_token(
+        &self,
+        token: &str,
+        now_unix_seconds: i64,
+    ) -> Result<SessionPrincipal, DomainError> {
+        let profile = AuthenticationProfile {
+            domain: KeyDomain::AccessToken,
+            max_token_bytes: MAX_TOKEN_BYTES,
+            max_header_bytes: MAX_HEADER_BYTES,
+            max_payload_bytes: MAX_PAYLOAD_BYTES,
+            allow_legacy_without_key_id: false,
+            reject_unknown_header_fields: true,
+            json_limits: JsonLimits::default(),
+        };
+        let authenticated = authenticate(token, &profile, &self.resolver, &self.provider)
+            .map_err(|_| unauthenticated())?;
+        if authenticated.route != ProviderTokenRoute::Epoch(self.epoch) {
+            return Err(unauthenticated());
+        }
+        let claims = json::parse(&authenticated.payload_bytes, JsonLimits::default())
+            .map_err(|_| unauthenticated())?;
+        let claims = claims.as_object().ok_or_else(unauthenticated)?;
+        self.validate_claims(claims, now_unix_seconds)
+    }
+
+    fn validate_claims(
+        &self,
+        claims: &BTreeMap<String, JsonValue>,
+        now_unix_seconds: i64,
+    ) -> Result<SessionPrincipal, DomainError> {
+        if claim_string(claims, "iss")? != self.issuer
+            || !audience_contains(claims.get("aud"), &self.audience)?
+            || claim_unsigned(claims, "trnm_kep")? != u64::from(self.epoch)
+        {
+            return Err(unauthenticated());
+        }
+
+        let issued_at = claim_numeric_date(claims, "iat")?;
+        let expires_at_unix_seconds = claim_numeric_date(claims, "exp")?;
+        let not_before = optional_numeric_date(claims, "nbf")?;
+        let now = i128::from(now_unix_seconds);
+        let skew = i128::from(CLOCK_SKEW_SECONDS);
+        if now >= i128::from(expires_at_unix_seconds) + skew
+            || now + skew < i128::from(issued_at)
+            || not_before.is_some_and(|value| now + skew < i128::from(value))
+            || expires_at_unix_seconds <= issued_at
+        {
+            return Err(unauthenticated());
+        }
+        let lifetime = u64::try_from(expires_at_unix_seconds - issued_at)
+            .map_err(|_| unauthenticated())?;
+        if lifetime > MAX_ACCESS_TOKEN_LIFETIME_SECONDS {
+            return Err(unauthenticated());
+        }
+
+        let user = UserId::new(parse_lower_hex::<16>(claim_string(claims, "sub")?)?);
+        let access_token_id = parse_lower_hex::<16>(claim_string(claims, "jti")?)?;
+        let family = SessionFamilyId::new(parse_lower_hex::<16>(claim_string(claims, "sid")?)?);
+        let generation = claim_unsigned(claims, "sgn")?;
+        if user.is_zero() || family.is_zero() || access_token_id.iter().all(|byte| *byte == 0) {
+            return Err(unauthenticated());
+        }
+
+        Ok(SessionPrincipal {
+            user,
+            family,
+            generation,
+            access_token_id,
+            expires_at_unix_seconds,
+        })
+    }
+}
+
+impl fmt::Debug for AccessTokenVerifier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AccessTokenVerifier")
+            .field("issuer", &self.issuer)
+            .field("audience", &self.audience)
+            .field("active_epoch", &self.epoch)
+            .field("provider", &self.provider)
+            .finish()
+    }
+}
+
+'''
+          text=text[:start]+replacement+text[end:]
+          old_import='use trnm_token_jwt_adapter::EPOCH_KEY_ID_PREFIX;\n'
+          new_import='''use trnm_token_crypto_provider::{
+              Hs256Provider, KeyDomain, KeyHandle, KeyReference, ProviderError, Signature32,
+              VerificationDecision, SIGNATURE_BYTES,
+          };
+          use trnm_token_jwt_provider_adapter::{
+              authenticate, AuthenticationError, AuthenticationProfile, KeyResolver,
+              TokenRoute as ProviderTokenRoute,
+          };
+          '''.replace('          ','')
+          if old_import not in text:
+              raise SystemExit('expected legacy epoch import is absent')
+          text=text.replace(old_import,new_import,1)
+          path.write_text(text,encoding='utf-8')
+
+          # Ensure package and canonical composition root explicitly depend on
+          # both provider contracts.
+          for relative in [
+              'crates/trnm-persistence-pg/Cargo.toml',
+              'crates/trnm-server/Cargo.toml',
+          ]:
+              p=Path(relative); value=p.read_text(encoding='utf-8')
+              if 'trnm-token-crypto-provider' not in value:
+                  value=value.replace(
+                      'trnm-token-jwt-adapter = { path = "../trnm-token-jwt-adapter" }',
+                      'trnm-token-crypto-provider = { path = "../trnm-token-crypto-provider" }\ntrnm-token-jwt-adapter = { path = "../trnm-token-jwt-adapter" }',
+                  )
+              if 'trnm-token-jwt-provider-adapter' not in value:
+                  value=value.replace(
+                      'trnm-token-jwt-adapter = { path = "../trnm-token-jwt-adapter" }',
+                      'trnm-token-jwt-adapter = { path = "../trnm-token-jwt-adapter" }\ntrnm-token-jwt-provider-adapter = { path = "../trnm-token-jwt-provider-adapter" }',
+                  )
+              p.write_text(value,encoding='utf-8')
+          PY
+          cargo fmt --all
+          git diff --check
+
+      - name: Migrate active outbox digest and equality to reviewed OpenSSL APIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs')
+          text=p.read_text(encoding='utf-8')
+          text=text.replace(
+              'use trnm_token_jwt_adapter::sha256_digest;\n',
+              'use openssl::memcmp;\nuse openssl::sha::sha256 as reviewed_sha256;\n',
+          )
+          text=text.replace('sha256_digest(', 'reviewed_sha256(')
+          text=text.replace(
+              'if constant_time_eq(&actual, expected) {',
+              'if actual.len() == expected.len() && memcmp::eq(&actual, expected) {',
+          )
+          text=re.sub(
+              r'\nfn constant_time_eq\(left: &\[u8\], right: &\[u8\]\) -> bool \{.*?\n\}\n',
+              '\n', text, flags=re.S,
+          )
+          if 'fn constant_time_eq' in text or 'sha256_digest' in text:
+              raise SystemExit('private outbox digest/equality helper remains')
+          p.write_text(text,encoding='utf-8')
+          PY
+          cargo fmt --all
+          git diff --check
+
+      - name: Update crypto authority and hostile regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('docs/development/CRYPTO_PATH_AUTHORITY.json')
+          data=json.loads(p.read_text(encoding='utf-8'))
+          for row in data.get('path_classifications',[]):
+              if row.get('id')=='CRYPTO-PATH-ACTIVE-ACCESS-AUTH':
+                  row['implementation']='crates/trnm-persistence-pg/src/auth.rs through trnm-token-crypto-provider and trnm-token-jwt-provider-adapter'
+                  row['primitive_provider']='PROVIDER-OPENSSL-HMAC-SHA256'
+                  row['private_primitive_reachable']=False
+                  row['provider_contract_composed']=True
+              elif row.get('id')=='CRYPTO-PATH-ACTIVE-OUTBOX-DIGEST':
+                  row['implementation']='OpenSSL SHA-256 and fixed-length memcmp in trnm-outbox-worker'
+                  row['primitive_provider']='PROVIDER-OPENSSL-HMAC-SHA256'
+                  row['private_primitive_reachable']=False
+                  row.pop('required_remediation',None)
+          summary=data.setdefault('summary',{})
+          summary['active_access_auth_private_primitive_reachable']=False
+          summary['all_active_crypto_paths_reviewed_provider_backed']=True
+          summary['production_key_provider_accepted']=False
+          summary['private_compatibility_implementation_removed']=False
+          summary['gap_closed']=False
+          summary['production_ready']=False
+          p.write_text(json.dumps(data,indent=2)+'\n',encoding='utf-8')
+
+          t=Path('tests/control_plane/test_crypto_path_authority.py')
+          text=t.read_text(encoding='utf-8')
+          text=text.replace(
+              'def test_unmigrated_outbox_digest_is_explicitly_blocking(self) -> None:',
+              'def test_active_outbox_digest_uses_reviewed_provider(self) -> None:',
+          )
+          text=text.replace(
+              'self.assertTrue(row["private_primitive_reachable"])',
+              'self.assertFalse(row["private_primitive_reachable"])',
+              1,
+          )
+          text=text.replace(
+              'self.assertIsNone(row["primitive_provider"])',
+              'self.assertEqual(row["primitive_provider"], "PROVIDER-OPENSSL-HMAC-SHA256")',
+              1,
+          )
+          text=text.replace(
+              'self.assertIn("trnm_token_jwt_adapter::sha256_digest", source)',
+              'self.assertIn("reviewed_sha256", source)',
+          )
+          text=text.replace(
+              'self.assertIn("fn constant_time_eq", source)',
+              'self.assertIn("memcmp::eq", source)',
+          )
+          text=text.replace(
+              'self.assertFalse(summary["all_active_crypto_paths_reviewed_provider_backed"])',
+              'self.assertTrue(summary["all_active_crypto_paths_reviewed_provider_backed"])',
+          )
+          t.write_text(text,encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Validate complete repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rm -f Cargo.lock
+          cargo generate-lockfile
+          cargo fmt --all
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-rust-foundation.py
+          python3 scripts/check-workflow-action-policy.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cd runtime
+          test -z "$(find . -type f -name '*.go' -print0 | sort -z | xargs -0 gofmt -l)"
+          go test ./... -count=1
+          go test -race ./... -count=1
+          go vet ./...
+
+      - name: Publish unchanged-target commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin "refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          before=$(cat "$RUNNER_TEMP/target-before.txt")
+          test "$(git rev-parse refs/remotes/origin/${TARGET_BRANCH})" = "$before"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'security: compose active JWT and outbox paths through reviewed providers'
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+
+      - name: Report failure without mutating target
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body=$(jq -n --arg run "$GITHUB_RUN_ID" '{body:("Crypto-provider composition failed closed in run " + $run + ". The target candidate was not updated; inspect the failing job log before retrying.")}')
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/116/comments" \
+            -d "$body" >/dev/null
+
+      - name: Delete transport branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git push origin --delete codex/crypto-provider-composition-transport-2026-09-08 >/dev/null 2>&1 || true
