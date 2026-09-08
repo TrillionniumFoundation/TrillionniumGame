@@ -19,8 +19,8 @@ The Go runtime is a migration input and behavior oracle, not target-production e
 
 The two server lines have different present purposes:
 
-- `crates/trnm-persistence-pg/src/bin/trnm-server.rs` is the current canonical database-backed integration slice and the server binary named by the machine package authority;
-- `crates/trnm-server` is a dependency-bounded foundation executable used to keep process/ingress/core contracts independently buildable.
+- `crates/trnm-server` is the only package allowed to publish the default `trnm-server` process and owns the canonical composition root;
+- `crates/trnm-persistence-pg/src/bin/trnm-server.rs` is retained only as the feature-gated `trnm-pg-compat-server` diagnostic and compatibility harness.
 
 This temporary split is not the target architecture. New production behavior must not create a third composition root. Convergence must move the working vertical slice behind stable service and persistence interfaces into one `trnm-server` composition root.
 

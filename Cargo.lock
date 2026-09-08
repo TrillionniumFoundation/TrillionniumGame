@@ -432,9 +432,9 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hybrid-array"
-version = "0.4.14"
+version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "707114b52a152fa7bdb290cd7cd5912d9467273b6d74e21b8d81aca1f8533f6b"
+checksum = "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17"
 dependencies = [
  "typenum",
 ]
@@ -1240,6 +1240,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "subtle"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1565,11 +1571,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "trnm-persistence-runtime-policy"
+version = "0.1.0"
+dependencies = [
+ "trnm-contracts",
+]
+
+[[package]]
 name = "trnm-presence-core"
 version = "0.1.0"
 dependencies = [
  "trnm-contracts",
 ]
+
+[[package]]
+name = "trnm-presence-router-v2"
+version = "0.1.0"
 
 [[package]]
 name = "trnm-query-core"
@@ -1581,6 +1598,27 @@ dependencies = [
 [[package]]
 name = "trnm-realtime-wire"
 version = "0.1.0"
+
+[[package]]
+name = "trnm-server"
+version = "0.1.0"
+dependencies = [
+ "postgres",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "protoc-bin-vendored",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tonic-prost",
+ "tonic-prost-build",
+ "trnm-contracts",
+ "trnm-persistence-pg",
+ "trnm-realtime-wire",
+ "trnm-session-core",
+ "trnm-token-jwt-adapter",
+]
 
 [[package]]
 name = "trnm-session-core"
@@ -1597,6 +1635,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "trnm-storage-nakama-version"
+version = "0.1.0"
+
+[[package]]
 name = "trnm-token-core"
 version = "0.1.0"
 dependencies = [
@@ -1606,10 +1648,20 @@ dependencies = [
 [[package]]
 name = "trnm-token-crypto-provider"
 version = "0.1.0"
+dependencies = [
+ "hmac",
+ "sha2",
+ "subtle",
+]
 
 [[package]]
 name = "trnm-token-jwt-adapter"
 version = "0.1.0"
+dependencies = [
+ "hmac",
+ "sha2",
+ "subtle",
+]
 
 [[package]]
 name = "trnm-token-jwt-provider-adapter"

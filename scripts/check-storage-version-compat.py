@@ -23,7 +23,7 @@ def main() -> int:
     try:
         root = ROOT / "crates/trnm-storage-nakama-version"
         manifest_path = root / "Cargo.toml"
-        lock_path = root / "Cargo.lock"
+        lock_path = ROOT / "Cargo.lock"
         source_path = root / "src/lib.rs"
         contract_path = ROOT / "contracts/storage/nakama-public-version-v1.json"
         documentation_path = ROOT / "docs/COMPATIBILITY.md"
@@ -46,7 +46,7 @@ def main() -> int:
             "wrong package name",
         )
         require(
-            package.get("publish") is False,
+            package.get("publish", {}).get("workspace") is True,
             "compatibility adapter must not publish",
         )
         require(
@@ -54,18 +54,14 @@ def main() -> int:
             "adapter gained a dependency",
         )
         require(
-            manifest.get("workspace") == {},
-            "adapter must remain an explicit standalone workspace candidate",
+            "workspace" not in manifest,
+            "adapter must remain a root-workspace member",
         )
 
         lock = lock_path.read_text(encoding="utf-8")
         require(
             'name = "trnm-storage-nakama-version"' in lock,
             "lock omits adapter package",
-        )
-        require(
-            "registry+" not in lock and "git+" not in lock,
-            "lock gained an external source",
         )
 
         contract = json.loads(contract_path.read_text(encoding="utf-8"))

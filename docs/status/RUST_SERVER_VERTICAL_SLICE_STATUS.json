@@ -7,7 +7,7 @@
   "contract": "contracts/server/rust-server-vertical-slice.v1.json",
   "gap_id": "GAP-P0-SERVER-001",
   "implemented": [
-    "isolated non-authoritative trnm-server-composition-candidate binary",
+    "isolated non-authoritative trnm-server binary",
     "typed bounded configuration and check-config/migrate/serve CLI",
     "PostgreSQL repository composition source",
     "bounded HTTP gRPC and WebSocket listener source",
@@ -18,7 +18,7 @@
     "isolated lockfile and hostile unit/live-test modules"
   ],
   "not_implemented": [
-    "atomic canonical authority transfer from trnm-persistence-pg",
+    "accepted exact-head authority-transfer evidence",
     "complete Nakama HTTP gRPC gateway and RTAPI parity",
     "complete accounts social leaderboard tournament party matchmaker and multiplayer surfaces",
     "complete Runtime provider IAP subscription and Console surfaces",

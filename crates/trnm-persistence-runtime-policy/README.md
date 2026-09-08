@@ -2,7 +2,7 @@
 
 Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
 Path: `crates/trnm-persistence-runtime-policy`  
-Workspace class: `isolated`  
+Workspace class: `root`
 Lifecycle: `database-runtime-policy-candidate`  
 Owner role: `database-migration`
 

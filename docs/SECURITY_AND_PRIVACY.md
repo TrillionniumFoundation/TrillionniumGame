@@ -168,3 +168,8 @@ An emergency repository bypass may contain an incident but cannot grant compatib
 ## 16. Approval boundary
 
 Security gaps close only when implementation choice, vectors/fuzz, key provider, rotation/revoke, dependencies, exact-head artifacts and independent security review are accepted. Current source candidates do not establish C2/C4/C5, production readiness or public-online approval.
+
+
+### Active access-token provider boundary
+
+The active database-backed access-token verifier authenticates the exact encoded JWT signing input through `trnm-token-jwt-provider-adapter` and the opaque `Hs256Provider` contract. The compatibility constructor may instantiate `SoftwareHs256Provider` for development and migration tests, but production approval requires a separately accepted KMS/HSM or approved secret-manager implementation. Persistence, protocol and session handlers do not implement HMAC or compare authenticators directly.

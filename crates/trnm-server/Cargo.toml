@@ -1,18 +1,18 @@
 [package]
 name = "trnm-server"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.85.1"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Canonical fail-closed TrillionniumGame server composition root"
-publish = false
+publish.workspace = true
 build = "build.rs"
 
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
-name = "trnm-server-composition-candidate"
+name = "trnm-server"
 path = "src/main.rs"
 
 [dependencies]
@@ -34,15 +34,5 @@ protoc-bin-vendored = "=3.2.0"
 tonic-build = "=0.14.5"
 tonic-prost-build = "=0.14.5"
 
-[workspace]
-
-[lints.rust]
-unsafe_code = "forbid"
-missing_debug_implementations = "deny"
-unused_must_use = "deny"
-
-[lints.clippy]
-dbg_macro = "deny"
-todo = "deny"
-unimplemented = "deny"
-wildcard_imports = "deny"
+[lints]
+workspace = true

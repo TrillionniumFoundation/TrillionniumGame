@@ -2,7 +2,7 @@
 
 Status: **module documentation; http-grpc-websocket-database-source-candidate; no automatic compatibility or production credit**  
 Path: `crates/trnm-persistence-pg`  
-Workspace class: `root`  
+Workspace class: `root`
 Lifecycle: `product-adapter-and-temporary-composition`  
 Owner role: `database-migration`
 
@@ -139,7 +139,7 @@ Focused checks:
 
 ```bash
 cargo test -p trnm-persistence-pg --locked --bin trnm-pg-tls-rotation-probe
-cargo test -p trnm-persistence-pg --locked --bin trnm-server live_cockroach_serialization_failure_retries_entire_command -- --nocapture
+cargo test -p trnm-persistence-pg --features diagnostic-compat-server --locked --bin trnm-pg-compat-server live_cockroach_serialization_failure_retries_entire_command -- --nocapture
 ```
 
 The second command requires the isolated live database environment and explicit

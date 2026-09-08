@@ -7,7 +7,7 @@ This document is the module-level authority for the isolated Rust server composi
 ## Status and authority
 
 `crates/trnm-server` contains a candidate composition root assembled from the repository's reviewed persistence, session/JWT, gRPC, and realtime-wire components.
-Its non-authoritative package-local binary is named `trnm-server-composition-candidate`.
+Its non-authoritative package-local binary is named `trnm-server`.
 The currently admitted canonical process remains `crates/trnm-persistence-pg/src/bin/trnm-server.rs` until a separate atomic authority-transfer change removes that duplicate entry point, updates every consumer, and receives exact-object review.
 This source candidate does not by itself establish compatibility, durability, release, deployment, or production authority.
 

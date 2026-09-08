@@ -23,7 +23,9 @@
   "components": [
     {
       "id": "COMPONENT-RUST-PACKAGES",
-      "roots": ["crates"],
+      "roots": [
+        "crates"
+      ],
       "lifecycle": "product-libraries-adapters-and-process-candidates",
       "owner_role": "multi-domain-by-module-registry",
       "authority": "Rust package boundaries are enumerated by docs/status/MODULE_DOCUMENTATION.json and docs/development/RUST_PACKAGE_AUTHORITY.json.",
@@ -34,7 +36,11 @@
       ],
       "documentation_status": "module-registered-depth-varies",
       "architecture": "One target composition root, stable core and adapter boundaries, bounded resources and explicit temporary-package convergence.",
-      "public_contracts": ["Cargo manifests", "public Rust APIs", "contracts"],
+      "public_contracts": [
+        "Cargo manifests",
+        "public Rust APIs",
+        "contracts"
+      ],
       "failure_model": "Strong types, fail-closed state transitions, stable domain errors, bounded retries and explicit cancellation.",
       "security_boundary": "No unsafe code or production private cryptographic primitive without accepted exception; secrets are redacted and provider-scoped.",
       "operations": "Process packages define readiness, drain and diagnostics; libraries expose no untracked global tasks.",
@@ -50,7 +56,9 @@
     },
     {
       "id": "COMPONENT-GO-RUNTIME-MIGRATION",
-      "roots": ["runtime"],
+      "roots": [
+        "runtime"
+      ],
       "lifecycle": "current-runnable-plugin-migration-input-and-oracle-fixture",
       "owner_role": "runtime-migration",
       "authority": "Official Nakama plus the first-party Go plugin remains the currently proven broad runnable path; it is not target Rust-server evidence.",
@@ -61,7 +69,11 @@
       ],
       "documentation_status": "partial-package-coverage",
       "architecture": "Nakama plugin entrypoints, authoritative match and World transition fixtures remain isolated from target Rust authority.",
-      "public_contracts": ["runtime/go.mod", "contracts/AUTHORITATIVE_MATCH_V1.md", "contracts/world-transition-v1.schema.json"],
+      "public_contracts": [
+        "runtime/go.mod",
+        "contracts/AUTHORITATIVE_MATCH_V1.md",
+        "contracts/world-transition-v1.schema.json"
+      ],
       "failure_model": "No target-profile fallback, generation fencing, exact command identity, bounded retry and explicit quarantine.",
       "security_boundary": "No production secret or private authority transfer to World; current Go code is migration input and rollback authority only.",
       "operations": "Compose and fault-lab paths exercise current plugin behavior; final topology removes the Go server/plugin loader.",
@@ -78,7 +90,10 @@
     },
     {
       "id": "COMPONENT-DATABASE-MIGRATIONS",
-      "roots": ["migrations", "database/schema/v2"],
+      "roots": [
+        "migrations",
+        "database/schema/v2"
+      ],
       "lifecycle": "production-authoritative-migration-chain-plus-quarantined-design-history",
       "owner_role": "database-migration",
       "authority": "migrations is the only production DDL authority; database/schema/v2 is non-authoritative design history.",
@@ -89,7 +104,10 @@
       ],
       "documentation_status": "authority-documented-object-catalog-incomplete",
       "architecture": "Separate PostgreSQL and CockroachDB profiles bind the same logical invariants but retain profile-specific SQL, retry and operations evidence.",
-      "public_contracts": ["migrations/MIGRATION_CHAIN.lock.json", "docs/development/SCHEMA_AUTHORITY.json"],
+      "public_contracts": [
+        "migrations/MIGRATION_CHAIN.lock.json",
+        "docs/development/SCHEMA_AUTHORITY.json"
+      ],
       "failure_model": "Serializable transactions, revision and generation predicates, exact receipt replay, no partial command/event/outbox commit.",
       "security_boundary": "Verify-full production TLS, least-privilege database identities, redacted URLs and no secrets in evidence.",
       "operations": "Apply, introspect, backup, PITR, restore, rollback fencing and profile failover require separate retained packets.",
@@ -106,7 +124,10 @@
     },
     {
       "id": "COMPONENT-PROTOCOL-CONTRACTS",
-      "roots": ["contracts", "testdata"],
+      "roots": [
+        "contracts",
+        "testdata"
+      ],
       "lifecycle": "versioned-wire-domain-and-evidence-contracts",
       "owner_role": "protocol-compatibility",
       "authority": "Versioned schemas and vectors define bounded public/internal observations but do not independently prove runtime behavior.",
@@ -117,7 +138,12 @@
       ],
       "documentation_status": "family-entrypoints-present-lifecycle-detail-partial",
       "architecture": "Generated or strict adapters translate wire values into versioned commands and stable errors without direct repository access.",
-      "public_contracts": ["contracts/v1", "contracts/realtime", "contracts/security", "contracts/database"],
+      "public_contracts": [
+        "contracts/v1",
+        "contracts/realtime",
+        "contracts/security",
+        "contracts/database"
+      ],
       "failure_model": "Malformed, duplicate, oversized, stale and incompatible inputs fail closed with profile-specific observable outcomes.",
       "security_boundary": "Identity, authorization, ACL, sequence, money, version, cursor, error and durable-effect fields cannot be normalized away.",
       "operations": "Schema changes require compatibility classification, consumer mapping, retained vectors and an explicit deprecation path.",
@@ -134,7 +160,12 @@
     },
     {
       "id": "COMPONENT-ORACLE-DIFFERENTIAL",
-      "roots": ["oracle", "corpus/runtime", "tools/oracle", "scripts/oracle"],
+      "roots": [
+        "oracle",
+        "corpus/runtime",
+        "tools/oracle",
+        "scripts/oracle"
+      ],
       "lifecycle": "immutable-and-instrumented-compatibility-oracle",
       "owner_role": "compatibility-qa",
       "authority": "Immutable source identities, observations and reviewed normalizers provide comparison inputs; synthetic fixtures alone grant no compatibility credit.",
@@ -145,7 +176,11 @@
       ],
       "documentation_status": "framework-documented-real-corpus-acceptance-open",
       "architecture": "Immutable and minimally instrumented Nakama lanes run isolated databases from identical logical seeds and produce schema-valid observations.",
-      "public_contracts": ["contracts/oracle", "contracts/runtime", "config/oracle-normalizers.json"],
+      "public_contracts": [
+        "contracts/oracle",
+        "contracts/runtime",
+        "config/oracle-normalizers.json"
+      ],
       "failure_model": "Source, image, environment, fixture, attempt or artifact identity mismatch invalidates the observation; unexplained P0/P1 divergence blocks promotion.",
       "security_boundary": "Synthetic credentials only, no production PII or secrets, and normalizers cannot hide security or durable-effect differences.",
       "operations": "Images, patches, runs, artifacts, expiry and independent decisions are retained by digest.",
@@ -162,7 +197,11 @@
     },
     {
       "id": "COMPONENT-CONTROL-PLANE",
-      "roots": ["scripts", "tools", "tests/control_plane"],
+      "roots": [
+        "scripts",
+        "tools",
+        "tests/control_plane"
+      ],
       "lifecycle": "validation-generation-and-evidence-control",
       "owner_role": "program-governance",
       "authority": "Control scripts validate source and evidence contracts but cannot grant human acceptance or administrator facts.",
@@ -173,7 +212,11 @@
       ],
       "documentation_status": "broad-entrypoint-documentation-per-tool-depth-partial",
       "architecture": "Standard-library validators reject ambiguous JSON, stale identity, missing inputs, silent skips and unsupported state transitions.",
-      "public_contracts": ["CURRENT_PLAN.md", "docs/status", "docs/evidence/index.json"],
+      "public_contracts": [
+        "CURRENT_PLAN.md",
+        "docs/status",
+        "docs/evidence/index.json"
+      ],
       "failure_model": "Missing, empty, skipped, cancelled, stale, malformed or identity-mismatched inputs fail closed.",
       "security_boundary": "Untrusted PR code never receives administrator credentials; validators do not fabricate reviewers or accepted evidence.",
       "operations": "Aggregate and focused workflows execute tools against exact candidates and retain bounded diagnostics.",
@@ -190,7 +233,10 @@
     },
     {
       "id": "COMPONENT-CI-GOVERNANCE",
-      "roots": [".github/workflows", ".github/actions"],
+      "roots": [
+        ".github/workflows",
+        ".github/actions"
+      ],
       "lifecycle": "exact-candidate-build-test-and-admission-control",
       "owner_role": "program-governance",
       "authority": "Workflow success is execution input; required checks, rulesets, reviews and evidence admission remain separate decision surfaces.",
@@ -200,7 +246,10 @@
       ],
       "documentation_status": "policy-documented-workflow-family-runbooks-partial",
       "architecture": "Closed-set candidate and prospective-merge workflows bind source, workflow definition, run, job, attempt and artifact identities.",
-      "public_contracts": ["docs/governance/REQUIRED_CHECKS.json", "docs/review/INDEPENDENT_REVIEW_MATRIX.json"],
+      "public_contracts": [
+        "docs/governance/REQUIRED_CHECKS.json",
+        "docs/review/INDEPENDENT_REVIEW_MATRIX.json"
+      ],
       "failure_model": "Zero-job, duplicate-name, stale-head, stale-base, cancelled, skipped and same-name impersonation paths receive no credit.",
       "security_boundary": "Least-privilege workflow permissions, pinned actions, bounded artifact upload and no administrator token in PR execution.",
       "operations": "Branch inventory, aggregate collection, artifact retention and no-bypass read-back are separately controlled.",
@@ -217,7 +266,10 @@
     },
     {
       "id": "COMPONENT-DEPLOYMENT-OPERATIONS",
-      "roots": ["deploy", "compose.yaml"],
+      "roots": [
+        "deploy",
+        "compose.yaml"
+      ],
       "lifecycle": "development-fault-lab-and-future-release-topology",
       "owner_role": "sre-release",
       "authority": "Current compose and fault-lab files are bounded development evidence inputs, not production topology approval.",
@@ -227,7 +279,10 @@
       ],
       "documentation_status": "development-runbooks-present-production-runbooks-open",
       "architecture": "Current Nakama/Go and candidate Rust paths remain explicitly separated through shadow, canary and ownership phases.",
-      "public_contracts": ["compose.yaml", "deploy/world-command-fault-lab/compose.yaml"],
+      "public_contracts": [
+        "compose.yaml",
+        "deploy/world-command-fault-lab/compose.yaml"
+      ],
       "failure_model": "Startup dependency, readiness, drain, node loss, database loss and external-effect ambiguity stop promotion and preserve the current authority.",
       "security_boundary": "No production credentials in compose, synthetic fixtures only, loopback exposure by default and explicit TLS identities.",
       "operations": "Backup, PITR, HA, upgrade, capacity, endurance, canary, rollback and incident procedures require independently accepted rehearsals.",
@@ -243,7 +298,11 @@
     },
     {
       "id": "COMPONENT-EVIDENCE-REVIEW",
-      "roots": ["docs/evidence", "docs/review", "docs/status"],
+      "roots": [
+        "docs/evidence",
+        "docs/review",
+        "docs/status"
+      ],
       "lifecycle": "machine-state-evidence-index-and-independent-decision-control",
       "owner_role": "compatibility-qa-governance",
       "authority": "Machine records state what is present and accepted; editing them cannot create the underlying execution, review or administrator fact.",
@@ -253,7 +312,10 @@
       ],
       "documentation_status": "schema-documented-accepted-entry-set-empty",
       "architecture": "Evidence binds exact source, tree, workflow, run, jobs, environment, artifacts, limitations, expiry and independent decisions.",
-      "public_contracts": ["docs/evidence/schemas/trillionnium-evidence-v1.schema.json", "docs/evidence/index.json"],
+      "public_contracts": [
+        "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
+        "docs/evidence/index.json"
+      ],
       "failure_model": "Duplicate, expired, unreviewed, wrong-target, incomplete or legacy evidence is rejected and cannot derive a passing gate.",
       "security_boundary": "Artifacts exclude secrets and production PII; evidence producers cannot independently accept their own packets.",
       "operations": "Admission, supersession, expiry and post-merge retention are explicit transactions with immutable digests.",

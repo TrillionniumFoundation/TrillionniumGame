@@ -66,6 +66,7 @@
     "docs/development/UPSTREAM_BASELINE.json",
     "docs/development/backlog/EXECUTION_BACKLOG.v2.json.gz",
     "docs/status/CURRENT_STATE.json",
+    "docs/status/ARCHITECTURE_CONVERGENCE_STATUS.json",
     "docs/status/EXECUTION_STATUS.json",
     "docs/status/GAP_REGISTER.json",
     "docs/status/IMPLEMENTATION_INVENTORY.json",

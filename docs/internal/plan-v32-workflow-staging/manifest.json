@@ -1,0 +1,46 @@
+{
+  "base_head": "01c3026611e8d33ad4825b57f201d1591139e261",
+  "claim_boundary": {
+    "all_gaps_closed": false,
+    "production_ready": false,
+    "staging_is_acceptance": false
+  },
+  "entries": [
+    {
+      "path": ".github/workflows/architecture-source-export-one-shot.yml",
+      "status": "D"
+    },
+    {
+      "bytes": 7566,
+      "path": ".github/workflows/cockroach-serialization-retry.yml",
+      "sha256": "5960c3b9b0f9c7f382582b4411a38e5d4621466c7fea7038d4c3c59b0560719a",
+      "status": "M"
+    },
+    {
+      "bytes": 5209,
+      "path": ".github/workflows/grpc-health-source.yml",
+      "sha256": "36e9fc6dc65de5cbe3e4511fa88441bac16dd50a248c1ca7ca70541a3c2b3965",
+      "status": "M"
+    },
+    {
+      "bytes": 17258,
+      "path": ".github/workflows/trillionnium-game-merge-gate.yml",
+      "sha256": "160b641e40adad7db75b21f0125edbf2954288850908ffdcba1e8739b93bd5ca",
+      "status": "M"
+    },
+    {
+      "bytes": 5453,
+      "path": ".github/workflows/w1-rust-server-vertical-slice.yml",
+      "sha256": "64f066d4faf9d941fae64bf4f7817e337fabefe9850b3b921b683f791ce2b5b8",
+      "status": "M"
+    },
+    {
+      "bytes": 4532,
+      "path": ".github/workflows/websocket-wire-source.yml",
+      "sha256": "ed0e7583c1b2fcaadd6f58773ad94457b41f6efc000e743662132e92dd3339f4",
+      "status": "M"
+    }
+  ],
+  "schema": "trillionnium.plan-v32-workflow-staging.v1",
+  "target_branch": "codex/architecture-gap-closure-2026-09-08"
+}

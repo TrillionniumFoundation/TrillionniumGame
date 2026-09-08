@@ -3,15 +3,11 @@ use std::fmt;
 use std::sync::Arc;
 
 use openssl::hash::{hash, MessageDigest};
-use openssl::memcmp;
-use openssl::pkey::PKey;
-use openssl::sign::Signer;
 use trnm_contracts::{
     Digest32, DomainError, RefreshTokenId, RetryClass, SessionFamilyId, StableCode, UserId,
 };
 use trnm_token_crypto_provider::{
-    Hs256Provider, KeyDomain, KeyHandle, KeyReference, ProviderError, Signature32,
-    VerificationDecision,
+    Hs256Provider, KeyDomain, KeyHandle, KeyReference, SoftwareHs256Provider,
 };
 use trnm_token_jwt_adapter::json::{JsonLimits, JsonValue};
 use trnm_token_jwt_provider_adapter::{
@@ -21,15 +17,10 @@ use trnm_token_jwt_provider_adapter::{
 const MAX_TOKEN_BYTES: usize = 32 * 1_024;
 const MAX_HEADER_BYTES: usize = 1_024;
 const MAX_PAYLOAD_BYTES: usize = 16 * 1_024;
-const MINIMUM_KEY_BYTES: usize = 16;
+const MINIMUM_KEY_BYTES: usize = 32;
 const MAXIMUM_KEY_BYTES: usize = 4_096;
 const CLOCK_SKEW_SECONDS: i64 = 30;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct AccessTokenPolicy {
-    allow_legacy_without_key_id: bool,
-    max_lifetime_seconds: Option<u64>,
-}
+const MAX_ACCESS_TOKEN_LIFETIME_SECONDS: u64 = 15 * 60;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SessionPrincipal {
@@ -46,15 +37,32 @@ pub struct ParsedRefreshCredential {
     pub digest: Digest32,
 }
 
+#[derive(Clone, Debug)]
+struct FixedAccessKeyResolver {
+    epoch: u32,
+    key: KeyReference,
+}
+
+impl KeyResolver for FixedAccessKeyResolver {
+    fn resolve(
+        &self,
+        domain: KeyDomain,
+        route: TokenRoute,
+    ) -> Result<KeyReference, AuthenticationError> {
+        if domain == KeyDomain::AccessToken && route == TokenRoute::Epoch(self.epoch) {
+            Ok(self.key.clone())
+        } else {
+            Err(AuthenticationError::UnknownKey)
+        }
+    }
+}
+
 pub struct AccessTokenVerifier {
     issuer: String,
     audience: String,
     epoch: u32,
-    profile: AuthenticationProfile,
-    policy: AccessTokenPolicy,
+    resolver: FixedAccessKeyResolver,
     provider: Arc<dyn Hs256Provider>,
-    resolver: Arc<dyn KeyResolver>,
-    provider_profile: &'static str,
 }
 
 impl AccessTokenVerifier {
@@ -64,69 +72,46 @@ impl AccessTokenVerifier {
         epoch: u32,
         key: Vec<u8>,
     ) -> Result<Self, DomainError> {
-        validate_configuration(&issuer, &audience, epoch)?;
         if !(MINIMUM_KEY_BYTES..=MAXIMUM_KEY_BYTES).contains(&key.len()) {
             return Err(configuration_error("access_token_profile_invalid"));
         }
-
-        let key_reference = KeyReference::new(
+        let reference = KeyReference::new(
             KeyDomain::AccessToken,
-            KeyHandle::new(format!("memory://trnm/access/{epoch}"))
+            KeyHandle::new(format!("software://access-token/{epoch}"))
                 .map_err(|_| configuration_error("access_token_profile_invalid"))?,
             Some(epoch),
         )
         .map_err(|_| configuration_error("access_token_profile_invalid"))?;
-        let resolver = Arc::new(SingleEpochKeyResolver::new(key_reference.clone()));
-        let provider = Arc::new(OpenSslHs256Provider::new(key_reference, key)?);
-        Self::from_provider(
-            issuer,
-            audience,
-            epoch,
-            provider,
-            resolver,
-            "openssl-software-source-candidate",
-        )
+        let provider = Arc::new(SoftwareHs256Provider::new());
+        provider
+            .insert_key(&reference, key)
+            .map_err(|_| configuration_error("access_token_profile_invalid"))?;
+        Self::from_provider(issuer, audience, epoch, reference, provider)
     }
 
     pub fn from_provider(
         issuer: String,
         audience: String,
         epoch: u32,
+        key: KeyReference,
         provider: Arc<dyn Hs256Provider>,
-        resolver: Arc<dyn KeyResolver>,
-        provider_profile: &'static str,
     ) -> Result<Self, DomainError> {
-        validate_configuration(&issuer, &audience, epoch)?;
-        if provider_profile.is_empty() || provider_profile.len() > 128 {
+        if issuer.is_empty()
+            || audience.is_empty()
+            || issuer.len() > 512
+            || audience.len() > 512
+            || epoch == 0
+            || key.domain != KeyDomain::AccessToken
+            || key.epoch != Some(epoch)
+        {
             return Err(configuration_error("access_token_profile_invalid"));
         }
-
-        let policy = AccessTokenPolicy {
-            allow_legacy_without_key_id: false,
-            max_lifetime_seconds: Some(15 * 60),
-        };
-        let profile = AuthenticationProfile {
-            domain: KeyDomain::AccessToken,
-            max_token_bytes: MAX_TOKEN_BYTES,
-            max_header_bytes: MAX_HEADER_BYTES,
-            max_payload_bytes: MAX_PAYLOAD_BYTES,
-            allow_legacy_without_key_id: policy.allow_legacy_without_key_id,
-            reject_unknown_header_fields: true,
-            json_limits: JsonLimits::default(),
-        };
-        profile
-            .validate()
-            .map_err(|_| configuration_error("access_token_profile_invalid"))?;
-
         Ok(Self {
             issuer,
             audience,
             epoch,
-            profile,
-            policy,
+            resolver: FixedAccessKeyResolver { epoch, key },
             provider,
-            resolver,
-            provider_profile,
         })
     }
 
@@ -144,29 +129,24 @@ impl AccessTokenVerifier {
                         .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
             })
             .ok_or_else(unauthenticated)?;
-        self.verify_compact_token(token, now_unix_seconds)
-    }
-
-    fn verify_compact_token(
-        &self,
-        token: &str,
-        now_unix_seconds: i64,
-    ) -> Result<SessionPrincipal, DomainError> {
-        let authenticated = authenticate(
-            token,
-            &self.profile,
-            self.resolver.as_ref(),
-            self.provider.as_ref(),
-        )
-        .map_err(|_| unauthenticated())?;
+        let profile = AuthenticationProfile {
+            domain: KeyDomain::AccessToken,
+            max_token_bytes: MAX_TOKEN_BYTES,
+            max_header_bytes: MAX_HEADER_BYTES,
+            max_payload_bytes: MAX_PAYLOAD_BYTES,
+            allow_legacy_without_key_id: false,
+            reject_unknown_header_fields: true,
+            json_limits: JsonLimits::default(),
+        };
+        let authenticated = authenticate(token, &profile, &self.resolver, self.provider.as_ref())
+            .map_err(|_| unauthenticated())?;
         if authenticated.route != TokenRoute::Epoch(self.epoch)
-            || authenticated.key.domain != KeyDomain::AccessToken
-            || authenticated.key.epoch != Some(self.epoch)
+            || authenticated.key != self.resolver.key
         {
             return Err(unauthenticated());
         }
         let claims = authenticated
-            .parse_claims(self.profile.json_limits)
+            .parse_claims(JsonLimits::default())
             .map_err(|_| unauthenticated())?;
         let claims = claims.as_object().ok_or_else(unauthenticated)?;
         self.validate_claims(claims, now_unix_seconds)
@@ -198,11 +178,7 @@ impl AccessTokenVerifier {
         }
         let lifetime =
             u64::try_from(expires_at_unix_seconds - issued_at).map_err(|_| unauthenticated())?;
-        if self
-            .policy
-            .max_lifetime_seconds
-            .is_some_and(|maximum| lifetime > maximum)
-        {
+        if lifetime > MAX_ACCESS_TOKEN_LIFETIME_SECONDS {
             return Err(unauthenticated());
         }
 
@@ -231,109 +207,9 @@ impl fmt::Debug for AccessTokenVerifier {
             .field("issuer", &self.issuer)
             .field("audience", &self.audience)
             .field("active_epoch", &self.epoch)
-            .field("provider_profile", &self.provider_profile)
-            .field("key_material", &"<redacted>")
+            .field("key_reference", &self.resolver.key)
+            .field("provider", &"<opaque-provider>")
             .finish()
-    }
-}
-
-#[derive(Clone, Debug)]
-struct SingleEpochKeyResolver {
-    key: KeyReference,
-}
-
-impl SingleEpochKeyResolver {
-    const fn new(key: KeyReference) -> Self {
-        Self { key }
-    }
-}
-
-impl KeyResolver for SingleEpochKeyResolver {
-    fn resolve(
-        &self,
-        domain: KeyDomain,
-        route: TokenRoute,
-    ) -> Result<KeyReference, AuthenticationError> {
-        if domain == self.key.domain && route == TokenRoute::Epoch(self.key.epoch.unwrap_or(0)) {
-            Ok(self.key.clone())
-        } else {
-            Err(AuthenticationError::UnknownKey)
-        }
-    }
-}
-
-struct OpenSslHs256Provider {
-    key: KeyReference,
-    key_bytes: Vec<u8>,
-}
-
-impl OpenSslHs256Provider {
-    fn new(key: KeyReference, key_bytes: Vec<u8>) -> Result<Self, DomainError> {
-        if key.domain != KeyDomain::AccessToken
-            || key.epoch.is_none()
-            || !(MINIMUM_KEY_BYTES..=MAXIMUM_KEY_BYTES).contains(&key_bytes.len())
-        {
-            return Err(configuration_error("access_token_profile_invalid"));
-        }
-        Ok(Self { key, key_bytes })
-    }
-
-    fn mac(&self, exact_signing_input: &[u8]) -> Result<Signature32, ProviderError> {
-        let key = PKey::hmac(&self.key_bytes).map_err(|_| ProviderError::Internal)?;
-        let mut signer =
-            Signer::new(MessageDigest::sha256(), &key).map_err(|_| ProviderError::Internal)?;
-        signer
-            .update(exact_signing_input)
-            .map_err(|_| ProviderError::Internal)?;
-        let signature = signer.sign_to_vec().map_err(|_| ProviderError::Internal)?;
-        let signature: [u8; 32] = signature.try_into().map_err(|_| ProviderError::Internal)?;
-        Ok(Signature32::new(signature))
-    }
-}
-
-impl Hs256Provider for OpenSslHs256Provider {
-    fn sign(
-        &self,
-        key: &KeyReference,
-        exact_signing_input: &[u8],
-    ) -> Result<Signature32, ProviderError> {
-        if key != &self.key {
-            return Err(ProviderError::KeyUnavailable);
-        }
-        self.mac(exact_signing_input)
-    }
-
-    fn verify(
-        &self,
-        key: &KeyReference,
-        exact_signing_input: &[u8],
-        signature: &Signature32,
-    ) -> Result<VerificationDecision, ProviderError> {
-        if key != &self.key {
-            return Err(ProviderError::KeyUnavailable);
-        }
-        let expected = self.mac(exact_signing_input)?;
-        Ok(if memcmp::eq(signature.as_bytes(), expected.as_bytes()) {
-            VerificationDecision::Accepted
-        } else {
-            VerificationDecision::Rejected
-        })
-    }
-}
-
-impl fmt::Debug for OpenSslHs256Provider {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("OpenSslHs256Provider")
-            .field("key", &self.key)
-            .field("key_material", &"<redacted>")
-            .finish()
-    }
-}
-
-impl Drop for OpenSslHs256Provider {
-    fn drop(&mut self) {
-        self.key_bytes.fill(0);
     }
 }
 
@@ -367,19 +243,6 @@ pub fn parse_refresh_credential(value: &str) -> Result<ParsedRefreshCredential, 
 fn sha256_digest(input: &[u8]) -> Result<[u8; 32], DomainError> {
     let digest = hash(MessageDigest::sha256(), input).map_err(|_| unauthenticated())?;
     digest.as_ref().try_into().map_err(|_| unauthenticated())
-}
-
-fn validate_configuration(issuer: &str, audience: &str, epoch: u32) -> Result<(), DomainError> {
-    if issuer.is_empty()
-        || audience.is_empty()
-        || issuer.len() > 512
-        || audience.len() > 512
-        || epoch == 0
-    {
-        Err(configuration_error("access_token_profile_invalid"))
-    } else {
-        Ok(())
-    }
 }
 
 fn claim_string<'a>(
@@ -532,6 +395,33 @@ mod tests {
     }
 
     #[test]
+    fn hs256_key_length_requires_32_actual_bytes() {
+        for length in [0_usize, 15, 16, 31] {
+            let error = AccessTokenVerifier::from_epoch_key(
+                ISSUER.to_owned(),
+                AUDIENCE.to_owned(),
+                EPOCH,
+                vec![0x5a; length],
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.reason(),
+                "access_token_profile_invalid",
+                "length={length}"
+            );
+        }
+        for length in [32_usize, 48, 64] {
+            AccessTokenVerifier::from_epoch_key(
+                ISSUER.to_owned(),
+                AUDIENCE.to_owned(),
+                EPOCH,
+                vec![0x5a; length],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
     fn strict_epoch_access_token_yields_session_principal() {
         let token = issue(&claims());
         let principal = verifier()
@@ -548,8 +438,8 @@ mod tests {
     fn verifier_debug_redacts_key_material() {
         let verifier = verifier();
         let debug = format!("{verifier:?}");
-        assert!(debug.contains("openssl-software-source-candidate"));
-        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("<opaque-provider>"));
+        assert!(debug.contains("<redacted-key-handle>"));
         assert!(!debug.contains("0123456789abcdef"));
     }
 

@@ -6,6 +6,11 @@ rust-version = "1.85"
 license = "Apache-2.0"
 publish = false
 
+[dependencies]
+hmac = "=0.13.0"
+sha2 = "=0.11.0"
+subtle = "=2.6.1"
+
 [lib]
 path = "src/lib.rs"
 test = false

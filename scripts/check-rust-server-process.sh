@@ -11,10 +11,10 @@ mkdir -p "$run_root"
 cargo build \
   --manifest-path crates/trnm-server/Cargo.toml \
   --locked \
-  --bin trnm-server-composition-candidate \
+  --bin trnm-server \
   >"$run_root/build.log" 2>&1
 
-binary=crates/trnm-server/target/debug/trnm-server-composition-candidate
+binary=target/debug/trnm-server
 test -x "$binary"
 
 export TRNM_SERVER_BIND=127.0.0.1:17350

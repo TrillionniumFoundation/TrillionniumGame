@@ -86,7 +86,7 @@ def load_json(path: Path) -> dict[str, Any]:
 def main() -> int:
     try:
         manifest_path = CRATE / "Cargo.toml"
-        lock_path = CRATE / "Cargo.lock"
+        lock_path = ROOT / "Cargo.lock"
         lib_path = CRATE / "src/lib.rs"
         main_path = CRATE / "src/main.rs"
         runtime_path = CRATE / "src/runtime"
@@ -97,10 +97,10 @@ def main() -> int:
         package = manifest.get("package")
         require(isinstance(package, dict), "server package table missing")
         require(package.get("name") == "trnm-server", "wrong server package name")
-        require(package.get("publish") is False, "server package must not publish")
-        require(package.get("rust-version") == "1.85.1", "server Rust version drift")
+        require(package.get("publish", {}).get("workspace") is True, "server package must not publish")
+        require(package.get("rust-version", {}).get("workspace") is True, "server Rust version drift")
         require(package.get("build") == "build.rs", "server build script binding drift")
-        require(manifest.get("workspace") == {}, "server must remain an isolated workspace")
+        require("workspace" not in manifest, "server must remain a root-workspace member")
         require(manifest.get("dependencies") == EXPECTED_DEPENDENCIES, "server dependency contract drift")
         require(
             manifest.get("build-dependencies") == EXPECTED_BUILD_DEPENDENCIES,
@@ -109,7 +109,7 @@ def main() -> int:
         binaries = manifest.get("bin")
         require(isinstance(binaries, list) and len(binaries) == 1, "exactly one binary required")
         require(
-            binaries[0] == {"name": "trnm-server-composition-candidate", "path": "src/main.rs"},
+            binaries[0] == {"name": "trnm-server", "path": "src/main.rs"},
             "canonical package-local binary binding drift",
         )
 
@@ -174,7 +174,7 @@ def main() -> int:
         require(contract.get("schema") == "trillionnium.server-vertical-slice.v1", "wrong contract schema")
         require(contract.get("status") == "source-candidate", "contract status must fail closed")
         require(contract.get("crate") == "crates/trnm-server", "contract crate drift")
-        require(contract.get("binary") == "trnm-server-composition-candidate", "contract binary drift")
+        require(contract.get("binary") == "trnm-server", "contract binary drift")
         claims = contract.get("claims")
         require(isinstance(claims, dict), "contract claims object required")
         require(claims.get("rust_binary_exists") is True, "binary source-presence claim missing")

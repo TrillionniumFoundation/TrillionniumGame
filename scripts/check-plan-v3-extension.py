@@ -25,7 +25,7 @@ REQUIRED_FILES = [
     ".github/CODEOWNERS",
     ".github/workflows/trillionnium-game-merge-gate.yml",
     "crates/trnm-server/Cargo.toml",
-    "crates/trnm-server/Cargo.lock",
+    "Cargo.lock",
     "crates/trnm-server/src/lib.rs",
     "crates/trnm-server/src/main.rs",
     "database/schema/v2/STATUS.json",

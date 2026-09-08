@@ -2,7 +2,7 @@
 
 Status: **module documentation; feasibility-candidate; no automatic compatibility or production credit**  
 Path: `crates/trnm-query-core`  
-Workspace class: `root`  
+Workspace class: `root`
 Lifecycle: `product-library`  
 Owner role: `matchmaker-query`
 

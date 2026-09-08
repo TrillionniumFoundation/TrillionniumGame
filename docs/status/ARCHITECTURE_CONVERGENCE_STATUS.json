@@ -1,0 +1,34 @@
+{
+  "schema": "trillionnium.architecture-convergence-status.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "identity_rule": "Exact commit, tree, workflow, artifact and prospective-merge identity are supplied by retained execution evidence; this source file does not guess its own final commit.",
+  "repository_controlled_source": {
+    "one_default_server_authority": true,
+    "long_lived_rust_workspace_converged": true,
+    "private_crypto_primitives_absent_from_active_and_compatibility_implementations": true,
+    "temporary_one_shot_workflows_absent": true,
+    "temporary_isolated_jwt_gate_count": 2
+  },
+  "external_and_product_facts": {
+    "exact_head_workflow_collection_accepted": false,
+    "prospective_merge_packet_accepted": false,
+    "conflict_free_specialist_review_accepted": false,
+    "administrative_no_bypass_packet_accepted": false,
+    "all_denominator_family_locks_accepted": false,
+    "global_sg1_acceptance": false,
+    "complete_nakama_surface_implemented": false,
+    "production_kms_hsm_accepted": false,
+    "multi_node_ha_pitr_endurance_accepted": false,
+    "shadow_canary_cutover_retirement_accepted": false
+  },
+  "claims": {
+    "source_convergence_candidate": true,
+    "accepted_evidence": false,
+    "all_gaps_closed": false,
+    "production_ready": false,
+    "public_online": false,
+    "cutover_authorized": false,
+    "nakama_retired": false
+  }
+}

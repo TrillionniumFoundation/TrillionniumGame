@@ -1,5 +1,6 @@
 [package]
 name = "trnm-persistence-pg"
+autobins = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
+diagnostic-compat-server = []
 session-test-hooks = []
 
 [dependencies]
@@ -34,6 +36,27 @@ prost-types = "=0.14.3"
 protoc-bin-vendored = "=3.2.0"
 tonic-build = "=0.14.5"
 tonic-prost-build = "=0.14.5"
+
+[[bin]]
+name = "trnm-outbox-worker"
+path = "src/bin/trnm-outbox-worker.rs"
+
+[[bin]]
+name = "trnm-pg-command"
+path = "src/bin/trnm-pg-command.rs"
+
+[[bin]]
+name = "trnm-pg-retry"
+path = "src/bin/trnm-pg-retry.rs"
+
+[[bin]]
+name = "trnm-pg-tls-rotation-probe"
+path = "src/bin/trnm-pg-tls-rotation-probe.rs"
+
+[[bin]]
+name = "trnm-pg-compat-server"
+path = "src/bin/trnm-server.rs"
+required-features = ["diagnostic-compat-server"]
 
 [lints]
 workspace = true

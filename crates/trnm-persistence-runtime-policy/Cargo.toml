@@ -1,11 +1,11 @@
 [package]
 name = "trnm-persistence-runtime-policy"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.85"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Bounded database pool, TLS, deadline and retry policy for TrillionniumGame"
-publish = false
+publish.workspace = true
 
 [dependencies]
 trnm-contracts = { path = "../trnm-contracts" }
@@ -13,4 +13,5 @@ trnm-contracts = { path = "../trnm-contracts" }
 [lib]
 path = "src/lib.rs"
 
-[workspace]
+[lints]
+workspace = true

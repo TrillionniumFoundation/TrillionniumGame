@@ -39,10 +39,7 @@ class CryptoPathAuthorityTest(unittest.TestCase):
 
     def test_registry_is_authoritative_but_does_not_grant_security_credit(self) -> None:
         self.assertEqual(self.authority["schema"], "trillionnium.crypto-path-authority.v1")
-        self.assertIn(
-            "docs/development/CRYPTO_PATH_AUTHORITY.json",
-            self.documentation_authority["machine_control_documents"],
-        )
+        self.assertIn("docs/development/CRYPTO_PATH_AUTHORITY.json", self.documentation_authority["machine_control_documents"])
         summary = self.authority["summary"]
         self.assertEqual(summary["classified_paths"], len(self.paths))
         self.assertTrue(summary["active_access_opaque_provider_composed"])
@@ -50,9 +47,9 @@ class CryptoPathAuthorityTest(unittest.TestCase):
         self.assertFalse(summary["active_access_auth_private_primitive_reachable"])
         self.assertFalse(summary["active_admin_auth_private_primitive_reachable"])
         self.assertFalse(summary["active_outbox_digest_private_primitive_reachable"])
+        self.assertTrue(summary["private_compatibility_implementation_removed"])
         self.assertFalse(summary["all_production_crypto_paths_classified_and_accepted"])
         self.assertFalse(summary["production_key_provider_accepted"])
-        self.assertFalse(summary["private_compatibility_implementation_removed"])
         self.assertFalse(summary["gap_closed"])
         self.assertFalse(summary["production_ready"])
 
@@ -61,28 +58,21 @@ class CryptoPathAuthorityTest(unittest.TestCase):
         self.assertTrue(row["opaque_provider_composed"])
         self.assertFalse(row["private_primitive_reachable"])
         self.assertEqual(row["provider_contract"], "CONTRACT-HS256-OPAQUE-PROVIDER")
-        self.assertEqual(row["primitive_provider"], "PROVIDER-OPENSSL-SOFTWARE-CRYPTO")
+        self.assertEqual(row["primitive_provider"], "CONTRACT-HS256-OPAQUE-PROVIDER")
         production = ACCESS_AUTH.read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
         manifest = PERSISTENCE_MANIFEST.read_text(encoding="utf-8")
         for required in (
             "Arc<dyn Hs256Provider>",
-            "Arc<dyn KeyResolver>",
+            "impl KeyResolver for FixedAccessKeyResolver",
             "AuthenticationProfile",
             "authenticate(",
             "from_provider(",
-            "impl Hs256Provider for OpenSslHs256Provider",
-            "PKey::hmac",
-            "memcmp::eq",
+            "SoftwareHs256Provider",
         ):
             self.assertIn(required, production)
         self.assertIn("trnm-token-crypto-provider", manifest)
         self.assertIn("trnm-token-jwt-provider-adapter", manifest)
-        for forbidden in (
-            "KeyRing",
-            "SecretKey",
-            "trnm_token_jwt_adapter::sha256_digest",
-            "constant_time_eq",
-        ):
+        for forbidden in ("PKey::hmac", "Signer::new", "KeyRing", "SecretKey", "constant_time_eq"):
             self.assertNotIn(forbidden, production)
 
     def test_administrator_token_comparison_uses_openssl(self) -> None:
@@ -110,11 +100,11 @@ class CryptoPathAuthorityTest(unittest.TestCase):
         self.assertIn("GAP-P0-CRYPTO-001", row["gap_links"])
         self.assertIn("GAP-P1-OUTBOX-001", row["gap_links"])
 
-    def test_reference_adapter_cannot_be_misclassified_as_production_provider(self) -> None:
+    def test_reference_adapter_uses_reviewed_libraries_but_is_not_production(self) -> None:
         row = self.paths["CRYPTO-PATH-COMPATIBILITY-REFERENCE"]
-        self.assertTrue(row["private_primitive_reachable"])
+        self.assertFalse(row["private_primitive_reachable"])
         self.assertIn("non-production", row["classification"])
-        self.assertIsNone(row["primitive_provider"])
+        self.assertEqual(row["primitive_provider"], "PROVIDER-RUSTCRYPTO-JWT")
         self.assertFalse(row["claim_credit"])
 
     def test_every_classified_path_resolves_and_has_gap_links(self) -> None:

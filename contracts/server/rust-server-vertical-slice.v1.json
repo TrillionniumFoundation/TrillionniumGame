@@ -4,7 +4,7 @@
   "contract_version": 2,
   "status": "source-candidate",
   "crate": "crates/trnm-server",
-  "binary": "trnm-server-composition-candidate",
+  "binary": "trnm-server",
   "runtime_profile": "isolated-postgresql-grpc-realtime-composition-source",
   "configuration": {
     "environment": [

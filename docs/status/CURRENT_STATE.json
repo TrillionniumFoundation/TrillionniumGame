@@ -40,7 +40,7 @@
     "current_proven_runnable_path": "official Nakama v3.40.0 plus first-party Go plugin under runtime/",
     "target_runnable_path": "first-party Rust trnm-server without Go server, Go sidecar or compiled Go plugin loader",
     "rust_server_binary_present": true,
-    "rust_server_binary_authority": "crates/trnm-persistence-pg/Cargo.toml::trnm-server",
+    "rust_server_binary_authority": "crates/trnm-server/Cargo.toml::trnm-server",
     "rust_server_stage": "http-grpc-websocket-session-database-source-candidate",
     "rust_server_remote_verified": false,
     "source_and_prospective_packets_observed": true,

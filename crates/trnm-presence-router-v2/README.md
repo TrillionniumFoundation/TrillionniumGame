@@ -2,7 +2,7 @@
 
 Status: **module documentation; integration-candidate; no automatic compatibility or production credit**  
 Path: `crates/trnm-presence-router-v2`  
-Workspace class: `isolated`  
+Workspace class: `root`
 Lifecycle: `realtime-integration-candidate`  
 Owner role: `realtime-distributed-systems`
 

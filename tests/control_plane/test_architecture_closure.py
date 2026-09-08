@@ -79,14 +79,24 @@ class ArchitectureClosureTest(unittest.TestCase):
 
     def test_active_server_auth_uses_reviewed_crypto_boundary(self) -> None:
         production = AUTH_SOURCE.read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
-        self.assertIn("PKey::hmac", production)
-        self.assertIn("Signer::new(MessageDigest::sha256()", production)
-        self.assertIn("memcmp::eq", production)
-        self.assertIn("hash(MessageDigest::sha256()", production)
-        self.assertIn("fn sha256_digest", production)
-        self.assertNotIn("KeyRing", production)
-        self.assertNotIn("trnm_token_jwt_adapter::sha256_digest", production)
-        self.assertNotIn("constant_time_eq", production)
+        for required in (
+            "Arc<dyn Hs256Provider>",
+            "impl KeyResolver for FixedAccessKeyResolver",
+            "AuthenticationProfile",
+            "authenticate(",
+            "from_provider(",
+            "SoftwareHs256Provider",
+            "hash(MessageDigest::sha256()",
+        ):
+            self.assertIn(required, production)
+        for forbidden in (
+            "PKey::hmac",
+            "Signer::new",
+            "KeyRing",
+            "trnm_token_jwt_adapter::sha256_digest",
+            "constant_time_eq",
+        ):
+            self.assertNotIn(forbidden, production)
 
     def test_external_facts_cannot_be_auto_closed(self) -> None:
         blockers = self.plan["external_blockers"]

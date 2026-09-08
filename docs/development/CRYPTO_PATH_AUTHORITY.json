@@ -23,6 +23,34 @@
       "profile": "source-candidate-software-provider",
       "production_approval": false,
       "independent_security_acceptance": false
+    },
+    {
+      "id": "PROVIDER-RUSTCRYPTO-JWT",
+      "packages": [
+        {
+          "name": "hmac",
+          "version": "0.13.0"
+        },
+        {
+          "name": "sha2",
+          "version": "0.11.0"
+        },
+        {
+          "name": "subtle",
+          "version": "2.6.1"
+        }
+      ],
+      "operations": [
+        "SHA-256 digest",
+        "HMAC-SHA256 issue and verification",
+        "constant-time equal-length byte comparison"
+      ],
+      "source_paths": [
+        "crates/trnm-token-jwt-adapter/src/sha256.rs"
+      ],
+      "profile": "reviewed-library-source-candidate",
+      "production_approval": false,
+      "independent_security_acceptance": false
     }
   ],
   "provider_contracts": [
@@ -47,18 +75,19 @@
         "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
         "crates/trnm-server/src/main.rs"
       ],
-      "implementation": "crates/trnm-persistence-pg/src/auth.rs composes AuthenticationProfile, KeyResolver and Hs256Provider through trnm-token-jwt-provider-adapter before parsing claims",
+      "implementation": "trnm-token-jwt-provider-adapter composes AuthenticationProfile, KeyResolver and Hs256Provider before claims parsing",
       "provider_contract": "CONTRACT-HS256-OPAQUE-PROVIDER",
-      "primitive_provider": "PROVIDER-OPENSSL-SOFTWARE-CRYPTO",
+      "primitive_provider": "CONTRACT-HS256-OPAQUE-PROVIDER",
       "opaque_provider_composed": true,
       "private_primitive_reachable": false,
-      "required_remediation": "Replace the software in-memory provider with an accepted production key provider and retain rotation, revoke, timeout, cancellation and audit evidence.",
+      "required_remediation": "Replace the development software provider with an accepted KMS or HSM provider and retain rotation, revoke, timeout, cancellation and audit evidence.",
       "gap_links": [
         "GAP-P0-CRYPTO-001",
         "GAP-P1-CRYPTO-002",
         "GAP-P0-SERVER-001"
       ],
-      "claim_credit": false
+      "claim_credit": false,
+      "required_acceptance": "Production KMS/HSM profile, rotation, revoke, deadlines, audit and independent cryptographic review remain required."
     },
     {
       "id": "CRYPTO-PATH-ACTIVE-ADMIN-AUTH",
@@ -87,31 +116,33 @@
       "implementation": "OpenSSL SHA-256 and constant-time comparison over byte-stable spool and retry material",
       "primitive_provider": "PROVIDER-OPENSSL-SOFTWARE-CRYPTO",
       "private_primitive_reachable": false,
-      "required_remediation": "Retain byte-stable old/new receipt and retry-jitter regression evidence, then obtain independent data-integrity and security acceptance.",
       "gap_links": [
         "GAP-P0-CRYPTO-001",
         "GAP-P1-OUTBOX-001"
       ],
-      "claim_credit": false
+      "claim_credit": false,
+      "required_acceptance": "Byte-stability, fault, data-integrity and security evidence remain independently accepted facts.",
+      "required_remediation": "Retain byte-stable receipt and retry-jitter fault evidence, then obtain independent data-integrity and security acceptance."
     },
     {
       "id": "CRYPTO-PATH-COMPATIBILITY-REFERENCE",
-      "classification": "non-production-compatibility-reference-pending-quarantine",
+      "classification": "non-production-compatibility-adapter-reviewed-library-source-candidate",
       "entrypoints": [
         "crates/trnm-token-jwt-adapter",
         "crates/trnm-token-jwt-adapter-gate",
         "crates/trnm-token-jwt-adapter-gate-v2"
       ],
-      "implementation": "private SHA-256, HMAC-SHA256, base64url, JSON and equality implementation retained for differential migration",
-      "primitive_provider": null,
-      "private_primitive_reachable": true,
-      "required_remediation": "Run old/new/Nakama three-way differential, disable all production features and then remove or retain only a non-shipping fixture with explicit expiry.",
+      "implementation": "strict JWT adapter backed by RustCrypto hmac and sha2 plus subtle constant-time comparison",
+      "primitive_provider": "PROVIDER-RUSTCRYPTO-JWT",
+      "private_primitive_reachable": false,
       "gap_links": [
         "GAP-P0-CRYPTO-001",
         "GAP-P1-CRYPTO-002",
         "GAP-P1-REVIEW-001"
       ],
-      "claim_credit": false
+      "claim_credit": false,
+      "required_acceptance": "Three-way Nakama differential, malformed-token/fuzz corpus, provenance and independent cryptographic review remain required.",
+      "required_remediation": "Retain three-way Nakama differential, malformed-token and fuzz evidence plus independent cryptographic acceptance."
     }
   ],
   "production_requirements": [
@@ -140,8 +171,14 @@
     "classified_active_paths_use_reviewed_primitives": true,
     "all_production_crypto_paths_classified_and_accepted": false,
     "production_key_provider_accepted": false,
-    "private_compatibility_implementation_removed": false,
+    "private_compatibility_implementation_removed": true,
     "gap_closed": false,
-    "production_ready": false
+    "production_ready": false,
+    "all_active_crypto_paths_reviewed_provider_backed": true
+  },
+  "key_contracts": {
+    "hs256_minimum_actual_key_bytes": 32,
+    "encoded_length_may_substitute": false,
+    "padding_hashing_or_truncation_may_substitute": false
   }
 }

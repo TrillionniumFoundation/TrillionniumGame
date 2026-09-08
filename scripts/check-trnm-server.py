@@ -245,10 +245,14 @@ def main() -> int:
         "crates/trnm-persistence-pg/src/auth.rs": (
             "pub struct AccessTokenVerifier",
             "allow_legacy_without_key_id: false",
-            "max_lifetime_seconds: Some(15 * 60)",
+            "MAX_ACCESS_TOKEN_LIFETIME_SECONDS",
+            "if lifetime > MAX_ACCESS_TOKEN_LIFETIME_SECONDS",
             "claim_string(claims, \"sid\")",
             "claim_unsigned(claims, \"sgn\")",
             "sha256_digest(value.as_bytes())",
+            "trnm_token_jwt_provider_adapter",
+            "authenticate(",
+            "from_provider(",
             "\"session_authentication_failed\"",
         ),
         "crates/trnm-persistence-pg/src/bin/trnm_server/mod.rs": (
@@ -416,9 +420,9 @@ def main() -> int:
     server = authority.get("server_binary_authority", {})
     if server.get("name") != "trnm-server":
         fail("Rust package authority does not name trnm-server")
-    if server.get("manifest") != "crates/trnm-persistence-pg/Cargo.toml":
+    if server.get("manifest") != "crates/trnm-server/Cargo.toml":
         fail("Rust package authority points to another server manifest")
-    if server.get("source") != "crates/trnm-persistence-pg/src/bin/trnm-server.rs":
+    if server.get("source") != "crates/trnm-server/src/main.rs":
         fail("Rust package authority points to another server source")
 
     status = json.loads(

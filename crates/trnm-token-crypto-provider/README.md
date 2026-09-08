@@ -2,7 +2,7 @@
 
 Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
 Path: `crates/trnm-token-crypto-provider`  
-Workspace class: `isolated`  
+Workspace class: `root`
 Lifecycle: `security-critical-crypto-provider`  
 Owner role: `security`
 
