@@ -7,7 +7,9 @@
 //! registry composes them with a monotonic session-generation revocation
 //! high-water. Connection actors, authenticated replay cursors and reconciled
 //! disconnect effects are independently bounded and fail closed across
-//! response loss, reconnect, drain and stale-generation attempts.
+//! response loss, reconnect, drain and stale-generation attempts. Disconnect
+//! admission also reserves a checked epoch-wide verifier-receipt budget, so
+//! retries cannot multiply retained evidence beyond the configured hard cap.
 
 mod connection_actor;
 mod disconnect_journal;
