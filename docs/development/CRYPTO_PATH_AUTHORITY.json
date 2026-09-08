@@ -13,11 +13,12 @@
         "HMAC-SHA256 verification for the current database-backed access-token path",
         "SHA-256 digest for the current refresh-token credential path",
         "SHA-256 durable spool receipt, failure-reason and deterministic retry-jitter material",
-        "constant-time fixed-length authenticator and durable spool comparison"
+        "constant-time fixed-length access, administrator and durable spool comparison"
       ],
       "source_paths": [
         "crates/trnm-persistence-pg/src/auth.rs",
-        "crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs"
+        "crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs",
+        "crates/trnm-persistence-pg/src/bin/trnm_server/app.rs"
       ],
       "profile": "source-candidate-software-provider",
       "production_approval": false,
@@ -50,6 +51,24 @@
         "GAP-P0-CRYPTO-001",
         "GAP-P1-CRYPTO-002",
         "GAP-P0-SERVER-001"
+      ],
+      "claim_credit": false
+    },
+    {
+      "id": "CRYPTO-PATH-ACTIVE-ADMIN-AUTH",
+      "classification": "active-administrator-bearer-comparison-source-candidate",
+      "entrypoints": [
+        "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
+        "crates/trnm-server/src/main.rs"
+      ],
+      "implementation": "crates/trnm-persistence-pg/src/bin/trnm_server/app.rs",
+      "primitive_provider": "PROVIDER-OPENSSL-SOFTWARE-CRYPTO",
+      "private_primitive_reachable": false,
+      "required_remediation": "Replace the static administrator bearer token with an accepted operator identity and authorization profile before production approval.",
+      "gap_links": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P0-SERVER-001",
+        "GAP-P1-REVIEW-001"
       ],
       "claim_credit": false
     },
@@ -100,14 +119,16 @@
   ],
   "exit_criteria": [
     "CRYPTO-PATH-ACTIVE-ACCESS-AUTH is composed through the opaque provider contract.",
+    "CRYPTO-PATH-ACTIVE-ADMIN-AUTH uses an accepted operator identity and authorization profile.",
     "CRYPTO-PATH-ACTIVE-OUTBOX-DIGEST has byte-stable old/new regression evidence and independent acceptance.",
     "The compatibility reference is non-shipping or removed after accepted three-way differential evidence.",
     "Production KMS, HSM or approved secret-manager profiles pass rotation, revoke, permission, timeout, cancellation and audit tests.",
     "Independent cryptography and application-security reviewers accept the exact source, dependency and evidence objects."
   ],
   "summary": {
-    "classified_paths": 3,
+    "classified_paths": 4,
     "active_access_auth_private_primitive_reachable": false,
+    "active_admin_auth_private_primitive_reachable": false,
     "active_outbox_digest_private_primitive_reachable": false,
     "classified_active_paths_use_reviewed_primitives": true,
     "all_production_crypto_paths_classified_and_accepted": false,
