@@ -57,6 +57,7 @@
   "machine_control_documents": [
     "docs/development/COMPATIBILITY_DIVERGENCES.json",
     "docs/development/COMPATIBILITY_PROFILES.json",
+    "docs/development/CRYPTO_PATH_AUTHORITY.json",
     "docs/development/DENOMINATOR_CLASSIFICATION_RULES.json",
     "docs/development/EXECUTION_BACKLOG.json",
     "docs/development/PARITY_DENOMINATORS.json",
