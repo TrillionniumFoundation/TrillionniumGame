@@ -73,6 +73,7 @@ jobs:
           python3 "$GITHUB_WORKSPACE/provider/tools/compose_crypto_provider.py" "$GITHUB_WORKSPACE/target"
           python3 "$GITHUB_WORKSPACE/controller/tools/finalize_plan_v32_contracts.py" "$GITHUB_WORKSPACE/target"
           git -C "$GITHUB_WORKSPACE/target" diff --check
+          git -C "$GITHUB_WORKSPACE/target" add -A
 
       - name: Resolve exact Rust dependency graph
         working-directory: target
