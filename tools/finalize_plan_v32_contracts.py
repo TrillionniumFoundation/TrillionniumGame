@@ -74,7 +74,11 @@ def crypto(root: Path)->None:
 def server_checkers(root: Path)->None:
     p=root/"scripts/check-trnm-server.py"; s=rd(p)
     s=s.replace('            "max_lifetime_seconds: Some(15 * 60)",','            "MAX_ACCESS_TOKEN_LIFETIME_SECONDS",\n            "if lifetime > MAX_ACCESS_TOKEN_LIFETIME_SECONDS",')
-    s=s.replace('            "sha256_digest(value.as_bytes())",','            "sha256_digest(value.as_bytes())",\n            "trnm_token_jwt_provider_adapter",\n            "authenticate(",\n            "from_provider(",')
+    provider_anchor='            "sha256_digest(value.as_bytes())",'
+    provider_block=provider_anchor+'\n            "trnm_token_jwt_provider_adapter",\n            "authenticate(",\n            "from_provider(",'
+    if provider_block not in s:
+        req(provider_anchor in s,"server checker provider anchor")
+        s=s.replace(provider_anchor,provider_block,1)
     s=s.replace('server.get("manifest") != "crates/trnm-persistence-pg/Cargo.toml"','server.get("manifest") != "crates/trnm-server/Cargo.toml"').replace('server.get("source") != "crates/trnm-persistence-pg/src/bin/trnm-server.rs"','server.get("source") != "crates/trnm-server/src/main.rs"'); wr(p,s)
     p=root/"scripts/check-rust-server-source-candidate.py"; s=rd(p).replace('lock_path = CRATE / "Cargo.lock"','lock_path = ROOT / "Cargo.lock"').replace('package.get("publish") is False','package.get("publish", {}).get("workspace") is True').replace('package.get("rust-version") == "1.85.1"','package.get("rust-version", {}).get("workspace") is True').replace('manifest.get("workspace") == {}','"workspace" not in manifest').replace('"server must remain an isolated workspace"','"server must remain a root-workspace member"'); wr(p,s)
     p=root/"scripts/check-rust-server-vertical-slice.py"; s=rd(p).replace('lock = read(CRATE / "Cargo.lock")','lock = read(ROOT / "Cargo.lock")').replace('require("[workspace]" in manifest, "isolated workspace boundary missing")','require("[workspace]" not in manifest, "nested server workspace returned")'); wr(p,s)
