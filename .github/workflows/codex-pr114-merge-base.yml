@@ -1,0 +1,93 @@
+name: codex-pr114-merge-base
+
+on:
+  push:
+    branches:
+      - codex/server-composition-root-v2-2026-09-06
+
+permissions:
+  contents: write
+
+jobs:
+  merge-current-base:
+    if: github.repository == 'TrillionniumFoundation/TrillionniumGame'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      TARGET_BRANCH: codex/server-composition-root-v2-2026-09-06
+      BASE_SHA: 88c02a417c7b0c64f27dc9f49e0b5e6317150964
+      CONFLICT_PATH: docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json
+    steps:
+      - name: Fetch exact head and exact base
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git -C "$GITHUB_WORKSPACE" -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic" \
+            fetch --no-tags origin "$GITHUB_SHA" "$BASE_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$TARGET_BRANCH" "$GITHUB_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE" cat-file -t "$BASE_SHA")" = commit
+
+      - name: Merge base and resolve the exact three-way overlay conflict
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "ProfHepta"
+          git config user.email "102159240+ProfHepta@users.noreply.github.com"
+          set +e
+          git merge --no-commit --no-ff "$BASE_SHA"
+          merge_status=$?
+          set -e
+          test "$merge_status" -eq 1
+          test "$(git rev-parse MERGE_HEAD)" = "$BASE_SHA"
+          mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+          test "${#conflicts[@]}" -eq 1
+          test "${conflicts[0]}" = "$CONFLICT_PATH"
+          python3 scripts/codex-pr114-merge-base-overlay.py
+          git add "$CONFLICT_PATH"
+          test -z "$(git diff --name-only --diff-filter=U)"
+
+      - name: Materialize the final merge tree without repair-only tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f scripts/codex-pr114-merge-base-overlay.py
+          rm -f scripts/codex-pr114-merge-base-trigger.txt
+          rm -f .github/workflows/codex-pr114-merge-base.yml
+          git add -A
+          test -f .git/MERGE_HEAD
+          test "$(cat .git/MERGE_HEAD)" = "$BASE_SHA"
+
+      - name: Validate the final staged merge tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 scripts/check-plan.py
+          python3 scripts/check-rust-server-slice.py
+          python3 scripts/check-rust-server-source-candidate.py
+          python3 scripts/check-rust-server-vertical-slice.py
+          git diff --cached --check
+
+      - name: Publish the non-force merge commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          original_head="$GITHUB_SHA"
+          git commit -m "merge(server): absorb current Plan v3.1 base"
+          merged_head="$(git rev-parse HEAD)"
+          mapfile -t parents < <(git show -s --format=%P "$merged_head" | tr ' ' '\n')
+          test "${#parents[@]}" -eq 2
+          test "${parents[0]}" = "$original_head"
+          test "${parents[1]}" = "$BASE_SHA"
+          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic" \
+            push origin "HEAD:refs/heads/$TARGET_BRANCH"
