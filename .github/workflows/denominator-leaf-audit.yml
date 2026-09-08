@@ -1,0 +1,273 @@
+name: denominator-leaf-audit
+
+on:
+  push:
+    branches:
+      - codex/denominator-leaf-audit-2026-09-08
+    paths:
+      - .github/workflows/denominator-leaf-audit.yml
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
+      TARGET_PR: '116'
+    steps:
+      - name: Fetch stable exact candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          previous=''; stable=0; deadline=$((SECONDS+1800))
+          while (( SECONDS < deadline )); do
+            head=$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "${api}/git/ref/heads/${TARGET_BRANCH//\//%2F}" | jq -r '.object.sha')
+            if [[ "$head" == "$previous" ]]; then stable=$((stable+1)); else previous="$head"; stable=0; fi
+            if (( stable >= 3 )); then printf '%s\n' "$head" > "$RUNNER_TEMP/head.txt"; break; fi
+            sleep 20
+          done
+          test -s "$RUNNER_TEMP/head.txt"
+          head=$(cat "$RUNNER_TEMP/head.txt")
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$head"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$head"
+
+      - name: Audit every denominator leaf without changing classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          HEAD_SHA=$(cat "$RUNNER_TEMP/head.txt") TREE_SHA=$(git rev-parse HEAD^{tree}) python3 - <<'PY'
+          from __future__ import annotations
+
+          import csv
+          import gzip
+          import hashlib
+          import json
+          import os
+          import re
+          from collections import Counter, defaultdict
+          from pathlib import Path
+          from typing import Any
+
+          root=Path('.')
+          out=Path(os.environ['RUNNER_TEMP'],'denominator-audit')
+          out.mkdir(parents=True,exist_ok=True)
+          head=os.environ['HEAD_SHA']; tree=os.environ['TREE_SHA']
+
+          json_files=sorted(Path('manifests/upstream').rglob('*.json'))
+          json_files += sorted(Path('docs/development').glob('*DENOMINATOR*.json'))
+          json_files += [Path('docs/development/PARITY_DENOMINATORS.json')]
+          json_files=sorted({p for p in json_files if p.is_file()})
+
+          id_keys=('leaf_id','id','key','symbol','route_id','case_id','operation_id','surface_id')
+          owner_keys=('owner','owner_role','team','responsible_role')
+          task_keys=('task','task_id','task_ref','implementation_task')
+          test_keys=('test','test_id','test_ref','tests','test_mapping')
+          profile_keys=('profile','profiles','compatibility_profile','database_profile','runtime_profile')
+          class_keys=('classification','class','disposition','parity_class','status')
+          evidence_keys=('evidence','evidence_ids','evidence_mapping','required_evidence')
+          unclassified_values={'','unclassified','unknown','pending','tbd','todo','unset','needs-decision','open'}
+
+          def load(path:Path)->Any:
+              raw=path.read_bytes()
+              if path.suffix=='.gz': raw=gzip.decompress(raw)
+              return json.loads(raw)
+
+          def first(row:dict[str,Any],keys):
+              for key in keys:
+                  if key in row: return row[key]
+              return None
+
+          def scalar_id(value:Any)->str|None:
+              if isinstance(value,(str,int)) and str(value).strip(): return str(value).strip()
+              return None
+
+          leaves=[]
+          parse_errors=[]
+          family_counts=Counter()
+          for path in json_files:
+              try: value=load(path)
+              except Exception as exc:
+                  parse_errors.append({'file':path.as_posix(),'error':type(exc).__name__}); continue
+              family=path.stem
+              def walk(node:Any,pointer:str='$'):
+                  if isinstance(node,dict):
+                      identifier=None
+                      for key in id_keys:
+                          identifier=scalar_id(node.get(key))
+                          if identifier: break
+                      # Treat a dictionary as a leaf only when it has an identity
+                      # plus at least one parity-control field or no nested container.
+                      nested=any(isinstance(v,(dict,list)) for v in node.values())
+                      control=any(key in node for key in owner_keys+task_keys+test_keys+profile_keys+class_keys+evidence_keys)
+                      if identifier and (control or not nested):
+                          owner=first(node,owner_keys); task=first(node,task_keys)
+                          test=first(node,test_keys); profile=first(node,profile_keys)
+                          classification=first(node,class_keys); evidence=first(node,evidence_keys)
+                          leaves.append({
+                              'family':family,'source_file':path.as_posix(),'pointer':pointer,
+                              'leaf_id':identifier,'owner':owner,'task':task,'test':test,
+                              'profile':profile,'classification':classification,'evidence':evidence,
+                          })
+                          family_counts[family]+=1
+                      for key,item in node.items(): walk(item,f'{pointer}/{key}')
+                  elif isinstance(node,list):
+                      for index,item in enumerate(node): walk(item,f'{pointer}/{index}')
+              walk(value)
+
+          # Stable de-duplication by exact source pointer; duplicate semantic IDs
+          # are reported, not silently collapsed.
+          ids=Counter(row['leaf_id'] for row in leaves)
+          def missing(value:Any)->bool:
+              if value is None: return True
+              if isinstance(value,str): return not value.strip()
+              if isinstance(value,(list,dict)): return len(value)==0
+              return False
+          def unclassified(value:Any)->bool:
+              if missing(value): return True
+              if isinstance(value,str): return value.strip().lower() in unclassified_values
+              return False
+
+          for row in leaves:
+              row['missing_owner']=missing(row['owner'])
+              row['missing_task']=missing(row['task'])
+              row['missing_test']=missing(row['test'])
+              row['missing_profile']=missing(row['profile'])
+              row['unclassified']=unclassified(row['classification'])
+              row['missing_evidence_mapping']=missing(row['evidence'])
+              row['duplicate_leaf_id']=ids[row['leaf_id']]>1
+
+          fieldnames=[
+              'family','source_file','pointer','leaf_id','owner','task','test','profile',
+              'classification','evidence','missing_owner','missing_task','missing_test',
+              'missing_profile','unclassified','missing_evidence_mapping','duplicate_leaf_id'
+          ]
+          with (out/'leaves.csv').open('w',encoding='utf-8',newline='') as handle:
+              writer=csv.DictWriter(handle,fieldnames=fieldnames); writer.writeheader()
+              for row in sorted(leaves,key=lambda r:(r['family'],r['leaf_id'],r['source_file'],r['pointer'])):
+                  encoded={k:(json.dumps(row[k],sort_keys=True) if isinstance(row[k],(dict,list)) else row[k]) for k in fieldnames}
+                  writer.writerow(encoded)
+
+          families=[]
+          for family,count in sorted(family_counts.items()):
+              rows=[r for r in leaves if r['family']==family]
+              summary={
+                  'family':family,'leaf_occurrences':count,
+                  'unique_leaf_ids':len({r['leaf_id'] for r in rows}),
+                  'missing_owner':sum(r['missing_owner'] for r in rows),
+                  'missing_task':sum(r['missing_task'] for r in rows),
+                  'missing_test':sum(r['missing_test'] for r in rows),
+                  'missing_profile':sum(r['missing_profile'] for r in rows),
+                  'unclassified':sum(r['unclassified'] for r in rows),
+                  'missing_evidence_mapping':sum(r['missing_evidence_mapping'] for r in rows),
+                  'duplicate_id_occurrences':sum(r['duplicate_leaf_id'] for r in rows),
+              }
+              families.append(summary)
+              packet={
+                  'schema':'trillionnium.denominator-family-decision-request.v1',
+                  'candidate':{'head':head,'tree':tree},
+                  'family':family,'summary':summary,
+                  'decision_required':True,
+                  'required_reviewer_fields':[
+                      'stable_identity','qualification_evidence','conflict_declaration',
+                      'reproduction_commands','source_digest','denominator_delta_decision',
+                      'leaf_classification_decision','limitations','expiry','verdict'
+                  ],
+                  'claims':{'reviewed':False,'accepted':False,'family_locked':False,'sg1_credit':False},
+              }
+              (out/f'{family}.decision-request.json').write_text(json.dumps(packet,indent=2,sort_keys=True)+'\n')
+
+          global_request={
+              'schema':'trillionnium.sg1-global-decision-request.v1',
+              'candidate':{'head':head,'tree':tree},
+              'source_files':[p.as_posix() for p in json_files],
+              'parse_errors':parse_errors,'family_summaries':families,
+              'totals':{
+                  'leaf_occurrences':len(leaves),
+                  'unique_leaf_ids':len(ids),
+                  'families_detected':len(families),
+                  'missing_owner':sum(r['missing_owner'] for r in leaves),
+                  'missing_task':sum(r['missing_task'] for r in leaves),
+                  'missing_test':sum(r['missing_test'] for r in leaves),
+                  'missing_profile':sum(r['missing_profile'] for r in leaves),
+                  'unclassified':sum(r['unclassified'] for r in leaves),
+                  'missing_evidence_mapping':sum(r['missing_evidence_mapping'] for r in leaves),
+                  'duplicate_id_occurrences':sum(r['duplicate_leaf_id'] for r in leaves),
+              },
+              'separate_global_reviewer_required':True,
+              'claims':{
+                  'audit_generated':True,'source_modified':False,'classification_auto_approved':False,
+                  'family_locks_accepted':False,'global_sg1_accepted':False,
+                  'gap_closed':False,'compatibility_credit':False,
+              },
+          }
+          (out/'global-decision-request.json').write_text(json.dumps(global_request,indent=2,sort_keys=True)+'\n')
+          files=[]
+          for path in sorted(out.iterdir()):
+              if path.is_file() and path.name!='SHA256SUMS':
+                  files.append(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}')
+          (out/'SHA256SUMS').write_text('\n'.join(files)+'\n')
+          PY
+          python3 -m json.tool "$RUNNER_TEMP/denominator-audit/global-decision-request.json" >/dev/null
+          cat "$RUNNER_TEMP/denominator-audit/global-decision-request.json"
+
+      - name: Seal and upload audit packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          head=$(cat "$RUNNER_TEMP/head.txt")
+          archive="$RUNNER_TEMP/denominator-leaf-audit.tar.gz"
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+            -cf - -C "$RUNNER_TEMP/denominator-audit" . | gzip -n > "$archive"
+          test -s "$archive"
+          python3 scripts/upload-actions-artifact.py \
+            "denominator-leaf-audit-${head}" "$archive" --mime-type application/gzip \
+            | tail -n 1 > "$RUNNER_TEMP/artifact-receipt.json"
+          sha256sum "$archive" > "$RUNNER_TEMP/archive.sha256"
+
+      - name: Publish exact audit result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          summary=$(jq -c '.totals' "$RUNNER_TEMP/denominator-audit/global-decision-request.json")
+          receipt=$(cat "$RUNNER_TEMP/artifact-receipt.json")
+          digest=$(cat "$RUNNER_TEMP/archive.sha256")
+          body=$(jq -n --arg summary "$summary" --arg receipt "$receipt" --arg digest "$digest" \
+            '{body:("## D0–D8 denominator leaf audit\n\nTotals:\n```json\n"+$summary+"\n```\n\nArtifact receipt:\n```json\n"+$receipt+"\n```\n\nOuter digest:\n```text\n"+$digest+"\n```\n\nThe audit changes no classification and grants no SG1 credit. It exposes every detectable missing mapping, unclassified value and duplicate identity, and includes family/global decision templates for conflict-free reviewers." )}')
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" \
+            -d "$body" >/dev/null
+
+      - name: Delete audit transport branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/delete"
+          git -C "$RUNNER_TEMP/delete" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$RUNNER_TEMP/delete" push origin --delete codex/denominator-leaf-audit-2026-09-08 >/dev/null 2>&1 || true
