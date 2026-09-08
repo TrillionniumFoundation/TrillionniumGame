@@ -66,7 +66,9 @@ def values():
         "workflow_permissions": {"default_workflow_permissions": "read", "can_approve_pull_request_reviews": False},
         "environments": {"total_count": 1, "environments": [{"name": "governance-audit"}]},
         "environment": {"name": "governance-audit", "prevent_self_review": True, "protection_rules": [
-            {"type": "required_reviewers", "reviewers": [{"type": "User", "reviewer": {"id": 99}}]}]},
+            {"type": "required_reviewers", "reviewers": [
+                {"type": "User", "reviewer": {"id": 99, "login": "independent-reviewer"}}
+            ]}]},
     }
 
 
@@ -246,6 +248,23 @@ class Tests(unittest.TestCase):
             with self.assertRaises(MODULE.ReadbackError):
                 MODULE.write(writer / "SHA256SUMS", manifest)
             writer.close()
+
+
+    def test_team_only_or_unstable_user_environment_reviewers_fail_closed(self):
+        for reviewers in (
+            [{"type": "Team", "reviewer": {"id": 77, "slug": "release-sre"}}],
+            [{"type": "User", "reviewer": {"login": "missing-id"}}],
+            [{"type": "User", "reviewer": {"id": 0, "login": "zero-id"}}],
+            [{"type": "User", "reviewer": {"id": 99, "login": "   "}}],
+        ):
+            with self.subTest(reviewers=reviewers), tempfile.TemporaryDirectory() as directory:
+                data = values()
+                data["environment"]["protection_rules"][0]["reviewers"] = reviewers
+                result = MODULE.capture(
+                    FakeApi(data), Path(directory) / "packet",
+                    "a" * 40, ["governance-audit"],
+                )
+                self.assertFalse(result["assertions"]["required_environments_have_reviewers"])
 
 
 if __name__ == "__main__": unittest.main()

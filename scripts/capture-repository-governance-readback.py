@@ -113,6 +113,24 @@ def has_next_page(headers: dict[str, str]) -> bool:
     return 'rel="next"' in headers.get("link", "").lower()
 
 
+def has_stable_human_environment_reviewer(rule: Any) -> bool:
+    if not isinstance(rule, dict) or rule.get("type") != "required_reviewers":
+        return False
+    reviewers = rule.get("reviewers")
+    if not isinstance(reviewers, list) or not reviewers:
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("type") == "User"
+        and isinstance(item.get("reviewer"), dict)
+        and isinstance(item["reviewer"].get("id"), int)
+        and item["reviewer"]["id"] > 0
+        and isinstance(item["reviewer"].get("login"), str)
+        and bool(item["reviewer"]["login"].strip())
+        for item in reviewers
+    )
+
+
 class PacketTarget:
     def __init__(self, writer: "PacketWriter", name: str):
         self.writer = writer
@@ -425,7 +443,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         and values[key].get("name") == name
         and values[key].get("prevent_self_review") is True
         and any(
-            isinstance(rule, dict) and rule.get("type") == "required_reviewers" and rule.get("reviewers")
+            has_stable_human_environment_reviewer(rule)
             for rule in values[key].get("protection_rules", [])
         )
         for name, key in environment_keys.items()
