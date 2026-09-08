@@ -6,16 +6,18 @@
   "claim_rule": "A reviewed primitive on one active path does not approve the complete token, key-lifecycle, durable-digest or production security boundary. Every production binary and cryptographic operation must be classified separately.",
   "approved_primitive_providers": [
     {
-      "id": "PROVIDER-OPENSSL-HMAC-SHA256",
+      "id": "PROVIDER-OPENSSL-SOFTWARE-CRYPTO",
       "package": "openssl",
       "version": "0.10.81",
       "operations": [
-        "HMAC-SHA256 verify for the current database-backed access-token path",
+        "HMAC-SHA256 verification for the current database-backed access-token path",
         "SHA-256 digest for the current refresh-token credential path",
-        "constant-time fixed-length authenticator comparison"
+        "SHA-256 durable spool receipt, failure-reason and deterministic retry-jitter material",
+        "constant-time fixed-length authenticator and durable spool comparison"
       ],
       "source_paths": [
-        "crates/trnm-persistence-pg/src/auth.rs"
+        "crates/trnm-persistence-pg/src/auth.rs",
+        "crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs"
       ],
       "profile": "source-candidate-software-provider",
       "production_approval": false,
@@ -42,7 +44,7 @@
         "crates/trnm-server/src/main.rs"
       ],
       "implementation": "crates/trnm-persistence-pg/src/auth.rs",
-      "primitive_provider": "PROVIDER-OPENSSL-HMAC-SHA256",
+      "primitive_provider": "PROVIDER-OPENSSL-SOFTWARE-CRYPTO",
       "private_primitive_reachable": false,
       "gap_links": [
         "GAP-P0-CRYPTO-001",
@@ -53,14 +55,14 @@
     },
     {
       "id": "CRYPTO-PATH-ACTIVE-OUTBOX-DIGEST",
-      "classification": "active-durable-spool-source-blocker",
+      "classification": "active-durable-spool-reviewed-primitive-source-candidate",
       "entrypoints": [
         "crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs"
       ],
-      "implementation": "trnm_token_jwt_adapter::sha256_digest",
-      "primitive_provider": null,
-      "private_primitive_reachable": true,
-      "required_remediation": "Move spool receipts, retry jitter and failure-reason digests to a reviewed digest provider without changing durable bytes or receipt identities.",
+      "implementation": "OpenSSL SHA-256 and constant-time comparison over byte-stable spool and retry material",
+      "primitive_provider": "PROVIDER-OPENSSL-SOFTWARE-CRYPTO",
+      "private_primitive_reachable": false,
+      "required_remediation": "Retain byte-stable old/new receipt and retry-jitter regression evidence, then obtain independent data-integrity and security acceptance.",
       "gap_links": [
         "GAP-P0-CRYPTO-001",
         "GAP-P1-OUTBOX-001"
@@ -98,7 +100,7 @@
   ],
   "exit_criteria": [
     "CRYPTO-PATH-ACTIVE-ACCESS-AUTH is composed through the opaque provider contract.",
-    "CRYPTO-PATH-ACTIVE-OUTBOX-DIGEST uses a reviewed provider with byte-stable regression evidence.",
+    "CRYPTO-PATH-ACTIVE-OUTBOX-DIGEST has byte-stable old/new regression evidence and independent acceptance.",
     "The compatibility reference is non-shipping or removed after accepted three-way differential evidence.",
     "Production KMS, HSM or approved secret-manager profiles pass rotation, revoke, permission, timeout, cancellation and audit tests.",
     "Independent cryptography and application-security reviewers accept the exact source, dependency and evidence objects."
@@ -106,7 +108,9 @@
   "summary": {
     "classified_paths": 3,
     "active_access_auth_private_primitive_reachable": false,
-    "all_active_crypto_paths_reviewed_provider_backed": false,
+    "active_outbox_digest_private_primitive_reachable": false,
+    "classified_active_paths_use_reviewed_primitives": true,
+    "all_production_crypto_paths_classified_and_accepted": false,
     "production_key_provider_accepted": false,
     "private_compatibility_implementation_removed": false,
     "gap_closed": false,
