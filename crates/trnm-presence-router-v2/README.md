@@ -50,7 +50,7 @@ Revocation and connection high-waters are never opportunistically evicted. Long-
 
 `ReconnectJournal` authenticates each cursor and requires one exact journal, stream, session-generation and producer-epoch identity. Replay is contiguous and bounded; expired, ahead, tampered, wrong-key and retired-generation cursors fail closed.
 
-`DisconnectJournal` binds every possible transport write to one immutable dispatch identity. After delivery becomes ambiguous, retry is forbidden until a trusted verifier accepts a typed exact outcome. One `Unknown` result may be retained and replayed exactly; a distinct second unknown fails without mutation. Admission reserves archive capacity and the worst-case verifier-receipt allowance. Each accepted receipt consumes one reservation before owner-map mutation, terminal archive releases unused reservation, and epoch advance clears the finite namespace only after all active records have left.
+`DisconnectJournal` binds every possible transport write to one immutable dispatch identity. After delivery becomes ambiguous, retry is forbidden until a trusted verifier accepts a typed exact outcome. One `Unknown` result may be retained and replayed exactly; a distinct second unknown fails without mutation. Admission reserves archive capacity and the worst-case verifier-receipt allowance. Each accepted receipt consumes one reservation before either record or owner-map mutation; terminal archive releases unused reservation, and epoch advance clears the finite namespace only after all active records have left.
 
 `DisconnectJournalConfig` rejects zero, excessive and arithmetically unsafe limits. Construction checks the complete `tombstone_capacity × max_attempts × receipts_per_attempt` product against the repository hard cap. Production reconnect authenticators and outcome verifiers must authenticate the complete typed identity; a caller boolean or nonzero digest is never proof.
 
@@ -133,7 +133,7 @@ The isolated workspace must also execute in the stable aggregate gate. Empty dis
 
 ## Operations
 
-Adapters must expose bounded cardinalities, generation mismatch rejection, revocation fanout, reconnect outcomes, capacity saturation, and invariant failures without high-cardinality labels. Readiness, drain behavior, durable revocation replay, and recovery must be specified before production use.
+Adapters must expose bounded cardinalities, generation mismatch rejection, revocation fanout, actor saturation, cursor rejection, disconnect reconciliation outcomes, receipt-budget saturation, reconnect outcomes, capacity saturation, and invariant failures without high-cardinality labels. Readiness, drain behavior, durable revocation replay, production verifier behavior, authenticated epoch rollover, and recovery must be specified before production use.
 
 Evidence must bind the exact repository, source commit/tree, prospective merge object, workflow/run/job/attempt, environment, assertions, retained artifact digests, limitations, expiry, and independent review.
 
