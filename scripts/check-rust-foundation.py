@@ -66,7 +66,11 @@ EXPECTED_DEPENDENCIES: dict[str, dict[str, Any]] = {
         "trnm-contracts": {"path": "../trnm-contracts"},
         "trnm-realtime-wire": {"path": "../trnm-realtime-wire"},
         "trnm-session-core": {"path": "../trnm-session-core"},
+        "trnm-token-crypto-provider": {"path": "../trnm-token-crypto-provider"},
         "trnm-token-jwt-adapter": {"path": "../trnm-token-jwt-adapter"},
+        "trnm-token-jwt-provider-adapter": {
+            "path": "../trnm-token-jwt-provider-adapter"
+        },
     },
 }
 FORBIDDEN_PURE_CORE_PATTERNS = (
