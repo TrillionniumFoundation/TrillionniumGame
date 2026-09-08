@@ -36,7 +36,7 @@ jobs:
           git config user.name "ProfHepta"
           git config user.email "102159240+ProfHepta@users.noreply.github.com"
 
-      - name: Merge base and resolve only the expected semantic conflicts
+      - name: Merge base and resolve only the actual document conflict
         shell: bash
         env:
           GIT_MERGE_AUTOEDIT: no
@@ -49,11 +49,10 @@ jobs:
           test "$status" -eq 1
           test "$(git rev-parse MERGE_HEAD)" = "$BASE_SHA"
           mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
-          test "${#conflicts[@]}" -eq 2
+          test "${#conflicts[@]}" -eq 1
           test "${conflicts[0]}" = "crates/trnm-presence-router-v2/README.md"
-          test "${conflicts[1]}" = "crates/trnm-presence-router-v2/src/lib.rs"
-          python3 scripts/codex-pr104-merge-current-base.py
-          git add crates/trnm-presence-router-v2/README.md crates/trnm-presence-router-v2/src/lib.rs
+          python3 scripts/codex-pr104-merge-current-base-r2.py
+          git add crates/trnm-presence-router-v2/README.md
           test -z "$(git diff --name-only --diff-filter=U)"
 
       - name: Materialize final source-only merge tree
@@ -61,6 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -f scripts/codex-pr104-merge-current-base.py
+          rm -f scripts/codex-pr104-merge-current-base-r2.py
           rm -f .github/workflows/codex-pr104-merge-current-base.yml
           git add -A
           test -f .git/MERGE_HEAD
