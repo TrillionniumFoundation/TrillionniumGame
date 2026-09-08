@@ -15,7 +15,9 @@ evidence_root=${TRNM_EVIDENCE_ROOT:-run/outbox-final-attempt-reaper}
 evidence="$evidence_root/$profile"
 rm -rf "$evidence"
 mkdir -p "$evidence/logs"
-exec > >(tee "$evidence/logs/run.log") 2>&1
+exec 3>&1 4>&2
+exec > >(tee "$evidence/logs/run.log" >&3) 2>&1
+tee_pid=$!
 
 container="trnm-outbox-final-attempt-${profile}-${run_id//[^a-zA-Z0-9_.-]/-}"
 database_url=
@@ -269,5 +271,17 @@ run_scenario crash-before-publish 20 21 22 23 24 3100 71 1
 run_scenario crash-after-publish 30 31 32 33 34 4100 70 1
 
 printf 'status=passed\nprofile=%s\ncommit=%s\n' "$profile" "$commit" >"$evidence/result.env"
-find "$evidence" -type f -print0 | sort -z | xargs -0 sha256sum >"$evidence/files.sha256"
 cat "$evidence/result.env"
+
+# Stop the process-substitution logger before calculating retained-member
+# digests. Otherwise run.log can grow after it is hashed, and redirecting the
+# manifest creates files.sha256 early enough for it to hash itself.
+exec 1>&3 2>&4
+exec 3>&- 4>&-
+wait "$tee_pid"
+(
+  cd "$evidence"
+  find . -type f ! -path './files.sha256' -print0 \
+    | LC_ALL=C sort -z | xargs -0 sha256sum >files.sha256
+  sha256sum --check files.sha256
+)
