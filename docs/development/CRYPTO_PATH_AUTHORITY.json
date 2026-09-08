@@ -32,21 +32,27 @@
         "crates/trnm-token-crypto-provider",
         "crates/trnm-token-jwt-provider-adapter"
       ],
-      "status": "source-candidate-not-yet-composed-into-production-server",
-      "required_next_step": "Compose an accepted software or remote-key implementation through this boundary without exposing raw key bytes to protocol or persistence handlers."
+      "status": "active-access-verification-source-composed",
+      "composed_consumers": [
+        "crates/trnm-persistence-pg/src/auth.rs"
+      ],
+      "remaining_boundary": "The software constructor still materializes key bytes inside an OpenSSL provider object. Production profiles require an accepted remote KMS, HSM or secret-manager resolver and independent security evidence."
     }
   ],
   "path_classifications": [
     {
       "id": "CRYPTO-PATH-ACTIVE-ACCESS-AUTH",
-      "classification": "active-server-authentication-source-candidate",
+      "classification": "active-server-authentication-opaque-provider-source-candidate",
       "entrypoints": [
         "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
         "crates/trnm-server/src/main.rs"
       ],
-      "implementation": "crates/trnm-persistence-pg/src/auth.rs",
+      "implementation": "crates/trnm-persistence-pg/src/auth.rs composes AuthenticationProfile, KeyResolver and Hs256Provider through trnm-token-jwt-provider-adapter before parsing claims",
+      "provider_contract": "CONTRACT-HS256-OPAQUE-PROVIDER",
       "primitive_provider": "PROVIDER-OPENSSL-SOFTWARE-CRYPTO",
+      "opaque_provider_composed": true,
       "private_primitive_reachable": false,
+      "required_remediation": "Replace the software in-memory provider with an accepted production key provider and retain rotation, revoke, timeout, cancellation and audit evidence.",
       "gap_links": [
         "GAP-P0-CRYPTO-001",
         "GAP-P1-CRYPTO-002",
@@ -118,7 +124,7 @@
     "Dependency identity, checksums, license, SBOM, advisories, malformed corpus, fuzzing and independent security decisions are retained."
   ],
   "exit_criteria": [
-    "CRYPTO-PATH-ACTIVE-ACCESS-AUTH is composed through the opaque provider contract.",
+    "CRYPTO-PATH-ACTIVE-ACCESS-AUTH uses an accepted production provider rather than only the software source candidate.",
     "CRYPTO-PATH-ACTIVE-ADMIN-AUTH uses an accepted operator identity and authorization profile.",
     "CRYPTO-PATH-ACTIVE-OUTBOX-DIGEST has byte-stable old/new regression evidence and independent acceptance.",
     "The compatibility reference is non-shipping or removed after accepted three-way differential evidence.",
@@ -127,6 +133,7 @@
   ],
   "summary": {
     "classified_paths": 4,
+    "active_access_opaque_provider_composed": true,
     "active_access_auth_private_primitive_reachable": false,
     "active_admin_auth_private_primitive_reachable": false,
     "active_outbox_digest_private_primitive_reachable": false,
