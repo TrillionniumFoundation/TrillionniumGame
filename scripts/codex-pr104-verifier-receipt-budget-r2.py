@@ -18,10 +18,22 @@ anchor = (
 )
 if text.count(anchor) != 1:
     raise SystemExit("active-capacity anchor drift")
-text = text.replace(line, "", 1) if line in text else text
 text = text.replace(
     anchor,
     line + anchor,
     1,
 )
+old_expectation = (
+    "            Err(DisconnectJournalError::VerifierReceiptCapacityExceeded {\n"
+    "                capacity: 4\n"
+    "            })\n"
+)
+new_expectation = (
+    "            Err(DisconnectJournalError::TombstoneCapacityExceeded {\n"
+    "                capacity: 2\n"
+    "            })\n"
+)
+if text.count(old_expectation) != 1:
+    raise SystemExit("aggregate receipt budget expectation drift")
+text = text.replace(old_expectation, new_expectation, 1)
 source.write_text(text, encoding="utf-8")
