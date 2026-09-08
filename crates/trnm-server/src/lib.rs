@@ -4,9 +4,10 @@
 //! Canonical TrillionniumGame server composition root.
 //!
 //! The crate owns the process boundary and composes the already reviewed
-//! persistence, session, protocol and realtime components. Source availability
-//! is not production acceptance; exact-head execution and independent review
-//! remain mandatory.
+//! persistence, session, protocol and realtime components. Ingress reads use
+//! absolute request/frame deadlines, and drain actively closes registered
+//! sockets before joining workers. Source availability is not production
+//! acceptance; exact-head execution and independent review remain mandatory.
 
 mod runtime;
 
