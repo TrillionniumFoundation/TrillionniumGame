@@ -44,6 +44,12 @@ The active security and evidence contracts are:
 
 Security-critical paths require independent review and aggregate-gate coverage. Empty, skipped, cancelled, zero-job, startup-failure or older-head checks are not security evidence.
 
+### Secret-bearing configuration and operator output
+
+Configuration objects that can carry database URLs, administrative tokens, session-authentication keys, provider credentials or private-key paths must never be passed to generic formatting, logging, tracing, panic, metric-label or error-rendering sinks, even when their current `Debug` implementation is redacted. Field-insensitive dataflow analysis and future struct changes make whole-object logging an unsafe boundary.
+
+Operator messages for configuration validation, migration completion and process startup must be static, low-cardinality strings. They must not interpolate configuration fields or values derived from secret-bearing configuration. Detailed non-secret operational state belongs in separately typed, explicitly allow-listed telemetry whose fields are reviewed and tested. A scanner suppression or a claim that a value is “normally redacted” is not a substitute for removing the dataflow.
+
 ## Disclosure and remediation
 
 The response owner coordinates containment, affected-key/session/data identification, fixes, regression tests, release/advisory preparation and notification. Public disclosure timing should allow users to mitigate while avoiding unnecessary delay. If a report reveals a credential, production access or personal data, the credential/data incident process takes precedence over ordinary code review.
