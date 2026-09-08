@@ -1,9 +1,11 @@
 # Roadmap
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-01
+Revision: 2026-09-08
 
-The machine execution queue is `docs/roadmap/NEXT_MILESTONE.json`. This document explains sequencing and team boundaries; it does not override machine status.
+The machine execution queue is `docs/roadmap/NEXT_MILESTONE.json`. The blocker-first architecture overlay is `docs/roadmap/ARCHITECTURE_CLOSURE.json`. This document explains sequencing and team boundaries; it does not override machine status.
+
+The architecture overlay changes execution order, not the final Nakama denominator. It separates a narrow, independently claim-scoped core-delivery track from the complete Nakama parity program so that a PostgreSQL golden slice can become operable without pretending that incomplete Console, Runtime, provider, SDK or CockroachDB profiles are complete. No mandatory D0-D8 leaf is removed, and Trillionnium extensions cannot inflate compatibility coverage.
 
 ## 1. Current milestone
 
@@ -33,6 +35,7 @@ Exit criteria:
 - all historical/versioned Markdown removed from the active tree;
 - all active references migrated;
 - documentation authority checker required by the plan/merge gate;
+- Rust modules and all cross-language engineering component families are registered with real roots, documents, tests, failure/security/operations boundaries and explicit depth gaps;
 - plan, state, gap, evidence and gate validators all pass on the same head;
 - no product claim is promoted by documentation cleanup.
 
@@ -47,35 +50,50 @@ Exit criteria:
 - negative merge rehearsal proves no bypass;
 - named independent owners/reviewers are active.
 
+Repository code may prepare validators and read-only collectors, but it cannot synthesize administrator state, reviewer independence or accepted decisions. These remain external facts until produced and reviewed through the ordinary protected path.
+
 ### R2 — Data and security authority
 
 Exit criteria:
 
-- authoritative migration/adapter/backup digests agree for both profiles;
+- authoritative migration/adapter/backup digests agree for each declared database profile;
 - pool acquisition, statement/lock timeout, cancellation and retry budgets are proven;
 - outbox terminal, ambiguous outcome and reconciliation behavior are accepted;
-- JWT/crypto provider choice, malformed corpus, key separation and rotation are reviewed;
+- no active server path uses private SHA, HMAC, tag comparison, randomness or key-storage primitives;
+- JWT syntax/claim compatibility is separated from cryptographic provider and key lifecycle;
+- a reviewed software provider is available for bounded development/compatibility use, while production profiles require an accepted KMS, HSM or secret-manager boundary;
+- malformed corpus, key separation, rotation, revoke and node convergence are independently reviewed;
 - no acknowledged-write loss, duplicate visible value or stale writer acceptance.
+
+The first source step moves the active database-backed JWT verification and refresh hashing to the already locked OpenSSL provider. That removes the private primitive from the active path but does not close the crypto gap, approve the historical compatibility adapter or substitute for production key-provider acceptance.
 
 ### R3 — Single golden server vertical slice
 
-Exit criteria:
+The first operable, claim-scoped path is PostgreSQL-first:
 
 ```text
 official SDK request
- -> HTTP/JSON + generated gRPC + persistent RTAPI
+ -> maintained HTTP framing + generated gRPC + maintained WebSocket transport
+ -> narrow Nakama compatibility adapters
  -> session verification and authorization
- -> deterministic service command
- -> SERIALIZABLE transaction
+ -> deterministic command/query service
+ -> SERIALIZABLE PostgreSQL transaction
  -> head + event + receipt + outbox
  -> acknowledgement after commit
  -> delivery/reconciliation
  -> response-loss/restart/reconnect
- -> PostgreSQL and CockroachDB
  -> immutable Nakama differential
 ```
 
-The final process has one composition root, supervised lifecycle, bounded queues/deadlines and signal-driven drain. Protocol, database, security and SRE reviewers accept the exact evidence.
+Exit criteria:
+
+- one production `trnm-server` composition root and one supervised cancellation/drain tree;
+- the temporary database-backed binary is removed in the same accepted change that transfers authority;
+- adapters do not access repositories directly and handwritten socket/HTTP parsers cannot expand beyond explicitly bounded compatibility fixtures;
+- PostgreSQL catalog, transaction, cancellation, backup/PITR, rollback and capacity evidence is accepted for the declared profile;
+- protocol, database, security and SRE reviewers accept the exact evidence.
+
+CockroachDB remains a mandatory separately evidenced target profile. It repeats the golden slice with its own transaction-restart, leaseholder/node-loss, backup/PITR, capacity and endurance evidence before any CockroachDB or full-replacement claim. PostgreSQL evidence never grants CockroachDB credit, but unfinished CockroachDB work does not prevent an explicitly PostgreSQL-scoped core milestone from being measured honestly.
 
 ### R4 — SG1 and SG2 lock
 
@@ -88,7 +106,7 @@ Exit criteria:
 - normalizer registry approved;
 - official SDK consumer matrix active.
 
-Only after R0–R4 may the program open broad horizontal implementation without exception review.
+Only after R0-R4 may the program open broad horizontal implementation without exception review.
 
 ## 3. Domain expansion sequence
 
@@ -157,6 +175,8 @@ Each module has one owner and one stable public boundary. Cross-team changes use
 - No external value effect is accepted without idempotency, ambiguous-outcome reconciliation and rollback policy.
 - No database profile inherits another profile's evidence.
 - No security-sensitive source advances without independent review.
+- No production path owns private cryptographic primitives when a reviewed provider exists.
+- No handwritten public transport implementation expands without a reviewed necessity, bounded resource contract and immutable-oracle differential.
 - No migration phase permits dual writers.
 - No release claim is derived from task/LOC/commit counts.
 
