@@ -117,11 +117,29 @@ def update_auth_contract(root: Path) -> None:
     write(path, text)
 
 
+def update_gate_v2_digest(root: Path) -> None:
+    path = root / "crates/trnm-token-jwt-adapter-gate-v2/src/lib.rs"
+    text = read(path)
+    wrapper = '''
+
+#[must_use]
+pub fn sha256_digest(input: &[u8]) -> [u8; 32] {
+    sha256::digest(input)
+}
+'''
+    if "pub fn sha256_digest(" not in text:
+        text = text.rstrip() + wrapper
+    require("pub fn sha256_digest(" in text, "gate-v2 compatibility digest wrapper missing")
+    require("sha256::digest(input)" in text, "gate-v2 digest wrapper does not exercise backend")
+    write(path, text)
+
+
 def run(root: Path) -> None:
     require((root / ".git").is_dir(), "Git working tree required")
     update_overlay(root)
     update_server_tests(root)
     update_auth_contract(root)
+    update_gate_v2_digest(root)
 
 
 if __name__ == "__main__":
