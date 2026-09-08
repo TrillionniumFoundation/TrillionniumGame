@@ -1,0 +1,156 @@
+name: external-world-v6-qualification-20260909
+
+on:
+  push:
+    branches:
+      - ops/world-v6-external-qualification-20260909
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-world-v6-qualification-20260909
+  cancel-in-progress: false
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_BASE_SHA: 0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
+  WORLD_HEAD_SHA: d0eb45783db1273dfbd9a8f3c72c281381c2e29b
+  WORLD_MERGE_REF: refs/pull/104/merge
+  WORLD_MERGE_SHA: 7b8429636d454ab258584d9281a06c689423137b
+  RUST_TOOLCHAIN: '1.98.1'
+  RUSTUP_TOOLCHAIN: '1.98.1'
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+  RUST_BACKTRACE: '1'
+  RUST_TEST_THREADS: '1'
+  PGHOST: 127.0.0.1
+  PGPORT: '5432'
+  PGUSER: postgres
+  PGPASSWORD: postgres
+  PGDATABASE: postgres
+  TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+  TRNM_WORLD_POSTGRES_CLIENT_IMAGE: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+
+jobs:
+  qualify:
+    name: world-v6/${{ matrix.scope }}-head-and-merge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        scope:
+          - truth
+          - source
+          - postgres
+          - package
+    services:
+      postgres:
+        image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout exact World head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ env.WORLD_REPOSITORY }}
+          ref: ${{ env.WORLD_HEAD_SHA }}
+          path: world-head
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout actual World prospective merge
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ env.WORLD_REPOSITORY }}
+          ref: ${{ env.WORLD_MERGE_REF }}
+          path: world-merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify immutable object identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C world-head rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+          test "$(git -C world-merge rev-parse HEAD)" = "$WORLD_MERGE_SHA"
+          test "$(git -C world-merge rev-parse HEAD^1)" = "$WORLD_BASE_SHA"
+          test "$(git -C world-merge rev-parse HEAD^2)" = "$WORLD_HEAD_SHA"
+          test "$(git -C world-head status --porcelain=v1 --untracked-files=no)" = ""
+          test "$(git -C world-merge status --porcelain=v1 --untracked-files=no)" = ""
+
+      - name: Install pinned toolchain and native dependencies
+        if: matrix.scope != 'truth'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+          rustup default "$RUST_TOOLCHAIN"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libudev-dev libx11-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev pkg-config postgresql-client
+          rustc --version --verbose
+          cargo --version --verbose
+          psql --version
+
+      - name: Qualify exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd world-head
+          bash scripts/run-trnm-world-v6-qualification-v2.sh "${{ matrix.scope }}"
+
+      - name: Qualify actual prospective merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd world-merge
+          bash scripts/run-trnm-world-v6-qualification-v2.sh "${{ matrix.scope }}"
+
+      - name: Assemble immutable evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="external-evidence/${{ matrix.scope }}"
+          mkdir -p "$out/head" "$out/merge"
+          if test -d "world-head/run/world-v6-v2/${{ matrix.scope }}"; then
+            cp -R "world-head/run/world-v6-v2/${{ matrix.scope }}/." "$out/head/"
+          fi
+          if test -d "world-merge/run/world-v6-v2/${{ matrix.scope }}"; then
+            cp -R "world-merge/run/world-v6-v2/${{ matrix.scope }}/." "$out/merge/"
+          fi
+          {
+            printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
+            printf 'world_base_sha=%s\n' "$WORLD_BASE_SHA"
+            printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
+            printf 'world_merge_sha=%s\n' "$WORLD_MERGE_SHA"
+            printf 'scope=%s\n' "${{ matrix.scope }}"
+            printf 'external_runner_repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'external_runner_commit=%s\n' "$GITHUB_SHA"
+            printf 'external_runner_run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'production_authorization=not_granted\n'
+          } > "$out/attestation.txt"
+          find "$out" -type f -print0 | sort -z | xargs -0 sha256sum > "$out/SHA256SUMS"
+
+      - name: Upload external qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: external-world-v6-${{ matrix.scope }}-${{ env.WORLD_HEAD_SHA }}-${{ env.WORLD_MERGE_SHA }}-${{ github.run_attempt }}
+          path: external-evidence/${{ matrix.scope }}/**
+          if-no-files-found: warn
+          retention-days: 30
