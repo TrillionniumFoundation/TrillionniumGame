@@ -48,7 +48,7 @@ jobs:
           test -n "$GITHUB_SHA"
           test -n "$GITHUB_RUN_ID"
 
-  freeze-world-tuple:
+  freeze_world_tuple:
     name: freeze-world-pr-104-tuple
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -91,7 +91,7 @@ jobs:
 
   external-world-v6:
     name: external-world-v6 (${{ matrix.scope }})
-    needs: freeze-world-tuple
+    needs: freeze_world_tuple
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     strategy:
@@ -99,11 +99,11 @@ jobs:
       matrix:
         scope: [truth, source, postgres, package]
     env:
-      WORLD_BASE_SHA: ${{ needs.freeze-world-tuple.outputs.base_sha }}
-      WORLD_HEAD_SHA: ${{ needs.freeze-world-tuple.outputs.head_sha }}
-      WORLD_HEAD_TREE: ${{ needs.freeze-world-tuple.outputs.head_tree }}
-      WORLD_MERGE_SHA: ${{ needs.freeze-world-tuple.outputs.merge_sha }}
-      WORLD_MERGE_TREE: ${{ needs.freeze-world-tuple.outputs.merge_tree }}
+      WORLD_BASE_SHA: ${{ needs.freeze_world_tuple.outputs.base_sha }}
+      WORLD_HEAD_SHA: ${{ needs.freeze_world_tuple.outputs.head_sha }}
+      WORLD_HEAD_TREE: ${{ needs.freeze_world_tuple.outputs.head_tree }}
+      WORLD_MERGE_SHA: ${{ needs.freeze_world_tuple.outputs.merge_sha }}
+      WORLD_MERGE_TREE: ${{ needs.freeze_world_tuple.outputs.merge_tree }}
     services:
       postgres:
         image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
@@ -203,7 +203,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: external-world-v6-${{ matrix.scope }}-${{ needs.freeze-world-tuple.outputs.head_sha }}-${{ needs.freeze-world-tuple.outputs.merge_sha }}-${{ github.run_attempt }}
+          name: external-world-v6-${{ matrix.scope }}-${{ needs.freeze_world_tuple.outputs.head_sha }}-${{ needs.freeze_world_tuple.outputs.merge_sha }}-${{ github.run_attempt }}
           path: external-evidence/${{ matrix.scope }}/**
           if-no-files-found: warn
           retention-days: 30
