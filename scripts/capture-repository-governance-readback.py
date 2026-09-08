@@ -20,9 +20,14 @@ REPO_ID = 1323087470
 BRANCH = "main"
 REQUIRED_CHECK = "trillionnium-game-merge-gate"
 REQUIRED_CHECK_APP_ID = 15368
+REQUIRED_WORKFLOW_ID = 345272210
+REQUIRED_WORKFLOW_PATH = ".github/workflows/trillionnium-game-merge-gate.yml"
 TOKEN_ENV = "TRNM_GITHUB_ADMIN_AUDIT_TOKEN"
 MAX_BYTES = 2 * 1024 * 1024
 SHA = re.compile(r"^[0-9a-f]{40}$")
+DETAILS_URL = re.compile(
+    rf"^https://github\.com/{re.escape(REPO)}/actions/runs/([1-9][0-9]*)/job/([1-9][0-9]*)$"
+)
 SAFE_HEADERS = {
     "content-type", "date", "etag", "last-modified", "link",
     "x-github-request-id", "x-github-api-version-selected",
@@ -38,6 +43,19 @@ class ReadbackError(RuntimeError):
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
         raise ReadbackError(f"redirect rejected: HTTP {code}")
+
+
+def reject_non_finite_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def reject_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
 
 
 class GitHubApi:
@@ -78,9 +96,13 @@ class GitHubApi:
             if len(body) > MAX_BYTES:
                 raise ReadbackError(f"response exceeds {MAX_BYTES} bytes")
             try:
-                value = json.loads(body.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                raise ReadbackError(f"non-JSON response for {path}") from error
+                value = json.loads(
+                    body.decode("utf-8"),
+                    object_pairs_hook=reject_duplicate_object_pairs,
+                    parse_constant=reject_non_finite_constant,
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+                raise ReadbackError(f"non-canonical JSON response for {path}") from error
             safe = {
                 str(name).lower(): str(value)
                 for name, value in response.headers.items()
@@ -385,11 +407,15 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
     values["actor_permission"] = retain(output, "actor_permission", permission_path, reads["actor_permission"])
 
     ruleset_keys: dict[int, str] = {}
-    rulesets = values["rulesets"] if isinstance(values["rulesets"], list) else []
+    ruleset_collection_valid = isinstance(values["rulesets"], list)
+    rulesets = values["rulesets"] if ruleset_collection_valid else []
+    seen_ruleset_ids: set[int] = set()
     for row in rulesets:
-        if not isinstance(row, dict) or not isinstance(row.get("id"), int):
+        ruleset_id = row.get("id") if isinstance(row, dict) else None
+        if type(ruleset_id) is not int or ruleset_id <= 0 or ruleset_id in seen_ruleset_ids:
+            ruleset_collection_valid = False
             continue
-        ruleset_id = row["id"]
+        seen_ruleset_ids.add(ruleset_id)
         key = f"ruleset_{ruleset_id}"
         path = f"/repos/{REPO}/rulesets/{ruleset_id}"
         reads[key] = api.get(path)
@@ -404,6 +430,88 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         values[key] = retain(output, key, path, reads[key])
         environment_keys[name] = key
 
+    preliminary_checks = values["main_checks"] if isinstance(values["main_checks"], dict) else {}
+    preliminary_check_rows = preliminary_checks.get("check_runs", [])
+    if not isinstance(preliminary_check_rows, list):
+        preliminary_check_rows = []
+    preliminary_merge_gate_rows = [
+        row for row in preliminary_check_rows
+        if isinstance(row, dict)
+        and row.get("name") == REQUIRED_CHECK
+        and nested(row, "app", "id") == REQUIRED_CHECK_APP_ID
+        and type(row.get("id")) is int
+        and row["id"] > 0
+    ]
+    selected_merge_gate = max(
+        preliminary_merge_gate_rows,
+        key=lambda row: row["id"],
+        default=None,
+    )
+    canonical_ids: dict[str, int | None] = {
+        "check_run_id": None,
+        "run_id": None,
+        "job_id": None,
+        "run_attempt": None,
+    }
+    if isinstance(selected_merge_gate, dict):
+        details = selected_merge_gate.get("details_url")
+        match = DETAILS_URL.fullmatch(details) if isinstance(details, str) else None
+        check_id = selected_merge_gate.get("id")
+        if match is not None and type(check_id) is int and check_id > 0:
+            run_id, job_id = (int(match.group(1)), int(match.group(2)))
+            canonical_ids.update(
+                {"check_run_id": check_id, "run_id": run_id, "job_id": job_id}
+            )
+            identity_paths = {
+                "required_check_detail": f"/repos/{REPO}/check-runs/{check_id}",
+                "required_workflow_run": f"/repos/{REPO}/actions/runs/{run_id}",
+                "required_workflow": f"/repos/{REPO}/actions/workflows/{REQUIRED_WORKFLOW_ID}",
+            }
+            for key, path in identity_paths.items():
+                reads[key] = api.get(path)
+                values[key] = retain(output, key, path, reads[key])
+            run_attempt = (
+                values["required_workflow_run"].get("run_attempt")
+                if isinstance(values["required_workflow_run"], dict)
+                else None
+            )
+            if type(run_attempt) is int and run_attempt > 0:
+                canonical_ids["run_attempt"] = run_attempt
+                key = "required_workflow_jobs"
+                path = (
+                    f"/repos/{REPO}/actions/runs/{run_id}/attempts/"
+                    f"{run_attempt}/jobs?per_page=100"
+                )
+                reads[key] = api.get(path)
+                values[key] = retain(output, key, path, reads[key])
+
+    stability_paths = {
+        "branch": paths["branch"],
+        "protection": paths["protection"],
+        "rulesets": paths["rulesets"],
+        "actions": paths["actions"],
+        "workflow_permissions": paths["workflow_permissions"],
+        "environments": paths["environments"],
+    }
+    stability_paths.update(
+        {
+            key: f"/repos/{REPO}/rulesets/{ruleset_id}"
+            for ruleset_id, key in ruleset_keys.items()
+        }
+    )
+    stability_paths.update(
+        {
+            key: f"/repos/{REPO}/environments/{urllib.parse.quote(name, safe='')}"
+            for name, key in environment_keys.items()
+        }
+    )
+    stability_pairs: dict[str, str] = {}
+    for source_key, path in stability_paths.items():
+        stable_key = f"{source_key}_stable"
+        reads[stable_key] = api.get(path)
+        values[stable_key] = retain(output, stable_key, path, reads[stable_key])
+        stability_pairs[source_key] = stable_key
+
     repository, branch, checks = values["repository"], values["branch"], values["main_checks"]
     protection, actions, workflow = values["protection"], values["actions"], values["workflow_permissions"]
     actor_permission = values["actor_permission"] if isinstance(values["actor_permission"], dict) else {}
@@ -416,26 +524,124 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         for item in (required.get("checks", []) if isinstance(required, dict) else [])
     )
     check_rows = checks.get("check_runs", []) if isinstance(checks, dict) else []
-    merge_gate_rows = [
-        row for row in check_rows
-        if isinstance(row, dict)
-        and row.get("name") == REQUIRED_CHECK
-        and nested(row, "app", "id") == REQUIRED_CHECK_APP_ID
-        and isinstance(row.get("id"), int)
+    if not isinstance(check_rows, list):
+        check_rows = []
+    latest_merge_gate = selected_merge_gate
+    canonical_check = values.get("required_check_detail")
+    canonical_run = values.get("required_workflow_run")
+    canonical_workflow = values.get("required_workflow")
+    canonical_jobs = values.get("required_workflow_jobs")
+    canonical_job_rows = (
+        canonical_jobs.get("jobs", []) if isinstance(canonical_jobs, dict) else []
+    )
+    if not isinstance(canonical_job_rows, list):
+        canonical_job_rows = []
+    selected_job = next(
+        (
+            row for row in canonical_job_rows
+            if isinstance(row, dict) and row.get("id") == canonical_ids["job_id"]
+        ),
+        None,
+    )
+    selected_steps = (
+        selected_job.get("steps", []) if isinstance(selected_job, dict) else []
+    )
+    if not isinstance(selected_steps, list):
+        selected_steps = []
+    effective_success_steps = [
+        step for step in selected_steps
+        if isinstance(step, dict)
+        and isinstance(step.get("name"), str)
+        and step["name"] not in {"Set up job", "Complete job"}
+        and not step["name"].startswith("Post ")
+        and step.get("status") == "completed"
+        and step.get("conclusion") == "success"
     ]
-    latest_merge_gate = max(merge_gate_rows, key=lambda row: row["id"], default=None)
+    canonical_check_identity = (
+        isinstance(latest_merge_gate, dict)
+        and isinstance(canonical_check, dict)
+        and canonical_ids["check_run_id"] == latest_merge_gate.get("id")
+        and canonical_check.get("id") == canonical_ids["check_run_id"]
+        and canonical_check.get("name") == REQUIRED_CHECK
+        and canonical_check.get("head_sha") == expected_main
+        and nested(canonical_check, "app", "id") == REQUIRED_CHECK_APP_ID
+        and canonical_check.get("details_url") == latest_merge_gate.get("details_url")
+        and canonical_check.get("status") == "completed"
+        and canonical_check.get("conclusion") == "success"
+    )
+    canonical_run_identity = (
+        isinstance(canonical_run, dict)
+        and canonical_run.get("id") == canonical_ids["run_id"]
+        and canonical_run.get("workflow_id") == REQUIRED_WORKFLOW_ID
+        and canonical_run.get("name") == REQUIRED_CHECK
+        and canonical_run.get("path") == REQUIRED_WORKFLOW_PATH
+        and canonical_run.get("event") == "push"
+        and canonical_run.get("head_branch") == BRANCH
+        and canonical_run.get("head_sha") == expected_main
+        and canonical_run.get("run_attempt") == canonical_ids["run_attempt"]
+        and canonical_run.get("status") == "completed"
+        and canonical_run.get("conclusion") == "success"
+        and nested(canonical_run, "repository", "id") == REPO_ID
+        and nested(canonical_run, "repository", "full_name") == REPO
+    )
+    canonical_workflow_identity = (
+        isinstance(canonical_workflow, dict)
+        and canonical_workflow.get("id") == REQUIRED_WORKFLOW_ID
+        and canonical_workflow.get("name") == REQUIRED_CHECK
+        and canonical_workflow.get("path") == REQUIRED_WORKFLOW_PATH
+        and canonical_workflow.get("state") == "active"
+    )
+    jobs_read = reads.get("required_workflow_jobs")
+    canonical_job_evidence = (
+        isinstance(canonical_jobs, dict)
+        and type(canonical_jobs.get("total_count")) is int
+        and canonical_jobs["total_count"] == len(canonical_job_rows)
+        and bool(canonical_job_rows)
+        and isinstance(jobs_read, tuple)
+        and not has_next_page(jobs_read[1])
+        and all(
+            isinstance(job, dict)
+            and job.get("status") == "completed"
+            and job.get("conclusion") == "success"
+            for job in canonical_job_rows
+        )
+        and isinstance(selected_job, dict)
+        and selected_job.get("run_id") == canonical_ids["run_id"]
+        and bool(effective_success_steps)
+    )
+    policy_surface_stable = bool(stability_pairs) and all(
+        reads[stable_key][0] == 200 and values[stable_key] == values[source_key]
+        for source_key, stable_key in stability_pairs.items()
+    )
     environment_names = {
         row.get("name") for row in nested(values["environments"], "environments", default=[])
         if isinstance(row, dict) and isinstance(row.get("name"), str)
     }
-    bypass = review.get("bypass_pull_request_allowances", {}) if isinstance(review, dict) else None
-    branch_bypass_empty = isinstance(bypass, dict) and all(value in (None, [], {}) for value in bypass.values())
-    ruleset_details_valid = all(
-        isinstance(values[key], dict) and values[key].get("id") == ruleset_id
-        for ruleset_id, key in ruleset_keys.items()
+    bypass = review.get("bypass_pull_request_allowances") if isinstance(review, dict) else None
+    branch_bypass_empty = (
+        isinstance(bypass, dict)
+        and set(bypass) == {"users", "teams", "apps"}
+        and all(bypass[key] == [] for key in ("users", "teams", "apps"))
     )
-    ruleset_bypass_empty = all(
-        isinstance(values[key], dict) and values[key].get("bypass_actors") in (None, [])
+    ruleset_details_valid = (
+        ruleset_collection_valid
+        and bool(rulesets)
+        and len(ruleset_keys) == len(rulesets)
+        and all(
+            isinstance(values[key], dict)
+            and values[key].get("id") == ruleset_id
+            and reads[key][0] == 200
+            for ruleset_id, key in ruleset_keys.items()
+        )
+    )
+    ruleset_bypass_empty = bool(ruleset_keys) and all(
+        isinstance(values[key], dict)
+        and "bypass_actors" in values[key]
+        and values[key]["bypass_actors"] == []
+        for key in ruleset_keys.values()
+    )
+    rulesets_active = bool(ruleset_keys) and all(
+        isinstance(values[key], dict) and values[key].get("enforcement") == "active"
         for key in ruleset_keys.values()
     )
     protected_environments = all(
@@ -453,8 +659,8 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         "all_reads_http_200": all(status == 200 for status, _, _ in reads.values()),
         "authenticated_human_admin": (
             isinstance(actor, dict) and actor.get("type") == "User"
-            and isinstance(actor.get("id"), int)
-            and actor_permission.get("permission") == "admin"
+            and type(actor.get("id")) is int and actor["id"] > 0
+            and actor_permission.get("permission") in {"admin", "maintain"}
         ),
         "repository_identity": (
             isinstance(repository, dict) and repository.get("id") == REPO_ID
@@ -464,7 +670,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         "main_identity": nested(branch, "commit", "sha") == expected_main,
         "main_protected": isinstance(branch, dict) and branch.get("protected") is True,
         "main_check_collection_complete": (
-            isinstance(checks, dict) and isinstance(checks.get("total_count"), int)
+            isinstance(checks, dict) and type(checks.get("total_count")) is int
             and checks.get("total_count") == len(check_rows)
             and not has_next_page(reads["main_checks"][1])
         ),
@@ -473,12 +679,22 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
             and latest_merge_gate.get("status") == "completed"
             and latest_merge_gate.get("conclusion") == "success"
         ),
+        "canonical_required_check_identity": canonical_check_identity,
+        "canonical_required_workflow_identity": (
+            canonical_run_identity and canonical_workflow_identity
+        ),
+        "canonical_required_workflow_job_evidence": canonical_job_evidence,
+        "policy_surface_stable": policy_surface_stable,
         "strict_required_check": isinstance(required, dict) and required.get("strict") is True and context_present,
         "admins_enforced": enabled(protection, "enforce_admins"),
         "stale_reviews_dismissed": isinstance(review, dict) and review.get("dismiss_stale_reviews") is True,
         "code_owner_review_required": isinstance(review, dict) and review.get("require_code_owner_reviews") is True,
         "latest_push_approval_required": isinstance(review, dict) and review.get("require_last_push_approval") is True,
-        "approval_required": isinstance(review, dict) and review.get("required_approving_review_count", 0) >= 1,
+        "approval_required": (
+            isinstance(review, dict)
+            and type(review.get("required_approving_review_count")) is int
+            and review["required_approving_review_count"] >= 1
+        ),
         "conversation_resolution_required": enabled(protection, "required_conversation_resolution"),
         "linear_history_required": enabled(protection, "required_linear_history"),
         "force_push_forbidden": not enabled(protection, "allow_force_pushes", True),
@@ -489,16 +705,17 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         "actions_cannot_approve": isinstance(workflow, dict) and workflow.get("can_approve_pull_request_reviews") is False,
         "rulesets_read_back": (
             reads["rulesets"][0] == 200
-            and isinstance(values["rulesets"], list)
+            and ruleset_collection_valid
             and not has_next_page(reads["rulesets"][1])
-            and all(reads[key][0] == 200 for key in ruleset_keys.values())
             and ruleset_details_valid
         ),
         "ruleset_bypass_empty": ruleset_bypass_empty,
+        "rulesets_active": rulesets_active,
         "environments_read_back": (
             reads["environments"][0] == 200
             and isinstance(values["environments"], dict)
             and isinstance(values["environments"].get("environments"), list)
+            and type(values["environments"].get("total_count")) is int
             and values["environments"].get("total_count") == len(values["environments"]["environments"])
             and not has_next_page(reads["environments"][1])
             and all(reads[key][0] == 200 for key in environment_keys.values())
@@ -508,7 +725,7 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
     }
     complete = all(assertions.values())
     result = {
-        "schema": "trillionnium.repository-governance-readback.v1",
+        "schema": "trillionnium.repository-governance-readback.v2",
         "repository": REPO, "repository_id": REPO_ID, "branch": BRANCH,
         "expected_main": expected_main, "required_check": REQUIRED_CHECK,
         "authenticated_actor": {"id": actor.get("id"), "login": login, "type": actor.get("type"),
@@ -517,6 +734,12 @@ def capture(api: Any, output_path: Path, expected_main: str, environments: list[
         "required_environments": environments,
         "observed_environment_names": sorted(environment_names),
         "ruleset_ids": sorted(ruleset_keys),
+        "required_workflow_identity": {
+            "workflow_id": REQUIRED_WORKFLOW_ID,
+            "workflow_path": REQUIRED_WORKFLOW_PATH,
+            **canonical_ids,
+        },
+        "stable_policy_surface": sorted(stability_pairs),
         "http_status": {key: status for key, (status, _, _) in reads.items()},
         "assertions": assertions, "all_required_assertions": complete,
         "claims": {"governance_readback_complete": complete, "negative_rehearsal_accepted": False,

@@ -1,6 +1,7 @@
 """Tests for the read-only GitHub governance packet generator."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import io
@@ -24,9 +25,9 @@ class FakeApi:
     def __init__(self, values, statuses=None, headers=None):
         self.values, self.statuses, self.headers, self.paths = values, statuses or {}, headers or {}, []
 
-    def get(self, path):
-        self.paths.append(path)
-        key = {
+    @staticmethod
+    def key_for(path):
+        fixed = {
             "/user": "actor",
             f"/repos/{MODULE.REPO}": "repository",
             f"/repos/{MODULE.REPO}/branches/main": "branch",
@@ -39,18 +40,85 @@ class FakeApi:
             f"/repos/{MODULE.REPO}/environments?per_page=100": "environments",
             f"/repos/{MODULE.REPO}/environments/governance-audit": "environment",
             f"/repos/{MODULE.REPO}/collaborators/independent-admin/permission": "actor_permission",
-        }[path]
+            f"/repos/{MODULE.REPO}/actions/workflows/{MODULE.REQUIRED_WORKFLOW_ID}": "required_workflow",
+        }
+        if path in fixed:
+            return fixed[path]
+        if path.startswith(f"/repos/{MODULE.REPO}/check-runs/"):
+            return "required_check_detail"
+        if path.startswith(f"/repos/{MODULE.REPO}/actions/runs/") and "/attempts/" in path:
+            return "required_workflow_jobs"
+        if path.startswith(f"/repos/{MODULE.REPO}/actions/runs/"):
+            return "required_workflow_run"
+        raise KeyError(path)
+
+    def get(self, path):
+        self.paths.append(path)
+        key = self.key_for(path)
         headers = {"x-github-request-id": key, **self.headers.get(key, {})}
-        return self.statuses.get(key, 200), headers, self.values.get(key, {})
+        return (
+            self.statuses.get(key, 200),
+            headers,
+            copy.deepcopy(self.values.get(key, {})),
+        )
 
 
 def values():
+    details_url = (
+        f"https://github.com/{MODULE.REPO}/actions/runs/10/job/1"
+    )
     return {
         "actor": {"id": 42, "login": "independent-admin", "type": "User"},
         "actor_permission": {"permission": "admin"},
         "repository": {"id": MODULE.REPO_ID, "full_name": MODULE.REPO, "default_branch": "main", "archived": False},
         "branch": {"name": "main", "protected": True, "commit": {"sha": "a" * 40}},
-        "main_checks": {"total_count": 1, "check_runs": [{"id": 1, "name": MODULE.REQUIRED_CHECK, "app": {"id": MODULE.REQUIRED_CHECK_APP_ID}, "status": "completed", "conclusion": "success"}]},
+        "main_checks": {"total_count": 1, "check_runs": [{
+            "id": 1, "name": MODULE.REQUIRED_CHECK,
+            "head_sha": "a" * 40,
+            "details_url": details_url,
+            "app": {"id": MODULE.REQUIRED_CHECK_APP_ID},
+            "status": "completed", "conclusion": "success",
+        }]},
+        "required_check_detail": {
+            "id": 1, "name": MODULE.REQUIRED_CHECK,
+            "head_sha": "a" * 40,
+            "details_url": details_url,
+            "app": {"id": MODULE.REQUIRED_CHECK_APP_ID},
+            "status": "completed", "conclusion": "success",
+        },
+        "required_workflow_run": {
+            "id": 10,
+            "workflow_id": MODULE.REQUIRED_WORKFLOW_ID,
+            "name": MODULE.REQUIRED_CHECK,
+            "path": MODULE.REQUIRED_WORKFLOW_PATH,
+            "event": "push",
+            "head_branch": "main",
+            "head_sha": "a" * 40,
+            "run_attempt": 1,
+            "status": "completed",
+            "conclusion": "success",
+            "repository": {"id": MODULE.REPO_ID, "full_name": MODULE.REPO},
+        },
+        "required_workflow": {
+            "id": MODULE.REQUIRED_WORKFLOW_ID,
+            "name": MODULE.REQUIRED_CHECK,
+            "path": MODULE.REQUIRED_WORKFLOW_PATH,
+            "state": "active",
+        },
+        "required_workflow_jobs": {
+            "total_count": 1,
+            "jobs": [{
+                "id": 1,
+                "run_id": 10,
+                "status": "completed",
+                "conclusion": "success",
+                "steps": [
+                    {"name": "Set up job", "status": "completed", "conclusion": "success"},
+                    {"name": "Validate aggregate", "status": "completed", "conclusion": "success"},
+                    {"name": "Complete job", "status": "completed", "conclusion": "success"},
+                ],
+            }],
+        },
         "protection": {
             "required_status_checks": {"strict": True, "contexts": [MODULE.REQUIRED_CHECK], "checks": [{"context": MODULE.REQUIRED_CHECK, "app_id": MODULE.REQUIRED_CHECK_APP_ID}]},
             "enforce_admins": {"enabled": True},
@@ -61,7 +129,8 @@ def values():
             "required_linear_history": {"enabled": True},
             "allow_force_pushes": {"enabled": False}, "allow_deletions": {"enabled": False},
         },
-        "rulesets": [{"id": 17}], "ruleset_17": {"id": 17, "bypass_actors": []},
+        "rulesets": [{"id": 17}],
+        "ruleset_17": {"id": 17, "enforcement": "active", "bypass_actors": []},
         "actions": {"enabled": True},
         "workflow_permissions": {"default_workflow_permissions": "read", "can_approve_pull_request_reviews": False},
         "environments": {"total_count": 1, "environments": [{"name": "governance-audit"}]},
@@ -265,6 +334,108 @@ class Tests(unittest.TestCase):
                     "a" * 40, ["governance-audit"],
                 )
                 self.assertFalse(result["assertions"]["required_environments_have_reviewers"])
+
+
+    def test_duplicate_keys_and_nonfinite_json_fail_closed(self):
+        for payload in (b'{"x":1,"x":2}', b'{"x":NaN}', b'{"x":Infinity}'):
+            with self.subTest(payload=payload):
+                response = Response(payload)
+                with self.assertRaises(MODULE.ReadbackError):
+                    MODULE.GitHubApi("x" * 32, opener=Opener(response)).get(
+                        f"/repos/{MODULE.REPO}"
+                    )
+                self.assertTrue(response.closed)
+
+    def test_ruleset_collection_and_bypass_shape_are_closed_world(self):
+        data = values()
+        del data["ruleset_17"]["bypass_actors"]
+        with tempfile.TemporaryDirectory() as directory:
+            result = MODULE.capture(
+                FakeApi(data), Path(directory) / "packet",
+                "a" * 40, ["governance-audit"],
+            )
+            self.assertFalse(result["assertions"]["ruleset_bypass_empty"])
+        data = values()
+        data["rulesets"].append({"id": 17})
+        with tempfile.TemporaryDirectory() as directory:
+            result = MODULE.capture(
+                FakeApi(data), Path(directory) / "packet",
+                "a" * 40, ["governance-audit"],
+            )
+            self.assertFalse(result["assertions"]["rulesets_read_back"])
+        data = values()
+        data["rulesets"].append({"name": "missing-id"})
+        with tempfile.TemporaryDirectory() as directory:
+            result = MODULE.capture(
+                FakeApi(data), Path(directory) / "packet",
+                "a" * 40, ["governance-audit"],
+            )
+            self.assertFalse(result["assertions"]["rulesets_read_back"])
+
+    def test_canonical_workflow_run_and_job_evidence_are_mandatory(self):
+        data = values()
+        data["required_workflow_run"]["workflow_id"] = 999
+        with tempfile.TemporaryDirectory() as directory:
+            result = MODULE.capture(
+                FakeApi(data), Path(directory) / "packet",
+                "a" * 40, ["governance-audit"],
+            )
+            self.assertFalse(
+                result["assertions"]["canonical_required_workflow_identity"]
+            )
+        data = values()
+        data["required_workflow_jobs"] = {"total_count": 0, "jobs": []}
+        with tempfile.TemporaryDirectory() as directory:
+            result = MODULE.capture(
+                FakeApi(data), Path(directory) / "packet",
+                "a" * 40, ["governance-audit"],
+            )
+            self.assertFalse(
+                result["assertions"]["canonical_required_workflow_job_evidence"]
+            )
+        data = values()
+        data["required_check_detail"]["head_sha"] = "b" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            result = MODULE.capture(
+                FakeApi(data), Path(directory) / "packet",
+                "a" * 40, ["governance-audit"],
+            )
+            self.assertFalse(
+                result["assertions"]["canonical_required_check_identity"]
+            )
+
+    def test_policy_surface_must_be_stable_across_two_reads(self):
+        class DriftingApi(FakeApi):
+            def __init__(self, data):
+                super().__init__(data)
+                self.counts = {}
+
+            def get(self, path):
+                result = super().get(path)
+                key = self.key_for(path)
+                self.counts[key] = self.counts.get(key, 0) + 1
+                if key == "protection" and self.counts[key] == 2:
+                    result[2]["enforce_admins"]["enabled"] = False
+                return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = MODULE.capture(
+                DriftingApi(values()), Path(directory) / "packet",
+                "a" * 40, ["governance-audit"],
+            )
+            self.assertFalse(result["assertions"]["policy_surface_stable"])
+            self.assertFalse(result["all_required_assertions"])
+
+    def test_maintainer_can_capture_read_only_administration_surface(self):
+        data = values()
+        data["actor_permission"]["permission"] = "maintain"
+        with tempfile.TemporaryDirectory() as directory:
+            result = MODULE.capture(
+                FakeApi(data), Path(directory) / "packet",
+                "a" * 40, ["governance-audit"],
+            )
+            self.assertTrue(result["assertions"]["authenticated_human_admin"])
+            self.assertTrue(result["all_required_assertions"])
 
 
 if __name__ == "__main__": unittest.main()
