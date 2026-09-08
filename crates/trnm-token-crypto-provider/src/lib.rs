@@ -5,7 +5,11 @@
 //!
 //! This crate contains no SHA, HMAC, constant-time or key-storage
 //! implementation. Production providers must be supplied by separately
-//! reviewed software or remote-key adapters.
+//! reviewed software or remote-key adapters. Operational key checkpoints are
+//! locally shape-validated before any external verifier runs: signing authority
+//! retains exactly one `Active` record at the highest epoch, authority loss
+//! retains none, and verification/terminal lifecycle timestamps must remain
+//! consistent with activation and the checkpoint time high-water.
 
 mod lifecycle;
 
