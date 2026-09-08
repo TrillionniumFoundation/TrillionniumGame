@@ -6,6 +6,10 @@ on:
       - codex/plan-v32-controller-v2-2026-09-09
     paths:
       - .github/workflows/plan-v32-controller-v4-20260909.yml
+      - tools/plan_v32_converge.py
+      - tools/finalize_plan_v32_contracts.py
+      - tools/finalize_plan_v32_regressions.py
+      - tools/run_plan_v32_convergence.sh
 
 permissions:
   contents: write
@@ -24,143 +28,21 @@ jobs:
       TARGET_BRANCH: codex/architecture-gap-closure-2026-09-08
       TARGET_PR: "116"
     steps:
-      - name: Fetch controller, provider and stable target
+      - name: Fetch exact controller source
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          for name in controller provider target; do rm -rf "$GITHUB_WORKSPACE/$name"; done
+          rm -rf "$GITHUB_WORKSPACE/controller"
           git init "$GITHUB_WORKSPACE/controller"
-          git -C "$GITHUB_WORKSPACE/controller" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/controller" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git -C "$GITHUB_WORKSPACE/controller" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git -C "$GITHUB_WORKSPACE/controller" checkout --detach FETCH_HEAD
-          python3 -m py_compile "$GITHUB_WORKSPACE/controller/tools/plan_v32_converge.py" "$GITHUB_WORKSPACE/controller/tools/finalize_plan_v32_contracts.py"
-          git init "$GITHUB_WORKSPACE/provider"
-          git -C "$GITHUB_WORKSPACE/provider" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git -C "$GITHUB_WORKSPACE/provider" fetch --no-tags --depth=1 origin refs/heads/codex/provider-composition-transport-2026-09-09
-          git -C "$GITHUB_WORKSPACE/provider" checkout --detach FETCH_HEAD
-          python3 -m py_compile "$GITHUB_WORKSPACE/provider/tools/compose_crypto_provider.py"
-          previous=''
-          stable=0
-          for _ in $(seq 1 8); do
-            current=$(git -C "$GITHUB_WORKSPACE/controller" ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
-            test -n "$current"
-            if [[ "$current" == "$previous" ]]; then stable=$((stable + 1)); else previous=$current; stable=1; fi
-            if [[ "$stable" -ge 2 ]]; then break; fi
-            sleep 5
-          done
-          test "$stable" -ge 2
-          printf '%s\n' "$previous" > "$RUNNER_TEMP/original-head"
-          git init "$GITHUB_WORKSPACE/target"
-          git -C "$GITHUB_WORKSPACE/target" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git -C "$GITHUB_WORKSPACE/target" fetch --no-tags origin "$previous"
-          git -C "$GITHUB_WORKSPACE/target" checkout -b "$TARGET_BRANCH" FETCH_HEAD
-
-      - name: Apply deterministic architecture convergence
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 "$GITHUB_WORKSPACE/controller/tools/plan_v32_converge.py" "$GITHUB_WORKSPACE/target"
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path("target/crates/trnm-persistence-pg/src/auth.rs")
-          text = path.read_text(encoding="utf-8")
-          if "PKey::hmac" in text and "pub fn from_provider(" in text:
-              text = text.replace("pub fn from_provider(", "pub fn from_provider_legacy(", 1)
-              path.write_text(text, encoding="utf-8")
-          PY
-          python3 "$GITHUB_WORKSPACE/provider/tools/compose_crypto_provider.py" "$GITHUB_WORKSPACE/target"
-          python3 "$GITHUB_WORKSPACE/controller/tools/finalize_plan_v32_contracts.py" "$GITHUB_WORKSPACE/target"
-          git -C "$GITHUB_WORKSPACE/target" diff --check
-          git -C "$GITHUB_WORKSPACE/target" add -A
-
-      - name: Resolve exact Rust dependency graph
-        working-directory: target
-        run: |
-          set -euo pipefail
-          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
-          rustup override set 1.85.1
-          cargo generate-lockfile
-          cargo generate-lockfile --manifest-path crates/trnm-token-jwt-adapter-gate/Cargo.toml
-          cargo generate-lockfile --manifest-path crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml
-          cargo metadata --format-version 1 --no-deps > "$RUNNER_TEMP/metadata.json"
-
-      - name: Validate control plane and Python corpus
-        working-directory: target
-        shell: bash
-        run: |
-          set -euo pipefail
-          exec > >(tee "$RUNNER_TEMP/control.log") 2>&1
-          python3 scripts/check-production-crypto-paths.py
-          python3 scripts/check-jwt-rustcrypto-backend.py
-          python3 scripts/check-workspace-convergence.py
-          python3 scripts/check-single-server-authority.py
-          python3 scripts/check-auth-provider-composition.py
-          python3 scripts/check-documentation-authority.py
-          python3 scripts/check-plan.py
-          python3 scripts/check-rust-foundation.py
-          python3 scripts/check-rust-package-inventory.py
-          python3 scripts/check-trnm-server.py
-          python3 -m compileall -q scripts tools tests
-          python3 -m unittest discover -s tests -p 'test_*.py' -q
-
-      - name: Validate Rust workspace, gates and process
-        working-directory: target
-        shell: bash
-        run: |
-          set -euo pipefail
-          exec > >(tee "$RUNNER_TEMP/rust.log") 2>&1
-          cargo fmt --all
-          cargo fmt --manifest-path crates/trnm-token-jwt-adapter-gate/Cargo.toml
-          cargo fmt --manifest-path crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml
-          cargo fmt --all -- --check
-          cargo test --workspace --all-targets --locked
-          cargo clippy --workspace --all-targets --locked -- -D warnings
-          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
-            cargo test --manifest-path "$manifest" --all-targets --locked
-            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
-          done
-          cargo test -p trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server --locked
-          cargo clippy -p trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server --locked -- -D warnings
-          bash scripts/check-rust-server-process.sh
-
-      - name: Validate Go runtime including race detector
-        working-directory: target/runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          exec > >(tee "$RUNNER_TEMP/go.log") 2>&1
-          test -z "$(gofmt -l .)"
-          go test ./... -count=1
-          go test -race ./... -count=1
-          go vet ./...
-
-      - name: Publish ordinary fast-forward source candidate
-        working-directory: target
+          test "$(git -C "$GITHUB_WORKSPACE/controller" rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Execute fail-closed convergence and complete validation
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: |
-          set -euo pipefail
-          original=$(cat "$RUNNER_TEMP/original-head")
-          remote=$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
-          test "$remote" = "$original"
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A
-          git commit -m 'architecture: finalize Plan v3.2 source convergence'
-          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
-          head=$(git rev-parse HEAD)
-          gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" -f body="Plan v3.2 deterministic source convergence passed complete control-plane/Python, Rust all-target strict Clippy/process, and Go race/vet at \`$head\`. Independent acceptance, complete product parity, production infrastructure and all-gap closure remain separate false facts." >/dev/null
-
-      - name: Report fail-closed diagnostics
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          head=$(cat "$RUNNER_TEMP/original-head" 2>/dev/null || printf unknown)
-          { printf 'Plan v3.2 convergence failed closed; target unchanged.\n\n```text\nhead=%s\n' "$head"; for name in control rust go; do test ! -f "$RUNNER_TEMP/$name.log" || { printf '\n=== %s ===\n' "$name"; tail -n 120 "$RUNNER_TEMP/$name.log"; }; done; printf '\n```\n'; } > "$RUNNER_TEMP/failure.md"
-          gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${TARGET_PR}/comments" -f body="$(tail -c 60000 "$RUNNER_TEMP/failure.md")" >/dev/null
+        run: bash "$GITHUB_WORKSPACE/controller/tools/run_plan_v32_convergence.sh"
