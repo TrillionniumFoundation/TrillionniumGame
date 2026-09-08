@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      EXPECTED_PARENT: 90f93e32909f876e1fde1b1834085c31cc349e6e
+      EXPECTED_PARENT: d70d6c6999af4ecafbcd8fc9916539031a60f94a
       TARGET_BRANCH: ops/governance-readback-packet-2026-09-08
     steps:
       - name: Fetch exact temporary repair object
@@ -40,12 +40,11 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD^)" = "$EXPECTED_PARENT"
           actual=$(git diff --name-only "$EXPECTED_PARENT" HEAD | sort)
-          expected=$(printf '%s\n' \
-            '.github/workflows/codex-governance-packet-custody-r3.yml' \
-            'scripts/codex-apply-governance-packet-custody-r3.py' | sort)
+          expected='.github/workflows/codex-governance-packet-custody-r3.yml'
           test "$actual" = "$expected"
+          test -f scripts/codex-apply-governance-packet-custody-r3.py
 
-      - name: Apply descriptor-relative custody repair
+      - name: Apply, remove temporary authority, and qualify final tree
         shell: bash
         run: |
           set -euo pipefail
@@ -56,6 +55,11 @@ jobs:
             tests/control_plane/test_capture_repository_governance_readback.py
           python3 -m unittest -v \
             tests/control_plane/test_capture_repository_governance_readback.py
+          rm -f \
+            .github/workflows/codex-governance-packet-custody-r3.yml \
+            scripts/codex-apply-governance-packet-custody-r3.py
+          test ! -e .github/workflows/codex-governance-packet-custody-r3.yml
+          test ! -e scripts/codex-apply-governance-packet-custody-r3.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v
           python3 scripts/check-plan.py
 
@@ -66,9 +70,6 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
-          rm -f \
-            .github/workflows/codex-governance-packet-custody-r3.yml \
-            scripts/codex-apply-governance-packet-custody-r3.py
           git add -A
           actual=$(git diff --cached --name-only | sort)
           expected=$(printf '%s\n' \
