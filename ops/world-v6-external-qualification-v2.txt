@@ -1,0 +1,6 @@
+schema=trillionnium.external-world-v6-trigger.v2
+world_pr=104
+world_base=0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
+world_head=e2c2962981df6c420de764fcb11f626463245f98
+world_merge=0d01195f6fe882597399638bbd843b779331c436
+production_authorization=not_granted
