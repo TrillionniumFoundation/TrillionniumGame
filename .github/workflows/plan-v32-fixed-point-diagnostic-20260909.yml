@@ -1,0 +1,85 @@
+name: plan-v32-fixed-point-diagnostic-20260909
+
+on:
+  push:
+    branches:
+      - codex/plan-v32-controller-v2-2026-09-09
+    paths:
+      - .github/workflows/plan-v32-fixed-point-diagnostic-20260909.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch controller, provider and exact target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in controller provider target; do
+            rm -rf "$GITHUB_WORKSPACE/$name"
+            git init "$GITHUB_WORKSPACE/$name"
+            git -C "$GITHUB_WORKSPACE/$name" remote add origin \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          done
+          git -C "$GITHUB_WORKSPACE/controller" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/controller" checkout --detach FETCH_HEAD
+          git -C "$GITHUB_WORKSPACE/provider" fetch --no-tags --depth=1 origin 256fe87dd093beb54aa398ce62888d1d4edf1f19
+          git -C "$GITHUB_WORKSPACE/provider" checkout --detach FETCH_HEAD
+          git -C "$GITHUB_WORKSPACE/target" fetch --no-tags --depth=1 origin ead3a64fccf97ca25ad974c7312f2ca7260ddde1
+          git -C "$GITHUB_WORKSPACE/target" checkout --detach FETCH_HEAD
+      - name: Replay deterministic transform and expose fixed-point delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          C="$GITHUB_WORKSPACE/controller"
+          P="$GITHUB_WORKSPACE/provider"
+          T="$GITHUB_WORKSPACE/target"
+          python3 "$C/tools/plan_v32_converge.py" "$T"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("target/crates/trnm-persistence-pg/src/auth.rs")
+          text = path.read_text(encoding="utf-8")
+          if "PKey::hmac" in text and "pub fn from_provider(" in text:
+              path.write_text(text.replace("pub fn from_provider(", "pub fn from_provider_legacy(", 1), encoding="utf-8")
+          PY
+          python3 "$P/tools/compose_crypto_provider.py" "$T"
+          python3 "$C/tools/finalize_plan_v32_contracts.py" "$T"
+          python3 "$C/tools/finalize_plan_v32_regressions.py" "$T"
+          python3 "$C/tools/finalize_plan_v32_regressions_v2.py" "$T"
+          python3 - <<'PY'
+          from pathlib import Path
+          for path in sorted(Path("target").rglob("*.rs")):
+              text = path.read_text(encoding="utf-8")
+              if "new_from_slice" not in text or "use hmac" not in text or "KeyInit" in text:
+                  continue
+              updated = text.replace("use hmac::{Hmac, Mac};", "use hmac::{Hmac, KeyInit, Mac};", 1)
+              if updated == text:
+                  updated = text.replace("use hmac::{Mac, Hmac};", "use hmac::{Hmac, KeyInit, Mac};", 1)
+              if updated == text:
+                  raise SystemExit(f"unable to add hmac::KeyInit import: {path}")
+              path.write_text(updated, encoding="utf-8")
+          PY
+          cd "$T"
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo generate-lockfile --manifest-path crates/trnm-token-jwt-adapter-gate/Cargo.toml
+          cargo generate-lockfile --manifest-path crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml
+          cargo fmt --all
+          cargo fmt --manifest-path crates/trnm-token-jwt-adapter-gate/Cargo.toml
+          cargo fmt --manifest-path crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml
+          git add -A
+          printf '\n=== FIXED_POINT_STATUS ===\n'
+          git status --short
+          printf '\n=== FIXED_POINT_PATHS ===\n'
+          git diff --cached --name-status
+          printf '\n=== FIXED_POINT_STAT ===\n'
+          git diff --cached --stat
+          printf '\n=== FIXED_POINT_PATCH_EXCLUDING_LOCKS ===\n'
+          git diff --cached -- . ':(exclude)**/Cargo.lock' ':(exclude)Cargo.lock'
