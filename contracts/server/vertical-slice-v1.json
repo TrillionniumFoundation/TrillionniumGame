@@ -3,41 +3,45 @@
   "project_id": "trillionnium-game",
   "status": "source-candidate",
   "crate": "crates/trnm-server",
-  "binary": "trnm-server-foundation",
+  "binary": "trnm-server-composition-candidate",
   "implemented": [
-    "typed serve/check-config/version/help command parsing",
-    "bounded configurable HTTP/1.1 request parser",
-    "duplicate content-length rejection",
-    "transfer-encoding rejection",
-    "health and readiness endpoints",
-    "one bootstrap and one authority command reaching prepare/commit",
-    "event and transactional-outbox intent creation in the pure core",
-    "exact duplicate receipt replay",
-    "stale revision rejection",
-    "bounded synchronous worker queue and socket I/O timeouts"
+    "typed check-config/migrate/serve command parsing",
+    "bounded production-style configuration loader",
+    "bounded HTTP/1.1 request parser and response writer",
+    "duplicate content-length and transfer-encoding rejection",
+    "health readiness metrics and authenticated drain endpoints",
+    "PostgreSQL repository composition source",
+    "acknowledgement construction after commit or exact receipt replay",
+    "bounded retry pool acquisition and cancellation source",
+    "generated gRPC Healthcheck service source",
+    "bounded WebSocket JSON and protobuf-envelope source",
+    "access-token session refresh and logout source",
+    "schema migration and startup validation source"
   ],
   "not_implemented": [
-    "production configuration loader",
-    "actual migration execution",
-    "PostgreSQL or CockroachDB repository binding",
-    "HTTP JSON compatibility adapter",
-    "gRPC server",
-    "WebSocket JSON/protobuf server",
-    "production session verification",
-    "outbox worker and external delivery",
-    "signal-based graceful shutdown",
-    "metrics and traces",
-    "immutable Nakama differential",
-    "load, HA, security and operations evidence"
+    "canonical process authority transfer from trnm-persistence-pg",
+    "complete Nakama HTTP gRPC gateway and RTAPI compatibility",
+    "complete official SDK black-box differential",
+    "complete provider IAP subscription and Console surfaces",
+    "accepted PostgreSQL and CockroachDB durability evidence",
+    "durable outbox external-effect worker acceptance",
+    "distributed route and presence ownership",
+    "multi-node HA backup PITR capacity and endurance evidence",
+    "real KMS HSM and production credential custody",
+    "migration shadow canary cutover rollback and retirement evidence",
+    "conflict-free specialist and whole-candidate acceptance"
   ],
   "required_local_commands": [
     "cargo fmt --manifest-path crates/trnm-server/Cargo.toml -- --check",
     "cargo test --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked",
     "cargo clippy --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked -- -D warnings",
-    "bash scripts/check-rust-server-process.sh"
+    "python3 scripts/check-rust-server-source-candidate.py",
+    "python3 scripts/check-rust-server-vertical-slice.py"
   ],
   "gap_ids": [
-    "GAP-P0-SERVER-001"
+    "GAP-P0-SERVER-001",
+    "GAP-P0-DATA-001",
+    "GAP-P0-CRYPTO-001"
   ],
   "claims": {
     "rust_binary_exists": true,
