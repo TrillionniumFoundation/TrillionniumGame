@@ -1,0 +1,66 @@
+name: architecture-test-name-one-shot
+
+on:
+  push:
+    branches:
+      - codex/architecture-gap-closure-2026-09-08
+    paths:
+      - .github/workflows/architecture-test-name-one-shot.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: architecture-test-name-one-shot
+  cancel-in-progress: false
+
+jobs:
+  repair-test-name:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Fetch exact branch head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
+          test "$GITHUB_REF_NAME" = 'codex/architecture-gap-closure-2026-09-08'
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Restore stable test contract name
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crates/trnm-persistence-pg/src/auth.rs')
+          text = path.read_text(encoding='utf-8')
+          old = 'fn provider_boundary_is_visible_and_key_material_stays_redacted()'
+          new = 'fn verifier_debug_redacts_key_material()'
+          assert text.count(old) == 1, text.count(old)
+          assert new not in text
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          git diff --check
+          test "$(git diff --name-only)" = 'crates/trnm-persistence-pg/src/auth.rs'
+          grep -F 'fn verifier_debug_redacts_key_material()' crates/trnm-persistence-pg/src/auth.rs
+          grep -F 'openssl-software-source-candidate' crates/trnm-persistence-pg/src/auth.rs
+      - name: Commit to this feature branch only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-persistence-pg/src/auth.rs
+          git commit -m 'test(auth): preserve verifier redaction contract name'
+          git push origin HEAD:refs/heads/codex/architecture-gap-closure-2026-09-08
