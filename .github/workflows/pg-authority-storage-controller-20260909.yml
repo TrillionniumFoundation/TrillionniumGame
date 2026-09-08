@@ -1,0 +1,119 @@
+name: pg-authority-storage-controller-20260909
+
+on:
+  push:
+    branches:
+      - codex/plan-v32-controller-v2-2026-09-09
+    paths:
+      - .github/workflows/pg-authority-storage-controller-20260909.yml
+      - tools/compose_pg_authority_storage.py
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: pg-authority-storage-controller-20260909
+  cancel-in-progress: true
+
+jobs:
+  compose-validate-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TARGET_BRANCH: codex/postgresql-authority-storage-closure-2026-09-09
+    steps:
+      - name: Fetch exact controller and stable target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in controller target; do
+            rm -rf "$GITHUB_WORKSPACE/$name"
+            git init "$GITHUB_WORKSPACE/$name"
+            git -C "$GITHUB_WORKSPACE/$name" remote add origin \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          done
+          git -C "$GITHUB_WORKSPACE/controller" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/controller" checkout --detach FETCH_HEAD
+          previous=''
+          stable=0
+          for _ in $(seq 1 8); do
+            current=$(git -C "$GITHUB_WORKSPACE/controller" ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
+            test -n "$current"
+            if [[ "$current" == "$previous" ]]; then stable=$((stable + 1)); else previous=$current; stable=1; fi
+            if [[ "$stable" -ge 2 ]]; then break; fi
+            sleep 5
+          done
+          test "$stable" -ge 2
+          printf '%s\n' "$previous" > "$RUNNER_TEMP/original-head"
+          git -C "$GITHUB_WORKSPACE/target" fetch --no-tags origin "$previous"
+          git -C "$GITHUB_WORKSPACE/target" checkout -b "$TARGET_BRANCH" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/target" rev-parse HEAD)" = "$previous"
+      - name: Compose source candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          C="$GITHUB_WORKSPACE/controller"
+          T="$GITHUB_WORKSPACE/target"
+          python3 -m py_compile "$C/tools/compose_pg_authority_storage.py"
+          python3 "$C/tools/compose_pg_authority_storage.py" "$T"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("target/crates/trnm-persistence-pg/src/storage.rs")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace(
+              "use trnm_contracts::{DomainError, RetryClass, StableCode, UserId};",
+              "use trnm_contracts::{DomainError, RetryClass, StableCode};\n#[cfg(test)]\nuse trnm_contracts::UserId;",
+              1,
+          )
+          text = text.replace(
+              "\nfn decode_storage_key(\n",
+              "\n#[cfg(test)]\nfn decode_storage_key(\n",
+              1,
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
+          git -C "$T" diff --check
+      - name: Validate control, Rust and live-test contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$GITHUB_WORKSPACE/target"
+          cd "$T"
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          cargo fmt --all -- --check
+          python3 scripts/check-schema-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-documentation-authority.py
+          python3 -m compileall -q scripts tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -q
+          cargo test -p trnm-storage-core --all-targets --locked
+          cargo test -p trnm-persistence-pg --all-targets --locked
+          cargo clippy -p trnm-storage-core --all-targets --locked -- -D warnings
+          cargo clippy -p trnm-persistence-pg --all-targets --locked -- -D warnings
+          git add -A
+          git diff --cached --check
+      - name: Publish only after exact validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$GITHUB_WORKSPACE/target"
+          cd "$T"
+          original=$(cat "$RUNNER_TEMP/original-head")
+          remote=$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
+          test "$remote" = "$original"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'database: add fenced authority and transactional storage adapters'
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          head=$(git rev-parse HEAD)
+          tree=$(git rev-parse 'HEAD^{tree}')
+          gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/36/comments" \
+            -f body="AC-3 authority/storage source candidate passed control-plane, schema-authority, storage-core and persistence-pg all-target tests plus strict Clippy, then fast-forwarded to \`${head}\` (tree \`${tree}\`). Native dual-profile and aggregate qualification, independent database/storage acceptance, HA/PITR/RPO/RTO and production promotion remain separate facts." >/dev/null
