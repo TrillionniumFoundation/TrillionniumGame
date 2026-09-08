@@ -1538,7 +1538,9 @@ dependencies = [
  "trnm-contracts",
  "trnm-realtime-wire",
  "trnm-session-core",
+ "trnm-token-crypto-provider",
  "trnm-token-jwt-adapter",
+ "trnm-token-jwt-provider-adapter",
 ]
 
 [[package]]
@@ -1574,8 +1576,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "trnm-token-crypto-provider"
+version = "0.1.0"
+
+[[package]]
 name = "trnm-token-jwt-adapter"
 version = "0.1.0"
+
+[[package]]
+name = "trnm-token-jwt-provider-adapter"
+version = "0.1.0"
+dependencies = [
+ "trnm-token-crypto-provider",
+ "trnm-token-jwt-adapter",
+]
 
 [[package]]
 name = "try-lock"
