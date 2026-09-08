@@ -38,16 +38,24 @@ jobs:
           git -C "$GITHUB_WORKSPACE" config user.name "ProfHepta"
           git -C "$GITHUB_WORKSPACE" config user.email "102159240+ProfHepta@users.noreply.github.com"
 
-      - name: Apply exact legacy and smoke repair
+      - name: Apply exact operator-output repair
         shell: bash
         run: |
           set -euo pipefail
           python3 /tmp/codex-security-log-legacy-smoke-fix.py
           mapfile -t changed < <(git diff --name-only | sort)
-          test "${#changed[@]}" -eq 3
-          test "${changed[0]}" = "crates/trnm-persistence-pg/src/bin/trnm-server.rs"
-          test "${changed[1]}" = "crates/trnm-persistence-pg/src/bin/trnm_server/server.rs"
-          test "${changed[2]}" = "scripts/check-rust-server-process.sh"
+          expected=(
+            crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs
+            crates/trnm-persistence-pg/src/bin/trnm-server.rs
+            crates/trnm-persistence-pg/src/bin/trnm_server/server.rs
+            scripts/check-rust-server-process.sh
+            scripts/ci-outbox-spool-worker.sh
+            scripts/ci-trnm-server-live.sh
+          )
+          test "${#changed[@]}" -eq "${#expected[@]}"
+          for index in "${!expected[@]}"; do
+            test "${changed[$index]}" = "${expected[$index]}"
+          done
           git diff --check
           test "$(git grep -F 'configuration: {config:?}' -- crates/trnm-server crates/trnm-persistence-pg || true)" = ""
           test "$(git grep -F 'migration profile=' -- crates/trnm-server crates/trnm-persistence-pg || true)" = ""
@@ -71,7 +79,7 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
 
-      - name: Validate every Rust target and the real process smoke
+      - name: Validate every Rust target and process smoke
         shell: bash
         run: |
           set -euo pipefail
@@ -86,13 +94,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git add crates/trnm-persistence-pg/src/bin/trnm-server.rs crates/trnm-persistence-pg/src/bin/trnm_server/server.rs scripts/check-rust-server-process.sh
+          paths=(
+            crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs
+            crates/trnm-persistence-pg/src/bin/trnm-server.rs
+            crates/trnm-persistence-pg/src/bin/trnm_server/server.rs
+            scripts/check-rust-server-process.sh
+            scripts/ci-outbox-spool-worker.sh
+            scripts/ci-trnm-server-live.sh
+          )
+          git add "${paths[@]}"
           mapfile -t staged < <(git diff --cached --name-only | sort)
-          test "${#staged[@]}" -eq 3
-          test "${staged[0]}" = "crates/trnm-persistence-pg/src/bin/trnm-server.rs"
-          test "${staged[1]}" = "crates/trnm-persistence-pg/src/bin/trnm_server/server.rs"
-          test "${staged[2]}" = "scripts/check-rust-server-process.sh"
-          git commit -m "fix(security): align legacy operator output and smoke contract"
+          test "${#staged[@]}" -eq "${#paths[@]}"
+          for index in "${!paths[@]}"; do
+            test "${staged[$index]}" = "${paths[$index]}"
+          done
+          git commit -m "fix(security): align all operator output contracts"
           new_head="$(git rev-parse HEAD)"
           test "$(git show -s --format=%P "$new_head")" = "$TARGET_SHA"
           test -z "$(git status --porcelain)"
