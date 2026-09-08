@@ -75,6 +75,25 @@ python3 "$PROVIDER/tools/compose_crypto_provider.py" "$TARGET"
 python3 "$CONTROLLER/tools/finalize_plan_v32_contracts.py" "$TARGET"
 python3 "$CONTROLLER/tools/finalize_plan_v32_regressions.py" "$TARGET"
 python3 "$CONTROLLER/tools/finalize_plan_v32_regressions_v2.py" "$TARGET"
+python3 - <<'PY'
+from pathlib import Path
+root = Path("target")
+changed = []
+for path in sorted(root.rglob("*.rs")):
+    text = path.read_text(encoding="utf-8")
+    if "new_from_slice" not in text or "use hmac" not in text or "KeyInit" in text:
+        continue
+    updated = text.replace("use hmac::{Hmac, Mac};", "use hmac::{Hmac, KeyInit, Mac};", 1)
+    if updated == text:
+        updated = text.replace("use hmac::{Mac, Hmac};", "use hmac::{Hmac, KeyInit, Mac};", 1)
+    if updated == text:
+        raise SystemExit(f"unable to add hmac::KeyInit import: {path}")
+    path.write_text(updated, encoding="utf-8")
+    changed.append(path.as_posix())
+if not changed:
+    raise SystemExit("no generated HMAC source required KeyInit repair")
+print({"hmac_key_init_imports": changed})
+PY
 git -C "$TARGET" diff --check
 git -C "$TARGET" add -A
 
