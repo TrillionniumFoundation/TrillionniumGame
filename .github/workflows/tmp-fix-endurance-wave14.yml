@@ -1,0 +1,308 @@
+name: tmp-fix-endurance-wave14
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-fix-endurance-wave14.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-endurance-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Wait for exact endurance branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha=''
+          for _ in $(seq 1 1080); do
+            head_sha="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$head_sha" && break
+            sleep 20
+          done
+          test -n "$head_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$head_sha"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$FEATURE_BRANCH" "$head_sha"
+
+      - name: Derive rates and bind unique run artifacts
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/trnm-endurance-core/src/lib.rs')
+          text = path.read_text(encoding='utf-8')
+
+          old_slo = '''        || self.minimum_success_basis_points > MAX_BASIS_POINTS
+        || self.minimum_reconnect_success_basis_points > MAX_BASIS_POINTS
+'''
+          new_slo = '''        || self.minimum_success_basis_points > MAX_BASIS_POINTS
+        || self
+            .minimum_success_basis_points
+            .checked_add(self.maximum_error_basis_points)
+            != Some(MAX_BASIS_POINTS)
+        || self.minimum_reconnect_success_basis_points > MAX_BASIS_POINTS
+'''
+          if old_slo in text:
+              text = text.replace(old_slo, new_slo, 1)
+          elif new_slo not in text:
+              raise SystemExit('SLO consistency anchor missing')
+
+          metrics_start = text.index('impl RunMetrics {')
+          packet_start = text.index('#[derive(Clone, Debug, Eq, PartialEq)]\npub struct EndurancePacket', metrics_start)
+          metrics_impl = '''impl RunMetrics {
+    pub fn validate(self, policy: SloPolicy) -> Result<Self, EnduranceError> {
+        let accounted = self
+            .successful_requests
+            .checked_add(self.failed_requests)
+            .ok_or_else(|| EnduranceError::invalid("request_count_overflow"))?;
+        if self.total_requests == 0
+            || accounted != self.total_requests
+            || self.reconnect_attempts == 0
+            || self.reconnect_successes > self.reconnect_attempts
+        {
+            return Err(EnduranceError::invalid("run_metrics_invalid"));
+        }
+        let expected_error_basis_points = basis_points(
+            self.failed_requests,
+            self.total_requests,
+        )?;
+        let expected_success_basis_points = MAX_BASIS_POINTS
+            .checked_sub(expected_error_basis_points)
+            .ok_or_else(|| EnduranceError::invalid("basis_point_underflow"))?;
+        let expected_reconnect_basis_points = basis_points(
+            self.reconnect_successes,
+            self.reconnect_attempts,
+        )?;
+        if self.error_basis_points != expected_error_basis_points
+            || self.success_basis_points != expected_success_basis_points
+            || self.reconnect_success_basis_points
+                != expected_reconnect_basis_points
+        {
+            return Err(EnduranceError::invalid("reported_rate_mismatch"));
+        }
+        let memory_growth = self
+            .final_memory_bytes
+            .saturating_sub(self.initial_memory_bytes);
+        if self.error_basis_points > policy.maximum_error_basis_points
+            || self.success_basis_points < policy.minimum_success_basis_points
+            || self.p95_latency_us > policy.maximum_p95_latency_us
+            || self.p99_latency_us > policy.maximum_p99_latency_us
+            || memory_growth > policy.maximum_memory_growth_bytes
+            || self.maximum_queue_depth > policy.maximum_queue_depth
+            || self.maximum_pool_waiters > policy.maximum_pool_waiters
+            || self.maximum_outbox_backlog > policy.maximum_outbox_backlog
+            || self.maximum_scheduler_drift_ms > policy.maximum_scheduler_drift_ms
+            || self.reconnect_success_basis_points
+                < policy.minimum_reconnect_success_basis_points
+            || self.cost_microunits_per_hour
+                > policy.maximum_cost_microunits_per_hour
+        {
+            return Err(EnduranceError::new(
+                StableEnduranceCode::FailedPrecondition,
+                "run_slo_missed",
+                false,
+            ));
+        }
+        Ok(self)
+    }
+}
+
+'''
+          text = text[:metrics_start] + metrics_impl + text[packet_start:]
+
+          old_samples = '''        let minimum_samples = elapsed
+            .checked_div(packet.slo.maximum_sample_gap_ms)
+            .unwrap_or(0);
+        if self.sample_count < minimum_samples {
+'''
+          new_samples = '''        let minimum_samples = minimum_sample_count(
+            elapsed,
+            packet.slo.maximum_sample_gap_ms,
+        )?;
+        if self.sample_count < minimum_samples {
+'''
+          if old_samples in text:
+              text = text.replace(old_samples, new_samples, 1)
+          elif new_samples not in text:
+              raise SystemExit('sample count anchor missing')
+
+          old_fields = '''    packets: BTreeMap<PacketId, EndurancePacket>,
+    runs: BTreeMap<RunId, EnduranceRun>,
+    duration_runs: BTreeMap<(PacketId, DurationClass), RunId>,
+'''
+          new_fields = '''    packets: BTreeMap<PacketId, EndurancePacket>,
+    runs: BTreeMap<RunId, EnduranceRun>,
+    artifact_owners: BTreeMap<Digest32, RunId>,
+    duration_runs: BTreeMap<(PacketId, DurationClass), RunId>,
+'''
+          if old_fields in text:
+              text = text.replace(old_fields, new_fields, 1)
+          elif new_fields not in text:
+              raise SystemExit('EnduranceRegistry field anchor missing')
+
+          old_init = '''            packets: BTreeMap::new(),
+            runs: BTreeMap::new(),
+            duration_runs: BTreeMap::new(),
+'''
+          new_init = '''            packets: BTreeMap::new(),
+            runs: BTreeMap::new(),
+            artifact_owners: BTreeMap::new(),
+            duration_runs: BTreeMap::new(),
+'''
+          if old_init in text:
+              text = text.replace(old_init, new_init, 1)
+          elif new_init not in text:
+              raise SystemExit('EnduranceRegistry initializer anchor missing')
+
+          validated_anchor = '''        let run = run.validate(packet)?;
+        let key = (run.packet, run.duration_class);
+'''
+          validated_replacement = '''        let run = run.validate(packet)?;
+        if self.artifact_owners.contains_key(&run.artifact_digest) {
+            return Err(EnduranceError::new(
+                StableEnduranceCode::AlreadyExists,
+                "endurance_artifact_reused",
+                false,
+            ));
+        }
+        let key = (run.packet, run.duration_class);
+'''
+          if validated_anchor in text:
+              text = text.replace(validated_anchor, validated_replacement, 1)
+          elif validated_replacement not in text:
+              raise SystemExit('run artifact validation anchor missing')
+
+          insertion = '''        self.duration_runs.insert(key, run.id);
+        self.runs.insert(run.id, run);
+'''
+          insertion_new = '''        self.duration_runs.insert(key, run.id);
+        self.artifact_owners.insert(run.artifact_digest, run.id);
+        self.runs.insert(run.id, run);
+'''
+          if insertion in text:
+              text = text.replace(insertion, insertion_new, 1)
+          elif insertion_new not in text:
+              raise SystemExit('run artifact insertion anchor missing')
+
+          helper_anchor = '#[cfg(test)]\nmod tests {'
+          if 'fn basis_points(' not in text:
+              helpers = '''fn basis_points(numerator: u64, denominator: u64) -> Result<u32, EnduranceError> {
+    if denominator == 0 || numerator > denominator {
+        return Err(EnduranceError::invalid("rate_denominator_invalid"));
+    }
+    let value = u128::from(numerator)
+        .checked_mul(u128::from(MAX_BASIS_POINTS))
+        .and_then(|product| product.checked_div(u128::from(denominator)))
+        .ok_or_else(|| EnduranceError::invalid("rate_calculation_failed"))?;
+    u32::try_from(value).map_err(|_| EnduranceError::invalid("rate_out_of_range"))
+}
+
+fn minimum_sample_count(elapsed_ms: u64, maximum_gap_ms: u64) -> Result<u64, EnduranceError> {
+    let rounded = elapsed_ms
+        .checked_add(maximum_gap_ms - 1)
+        .ok_or_else(|| EnduranceError::invalid("sample_interval_overflow"))?;
+    rounded
+        .checked_div(maximum_gap_ms)
+        .and_then(|intervals| intervals.checked_add(1))
+        .ok_or_else(|| EnduranceError::invalid("sample_count_overflow"))
+}
+
+'''
+              if helper_anchor not in text:
+                  raise SystemExit('helper insertion anchor missing')
+              text = text.replace(helper_anchor, helpers + helper_anchor, 1)
+
+          text = text.replace(
+              '            sample_count: elapsed / 60_000,',
+              '            sample_count: elapsed / 60_000 + 1,',
+              1,
+          )
+
+          test_anchor = '''    #[test]
+    fn profile_or_subject_mismatch_is_rejected() {'''
+          if 'fn one_retained_artifact_cannot_credit_two_duration_classes()' not in text:
+              addition = '''    #[test]
+    fn one_retained_artifact_cannot_credit_two_duration_classes() {
+        let mut registry = registry();
+        let first = run(2, DurationClass::Hours24);
+        let artifact = first.artifact_digest;
+        registry.record_run(first).unwrap();
+        let mut reused = run(3, DurationClass::Hours72);
+        reused.artifact_digest = artifact;
+        assert_eq!(
+            registry.record_run(reused).unwrap_err().reason(),
+            "endurance_artifact_reused"
+        );
+        assert_eq!(
+            registry.summary(id(1, PacketId::new)).unwrap().completed_durations,
+            BTreeSet::from([DurationClass::Hours24])
+        );
+    }
+
+'''
+              if test_anchor not in text:
+                  raise SystemExit('artifact reuse test anchor missing')
+              text = text.replace(test_anchor, addition + test_anchor, 1)
+
+          rate_test_anchor = '''    #[test]
+    fn slo_or_cost_miss_blocks_run_without_duration_credit() {'''
+          if 'fn reported_rates_must_match_raw_counts()' not in text:
+              addition = '''    #[test]
+    fn reported_rates_must_match_raw_counts() {
+        let mut registry = registry();
+        let mut run = run(2, DurationClass::Hours24);
+        run.metrics.error_basis_points = 0;
+        run.metrics.success_basis_points = MAX_BASIS_POINTS;
+        assert_eq!(
+            registry.record_run(run).unwrap_err().reason(),
+            "reported_rate_mismatch"
+        );
+    }
+
+'''
+              if rate_test_anchor not in text:
+                  raise SystemExit('rate test anchor missing')
+              text = text.replace(rate_test_anchor, addition + rate_test_anchor, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          if git diff --quiet; then echo 'changed=false' >> "$GITHUB_OUTPUT"; else echo 'changed=true' >> "$GITHUB_OUTPUT"; fi
+
+      - name: Qualify and publish endurance repair
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo test --package trnm-endurance-core --all-targets --locked
+          cargo clippy --package trnm-endurance-core --all-targets --locked -- -D warnings
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-endurance-core/src/lib.rs
+          git commit -m 'fix(operations): derive endurance rates and reserve artifacts'
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Endurance rates are now derived from raw counts, sample coverage uses a ceiling interval plus endpoints, and a retained artifact cannot credit multiple duration classes. Focused tests and strict Clippy passed in carrier run `${GITHUB_RUN_ID}`; exact-head checks must requalify."
