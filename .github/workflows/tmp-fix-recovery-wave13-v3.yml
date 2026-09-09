@@ -1,0 +1,307 @@
+name: tmp-fix-recovery-wave13-v3
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-fix-recovery-wave13-v3.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-recovery-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Wait for exact recovery branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha=''
+          for _ in $(seq 1 1080); do
+            head_sha="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$head_sha" && break
+            sleep 20
+          done
+          test -n "$head_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=6 origin "$head_sha"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$FEATURE_BRANCH" "$head_sha"
+
+      - name: Apply format-independent recovery repair
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('crates/trnm-recovery-core/src/lib.rs')
+          text = path.read_text(encoding='utf-8')
+
+          if 'pub source_observed_at_ms: u64' not in text:
+              text, count = re.subn(
+                  r'(\s*pub backup_completed_at_ms: u64,\n)(\s*pub backup_artifact_digest: Digest32,\n)',
+                  r'\1    pub source_observed_at_ms: u64,\n'
+                  r'\2    pub expected_catalog_digest: Digest32,\n'
+                  r'    pub expected_semantic_digest: Digest32,\n',
+                  text,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit('RecoveryPacket semantic field insertion failed')
+
+          packet_impl_start = text.index('impl RecoveryPacket {')
+          packet_impl_end = text.index('#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\npub enum Invariant', packet_impl_start)
+          packet_impl = text[packet_impl_start:packet_impl_end]
+          packet_impl = packet_impl.replace(
+              'self.backup_completed_at_ms < self.backup_started_at_ms',
+              'self.backup_completed_at_ms <= self.backup_started_at_ms',
+          )
+          if 'self.source_observed_at_ms < self.backup_completed_at_ms' not in packet_impl:
+              marker = '                || self.required_scenarios.is_empty()'
+              packet_impl = packet_impl.replace(
+                  marker,
+                  '                || self.source_observed_at_ms < self.backup_completed_at_ms\n'
+                  + marker,
+                  1,
+              )
+          text = text[:packet_impl_start] + packet_impl + text[packet_impl_end:]
+
+          invariant_enum_start = text.index('pub enum Invariant {')
+          invariant_enum_end = text.index('\n}\n', invariant_enum_start) + 3
+          if 'const REQUIRED_INVARIANTS' not in text:
+              constant = '''
+const REQUIRED_INVARIANTS: [Invariant; 10] = [
+    Invariant::AcknowledgedCommandLoss,
+    Invariant::DuplicateVisibleValue,
+    Invariant::StaleAuthorityAcceptedWrite,
+    Invariant::PartialCommandEventOutboxCommit,
+    Invariant::DuplicateActiveAuthority,
+    Invariant::ReceiptReplayMismatch,
+    Invariant::SchemaDigestMismatch,
+    Invariant::MissingRestoredObject,
+    Invariant::CorruptRestoredObject,
+    Invariant::UnreconciledOutboxIntent,
+];
+'''
+              text = text[:invariant_enum_end] + constant + text[invariant_enum_end:]
+
+          text = text.replace(
+              'self.executed > self.collected',
+              'self.executed != self.collected',
+              1,
+          )
+
+          attempt_struct_start = text.index('pub struct RecoveryAttempt {')
+          attempt_struct_end = text.index('\n}\n', attempt_struct_start)
+          attempt_struct = text[attempt_struct_start:attempt_struct_end]
+          attempt_struct = attempt_struct.replace(
+              '    pub expected_semantic_digest: Digest32,\n',
+              '',
+          )
+          if 'pub assertion_digest: Digest32' not in attempt_struct:
+              attempt_struct = attempt_struct.replace(
+                  '    pub semantic_digest: Digest32,\n',
+                  '    pub semantic_digest: Digest32,\n    pub assertion_digest: Digest32,\n',
+                  1,
+              )
+          text = text[:attempt_struct_start] + attempt_struct + text[attempt_struct_end:]
+
+          attempt_impl_start = text.index('impl RecoveryAttempt {')
+          attempt_impl_end = text.index('#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\npub enum DecisionKind', attempt_impl_start)
+          attempt_impl = '''impl RecoveryAttempt {
+    pub fn validate(self, packet: &RecoveryPacket) -> Result<Self, RecoveryError> {
+        self.assertions.validate()?;
+        let scenario = packet
+            .required_scenarios
+            .get(&self.scenario)
+            .ok_or_else(|| {
+                RecoveryError::new(
+                    StableRecoveryCode::FailedPrecondition,
+                    "recovery_scenario_not_required",
+                    false,
+                )
+            })?;
+        let invariant_set_complete = self.invariant_violations.len() == REQUIRED_INVARIANTS.len()
+            && REQUIRED_INVARIANTS.iter().all(|invariant| {
+                self.invariant_violations.get(invariant).copied() == Some(0)
+            });
+        if self.packet != packet.id
+            || self.profile != packet.profile
+            || self.subject != packet.subject
+            || self.restored_sequence == 0
+            || self.restored_sequence > packet.source_sequence
+            || self.recovery_point_ms == 0
+            || self.recovery_point_ms > packet.source_observed_at_ms
+            || self.restore_started_at_ms == 0
+            || self.readiness_restored_at_ms < self.restore_started_at_ms
+            || self.catalog_digest != packet.expected_catalog_digest
+            || self.semantic_digest != packet.expected_semantic_digest
+            || self.assertion_digest != scenario.expected_assertion_digest
+            || !invariant_set_complete
+        {
+            return Err(RecoveryError::new(
+                StableRecoveryCode::FailedPrecondition,
+                "recovery_attempt_invalid",
+                false,
+            ));
+        }
+        let actual_rpo_ms = packet
+            .source_observed_at_ms
+            .checked_sub(self.recovery_point_ms)
+            .ok_or_else(|| RecoveryError::invalid("recovery_point_invalid"))?;
+        let actual_rto_ms = self
+            .readiness_restored_at_ms
+            .checked_sub(self.restore_started_at_ms)
+            .ok_or_else(|| RecoveryError::invalid("restore_time_invalid"))?;
+        if actual_rpo_ms > packet.objectives.maximum_rpo_ms
+            || actual_rto_ms > packet.objectives.maximum_rto_ms
+        {
+            return Err(RecoveryError::new(
+                StableRecoveryCode::FailedPrecondition,
+                "recovery_objective_missed",
+                false,
+            ));
+        }
+        Ok(self)
+    }
+}
+
+'''
+          text = text[:attempt_impl_start] + attempt_impl + text[attempt_impl_end:]
+
+          tests_start = text.index('#[cfg(test)]\nmod tests {')
+
+          packet_fn_start = text.index('    fn packet(', tests_start)
+          packet_fn_end = text.index('    fn attempt(', packet_fn_start)
+          packet_fn = text[packet_fn_start:packet_fn_end]
+          if 'source_observed_at_ms:' not in packet_fn:
+              packet_fn = packet_fn.replace(
+                  '            backup_completed_at_ms: 20,\n',
+                  '            backup_completed_at_ms: 20,\n'
+                  '            source_observed_at_ms: 200,\n',
+                  1,
+              )
+          if 'expected_catalog_digest:' not in packet_fn:
+              packet_fn = packet_fn.replace(
+                  '            backup_artifact_digest: digest(40),\n',
+                  '            backup_artifact_digest: digest(40),\n'
+                  '            expected_catalog_digest: digest(50),\n'
+                  '            expected_semantic_digest: digest(51),\n',
+                  1,
+              )
+          text = text[:packet_fn_start] + packet_fn + text[packet_fn_end:]
+
+          attempt_fn_start = text.index('    fn attempt(', tests_start)
+          attempt_fn_end = text.index('    fn registry()', attempt_fn_start)
+          attempt_fn = '''    fn attempt(profile: DatabaseProfile) -> RecoveryAttempt {
+        RecoveryAttempt {
+            id: id(3, AttemptId::new),
+            packet: id(1, PacketId::new),
+            profile,
+            subject: subject(30),
+            scenario: id(2, ScenarioId::new),
+            restored_sequence: 98,
+            recovery_point_ms: 198,
+            restore_started_at_ms: 100,
+            readiness_restored_at_ms: 140,
+            catalog_digest: digest(50),
+            semantic_digest: digest(51),
+            assertion_digest: digest(20),
+            invariant_violations: REQUIRED_INVARIANTS
+                .into_iter()
+                .map(|invariant| (invariant, 0))
+                .collect(),
+            assertions: AssertionCounts {
+                collected: 3,
+                executed: 3,
+                passed: 3,
+                failed: 0,
+                skipped: 0,
+            },
+            artifact_digest: digest(52),
+        }
+    }
+
+'''
+          text = text[:attempt_fn_start] + attempt_fn + text[attempt_fn_end:]
+
+          rpo_test_start = text.index('    fn rpo_and_rto_objectives_are_enforced()', tests_start)
+          rpo_test_end = text.index('    #[test]', rpo_test_start)
+          rpo_test = text[rpo_test_start:rpo_test_end]
+          rpo_test = re.sub(
+              r'attempt\.(restored_sequence|recovery_point_ms)\s*=\s*\d+;',
+              'attempt.recovery_point_ms = 190;',
+              rpo_test,
+              count=1,
+          )
+          text = text[:rpo_test_start] + rpo_test + text[rpo_test_end:]
+
+          test_anchor = '    fn all_scenarios_do_not_substitute_for_independent_decisions() {'
+          if 'fn missing_invariant_or_wrong_assertion_digest_is_rejected()' not in text:
+              insert = text.index('    #[test]\n' + test_anchor, tests_start)
+              test = '''    #[test]
+    fn missing_invariant_or_wrong_assertion_digest_is_rejected() {
+        let mut registry = registry();
+        registry
+            .register_packet(packet(DatabaseProfile::PostgreSql))
+            .unwrap();
+        let mut missing = attempt(DatabaseProfile::PostgreSql);
+        missing
+            .invariant_violations
+            .remove(&Invariant::CorruptRestoredObject);
+        assert_eq!(
+            registry.record_attempt(missing).unwrap_err().reason(),
+            "recovery_attempt_invalid"
+        );
+        let mut wrong_assertion = attempt(DatabaseProfile::PostgreSql);
+        wrong_assertion.assertion_digest = digest(99);
+        assert_eq!(
+            registry
+                .record_attempt(wrong_assertion)
+                .unwrap_err()
+                .reason(),
+            "recovery_attempt_invalid"
+        );
+    }
+
+'''
+              text = text[:insert] + test + text[insert:]
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          if git diff --quiet; then echo 'changed=false' >> "$GITHUB_OUTPUT"; else echo 'changed=true' >> "$GITHUB_OUTPUT"; fi
+
+      - name: Qualify and publish structural recovery repair
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo test --package trnm-recovery-core --all-targets --locked
+          cargo clippy --package trnm-recovery-core --all-targets --locked -- -D warnings
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-recovery-core/src/lib.rs
+          git commit -m 'fix(operations): bind exact recovery evidence semantics'
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Applied a format-independent recovery repair binding time-based RPO, catalog/semantic/assertion digests, complete zero-invariant coverage and fully executed assertions. Focused tests and strict Clippy passed in carrier run `${GITHUB_RUN_ID}`; exact-head checks must requalify."
