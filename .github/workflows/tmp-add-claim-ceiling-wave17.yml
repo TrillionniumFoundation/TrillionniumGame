@@ -1,0 +1,408 @@
+name: tmp-add-claim-ceiling-wave17
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-add-claim-ceiling-wave17.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-product-assurance-v2-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  add-claim-ceiling:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Wait for repaired and registered Wave 17 head
+        id: subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous=''
+          stable=0
+          for _ in $(seq 1 1080); do
+            head="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            if test -z "$head"; then sleep 20; continue; fi
+            checker="$(gh api "repos/${REPOSITORY}/contents/scripts/check-plan-v32-product-hardening.py?ref=${FEATURE_BRANCH}" --jq '.content' 2>/dev/null | base64 --decode || true)"
+            registry="$(gh api "repos/${REPOSITORY}/contents/docs/status/PLAN_V32_PRODUCT_SURFACE.json?ref=${FEATURE_BRANCH}" --jq '.content' 2>/dev/null | base64 --decode || true)"
+            if ! grep -q 'cutover exact-subject validation must cover artifact, window and rehearsal' <<<"$checker" \
+              || ! grep -q 'trillionnium.plan-v32-product-surface.v1' <<<"$registry"; then
+              stable=0
+              sleep 20
+              continue
+            fi
+            if test "$head" = "$previous"; then stable=$((stable+1)); else previous="$head"; stable=1; fi
+            if test "$stable" -ge 2; then printf 'head=%s\n' "$head" >> "$GITHUB_OUTPUT"; exit 0; fi
+            sleep 20
+          done
+          echo 'Wave 17 did not expose the repaired checker and product surface registry.' >&2
+          exit 1
+
+      - name: Fetch exact Wave 17 subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=6 origin '${{ steps.subject.outputs.head }}'
+          git -C "$GITHUB_WORKSPACE" checkout -B "$FEATURE_BRANCH" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = '${{ steps.subject.outputs.head }}'
+
+      - name: Write external fact ledger and claim ceiling checker
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          gaps = [
+              ('GAP-P0-CI-001', 'program-governance', ['current-head native aggregate and actual prospective-merge packets', 'retained exact-object artifacts']),
+              ('GAP-P0-GOV-001', 'program-governance', ['administrator-scoped branch/ruleset readback', 'harmless negative no-bypass rehearsal']),
+              ('GAP-P0-PR-001', 'program-governance', ['singular current integration subject', 'fresh eligible exact-head review']),
+              ('GAP-P0-PLAN-001', 'program-director', ['current plan/status/gate agreement', 'non-shrinkable product denominator']),
+              ('GAP-P0-EVIDENCE-001', 'compatibility-qa', ['retained bytes and exact manifest', 'conflict-free independent evidence acceptance']),
+              ('GAP-P0-DATA-001', 'database-migration', ['profile-specific catalog and transaction proof', 'migration semantic comparison and rollback barrier']),
+              ('GAP-P0-SERVER-001', 'foundation-runtime', ['complete public and realtime product surface', 'multi-node authority and lifecycle evidence']),
+              ('GAP-P0-CRYPTO-001', 'security', ['production KMS or HSM custody', 'rotation revoke provider-outcome and node-convergence evidence']),
+              ('GAP-P0-SCOPE-001', 'compatibility-architecture', ['fourteen independently locked denominator families', 'distinct global SG1 decision']),
+              ('GAP-P1-CRYPTO-002', 'security', ['malformed and fuzz corpus', 'independent cryptography review']),
+              ('GAP-P1-OUTBOX-001', 'database-migration', ['real provider ambiguous-outcome reconciliation', 'independent data-integrity acceptance']),
+              ('GAP-P1-IDENTITY-001', 'identity', ['durable session and revocation fanout', 'provider and migration differential']),
+              ('GAP-P1-TEST-001', 'compatibility-qa', ['required live lanes with zero skipped scenarios', 'assertion and artifact accounting']),
+              ('GAP-P1-STORAGE-001', 'storage', ['public API cursor ACL and OCC differential', 'live database and independent storage review']),
+              ('GAP-P1-PG-001', 'database-migration', ['PostgreSQL and CockroachDB independent HA/PITR', 'approved RPO RTO capacity and endurance']),
+              ('GAP-P1-DOCS-001', 'documentation-governance', ['source-derived module and component truth', 'independent claim and trademark review']),
+              ('GAP-P1-BRANCH-001', 'program-governance', ['reviewed before/after branch manifest', 'safe deletion with exact expected tips']),
+              ('GAP-P1-REVIEW-001', 'program-governance', ['conflict-free role-qualified principals', 'fresh exact-object specialist decisions']),
+          ]
+          ledger = {
+              'schema': 'trillionnium.external-fact-ledger.v1',
+              'project_id': 'trillionnium-game',
+              'plan_version': 3,
+              'claim_rule': 'Repository source can prepare and validate evidence contracts but cannot manufacture administrator state, independent human decisions, physical infrastructure execution or production authority.',
+              'gaps': [
+                  {
+                      'gap_id': gap_id,
+                      'owner_role': owner,
+                      'state': 'open-source-candidate-or-external',
+                      'blocking_facts': facts,
+                      'closed': False,
+                      'accepted': False,
+                  }
+                  for gap_id, owner, facts in gaps
+              ],
+              'external_fact_groups': [
+                  {
+                      'id': 'github-governance',
+                      'required': ['full protection and ruleset readback', 'required-check review-freshness CODEOWNER conversation and bypass state', 'negative no-bypass rehearsal'],
+                      'verified': False,
+                  },
+                  {
+                      'id': 'independent-review-capacity',
+                      'required': ['governance', 'security and cryptography', 'database and data integrity', 'protocol and realtime', 'compatibility QA', 'SRE and operations'],
+                      'verified': False,
+                  },
+                  {
+                      'id': 'denominator-and-oracle',
+                      'required': ['fourteen family locks', 'global SG1', 'immutable and instrumented oracle equivalence', 'official SDK black-box matrix'],
+                      'verified': False,
+                  },
+                  {
+                      'id': 'production-security',
+                      'required': ['real KMS or HSM', 'provider outcome authentication', 'rotation revoke and compromise recovery'],
+                      'verified': False,
+                  },
+                  {
+                      'id': 'production-data-operations',
+                      'required': ['PostgreSQL HA PITR RPO RTO', 'CockroachDB HA PITR RPO RTO', 'capacity and 24h 72h 7d endurance'],
+                      'verified': False,
+                  },
+                  {
+                      'id': 'migration-cutover-retirement',
+                      'required': ['snapshot backfill CDC and semantic comparison', 'live shadow and exclusive canary', 'rollback rehearsal', 'cutover and retirement decisions'],
+                      'verified': False,
+                  },
+              ],
+              'summary': {
+                  'gap_count': len(gaps),
+                  'closed_count': 0,
+                  'accepted_count': 0,
+                  'verified_external_fact_group_count': 0,
+                  'all_gaps_closed': False,
+                  'accepted_evidence': False,
+                  'production_ready': False,
+                  'public_online': False,
+                  'cutover_authorized': False,
+                  'nakama_retired': False,
+              },
+          }
+          ledger_path = Path('docs/status/EXTERNAL_FACT_LEDGER.json')
+          ledger_path.write_text(json.dumps(ledger, indent=2) + '\n', encoding='utf-8')
+
+          authority_path = Path('docs/DOCUMENTATION_AUTHORITY.json')
+          authority = json.loads(authority_path.read_text(encoding='utf-8'))
+          controls = authority.setdefault('machine_control_documents', [])
+          relative = 'docs/status/EXTERNAL_FACT_LEDGER.json'
+          if relative not in controls:
+              controls.append(relative)
+              controls.sort()
+          authority_path.write_text(json.dumps(authority, indent=2) + '\n', encoding='utf-8')
+          PY
+
+          cat > scripts/check-plan-v32-claim-ceiling.py <<'PY'
+          #!/usr/bin/env python3
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          from typing import Any
+
+          ROOT = Path(__file__).resolve().parents[1]
+          EXPECTED_GAPS = {
+              'GAP-P0-CI-001', 'GAP-P0-GOV-001', 'GAP-P0-PR-001',
+              'GAP-P0-PLAN-001', 'GAP-P0-EVIDENCE-001', 'GAP-P0-DATA-001',
+              'GAP-P0-SERVER-001', 'GAP-P0-CRYPTO-001', 'GAP-P0-SCOPE-001',
+              'GAP-P1-CRYPTO-002', 'GAP-P1-OUTBOX-001', 'GAP-P1-IDENTITY-001',
+              'GAP-P1-TEST-001', 'GAP-P1-STORAGE-001', 'GAP-P1-PG-001',
+              'GAP-P1-DOCS-001', 'GAP-P1-BRANCH-001', 'GAP-P1-REVIEW-001',
+          }
+          FORBIDDEN_TRUE_KEYS = {
+              'accepted_evidence', 'all_gaps_closed', 'production_ready',
+              'public_online', 'cutover_authorized', 'nakama_retired',
+              'complete_nakama_compatibility', 'supported_full_replacement',
+              'drop_in_replacement', 'operationally_replaceable',
+          }
+
+
+          class ClaimCeilingError(RuntimeError):
+              pass
+
+
+          def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+              result: dict[str, Any] = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ClaimCeilingError(f'duplicate JSON key: {key}')
+                  result[key] = value
+              return result
+
+
+          def load(root: Path, relative: str) -> Any:
+              path = root / relative
+              if not path.is_file():
+                  raise ClaimCeilingError(f'missing current authority file: {relative}')
+              return json.loads(
+                  path.read_text(encoding='utf-8'),
+                  object_pairs_hook=unique_object,
+              )
+
+
+          def reject_forbidden_true(value: Any, path: str = '$') -> None:
+              if isinstance(value, dict):
+                  for key, item in value.items():
+                      current = f'{path}.{key}'
+                      if key in FORBIDDEN_TRUE_KEYS and item is True:
+                          raise ClaimCeilingError(f'premature claim at {current}')
+                      reject_forbidden_true(item, current)
+              elif isinstance(value, list):
+                  for index, item in enumerate(value):
+                      reject_forbidden_true(item, f'{path}[{index}]')
+
+
+          def validate(root: Path = ROOT) -> None:
+              current = load(root, 'docs/status/CURRENT_STATE.json')
+              convergence = load(root, 'docs/status/ARCHITECTURE_CONVERGENCE_STATUS.json')
+              product = load(root, 'docs/status/PLAN_V32_PRODUCT_SURFACE.json')
+              ledger = load(root, 'docs/status/EXTERNAL_FACT_LEDGER.json')
+              gates = load(root, 'docs/status/PRODUCT_GATES.json')
+
+              for label, value in (
+                  ('current-state', current),
+                  ('architecture-convergence', convergence),
+                  ('product-surface', product),
+                  ('external-fact-ledger', ledger),
+                  ('product-gates', gates),
+              ):
+                  try:
+                      reject_forbidden_true(value)
+                  except ClaimCeilingError as error:
+                      raise ClaimCeilingError(f'{label}: {error}') from error
+
+              rows = ledger.get('gaps')
+              if not isinstance(rows, list) or len(rows) != len(EXPECTED_GAPS):
+                  raise ClaimCeilingError('external fact ledger gap count changed')
+              ids = {row.get('gap_id') for row in rows}
+              if ids != EXPECTED_GAPS:
+                  raise ClaimCeilingError('external fact ledger gap denominator changed')
+              if len(ids) != len(rows):
+                  raise ClaimCeilingError('duplicate external fact gap row')
+              for row in rows:
+                  gap_id = row.get('gap_id')
+                  if row.get('closed') is not False or row.get('accepted') is not False:
+                      raise ClaimCeilingError(f'{gap_id}: premature gap acceptance')
+                  if row.get('state') != 'open-source-candidate-or-external':
+                      raise ClaimCeilingError(f'{gap_id}: unexpected current state')
+                  facts = row.get('blocking_facts')
+                  if not isinstance(facts, list) or not facts or len(facts) != len(set(facts)):
+                      raise ClaimCeilingError(f'{gap_id}: nonempty unique blocking facts required')
+
+              groups = ledger.get('external_fact_groups')
+              if not isinstance(groups, list) or len(groups) != 6:
+                  raise ClaimCeilingError('external fact group denominator changed')
+              for group in groups:
+                  if group.get('verified') is not False:
+                      raise ClaimCeilingError(f"{group.get('id')}: premature external verification")
+                  required = group.get('required')
+                  if not isinstance(required, list) or not required:
+                      raise ClaimCeilingError(f"{group.get('id')}: required facts missing")
+
+              summary = ledger.get('summary') or {}
+              if summary.get('gap_count') != len(EXPECTED_GAPS):
+                  raise ClaimCeilingError('external fact summary gap count stale')
+              if summary.get('closed_count') != 0 or summary.get('accepted_count') != 0:
+                  raise ClaimCeilingError('external fact summary prematurely closed')
+              if summary.get('verified_external_fact_group_count') != 0:
+                  raise ClaimCeilingError('external fact summary prematurely verified')
+
+              product_rows = product.get('surfaces') or []
+              if len(product_rows) != 16:
+                  raise ClaimCeilingError('product surface denominator must contain 16 rows')
+              if any(row.get('accepted') is not False for row in product_rows):
+                  raise ClaimCeilingError('product surface contains premature acceptance')
+
+              claims = current.get('claims') or {}
+              for key in (
+                  'wire_compatible', 'behavior_compatible',
+                  'data_migration_compatible', 'operationally_replaceable',
+                  'supported_full_replacement', 'production_ready',
+                  'public_online', 'nakama_retired',
+              ):
+                  if claims.get(key) is not False:
+                      raise ClaimCeilingError(f'CURRENT_STATE claim must remain false: {key}')
+              evidence = current.get('evidence') or {}
+              if evidence.get('accepted_entry_count') != 0:
+                  raise ClaimCeilingError('accepted evidence entry count must remain zero')
+
+              if gates.get('public_online') is not False \
+                  or gates.get('drop_in_replacement') is not False \
+                  or gates.get('production_ready') is not False \
+                  or gates.get('nakama_retired') is not False:
+                  raise ClaimCeilingError('product gate top-level claim ceiling violated')
+
+
+          if __name__ == '__main__':
+              validate()
+              print('Plan v3.2 global claim ceiling passed')
+          PY
+          chmod +x scripts/check-plan-v32-claim-ceiling.py
+
+          cat > tests/control_plane/test_plan_v32_claim_ceiling.py <<'PY'
+          import importlib.util
+          import json
+          import shutil
+          import tempfile
+          import unittest
+          from pathlib import Path
+
+          ROOT = Path(__file__).resolve().parents[2]
+          SCRIPT = ROOT / 'scripts/check-plan-v32-claim-ceiling.py'
+          SPEC = importlib.util.spec_from_file_location('claim_ceiling', SCRIPT)
+          assert SPEC and SPEC.loader
+          MODULE = importlib.util.module_from_spec(SPEC)
+          SPEC.loader.exec_module(MODULE)
+          FILES = [
+              'docs/status/CURRENT_STATE.json',
+              'docs/status/ARCHITECTURE_CONVERGENCE_STATUS.json',
+              'docs/status/PLAN_V32_PRODUCT_SURFACE.json',
+              'docs/status/EXTERNAL_FACT_LEDGER.json',
+              'docs/status/PRODUCT_GATES.json',
+          ]
+
+
+          def fixture_root():
+              directory = tempfile.TemporaryDirectory()
+              root = Path(directory.name)
+              for relative in FILES:
+                  target = root / relative
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(ROOT / relative, target)
+              return directory, root
+
+
+          class ClaimCeilingTests(unittest.TestCase):
+              def test_current_authority_passes(self):
+                  MODULE.validate()
+
+              def test_production_true_fails_closed(self):
+                  directory, root = fixture_root()
+                  self.addCleanup(directory.cleanup)
+                  path = root / 'docs/status/CURRENT_STATE.json'
+                  value = json.loads(path.read_text())
+                  value['claims']['production_ready'] = True
+                  path.write_text(json.dumps(value))
+                  with self.assertRaises(MODULE.ClaimCeilingError):
+                      MODULE.validate(root)
+
+              def test_missing_gap_row_fails_closed(self):
+                  directory, root = fixture_root()
+                  self.addCleanup(directory.cleanup)
+                  path = root / 'docs/status/EXTERNAL_FACT_LEDGER.json'
+                  value = json.loads(path.read_text())
+                  value['gaps'].pop()
+                  path.write_text(json.dumps(value))
+                  with self.assertRaises(MODULE.ClaimCeilingError):
+                      MODULE.validate(root)
+
+              def test_product_acceptance_fails_closed(self):
+                  directory, root = fixture_root()
+                  self.addCleanup(directory.cleanup)
+                  path = root / 'docs/status/PLAN_V32_PRODUCT_SURFACE.json'
+                  value = json.loads(path.read_text())
+                  value['surfaces'][0]['accepted'] = True
+                  path.write_text(json.dumps(value))
+                  with self.assertRaises(MODULE.ClaimCeilingError):
+                      MODULE.validate(root)
+
+
+          if __name__ == '__main__':
+              unittest.main()
+          PY
+
+      - name: Qualify and publish claim ceiling
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          python3 scripts/check-plan-v32-product-surface.py
+          python3 scripts/check-plan-v32-product-hardening.py
+          python3 scripts/check-plan-v32-claim-ceiling.py
+          python3 -m unittest tests.control_plane.test_plan_v32_product_surface tests.control_plane.test_plan_v32_product_hardening tests.control_plane.test_plan_v32_claim_ceiling -v
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tests
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/DOCUMENTATION_AUTHORITY.json docs/status/EXTERNAL_FACT_LEDGER.json scripts/check-plan-v32-claim-ceiling.py tests/control_plane/test_plan_v32_claim_ceiling.py
+          git commit -m 'feat(control): enforce global claim ceiling and external fact ledger'
+          remote="$(git ls-remote origin "refs/heads/${FEATURE_BRANCH}" | awk '{print $1}')"
+          git push --force-with-lease="refs/heads/${FEATURE_BRANCH}:${remote}" origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Added a non-shrinkable 18-gap external fact ledger and global claim ceiling. Any premature compatibility, accepted-evidence, production, public-online, cutover, retirement or all-gap-closure claim now fails the complete Python control plane. Focused checks passed in carrier run `${GITHUB_RUN_ID}`; exact-head CI must requalify."
+          gh issue comment 129 --repo "$REPOSITORY" --body \
+            "Wave 17 now contains a global claim ceiling and 18-gap external fact ledger. Repository source remains a candidate; external facts must still be independently produced."
