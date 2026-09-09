@@ -57,6 +57,12 @@ jobs:
           set -euo pipefail
           rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
           rustup override set "$WORLD_RUST_TOOLCHAIN"
+          # The World qualification needs only Ubuntu packages. Third-party browser
+          # repositories on the hosted image are outside the evidence boundary and
+          # can transiently fail during mirror publication.
+          sudo rm -f \
+            /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.list.save
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev libudev-dev libx11-dev libxi-dev \
