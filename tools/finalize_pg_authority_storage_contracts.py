@@ -70,6 +70,7 @@ def strengthen_server_source_contract(root: Path) -> None:
     additions = {
         '    PERSISTENCE_ROOT / "authority.rs",\n': '    PERSISTENCE_ROOT / "auth.rs",\n',
         '    PERSISTENCE_ROOT / "storage.rs",\n': '    PERSISTENCE_ROOT / "session.rs",\n',
+        '    ROOT / "crates/trnm-persistence-pg/tests/authority_storage.rs",\n': '    PERSISTENCE_ROOT / "storage.rs",\n',
     }
     for line, anchor in additions.items():
         if line not in text:
