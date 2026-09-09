@@ -1,0 +1,297 @@
+name: tmp-fix-console-wave8
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-fix-console-wave8.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-console-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Wait for exact Console branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha=''
+          for _ in $(seq 1 600); do
+            head_sha="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$head_sha" && break
+            sleep 30
+          done
+          test -n "$head_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$head_sha"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$FEATURE_BRANCH" "$head_sha"
+
+      - name: Rewrite action creation as one bounded request object
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/trnm-console-core/src/lib.rs')
+          text = path.read_text(encoding='utf-8')
+
+          action_state_anchor = '#[derive(Clone, Debug, Eq, PartialEq)]\npub enum ActionState {'
+          if 'pub struct ActionRequest {' not in text:
+              request_type = '''#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActionRequest {
+    pub id: ActionId,
+    pub kind: DangerousActionKind,
+    pub payload_digest: Fingerprint,
+    pub policy: ApprovalPolicy,
+    pub now_ms: u64,
+    pub audit_id: AuditId,
+}
+
+'''
+              if action_state_anchor not in text:
+                  raise SystemExit('ActionState insertion anchor missing')
+              text = text.replace(action_state_anchor, request_type + action_state_anchor, 1)
+
+          method_start = text.index('    pub fn request_action(')
+          next_method = text.index('    pub fn approve_action(', method_start)
+          if 'request: ActionRequest' not in text[method_start:next_method]:
+              method = '''    pub fn request_action(
+        &mut self,
+        identity: CommandIdentity,
+        session: SessionId,
+        request: ActionRequest,
+    ) -> Result<MutationReceipt, ConsoleError> {
+        if let Some(receipt) = self.replay(identity)? {
+            return Ok(receipt);
+        }
+        let principal = self.authorize(session, request.kind.permission(), request.now_ms)?;
+        let policy = request.policy.validate()?;
+        if self.actions.contains_key(&request.id) {
+            return Err(ConsoleError::new(
+                StableConsoleCode::AlreadyExists,
+                "action_exists",
+                false,
+            ));
+        }
+        if self.actions.len() >= self.limits.actions {
+            return Err(ConsoleError::new(
+                StableConsoleCode::ResourceExhausted,
+                "action_capacity_exhausted",
+                false,
+            ));
+        }
+        let expires_at_ms = request
+            .now_ms
+            .checked_add(policy.expires_after_ms)
+            .ok_or_else(|| ConsoleError::new(
+                StableConsoleCode::OutOfRange,
+                "action_expiry_overflow",
+                false,
+            ))?;
+        let action = DangerousAction {
+            id: request.id,
+            project: principal.project,
+            kind: request.kind,
+            payload_digest: request.payload_digest,
+            requester: principal.operator,
+            approvals: BTreeSet::new(),
+            policy,
+            requested_at_ms: request.now_ms,
+            expires_at_ms,
+            state: ActionState::Pending,
+            revision: 1,
+        };
+        self.commit(
+            identity,
+            MutationResult::Action(action.clone()),
+            AuditInput {
+                id: request.audit_id,
+                project: action.project,
+                actor: Some(action.requester),
+                kind: AuditKind::ActionRequested,
+                subject: action.id.0,
+                occurred_at_ms: request.now_ms,
+                detail: action.payload_digest,
+            },
+            |candidate| {
+                candidate.actions.insert(action.id, action);
+                Ok(())
+            },
+        )
+    }
+
+'''
+              text = text[:method_start] + method + text[next_method:]
+
+          def matching_paren(source: str, open_index: int) -> int:
+              depth = 0
+              quote = None
+              escaped = False
+              for index in range(open_index, len(source)):
+                  char = source[index]
+                  if quote is not None:
+                      if escaped:
+                          escaped = False
+                      elif char == '\\':
+                          escaped = True
+                      elif char == quote:
+                          quote = None
+                      continue
+                  if char in {'"', "'"}:
+                      quote = char
+                  elif char == '(':
+                      depth += 1
+                  elif char == ')':
+                      depth -= 1
+                      if depth == 0:
+                          return index
+              raise ValueError('unclosed request_action call')
+
+          def split_top_level(value: str) -> list[str]:
+              parts = []
+              start = 0
+              stack = []
+              quote = None
+              escaped = False
+              pairs = {')': '(', ']': '[', '}': '{'}
+              for index, char in enumerate(value):
+                  if quote is not None:
+                      if escaped:
+                          escaped = False
+                      elif char == '\\':
+                          escaped = True
+                      elif char == quote:
+                          quote = None
+                      continue
+                  if char in {'"', "'"}:
+                      quote = char
+                  elif char in '([{':
+                      stack.append(char)
+                  elif char in ')]}':
+                      if not stack or stack.pop() != pairs[char]:
+                          raise ValueError('unbalanced Rust call')
+                  elif char == ',' and not stack:
+                      parts.append(value[start:index].strip())
+                      start = index + 1
+              parts.append(value[start:].strip())
+              return parts
+
+          cursor = 0
+          replacements = []
+          needle = '.request_action('
+          while True:
+              found = text.find(needle, cursor)
+              if found < 0:
+                  break
+              open_index = found + len(needle) - 1
+              close_index = matching_paren(text, open_index)
+              arguments = split_top_level(text[open_index + 1:close_index])
+              if len(arguments) == 8:
+                  replacement = (
+                      '.request_action('
+                      + arguments[0]
+                      + ', '
+                      + arguments[1]
+                      + ', ActionRequest { id: '
+                      + arguments[2]
+                      + ', kind: '
+                      + arguments[3]
+                      + ', payload_digest: '
+                      + arguments[4]
+                      + ', policy: '
+                      + arguments[5]
+                      + ', now_ms: '
+                      + arguments[6]
+                      + ', audit_id: '
+                      + arguments[7]
+                      + ' })'
+                  )
+                  replacements.append((found, close_index + 1, replacement))
+              elif len(arguments) != 3:
+                  raise SystemExit(f'unexpected request_action argument count: {len(arguments)}')
+              cursor = close_index + 1
+          for start, end, replacement in reversed(replacements):
+              text = text[:start] + replacement + text[end:]
+
+          old_loop = '''            for (id, audit_id) in ids.into_iter().zip(audit_ids.iter().copied()) {
+                let action = candidate.actions.get_mut(&id).expect("selected action exists");
+                action.state = ActionState::Expired { expired_at_ms: now_ms };
+                action.revision = next_revision(action.revision)?;
+                expired.push(action.clone());
+                candidate.append_audit(AuditInput {
+                    id: audit_id,
+                    project: action.project,
+                    actor: None,
+                    kind: AuditKind::ActionExpired,
+                    subject: action.id.0,
+                    occurred_at_ms: now_ms,
+                    detail,
+                })?;
+            }
+'''
+          new_loop = '''            for (id, audit_id) in ids.into_iter().zip(audit_ids.iter().copied()) {
+                let (project, subject, updated) = {
+                    let action = candidate
+                        .actions
+                        .get_mut(&id)
+                        .expect("selected action exists");
+                    action.state = ActionState::Expired { expired_at_ms: now_ms };
+                    action.revision = next_revision(action.revision)?;
+                    (action.project, action.id.0, action.clone())
+                };
+                expired.push(updated);
+                candidate.append_audit(AuditInput {
+                    id: audit_id,
+                    project,
+                    actor: None,
+                    kind: AuditKind::ActionExpired,
+                    subject,
+                    occurred_at_ms: now_ms,
+                    detail,
+                })?;
+            }
+'''
+          if old_loop in text:
+              text = text.replace(old_loop, new_loop, 1)
+          elif new_loop not in text:
+              raise SystemExit('expire_actions borrow repair anchor missing')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          if git diff --quiet; then echo 'changed=false' >> "$GITHUB_OUTPUT"; else echo 'changed=true' >> "$GITHUB_OUTPUT"; fi
+
+      - name: Qualify and publish Console repair
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo test --package trnm-console-core --all-targets --locked
+          cargo clippy --package trnm-console-core --all-targets --locked -- -D warnings
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-console-core/src/lib.rs
+          git commit -m 'fix(console): bind action request and audit expiry atomically'
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Converted dangerous-action creation to a bounded request object and repaired bulk-expiry audit borrowing while preserving candidate-copy atomicity. Focused tests and strict Clippy passed in carrier run `${GITHUB_RUN_ID}`; exact-head checks must requalify the new source."
