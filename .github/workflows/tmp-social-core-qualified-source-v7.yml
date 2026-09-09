@@ -1,0 +1,124 @@
+name: tmp-social-core-qualified-source-v7
+
+on:
+  push:
+    branches:
+      - feature/plan-v32-social-core-20260909
+    paths:
+      - .github/workflows/tmp-social-core-qualified-source-v7.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: tmp-social-core-qualified-source-v7
+  cancel-in-progress: false
+
+jobs:
+  rebuild-qualify-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      FEATURE_BRANCH: feature/plan-v32-social-core-20260909
+      EXPECTED_BASE_SHA: 541016f34f2dbaf7c2be10cd45afdd04223c49f2
+      BASE_BRANCH: integration/plan-v32-main-rebind-2026-09-09
+      GENERATOR_REF: ops/social-core-source-20260909
+      V2_REF: cfe6e4831fcc88556194cadc167fe517025276a3
+      V3_REF: b2a62b190ecc1251ea444e1e7c327512de07a88a
+      V4_REF: 79fcfa45fbd0077989b964753768f463bbfbd9ea
+      V5_REF: 4fe376b5e72d5a85fc487fb2b942d4f2d6228a12
+      V6_REF: 051b1a90af731f9791cd7a1a8214e7799a7e6250
+    steps:
+      - name: Extract v6 pipeline steps
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${REPOSITORY}/contents/.github/workflows/tmp-social-core-qualified-source-v6.yml?ref=${V6_REF}" \
+            --jq .content | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/social-v6.yml"
+          ruby -ryaml -e '
+            document = YAML.safe_load(File.read(ARGV[0]), aliases: true)
+            steps = document.fetch("jobs").fetch("rebuild-qualify-and-publish").fetch("steps")
+            names = [
+              "Extract v5 orchestration without failed refactor",
+              "Prepare scripts and reconstruct exact candidate",
+              "Introduce typed notification input and rewrite callers",
+              "Prove atomic source semantics",
+              "Validate package workspace and complete control plane",
+              "Publish clean social source"
+            ]
+            names.each_with_index do |name, index|
+              step = steps.find { |entry| entry["name"] == name }
+              abort("missing v6 step: #{name}") unless step && step["run"]
+              File.write(ARGV[index + 1], step.fetch("run"))
+            end
+          ' "$RUNNER_TEMP/social-v6.yml" \
+            "$RUNNER_TEMP/v6-extract.sh" \
+            "$RUNNER_TEMP/v6-reconstruct.sh" \
+            "$RUNNER_TEMP/v6-transform.sh" \
+            "$RUNNER_TEMP/v6-prove.sh" \
+            "$RUNNER_TEMP/v6-validate.sh" \
+            "$RUNNER_TEMP/v6-publish.sh"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("/home/runner/work/_temp/v6-transform.sh")
+          text = path.read_text(encoding="utf-8")
+          start = text.index('old_signature = """')
+          end = text.index('if text.count(old_signature)', start)
+          replacement = '''old_signature = "\\n".join([
+              "    pub fn create_notification(",
+              "        &mut self,",
+              "        command: CommandId,",
+              "        fingerprint: Fingerprint,",
+              "        actor: UserId,",
+              "        recipient: UserId,",
+              "        notification: NotificationId,",
+              "        subject: String,",
+              "        body: Vec<u8>,",
+              "    ) -> Result<SocialReceipt, SocialError> {",
+          ]) + "\\n"
+          new_signature = "\\n".join([
+              "    pub fn create_notification(",
+              "        &mut self,",
+              "        command: CommandId,",
+              "        fingerprint: Fingerprint,",
+              "        actor: UserId,",
+              "        input: NotificationInput,",
+              "    ) -> Result<SocialReceipt, SocialError> {",
+              "        let NotificationInput {",
+              "            recipient,",
+              "            notification,",
+              "            subject,",
+              "            body,",
+              "        } = input;",
+          ]) + "\\n"
+          '''
+          path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+          PY
+      - name: Reconstruct exact social candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash "$RUNNER_TEMP/v6-extract.sh"
+          bash "$RUNNER_TEMP/v6-reconstruct.sh"
+      - name: Apply typed notification input transformation
+        shell: bash
+        run: bash "$RUNNER_TEMP/v6-transform.sh"
+      - name: Prove atomic source semantics
+        shell: bash
+        run: bash "$RUNNER_TEMP/v6-prove.sh"
+      - name: Validate package workspace and control plane
+        shell: bash
+        run: bash "$RUNNER_TEMP/v6-validate.sh"
+      - name: Publish clean social source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash "$RUNNER_TEMP/v6-publish.sh"
