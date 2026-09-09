@@ -1,0 +1,1296 @@
+name: tmp-migration-wave10
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-migration-wave10.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-provider-value-core-20260909
+  FEATURE_BRANCH: feature/plan-v32-migration-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-migration-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - name: Wait for exact Wave 9 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 720); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 30
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write migration ownership and cutover state core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-migration-core/src
+          cat > crates/trnm-migration-core/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-migration-core"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Fail-closed migration ownership backfill CDC rollback and cutover state"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-migration-core/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::collections::{BTreeMap, BTreeSet};
+
+          pub const MAX_DOMAINS: usize = 128;
+          pub const MAX_COHORTS_PER_DOMAIN: usize = 65_536;
+          pub const MAX_CHECKPOINTS: usize = 1_000_000;
+          pub const MAX_COMPARISONS: usize = 1_000_000;
+          pub const MAX_DECISIONS: usize = 1024;
+          pub const MAX_RECEIPTS: usize = 1_000_000;
+
+          macro_rules! id16 {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(value: [u8; 16]) -> Result<Self, MigrationError> {
+                          if value.iter().all(|byte| *byte == 0) {
+                              Err(MigrationError::invalid($reason))
+                          } else {
+                              Ok(Self(value))
+                          }
+                      }
+                  }
+              };
+          }
+
+          id16!(PlanId, "plan_id_zero");
+          id16!(CohortId, "cohort_id_zero");
+          id16!(CheckpointId, "checkpoint_id_zero");
+          id16!(ComparisonId, "comparison_id_zero");
+          id16!(DecisionId, "decision_id_zero");
+          id16!(CommandId, "command_id_zero");
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Digest32([u8; 32]);
+
+          impl Digest32 {
+              pub fn new(value: [u8; 32]) -> Result<Self, MigrationError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      Err(MigrationError::invalid("digest_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum DomainKind {
+              Account,
+              SessionFamily,
+              StorageObject,
+              FriendGraph,
+              Group,
+              ChatStream,
+              Leaderboard,
+              Tournament,
+              Party,
+              MatchmakerTicket,
+              Match,
+              RuntimeModule,
+              SchedulerJob,
+              ProviderTransaction,
+              ConsoleAudit,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum MigrationStage {
+              NakamaPrimary,
+              RustShadowNoEffect,
+              RustCanaryNewEntities,
+              RustPrimaryNewEntities,
+              NakamaReadOnly,
+              NakamaRetired,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum Writer {
+              Nakama,
+              Rust,
+              None,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum RollbackState {
+              Reversible,
+              ReverseDeltaRequired,
+              ReverseDeltaComplete,
+              Irreversible,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum CheckpointKind {
+              Snapshot,
+              Backfill,
+              Cdc,
+              ReverseDelta,
+              FinalBackup,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct Checkpoint {
+              pub id: CheckpointId,
+              pub kind: CheckpointKind,
+              pub source_sequence: u64,
+              pub target_sequence: u64,
+              pub item_count: u64,
+              pub source_digest: Digest32,
+              pub target_digest: Digest32,
+              pub completed_at_ms: u64,
+          }
+
+          impl Checkpoint {
+              pub fn validate(self) -> Result<Self, MigrationError> {
+                  if self.completed_at_ms == 0
+                      || self.item_count == 0
+                      || self.source_sequence == 0
+                      || self.target_sequence == 0
+                      || self.target_sequence > self.source_sequence
+                  {
+                      Err(MigrationError::invalid("checkpoint_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+
+              #[must_use]
+              pub const fn semantically_equal(&self) -> bool {
+                  self.source_sequence == self.target_sequence
+                      && self.source_digest.0 == self.target_digest.0
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum DivergenceClass {
+              NonContractual,
+              Identity,
+              Authorization,
+              Money,
+              Sequence,
+              Version,
+              Cursor,
+              PublicError,
+              DurableEffect,
+              DataLoss,
+              DuplicateWriter,
+          }
+
+          impl DivergenceClass {
+              #[must_use]
+              pub const fn blocks_promotion(self) -> bool {
+                  !matches!(self, Self::NonContractual)
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct SemanticComparison {
+              pub id: ComparisonId,
+              pub source_sequence: u64,
+              pub target_sequence: u64,
+              pub compared_items: u64,
+              pub source_digest: Digest32,
+              pub target_digest: Digest32,
+              pub divergences: BTreeMap<DivergenceClass, u64>,
+              pub completed_at_ms: u64,
+          }
+
+          impl SemanticComparison {
+              pub fn validate(self) -> Result<Self, MigrationError> {
+                  if self.completed_at_ms == 0
+                      || self.compared_items == 0
+                      || self.source_sequence == 0
+                      || self.source_sequence != self.target_sequence
+                  {
+                      return Err(MigrationError::invalid("semantic_comparison_invalid"));
+                  }
+                  if self
+                      .divergences
+                      .iter()
+                      .any(|(class, count)| *count > 0 && class.blocks_promotion())
+                  {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::FailedPrecondition,
+                          "blocking_semantic_divergence",
+                          false,
+                      ));
+                  }
+                  Ok(self)
+              }
+
+              #[must_use]
+              pub fn clean(&self) -> bool {
+                  self.source_digest == self.target_digest
+                      && self
+                          .divergences
+                          .iter()
+                          .all(|(class, count)| *count == 0 || !class.blocks_promotion())
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum DecisionKind {
+              Compatibility,
+              DataIntegrity,
+              Security,
+              Operations,
+              Product,
+              Retirement,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct AcceptedDecision {
+              pub id: DecisionId,
+              pub kind: DecisionKind,
+              pub evidence_digest: Digest32,
+              pub reviewer_digest: Digest32,
+              pub decided_at_ms: u64,
+              pub independent: bool,
+              pub self_review: bool,
+          }
+
+          impl AcceptedDecision {
+              pub fn validate(self) -> Result<Self, MigrationError> {
+                  if self.decided_at_ms == 0 || !self.independent || self.self_review {
+                      Err(MigrationError::new(
+                          StableMigrationCode::FailedPrecondition,
+                          "decision_not_independent",
+                          false,
+                      ))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct CohortOwnership {
+              pub cohort: CohortId,
+              pub writer: Writer,
+              pub generation: u64,
+              pub revision: u64,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct DomainMigration {
+              pub plan: PlanId,
+              pub domain: DomainKind,
+              pub stage: MigrationStage,
+              pub default_new_entity_writer: Writer,
+              pub source_high_water: u64,
+              pub target_high_water: u64,
+              pub snapshot_complete: bool,
+              pub reverse_delta_complete: bool,
+              pub final_backup_complete: bool,
+              pub rollback: RollbackState,
+              pub active_source_authorities: u64,
+              pub active_target_authorities: u64,
+              pub cohorts: BTreeMap<CohortId, CohortOwnership>,
+              pub checkpoints: Vec<Checkpoint>,
+              pub comparisons: Vec<SemanticComparison>,
+              pub decisions: BTreeMap<DecisionKind, AcceptedDecision>,
+              pub revision: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct CommandIdentity {
+              pub command: CommandId,
+              pub fingerprint: Digest32,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub enum MutationResult {
+              Domain(DomainMigration),
+              Ownership(CohortOwnership),
+              Checkpoint(Checkpoint),
+              Comparison(SemanticComparison),
+              Decision(AcceptedDecision),
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct MigrationReceipt {
+              pub command: CommandId,
+              pub result: MutationResult,
+              pub duplicate: bool,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          struct StoredReceipt {
+              fingerprint: Digest32,
+              receipt: MigrationReceipt,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct Limits {
+              pub domains: usize,
+              pub cohorts_per_domain: usize,
+              pub checkpoints: usize,
+              pub comparisons: usize,
+              pub decisions: usize,
+              pub receipts: usize,
+          }
+
+          impl Limits {
+              pub fn validate(self) -> Result<Self, MigrationError> {
+                  if self.domains == 0 || self.domains > MAX_DOMAINS
+                      || self.cohorts_per_domain == 0 || self.cohorts_per_domain > MAX_COHORTS_PER_DOMAIN
+                      || self.checkpoints == 0 || self.checkpoints > MAX_CHECKPOINTS
+                      || self.comparisons == 0 || self.comparisons > MAX_COMPARISONS
+                      || self.decisions == 0 || self.decisions > MAX_DECISIONS
+                      || self.receipts == 0 || self.receipts > MAX_RECEIPTS
+                  {
+                      Err(MigrationError::invalid("migration_limits_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableMigrationCode {
+              InvalidArgument,
+              NotFound,
+              AlreadyExists,
+              FailedPrecondition,
+              Aborted,
+              OutOfRange,
+              ResourceExhausted,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct MigrationError {
+              code: StableMigrationCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl MigrationError {
+              #[must_use]
+              pub const fn new(code: StableMigrationCode, reason: &'static str, retryable: bool) -> Self {
+                  Self { code, reason, retryable }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableMigrationCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableMigrationCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct MigrationRegistry {
+              domains: BTreeMap<DomainKind, DomainMigration>,
+              receipts: BTreeMap<CommandId, StoredReceipt>,
+              checkpoint_ids: BTreeSet<CheckpointId>,
+              comparison_ids: BTreeSet<ComparisonId>,
+              decision_ids: BTreeSet<DecisionId>,
+              limits: Limits,
+          }
+
+          impl MigrationRegistry {
+              pub fn new(limits: Limits) -> Result<Self, MigrationError> {
+                  Ok(Self {
+                      domains: BTreeMap::new(),
+                      receipts: BTreeMap::new(),
+                      checkpoint_ids: BTreeSet::new(),
+                      comparison_ids: BTreeSet::new(),
+                      decision_ids: BTreeSet::new(),
+                      limits: limits.validate()?,
+                  })
+              }
+
+              pub fn register_domain(
+                  &mut self,
+                  identity: CommandIdentity,
+                  plan: PlanId,
+                  domain: DomainKind,
+              ) -> Result<MigrationReceipt, MigrationError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  if self.domains.contains_key(&domain) {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::AlreadyExists,
+                          "migration_domain_exists",
+                          false,
+                      ));
+                  }
+                  if self.domains.len() >= self.limits.domains {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::ResourceExhausted,
+                          "migration_domain_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let migration = DomainMigration {
+                      plan,
+                      domain,
+                      stage: MigrationStage::NakamaPrimary,
+                      default_new_entity_writer: Writer::Nakama,
+                      source_high_water: 0,
+                      target_high_water: 0,
+                      snapshot_complete: false,
+                      reverse_delta_complete: false,
+                      final_backup_complete: false,
+                      rollback: RollbackState::Reversible,
+                      active_source_authorities: 0,
+                      active_target_authorities: 0,
+                      cohorts: BTreeMap::new(),
+                      checkpoints: Vec::new(),
+                      comparisons: Vec::new(),
+                      decisions: BTreeMap::new(),
+                      revision: 1,
+                  };
+                  self.commit(
+                      identity,
+                      MutationResult::Domain(migration.clone()),
+                      |candidate| {
+                          candidate.domains.insert(domain, migration);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn assign_cohort(
+                  &mut self,
+                  identity: CommandIdentity,
+                  domain: DomainKind,
+                  cohort: CohortId,
+                  expected_domain_revision: u64,
+                  writer: Writer,
+              ) -> Result<MigrationReceipt, MigrationError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let current = self.domain_for_update(domain, expected_domain_revision)?;
+                  if current.cohorts.len() >= self.limits.cohorts_per_domain
+                      && !current.cohorts.contains_key(&cohort)
+                  {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::ResourceExhausted,
+                          "cohort_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  writer_allowed_for_stage(current.stage, writer)?;
+                  let ownership = match current.cohorts.get(&cohort) {
+                      None => CohortOwnership { cohort, writer, generation: 1, revision: 1 },
+                      Some(existing) if existing.writer == writer => existing.clone(),
+                      Some(existing) => CohortOwnership {
+                          cohort,
+                          writer,
+                          generation: next_revision(existing.generation)?,
+                          revision: next_revision(existing.revision)?,
+                      },
+                  };
+                  self.commit(
+                      identity,
+                      MutationResult::Ownership(ownership.clone()),
+                      |candidate| {
+                          let migration = candidate.domains.get_mut(&domain).expect("domain checked above");
+                          migration.cohorts.insert(cohort, ownership.clone());
+                          migration.revision = next_revision(migration.revision)?;
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn append_checkpoint(
+                  &mut self,
+                  identity: CommandIdentity,
+                  domain: DomainKind,
+                  expected_domain_revision: u64,
+                  checkpoint: Checkpoint,
+              ) -> Result<MigrationReceipt, MigrationError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let checkpoint = checkpoint.validate()?;
+                  if self.checkpoint_ids.contains(&checkpoint.id) {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::AlreadyExists,
+                          "checkpoint_id_exists",
+                          false,
+                      ));
+                  }
+                  if self.checkpoint_ids.len() >= self.limits.checkpoints {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::ResourceExhausted,
+                          "checkpoint_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let current = self.domain_for_update(domain, expected_domain_revision)?;
+                  validate_checkpoint_progress(current, &checkpoint)?;
+                  self.commit(
+                      identity,
+                      MutationResult::Checkpoint(checkpoint.clone()),
+                      |candidate| {
+                          candidate.checkpoint_ids.insert(checkpoint.id);
+                          let migration = candidate.domains.get_mut(&domain).expect("domain checked above");
+                          migration.source_high_water = checkpoint.source_sequence;
+                          migration.target_high_water = checkpoint.target_sequence;
+                          match checkpoint.kind {
+                              CheckpointKind::Snapshot => migration.snapshot_complete = checkpoint.semantically_equal(),
+                              CheckpointKind::ReverseDelta => migration.reverse_delta_complete = checkpoint.semantically_equal(),
+                              CheckpointKind::FinalBackup => migration.final_backup_complete = checkpoint.semantically_equal(),
+                              CheckpointKind::Backfill | CheckpointKind::Cdc => {}
+                          }
+                          migration.checkpoints.push(checkpoint);
+                          migration.revision = next_revision(migration.revision)?;
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn record_comparison(
+                  &mut self,
+                  identity: CommandIdentity,
+                  domain: DomainKind,
+                  expected_domain_revision: u64,
+                  comparison: SemanticComparison,
+              ) -> Result<MigrationReceipt, MigrationError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let comparison = comparison.validate()?;
+                  if self.comparison_ids.contains(&comparison.id) {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::AlreadyExists,
+                          "comparison_id_exists",
+                          false,
+                      ));
+                  }
+                  if self.comparison_ids.len() >= self.limits.comparisons {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::ResourceExhausted,
+                          "comparison_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let current = self.domain_for_update(domain, expected_domain_revision)?;
+                  if comparison.source_sequence != current.source_high_water
+                      || comparison.target_sequence != current.target_high_water
+                  {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::Aborted,
+                          "comparison_high_water_mismatch",
+                          true,
+                      ));
+                  }
+                  self.commit(
+                      identity,
+                      MutationResult::Comparison(comparison.clone()),
+                      |candidate| {
+                          candidate.comparison_ids.insert(comparison.id);
+                          let migration = candidate.domains.get_mut(&domain).expect("domain checked above");
+                          migration.comparisons.push(comparison);
+                          migration.revision = next_revision(migration.revision)?;
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn record_decision(
+                  &mut self,
+                  identity: CommandIdentity,
+                  domain: DomainKind,
+                  expected_domain_revision: u64,
+                  decision: AcceptedDecision,
+              ) -> Result<MigrationReceipt, MigrationError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let decision = decision.validate()?;
+                  if self.decision_ids.contains(&decision.id) {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::AlreadyExists,
+                          "decision_id_exists",
+                          false,
+                      ));
+                  }
+                  if self.decision_ids.len() >= self.limits.decisions {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::ResourceExhausted,
+                          "decision_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let current = self.domain_for_update(domain, expected_domain_revision)?;
+                  if current.decisions.contains_key(&decision.kind) {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::AlreadyExists,
+                          "decision_kind_already_recorded",
+                          false,
+                      ));
+                  }
+                  self.commit(
+                      identity,
+                      MutationResult::Decision(decision),
+                      |candidate| {
+                          candidate.decision_ids.insert(decision.id);
+                          let migration = candidate.domains.get_mut(&domain).expect("domain checked above");
+                          migration.decisions.insert(decision.kind, decision);
+                          migration.revision = next_revision(migration.revision)?;
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn set_active_authorities(
+                  &mut self,
+                  identity: CommandIdentity,
+                  domain: DomainKind,
+                  expected_domain_revision: u64,
+                  source: u64,
+                  target: u64,
+              ) -> Result<MigrationReceipt, MigrationError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let current = self.domain_for_update(domain, expected_domain_revision)?;
+                  if source > 0 && target > 0 {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::FailedPrecondition,
+                          "dual_active_authority_forbidden",
+                          false,
+                      ));
+                  }
+                  let mut updated = current.clone();
+                  updated.active_source_authorities = source;
+                  updated.active_target_authorities = target;
+                  updated.revision = next_revision(updated.revision)?;
+                  self.commit(
+                      identity,
+                      MutationResult::Domain(updated.clone()),
+                      |candidate| {
+                          candidate.domains.insert(domain, updated);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn transition(
+                  &mut self,
+                  identity: CommandIdentity,
+                  domain: DomainKind,
+                  expected_domain_revision: u64,
+                  next: MigrationStage,
+              ) -> Result<MigrationReceipt, MigrationError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let current = self.domain_for_update(domain, expected_domain_revision)?;
+                  validate_transition(current, next)?;
+                  let mut updated = current.clone();
+                  updated.stage = next;
+                  updated.default_new_entity_writer = match next {
+                      MigrationStage::NakamaPrimary | MigrationStage::RustShadowNoEffect => Writer::Nakama,
+                      MigrationStage::RustCanaryNewEntities | MigrationStage::RustPrimaryNewEntities => Writer::Rust,
+                      MigrationStage::NakamaReadOnly | MigrationStage::NakamaRetired => Writer::None,
+                  };
+                  updated.rollback = match next {
+                      MigrationStage::NakamaPrimary | MigrationStage::RustShadowNoEffect | MigrationStage::RustCanaryNewEntities => RollbackState::Reversible,
+                      MigrationStage::RustPrimaryNewEntities => RollbackState::ReverseDeltaRequired,
+                      MigrationStage::NakamaReadOnly => RollbackState::ReverseDeltaComplete,
+                      MigrationStage::NakamaRetired => RollbackState::Irreversible,
+                  };
+                  updated.revision = next_revision(updated.revision)?;
+                  self.commit(
+                      identity,
+                      MutationResult::Domain(updated.clone()),
+                      |candidate| {
+                          candidate.domains.insert(domain, updated);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn rollback(
+                  &mut self,
+                  identity: CommandIdentity,
+                  domain: DomainKind,
+                  expected_domain_revision: u64,
+                  previous: MigrationStage,
+              ) -> Result<MigrationReceipt, MigrationError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let current = self.domain_for_update(domain, expected_domain_revision)?;
+                  validate_rollback(current, previous)?;
+                  let mut updated = current.clone();
+                  updated.stage = previous;
+                  updated.default_new_entity_writer = Writer::Nakama;
+                  updated.rollback = RollbackState::Reversible;
+                  updated.revision = next_revision(updated.revision)?;
+                  self.commit(
+                      identity,
+                      MutationResult::Domain(updated.clone()),
+                      |candidate| {
+                          candidate.domains.insert(domain, updated);
+                          Ok(())
+                      },
+                  )
+              }
+
+              fn domain_for_update(
+                  &self,
+                  domain: DomainKind,
+                  expected_revision: u64,
+              ) -> Result<&DomainMigration, MigrationError> {
+                  let current = self.domains.get(&domain).ok_or_else(|| MigrationError::new(
+                      StableMigrationCode::NotFound,
+                      "migration_domain_not_found",
+                      false,
+                  ))?;
+                  if current.revision != expected_revision {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::Aborted,
+                          "migration_revision_mismatch",
+                          true,
+                      ));
+                  }
+                  Ok(current)
+              }
+
+              fn replay(
+                  &self,
+                  identity: CommandIdentity,
+              ) -> Result<Option<MigrationReceipt>, MigrationError> {
+                  let Some(stored) = self.receipts.get(&identity.command) else {
+                      return Ok(None);
+                  };
+                  if stored.fingerprint != identity.fingerprint {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::AlreadyExists,
+                          "command_fingerprint_conflict",
+                          false,
+                      ));
+                  }
+                  let mut receipt = stored.receipt.clone();
+                  receipt.duplicate = true;
+                  Ok(Some(receipt))
+              }
+
+              fn commit<F>(
+                  &mut self,
+                  identity: CommandIdentity,
+                  result: MutationResult,
+                  apply: F,
+              ) -> Result<MigrationReceipt, MigrationError>
+              where
+                  F: FnOnce(&mut Self) -> Result<(), MigrationError>,
+              {
+                  if self.receipts.len() >= self.limits.receipts {
+                      return Err(MigrationError::new(
+                          StableMigrationCode::ResourceExhausted,
+                          "migration_receipt_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let receipt = MigrationReceipt {
+                      command: identity.command,
+                      result,
+                      duplicate: false,
+                  };
+                  let mut candidate = self.clone();
+                  apply(&mut candidate)?;
+                  candidate.receipts.insert(
+                      identity.command,
+                      StoredReceipt {
+                          fingerprint: identity.fingerprint,
+                          receipt: receipt.clone(),
+                      },
+                  );
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              #[must_use]
+              pub fn domain(&self, domain: DomainKind) -> Option<&DomainMigration> {
+                  self.domains.get(&domain)
+              }
+          }
+
+          fn validate_checkpoint_progress(
+              current: &DomainMigration,
+              checkpoint: &Checkpoint,
+          ) -> Result<(), MigrationError> {
+              if checkpoint.source_sequence <= current.source_high_water
+                  || checkpoint.target_sequence < current.target_high_water
+              {
+                  return Err(MigrationError::new(
+                      StableMigrationCode::Aborted,
+                      "checkpoint_sequence_regression",
+                      true,
+                  ));
+              }
+              match checkpoint.kind {
+                  CheckpointKind::Snapshot if !current.checkpoints.is_empty() => Err(MigrationError::new(
+                      StableMigrationCode::FailedPrecondition,
+                      "snapshot_must_be_first_checkpoint",
+                      false,
+                  )),
+                  CheckpointKind::Backfill | CheckpointKind::Cdc if !current.snapshot_complete => Err(MigrationError::new(
+                      StableMigrationCode::FailedPrecondition,
+                      "snapshot_not_complete",
+                      false,
+                  )),
+                  CheckpointKind::ReverseDelta if current.stage != MigrationStage::RustPrimaryNewEntities => Err(MigrationError::new(
+                      StableMigrationCode::FailedPrecondition,
+                      "reverse_delta_wrong_stage",
+                      false,
+                  )),
+                  CheckpointKind::FinalBackup if current.stage != MigrationStage::NakamaReadOnly => Err(MigrationError::new(
+                      StableMigrationCode::FailedPrecondition,
+                      "final_backup_wrong_stage",
+                      false,
+                  )),
+                  _ => Ok(()),
+              }
+          }
+
+          fn writer_allowed_for_stage(stage: MigrationStage, writer: Writer) -> Result<(), MigrationError> {
+              let allowed = match stage {
+                  MigrationStage::NakamaPrimary | MigrationStage::RustShadowNoEffect => writer == Writer::Nakama,
+                  MigrationStage::RustCanaryNewEntities | MigrationStage::RustPrimaryNewEntities => matches!(writer, Writer::Nakama | Writer::Rust),
+                  MigrationStage::NakamaReadOnly | MigrationStage::NakamaRetired => writer != Writer::Nakama,
+              };
+              if allowed {
+                  Ok(())
+              } else {
+                  Err(MigrationError::new(
+                      StableMigrationCode::FailedPrecondition,
+                      "writer_not_allowed_for_stage",
+                      false,
+                  ))
+              }
+          }
+
+          fn clean_latest_comparison(current: &DomainMigration) -> bool {
+              current
+                  .comparisons
+                  .last()
+                  .is_some_and(SemanticComparison::clean)
+          }
+
+          fn has_decisions(current: &DomainMigration, kinds: &[DecisionKind]) -> bool {
+              kinds.iter().all(|kind| current.decisions.contains_key(kind))
+          }
+
+          fn all_cohorts(current: &DomainMigration, writer: Writer) -> bool {
+              !current.cohorts.is_empty()
+                  && current.cohorts.values().all(|cohort| cohort.writer == writer)
+          }
+
+          fn validate_transition(
+              current: &DomainMigration,
+              next: MigrationStage,
+          ) -> Result<(), MigrationError> {
+              let valid = match (current.stage, next) {
+                  (MigrationStage::NakamaPrimary, MigrationStage::RustShadowNoEffect) => {
+                      current.snapshot_complete
+                          && current.source_high_water == current.target_high_water
+                          && clean_latest_comparison(current)
+                  }
+                  (MigrationStage::RustShadowNoEffect, MigrationStage::RustCanaryNewEntities) => {
+                      current.source_high_water == current.target_high_water
+                          && clean_latest_comparison(current)
+                          && has_decisions(current, &[DecisionKind::Compatibility, DecisionKind::DataIntegrity, DecisionKind::Security])
+                          && current.active_target_authorities == 0
+                  }
+                  (MigrationStage::RustCanaryNewEntities, MigrationStage::RustPrimaryNewEntities) => {
+                      clean_latest_comparison(current)
+                          && has_decisions(current, &[DecisionKind::Compatibility, DecisionKind::DataIntegrity, DecisionKind::Security, DecisionKind::Operations, DecisionKind::Product])
+                          && current.cohorts.values().any(|cohort| cohort.writer == Writer::Rust)
+                          && current.active_source_authorities == 0
+                  }
+                  (MigrationStage::RustPrimaryNewEntities, MigrationStage::NakamaReadOnly) => {
+                      current.reverse_delta_complete
+                          && all_cohorts(current, Writer::Rust)
+                          && current.active_source_authorities == 0
+                  }
+                  (MigrationStage::NakamaReadOnly, MigrationStage::NakamaRetired) => {
+                      current.final_backup_complete
+                          && current.active_source_authorities == 0
+                          && current.active_target_authorities == 0
+                          && all_cohorts(current, Writer::Rust)
+                          && has_decisions(current, &[DecisionKind::Compatibility, DecisionKind::DataIntegrity, DecisionKind::Security, DecisionKind::Operations, DecisionKind::Product, DecisionKind::Retirement])
+                  }
+                  _ => false,
+              };
+              if valid {
+                  Ok(())
+              } else {
+                  Err(MigrationError::new(
+                      StableMigrationCode::FailedPrecondition,
+                      "migration_transition_preconditions_not_met",
+                      false,
+                  ))
+              }
+          }
+
+          fn validate_rollback(
+              current: &DomainMigration,
+              previous: MigrationStage,
+          ) -> Result<(), MigrationError> {
+              let valid = match (current.stage, previous) {
+                  (MigrationStage::RustShadowNoEffect, MigrationStage::NakamaPrimary)
+                  | (MigrationStage::RustCanaryNewEntities, MigrationStage::RustShadowNoEffect) => true,
+                  (MigrationStage::RustPrimaryNewEntities, MigrationStage::RustCanaryNewEntities) => current.reverse_delta_complete,
+                  (MigrationStage::NakamaReadOnly, MigrationStage::RustPrimaryNewEntities) => current.reverse_delta_complete,
+                  _ => false,
+              };
+              if valid && current.rollback != RollbackState::Irreversible {
+                  Ok(())
+              } else {
+                  Err(MigrationError::new(
+                      StableMigrationCode::FailedPrecondition,
+                      "rollback_preconditions_not_met",
+                      false,
+                  ))
+              }
+          }
+
+          fn next_revision(current: u64) -> Result<u64, MigrationError> {
+              current.checked_add(1).ok_or_else(|| MigrationError::new(
+                  StableMigrationCode::OutOfRange,
+                  "revision_overflow",
+                  false,
+              ))
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn id<T>(byte: u8, constructor: fn([u8;16]) -> Result<T, MigrationError>) -> T {
+                  constructor([byte;16]).unwrap()
+              }
+
+              fn digest(byte: u8) -> Digest32 {
+                  Digest32::new([byte;32]).unwrap()
+              }
+
+              fn command(byte: u8) -> CommandIdentity {
+                  CommandIdentity { command: id(byte, CommandId::new), fingerprint: digest(byte) }
+              }
+
+              fn registry() -> MigrationRegistry {
+                  MigrationRegistry::new(Limits {
+                      domains: 16,
+                      cohorts_per_domain: 16,
+                      checkpoints: 64,
+                      comparisons: 64,
+                      decisions: 64,
+                      receipts: 256,
+                  }).unwrap()
+              }
+
+              fn registered() -> MigrationRegistry {
+                  let mut registry = registry();
+                  registry.register_domain(command(1), id(1, PlanId::new), DomainKind::Match).unwrap();
+                  registry
+              }
+
+              fn snapshot(registry: &mut MigrationRegistry) {
+                  registry.append_checkpoint(
+                      command(2), DomainKind::Match, 1,
+                      Checkpoint { id:id(1,CheckpointId::new), kind:CheckpointKind::Snapshot, source_sequence:10, target_sequence:10, item_count:10, source_digest:digest(10), target_digest:digest(10), completed_at_ms:10 }
+                  ).unwrap();
+                  registry.record_comparison(
+                      command(3), DomainKind::Match, 2,
+                      SemanticComparison { id:id(1,ComparisonId::new), source_sequence:10, target_sequence:10, compared_items:10, source_digest:digest(10), target_digest:digest(10), divergences:BTreeMap::new(), completed_at_ms:11 }
+                  ).unwrap();
+              }
+
+              #[test]
+              fn checkpoint_progress_is_monotonic_and_exact_replay_is_idempotent() {
+                  let mut registry = registered();
+                  let identity = command(2);
+                  let checkpoint = Checkpoint { id:id(1,CheckpointId::new), kind:CheckpointKind::Snapshot, source_sequence:10, target_sequence:10, item_count:10, source_digest:digest(10), target_digest:digest(10), completed_at_ms:10 };
+                  registry.append_checkpoint(identity, DomainKind::Match, 1, checkpoint.clone()).unwrap();
+                  assert!(registry.append_checkpoint(identity, DomainKind::Match, 1, checkpoint).unwrap().duplicate);
+                  let regression = Checkpoint { id:id(2,CheckpointId::new), kind:CheckpointKind::Cdc, source_sequence:9, target_sequence:9, item_count:1, source_digest:digest(9), target_digest:digest(9), completed_at_ms:11 };
+                  assert_eq!(registry.append_checkpoint(command(3), DomainKind::Match, 2, regression).unwrap_err().reason(), "checkpoint_sequence_regression");
+                  assert_eq!(registry.domain(DomainKind::Match).unwrap().source_high_water, 10);
+              }
+
+              #[test]
+              fn blocking_divergence_is_never_normalized_into_success() {
+                  let mut registry = registered();
+                  registry.append_checkpoint(command(2), DomainKind::Match, 1, Checkpoint { id:id(1,CheckpointId::new), kind:CheckpointKind::Snapshot, source_sequence:10, target_sequence:10, item_count:10, source_digest:digest(10), target_digest:digest(10), completed_at_ms:10 }).unwrap();
+                  let comparison = SemanticComparison { id:id(1,ComparisonId::new), source_sequence:10, target_sequence:10, compared_items:10, source_digest:digest(10), target_digest:digest(10), divergences:BTreeMap::from([(DivergenceClass::Authorization,1)]), completed_at_ms:11 };
+                  assert_eq!(registry.record_comparison(command(3), DomainKind::Match, 2, comparison).unwrap_err().reason(), "blocking_semantic_divergence");
+                  assert!(registry.domain(DomainKind::Match).unwrap().comparisons.is_empty());
+              }
+
+              #[test]
+              fn dual_active_authority_is_rejected_without_state_change() {
+                  let mut registry = registered();
+                  assert_eq!(registry.set_active_authorities(command(2), DomainKind::Match, 1, 1, 1).unwrap_err().reason(), "dual_active_authority_forbidden");
+                  let domain = registry.domain(DomainKind::Match).unwrap();
+                  assert_eq!(domain.active_source_authorities, 0);
+                  assert_eq!(domain.active_target_authorities, 0);
+              }
+
+              #[test]
+              fn shadow_transition_requires_snapshot_and_clean_comparison() {
+                  let mut registry = registered();
+                  assert_eq!(registry.transition(command(2), DomainKind::Match, 1, MigrationStage::RustShadowNoEffect).unwrap_err().reason(), "migration_transition_preconditions_not_met");
+                  snapshot(&mut registry);
+                  registry.transition(command(4), DomainKind::Match, 3, MigrationStage::RustShadowNoEffect).unwrap();
+                  assert_eq!(registry.domain(DomainKind::Match).unwrap().stage, MigrationStage::RustShadowNoEffect);
+                  assert_eq!(registry.domain(DomainKind::Match).unwrap().default_new_entity_writer, Writer::Nakama);
+              }
+
+              #[test]
+              fn independent_decision_shape_rejects_self_review() {
+                  let mut registry = registered();
+                  let decision = AcceptedDecision { id:id(1,DecisionId::new), kind:DecisionKind::Security, evidence_digest:digest(1), reviewer_digest:digest(2), decided_at_ms:10, independent:true, self_review:true };
+                  assert_eq!(registry.record_decision(command(2), DomainKind::Match, 1, decision).unwrap_err().reason(), "decision_not_independent");
+                  assert!(registry.domain(DomainKind::Match).unwrap().decisions.is_empty());
+              }
+
+              #[test]
+              fn stage_rejects_writer_that_would_create_dual_authority() {
+                  let mut registry = registered();
+                  assert_eq!(registry.assign_cohort(command(2), DomainKind::Match, id(1,CohortId::new), 1, Writer::Rust).unwrap_err().reason(), "writer_not_allowed_for_stage");
+                  registry.assign_cohort(command(3), DomainKind::Match, id(1,CohortId::new), 1, Writer::Nakama).unwrap();
+                  assert_eq!(registry.domain(DomainKind::Match).unwrap().cohorts.len(), 1);
+              }
+
+              #[test]
+              fn retirement_cannot_be_reached_without_backup_zero_authorities_and_all_decisions() {
+                  let mut registry = registered();
+                  let domain = registry.domains.get_mut(&DomainKind::Match).unwrap();
+                  domain.stage = MigrationStage::NakamaReadOnly;
+                  domain.snapshot_complete = true;
+                  domain.final_backup_complete = false;
+                  domain.cohorts.insert(id(1,CohortId::new), CohortOwnership { cohort:id(1,CohortId::new), writer:Writer::Rust, generation:1, revision:1 });
+                  domain.revision = 2;
+                  assert_eq!(registry.transition(command(2), DomainKind::Match, 2, MigrationStage::NakamaRetired).unwrap_err().reason(), "migration_transition_preconditions_not_met");
+                  assert_eq!(registry.domain(DomainKind::Match).unwrap().stage, MigrationStage::NakamaReadOnly);
+              }
+
+              #[test]
+              fn irreversible_stage_cannot_roll_back() {
+                  let mut registry = registered();
+                  let domain = registry.domains.get_mut(&DomainKind::Match).unwrap();
+                  domain.stage = MigrationStage::NakamaRetired;
+                  domain.rollback = RollbackState::Irreversible;
+                  domain.revision = 2;
+                  assert_eq!(registry.rollback(command(2), DomainKind::Match, 2, MigrationStage::NakamaReadOnly).unwrap_err().reason(), "rollback_preconditions_not_met");
+              }
+          }
+          EOF
+
+          cat > crates/trnm-migration-core/README.md <<'EOF'
+          # trnm-migration-core
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-migration-core`  
+          Workspace class: `root`  
+          Lifecycle: `product-library`  
+          Owner role: `data-migration`
+
+          ## Status and authority
+
+          This document is the engineering contract for migration stage, ownership, checkpoint, semantic comparison, rollback and retirement state. It is a source candidate and does not authorize production migration, cutover or Nakama retirement.
+
+          ## Responsibilities
+
+          The crate owns the explicit stage sequence from Nakama primary through Rust shadow/canary/primary, Nakama read-only and retirement; cohort writer generations; snapshot/backfill/CDC/reverse-delta/final-backup checkpoints; semantic divergence classes; rollback state; active-authority counts; exact command receipts and structurally independent decision records.
+
+          It does not copy data, authenticate evidence/review provenance, operate databases, route traffic, stop processes or execute cutover.
+
+          ## Architecture and dependencies
+
+          Profile-specific migration workers generate content-addressed checkpoints. A semantic comparator produces typed divergence records. A trusted evidence/governance adapter authenticates accepted decisions before passing them into this state machine.
+
+          Traffic and database adapters consume writer assignments and generation fences. There is never a synchronous request-path dual write; source transactions emit immutable CDC/outbox records and the target applies them idempotently.
+
+          ## Public contracts
+
+          Every domain has one stage and one default new-entity writer. Every cohort has exactly one writer, generation and revision. Snapshot must be the first checkpoint; later high-water marks never regress. Identity, authorization, money, sequence, version, cursor, public error, durable effect, data loss and duplicate writer divergences always block promotion.
+
+          Retirement requires final backup, zero active source and target authorities, all cohorts on Rust and independently authenticated compatibility/data/security/operations/product/retirement decisions.
+
+          ## Correctness and failure model
+
+          All mutations use clone-validate-commit and exact receipts. Stale revision, duplicate identity, capacity, sequence regression, dual authority, blocked divergence, unsupported stage or rollback failure changes no state.
+
+          Rollback after Rust-primary requires a complete reverse delta. Retirement is irreversible in this model. A typed decision with `independent=true` is only structural input; the adapter must authenticate reviewer and evidence provenance.
+
+          ## Security and privacy
+
+          Migration checkpoints and decisions contain digests, not raw production data or credentials. Writer generation is an authorization fence. No caller-provided boolean or document may be treated as actual independent approval without authenticated evidence admission.
+
+          Snapshot, CDC, reverse delta and backups require encryption, least privilege, retention and secret/PII scanning.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-migration-core --all-targets --locked
+          cargo clippy --package trnm-migration-core --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover monotonic checkpoints and replay, blocking divergences, dual authority, shadow preconditions, self-review rejection, stage writer restrictions, retirement prerequisites and irreversible rollback rejection.
+
+          ## Operations
+
+          Adapters expose high-water lag, checkpoint age, comparison divergence, writer generation, authority counts, rollback state, stage and abort reason with bounded labels. Entity IDs and raw data are not labels.
+
+          ## Compatibility and evidence
+
+          Complete #147 requires actual Go module/state inventory, data introspection, repeatable snapshot/backfill/CDC, semantic comparison, traffic/write fences, reverse disposition, shadow/canary observations, rollback rehearsals, final backup, secret rotation and explicit legacy deletion evidence.
+
+          This core cannot prove database transfer, zero downtime, no data loss, reviewer independence, production operations or retirement.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P0-DATA-001`, `GAP-P0-SERVER-001`, `GAP-P0-SCOPE-001`, `GAP-P0-CI-001`, `GAP-P1-BRANCH-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires profile migration workers, authenticated evidence decisions, live shadow/canary/rollback runs, HA/PITR integration, final data/authority audits, retained exact-head evidence and independent data/compatibility/SRE acceptance.
+          EOF
+
+      - name: Register migration module fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          member='crates/trnm-migration-core'
+          p=Path('Cargo.toml'); t=p.read_text();
+          if f'"{member}"' not in t: p.write_text(t.replace(']\nexclude = [',f'  "{member}",\n]\nexclude = [',1))
+          mp=Path('docs/status/MODULE_DOCUMENTATION.json'); m=json.loads(mp.read_text())
+          if not any(r['id']=='trnm-migration-core' for r in m['modules']):
+              m['modules'].append({'id':'trnm-migration-core','path':member,'manifest':f'{member}/Cargo.toml','documentation':f'{member}/README.md','workspace':'root','lifecycle':'product-library','maturity':'source-candidate','owner_role':'data-migration','authority':'migration stage cohort ownership checkpoint comparison rollback and retirement state','blocking_gaps':['GAP-P0-DATA-001','GAP-P0-SERVER-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-BRANCH-001','GAP-P1-REVIEW-001'],'claim_credit':False})
+          m['modules'].sort(key=lambda r:r['id']); m['summary'].update({'module_count':len(m['modules']),'documented_count':len(m['modules']),'root_workspace_count':sum(r['workspace']=='root' for r in m['modules']),'isolated_workspace_count':sum(r['workspace']=='isolated' for r in m['modules']),'undocumented_count':0}); mp.write_text(json.dumps(m,indent=2)+'\n')
+          ap=Path('docs/development/RUST_PACKAGE_AUTHORITY.json'); a=json.loads(ap.read_text());
+          if member not in a['workspace']['members']: a['workspace']['members'].append(member); a['workspace']['members'].sort()
+          for k in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'): a.setdefault('claim_boundary',{})[k]=False
+          ap.write_text(json.dumps(a,indent=2)+'\n')
+          ip=Path('docs/status/IMPLEMENTATION_INVENTORY.json'); inv=json.loads(ip.read_text())
+          if not any(r.get('id')=='COMP-MIGRATION-CORE' for r in inv['components']):
+              inv['components'].append({'id':'COMP-MIGRATION-CORE','path':member,'kind':'rust-library','workstreams':['W14','W16'],'status':'source-candidate','implemented':['explicit migration stage and writer ownership model','snapshot backfill CDC reverse-delta and backup checkpoint state','semantic divergence rollback and retirement preconditions'],'missing':['actual source/target migration workers and comparator','authenticated decision provenance and live shadow/canary','HA/PITR rollback and final authority audit','Go disposition and independent retirement acceptance'],'blocking_gaps':['GAP-P0-DATA-001','GAP-P0-SERVER-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-BRANCH-001','GAP-P1-REVIEW-001'],'parity_ids':[],'evidence_ids':[],'claim_credit':False})
+          ip.write_text(json.dumps(inv,indent=2)+'\n')
+          sp=Path('docs/status/CURRENT_STATE.json'); st=json.loads(sp.read_text()); st.setdefault('implementation',{})['migration_ownership_core_source_candidate']=True; st['implementation']['complete_data_migration']=False
+          for k in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'): st.setdefault('claims',{})[k]=False
+          sp.write_text(json.dumps(st,indent=2)+'\n')
+          PY
+
+      - name: Publish Draft and qualify exact source
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git commit -m 'feat(migration): add ownership checkpoint rollback and retirement core'
+          head_sha="$(git rev-parse HEAD)"; head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Source candidate for #147, stacked on provider/value Wave 9.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds explicit migration stages, one-writer cohort generations, monotonic snapshot/backfill/CDC/reverse-delta/final-backup checkpoints, non-normalizable semantic divergences, rollback barriers and retirement preconditions.
+
+          Actual migration workers, authenticated decisions, live shadow/canary/rollback, HA/PITR, final authority audit and Go disposition remain open. No C3/C4/C5, cutover or retirement credit.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 10] Add migration ownership and cutover state core' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do cargo test --manifest-path "$manifest" --all-targets --locked; cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings; done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "Migration Wave 10 carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and all claim ceilings remain binding."
+          gh issue comment 147 --repo "$REPOSITORY" --body "Migration core carrier status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`; #147 remains open pending live migration, cutover and retirement evidence."
