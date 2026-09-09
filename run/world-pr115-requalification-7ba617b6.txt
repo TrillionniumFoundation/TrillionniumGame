@@ -1,0 +1,7 @@
+repository=TrillionniumFoundation/Trillionnium-World
+pull_request=115
+head=7ba617b6644a173f0c0efb8d5fa462c1cc943bce
+prospective_merge=23b3da674641cc7ba24da7f43ea5e7012ba11177
+reason=remove forbidden obsolete V5 plan reference after exact truth failure
+workflow_tuple_binding=dynamic_at_job_start
+production_authorization=not_granted
