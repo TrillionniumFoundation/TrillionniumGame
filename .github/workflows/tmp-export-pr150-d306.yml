@@ -1,0 +1,53 @@
+name: tmp-export-pr150-d306
+
+on:
+  push:
+    branches:
+      - ops/export-pr150-d306-20260909
+    paths:
+      - .github/workflows/tmp-export-pr150-d306.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tmp-export-pr150-d306
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Fetch exact source
+        shell: bash
+        env:
+          TARGET_SHA: d306a9385e154babc0173bfb214b5726a0f2942c
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$TARGET_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD^{tree})" = '7c06b974eb67201d0cd452a00db5e6143344bf62'
+      - name: Build deterministic archive
+        shell: bash
+        env:
+          TARGET_SHA: d306a9385e154babc0173bfb214b5726a0f2942c
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/trillionnium-game-${TARGET_SHA}.tar.gz"
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner --exclude=.git -cf - -C "$GITHUB_WORKSPACE" . | gzip -n > "$archive"
+          test -s "$archive"
+          test "$(stat -c %s "$archive")" -le 67108864
+          sha256sum "$archive"
+          printf 'SOURCE_ARCHIVE=%s\n' "$archive" >> "$GITHUB_ENV"
+      - name: Upload exact archive
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: pr150-source-d306a9385e154babc0173bfb214b5726a0f2942c
+          path: ${{ env.SOURCE_ARCHIVE }}
+          mime_type: application/gzip
