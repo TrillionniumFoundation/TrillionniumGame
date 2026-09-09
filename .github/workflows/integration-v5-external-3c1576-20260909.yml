@@ -1,0 +1,127 @@
+name: integration-v5-external-3c1576-20260909
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-v5-external-3c1576-20260909-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  INTEGRATION_REPOSITORY: TrillionniumFoundation/Trillionnium-Integration
+  INTEGRATION_BASE_SHA: ac71d4ae4b154f689a9e1ca0abf27e390202f871
+  INTEGRATION_HEAD_SHA: 3c157649ca3b3d1055aab27a07eca65ff5aec950
+  INTEGRATION_HEAD_TREE: 5428638cb3bfff7a28a19f81043269df3cc5d079
+  INTEGRATION_MERGE_SHA: 6f795700d51d28d5b6da7eacee55d2eb4e74722b
+  INTEGRATION_MERGE_TREE: 5428638cb3bfff7a28a19f81043269df3cc5d079
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  qualify:
+    name: integration-v5/external-required
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Fetch and verify immutable Integration tuple
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_dir="$RUNNER_TEMP/integration-head"
+          merge_dir="$RUNNER_TEMP/integration-merge"
+          rm -rf "$head_dir" "$merge_dir"
+
+          git init "$head_dir"
+          git -C "$head_dir" remote add origin "https://github.com/${INTEGRATION_REPOSITORY}.git"
+          git -C "$head_dir" fetch --no-tags --depth=1 origin "$INTEGRATION_HEAD_SHA"
+          git -C "$head_dir" checkout --detach FETCH_HEAD
+
+          git init "$merge_dir"
+          git -C "$merge_dir" remote add origin "https://github.com/${INTEGRATION_REPOSITORY}.git"
+          git -C "$merge_dir" fetch --no-tags --depth=2 origin "$INTEGRATION_MERGE_SHA"
+          git -C "$merge_dir" checkout --detach FETCH_HEAD
+
+          test "$(git -C "$head_dir" rev-parse HEAD)" = "$INTEGRATION_HEAD_SHA"
+          test "$(git -C "$head_dir" rev-parse 'HEAD^{tree}')" = "$INTEGRATION_HEAD_TREE"
+          test "$(git -C "$merge_dir" rev-parse HEAD)" = "$INTEGRATION_MERGE_SHA"
+          test "$(git -C "$merge_dir" rev-parse 'HEAD^{tree}')" = "$INTEGRATION_MERGE_TREE"
+          test "$(git -C "$merge_dir" rev-parse 'HEAD^1')" = "$INTEGRATION_BASE_SHA"
+          test "$(git -C "$merge_dir" rev-parse 'HEAD^2')" = "$INTEGRATION_HEAD_SHA"
+          test -z "$(git -C "$head_dir" status --porcelain=v1 --untracked-files=all)"
+          test -z "$(git -C "$merge_dir" status --porcelain=v1 --untracked-files=all)"
+
+          printf 'head=%s\n' "$(git -C "$head_dir" rev-parse HEAD)"
+          printf 'head_tree=%s\n' "$(git -C "$head_dir" rev-parse 'HEAD^{tree}')"
+          printf 'merge=%s\n' "$(git -C "$merge_dir" rev-parse HEAD)"
+          printf 'merge_tree=%s\n' "$(git -C "$merge_dir" rev-parse 'HEAD^{tree}')"
+          printf 'parents=%s\n' "$(git -C "$merge_dir" show -s --format=%P HEAD)"
+
+      - name: Validate exact head lock and hostile fixtures
+        id: head
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/integration-head"
+          python3 scripts/check-components-lock.py
+          python3 scripts/test-components-lock-negative.py
+          bash scripts/project-preflight.sh
+          find . -type d -name '__pycache__' -prune -print0 | xargs -0 -r rm -rf
+          find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Validate prospective merge lock and hostile fixtures
+        id: merge
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/integration-merge"
+          python3 scripts/check-components-lock.py
+          python3 scripts/test-components-lock-negative.py
+          bash scripts/project-preflight.sh
+          find . -type d -name '__pycache__' -prune -print0 | xargs -0 -r rm -rf
+          find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Enforce both immutable outcomes
+        if: always()
+        shell: bash
+        env:
+          HEAD_OUTCOME: ${{ steps.head.outcome }}
+          MERGE_OUTCOME: ${{ steps.merge.outcome }}
+        run: |
+          set -euo pipefail
+          head_dir="$RUNNER_TEMP/integration-head"
+          merge_dir="$RUNNER_TEMP/integration-merge"
+          {
+            printf 'integration_repository=%s\n' "$INTEGRATION_REPOSITORY"
+            printf 'integration_base_sha=%s\n' "$INTEGRATION_BASE_SHA"
+            printf 'integration_head_sha=%s\n' "$INTEGRATION_HEAD_SHA"
+            printf 'integration_head_tree=%s\n' "$INTEGRATION_HEAD_TREE"
+            printf 'integration_merge_sha=%s\n' "$INTEGRATION_MERGE_SHA"
+            printf 'integration_merge_tree=%s\n' "$INTEGRATION_MERGE_TREE"
+            printf 'actual_head=%s\n' "$(git -C "$head_dir" rev-parse HEAD)"
+            printf 'actual_head_tree=%s\n' "$(git -C "$head_dir" rev-parse 'HEAD^{tree}')"
+            printf 'actual_merge=%s\n' "$(git -C "$merge_dir" rev-parse HEAD)"
+            printf 'actual_merge_tree=%s\n' "$(git -C "$merge_dir" rev-parse 'HEAD^{tree}')"
+            printf 'actual_merge_parents=%s\n' "$(git -C "$merge_dir" show -s --format=%P HEAD)"
+            printf 'head_validation=%s\n' "$HEAD_OUTCOME"
+            printf 'merge_validation=%s\n' "$MERGE_OUTCOME"
+            printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'runner_commit=%s\n' "$GITHUB_SHA"
+            printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'runner_run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'production_authorization=not_granted\n'
+          } | tee "$RUNNER_TEMP/integration-v5-identity.txt"
+          {
+            printf '## Integration v5 immutable external qualification\n\n```text\n'
+            cat "$RUNNER_TEMP/integration-v5-identity.txt"
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$HEAD_OUTCOME" = success
+          test "$MERGE_OUTCOME" = success
+          printf 'INTEGRATION_V5_EXTERNAL_REQUIRED=PASS\n'
