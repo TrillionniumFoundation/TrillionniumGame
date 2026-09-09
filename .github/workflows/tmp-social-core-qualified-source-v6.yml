@@ -1,0 +1,248 @@
+name: tmp-social-core-qualified-source-v6
+
+on:
+  push:
+    branches:
+      - feature/plan-v32-social-core-20260909
+    paths:
+      - .github/workflows/tmp-social-core-qualified-source-v6.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: tmp-social-core-qualified-source-v6
+  cancel-in-progress: false
+
+jobs:
+  rebuild-qualify-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      FEATURE_BRANCH: feature/plan-v32-social-core-20260909
+      EXPECTED_BASE_SHA: 541016f34f2dbaf7c2be10cd45afdd04223c49f2
+      BASE_BRANCH: integration/plan-v32-main-rebind-2026-09-09
+      GENERATOR_REF: ops/social-core-source-20260909
+      V2_REF: cfe6e4831fcc88556194cadc167fe517025276a3
+      V3_REF: b2a62b190ecc1251ea444e1e7c327512de07a88a
+      V4_REF: 79fcfa45fbd0077989b964753768f463bbfbd9ea
+      V5_REF: 4fe376b5e72d5a85fc487fb2b942d4f2d6228a12
+    steps:
+      - name: Extract v5 orchestration without failed refactor
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${REPOSITORY}/contents/.github/workflows/tmp-social-core-qualified-source-v5.yml?ref=${V5_REF}" \
+            --jq .content | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/social-v5.yml"
+          ruby -ryaml -e '
+            document = YAML.safe_load(File.read(ARGV[0]), aliases: true)
+            steps = document.fetch("jobs").fetch("execute-bound-pipeline").fetch("steps")
+            names = [
+              "Extract immutable v4 execution steps",
+              "Prepare reusable scripts and repair parent-shell cwd",
+              "Reconstruct source from exact parent",
+              "Prove atomic source semantics",
+              "Validate all source and control contracts",
+              "Publish clean source branch"
+            ]
+            names.each_with_index do |name, index|
+              step = steps.find { |entry| entry["name"] == name }
+              abort("missing v5 step: #{name}") unless step && step["run"]
+              File.write(ARGV[index + 1], step.fetch("run"))
+            end
+          ' "$RUNNER_TEMP/social-v5.yml" \
+            "$RUNNER_TEMP/v5-extract.sh" \
+            "$RUNNER_TEMP/v5-prepare.sh" \
+            "$RUNNER_TEMP/v5-reconstruct.sh" \
+            "$RUNNER_TEMP/v5-prove.sh" \
+            "$RUNNER_TEMP/v5-validate.sh" \
+            "$RUNNER_TEMP/v5-publish.sh"
+      - name: Prepare scripts and reconstruct exact candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash "$RUNNER_TEMP/v5-extract.sh"
+          bash "$RUNNER_TEMP/v5-prepare.sh"
+          bash "$RUNNER_TEMP/v5-reconstruct.sh"
+      - name: Introduce typed notification input and rewrite callers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/trnm-social-core/src/lib.rs")
+          text = path.read_text(encoding="utf-8")
+
+          marker = "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct Notification {\n"
+          input_type = """#[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct NotificationInput {
+              recipient: UserId,
+              notification: NotificationId,
+              subject: String,
+              body: Vec<u8>,
+          }
+
+          impl NotificationInput {
+              #[must_use]
+              pub fn new(
+                  recipient: UserId,
+                  notification: NotificationId,
+                  subject: String,
+                  body: Vec<u8>,
+              ) -> Self {
+                  Self {
+                      recipient,
+                      notification,
+                      subject,
+                      body,
+                  }
+              }
+          }
+
+          """
+          if text.count(marker) != 1:
+              raise SystemExit("notification type marker drifted")
+          text = text.replace(marker, input_type + marker, 1)
+
+          old_signature = """    pub fn create_notification(
+              &mut self,
+              command: CommandId,
+              fingerprint: Fingerprint,
+              actor: UserId,
+              recipient: UserId,
+              notification: NotificationId,
+              subject: String,
+              body: Vec<u8>,
+          ) -> Result<SocialReceipt, SocialError> {
+          """
+          new_signature = """    pub fn create_notification(
+              &mut self,
+              command: CommandId,
+              fingerprint: Fingerprint,
+              actor: UserId,
+              input: NotificationInput,
+          ) -> Result<SocialReceipt, SocialError> {
+              let NotificationInput {
+                  recipient,
+                  notification,
+                  subject,
+                  body,
+              } = input;
+          """
+          if text.count(old_signature) != 1:
+              raise SystemExit("create_notification signature drifted")
+          text = text.replace(old_signature, new_signature, 1)
+
+          def matching_paren(source: str, opening: int) -> int:
+              depth = 0
+              in_string = False
+              escaped = False
+              for index in range(opening, len(source)):
+                  char = source[index]
+                  if in_string:
+                      if escaped:
+                          escaped = False
+                      elif char == "\\":
+                          escaped = True
+                      elif char == '"':
+                          in_string = False
+                      continue
+                  if char == '"':
+                      in_string = True
+                  elif char == '(':
+                      depth += 1
+                  elif char == ')':
+                      depth -= 1
+                      if depth == 0:
+                          return index
+              raise SystemExit("unbalanced notification call")
+
+          def split_top_level(payload: str) -> list[str]:
+              values: list[str] = []
+              start = 0
+              stack: list[str] = []
+              in_string = False
+              escaped = False
+              pairs = {')': '(', ']': '[', '}': '{'}
+              for index, char in enumerate(payload):
+                  if in_string:
+                      if escaped:
+                          escaped = False
+                      elif char == "\\":
+                          escaped = True
+                      elif char == '"':
+                          in_string = False
+                      continue
+                  if char == '"':
+                      in_string = True
+                  elif char in "([{":
+                      stack.append(char)
+                  elif char in ")]}":
+                      if not stack or stack.pop() != pairs[char]:
+                          raise SystemExit("unbalanced nested notification argument")
+                  elif char == ',' and not stack:
+                      values.append(payload[start:index].strip())
+                      start = index + 1
+              tail = payload[start:].strip()
+              if tail:
+                  values.append(tail)
+              return values
+
+          needle = ".create_notification("
+          cursor = rewritten = 0
+          while True:
+              start = text.find(needle, cursor)
+              if start < 0:
+                  break
+              opening = start + len(needle) - 1
+              end = matching_paren(text, opening)
+              args = split_top_level(text[opening + 1:end])
+              if len(args) != 7:
+                  raise SystemExit(f"expected seven notification call arguments, got {len(args)}")
+              line_start = text.rfind("\n", 0, start) + 1
+              indent = text[line_start:start]
+              replacement = (
+                  ".create_notification(\n"
+                  f"{indent}    {args[0]},\n"
+                  f"{indent}    {args[1]},\n"
+                  f"{indent}    {args[2]},\n"
+                  f"{indent}    NotificationInput::new(\n"
+                  f"{indent}        {args[3]},\n"
+                  f"{indent}        {args[4]},\n"
+                  f"{indent}        {args[5]},\n"
+                  f"{indent}        {args[6]},\n"
+                  f"{indent}    ),\n"
+                  f"{indent})"
+              )
+              text = text[:start] + replacement + text[end + 1:]
+              cursor = start + len(replacement)
+              rewritten += 1
+          if rewritten != 3:
+              raise SystemExit(f"expected three notification calls, rewrote {rewritten}")
+          if "recipient: UserId,\n        notification:" in text:
+              raise SystemExit("old notification argument fanout remains")
+          path.write_text(text, encoding="utf-8")
+          PY
+          cargo fmt --all
+          git add -A
+          git diff --cached --check
+      - name: Prove atomic source semantics
+        shell: bash
+        run: bash "$RUNNER_TEMP/v5-prove.sh"
+      - name: Validate package workspace and complete control plane
+        shell: bash
+        run: bash "$RUNNER_TEMP/v5-validate.sh"
+      - name: Publish clean social source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash "$RUNNER_TEMP/v5-publish.sh"
