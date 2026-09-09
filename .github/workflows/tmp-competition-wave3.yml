@@ -1,0 +1,1103 @@
+name: tmp-competition-wave3
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-competition-wave3.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-storage-service-20260909
+  FEATURE_BRANCH: feature/plan-v32-competition-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-competition-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Wait for exact Wave 2 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 120); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 30
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write deterministic competition core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-competition-core/src
+          cat > crates/trnm-competition-core/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-competition-core"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Deterministic bounded leaderboard tournament and scheduler state core"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-competition-core/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::cmp::Ordering;
+          use std::collections::BTreeMap;
+
+          pub const MAX_DEFINITIONS: usize = 1024;
+          pub const MAX_RECORDS_PER_BOARD: usize = 100_000;
+          pub const MAX_JOBS: usize = 4096;
+          pub const MAX_CLAIM_BATCH: usize = 256;
+          pub const MAX_LEASE_MS: u64 = 300_000;
+
+          macro_rules! identity {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(value: [u8; 16]) -> Result<Self, CompetitionError> {
+                          if value.iter().all(|byte| *byte == 0) {
+                              Err(CompetitionError::invalid($reason))
+                          } else {
+                              Ok(Self(value))
+                          }
+                      }
+
+                      #[must_use]
+                      pub const fn as_bytes(&self) -> &[u8; 16] {
+                          &self.0
+                      }
+                  }
+              };
+          }
+
+          identity!(LeaderboardId, "leaderboard_id_zero");
+          identity!(UserId, "user_id_zero");
+          identity!(CommandId, "command_id_zero");
+          identity!(JobId, "job_id_zero");
+          identity!(NodeId, "node_id_zero");
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Fingerprint([u8; 32]);
+
+          impl Fingerprint {
+              pub fn new(value: [u8; 32]) -> Result<Self, CompetitionError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      Err(CompetitionError::invalid("fingerprint_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum SortOrder {
+              Descending,
+              Ascending,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum ScoreOperator {
+              Best,
+              Set,
+              Increment,
+              Decrement,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct TournamentWindow {
+              pub start_at_ms: u64,
+              pub end_at_ms: u64,
+              pub reset_at_ms: Option<u64>,
+          }
+
+          impl TournamentWindow {
+              pub fn validate(self) -> Result<Self, CompetitionError> {
+                  if self.start_at_ms == 0 || self.end_at_ms <= self.start_at_ms {
+                      return Err(CompetitionError::invalid("tournament_window_invalid"));
+                  }
+                  if self
+                      .reset_at_ms
+                      .is_some_and(|value| value <= self.end_at_ms)
+                  {
+                      return Err(CompetitionError::invalid("tournament_reset_invalid"));
+                  }
+                  Ok(self)
+              }
+
+              #[must_use]
+              pub const fn contains(self, now_ms: u64) -> bool {
+                  now_ms >= self.start_at_ms && now_ms < self.end_at_ms
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct LeaderboardDefinition {
+              pub id: LeaderboardId,
+              pub sort: SortOrder,
+              pub operator: ScoreOperator,
+              pub max_records: usize,
+              pub tournament: Option<TournamentWindow>,
+              pub revision: u64,
+          }
+
+          impl LeaderboardDefinition {
+              pub fn validate(mut self) -> Result<Self, CompetitionError> {
+                  if self.max_records == 0 || self.max_records > MAX_RECORDS_PER_BOARD {
+                      return Err(CompetitionError::resource("leaderboard_capacity_invalid"));
+                  }
+                  if self.revision == 0 {
+                      return Err(CompetitionError::invalid("definition_revision_zero"));
+                  }
+                  self.tournament = self.tournament.map(TournamentWindow::validate).transpose()?;
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ScoreRecord {
+              pub leaderboard: LeaderboardId,
+              pub user: UserId,
+              pub score: i64,
+              pub subscore: i64,
+              pub update_time_ms: u64,
+              pub revision: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct ScoreCommand {
+              pub command: CommandId,
+              pub fingerprint: Fingerprint,
+              pub leaderboard: LeaderboardId,
+              pub user: UserId,
+              pub score: i64,
+              pub subscore: i64,
+              pub occurred_at_ms: u64,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ScoreReceipt {
+              pub command: CommandId,
+              pub record: ScoreRecord,
+              pub changed: bool,
+              pub duplicate: bool,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          struct StoredReceipt {
+              fingerprint: Fingerprint,
+              receipt: ScoreReceipt,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct RankedRecord {
+              pub rank: u64,
+              pub record: ScoreRecord,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct RankCursor {
+              pub rank: u64,
+              pub user: UserId,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum JobKind {
+              TournamentStart(LeaderboardId),
+              TournamentEnd(LeaderboardId),
+              LeaderboardReset(LeaderboardId),
+              RewardDispatch(LeaderboardId),
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct JobLease {
+              pub owner: NodeId,
+              pub generation: u64,
+              pub expires_at_ms: u64,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub enum JobState {
+              Pending,
+              Leased(JobLease),
+              Completed { completed_at_ms: u64 },
+              DeadLetter { reason_code: u32, failed_at_ms: u64 },
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ScheduledJob {
+              pub id: JobId,
+              pub kind: JobKind,
+              pub due_at_ms: u64,
+              pub state: JobState,
+              pub revision: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableCompetitionCode {
+              InvalidArgument,
+              NotFound,
+              AlreadyExists,
+              FailedPrecondition,
+              Aborted,
+              OutOfRange,
+              ResourceExhausted,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct CompetitionError {
+              code: StableCompetitionCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl CompetitionError {
+              #[must_use]
+              pub const fn new(
+                  code: StableCompetitionCode,
+                  reason: &'static str,
+                  retryable: bool,
+              ) -> Self {
+                  Self {
+                      code,
+                      reason,
+                      retryable,
+                  }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableCompetitionCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn resource(reason: &'static str) -> Self {
+                  Self::new(StableCompetitionCode::ResourceExhausted, reason, false)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableCompetitionCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct CompetitionRegistry {
+              definitions: BTreeMap<LeaderboardId, LeaderboardDefinition>,
+              records: BTreeMap<(LeaderboardId, UserId), ScoreRecord>,
+              receipts: BTreeMap<CommandId, StoredReceipt>,
+              jobs: BTreeMap<JobId, ScheduledJob>,
+              max_definitions: usize,
+              max_receipts: usize,
+              max_jobs: usize,
+          }
+
+          impl CompetitionRegistry {
+              pub fn new(
+                  max_definitions: usize,
+                  max_receipts: usize,
+                  max_jobs: usize,
+              ) -> Result<Self, CompetitionError> {
+                  if max_definitions == 0 || max_definitions > MAX_DEFINITIONS {
+                      return Err(CompetitionError::resource("definition_limit_invalid"));
+                  }
+                  if max_receipts == 0 {
+                      return Err(CompetitionError::resource("receipt_limit_invalid"));
+                  }
+                  if max_jobs == 0 || max_jobs > MAX_JOBS {
+                      return Err(CompetitionError::resource("job_limit_invalid"));
+                  }
+                  Ok(Self {
+                      definitions: BTreeMap::new(),
+                      records: BTreeMap::new(),
+                      receipts: BTreeMap::new(),
+                      jobs: BTreeMap::new(),
+                      max_definitions,
+                      max_receipts,
+                      max_jobs,
+                  })
+              }
+
+              pub fn put_definition(
+                  &mut self,
+                  definition: LeaderboardDefinition,
+                  expected_revision: Option<u64>,
+              ) -> Result<LeaderboardDefinition, CompetitionError> {
+                  let definition = definition.validate()?;
+                  match self.definitions.get(&definition.id) {
+                      None if expected_revision.is_some() => {
+                          return Err(CompetitionError::new(
+                              StableCompetitionCode::FailedPrecondition,
+                              "definition_missing",
+                              false,
+                          ));
+                      }
+                      None if self.definitions.len() >= self.max_definitions => {
+                          return Err(CompetitionError::resource("definition_capacity_exhausted"));
+                      }
+                      None => {}
+                      Some(current) if expected_revision != Some(current.revision) => {
+                          return Err(CompetitionError::new(
+                              StableCompetitionCode::Aborted,
+                              "definition_revision_mismatch",
+                              true,
+                          ));
+                      }
+                      Some(_) => {}
+                  }
+                  self.definitions.insert(definition.id, definition.clone());
+                  Ok(definition)
+              }
+
+              pub fn write_score(
+                  &mut self,
+                  command: ScoreCommand,
+              ) -> Result<ScoreReceipt, CompetitionError> {
+                  if command.occurred_at_ms == 0 {
+                      return Err(CompetitionError::invalid("occurred_at_zero"));
+                  }
+                  if let Some(existing) = self.receipts.get(&command.command) {
+                      if existing.fingerprint != command.fingerprint {
+                          return Err(CompetitionError::new(
+                              StableCompetitionCode::AlreadyExists,
+                              "command_fingerprint_conflict",
+                              false,
+                          ));
+                      }
+                      let mut receipt = existing.receipt.clone();
+                      receipt.duplicate = true;
+                      return Ok(receipt);
+                  }
+                  if self.receipts.len() >= self.max_receipts {
+                      return Err(CompetitionError::resource("receipt_capacity_exhausted"));
+                  }
+                  let definition = self
+                      .definitions
+                      .get(&command.leaderboard)
+                      .ok_or_else(|| CompetitionError::new(
+                          StableCompetitionCode::NotFound,
+                          "leaderboard_not_found",
+                          false,
+                      ))?
+                      .clone();
+                  if definition
+                      .tournament
+                      .is_some_and(|window| !window.contains(command.occurred_at_ms))
+                  {
+                      return Err(CompetitionError::new(
+                          StableCompetitionCode::FailedPrecondition,
+                          "tournament_not_open",
+                          false,
+                      ));
+                  }
+                  let key = (command.leaderboard, command.user);
+                  let current = self.records.get(&key).cloned();
+                  if current.is_none()
+                      && self
+                          .records
+                          .range((command.leaderboard, UserId([0; 16]))..=(command.leaderboard, UserId([u8::MAX; 16])))
+                          .count()
+                          >= definition.max_records
+                  {
+                      return Err(CompetitionError::resource("leaderboard_record_capacity_exhausted"));
+                  }
+                  let (next_score, changed) = apply_score(&definition, current.as_ref(), command.score)?;
+                  let next_subscore = if changed {
+                      command.subscore
+                  } else {
+                      current.as_ref().map_or(command.subscore, |record| record.subscore)
+                  };
+                  let next_revision = current
+                      .as_ref()
+                      .map_or(Ok(1_u64), |record| record.revision.checked_add(1).ok_or_else(|| CompetitionError::new(
+                          StableCompetitionCode::OutOfRange,
+                          "record_revision_overflow",
+                          false,
+                      )))?;
+                  let record = if changed || current.is_none() {
+                      ScoreRecord {
+                          leaderboard: command.leaderboard,
+                          user: command.user,
+                          score: next_score,
+                          subscore: next_subscore,
+                          update_time_ms: command.occurred_at_ms,
+                          revision: next_revision,
+                      }
+                  } else {
+                      current.expect("checked Some record")
+                  };
+                  let receipt = ScoreReceipt {
+                      command: command.command,
+                      record: record.clone(),
+                      changed,
+                      duplicate: false,
+                  };
+                  let mut candidate = self.clone();
+                  if changed || !candidate.records.contains_key(&key) {
+                      candidate.records.insert(key, record);
+                  }
+                  candidate.receipts.insert(
+                      command.command,
+                      StoredReceipt {
+                          fingerprint: command.fingerprint,
+                          receipt: receipt.clone(),
+                      },
+                  );
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              pub fn ranked_records(
+                  &self,
+                  leaderboard: LeaderboardId,
+                  limit: usize,
+                  after: Option<RankCursor>,
+              ) -> Result<Vec<RankedRecord>, CompetitionError> {
+                  if limit == 0 || limit > 1000 {
+                      return Err(CompetitionError::invalid("rank_limit_invalid"));
+                  }
+                  let definition = self.definitions.get(&leaderboard).ok_or_else(|| {
+                      CompetitionError::new(
+                          StableCompetitionCode::NotFound,
+                          "leaderboard_not_found",
+                          false,
+                      )
+                  })?;
+                  let mut records = self
+                      .records
+                      .values()
+                      .filter(|record| record.leaderboard == leaderboard)
+                      .cloned()
+                      .collect::<Vec<_>>();
+                  records.sort_by(|left, right| compare_records(definition.sort, left, right));
+                  let start = match after {
+                      None => 0,
+                      Some(cursor) => {
+                          let index = usize::try_from(cursor.rank).map_err(|_| {
+                              CompetitionError::invalid("rank_cursor_invalid")
+                          })?;
+                          if index == 0 || records.get(index - 1).map(|record| record.user) != Some(cursor.user) {
+                              return Err(CompetitionError::invalid("rank_cursor_mismatch"));
+                          }
+                          index
+                      }
+                  };
+                  records
+                      .into_iter()
+                      .enumerate()
+                      .skip(start)
+                      .take(limit)
+                      .map(|(index, record)| {
+                          Ok(RankedRecord {
+                              rank: u64::try_from(index + 1).map_err(|_| CompetitionError::new(
+                                  StableCompetitionCode::OutOfRange,
+                                  "rank_overflow",
+                                  false,
+                              ))?,
+                              record,
+                          })
+                      })
+                      .collect()
+              }
+
+              pub fn schedule_job(&mut self, job: ScheduledJob) -> Result<(), CompetitionError> {
+                  if job.due_at_ms == 0 || job.revision == 0 || !matches!(job.state, JobState::Pending) {
+                      return Err(CompetitionError::invalid("scheduled_job_invalid"));
+                  }
+                  if self.jobs.contains_key(&job.id) {
+                      return Err(CompetitionError::new(
+                          StableCompetitionCode::AlreadyExists,
+                          "job_exists",
+                          false,
+                      ));
+                  }
+                  if self.jobs.len() >= self.max_jobs {
+                      return Err(CompetitionError::resource("job_capacity_exhausted"));
+                  }
+                  self.jobs.insert(job.id, job);
+                  Ok(())
+              }
+
+              pub fn claim_due(
+                  &mut self,
+                  now_ms: u64,
+                  owner: NodeId,
+                  limit: usize,
+                  lease_ms: u64,
+              ) -> Result<Vec<ScheduledJob>, CompetitionError> {
+                  if now_ms == 0 || limit == 0 || limit > MAX_CLAIM_BATCH || lease_ms == 0 || lease_ms > MAX_LEASE_MS {
+                      return Err(CompetitionError::invalid("job_claim_limits_invalid"));
+                  }
+                  let expires_at_ms = now_ms.checked_add(lease_ms).ok_or_else(|| {
+                      CompetitionError::new(
+                          StableCompetitionCode::OutOfRange,
+                          "lease_expiry_overflow",
+                          false,
+                      )
+                  })?;
+                  let ids = self
+                      .jobs
+                      .iter()
+                      .filter(|(_, job)| {
+                          job.due_at_ms <= now_ms
+                              && match job.state {
+                                  JobState::Pending => true,
+                                  JobState::Leased(lease) => lease.expires_at_ms <= now_ms,
+                                  JobState::Completed { .. } | JobState::DeadLetter { .. } => false,
+                              }
+                      })
+                      .map(|(id, job)| (job.due_at_ms, *id))
+                      .collect::<Vec<_>>();
+                  let mut ids = ids;
+                  ids.sort();
+                  let mut claimed = Vec::new();
+                  let mut candidate = self.clone();
+                  for (_, id) in ids.into_iter().take(limit) {
+                      let job = candidate.jobs.get_mut(&id).expect("job selected from map");
+                      let generation = match job.state {
+                          JobState::Leased(lease) => lease.generation.checked_add(1),
+                          _ => Some(1),
+                      }
+                      .ok_or_else(|| CompetitionError::new(
+                          StableCompetitionCode::OutOfRange,
+                          "lease_generation_overflow",
+                          false,
+                      ))?;
+                      job.revision = job.revision.checked_add(1).ok_or_else(|| CompetitionError::new(
+                          StableCompetitionCode::OutOfRange,
+                          "job_revision_overflow",
+                          false,
+                      ))?;
+                      job.state = JobState::Leased(JobLease {
+                          owner,
+                          generation,
+                          expires_at_ms,
+                      });
+                      claimed.push(job.clone());
+                  }
+                  *self = candidate;
+                  Ok(claimed)
+              }
+
+              pub fn complete_job(
+                  &mut self,
+                  id: JobId,
+                  owner: NodeId,
+                  generation: u64,
+                  completed_at_ms: u64,
+              ) -> Result<ScheduledJob, CompetitionError> {
+                  if generation == 0 || completed_at_ms == 0 {
+                      return Err(CompetitionError::invalid("job_completion_invalid"));
+                  }
+                  let current = self.jobs.get(&id).ok_or_else(|| CompetitionError::new(
+                      StableCompetitionCode::NotFound,
+                      "job_not_found",
+                      false,
+                  ))?;
+                  let JobState::Leased(lease) = current.state else {
+                      return Err(CompetitionError::new(
+                          StableCompetitionCode::FailedPrecondition,
+                          "job_not_leased",
+                          false,
+                      ));
+                  };
+                  if lease.owner != owner || lease.generation != generation {
+                      return Err(CompetitionError::new(
+                          StableCompetitionCode::Aborted,
+                          "stale_job_lease",
+                          false,
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  let job = candidate.jobs.get_mut(&id).expect("job checked above");
+                  job.revision = job.revision.checked_add(1).ok_or_else(|| CompetitionError::new(
+                      StableCompetitionCode::OutOfRange,
+                      "job_revision_overflow",
+                      false,
+                  ))?;
+                  job.state = JobState::Completed { completed_at_ms };
+                  let result = job.clone();
+                  *self = candidate;
+                  Ok(result)
+              }
+
+              #[must_use]
+              pub fn job(&self, id: JobId) -> Option<&ScheduledJob> {
+                  self.jobs.get(&id)
+              }
+          }
+
+          fn apply_score(
+              definition: &LeaderboardDefinition,
+              current: Option<&ScoreRecord>,
+              input: i64,
+          ) -> Result<(i64, bool), CompetitionError> {
+              let Some(current) = current else {
+                  return Ok((input, true));
+              };
+              match definition.operator {
+                  ScoreOperator::Set => Ok((input, input != current.score)),
+                  ScoreOperator::Best => {
+                      let better = match definition.sort {
+                          SortOrder::Descending => input > current.score,
+                          SortOrder::Ascending => input < current.score,
+                      };
+                      Ok((if better { input } else { current.score }, better))
+                  }
+                  ScoreOperator::Increment => current
+                      .score
+                      .checked_add(input)
+                      .map(|score| (score, input != 0))
+                      .ok_or_else(|| CompetitionError::new(
+                          StableCompetitionCode::OutOfRange,
+                          "score_overflow",
+                          false,
+                      )),
+                  ScoreOperator::Decrement => current
+                      .score
+                      .checked_sub(input)
+                      .map(|score| (score, input != 0))
+                      .ok_or_else(|| CompetitionError::new(
+                          StableCompetitionCode::OutOfRange,
+                          "score_overflow",
+                          false,
+                      )),
+              }
+          }
+
+          fn compare_records(
+              order: SortOrder,
+              left: &ScoreRecord,
+              right: &ScoreRecord,
+          ) -> Ordering {
+              let score = match order {
+                  SortOrder::Descending => right.score.cmp(&left.score),
+                  SortOrder::Ascending => left.score.cmp(&right.score),
+              };
+              score
+                  .then_with(|| right.subscore.cmp(&left.subscore))
+                  .then_with(|| left.update_time_ms.cmp(&right.update_time_ms))
+                  .then_with(|| left.user.cmp(&right.user))
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn board(byte: u8) -> LeaderboardId {
+                  LeaderboardId::new([byte; 16]).unwrap()
+              }
+
+              fn user(byte: u8) -> UserId {
+                  UserId::new([byte; 16]).unwrap()
+              }
+
+              fn command(byte: u8, board: LeaderboardId, user: UserId, score: i64) -> ScoreCommand {
+                  ScoreCommand {
+                      command: CommandId::new([byte; 16]).unwrap(),
+                      fingerprint: Fingerprint::new([byte; 32]).unwrap(),
+                      leaderboard: board,
+                      user,
+                      score,
+                      subscore: 0,
+                      occurred_at_ms: u64::from(byte),
+                  }
+              }
+
+              fn registry(operator: ScoreOperator, sort: SortOrder) -> CompetitionRegistry {
+                  let mut registry = CompetitionRegistry::new(8, 64, 8).unwrap();
+                  registry
+                      .put_definition(
+                          LeaderboardDefinition {
+                              id: board(1),
+                              sort,
+                              operator,
+                              max_records: 16,
+                              tournament: None,
+                              revision: 1,
+                          },
+                          None,
+                      )
+                      .unwrap();
+                  registry
+              }
+
+              #[test]
+              fn best_score_only_improves_and_duplicate_is_exact() {
+                  let mut registry = registry(ScoreOperator::Best, SortOrder::Descending);
+                  let first = command(1, board(1), user(2), 100);
+                  assert!(registry.write_score(first).unwrap().changed);
+                  let worse = command(2, board(1), user(2), 90);
+                  let receipt = registry.write_score(worse).unwrap();
+                  assert!(!receipt.changed);
+                  assert_eq!(receipt.record.score, 100);
+                  let duplicate = registry.write_score(first).unwrap();
+                  assert!(duplicate.duplicate);
+                  let changed_fingerprint = ScoreCommand {
+                      fingerprint: Fingerprint::new([9; 32]).unwrap(),
+                      ..first
+                  };
+                  assert_eq!(
+                      registry.write_score(changed_fingerprint).unwrap_err().reason(),
+                      "command_fingerprint_conflict"
+                  );
+              }
+
+              #[test]
+              fn ranking_is_deterministic_for_ties() {
+                  let mut registry = registry(ScoreOperator::Set, SortOrder::Descending);
+                  let mut later = command(3, board(1), user(3), 50);
+                  later.occurred_at_ms = 30;
+                  later.subscore = 7;
+                  let mut earlier = command(4, board(1), user(4), 50);
+                  earlier.occurred_at_ms = 20;
+                  earlier.subscore = 7;
+                  registry.write_score(later).unwrap();
+                  registry.write_score(earlier).unwrap();
+                  let ranked = registry.ranked_records(board(1), 10, None).unwrap();
+                  assert_eq!(ranked[0].record.user, user(4));
+                  assert_eq!(ranked[0].rank, 1);
+                  assert_eq!(ranked[1].rank, 2);
+                  let next = registry
+                      .ranked_records(
+                          board(1),
+                          10,
+                          Some(RankCursor { rank: 1, user: user(4) }),
+                      )
+                      .unwrap();
+                  assert_eq!(next.len(), 1);
+                  assert_eq!(next[0].record.user, user(3));
+              }
+
+              #[test]
+              fn closed_tournament_rejects_without_receipt() {
+                  let mut registry = CompetitionRegistry::new(8, 64, 8).unwrap();
+                  registry
+                      .put_definition(
+                          LeaderboardDefinition {
+                              id: board(1),
+                              sort: SortOrder::Descending,
+                              operator: ScoreOperator::Set,
+                              max_records: 16,
+                              tournament: Some(TournamentWindow {
+                                  start_at_ms: 100,
+                                  end_at_ms: 200,
+                                  reset_at_ms: Some(300),
+                              }),
+                              revision: 1,
+                          },
+                          None,
+                      )
+                      .unwrap();
+                  let error = registry
+                      .write_score(command(1, board(1), user(2), 10))
+                      .unwrap_err();
+                  assert_eq!(error.reason(), "tournament_not_open");
+                  let mut valid = command(2, board(1), user(2), 10);
+                  valid.occurred_at_ms = 150;
+                  assert!(registry.write_score(valid).is_ok());
+              }
+
+              #[test]
+              fn score_overflow_preserves_record() {
+                  let mut registry = registry(ScoreOperator::Increment, SortOrder::Descending);
+                  registry
+                      .write_score(command(1, board(1), user(2), i64::MAX))
+                      .unwrap();
+                  let error = registry
+                      .write_score(command(2, board(1), user(2), 1))
+                      .unwrap_err();
+                  assert_eq!(error.code(), StableCompetitionCode::OutOfRange);
+                  let ranked = registry.ranked_records(board(1), 1, None).unwrap();
+                  assert_eq!(ranked[0].record.score, i64::MAX);
+              }
+
+              #[test]
+              fn expired_job_takeover_fences_stale_owner() {
+                  let mut registry = CompetitionRegistry::new(8, 64, 8).unwrap();
+                  let id = JobId::new([8; 16]).unwrap();
+                  registry
+                      .schedule_job(ScheduledJob {
+                          id,
+                          kind: JobKind::LeaderboardReset(board(1)),
+                          due_at_ms: 10,
+                          state: JobState::Pending,
+                          revision: 1,
+                      })
+                      .unwrap();
+                  let first = registry
+                      .claim_due(10, NodeId::new([1; 16]).unwrap(), 1, 10)
+                      .unwrap();
+                  let first_lease = match first[0].state {
+                      JobState::Leased(lease) => lease,
+                      _ => panic!("expected lease"),
+                  };
+                  let second = registry
+                      .claim_due(20, NodeId::new([2; 16]).unwrap(), 1, 10)
+                      .unwrap();
+                  let second_lease = match second[0].state {
+                      JobState::Leased(lease) => lease,
+                      _ => panic!("expected lease"),
+                  };
+                  assert_eq!(second_lease.generation, first_lease.generation + 1);
+                  assert_eq!(
+                      registry
+                          .complete_job(id, first_lease.owner, first_lease.generation, 21)
+                          .unwrap_err()
+                          .reason(),
+                      "stale_job_lease"
+                  );
+                  let completed = registry
+                      .complete_job(id, second_lease.owner, second_lease.generation, 22)
+                      .unwrap();
+                  assert!(matches!(completed.state, JobState::Completed { .. }));
+              }
+          }
+          EOF
+
+          cat > crates/trnm-competition-core/README.md <<'EOF'
+          # trnm-competition-core
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-competition-core`  
+          Workspace class: `root`  
+          Lifecycle: `product-library`  
+          Owner role: `competition-scheduler`
+
+          ## Status and authority
+
+          This document is the module engineering contract for deterministic leaderboard, tournament-window and scheduler state. It is a source candidate and grants no automatic Nakama compatibility, database durability, scheduler availability or production credit.
+
+          ## Responsibilities
+
+          The crate owns bounded leaderboard definitions, deterministic score updates, exact command replay, ranking order, tournament admission windows, scheduled-job admission, generation-fenced lease takeover and terminal completion.
+
+          It does not expose HTTP/gRPC/RTAPI, persist rows, run timers, dispatch rewards, execute Runtime hooks, sign cursors or own cluster membership.
+
+          ## Architecture and dependencies
+
+          Protocol adapters translate public requests into commands. Application services authorize them. A persistence adapter stores definitions, records, command receipts and jobs transactionally. A supervised scheduler leases due jobs and invokes typed handlers outside mutable database transactions.
+
+          The pure state machine uses no I/O, global mutable state or detached work.
+
+          ## Public contracts
+
+          Score operators are Best, Set, Increment and Decrement. Sort direction is explicit. Ranking uses score, subscore, update time and user identity as a total deterministic order. Every mutation has a nonzero command ID and fingerprint; exact replay returns the original receipt while a changed fingerprint fails.
+
+          Tournament windows are half-open. Scheduler leases bind exact owner, generation and expiry. Completion requires the current owner and generation.
+
+          ## Correctness and failure model
+
+          Score and revision overflow fail before mutation. Closed tournament writes create no record or receipt. Capacity exhaustion is deterministic. An expired lease takeover increments generation, and stale completion cannot mutate the current job.
+
+          Production persistence must preserve these transitions atomically under concurrent writers and serializable retries.
+
+          ## Security and privacy
+
+          User identity and command identity are untrusted inputs. Public errors must not expose private leaderboard membership, reward payloads or database causes. Score, user and tournament values are excluded from metric labels.
+
+          Reward delivery is an outbox/reconciliation concern and must not execute inside the ranking transaction.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-competition-core --all-targets --locked
+          cargo clippy --package trnm-competition-core --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover best-score semantics, exact replay and changed-fingerprint conflict, deterministic tie ranking and cursor validation, tournament-window rejection, overflow atomicity, expired-owner takeover and stale lease completion.
+
+          ## Operations
+
+          Adapters expose low-cardinality score-write outcomes, rank latency, tournament state, due/leased/completed/dead-letter jobs, lease takeover and stale-owner rejection. Scheduler lag and reward backlog have explicit bounds and alerts.
+
+          ## Compatibility and evidence
+
+          Complete #140 requires all Nakama leaderboard/tournament routes and generated messages, authoritative reset/end hooks, scheduler/job persistence, cursor bytes, reward delivery, PostgreSQL/CockroachDB profile evidence and official SDK/immutable-oracle differential.
+
+          Source or unit success cannot establish distributed scheduler correctness, reward exactly-once semantics, HA, endurance or production readiness.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P0-SERVER-001`, `GAP-P0-DATA-001`, `GAP-P0-SCOPE-001`, `GAP-P0-CI-001`, `GAP-P1-OUTBOX-001`, `GAP-P1-PG-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires generated public adapters, profile-specific durable repositories, runtime hook ordering, outbox reward reconciliation, failover/restart tests, official consumer differential, retained exact-head evidence and conflict-free protocol/database/runtime/SRE review.
+          EOF
+
+      - name: Register competition module fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          member = 'crates/trnm-competition-core'
+          cargo = Path('Cargo.toml')
+          text = cargo.read_text(encoding='utf-8')
+          if f'"{member}"' not in text:
+              text = text.replace(']\nexclude = [', f'  "{member}",\n]\nexclude = [', 1)
+              cargo.write_text(text, encoding='utf-8')
+
+          module_path = Path('docs/status/MODULE_DOCUMENTATION.json')
+          module = json.loads(module_path.read_text(encoding='utf-8'))
+          if not any(row['id'] == 'trnm-competition-core' for row in module['modules']):
+              module['modules'].append({
+                  'id':'trnm-competition-core','path':member,'manifest':f'{member}/Cargo.toml',
+                  'documentation':f'{member}/README.md','workspace':'root','lifecycle':'product-library',
+                  'maturity':'source-candidate','owner_role':'competition-scheduler',
+                  'authority':'deterministic leaderboard tournament and generation-fenced scheduler state',
+                  'blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-DATA-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-OUTBOX-001','GAP-P1-PG-001','GAP-P1-REVIEW-001'],
+                  'claim_credit':False,
+              })
+          module['modules'].sort(key=lambda row: row['id'])
+          module['summary'].update({
+              'module_count':len(module['modules']),
+              'documented_count':len(module['modules']),
+              'root_workspace_count':sum(row['workspace']=='root' for row in module['modules']),
+              'isolated_workspace_count':sum(row['workspace']=='isolated' for row in module['modules']),
+              'undocumented_count':0,
+          })
+          module_path.write_text(json.dumps(module, indent=2)+'\n', encoding='utf-8')
+
+          authority_path = Path('docs/development/RUST_PACKAGE_AUTHORITY.json')
+          authority = json.loads(authority_path.read_text(encoding='utf-8'))
+          if member not in authority['workspace']['members']:
+              authority['workspace']['members'].append(member)
+              authority['workspace']['members'].sort()
+          for key in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'):
+              authority.setdefault('claim_boundary', {})[key]=False
+          authority_path.write_text(json.dumps(authority, indent=2)+'\n', encoding='utf-8')
+
+          inventory_path = Path('docs/status/IMPLEMENTATION_INVENTORY.json')
+          inventory = json.loads(inventory_path.read_text(encoding='utf-8'))
+          if not any(row.get('id')=='COMP-COMPETITION-CORE' for row in inventory['components']):
+              inventory['components'].append({
+                  'id':'COMP-COMPETITION-CORE','path':member,'kind':'rust-library','workstreams':['W7'],
+                  'status':'source-candidate',
+                  'implemented':['bounded leaderboard definitions and deterministic ranks','exact command receipts and tournament admission','generation-fenced scheduler job leases'],
+                  'missing':['complete public API and generated messages','transactional repositories and reward outbox','runtime hooks and official SDK/oracle differential','HA/endurance and independent acceptance'],
+                  'blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-DATA-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-OUTBOX-001','GAP-P1-PG-001','GAP-P1-REVIEW-001'],
+                  'parity_ids':[],'evidence_ids':[],'claim_credit':False,
+              })
+          inventory_path.write_text(json.dumps(inventory, indent=2)+'\n', encoding='utf-8')
+
+          state_path = Path('docs/status/CURRENT_STATE.json')
+          state = json.loads(state_path.read_text(encoding='utf-8'))
+          state.setdefault('implementation', {})['competition_scheduler_source_candidate']=True
+          for key in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'):
+              state.setdefault('claims', {})[key]=False
+          state_path.write_text(json.dumps(state, indent=2)+'\n', encoding='utf-8')
+          PY
+
+      - name: Publish Draft candidate before qualification
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git commit -m 'feat(competition): add deterministic leaderboard and scheduler core'
+          head_sha="$(git rev-parse HEAD)"
+          head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Source candidate for #140, stacked on storage Wave 2.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds deterministic bounded leaderboard and tournament state, exact command replay, total ranking order, overflow atomicity, and generation-fenced scheduler leases with stale-owner rejection.
+
+          This is not complete #140. Public API/gRPC, persistence, runtime hooks, reward outbox, official SDK/oracle differential, HA/endurance and independent acceptance remain open. No compatibility or production credit.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" \
+            --title '[Plan v3.2][Wave 3] Add leaderboard tournament and scheduler core' \
+            --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+      - name: Run exact source qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
+            cargo test --manifest-path "$manifest" --all-targets --locked
+            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
+          done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Competition Wave 3 carrier result: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and all claim ceilings remain in force."
+          gh issue comment 140 --repo "$REPOSITORY" --body \
+            "Competition core carrier status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`; this source candidate does not close #140."
