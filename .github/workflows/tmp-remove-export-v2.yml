@@ -1,0 +1,52 @@
+name: tmp-remove-export-v2
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-remove-export-v2.yml
+
+permissions:
+  actions: write
+  contents: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  CONTROL_BRANCH: ops/product-wave1-carrier-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  remove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Cancel v2 runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh run list --repo "$REPOSITORY" --workflow tmp-export-product-assurance-v2.yml \
+            --limit 100 --json databaseId,status \
+            --jq '.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "requested") | .databaseId' \
+            | while read -r run_id; do
+                test -z "$run_id" || gh run cancel "$run_id" --repo "$REPOSITORY" || true
+              done
+
+      - name: Delete superseded definition from carrier
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          head="$(gh api "repos/${REPOSITORY}/branches/${CONTROL_BRANCH}" --jq '.commit.sha')"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$head"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$CONTROL_BRANCH" FETCH_HEAD
+          cd "$GITHUB_WORKSPACE"
+          if ! test -e .github/workflows/tmp-export-product-assurance-v2.yml; then exit 0; fi
+          git rm .github/workflows/tmp-export-product-assurance-v2.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore(ops): remove superseded source packet v2'
+          remote="$(git ls-remote origin "refs/heads/${CONTROL_BRANCH}" | awk '{print $1}')"
+          git push --force-with-lease="refs/heads/${CONTROL_BRANCH}:${remote}" origin "HEAD:refs/heads/${CONTROL_BRANCH}"
