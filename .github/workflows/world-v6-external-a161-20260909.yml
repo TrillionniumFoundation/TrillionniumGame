@@ -1,4 +1,4 @@
-name: world-v6-external-a315-20260909
+name: world-v6-external-bd1603-20260909
 
 on:
   pull_request:
@@ -8,15 +8,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-v6-external-a315-20260909-${{ github.event.pull_request.number || github.ref }}
+  group: world-v6-external-bd1603-20260909-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_BASE_SHA: 0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
-  WORLD_HEAD_SHA: a31556d3979b21b99592030ba57ee89e09fd66f9
+  WORLD_HEAD_SHA: bd1603ea6087f71ee1fe2d7940c729931105c25f
   WORLD_MERGE_REF: refs/pull/104/merge
-  WORLD_MERGE_SHA: e5729f12e1e86bda21becf06e0e29877f182b407
+  WORLD_MERGE_SHA: 98a6c53d98cac94dcf746704c8d6508ad0cb10fc
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_INCREMENTAL: '0'
@@ -181,13 +181,36 @@ jobs:
           cargo fmt --manifest-path "$root/trillionnium/contracts/trnm-world-transition-v1/Cargo.toml"
           cargo fmt --manifest-path "$root/contracts/Cargo.toml" --all
           git -C "$root" diff --check
-          git -C "$root" diff --name-only
-          git -C "$root" diff --binary > "$RUNNER_TEMP/world-rustfmt.patch"
-          test -s "$RUNNER_TEMP/world-rustfmt.patch"
-          printf 'WORLD_RUSTFMT_PATCH_SHA256=%s\n' "$(sha256sum "$RUNNER_TEMP/world-rustfmt.patch" | cut -d' ' -f1)"
-          printf 'WORLD_RUSTFMT_PATCH_BASE64_BEGIN\n'
-          gzip -9c "$RUNNER_TEMP/world-rustfmt.patch" | base64 -w 120
-          printf '\nWORLD_RUSTFMT_PATCH_BASE64_END\n'
+          git -C "$root" diff --name-only > "$GITHUB_WORKSPACE/world-rustfmt-files.txt"
+          git -C "$root" diff --binary > "$GITHUB_WORKSPACE/world-rustfmt.patch"
+          test -s "$GITHUB_WORKSPACE/world-rustfmt.patch"
+          {
+            printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
+            printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
+            printf 'rustfmt=%s\n' "$(rustfmt --version)"
+            printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'runner_commit=%s\n' "$GITHUB_SHA"
+            printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'production_authorization=not_granted\n'
+          } > "$GITHUB_WORKSPACE/world-rustfmt-identity.txt"
+          sha256sum \
+            "$GITHUB_WORKSPACE/world-rustfmt.patch" \
+            "$GITHUB_WORKSPACE/world-rustfmt-files.txt" \
+            "$GITHUB_WORKSPACE/world-rustfmt-identity.txt" \
+            > "$GITHUB_WORKSPACE/SHA256SUMS"
+          cat "$GITHUB_WORKSPACE/world-rustfmt-files.txt"
+
+      - name: Upload canonical rustfmt patch
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-rustfmt-bd1603-${{ env.WORLD_HEAD_SHA }}-${{ github.run_attempt }}
+          path: |
+            world-rustfmt.patch
+            world-rustfmt-files.txt
+            world-rustfmt-identity.txt
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
 
   required:
     name: world-v6/external-required
