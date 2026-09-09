@@ -1,4 +1,4 @@
-name: cross-repo-external-qualification-20260909
+name: chain-external-qualification-ded43a-20260909
 
 on:
   pull_request:
@@ -8,22 +8,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: cross-repo-external-qualification-20260909-${{ github.event.pull_request.number || github.ref }}
+  group: chain-external-qualification-ded43a-20260909-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
-  INTEGRATION_REPOSITORY: TrillionniumFoundation/Trillionnium-Integration
-  INTEGRATION_BASE_SHA: ac71d4ae4b154f689a9e1ca0abf27e390202f871
-  INTEGRATION_HEAD_SHA: 84e651cbd0bc1c58374cf8ced661b54a81539895
-  INTEGRATION_HEAD_TREE: e5cebd154c143f1ee5fea87ad4c3bbc19b4d13dc
-  INTEGRATION_MERGE_SHA: 0ce5be709f4356bdac4211a959a926ca6b9db284
-  INTEGRATION_MERGE_TREE: e5cebd154c143f1ee5fea87ad4c3bbc19b4d13dc
   CHAIN_REPOSITORY: TrillionniumFoundation/Trillionnium-Chain
   CHAIN_BASE_SHA: b2d485e5641614ea0ca34ebf80a5f7843ff1e6d9
-  CHAIN_HEAD_SHA: bbee7c0194e420a36c7747167000450083d5d951
-  CHAIN_HEAD_TREE: f7b239de6bd3ec1bd782c429e7a141776314a078
-  CHAIN_MERGE_SHA: f2125748fd733b85f45567334e6e1b4aab80f86c
-  CHAIN_MERGE_TREE: f7b239de6bd3ec1bd782c429e7a141776314a078
+  CHAIN_HEAD_SHA: ded43a0704b455cd4bef724cb3ca40fb6db9465d
+  CHAIN_HEAD_TREE: c0791ffb57e05fde43f87bfed1a3b4656c09efc0
+  CHAIN_MERGE_SHA: 0549e088e5a1108363e542bf02d6afc2c11ffed2
+  CHAIN_MERGE_TREE: c0791ffb57e05fde43f87bfed1a3b4656c09efc0
   RUSTUP_TOOLCHAIN: '1.95.0'
   CARGO_INCREMENTAL: '0'
   CARGO_TERM_COLOR: never
@@ -31,92 +25,32 @@ env:
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
-  integration:
-    name: external/integration-head-merge
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Fetch and verify exact Integration tuple
-        shell: bash
-        run: |
-          set -euo pipefail
-          for kind in head merge; do
-            dir="$RUNNER_TEMP/integration-$kind"
-            rm -rf "$dir"
-            git init "$dir"
-            git -C "$dir" remote add origin "https://github.com/${INTEGRATION_REPOSITORY}.git"
-            if test "$kind" = head; then sha="$INTEGRATION_HEAD_SHA"; else sha="$INTEGRATION_MERGE_SHA"; fi
-            git -C "$dir" fetch --no-tags --depth=2 origin "$sha"
-            git -C "$dir" checkout --detach FETCH_HEAD
-            test "$(git -C "$dir" rev-parse HEAD)" = "$sha"
-          done
-          test "$(git -C "$RUNNER_TEMP/integration-head" rev-parse 'HEAD^{tree}')" = "$INTEGRATION_HEAD_TREE"
-          test "$(git -C "$RUNNER_TEMP/integration-merge" rev-parse 'HEAD^{tree}')" = "$INTEGRATION_MERGE_TREE"
-          test "$(git -C "$RUNNER_TEMP/integration-merge" rev-parse 'HEAD^1')" = "$INTEGRATION_BASE_SHA"
-          test "$(git -C "$RUNNER_TEMP/integration-merge" rev-parse 'HEAD^2')" = "$INTEGRATION_HEAD_SHA"
-
-      - name: Qualify exact Integration head
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/integration-head"
-          python3 -m json.tool components.lock.json >/dev/null
-          python3 -m py_compile scripts/check-components-lock.py scripts/test-components-lock-negative.py
-          python3 scripts/check-components-lock.py
-          python3 scripts/test-components-lock-negative.py
-          git diff --exit-code
-          test -z "$(git status --porcelain=v1 --untracked-files=all)"
-
-      - name: Qualify exact Integration prospective merge
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/integration-merge"
-          python3 -m json.tool components.lock.json >/dev/null
-          python3 -m py_compile scripts/check-components-lock.py scripts/test-components-lock-negative.py
-          python3 scripts/check-components-lock.py
-          python3 scripts/test-components-lock-negative.py
-          git diff --exit-code
-          test -z "$(git status --porcelain=v1 --untracked-files=all)"
-
-      - name: Emit Integration immutable identity
-        shell: bash
-        run: |
-          set -euo pipefail
-          printf 'integration_repository=%s\n' "$INTEGRATION_REPOSITORY"
-          printf 'integration_base=%s\n' "$INTEGRATION_BASE_SHA"
-          printf 'integration_head=%s\n' "$INTEGRATION_HEAD_SHA"
-          printf 'integration_head_tree=%s\n' "$INTEGRATION_HEAD_TREE"
-          printf 'integration_merge=%s\n' "$INTEGRATION_MERGE_SHA"
-          printf 'integration_merge_tree=%s\n' "$INTEGRATION_MERGE_TREE"
-          printf 'integration_merge_parents=%s\n' "$(git -C "$RUNNER_TEMP/integration-merge" show -s --format=%P HEAD)"
-          printf 'runner_repository=%s\nrunner_commit=%s\nrunner_run_id=%s\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_RUN_ID"
-          printf 'production_authorization=not_granted\n'
-          printf 'INTEGRATION_EXTERNAL_QUALIFICATION=PASS\n'
-
   chain:
     name: external/chain-head-merge
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - name: Fetch and verify exact Chain tuple
+      - name: Fetch and verify exact Chain tuple in canonical root and linked worktree
         shell: bash
         run: |
           set -euo pipefail
-          for kind in head merge; do
-            dir="$RUNNER_TEMP/chain-$kind"
-            rm -rf "$dir"
-            git init "$dir"
-            git -C "$dir" remote add origin "https://github.com/${CHAIN_REPOSITORY}.git"
-            if test "$kind" = head; then sha="$CHAIN_HEAD_SHA"; else sha="$CHAIN_MERGE_SHA"; fi
-            git -C "$dir" fetch --no-tags --depth=2 origin "$sha"
-            git -C "$dir" checkout --detach FETCH_HEAD
-            test "$(git -C "$dir" rev-parse HEAD)" = "$sha"
-          done
-          test "$(git -C "$RUNNER_TEMP/chain-head" rev-parse 'HEAD^{tree}')" = "$CHAIN_HEAD_TREE"
-          test "$(git -C "$RUNNER_TEMP/chain-merge" rev-parse 'HEAD^{tree}')" = "$CHAIN_MERGE_TREE"
-          test "$(git -C "$RUNNER_TEMP/chain-merge" rev-parse 'HEAD^1')" = "$CHAIN_BASE_SHA"
-          test "$(git -C "$RUNNER_TEMP/chain-merge" rev-parse 'HEAD^2')" = "$CHAIN_HEAD_SHA"
+          root="$RUNNER_TEMP/trillionnium-chain"
+          merge="$RUNNER_TEMP/chain-merge"
+          rm -rf "$root" "$merge"
+          git init "$root"
+          git -C "$root" remote add origin "https://github.com/${CHAIN_REPOSITORY}.git"
+          git -C "$root" fetch --no-tags --depth=2 origin "$CHAIN_HEAD_SHA"
+          git -C "$root" fetch --no-tags --depth=2 origin "$CHAIN_MERGE_SHA"
+          git -C "$root" checkout --detach "$CHAIN_HEAD_SHA"
+          git -C "$root" worktree add --detach "$merge" "$CHAIN_MERGE_SHA"
+          test "$(git -C "$root" rev-parse HEAD)" = "$CHAIN_HEAD_SHA"
+          test "$(git -C "$root" rev-parse 'HEAD^{tree}')" = "$CHAIN_HEAD_TREE"
+          test "$(git -C "$merge" rev-parse HEAD)" = "$CHAIN_MERGE_SHA"
+          test "$(git -C "$merge" rev-parse 'HEAD^{tree}')" = "$CHAIN_MERGE_TREE"
+          test "$(git -C "$merge" rev-parse 'HEAD^1')" = "$CHAIN_BASE_SHA"
+          test "$(git -C "$merge" rev-parse 'HEAD^2')" = "$CHAIN_HEAD_SHA"
+          test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
+          test -z "$(git -C "$merge" status --porcelain=v1 --untracked-files=no)"
 
       - name: Install Chain qualification dependencies
         shell: bash
@@ -133,7 +67,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/chain-head"
+          cd "$RUNNER_TEMP/trillionnium-chain"
           export TRNM_EXPECTED_SOURCE_SHA="$CHAIN_HEAD_SHA"
           bash scripts/project-preflight.sh --audit
           bash scripts/ci/check_canonical_development_plan.sh
@@ -183,13 +117,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          root="$RUNNER_TEMP/trillionnium-chain"
+          merge="$RUNNER_TEMP/chain-merge"
+          test "$(git -C "$root" rev-parse HEAD)" = "$CHAIN_HEAD_SHA"
+          test "$(git -C "$root" rev-parse 'HEAD^{tree}')" = "$CHAIN_HEAD_TREE"
+          test "$(git -C "$merge" rev-parse HEAD)" = "$CHAIN_MERGE_SHA"
+          test "$(git -C "$merge" rev-parse 'HEAD^{tree}')" = "$CHAIN_MERGE_TREE"
+          test "$(git -C "$merge" show -s --format=%P HEAD)" = "$CHAIN_BASE_SHA $CHAIN_HEAD_SHA"
           printf 'chain_repository=%s\n' "$CHAIN_REPOSITORY"
           printf 'chain_base=%s\n' "$CHAIN_BASE_SHA"
           printf 'chain_head=%s\n' "$CHAIN_HEAD_SHA"
           printf 'chain_head_tree=%s\n' "$CHAIN_HEAD_TREE"
           printf 'chain_merge=%s\n' "$CHAIN_MERGE_SHA"
           printf 'chain_merge_tree=%s\n' "$CHAIN_MERGE_TREE"
-          printf 'chain_merge_parents=%s\n' "$(git -C "$RUNNER_TEMP/chain-merge" show -s --format=%P HEAD)"
+          printf 'chain_merge_parents=%s\n' "$(git -C "$merge" show -s --format=%P HEAD)"
           printf 'runner_repository=%s\nrunner_commit=%s\nrunner_run_id=%s\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_RUN_ID"
           printf 'production_authorization=not_granted\n'
           printf 'CHAIN_EXTERNAL_QUALIFICATION=PASS\n'
