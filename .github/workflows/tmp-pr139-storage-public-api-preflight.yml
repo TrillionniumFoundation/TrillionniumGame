@@ -38,7 +38,7 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE"
           git init "$GITHUB_WORKSPACE"
           git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${REPOSITORY}.git"
-          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=8 origin "$carrier_sha" "$EXPECTED_BASE_SHA"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=16 origin "$carrier_sha" "$EXPECTED_BASE_SHA"
           git -C "$GITHUB_WORKSPACE" checkout --detach "$carrier_sha"
           git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$EXPECTED_BASE_SHA" "$carrier_sha"
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse "$EXPECTED_BASE_SHA^{tree}")" = "$EXPECTED_BASE_TREE"
@@ -119,8 +119,9 @@ jobs:
           printf 'https://x-access-token:%s@github.com\n' "$GH_TOKEN" > "$RUNNER_TEMP/git-credentials"
           chmod 600 "$RUNNER_TEMP/git-credentials"
           git config credential.helper "store --file=$RUNNER_TEMP/git-credentials"
-          git push --force-with-lease="refs/heads/${FEATURE_BRANCH}:${EXPECTED_BASE_SHA}" \
-            origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          remote_sha="$(git ls-remote origin "refs/heads/${FEATURE_BRANCH}" | awk '{print $1}')"
+          test "$remote_sha" = "$EXPECTED_BASE_SHA"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
           rm -f "$RUNNER_TEMP/git-credentials"
           printf 'source_head=%s\nsource_tree=%s\npatch_sha256=%s\n' \
             "$head_sha" "$head_tree" "$EXPECTED_PATCH_SHA256" >> "$GITHUB_STEP_SUMMARY"
