@@ -1,0 +1,1066 @@
+name: tmp-endurance-wave14
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-endurance-wave14.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-recovery-core-20260909
+  FEATURE_BRANCH: feature/plan-v32-endurance-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-endurance-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Wait for exact Wave 13 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 1080); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 20
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write capacity and endurance evidence core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-endurance-core/src
+          cat > crates/trnm-endurance-core/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-endurance-core"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Profile-bound capacity SLO and 24h 72h 7d endurance evidence state"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-endurance-core/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::collections::{BTreeMap, BTreeSet};
+
+          pub const HOUR_MS: u64 = 3_600_000;
+          pub const DAY_MS: u64 = 24 * HOUR_MS;
+          pub const MAX_PACKETS: usize = 65_536;
+          pub const MAX_RUNS: usize = 1_000_000;
+          pub const MAX_DECISIONS: usize = 1_000_000;
+          pub const MAX_SAMPLES: u64 = 10_000_000;
+          pub const MAX_SAMPLE_GAP_MS: u64 = 300_000;
+          pub const MAX_BASIS_POINTS: u32 = 10_000;
+
+          macro_rules! id16 {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(value: [u8; 16]) -> Result<Self, EnduranceError> {
+                          if value.iter().all(|byte| *byte == 0) {
+                              Err(EnduranceError::invalid($reason))
+                          } else {
+                              Ok(Self(value))
+                          }
+                      }
+                  }
+              };
+          }
+
+          id16!(PacketId, "packet_id_zero");
+          id16!(RunId, "run_id_zero");
+          id16!(DecisionId, "decision_id_zero");
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Digest32([u8; 32]);
+
+          impl Digest32 {
+              pub fn new(value: [u8; 32]) -> Result<Self, EnduranceError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      Err(EnduranceError::invalid("digest_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum DatabaseProfile {
+              PostgreSql,
+              CockroachDb,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct SubjectIdentity {
+              pub repository: Digest32,
+              pub commit: Digest32,
+              pub tree: Digest32,
+              pub schema: Digest32,
+              pub database_image: Digest32,
+              pub server_image: Digest32,
+              pub toolchain: Digest32,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct CapacityProfile {
+              pub profile_digest: Digest32,
+              pub hardware_digest: Digest32,
+              pub topology_digest: Digest32,
+              pub workload_digest: Digest32,
+              pub oracle_profile_digest: Digest32,
+              pub database: DatabaseProfile,
+              pub concurrent_connections: u64,
+              pub requests_per_second: u64,
+              pub commands_per_second: u64,
+              pub matches_per_second: u64,
+              pub storage_operations_per_second: u64,
+          }
+
+          impl CapacityProfile {
+              pub fn validate(self) -> Result<Self, EnduranceError> {
+                  if self.concurrent_connections == 0
+                      || self.requests_per_second == 0
+                      || self.commands_per_second == 0
+                      || self.matches_per_second == 0
+                      || self.storage_operations_per_second == 0
+                  {
+                      Err(EnduranceError::invalid("capacity_profile_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct SloPolicy {
+              pub maximum_error_basis_points: u32,
+              pub minimum_success_basis_points: u32,
+              pub maximum_p95_latency_us: u64,
+              pub maximum_p99_latency_us: u64,
+              pub maximum_memory_growth_bytes: u64,
+              pub maximum_queue_depth: u64,
+              pub maximum_pool_waiters: u64,
+              pub maximum_outbox_backlog: u64,
+              pub maximum_scheduler_drift_ms: u64,
+              pub minimum_reconnect_success_basis_points: u32,
+              pub maximum_cost_microunits_per_hour: u64,
+              pub maximum_sample_gap_ms: u64,
+          }
+
+          impl SloPolicy {
+              pub fn validate(self) -> Result<Self, EnduranceError> {
+                  if self.maximum_error_basis_points > MAX_BASIS_POINTS
+                      || self.minimum_success_basis_points == 0
+                      || self.minimum_success_basis_points > MAX_BASIS_POINTS
+                      || self.minimum_reconnect_success_basis_points > MAX_BASIS_POINTS
+                      || self.maximum_p95_latency_us == 0
+                      || self.maximum_p99_latency_us < self.maximum_p95_latency_us
+                      || self.maximum_sample_gap_ms == 0
+                      || self.maximum_sample_gap_ms > MAX_SAMPLE_GAP_MS
+                      || self.maximum_cost_microunits_per_hour == 0
+                  {
+                      Err(EnduranceError::invalid("slo_policy_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum DurationClass {
+              Hours24,
+              Hours72,
+              Days7,
+          }
+
+          impl DurationClass {
+              #[must_use]
+              pub const fn required_duration_ms(self) -> u64 {
+                  match self {
+                      Self::Hours24 => DAY_MS,
+                      Self::Hours72 => 3 * DAY_MS,
+                      Self::Days7 => 7 * DAY_MS,
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum CorrectnessInvariant {
+              AcknowledgedCommandLoss,
+              DuplicateVisibleValue,
+              StaleAuthorityAcceptedWrite,
+              PartialCommandEventOutboxCommit,
+              DuplicatePresenceOwner,
+              DuplicateMatchAuthority,
+              ReceiptMismatch,
+              UnreconciledValueEffect,
+              DataCorruption,
+              SecurityBoundaryViolation,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct RunMetrics {
+              pub total_requests: u64,
+              pub successful_requests: u64,
+              pub failed_requests: u64,
+              pub error_basis_points: u32,
+              pub success_basis_points: u32,
+              pub p95_latency_us: u64,
+              pub p99_latency_us: u64,
+              pub initial_memory_bytes: u64,
+              pub final_memory_bytes: u64,
+              pub maximum_queue_depth: u64,
+              pub maximum_pool_waiters: u64,
+              pub maximum_outbox_backlog: u64,
+              pub maximum_scheduler_drift_ms: u64,
+              pub reconnect_attempts: u64,
+              pub reconnect_successes: u64,
+              pub reconnect_success_basis_points: u32,
+              pub cost_microunits_per_hour: u64,
+          }
+
+          impl RunMetrics {
+              pub fn validate(self, policy: SloPolicy) -> Result<Self, EnduranceError> {
+                  let accounted = self
+                      .successful_requests
+                      .checked_add(self.failed_requests)
+                      .ok_or_else(|| EnduranceError::invalid("request_count_overflow"))?;
+                  if self.total_requests == 0
+                      || accounted != self.total_requests
+                      || self.error_basis_points > MAX_BASIS_POINTS
+                      || self.success_basis_points > MAX_BASIS_POINTS
+                      || self.error_basis_points + self.success_basis_points != MAX_BASIS_POINTS
+                      || self.reconnect_successes > self.reconnect_attempts
+                      || self.reconnect_success_basis_points > MAX_BASIS_POINTS
+                  {
+                      return Err(EnduranceError::invalid("run_metrics_invalid"));
+                  }
+                  let memory_growth = self
+                      .final_memory_bytes
+                      .saturating_sub(self.initial_memory_bytes);
+                  if self.error_basis_points > policy.maximum_error_basis_points
+                      || self.success_basis_points < policy.minimum_success_basis_points
+                      || self.p95_latency_us > policy.maximum_p95_latency_us
+                      || self.p99_latency_us > policy.maximum_p99_latency_us
+                      || memory_growth > policy.maximum_memory_growth_bytes
+                      || self.maximum_queue_depth > policy.maximum_queue_depth
+                      || self.maximum_pool_waiters > policy.maximum_pool_waiters
+                      || self.maximum_outbox_backlog > policy.maximum_outbox_backlog
+                      || self.maximum_scheduler_drift_ms > policy.maximum_scheduler_drift_ms
+                      || self.reconnect_success_basis_points
+                          < policy.minimum_reconnect_success_basis_points
+                      || self.cost_microunits_per_hour
+                          > policy.maximum_cost_microunits_per_hour
+                  {
+                      return Err(EnduranceError::new(
+                          StableEnduranceCode::FailedPrecondition,
+                          "run_slo_missed",
+                          false,
+                      ));
+                  }
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct EndurancePacket {
+              pub id: PacketId,
+              pub subject: SubjectIdentity,
+              pub capacity: CapacityProfile,
+              pub slo: SloPolicy,
+              pub required_durations: BTreeSet<DurationClass>,
+          }
+
+          impl EndurancePacket {
+              pub fn validate(mut self) -> Result<Self, EnduranceError> {
+                  self.capacity = self.capacity.validate()?;
+                  self.slo = self.slo.validate()?;
+                  let required = BTreeSet::from([
+                      DurationClass::Hours24,
+                      DurationClass::Hours72,
+                      DurationClass::Days7,
+                  ]);
+                  if self.required_durations != required {
+                      return Err(EnduranceError::new(
+                          StableEnduranceCode::FailedPrecondition,
+                          "all_endurance_durations_required",
+                          false,
+                      ));
+                  }
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct EnduranceRun {
+              pub id: RunId,
+              pub packet: PacketId,
+              pub subject: SubjectIdentity,
+              pub capacity_profile_digest: Digest32,
+              pub database: DatabaseProfile,
+              pub duration_class: DurationClass,
+              pub started_at_ms: u64,
+              pub completed_at_ms: u64,
+              pub sample_count: u64,
+              pub maximum_observed_sample_gap_ms: u64,
+              pub metrics: RunMetrics,
+              pub invariant_violations: BTreeMap<CorrectnessInvariant, u64>,
+              pub artifact_digest: Digest32,
+          }
+
+          impl EnduranceRun {
+              pub fn validate(self, packet: &EndurancePacket) -> Result<Self, EnduranceError> {
+                  if self.packet != packet.id
+                      || self.subject != packet.subject
+                      || self.capacity_profile_digest != packet.capacity.profile_digest
+                      || self.database != packet.capacity.database
+                      || self.started_at_ms == 0
+                      || self.completed_at_ms <= self.started_at_ms
+                      || self.sample_count == 0
+                      || self.sample_count > MAX_SAMPLES
+                      || self.maximum_observed_sample_gap_ms == 0
+                      || self.maximum_observed_sample_gap_ms > packet.slo.maximum_sample_gap_ms
+                      || self
+                          .invariant_violations
+                          .values()
+                          .any(|count| *count != 0)
+                  {
+                      return Err(EnduranceError::new(
+                          StableEnduranceCode::FailedPrecondition,
+                          "endurance_run_invalid",
+                          false,
+                      ));
+                  }
+                  let elapsed = self
+                      .completed_at_ms
+                      .checked_sub(self.started_at_ms)
+                      .ok_or_else(|| EnduranceError::invalid("run_time_invalid"))?;
+                  if elapsed < self.duration_class.required_duration_ms() {
+                      return Err(EnduranceError::new(
+                          StableEnduranceCode::FailedPrecondition,
+                          "endurance_duration_too_short",
+                          false,
+                      ));
+                  }
+                  let minimum_samples = elapsed
+                      .checked_div(packet.slo.maximum_sample_gap_ms)
+                      .unwrap_or(0);
+                  if self.sample_count < minimum_samples {
+                      return Err(EnduranceError::new(
+                          StableEnduranceCode::FailedPrecondition,
+                          "endurance_sample_coverage_incomplete",
+                          false,
+                      ));
+                  }
+                  self.metrics.validate(packet.slo)?;
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum DecisionKind {
+              Performance,
+              Sre,
+              Security,
+              CapacityCost,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct AcceptedDecision {
+              pub id: DecisionId,
+              pub packet: PacketId,
+              pub kind: DecisionKind,
+              pub evidence_digest: Digest32,
+              pub reviewer_digest: Digest32,
+              pub decided_at_ms: u64,
+              pub independent: bool,
+              pub self_review: bool,
+          }
+
+          impl AcceptedDecision {
+              pub fn validate(self, packet: PacketId) -> Result<Self, EnduranceError> {
+                  if self.packet != packet
+                      || self.decided_at_ms == 0
+                      || !self.independent
+                      || self.self_review
+                  {
+                      Err(EnduranceError::new(
+                          StableEnduranceCode::FailedPrecondition,
+                          "endurance_decision_not_acceptable",
+                          false,
+                      ))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum PacketStatus {
+              Registered,
+              PartiallyExecuted,
+              Executed,
+              Accepted,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct PacketSummary {
+              pub packet: PacketId,
+              pub status: PacketStatus,
+              pub completed_durations: BTreeSet<DurationClass>,
+              pub required_durations: BTreeSet<DurationClass>,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableEnduranceCode {
+              InvalidArgument,
+              NotFound,
+              AlreadyExists,
+              FailedPrecondition,
+              ResourceExhausted,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct EnduranceError {
+              code: StableEnduranceCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl EnduranceError {
+              #[must_use]
+              pub const fn new(
+                  code: StableEnduranceCode,
+                  reason: &'static str,
+                  retryable: bool,
+              ) -> Self {
+                  Self { code, reason, retryable }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableEnduranceCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableEnduranceCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct Limits {
+              pub packets: usize,
+              pub runs: usize,
+              pub decisions: usize,
+          }
+
+          impl Limits {
+              pub fn validate(self) -> Result<Self, EnduranceError> {
+                  if self.packets == 0
+                      || self.packets > MAX_PACKETS
+                      || self.runs == 0
+                      || self.runs > MAX_RUNS
+                      || self.decisions == 0
+                      || self.decisions > MAX_DECISIONS
+                  {
+                      Err(EnduranceError::invalid("endurance_limits_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct EnduranceRegistry {
+              packets: BTreeMap<PacketId, EndurancePacket>,
+              runs: BTreeMap<RunId, EnduranceRun>,
+              duration_runs: BTreeMap<(PacketId, DurationClass), RunId>,
+              decisions: BTreeMap<(PacketId, DecisionKind), AcceptedDecision>,
+              decision_ids: BTreeSet<DecisionId>,
+              limits: Limits,
+          }
+
+          impl EnduranceRegistry {
+              pub fn new(limits: Limits) -> Result<Self, EnduranceError> {
+                  Ok(Self {
+                      packets: BTreeMap::new(),
+                      runs: BTreeMap::new(),
+                      duration_runs: BTreeMap::new(),
+                      decisions: BTreeMap::new(),
+                      decision_ids: BTreeSet::new(),
+                      limits: limits.validate()?,
+                  })
+              }
+
+              pub fn register_packet(
+                  &mut self,
+                  packet: EndurancePacket,
+              ) -> Result<(), EnduranceError> {
+                  let packet = packet.validate()?;
+                  if self.packets.contains_key(&packet.id) {
+                      return Err(EnduranceError::new(
+                          StableEnduranceCode::AlreadyExists,
+                          "endurance_packet_exists",
+                          false,
+                      ));
+                  }
+                  if self.packets.len() >= self.limits.packets {
+                      return Err(EnduranceError::new(
+                          StableEnduranceCode::ResourceExhausted,
+                          "endurance_packet_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  self.packets.insert(packet.id, packet);
+                  Ok(())
+              }
+
+              pub fn record_run(&mut self, run: EnduranceRun) -> Result<(), EnduranceError> {
+                  if self.runs.contains_key(&run.id) {
+                      return Err(EnduranceError::new(
+                          StableEnduranceCode::AlreadyExists,
+                          "endurance_run_exists",
+                          false,
+                      ));
+                  }
+                  if self.runs.len() >= self.limits.runs {
+                      return Err(EnduranceError::new(
+                          StableEnduranceCode::ResourceExhausted,
+                          "endurance_run_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let packet = self.packets.get(&run.packet).ok_or_else(|| {
+                      EnduranceError::new(
+                          StableEnduranceCode::NotFound,
+                          "endurance_packet_not_found",
+                          false,
+                      )
+                  })?;
+                  let run = run.validate(packet)?;
+                  let key = (run.packet, run.duration_class);
+                  if self.duration_runs.contains_key(&key) {
+                      return Err(EnduranceError::new(
+                          StableEnduranceCode::AlreadyExists,
+                          "duration_run_already_recorded",
+                          false,
+                      ));
+                  }
+                  self.duration_runs.insert(key, run.id);
+                  self.runs.insert(run.id, run);
+                  Ok(())
+              }
+
+              pub fn record_decision(
+                  &mut self,
+                  decision: AcceptedDecision,
+              ) -> Result<(), EnduranceError> {
+                  if self.decision_ids.contains(&decision.id) {
+                      return Err(EnduranceError::new(
+                          StableEnduranceCode::AlreadyExists,
+                          "endurance_decision_id_exists",
+                          false,
+                      ));
+                  }
+                  if self.decision_ids.len() >= self.limits.decisions {
+                      return Err(EnduranceError::new(
+                          StableEnduranceCode::ResourceExhausted,
+                          "endurance_decision_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let packet = self.packets.get(&decision.packet).ok_or_else(|| {
+                      EnduranceError::new(
+                          StableEnduranceCode::NotFound,
+                          "endurance_packet_not_found",
+                          false,
+                      )
+                  })?;
+                  let decision = decision.validate(packet.id)?;
+                  let key = (decision.packet, decision.kind);
+                  if self.decisions.contains_key(&key) {
+                      return Err(EnduranceError::new(
+                          StableEnduranceCode::AlreadyExists,
+                          "endurance_decision_kind_exists",
+                          false,
+                      ));
+                  }
+                  self.decision_ids.insert(decision.id);
+                  self.decisions.insert(key, decision);
+                  Ok(())
+              }
+
+              pub fn summary(&self, packet_id: PacketId) -> Result<PacketSummary, EnduranceError> {
+                  let packet = self.packets.get(&packet_id).ok_or_else(|| {
+                      EnduranceError::new(
+                          StableEnduranceCode::NotFound,
+                          "endurance_packet_not_found",
+                          false,
+                      )
+                  })?;
+                  let completed_durations = packet
+                      .required_durations
+                      .iter()
+                      .copied()
+                      .filter(|duration| {
+                          self.duration_runs.contains_key(&(packet_id, *duration))
+                      })
+                      .collect::<BTreeSet<_>>();
+                  let executed = completed_durations == packet.required_durations;
+                  let required_decisions = [
+                      DecisionKind::Performance,
+                      DecisionKind::Sre,
+                      DecisionKind::Security,
+                      DecisionKind::CapacityCost,
+                  ];
+                  let accepted = executed
+                      && required_decisions.iter().all(|kind| {
+                          self.decisions.contains_key(&(packet_id, *kind))
+                      });
+                  let status = if accepted {
+                      PacketStatus::Accepted
+                  } else if executed {
+                      PacketStatus::Executed
+                  } else if completed_durations.is_empty() {
+                      PacketStatus::Registered
+                  } else {
+                      PacketStatus::PartiallyExecuted
+                  };
+                  Ok(PacketSummary {
+                      packet: packet_id,
+                      status,
+                      completed_durations,
+                      required_durations: packet.required_durations.clone(),
+                  })
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn id<T>(byte: u8, constructor: fn([u8; 16]) -> Result<T, EnduranceError>) -> T {
+                  constructor([byte; 16]).unwrap()
+              }
+
+              fn digest(byte: u8) -> Digest32 {
+                  Digest32::new([byte; 32]).unwrap()
+              }
+
+              fn subject() -> SubjectIdentity {
+                  SubjectIdentity {
+                      repository: digest(1),
+                      commit: digest(2),
+                      tree: digest(3),
+                      schema: digest(4),
+                      database_image: digest(5),
+                      server_image: digest(6),
+                      toolchain: digest(7),
+                  }
+              }
+
+              fn slo() -> SloPolicy {
+                  SloPolicy {
+                      maximum_error_basis_points: 10,
+                      minimum_success_basis_points: 9_990,
+                      maximum_p95_latency_us: 100_000,
+                      maximum_p99_latency_us: 200_000,
+                      maximum_memory_growth_bytes: 100_000_000,
+                      maximum_queue_depth: 1_000,
+                      maximum_pool_waiters: 100,
+                      maximum_outbox_backlog: 1_000,
+                      maximum_scheduler_drift_ms: 1_000,
+                      minimum_reconnect_success_basis_points: 9_900,
+                      maximum_cost_microunits_per_hour: 1_000_000,
+                      maximum_sample_gap_ms: 60_000,
+                  }
+              }
+
+              fn packet() -> EndurancePacket {
+                  EndurancePacket {
+                      id: id(1, PacketId::new),
+                      subject: subject(),
+                      capacity: CapacityProfile {
+                          profile_digest: digest(10),
+                          hardware_digest: digest(11),
+                          topology_digest: digest(12),
+                          workload_digest: digest(13),
+                          oracle_profile_digest: digest(14),
+                          database: DatabaseProfile::PostgreSql,
+                          concurrent_connections: 1_000,
+                          requests_per_second: 10_000,
+                          commands_per_second: 1_000,
+                          matches_per_second: 100,
+                          storage_operations_per_second: 1_000,
+                      },
+                      slo: slo(),
+                      required_durations: BTreeSet::from([
+                          DurationClass::Hours24,
+                          DurationClass::Hours72,
+                          DurationClass::Days7,
+                      ]),
+                  }
+              }
+
+              fn run(byte: u8, duration: DurationClass) -> EnduranceRun {
+                  let elapsed = duration.required_duration_ms();
+                  EnduranceRun {
+                      id: id(byte, RunId::new),
+                      packet: id(1, PacketId::new),
+                      subject: subject(),
+                      capacity_profile_digest: digest(10),
+                      database: DatabaseProfile::PostgreSql,
+                      duration_class: duration,
+                      started_at_ms: 1,
+                      completed_at_ms: 1 + elapsed,
+                      sample_count: elapsed / 60_000,
+                      maximum_observed_sample_gap_ms: 60_000,
+                      metrics: RunMetrics {
+                          total_requests: 1_000_000,
+                          successful_requests: 999_000,
+                          failed_requests: 1_000,
+                          error_basis_points: 10,
+                          success_basis_points: 9_990,
+                          p95_latency_us: 90_000,
+                          p99_latency_us: 190_000,
+                          initial_memory_bytes: 1_000_000,
+                          final_memory_bytes: 1_100_000,
+                          maximum_queue_depth: 100,
+                          maximum_pool_waiters: 10,
+                          maximum_outbox_backlog: 100,
+                          maximum_scheduler_drift_ms: 100,
+                          reconnect_attempts: 10_000,
+                          reconnect_successes: 9_900,
+                          reconnect_success_basis_points: 9_900,
+                          cost_microunits_per_hour: 900_000,
+                      },
+                      invariant_violations: BTreeMap::from([
+                          (CorrectnessInvariant::AcknowledgedCommandLoss, 0),
+                          (CorrectnessInvariant::DuplicateVisibleValue, 0),
+                          (CorrectnessInvariant::StaleAuthorityAcceptedWrite, 0),
+                      ]),
+                      artifact_digest: digest(byte + 20),
+                  }
+              }
+
+              fn registry() -> EnduranceRegistry {
+                  let mut registry = EnduranceRegistry::new(Limits {
+                      packets: 8,
+                      runs: 16,
+                      decisions: 16,
+                  })
+                  .unwrap();
+                  registry.register_packet(packet()).unwrap();
+                  registry
+              }
+
+              #[test]
+              fn twenty_three_hours_cannot_substitute_for_twenty_four() {
+                  let mut registry = registry();
+                  let mut short = run(2, DurationClass::Hours24);
+                  short.completed_at_ms = short.started_at_ms + 23 * HOUR_MS;
+                  assert_eq!(
+                      registry.record_run(short).unwrap_err().reason(),
+                      "endurance_duration_too_short"
+                  );
+              }
+
+              #[test]
+              fn seven_day_run_does_not_auto_credit_other_classes() {
+                  let mut registry = registry();
+                  registry
+                      .record_run(run(2, DurationClass::Days7))
+                      .unwrap();
+                  let summary = registry.summary(id(1, PacketId::new)).unwrap();
+                  assert_eq!(summary.status, PacketStatus::PartiallyExecuted);
+                  assert_eq!(summary.completed_durations.len(), 1);
+              }
+
+              #[test]
+              fn correctness_violation_blocks_run() {
+                  let mut registry = registry();
+                  let mut run = run(2, DurationClass::Hours24);
+                  run.invariant_violations
+                      .insert(CorrectnessInvariant::DuplicateVisibleValue, 1);
+                  assert_eq!(
+                      registry.record_run(run).unwrap_err().reason(),
+                      "endurance_run_invalid"
+                  );
+              }
+
+              #[test]
+              fn sample_gap_and_sample_count_are_both_enforced() {
+                  let mut registry = registry();
+                  let mut gap = run(2, DurationClass::Hours24);
+                  gap.maximum_observed_sample_gap_ms = 61_000;
+                  assert_eq!(
+                      registry.record_run(gap).unwrap_err().reason(),
+                      "endurance_run_invalid"
+                  );
+                  let mut count = run(3, DurationClass::Hours24);
+                  count.sample_count = 1;
+                  assert_eq!(
+                      registry.record_run(count).unwrap_err().reason(),
+                      "endurance_sample_coverage_incomplete"
+                  );
+              }
+
+              #[test]
+              fn slo_or_cost_miss_blocks_run_without_duration_credit() {
+                  let mut registry = registry();
+                  let mut run = run(2, DurationClass::Hours24);
+                  run.metrics.maximum_outbox_backlog = 1_001;
+                  assert_eq!(
+                      registry.record_run(run).unwrap_err().reason(),
+                      "run_slo_missed"
+                  );
+                  assert_eq!(
+                      registry.summary(id(1, PacketId::new)).unwrap().status,
+                      PacketStatus::Registered
+                  );
+              }
+
+              #[test]
+              fn profile_or_subject_mismatch_is_rejected() {
+                  let mut registry = registry();
+                  let mut mismatch = run(2, DurationClass::Hours24);
+                  mismatch.database = DatabaseProfile::CockroachDb;
+                  assert_eq!(
+                      registry.record_run(mismatch).unwrap_err().reason(),
+                      "endurance_run_invalid"
+                  );
+              }
+
+              #[test]
+              fn execution_and independent_acceptance_are_separate() {
+                  let mut registry = registry();
+                  for (byte, duration) in [
+                      (2, DurationClass::Hours24),
+                      (3, DurationClass::Hours72),
+                      (4, DurationClass::Days7),
+                  ] {
+                      registry.record_run(run(byte, duration)).unwrap();
+                  }
+                  assert_eq!(
+                      registry.summary(id(1, PacketId::new)).unwrap().status,
+                      PacketStatus::Executed
+                  );
+              }
+
+              #[test]
+              fn self_review_is_rejected() {
+                  let mut registry = registry();
+                  let decision = AcceptedDecision {
+                      id: id(9, DecisionId::new),
+                      packet: id(1, PacketId::new),
+                      kind: DecisionKind::Performance,
+                      evidence_digest: digest(90),
+                      reviewer_digest: digest(91),
+                      decided_at_ms: 100,
+                      independent: true,
+                      self_review: true,
+                  };
+                  assert_eq!(
+                      registry.record_decision(decision).unwrap_err().reason(),
+                      "endurance_decision_not_acceptable"
+                  );
+              }
+          }
+          EOF
+
+          cat > crates/trnm-endurance-core/README.md <<'EOF'
+          # trnm-endurance-core
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-endurance-core`  
+          Workspace class: `root`  
+          Lifecycle: `operations-evidence-control`  
+          Owner role: `performance-sre`
+
+          ## Status and authority
+
+          This document is the engineering contract for exact capacity profiles, SLOs and 24-hour, 72-hour and seven-day endurance evidence. It is a source candidate and does not prove a benchmark, endurance run, cost target or production readiness.
+
+          ## Responsibilities
+
+          The crate owns exact source/schema/image/toolchain identity, hardware/topology/workload/oracle profile binding, integer SLO policies, three mandatory duration classes, continuous sample coverage, correctness-invariant zero requirements, cost thresholds and independent decision aggregation.
+
+          It does not generate load, measure time, collect metrics, operate a cluster, compare the oracle, authenticate artifacts or supply human decisions.
+
+          ## Architecture and dependencies
+
+          An approved workload runner drives an isolated candidate and same-hardware oracle profile while correctness checks remain active. A telemetry collector emits bounded integer metrics and content-addressed artifacts. Evidence admission authenticates source, environment, duration and reviewer identity.
+
+          PostgreSQL and CockroachDB require separate capacity packets. Hardware, topology, workload or source movement invalidates the prior packet.
+
+          ## Public contracts
+
+          Every packet requires all three durations: 24h, 72h and 7d. A longer run does not automatically supply a separate shorter-class result. Every run binds exact packet subject, database and capacity profile and records interval, sample coverage, SLO metrics, invariant counts and artifact digest.
+
+          Latency, errors, memory growth, queue/pool pressure, outbox backlog, scheduler drift, reconnect success and cost all have explicit integer thresholds.
+
+          ## Correctness and failure model
+
+          Short duration, sparse samples, excessive sample gap, subject/profile mismatch, SLO/cost miss or any correctness/security violation rejects the run before duration credit. Packet execution is conjunctive across all duration classes; acceptance additionally requires performance, SRE, security and capacity/cost decisions.
+
+          A smoke test, extrapolation or interrupted run cannot substitute for endurance evidence.
+
+          ## Security and privacy
+
+          Workloads use synthetic or approved data and no production credentials. Raw user IDs, payloads, tokens and receipts are excluded from metric labels and artifacts. Security and correctness assertions continue throughout load.
+
+          Decision records are structural only; authenticated reviewer and artifact provenance remain evidence-layer obligations.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-endurance-core --all-targets --locked
+          cargo clippy --package trnm-endurance-core --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover short-run rejection, no cross-duration credit, correctness violations, sample continuity, SLO/cost failure, profile identity and execution-versus-acceptance separation.
+
+          ## Operations
+
+          Runners expose profile, duration, sample gap, latency/error, memory/queue/pool/outbox/scheduler/reconnect/cost and invariant status with bounded labels. Raw identities and payloads are not labels.
+
+          ## Compatibility and evidence
+
+          Complete #127 requires approved hardware/topology/workload/SLO profiles, same-hardware oracle comparison, real 24h/72h/7d runs, retained artifacts, confidence/cost analysis and independent performance/SRE/security acceptance for every supported database profile.
+
+          This core cannot establish capacity, latency, availability, cost or endurance by itself.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P0-SERVER-001`, `GAP-P0-DATA-001`, `GAP-P0-CI-001`, `GAP-P1-PG-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires real load/endurance harnesses, approved profiles, exact source/environment artifacts, complete duration runs, oracle comparison and conflict-free performance/SRE review.
+          EOF
+
+      - name: Register endurance module fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          member='crates/trnm-endurance-core'
+          p=Path('Cargo.toml'); t=p.read_text();
+          if f'"{member}"' not in t: p.write_text(t.replace(']\nexclude = [',f'  "{member}",\n]\nexclude = [',1))
+          mp=Path('docs/status/MODULE_DOCUMENTATION.json'); m=json.loads(mp.read_text())
+          if not any(r['id']=='trnm-endurance-core' for r in m['modules']):
+              m['modules'].append({'id':'trnm-endurance-core','path':member,'manifest':f'{member}/Cargo.toml','documentation':f'{member}/README.md','workspace':'root','lifecycle':'operations-evidence-control','maturity':'source-candidate','owner_role':'performance-sre','authority':'profile-bound capacity SLO and 24h 72h 7d endurance evidence state','blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-DATA-001','GAP-P0-CI-001','GAP-P1-PG-001','GAP-P1-REVIEW-001'],'claim_credit':False})
+          m['modules'].sort(key=lambda r:r['id']); m['summary'].update({'module_count':len(m['modules']),'documented_count':len(m['modules']),'root_workspace_count':sum(r['workspace']=='root' for r in m['modules']),'isolated_workspace_count':sum(r['workspace']=='isolated' for r in m['modules']),'undocumented_count':0}); mp.write_text(json.dumps(m,indent=2)+'\n')
+          ap=Path('docs/development/RUST_PACKAGE_AUTHORITY.json'); a=json.loads(ap.read_text());
+          if member not in a['workspace']['members']: a['workspace']['members'].append(member); a['workspace']['members'].sort()
+          for k in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'): a.setdefault('claim_boundary',{})[k]=False
+          ap.write_text(json.dumps(a,indent=2)+'\n')
+          ip=Path('docs/status/IMPLEMENTATION_INVENTORY.json'); inv=json.loads(ip.read_text())
+          if not any(r.get('id')=='COMP-ENDURANCE-CORE' for r in inv['components']):
+              inv['components'].append({'id':'COMP-ENDURANCE-CORE','path':member,'kind':'rust-operations-evidence-control','workstreams':['W16'],'status':'source-candidate','implemented':['exact hardware topology workload oracle and source profile','24h 72h 7d continuous sample and SLO admission','correctness cost and specialist decision aggregation'],'missing':['real load generators and telemetry collectors','same-hardware oracle capacity comparison','actual 24h 72h 7d retained runs','independent performance SRE security cost acceptance'],'blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-DATA-001','GAP-P0-CI-001','GAP-P1-PG-001','GAP-P1-REVIEW-001'],'parity_ids':[],'evidence_ids':[],'claim_credit':False})
+          ip.write_text(json.dumps(inv,indent=2)+'\n')
+          sp=Path('docs/status/CURRENT_STATE.json'); st=json.loads(sp.read_text()); st.setdefault('implementation',{})['endurance_evidence_core_source_candidate']=True
+          for k in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'): st.setdefault('claims',{})[k]=False
+          sp.write_text(json.dumps(st,indent=2)+'\n')
+          PY
+
+      - name: Publish Draft and qualify exact source
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git commit -m 'feat(operations): add capacity and endurance evidence core'
+          head_sha="$(git rev-parse HEAD)"; head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Repository-controlled source candidate for #127, stacked on recovery Wave 13.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds exact hardware/topology/workload/source profiles, integer SLO/cost policy, mandatory independent 24h/72h/7d run classes, continuous sampling and zero-correctness-violation admission.
+
+          No real load, oracle comparison, endurance duration, capacity result, cost decision or production evidence is claimed.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 14] Add capacity and endurance evidence core' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do cargo test --manifest-path "$manifest" --all-targets --locked; cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings; done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "Endurance Wave 14 carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and all claim ceilings remain binding."
+          gh issue comment 127 --repo "$REPOSITORY" --body "Endurance core carrier status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`; #127 remains open pending real duration runs and accepted evidence."
