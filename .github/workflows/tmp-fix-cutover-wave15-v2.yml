@@ -1,0 +1,351 @@
+name: tmp-fix-cutover-wave15-v2
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-fix-cutover-wave15-v2.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-cutover-controller-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Wait for exact cutover branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha=''
+          for _ in $(seq 1 1080); do
+            head_sha="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$head_sha" && break
+            sleep 20
+          done
+          test -n "$head_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=6 origin "$head_sha"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$FEATURE_BRANCH" "$head_sha"
+
+      - name: Apply format-independent cutover repair
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('crates/trnm-cutover-controller/src/lib.rs')
+          text = path.read_text(encoding='utf-8')
+
+          text = re.sub(
+              r'pub fn validate\(\s*self,\s*plan: &CutoverPlan,\s*subject_digest: Digest32,\s*\)',
+              'pub fn validate(self, plan: &CutoverPlan)',
+              text,
+          )
+          text = text.replace(
+              'self.subject_digest != subject_digest',
+              'self.subject_digest != plan.subject.tree',
+          )
+          if text.count('self.subject_digest != plan.subject.tree') < 3:
+              raise SystemExit('cutover exact-subject checks incomplete')
+
+          for method, validation in [
+              ('record_artifact', 'artifact.validate(&current.plan)?'),
+              ('record_window', 'window.validate(&current.plan)?'),
+              ('record_rehearsal', 'rehearsal.validate(&current.plan)?'),
+          ]:
+              start = text.index(f'    pub fn {method}(')
+              end = text.index('\n    pub fn ', start + 10)
+              block = text[start:end]
+              block = block.replace('        subject_digest: Digest32,\n', '')
+              block = block.replace(
+                  '.validate(&current.plan, subject_digest)?',
+                  '.validate(&current.plan)?',
+              )
+              if validation not in block:
+                  raise SystemExit(f'{method} exact-subject validation missing')
+              text = text[:start] + block + text[end:]
+
+          def matching_paren(source: str, open_index: int) -> int:
+              depth = 0
+              quote = None
+              escaped = False
+              for index in range(open_index, len(source)):
+                  char = source[index]
+                  if quote is not None:
+                      if escaped:
+                          escaped = False
+                      elif char == '\\':
+                          escaped = True
+                      elif char == quote:
+                          quote = None
+                      continue
+                  if char in {'"', "'"}:
+                      quote = char
+                  elif char == '(':
+                      depth += 1
+                  elif char == ')':
+                      depth -= 1
+                      if depth == 0:
+                          return index
+              raise ValueError('unclosed call')
+
+          def split_top_level(value: str) -> list[str]:
+              parts = []
+              start = 0
+              stack = []
+              quote = None
+              escaped = False
+              pairs = {')': '(', ']': '[', '}': '{'}
+              for index, char in enumerate(value):
+                  if quote is not None:
+                      if escaped:
+                          escaped = False
+                      elif char == '\\':
+                          escaped = True
+                      elif char == quote:
+                          quote = None
+                      continue
+                  if char in {'"', "'"}:
+                      quote = char
+                  elif char in '([{':
+                      stack.append(char)
+                  elif char in ')]}':
+                      if not stack or stack.pop() != pairs[char]:
+                          raise ValueError('unbalanced call')
+                  elif char == ',' and not stack:
+                      parts.append(value[start:index].strip())
+                      start = index + 1
+              parts.append(value[start:].strip())
+              return parts
+
+          replacements = []
+          for method in ('record_artifact', 'record_window', 'record_rehearsal'):
+              needle = f'.{method}('
+              cursor = 0
+              while True:
+                  found = text.find(needle, cursor)
+                  if found < 0:
+                      break
+                  open_index = found + len(needle) - 1
+                  close_index = matching_paren(text, open_index)
+                  arguments = split_top_level(text[open_index + 1:close_index])
+                  if len(arguments) == 5:
+                      arguments.pop(3)
+                      replacement = needle + ', '.join(arguments) + ')'
+                      replacements.append((found, close_index + 1, replacement))
+                  elif len(arguments) != 4:
+                      raise SystemExit(f'{method} unexpected argument count {len(arguments)}')
+                  cursor = close_index + 1
+          for start, end, replacement in reversed(replacements):
+              text = text[:start] + replacement + text[end:]
+
+          text = re.sub(
+              r'\.validate\(&plan\(\),\s*subject_digest\(&subject\(\)\)\)',
+              '.validate(&plan())',
+              text,
+          )
+          text = re.sub(
+              r'fn subject_digest\(subject: &SubjectIdentity\) -> Digest32 \{\s*subject\.tree\s*\}\s*',
+              '',
+              text,
+              count=1,
+          )
+
+          rehearsal_start = text.index('impl RollbackRehearsal {')
+          rehearsal_end = text.index('#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub struct RetirementFacts', rehearsal_start)
+          rehearsal = text[rehearsal_start:rehearsal_end]
+          if 'rollback_authority_shape(' not in rehearsal:
+              rehearsal = rehearsal.replace(
+                  '            || self.source_authorities_after == 0\n            || self.rust_authorities_after != 0\n',
+                  '            || !rollback_authority_shape(\n'
+                  '                self.from_stage,\n'
+                  '                self.to_stage,\n'
+                  '                self.source_authorities_after,\n'
+                  '                self.rust_authorities_after,\n'
+                  '            )\n',
+                  1,
+              )
+          if 'reverse_delta_requirement_matches' not in rehearsal:
+              marker = '        if self.plan != plan.id\n'
+              insertion = '''        let reverse_delta_requirement_matches = self.reverse_delta_required
+            == matches!(
+                self.from_stage,
+                CutoverStage::RustPrimary | CutoverStage::NakamaReadOnly
+            );
+'''
+              rehearsal = rehearsal.replace(marker, insertion + marker, 1)
+              rehearsal = rehearsal.replace(
+                  '            || (self.reverse_delta_required && !self.reverse_delta_complete)\n',
+                  '            || !reverse_delta_requirement_matches\n'
+                  '            || (self.reverse_delta_required && !self.reverse_delta_complete)\n',
+                  1,
+              )
+          text = text[:rehearsal_start] + rehearsal + text[rehearsal_end:]
+
+          rollback_start = text.index('    pub fn rollback(')
+          rollback_end = text.index('    fn for_update(', rollback_start)
+          rollback = text[rollback_start:rollback_end]
+          if 'cutover_rollback_target_invalid' not in rollback:
+              begin = rollback.index('        let mut updated = current.clone();')
+              finish = rollback.index('        updated.revision = next_revision(updated.revision)?;', begin)
+              replacement = '''        let mut updated = current.clone();
+        updated.stage = previous;
+        match previous {
+            CutoverStage::Planned | CutoverStage::Shadow | CutoverStage::Canary => {
+                updated.nakama_write_authorities = 1;
+                updated.rust_write_authorities = 0;
+                for writer in updated.cohort_writers.values_mut() {
+                    *writer = Writer::Nakama;
+                }
+            }
+            CutoverStage::RustPrimary => {
+                updated.nakama_write_authorities = 0;
+                updated.rust_write_authorities = 1;
+                for writer in updated.cohort_writers.values_mut() {
+                    *writer = Writer::Rust;
+                }
+            }
+            CutoverStage::NakamaReadOnly | CutoverStage::Retired => {
+                return Err(CutoverError::new(
+                    StableCutoverCode::FailedPrecondition,
+                    "cutover_rollback_target_invalid",
+                    false,
+                ));
+            }
+        }
+'''
+              rollback = rollback[:begin] + replacement + rollback[finish:]
+          text = text[:rollback_start] + rollback + text[rollback_end:]
+
+          transition_start = text.index('fn validate_transition(')
+          transition_end = text.index('fn writer_allowed(', transition_start)
+          transition = text[transition_start:transition_end]
+          planned_start = transition.index('(CutoverStage::Planned, CutoverStage::Shadow)')
+          planned_end = transition.index('(CutoverStage::Shadow, CutoverStage::Canary)', planned_start)
+          planned = transition[planned_start:planned_end]
+          if 'state.nakama_write_authorities > 0' not in planned:
+              marker = '&& state.rust_write_authorities == 0'
+              planned = planned.replace(
+                  marker,
+                  '&& state.nakama_write_authorities > 0\n'
+                  '                        ' + marker,
+                  1,
+              )
+              transition = transition[:planned_start] + planned + transition[planned_end:]
+          text = text[:transition_start] + transition + text[transition_end:]
+
+          helper_anchor = 'fn valid_rollback_pair(from: CutoverStage, to: CutoverStage) -> bool {'
+          if 'fn rollback_authority_shape(' not in text:
+              helper = '''fn rollback_authority_shape(
+    from: CutoverStage,
+    to: CutoverStage,
+    nakama: u64,
+    rust: u64,
+) -> bool {
+    match (from, to) {
+        (CutoverStage::Shadow, CutoverStage::Planned)
+        | (CutoverStage::Canary, CutoverStage::Shadow)
+        | (CutoverStage::RustPrimary, CutoverStage::Canary) => nakama > 0 && rust == 0,
+        (CutoverStage::NakamaReadOnly, CutoverStage::RustPrimary) => {
+            nakama == 0 && rust > 0
+        }
+        _ => false,
+    }
+}
+
+'''
+              text = text.replace(helper_anchor, helper + helper_anchor, 1)
+
+          tests_start = text.index('#[cfg(test)]\nmod tests {')
+          test_anchor = '    fn exact_command_replay_does_not_repeat_mutation() {'
+          if 'fn rollback_to_rust_primary_preserves_rust_authority()' not in text:
+              insert = text.index('    #[test]\n' + test_anchor, tests_start)
+              test = '''    #[test]
+    fn rollback_to_rust_primary_preserves_rust_authority() {
+        let mut registry = registry();
+        let state = registry.plans.get_mut(&plan().id).unwrap();
+        state.stage = CutoverStage::NakamaReadOnly;
+        state.revision = 2;
+        state.retirement.final_delta_complete = true;
+        state
+            .cohort_writers
+            .insert(id(2, CohortId::new), Writer::Rust);
+        state.rehearsals.insert(
+            (CutoverStage::NakamaReadOnly, CutoverStage::RustPrimary),
+            RollbackRehearsal {
+                id: id(3, RehearsalId::new),
+                plan: plan().id,
+                subject_digest: digest(3),
+                from_stage: CutoverStage::NakamaReadOnly,
+                to_stage: CutoverStage::RustPrimary,
+                started_at_ms: 1,
+                completed_at_ms: 10,
+                reverse_delta_required: true,
+                reverse_delta_complete: true,
+                source_digest: digest(40),
+                restored_digest: digest(40),
+                source_authorities_after: 0,
+                rust_authorities_after: 1,
+                artifact_digest: digest(41),
+            },
+        );
+        registry
+            .rollback(
+                command(20),
+                plan().id,
+                2,
+                CutoverStage::RustPrimary,
+            )
+            .unwrap();
+        let state = registry.state(plan().id).unwrap();
+        assert_eq!(state.stage, CutoverStage::RustPrimary);
+        assert_eq!(state.nakama_write_authorities, 0);
+        assert_eq!(state.rust_write_authorities, 1);
+        assert!(state
+            .cohort_writers
+            .values()
+            .all(|writer| *writer == Writer::Rust));
+    }
+
+'''
+              text = text[:insert] + test + text[insert:]
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          if git diff --quiet; then echo 'changed=false' >> "$GITHUB_OUTPUT"; else echo 'changed=true' >> "$GITHUB_OUTPUT"; fi
+
+      - name: Qualify and publish structural cutover repair
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo test --package trnm-cutover-controller --all-targets --locked
+          cargo clippy --package trnm-cutover-controller --all-targets --locked -- -D warnings
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-cutover-controller/src/lib.rs
+          git commit -m 'fix(cutover): enforce exact subjects and rollback barriers'
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Applied a format-independent cutover repair: exact plan-subject binding, stage-correct authority/writers, active Nakama Shadow prerequisite and mandatory reverse-delta semantics. Focused tests and strict Clippy passed in carrier run `${GITHUB_RUN_ID}`; exact-head checks must requalify."
