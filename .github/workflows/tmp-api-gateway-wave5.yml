@@ -1,0 +1,946 @@
+name: tmp-api-gateway-wave5
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-api-gateway-wave5.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-multiplayer-core-20260909
+  FEATURE_BRANCH: feature/plan-v32-api-gateway-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-api-gateway-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Wait for exact Wave 4 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 240); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 30
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write shared API gateway admission core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-api-gateway-core/src
+          cat > crates/trnm-api-gateway-core/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-api-gateway-core"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Bounded versioned HTTP and gRPC operation registry and admission core"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-api-gateway-core/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::collections::{BTreeMap, BTreeSet};
+
+          pub const MAX_OPERATIONS: usize = 4096;
+          pub const MAX_OPERATION_NAME_BYTES: usize = 256;
+          pub const MAX_PATH_BYTES: usize = 1024;
+          pub const MAX_CONTENT_TYPES: usize = 8;
+          pub const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+          pub const MAX_TIMEOUT_MS: u64 = 120_000;
+          pub const MAX_ACTIVE_REQUESTS: usize = 65_536;
+
+          macro_rules! id16 {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(value: [u8; 16]) -> Result<Self, GatewayError> {
+                          if value.iter().all(|byte| *byte == 0) {
+                              Err(GatewayError::invalid($reason))
+                          } else {
+                              Ok(Self(value))
+                          }
+                      }
+                  }
+              };
+          }
+
+          id16!(ProjectId, "project_id_zero");
+          id16!(UserId, "user_id_zero");
+          id16!(SessionId, "session_id_zero");
+          id16!(RequestId, "request_id_zero");
+          id16!(CommandId, "command_id_zero");
+
+          #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct OperationId(String);
+
+          impl OperationId {
+              pub fn new(value: impl Into<String>) -> Result<Self, GatewayError> {
+                  let value = value.into();
+                  validate_token(&value, MAX_OPERATION_NAME_BYTES, "operation_id_invalid")?;
+                  Ok(Self(value))
+              }
+
+              #[must_use]
+              pub fn as_str(&self) -> &str {
+                  &self.0
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum HttpMethod {
+              Get,
+              Post,
+              Put,
+              Patch,
+              Delete,
+          }
+
+          #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct HttpEndpoint {
+              pub method: HttpMethod,
+              pub path: String,
+          }
+
+          impl HttpEndpoint {
+              pub fn new(method: HttpMethod, path: impl Into<String>) -> Result<Self, GatewayError> {
+                  let path = path.into();
+                  if path.is_empty()
+                      || path.len() > MAX_PATH_BYTES
+                      || !path.starts_with('/')
+                      || path.bytes().any(|byte| byte.is_ascii_control() || byte == b' ')
+                      || path.contains("//")
+                      || path.contains("..")
+                  {
+                      return Err(GatewayError::invalid("http_path_invalid"));
+                  }
+                  Ok(Self { method, path })
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct GrpcEndpoint {
+              pub service: String,
+              pub method: String,
+          }
+
+          impl GrpcEndpoint {
+              pub fn new(
+                  service: impl Into<String>,
+                  method: impl Into<String>,
+              ) -> Result<Self, GatewayError> {
+                  let service = service.into();
+                  let method = method.into();
+                  validate_dotted_name(&service, "grpc_service_invalid")?;
+                  validate_token(&method, MAX_OPERATION_NAME_BYTES, "grpc_method_invalid")?;
+                  Ok(Self { service, method })
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum EndpointKey {
+              Http(HttpEndpoint),
+              Grpc(GrpcEndpoint),
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum ContentType {
+              None,
+              Json,
+              Protobuf,
+              OctetStream,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum AuthPolicy {
+              Public,
+              Session,
+              Operator,
+              InternalService,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum RateClass {
+              Read,
+              Write,
+              Authentication,
+              RealtimeControl,
+              Administration,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct OperationSpec {
+              pub id: OperationId,
+              pub endpoint: EndpointKey,
+              pub auth: AuthPolicy,
+              pub mutation: bool,
+              pub maximum_body_bytes: usize,
+              pub maximum_timeout_ms: u64,
+              pub content_types: BTreeSet<ContentType>,
+              pub rate_class: RateClass,
+          }
+
+          impl OperationSpec {
+              pub fn validate(self) -> Result<Self, GatewayError> {
+                  if self.maximum_body_bytes > MAX_REQUEST_BYTES {
+                      return Err(GatewayError::resource("operation_body_limit_invalid"));
+                  }
+                  if self.maximum_timeout_ms == 0 || self.maximum_timeout_ms > MAX_TIMEOUT_MS {
+                      return Err(GatewayError::invalid("operation_timeout_invalid"));
+                  }
+                  if self.content_types.is_empty() || self.content_types.len() > MAX_CONTENT_TYPES {
+                      return Err(GatewayError::invalid("operation_content_types_invalid"));
+                  }
+                  if self.maximum_body_bytes == 0 && self.content_types != BTreeSet::from([ContentType::None]) {
+                      return Err(GatewayError::invalid("bodyless_operation_content_type_invalid"));
+                  }
+                  if self.mutation && self.auth == AuthPolicy::Public {
+                      return Err(GatewayError::invalid("public_mutation_forbidden"));
+                  }
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum Principal {
+              Anonymous { project: ProjectId },
+              Session {
+                  project: ProjectId,
+                  user: UserId,
+                  session: SessionId,
+                  generation: u64,
+              },
+              Operator { project: ProjectId, user: UserId, mfa: bool },
+              Service { project: ProjectId, service_epoch: u64 },
+          }
+
+          impl Principal {
+              #[must_use]
+              pub const fn project(self) -> ProjectId {
+                  match self {
+                      Self::Anonymous { project }
+                      | Self::Session { project, .. }
+                      | Self::Operator { project, .. }
+                      | Self::Service { project, .. } => project,
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct InboundRequest {
+              pub request: RequestId,
+              pub endpoint: EndpointKey,
+              pub principal: Principal,
+              pub body_bytes: usize,
+              pub content_type: ContentType,
+              pub received_at_ms: u64,
+              pub deadline_at_ms: u64,
+              pub command: Option<CommandId>,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct AdmittedRequest {
+              pub request: RequestId,
+              pub operation: OperationId,
+              pub principal: Principal,
+              pub deadline_at_ms: u64,
+              pub command: Option<CommandId>,
+              pub rate_class: RateClass,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct RateLimit {
+              pub class: RateClass,
+              pub maximum_inflight: usize,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          struct ActiveRequest {
+              operation: OperationId,
+              rate_class: RateClass,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableGatewayCode {
+              InvalidArgument,
+              Unauthenticated,
+              PermissionDenied,
+              NotFound,
+              MethodNotAllowed,
+              ResourceExhausted,
+              DeadlineExceeded,
+              Aborted,
+              Unavailable,
+              Internal,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct GatewayError {
+              code: StableGatewayCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl GatewayError {
+              #[must_use]
+              pub const fn new(
+                  code: StableGatewayCode,
+                  reason: &'static str,
+                  retryable: bool,
+              ) -> Self {
+                  Self { code, reason, retryable }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableGatewayCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn resource(reason: &'static str) -> Self {
+                  Self::new(StableGatewayCode::ResourceExhausted, reason, true)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableGatewayCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct PublicFailure {
+              pub http_status: u16,
+              pub grpc_code: u8,
+              pub realtime_code: u16,
+              pub stable_name: &'static str,
+              pub retryable: bool,
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct GatewayRegistry {
+              by_endpoint: BTreeMap<EndpointKey, OperationSpec>,
+              by_id: BTreeMap<OperationId, EndpointKey>,
+          }
+
+          impl GatewayRegistry {
+              pub fn new(specs: impl IntoIterator<Item = OperationSpec>) -> Result<Self, GatewayError> {
+                  let mut by_endpoint = BTreeMap::new();
+                  let mut by_id = BTreeMap::new();
+                  for spec in specs {
+                      let spec = spec.validate()?;
+                      if by_endpoint.len() >= MAX_OPERATIONS {
+                          return Err(GatewayError::resource("operation_capacity_exhausted"));
+                      }
+                      if by_endpoint.contains_key(&spec.endpoint) {
+                          return Err(GatewayError::new(
+                              StableGatewayCode::Aborted,
+                              "duplicate_endpoint",
+                              false,
+                          ));
+                      }
+                      if by_id.contains_key(&spec.id) {
+                          return Err(GatewayError::new(
+                              StableGatewayCode::Aborted,
+                              "duplicate_operation_id",
+                              false,
+                          ));
+                      }
+                      by_id.insert(spec.id.clone(), spec.endpoint.clone());
+                      by_endpoint.insert(spec.endpoint.clone(), spec);
+                  }
+                  if by_endpoint.is_empty() {
+                      return Err(GatewayError::invalid("operation_registry_empty"));
+                  }
+                  Ok(Self { by_endpoint, by_id })
+              }
+
+              #[must_use]
+              pub fn operation(&self, endpoint: &EndpointKey) -> Option<&OperationSpec> {
+                  self.by_endpoint.get(endpoint)
+              }
+
+              #[must_use]
+              pub fn endpoint(&self, operation: &OperationId) -> Option<&EndpointKey> {
+                  self.by_id.get(operation)
+              }
+
+              #[must_use]
+              pub fn len(&self) -> usize {
+                  self.by_endpoint.len()
+              }
+
+              #[must_use]
+              pub fn is_empty(&self) -> bool {
+                  self.by_endpoint.is_empty()
+              }
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct GatewayAdmission {
+              registry: GatewayRegistry,
+              limits: BTreeMap<RateClass, usize>,
+              active: BTreeMap<RequestId, ActiveRequest>,
+              counts: BTreeMap<RateClass, usize>,
+              draining: bool,
+          }
+
+          impl GatewayAdmission {
+              pub fn new(
+                  registry: GatewayRegistry,
+                  limits: impl IntoIterator<Item = RateLimit>,
+              ) -> Result<Self, GatewayError> {
+                  let mut mapped = BTreeMap::new();
+                  for limit in limits {
+                      if limit.maximum_inflight == 0 || limit.maximum_inflight > MAX_ACTIVE_REQUESTS {
+                          return Err(GatewayError::invalid("rate_limit_invalid"));
+                      }
+                      if mapped.insert(limit.class, limit.maximum_inflight).is_some() {
+                          return Err(GatewayError::invalid("duplicate_rate_limit"));
+                      }
+                  }
+                  for spec in registry.by_endpoint.values() {
+                      if !mapped.contains_key(&spec.rate_class) {
+                          return Err(GatewayError::invalid("rate_class_limit_missing"));
+                      }
+                  }
+                  Ok(Self {
+                      registry,
+                      limits: mapped,
+                      active: BTreeMap::new(),
+                      counts: BTreeMap::new(),
+                      draining: false,
+                  })
+              }
+
+              pub fn begin_drain(&mut self) {
+                  self.draining = true;
+              }
+
+              #[must_use]
+              pub const fn is_draining(&self) -> bool {
+                  self.draining
+              }
+
+              pub fn admit(&mut self, inbound: InboundRequest) -> Result<AdmittedRequest, GatewayError> {
+                  if inbound.received_at_ms == 0
+                      || inbound.deadline_at_ms <= inbound.received_at_ms
+                  {
+                      return Err(GatewayError::new(
+                          StableGatewayCode::DeadlineExceeded,
+                          "request_deadline_invalid",
+                          false,
+                      ));
+                  }
+                  let spec = self.registry.operation(&inbound.endpoint).ok_or_else(|| GatewayError::new(
+                      StableGatewayCode::NotFound,
+                      "operation_not_found",
+                      false,
+                  ))?.clone();
+                  if self.draining && spec.mutation {
+                      return Err(GatewayError::new(
+                          StableGatewayCode::Unavailable,
+                          "gateway_draining",
+                          true,
+                      ));
+                  }
+                  authorize(spec.auth, inbound.principal)?;
+                  if inbound.body_bytes > spec.maximum_body_bytes {
+                      return Err(GatewayError::new(
+                          StableGatewayCode::ResourceExhausted,
+                          "request_body_too_large",
+                          false,
+                      ));
+                  }
+                  if !spec.content_types.contains(&inbound.content_type) {
+                      return Err(GatewayError::invalid("content_type_not_allowed"));
+                  }
+                  let elapsed = inbound
+                      .deadline_at_ms
+                      .checked_sub(inbound.received_at_ms)
+                      .ok_or_else(|| GatewayError::new(
+                          StableGatewayCode::DeadlineExceeded,
+                          "request_deadline_invalid",
+                          false,
+                      ))?;
+                  if elapsed > spec.maximum_timeout_ms {
+                      return Err(GatewayError::new(
+                          StableGatewayCode::DeadlineExceeded,
+                          "request_deadline_exceeds_operation_limit",
+                          false,
+                      ));
+                  }
+                  if spec.mutation && inbound.command.is_none() {
+                      return Err(GatewayError::invalid("mutation_command_id_required"));
+                  }
+                  if self.active.contains_key(&inbound.request) {
+                      return Err(GatewayError::new(
+                          StableGatewayCode::Aborted,
+                          "request_already_active",
+                          false,
+                      ));
+                  }
+                  if self.active.len() >= MAX_ACTIVE_REQUESTS {
+                      return Err(GatewayError::resource("global_inflight_exhausted"));
+                  }
+                  let count = self.counts.get(&spec.rate_class).copied().unwrap_or(0);
+                  let limit = self.limits[&spec.rate_class];
+                  if count >= limit {
+                      return Err(GatewayError::resource("rate_class_inflight_exhausted"));
+                  }
+                  let admitted = AdmittedRequest {
+                      request: inbound.request,
+                      operation: spec.id.clone(),
+                      principal: inbound.principal,
+                      deadline_at_ms: inbound.deadline_at_ms,
+                      command: inbound.command,
+                      rate_class: spec.rate_class,
+                  };
+                  self.active.insert(
+                      inbound.request,
+                      ActiveRequest {
+                          operation: spec.id,
+                          rate_class: spec.rate_class,
+                      },
+                  );
+                  self.counts.insert(spec.rate_class, count + 1);
+                  Ok(admitted)
+              }
+
+              pub fn complete(
+                  &mut self,
+                  request: RequestId,
+                  operation: &OperationId,
+              ) -> Result<(), GatewayError> {
+                  let active = self.active.get(&request).ok_or_else(|| GatewayError::new(
+                      StableGatewayCode::NotFound,
+                      "active_request_not_found",
+                      false,
+                  ))?;
+                  if &active.operation != operation {
+                      return Err(GatewayError::new(
+                          StableGatewayCode::Aborted,
+                          "active_operation_mismatch",
+                          false,
+                      ));
+                  }
+                  let class = active.rate_class;
+                  self.active.remove(&request);
+                  let count = self.counts.get(&class).copied().unwrap_or(0);
+                  if count == 0 {
+                      return Err(GatewayError::new(
+                          StableGatewayCode::Internal,
+                          "inflight_accounting_underflow",
+                          false,
+                      ));
+                  }
+                  self.counts.insert(class, count - 1);
+                  Ok(())
+              }
+
+              #[must_use]
+              pub fn active_count(&self, class: RateClass) -> usize {
+                  self.counts.get(&class).copied().unwrap_or(0)
+              }
+          }
+
+          #[must_use]
+          pub const fn public_failure(error: &GatewayError) -> PublicFailure {
+              match error.code {
+                  StableGatewayCode::InvalidArgument => PublicFailure { http_status: 400, grpc_code: 3, realtime_code: 3, stable_name: "invalid_argument", retryable: false },
+                  StableGatewayCode::Unauthenticated => PublicFailure { http_status: 401, grpc_code: 16, realtime_code: 16, stable_name: "unauthenticated", retryable: false },
+                  StableGatewayCode::PermissionDenied => PublicFailure { http_status: 403, grpc_code: 7, realtime_code: 7, stable_name: "permission_denied", retryable: false },
+                  StableGatewayCode::NotFound => PublicFailure { http_status: 404, grpc_code: 5, realtime_code: 5, stable_name: "not_found", retryable: false },
+                  StableGatewayCode::MethodNotAllowed => PublicFailure { http_status: 405, grpc_code: 12, realtime_code: 12, stable_name: "unimplemented", retryable: false },
+                  StableGatewayCode::ResourceExhausted => PublicFailure { http_status: 429, grpc_code: 8, realtime_code: 8, stable_name: "resource_exhausted", retryable: error.retryable },
+                  StableGatewayCode::DeadlineExceeded => PublicFailure { http_status: 504, grpc_code: 4, realtime_code: 4, stable_name: "deadline_exceeded", retryable: false },
+                  StableGatewayCode::Aborted => PublicFailure { http_status: 409, grpc_code: 10, realtime_code: 10, stable_name: "aborted", retryable: error.retryable },
+                  StableGatewayCode::Unavailable => PublicFailure { http_status: 503, grpc_code: 14, realtime_code: 14, stable_name: "unavailable", retryable: true },
+                  StableGatewayCode::Internal => PublicFailure { http_status: 500, grpc_code: 13, realtime_code: 13, stable_name: "internal", retryable: false },
+              }
+          }
+
+          fn authorize(policy: AuthPolicy, principal: Principal) -> Result<(), GatewayError> {
+              let valid = match (policy, principal) {
+                  (AuthPolicy::Public, _) => true,
+                  (AuthPolicy::Session, Principal::Session { generation, .. }) => generation > 0,
+                  (AuthPolicy::Operator, Principal::Operator { mfa, .. }) => mfa,
+                  (AuthPolicy::InternalService, Principal::Service { service_epoch, .. }) => service_epoch > 0,
+                  _ => false,
+              };
+              if valid {
+                  Ok(())
+              } else {
+                  Err(GatewayError::new(
+                      StableGatewayCode::Unauthenticated,
+                      "principal_not_authorized_for_operation",
+                      false,
+                  ))
+              }
+          }
+
+          fn validate_token(
+              value: &str,
+              maximum: usize,
+              reason: &'static str,
+          ) -> Result<(), GatewayError> {
+              if value.is_empty()
+                  || value.len() > maximum
+                  || !value
+                      .bytes()
+                      .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+              {
+                  Err(GatewayError::invalid(reason))
+              } else {
+                  Ok(())
+              }
+          }
+
+          fn validate_dotted_name(value: &str, reason: &'static str) -> Result<(), GatewayError> {
+              validate_token(value, MAX_OPERATION_NAME_BYTES, reason)?;
+              if value.starts_with('.') || value.ends_with('.') || value.contains("..") {
+                  Err(GatewayError::invalid(reason))
+              } else {
+                  Ok(())
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn project() -> ProjectId {
+                  ProjectId::new([1; 16]).unwrap()
+              }
+
+              fn endpoint() -> EndpointKey {
+                  EndpointKey::Http(HttpEndpoint::new(HttpMethod::Post, "/v2/storage/write").unwrap())
+              }
+
+              fn spec() -> OperationSpec {
+                  OperationSpec {
+                      id: OperationId::new("storage.write").unwrap(),
+                      endpoint: endpoint(),
+                      auth: AuthPolicy::Session,
+                      mutation: true,
+                      maximum_body_bytes: 1024,
+                      maximum_timeout_ms: 5000,
+                      content_types: BTreeSet::from([ContentType::Json]),
+                      rate_class: RateClass::Write,
+                  }
+              }
+
+              fn admission(limit: usize) -> GatewayAdmission {
+                  GatewayAdmission::new(
+                      GatewayRegistry::new([spec()]).unwrap(),
+                      [RateLimit { class: RateClass::Write, maximum_inflight: limit }],
+                  )
+                  .unwrap()
+              }
+
+              fn request(byte: u8) -> InboundRequest {
+                  InboundRequest {
+                      request: RequestId::new([byte; 16]).unwrap(),
+                      endpoint: endpoint(),
+                      principal: Principal::Session {
+                          project: project(),
+                          user: UserId::new([2; 16]).unwrap(),
+                          session: SessionId::new([3; 16]).unwrap(),
+                          generation: 1,
+                      },
+                      body_bytes: 10,
+                      content_type: ContentType::Json,
+                      received_at_ms: 100,
+                      deadline_at_ms: 1000,
+                      command: Some(CommandId::new([4; 16]).unwrap()),
+                  }
+              }
+
+              #[test]
+              fn registry_rejects_duplicate_endpoint_and_operation() {
+                  let duplicate_endpoint = OperationSpec {
+                      id: OperationId::new("storage.write.second").unwrap(),
+                      ..spec()
+                  };
+                  assert_eq!(
+                      GatewayRegistry::new([spec(), duplicate_endpoint]).unwrap_err().reason(),
+                      "duplicate_endpoint"
+                  );
+                  let second_endpoint = OperationSpec {
+                      endpoint: EndpointKey::Grpc(
+                          GrpcEndpoint::new("nakama.api.Nakama", "WriteStorageObjects").unwrap(),
+                      ),
+                      ..spec()
+                  };
+                  assert_eq!(
+                      GatewayRegistry::new([spec(), second_endpoint]).unwrap_err().reason(),
+                      "duplicate_operation_id"
+                  );
+              }
+
+              #[test]
+              fn auth_size_content_type_deadline_and_command_fail_before_admission() {
+                  let mut gateway = admission(1);
+                  let mut unauthenticated = request(1);
+                  unauthenticated.principal = Principal::Anonymous { project: project() };
+                  assert_eq!(gateway.admit(unauthenticated).unwrap_err().code(), StableGatewayCode::Unauthenticated);
+                  let mut large = request(2);
+                  large.body_bytes = 1025;
+                  assert_eq!(gateway.admit(large).unwrap_err().reason(), "request_body_too_large");
+                  let mut wrong_type = request(3);
+                  wrong_type.content_type = ContentType::Protobuf;
+                  assert_eq!(gateway.admit(wrong_type).unwrap_err().reason(), "content_type_not_allowed");
+                  let mut long_deadline = request(4);
+                  long_deadline.deadline_at_ms = 10_000;
+                  assert_eq!(gateway.admit(long_deadline).unwrap_err().reason(), "request_deadline_exceeds_operation_limit");
+                  let mut no_command = request(5);
+                  no_command.command = None;
+                  assert_eq!(gateway.admit(no_command).unwrap_err().reason(), "mutation_command_id_required");
+                  assert_eq!(gateway.active_count(RateClass::Write), 0);
+              }
+
+              #[test]
+              fn inflight_limit_and_exact_completion_are_fenced() {
+                  let mut gateway = admission(1);
+                  let admitted = gateway.admit(request(1)).unwrap();
+                  assert_eq!(gateway.active_count(RateClass::Write), 1);
+                  assert_eq!(gateway.admit(request(2)).unwrap_err().reason(), "rate_class_inflight_exhausted");
+                  assert_eq!(
+                      gateway.complete(admitted.request, &OperationId::new("other").unwrap()).unwrap_err().reason(),
+                      "active_operation_mismatch"
+                  );
+                  assert_eq!(gateway.active_count(RateClass::Write), 1);
+                  gateway.complete(admitted.request, &admitted.operation).unwrap();
+                  assert_eq!(gateway.active_count(RateClass::Write), 0);
+              }
+
+              #[test]
+              fn drain_rejects_mutations_without_canceling_admitted_requests() {
+                  let mut gateway = admission(2);
+                  let admitted = gateway.admit(request(1)).unwrap();
+                  gateway.begin_drain();
+                  assert_eq!(gateway.admit(request(2)).unwrap_err().reason(), "gateway_draining");
+                  assert_eq!(gateway.active_count(RateClass::Write), 1);
+                  gateway.complete(admitted.request, &admitted.operation).unwrap();
+              }
+
+              #[test]
+              fn public_error_mapping_is_stable_and_redacted() {
+                  let error = GatewayError::resource("private_capacity_reason");
+                  let public = public_failure(&error);
+                  assert_eq!(public.http_status, 429);
+                  assert_eq!(public.grpc_code, 8);
+                  assert_eq!(public.realtime_code, 8);
+                  assert_eq!(public.stable_name, "resource_exhausted");
+                  assert!(!public.stable_name.contains(error.reason()));
+              }
+
+              #[test]
+              fn invalid_paths_and_public_mutations_are_rejected() {
+                  for path in ["", "relative", "/a//b", "/a/../b", "/a b"] {
+                      assert!(HttpEndpoint::new(HttpMethod::Post, path).is_err());
+                  }
+                  let invalid = OperationSpec {
+                      auth: AuthPolicy::Public,
+                      ..spec()
+                  };
+                  assert_eq!(invalid.validate().unwrap_err().reason(), "public_mutation_forbidden");
+              }
+          }
+          EOF
+
+          cat > crates/trnm-api-gateway-core/README.md <<'EOF'
+          # trnm-api-gateway-core
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-api-gateway-core`  
+          Workspace class: `root`  
+          Lifecycle: `product-library`  
+          Owner role: `protocol`
+
+          ## Status and authority
+
+          This document is the engineering contract for a shared, versioned HTTP/gRPC operation registry and admission core. It is a source candidate and does not prove complete Nakama API coverage, wire compatibility or production readiness.
+
+          ## Responsibilities
+
+          The crate owns endpoint and operation identity, duplicate-free registration, auth class, mutation classification, content/body/deadline limits, command-ID requirements, bounded inflight accounting, drain admission and stable public error classes.
+
+          It does not parse raw HTTP, terminate TLS, decode protobuf/JSON, authenticate tokens, execute handlers, access repositories or implement grpc-gateway serialization.
+
+          ## Architecture and dependencies
+
+          Maintained HTTP and gRPC transports resolve a normalized endpoint and construct a typed inbound request. The gateway admits it against one immutable operation registry before invoking a typed service. Services, not adapters, own domain behavior.
+
+          The registry is protocol metadata; generated API/descriptor identity remains a separate pinned build input.
+
+          ## Public contracts
+
+          Every endpoint maps to one operation ID. Every operation declares auth, mutation status, maximum body, timeout, accepted content types and rate class. Mutations require a nonzero command identity before dispatch.
+
+          Active request completion binds exact request and operation identity. Drain rejects new mutations while allowing already admitted work to complete under its original deadline.
+
+          ## Correctness and failure model
+
+          Duplicate endpoint or operation registration fails construction. Unknown endpoints do not dispatch. Invalid auth, body, content type, deadline, command identity or capacity fails before active accounting changes.
+
+          Inflight counters are exact and bounded. A mismatched completion leaves the real request active. Public error mapping is stable and does not expose internal reasons.
+
+          ## Security and privacy
+
+          Principal variants are trusted outputs from authentication adapters, not raw headers. Session generations, operator MFA and service epochs must be positive. Request bodies, tokens, project/user/session identities and private reasons are excluded from logs and metric labels.
+
+          Raw framing, request smuggling, HTTP/2, TLS and protobuf parser security remain transport responsibilities and require independent fuzz/differential evidence.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-api-gateway-core --all-targets --locked
+          cargo clippy --package trnm-api-gateway-core --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover duplicate registry entries, authentication, body/content/deadline/command validation, capacity, exact completion fencing, drain behavior, stable error mapping and path validation.
+
+          ## Operations
+
+          Adapters expose operation/result totals, inflight by bounded rate class, deadline rejection, capacity saturation, drain state and stable public error code. High-cardinality endpoint strings and identities are not labels.
+
+          ## Compatibility and evidence
+
+          Complete #142 still requires generated descriptor/route coverage for every denominator leaf, exact JSON/protobuf/default/enum/integer behavior, headers and gRPC details, grpc-gateway parity, official SDK consumers, immutable-oracle byte differential and parser fuzzing.
+
+          This core does not replace maintained HTTP/gRPC libraries and cannot earn repository-wide C1 by itself.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P0-SERVER-001`, `GAP-P0-SCOPE-001`, `GAP-P0-CI-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires a generated full operation registry, maintained transports, typed service bindings, exact error/details mapping, official consumer tests, retained exact-head wire evidence and conflict-free protocol/security review.
+          EOF
+
+      - name: Register API gateway module fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          member='crates/trnm-api-gateway-core'
+          p=Path('Cargo.toml'); t=p.read_text();
+          if f'"{member}"' not in t: p.write_text(t.replace(']\nexclude = [',f'  "{member}",\n]\nexclude = [',1))
+          mp=Path('docs/status/MODULE_DOCUMENTATION.json'); m=json.loads(mp.read_text())
+          if not any(r['id']=='trnm-api-gateway-core' for r in m['modules']):
+              m['modules'].append({'id':'trnm-api-gateway-core','path':member,'manifest':f'{member}/Cargo.toml','documentation':f'{member}/README.md','workspace':'root','lifecycle':'product-library','maturity':'source-candidate','owner_role':'protocol','authority':'versioned HTTP and gRPC operation registry admission and stable error boundary','blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-REVIEW-001'],'claim_credit':False})
+          m['modules'].sort(key=lambda r:r['id']); m['summary'].update({'module_count':len(m['modules']),'documented_count':len(m['modules']),'root_workspace_count':sum(r['workspace']=='root' for r in m['modules']),'isolated_workspace_count':sum(r['workspace']=='isolated' for r in m['modules']),'undocumented_count':0}); mp.write_text(json.dumps(m,indent=2)+'\n')
+          ap=Path('docs/development/RUST_PACKAGE_AUTHORITY.json'); a=json.loads(ap.read_text());
+          if member not in a['workspace']['members']: a['workspace']['members'].append(member); a['workspace']['members'].sort()
+          for k in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'): a.setdefault('claim_boundary',{})[k]=False
+          ap.write_text(json.dumps(a,indent=2)+'\n')
+          ip=Path('docs/status/IMPLEMENTATION_INVENTORY.json'); inv=json.loads(ip.read_text())
+          if not any(r.get('id')=='COMP-API-GATEWAY-CORE' for r in inv['components']):
+              inv['components'].append({'id':'COMP-API-GATEWAY-CORE','path':member,'kind':'rust-library','workstreams':['W2'],'status':'source-candidate','implemented':['versioned duplicate-free operation registry','bounded auth body content deadline and mutation admission','exact inflight completion and stable public error mapping'],'missing':['complete generated HTTP/gRPC denominator','maintained transport and grpc-gateway integration','official SDK/oracle wire differential and fuzz','independent protocol/security acceptance'],'blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-REVIEW-001'],'parity_ids':['TG-PAR-004','TG-PAR-005','TG-PAR-006','TG-PAR-007'],'evidence_ids':[],'claim_credit':False})
+          ip.write_text(json.dumps(inv,indent=2)+'\n')
+          sp=Path('docs/status/CURRENT_STATE.json'); st=json.loads(sp.read_text()); st.setdefault('implementation',{})['api_gateway_admission_source_candidate']=True
+          for k in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'): st.setdefault('claims',{})[k]=False
+          sp.write_text(json.dumps(st,indent=2)+'\n')
+          PY
+
+      - name: Publish Draft and run exact qualification
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git commit -m 'feat(protocol): add bounded API gateway admission core'
+          head_sha="$(git rev-parse HEAD)"; head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Source candidate for #142, stacked on multiplayer Wave 4.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds a duplicate-free versioned HTTP/gRPC operation registry, auth/body/content/deadline/command admission, bounded inflight accounting, deterministic drain and stable redacted error mapping.
+
+          Full generated API/gateway, maintained transport integration, SDK/oracle differential and parser fuzz remain open. No compatibility, accepted evidence or production credit.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 5] Add shared API gateway admission core' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do cargo test --manifest-path "$manifest" --all-targets --locked; cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings; done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "API Wave 5 carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and claim ceilings remain binding."
+          gh issue comment 142 --repo "$REPOSITORY" --body "API gateway source carrier status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`; #142 remains open pending complete generated surface and evidence."
