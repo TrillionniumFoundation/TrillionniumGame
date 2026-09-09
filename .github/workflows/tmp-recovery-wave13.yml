@@ -1,0 +1,991 @@
+name: tmp-recovery-wave13
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-recovery-wave13.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-conformance-core-20260909
+  FEATURE_BRANCH: feature/plan-v32-recovery-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-recovery-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Wait for exact Wave 12 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 1080); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 20
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write profile-bound recovery evidence core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-recovery-core/src
+          cat > crates/trnm-recovery-core/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-recovery-core"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Profile-bound HA backup PITR restore and failure evidence state"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-recovery-core/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::collections::{BTreeMap, BTreeSet};
+
+          pub const MAX_PACKETS: usize = 65_536;
+          pub const MAX_ATTEMPTS: usize = 1_000_000;
+          pub const MAX_SCENARIOS: usize = 4096;
+          pub const MAX_ASSERTIONS_PER_ATTEMPT: usize = 4096;
+          pub const MAX_RPO_MS: u64 = 86_400_000;
+          pub const MAX_RTO_MS: u64 = 86_400_000;
+
+          macro_rules! id16 {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(value: [u8; 16]) -> Result<Self, RecoveryError> {
+                          if value.iter().all(|byte| *byte == 0) {
+                              Err(RecoveryError::invalid($reason))
+                          } else {
+                              Ok(Self(value))
+                          }
+                      }
+                  }
+              };
+          }
+
+          id16!(PacketId, "packet_id_zero");
+          id16!(AttemptId, "attempt_id_zero");
+          id16!(ScenarioId, "scenario_id_zero");
+          id16!(DecisionId, "decision_id_zero");
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Digest32([u8; 32]);
+
+          impl Digest32 {
+              pub fn new(value: [u8; 32]) -> Result<Self, RecoveryError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      Err(RecoveryError::invalid("digest_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum DatabaseProfile {
+              PostgreSql,
+              CockroachDb,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct SubjectIdentity {
+              pub repository: Digest32,
+              pub commit: Digest32,
+              pub tree: Digest32,
+              pub schema: Digest32,
+              pub migrations: Digest32,
+              pub database_image: Digest32,
+              pub toolchain: Digest32,
+              pub environment: Digest32,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct RecoveryObjectives {
+              pub maximum_rpo_ms: u64,
+              pub maximum_rto_ms: u64,
+          }
+
+          impl RecoveryObjectives {
+              pub fn validate(self) -> Result<Self, RecoveryError> {
+                  if self.maximum_rpo_ms == 0
+                      || self.maximum_rpo_ms > MAX_RPO_MS
+                      || self.maximum_rto_ms == 0
+                      || self.maximum_rto_ms > MAX_RTO_MS
+                  {
+                      Err(RecoveryError::invalid("recovery_objectives_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum ScenarioKind {
+              ProcessCrash,
+              NodeLoss,
+              NetworkPartition,
+              StaleAuthority,
+              DatabaseRestart,
+              PrimaryFailover,
+              LeaseholderMove,
+              BackupRestore,
+              PointInTimeRestore,
+              CorruptBackup,
+              MissingObject,
+              RollingRestart,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct RequiredScenario {
+              pub id: ScenarioId,
+              pub kind: ScenarioKind,
+              pub destructive: bool,
+              pub expected_assertion_digest: Digest32,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct RecoveryPacket {
+              pub id: PacketId,
+              pub profile: DatabaseProfile,
+              pub subject: SubjectIdentity,
+              pub objectives: RecoveryObjectives,
+              pub source_sequence: u64,
+              pub backup_sequence: u64,
+              pub backup_started_at_ms: u64,
+              pub backup_completed_at_ms: u64,
+              pub backup_artifact_digest: Digest32,
+              pub required_scenarios: BTreeMap<ScenarioId, RequiredScenario>,
+          }
+
+          impl RecoveryPacket {
+              pub fn validate(mut self) -> Result<Self, RecoveryError> {
+                  self.objectives = self.objectives.validate()?;
+                  if self.source_sequence == 0
+                      || self.backup_sequence == 0
+                      || self.backup_sequence > self.source_sequence
+                      || self.backup_started_at_ms == 0
+                      || self.backup_completed_at_ms < self.backup_started_at_ms
+                      || self.required_scenarios.is_empty()
+                      || self.required_scenarios.len() > MAX_SCENARIOS
+                  {
+                      return Err(RecoveryError::invalid("recovery_packet_invalid"));
+                  }
+                  for (id, scenario) in &self.required_scenarios {
+                      if id != &scenario.id {
+                          return Err(RecoveryError::new(
+                              StableRecoveryCode::Aborted,
+                              "scenario_key_mismatch",
+                              false,
+                          ));
+                      }
+                  }
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum Invariant {
+              AcknowledgedCommandLoss,
+              DuplicateVisibleValue,
+              StaleAuthorityAcceptedWrite,
+              PartialCommandEventOutboxCommit,
+              DuplicateActiveAuthority,
+              ReceiptReplayMismatch,
+              SchemaDigestMismatch,
+              MissingRestoredObject,
+              CorruptRestoredObject,
+              UnreconciledOutboxIntent,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct AssertionCounts {
+              pub collected: u64,
+              pub executed: u64,
+              pub passed: u64,
+              pub failed: u64,
+              pub skipped: u64,
+          }
+
+          impl AssertionCounts {
+              pub fn validate(self) -> Result<Self, RecoveryError> {
+                  let accounted = self
+                      .passed
+                      .checked_add(self.failed)
+                      .ok_or_else(|| RecoveryError::invalid("assertion_count_overflow"))?;
+                  if self.collected == 0
+                      || self.executed == 0
+                      || self.executed > self.collected
+                      || accounted != self.executed
+                      || self.failed > 0
+                      || self.skipped > 0
+                  {
+                      Err(RecoveryError::new(
+                          StableRecoveryCode::FailedPrecondition,
+                          "assertions_not_fully_passing",
+                          false,
+                      ))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct RecoveryAttempt {
+              pub id: AttemptId,
+              pub packet: PacketId,
+              pub profile: DatabaseProfile,
+              pub subject: SubjectIdentity,
+              pub scenario: ScenarioId,
+              pub restored_sequence: u64,
+              pub recovery_point_ms: u64,
+              pub restore_started_at_ms: u64,
+              pub readiness_restored_at_ms: u64,
+              pub catalog_digest: Digest32,
+              pub semantic_digest: Digest32,
+              pub expected_semantic_digest: Digest32,
+              pub invariant_violations: BTreeMap<Invariant, u64>,
+              pub assertions: AssertionCounts,
+              pub artifact_digest: Digest32,
+          }
+
+          impl RecoveryAttempt {
+              pub fn validate(self, packet: &RecoveryPacket) -> Result<Self, RecoveryError> {
+                  self.assertions.validate()?;
+                  if self.packet != packet.id
+                      || self.profile != packet.profile
+                      || self.subject != packet.subject
+                      || !packet.required_scenarios.contains_key(&self.scenario)
+                      || self.restored_sequence == 0
+                      || self.restored_sequence > packet.source_sequence
+                      || self.recovery_point_ms == 0
+                      || self.restore_started_at_ms == 0
+                      || self.readiness_restored_at_ms < self.restore_started_at_ms
+                      || self.semantic_digest != self.expected_semantic_digest
+                      || self
+                          .invariant_violations
+                          .values()
+                          .any(|count| *count != 0)
+                  {
+                      return Err(RecoveryError::new(
+                          StableRecoveryCode::FailedPrecondition,
+                          "recovery_attempt_invalid",
+                          false,
+                      ));
+                  }
+                  let actual_rpo_ms = packet
+                      .source_sequence
+                      .checked_sub(self.restored_sequence)
+                      .ok_or_else(|| RecoveryError::invalid("restored_sequence_invalid"))?;
+                  let actual_rto_ms = self
+                      .readiness_restored_at_ms
+                      .checked_sub(self.restore_started_at_ms)
+                      .ok_or_else(|| RecoveryError::invalid("restore_time_invalid"))?;
+                  if actual_rpo_ms > packet.objectives.maximum_rpo_ms
+                      || actual_rto_ms > packet.objectives.maximum_rto_ms
+                  {
+                      return Err(RecoveryError::new(
+                          StableRecoveryCode::FailedPrecondition,
+                          "recovery_objective_missed",
+                          false,
+                      ));
+                  }
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum DecisionKind {
+              Database,
+              DataIntegrity,
+              Security,
+              Sre,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct AcceptedDecision {
+              pub id: DecisionId,
+              pub kind: DecisionKind,
+              pub packet: PacketId,
+              pub profile: DatabaseProfile,
+              pub evidence_digest: Digest32,
+              pub reviewer_digest: Digest32,
+              pub decided_at_ms: u64,
+              pub independent: bool,
+              pub self_review: bool,
+          }
+
+          impl AcceptedDecision {
+              pub fn validate(self, packet: &RecoveryPacket) -> Result<Self, RecoveryError> {
+                  if self.packet != packet.id
+                      || self.profile != packet.profile
+                      || self.decided_at_ms == 0
+                      || !self.independent
+                      || self.self_review
+                  {
+                      Err(RecoveryError::new(
+                          StableRecoveryCode::FailedPrecondition,
+                          "recovery_decision_not_acceptable",
+                          false,
+                      ))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum PacketStatus {
+              Registered,
+              Executed,
+              Accepted,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct PacketSummary {
+              pub packet: PacketId,
+              pub profile: DatabaseProfile,
+              pub status: PacketStatus,
+              pub completed_scenarios: usize,
+              pub required_scenarios: usize,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableRecoveryCode {
+              InvalidArgument,
+              NotFound,
+              AlreadyExists,
+              PermissionDenied,
+              FailedPrecondition,
+              Aborted,
+              ResourceExhausted,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct RecoveryError {
+              code: StableRecoveryCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl RecoveryError {
+              #[must_use]
+              pub const fn new(
+                  code: StableRecoveryCode,
+                  reason: &'static str,
+                  retryable: bool,
+              ) -> Self {
+                  Self { code, reason, retryable }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableRecoveryCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableRecoveryCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct Limits {
+              pub packets: usize,
+              pub attempts: usize,
+              pub decisions: usize,
+          }
+
+          impl Limits {
+              pub fn validate(self) -> Result<Self, RecoveryError> {
+                  if self.packets == 0
+                      || self.packets > MAX_PACKETS
+                      || self.attempts == 0
+                      || self.attempts > MAX_ATTEMPTS
+                      || self.decisions == 0
+                      || self.decisions > MAX_ATTEMPTS
+                  {
+                      Err(RecoveryError::invalid("recovery_limits_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct RecoveryRegistry {
+              packets: BTreeMap<PacketId, RecoveryPacket>,
+              attempts: BTreeMap<AttemptId, RecoveryAttempt>,
+              scenario_attempts: BTreeMap<(PacketId, ScenarioId), AttemptId>,
+              decisions: BTreeMap<(PacketId, DecisionKind), AcceptedDecision>,
+              decision_ids: BTreeSet<DecisionId>,
+              limits: Limits,
+          }
+
+          impl RecoveryRegistry {
+              pub fn new(limits: Limits) -> Result<Self, RecoveryError> {
+                  Ok(Self {
+                      packets: BTreeMap::new(),
+                      attempts: BTreeMap::new(),
+                      scenario_attempts: BTreeMap::new(),
+                      decisions: BTreeMap::new(),
+                      decision_ids: BTreeSet::new(),
+                      limits: limits.validate()?,
+                  })
+              }
+
+              pub fn register_packet(
+                  &mut self,
+                  packet: RecoveryPacket,
+              ) -> Result<(), RecoveryError> {
+                  let packet = packet.validate()?;
+                  if self.packets.contains_key(&packet.id) {
+                      return Err(RecoveryError::new(
+                          StableRecoveryCode::AlreadyExists,
+                          "recovery_packet_exists",
+                          false,
+                      ));
+                  }
+                  if self.packets.len() >= self.limits.packets {
+                      return Err(RecoveryError::new(
+                          StableRecoveryCode::ResourceExhausted,
+                          "recovery_packet_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  self.packets.insert(packet.id, packet);
+                  Ok(())
+              }
+
+              pub fn record_attempt(
+                  &mut self,
+                  attempt: RecoveryAttempt,
+              ) -> Result<(), RecoveryError> {
+                  if self.attempts.contains_key(&attempt.id) {
+                      return Err(RecoveryError::new(
+                          StableRecoveryCode::AlreadyExists,
+                          "recovery_attempt_exists",
+                          false,
+                      ));
+                  }
+                  if self.attempts.len() >= self.limits.attempts {
+                      return Err(RecoveryError::new(
+                          StableRecoveryCode::ResourceExhausted,
+                          "recovery_attempt_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let packet = self.packets.get(&attempt.packet).ok_or_else(|| {
+                      RecoveryError::new(
+                          StableRecoveryCode::NotFound,
+                          "recovery_packet_not_found",
+                          false,
+                      )
+                  })?;
+                  let attempt = attempt.validate(packet)?;
+                  let scenario_key = (attempt.packet, attempt.scenario);
+                  if self.scenario_attempts.contains_key(&scenario_key) {
+                      return Err(RecoveryError::new(
+                          StableRecoveryCode::AlreadyExists,
+                          "scenario_attempt_already_recorded",
+                          false,
+                      ));
+                  }
+                  self.scenario_attempts.insert(scenario_key, attempt.id);
+                  self.attempts.insert(attempt.id, attempt);
+                  Ok(())
+              }
+
+              pub fn record_decision(
+                  &mut self,
+                  decision: AcceptedDecision,
+              ) -> Result<(), RecoveryError> {
+                  if self.decision_ids.contains(&decision.id) {
+                      return Err(RecoveryError::new(
+                          StableRecoveryCode::AlreadyExists,
+                          "recovery_decision_id_exists",
+                          false,
+                      ));
+                  }
+                  if self.decision_ids.len() >= self.limits.decisions {
+                      return Err(RecoveryError::new(
+                          StableRecoveryCode::ResourceExhausted,
+                          "recovery_decision_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let packet = self.packets.get(&decision.packet).ok_or_else(|| {
+                      RecoveryError::new(
+                          StableRecoveryCode::NotFound,
+                          "recovery_packet_not_found",
+                          false,
+                      )
+                  })?;
+                  let decision = decision.validate(packet)?;
+                  let key = (decision.packet, decision.kind);
+                  if self.decisions.contains_key(&key) {
+                      return Err(RecoveryError::new(
+                          StableRecoveryCode::AlreadyExists,
+                          "recovery_decision_kind_exists",
+                          false,
+                      ));
+                  }
+                  self.decision_ids.insert(decision.id);
+                  self.decisions.insert(key, decision);
+                  Ok(())
+              }
+
+              pub fn summary(&self, packet_id: PacketId) -> Result<PacketSummary, RecoveryError> {
+                  let packet = self.packets.get(&packet_id).ok_or_else(|| {
+                      RecoveryError::new(
+                          StableRecoveryCode::NotFound,
+                          "recovery_packet_not_found",
+                          false,
+                      )
+                  })?;
+                  let completed_scenarios = packet
+                      .required_scenarios
+                      .keys()
+                      .filter(|scenario| {
+                          self.scenario_attempts
+                              .contains_key(&(packet_id, **scenario))
+                      })
+                      .count();
+                  let executed = completed_scenarios == packet.required_scenarios.len();
+                  let required_decisions = [
+                      DecisionKind::Database,
+                      DecisionKind::DataIntegrity,
+                      DecisionKind::Security,
+                      DecisionKind::Sre,
+                  ];
+                  let accepted = executed
+                      && required_decisions.iter().all(|kind| {
+                          self.decisions.contains_key(&(packet_id, *kind))
+                      });
+                  let status = if accepted {
+                      PacketStatus::Accepted
+                  } else if executed {
+                      PacketStatus::Executed
+                  } else {
+                      PacketStatus::Registered
+                  };
+                  Ok(PacketSummary {
+                      packet: packet_id,
+                      profile: packet.profile,
+                      status,
+                      completed_scenarios,
+                      required_scenarios: packet.required_scenarios.len(),
+                  })
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn id<T>(byte: u8, constructor: fn([u8; 16]) -> Result<T, RecoveryError>) -> T {
+                  constructor([byte; 16]).unwrap()
+              }
+
+              fn digest(byte: u8) -> Digest32 {
+                  Digest32::new([byte; 32]).unwrap()
+              }
+
+              fn subject(byte: u8) -> SubjectIdentity {
+                  SubjectIdentity {
+                      repository: digest(byte),
+                      commit: digest(byte + 1),
+                      tree: digest(byte + 2),
+                      schema: digest(byte + 3),
+                      migrations: digest(byte + 4),
+                      database_image: digest(byte + 5),
+                      toolchain: digest(byte + 6),
+                      environment: digest(byte + 7),
+                  }
+              }
+
+              fn packet(profile: DatabaseProfile) -> RecoveryPacket {
+                  let scenario = RequiredScenario {
+                      id: id(2, ScenarioId::new),
+                      kind: ScenarioKind::PointInTimeRestore,
+                      destructive: true,
+                      expected_assertion_digest: digest(20),
+                  };
+                  RecoveryPacket {
+                      id: id(1, PacketId::new),
+                      profile,
+                      subject: subject(30),
+                      objectives: RecoveryObjectives {
+                          maximum_rpo_ms: 5,
+                          maximum_rto_ms: 50,
+                      },
+                      source_sequence: 100,
+                      backup_sequence: 98,
+                      backup_started_at_ms: 10,
+                      backup_completed_at_ms: 20,
+                      backup_artifact_digest: digest(40),
+                      required_scenarios: BTreeMap::from([(scenario.id, scenario)]),
+                  }
+              }
+
+              fn attempt(profile: DatabaseProfile) -> RecoveryAttempt {
+                  RecoveryAttempt {
+                      id: id(3, AttemptId::new),
+                      packet: id(1, PacketId::new),
+                      profile,
+                      subject: subject(30),
+                      scenario: id(2, ScenarioId::new),
+                      restored_sequence: 98,
+                      recovery_point_ms: 15,
+                      restore_started_at_ms: 100,
+                      readiness_restored_at_ms: 140,
+                      catalog_digest: digest(50),
+                      semantic_digest: digest(51),
+                      expected_semantic_digest: digest(51),
+                      invariant_violations: BTreeMap::from([
+                          (Invariant::AcknowledgedCommandLoss, 0),
+                          (Invariant::DuplicateVisibleValue, 0),
+                          (Invariant::StaleAuthorityAcceptedWrite, 0),
+                      ]),
+                      assertions: AssertionCounts {
+                          collected: 3,
+                          executed: 3,
+                          passed: 3,
+                          failed: 0,
+                          skipped: 0,
+                      },
+                      artifact_digest: digest(52),
+                  }
+              }
+
+              fn registry() -> RecoveryRegistry {
+                  RecoveryRegistry::new(Limits {
+                      packets: 8,
+                      attempts: 16,
+                      decisions: 16,
+                  })
+                  .unwrap()
+              }
+
+              #[test]
+              fn profile_evidence_cannot_cross_credit() {
+                  let mut registry = registry();
+                  registry
+                      .register_packet(packet(DatabaseProfile::PostgreSql))
+                      .unwrap();
+                  let error = registry
+                      .record_attempt(attempt(DatabaseProfile::CockroachDb))
+                      .unwrap_err();
+                  assert_eq!(error.reason(), "recovery_attempt_invalid");
+                  assert_eq!(
+                      registry.summary(id(1, PacketId::new)).unwrap().status,
+                      PacketStatus::Registered
+                  );
+              }
+
+              #[test]
+              fn invariant_violation_blocks_attempt_without_partial_credit() {
+                  let mut registry = registry();
+                  registry
+                      .register_packet(packet(DatabaseProfile::PostgreSql))
+                      .unwrap();
+                  let mut attempt = attempt(DatabaseProfile::PostgreSql);
+                  attempt
+                      .invariant_violations
+                      .insert(Invariant::AcknowledgedCommandLoss, 1);
+                  assert_eq!(
+                      registry.record_attempt(attempt).unwrap_err().reason(),
+                      "recovery_attempt_invalid"
+                  );
+                  assert_eq!(
+                      registry.summary(id(1, PacketId::new)).unwrap().completed_scenarios,
+                      0
+                  );
+              }
+
+              #[test]
+              fn rpo_and_rto_objectives_are_enforced() {
+                  let mut registry = registry();
+                  registry
+                      .register_packet(packet(DatabaseProfile::PostgreSql))
+                      .unwrap();
+                  let mut attempt = attempt(DatabaseProfile::PostgreSql);
+                  attempt.restored_sequence = 90;
+                  assert_eq!(
+                      registry.record_attempt(attempt).unwrap_err().reason(),
+                      "recovery_objective_missed"
+                  );
+              }
+
+              #[test]
+              fn all_scenarios_do_not_substitute_for_independent_decisions() {
+                  let mut registry = registry();
+                  let packet = packet(DatabaseProfile::PostgreSql);
+                  registry.register_packet(packet.clone()).unwrap();
+                  registry
+                      .record_attempt(attempt(DatabaseProfile::PostgreSql))
+                      .unwrap();
+                  assert_eq!(
+                      registry.summary(packet.id).unwrap().status,
+                      PacketStatus::Executed
+                  );
+              }
+
+              #[test]
+              fn self_review_is_rejected() {
+                  let mut registry = registry();
+                  let packet = packet(DatabaseProfile::PostgreSql);
+                  registry.register_packet(packet.clone()).unwrap();
+                  let decision = AcceptedDecision {
+                      id: id(4, DecisionId::new),
+                      kind: DecisionKind::Database,
+                      packet: packet.id,
+                      profile: packet.profile,
+                      evidence_digest: digest(60),
+                      reviewer_digest: digest(61),
+                      decided_at_ms: 200,
+                      independent: true,
+                      self_review: true,
+                  };
+                  assert_eq!(
+                      registry.record_decision(decision).unwrap_err().reason(),
+                      "recovery_decision_not_acceptable"
+                  );
+              }
+
+              #[test]
+              fn packet_acceptance_requires_every_specialist_decision() {
+                  let mut registry = registry();
+                  let packet = packet(DatabaseProfile::PostgreSql);
+                  registry.register_packet(packet.clone()).unwrap();
+                  registry
+                      .record_attempt(attempt(DatabaseProfile::PostgreSql))
+                      .unwrap();
+                  for (index, kind) in [
+                      DecisionKind::Database,
+                      DecisionKind::DataIntegrity,
+                      DecisionKind::Security,
+                      DecisionKind::Sre,
+                  ]
+                  .into_iter()
+                  .enumerate()
+                  {
+                      registry
+                          .record_decision(AcceptedDecision {
+                              id: id(u8::try_from(index + 10).unwrap(), DecisionId::new),
+                              kind,
+                              packet: packet.id,
+                              profile: packet.profile,
+                              evidence_digest: digest(u8::try_from(index + 70).unwrap()),
+                              reviewer_digest: digest(u8::try_from(index + 80).unwrap()),
+                              decided_at_ms: 200 + u64::try_from(index).unwrap(),
+                              independent: true,
+                              self_review: false,
+                          })
+                          .unwrap();
+                  }
+                  assert_eq!(
+                      registry.summary(packet.id).unwrap().status,
+                      PacketStatus::Accepted
+                  );
+              }
+          }
+          EOF
+
+          cat > crates/trnm-recovery-core/README.md <<'EOF'
+          # trnm-recovery-core
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-recovery-core`  
+          Workspace class: `root`  
+          Lifecycle: `operations-evidence-control`  
+          Owner role: `sre-database`
+
+          ## Status and authority
+
+          This document is the engineering contract for profile-bound backup, PITR, restore, failover and recovery evidence state. It is a source candidate and does not prove a live cluster, backup, restore, RPO/RTO or production readiness.
+
+          ## Responsibilities
+
+          The crate owns exact repository/tree/schema/migration/image/toolchain/environment binding, separate PostgreSQL and CockroachDB packets, required failure scenarios, assertion accounting, invariant-zero requirements, RPO/RTO evaluation, scenario uniqueness and specialist decision aggregation.
+
+          It does not create backups, restore databases, kill nodes, measure wall clock, inspect catalogs, authenticate artifacts or supply human decisions.
+
+          ## Architecture and dependencies
+
+          Profile-specific harnesses create immutable backup and restore artifacts in isolated environments. Catalog and semantic comparators emit digests and explicit invariant counts. A retained-evidence layer authenticates artifacts and reviewer provenance before recording decisions.
+
+          PostgreSQL and CockroachDB always use separate packet identities and conclusions. A result from one profile can never satisfy a scenario or decision for the other.
+
+          ## Public contracts
+
+          Every packet binds exact source, schema, migration, image, toolchain and environment identities plus RPO/RTO objectives and a closed scenario set. Every attempt binds the same packet/profile/subject and records restored sequence, restore interval, semantic equality, invariant counts, assertions and artifact digest.
+
+          Acknowledged-command loss, duplicate visible value, stale writer, partial commit, duplicate authority, receipt mismatch, schema mismatch, corruption, missing object and unreconciled outbox counts must all be zero.
+
+          ## Correctness and failure model
+
+          Missing/empty/skipped/failed assertions, subject mismatch, profile mismatch, duplicate scenario, semantic divergence, invariant violation or missed RPO/RTO rejects the attempt before credit. Packet acceptance is conjunctive across every scenario and database/data/security/SRE decisions.
+
+          Decision booleans are structural inputs only. The evidence adapter must authenticate independent reviewer identity and exact artifact/source binding.
+
+          ## Security and privacy
+
+          Recovery artifacts exclude credentials and production PII unless an approved protected profile explicitly governs them. Digests are identifiers, not authenticity. Backup encryption, access control, retention and deletion remain operational obligations.
+
+          Destructive scenarios require isolated environments and explicit authorization. This crate cannot trigger any destructive action.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-recovery-core --all-targets --locked
+          cargo clippy --package trnm-recovery-core --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover profile isolation, invariant rejection, RPO/RTO enforcement, executed-versus-accepted separation, self-review rejection and complete specialist decision requirements.
+
+          ## Operations
+
+          Harnesses expose profile, scenario, sequence lag, RPO/RTO, invariant class, assertion counts, artifact digest and decision state with bounded labels. Raw backup contents and identities are not labels.
+
+          ## Compatibility and evidence
+
+          Complete #126 requires actual multi-node PostgreSQL and CockroachDB environments, node/database/partition/failover faults, backup/PITR/restore, catalog and semantic comparison, authority/outbox correctness, rolling recovery and independently accepted retained packets.
+
+          This core cannot establish availability, durability, restore correctness, RPO/RTO or production operations by itself.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P0-DATA-001`, `GAP-P0-SERVER-001`, `GAP-P0-CI-001`, `GAP-P1-PG-001`, `GAP-P1-TEST-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires real profile harnesses, immutable artifacts, exact-source execution, every required fault and recovery scenario, authenticated decisions and conflict-free database/data/security/SRE review.
+          EOF
+
+      - name: Register recovery module fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          member='crates/trnm-recovery-core'
+          p=Path('Cargo.toml'); t=p.read_text();
+          if f'"{member}"' not in t: p.write_text(t.replace(']\nexclude = [',f'  "{member}",\n]\nexclude = [',1))
+          mp=Path('docs/status/MODULE_DOCUMENTATION.json'); m=json.loads(mp.read_text())
+          if not any(r['id']=='trnm-recovery-core' for r in m['modules']):
+              m['modules'].append({'id':'trnm-recovery-core','path':member,'manifest':f'{member}/Cargo.toml','documentation':f'{member}/README.md','workspace':'root','lifecycle':'operations-evidence-control','maturity':'source-candidate','owner_role':'sre-database','authority':'profile-bound HA backup PITR restore and recovery evidence state','blocking_gaps':['GAP-P0-DATA-001','GAP-P0-SERVER-001','GAP-P0-CI-001','GAP-P1-PG-001','GAP-P1-TEST-001','GAP-P1-REVIEW-001'],'claim_credit':False})
+          m['modules'].sort(key=lambda r:r['id']); m['summary'].update({'module_count':len(m['modules']),'documented_count':len(m['modules']),'root_workspace_count':sum(r['workspace']=='root' for r in m['modules']),'isolated_workspace_count':sum(r['workspace']=='isolated' for r in m['modules']),'undocumented_count':0}); mp.write_text(json.dumps(m,indent=2)+'\n')
+          ap=Path('docs/development/RUST_PACKAGE_AUTHORITY.json'); a=json.loads(ap.read_text());
+          if member not in a['workspace']['members']: a['workspace']['members'].append(member); a['workspace']['members'].sort()
+          for k in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'): a.setdefault('claim_boundary',{})[k]=False
+          ap.write_text(json.dumps(a,indent=2)+'\n')
+          ip=Path('docs/status/IMPLEMENTATION_INVENTORY.json'); inv=json.loads(ip.read_text())
+          if not any(r.get('id')=='COMP-RECOVERY-CORE' for r in inv['components']):
+              inv['components'].append({'id':'COMP-RECOVERY-CORE','path':member,'kind':'rust-operations-evidence-control','workstreams':['W15','W16'],'status':'source-candidate','implemented':['profile-bound backup restore subject and objective identity','closed fault scenario invariant and assertion admission','RPO RTO and specialist decision aggregation'],'missing':['real multi-node PostgreSQL and CockroachDB harnesses','actual backup PITR restore failover and partition execution','retained artifact provenance and authenticated decisions','independent database data security SRE acceptance'],'blocking_gaps':['GAP-P0-DATA-001','GAP-P0-SERVER-001','GAP-P0-CI-001','GAP-P1-PG-001','GAP-P1-TEST-001','GAP-P1-REVIEW-001'],'parity_ids':[],'evidence_ids':[],'claim_credit':False})
+          ip.write_text(json.dumps(inv,indent=2)+'\n')
+          sp=Path('docs/status/CURRENT_STATE.json'); st=json.loads(sp.read_text()); st.setdefault('implementation',{})['recovery_evidence_core_source_candidate']=True
+          for k in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'): st.setdefault('claims',{})[k]=False
+          sp.write_text(json.dumps(st,indent=2)+'\n')
+          PY
+
+      - name: Publish Draft and qualify exact source
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git commit -m 'feat(operations): add profile-bound recovery evidence core'
+          head_sha="$(git rev-parse HEAD)"; head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Repository-controlled source candidate for #126, stacked on conformance Wave 12.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds separate PostgreSQL/CockroachDB recovery packets, exact subject identities, closed fault scenarios, invariant/assertion admission, RPO/RTO evaluation and specialist decision aggregation.
+
+          No live cluster, backup, PITR, failover, partition, RPO/RTO or accepted operations evidence is claimed.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 13] Add HA/PITR recovery evidence core' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do cargo test --manifest-path "$manifest" --all-targets --locked; cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings; done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "Recovery Wave 13 carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and all claim ceilings remain binding."
+          gh issue comment 126 --repo "$REPOSITORY" --body "Recovery core carrier status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`; #126 remains open pending real HA/PITR execution and accepted evidence."
