@@ -1,4 +1,4 @@
-name: world-v6-external-final-e853aa-20260910
+name: world-v6-external-final-bcbce06-20260910
 
 on:
   pull_request:
@@ -8,16 +8,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-v6-external-final-e853aa-20260910-${{ github.event.pull_request.number || github.ref }}
+  group: world-v6-external-final-bcbce06-20260910-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_BASE_SHA: 0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
-  WORLD_HEAD_SHA: e853aa066ff45b1eaf05d9ec121fd1b7d9482795
-  WORLD_HEAD_TREE: df464c3d38c6a2a6046844006e24a04b63a3d0f7
-  WORLD_MERGE_SHA: 2ad1684432092c309c47c4fca167e6954fe57335
-  WORLD_MERGE_TREE: df464c3d38c6a2a6046844006e24a04b63a3d0f7
+  WORLD_HEAD_SHA: bcbce0640d1c8ce943c5331ac8582d340499f51f
+  WORLD_HEAD_TREE: c8a08d4c8e8066fc9b5cffd7c000161f6d20ceed
+  WORLD_MERGE_SHA: 4fca70fd2216108508a425ff2062deb7ff1dfe4d
+  WORLD_MERGE_TREE: c8a08d4c8e8066fc9b5cffd7c000161f6d20ceed
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_INCREMENTAL: '0'
