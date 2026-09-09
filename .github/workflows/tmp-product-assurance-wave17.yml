@@ -1,0 +1,930 @@
+name: tmp-product-assurance-wave17
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-product-assurance-wave17.yml
+
+permissions:
+  checks: read
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-product-hardening-20260909
+  FEATURE_BRANCH: feature/plan-v32-product-assurance-v2-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  assure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Wait for stable Wave 16 exact head
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=''
+          stable=0
+          for _ in $(seq 1 1080); do
+            current="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            if test -z "$current"; then sleep 20; continue; fi
+            if test "$current" != "$head"; then head="$current"; stable=0; fi
+            payload="$(gh api "repos/${REPOSITORY}/commits/${head}/check-runs?per_page=100" 2>/dev/null || echo '{"check_runs":[]}')"
+            canonical="$(jq -c 'reduce .check_runs[] as $run ({}; if .[$run.name] == null or ((.[$run.name].started_at // "") < ($run.started_at // "")) then .[$run.name] = $run else . end) | [.[]]' <<<"$payload")"
+            total="$(jq 'length' <<<"$canonical")"
+            pending="$(jq '[.[]|select(.status!="completed")]|length' <<<"$canonical")"
+            failed="$(jq '[.[]|select(.status=="completed" and (.conclusion!="success" and .conclusion!="neutral" and .conclusion!="skipped"))]|length' <<<"$canonical")"
+            aggregate="$(jq '[.[]|select(.name=="trillionnium-game-merge-gate" and .status=="completed" and .conclusion=="success")]|length' <<<"$canonical")"
+            if test "$total" -gt 0 && test "$pending" -eq 0 && test "$failed" -eq 0 && test "$aggregate" -gt 0; then stable=$((stable+1)); else stable=0; fi
+            if test "$failed" -gt 0 && test "$pending" -eq 0; then
+              gh issue comment 129 --repo "$REPOSITORY" --body "Wave 16 head \`${head}\` has terminal failures; Wave 17 was not created."
+              exit 1
+            fi
+            if test "$stable" -ge 2; then printf 'base_sha=%s\n' "$head" >> "$GITHUB_OUTPUT"; exit 0; fi
+            sleep 20
+          done
+          echo 'Wave 16 never reached stable aggregate success.' >&2
+          exit 1
+
+      - name: Fetch exact assurance base
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=4 origin '${{ steps.base.outputs.base_sha }}'
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = '${{ steps.base.outputs.base_sha }}'
+
+      - name: Apply second-layer correctness repairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def read(relative: str) -> tuple[Path, str]:
+              path = Path(relative)
+              if not path.is_file():
+                  raise SystemExit(f'missing required source: {relative}')
+              return path, path.read_text(encoding='utf-8')
+
+          # KMS: every accepted operation reserves its possible terminal and receipt slot.
+          path, text = read('crates/trnm-kms-provider-adapter/src/lib.rs')
+          prepare_start = text.index('    pub fn prepare(')
+          prepare_end = text.index('    pub fn dispatch(', prepare_start)
+          prepare = text[prepare_start:prepare_end]
+          if 'terminal_operation_capacity_reserved' not in prepare:
+              anchor = '        if self.active_count >= self.limits.active_operations {'
+              if anchor not in prepare:
+                  raise SystemExit('KMS active-capacity anchor missing')
+              reservation = '''        let terminal_reservations = self
+            .terminal_count
+            .checked_add(self.active_count)
+            .ok_or_else(|| KmsError::new(
+                StableKmsCode::Internal,
+                "terminal_reservation_overflow",
+                false,
+            ))?;
+        if terminal_reservations >= self.limits.terminal_operations {
+            return Err(KmsError::new(
+                StableKmsCode::ResourceExhausted,
+                "terminal_operation_capacity_reserved",
+                false,
+            ));
+        }
+        let receipt_reservations = self
+            .receipt_owners
+            .len()
+            .checked_add(self.active_count)
+            .ok_or_else(|| KmsError::new(
+                StableKmsCode::Internal,
+                "receipt_reservation_overflow",
+                false,
+            ))?;
+        if receipt_reservations >= self.limits.provider_receipts {
+            return Err(KmsError::new(
+                StableKmsCode::ResourceExhausted,
+                "provider_receipt_capacity_reserved",
+                false,
+            ));
+        }
+'''
+              prepare = prepare.replace(anchor, reservation + anchor, 1)
+              text = text[:prepare_start] + prepare + text[prepare_end:]
+          tests = text.index('#[cfg(test)]\nmod tests {')
+          if 'fn prepare_reserves_terminal_and_receipt_capacity()' not in text:
+              anchor = text.index('    #[test]\n    fn ambiguous_dispatch_cannot_be_dispatched_again()', tests)
+              test = '''    #[test]
+    fn prepare_reserves_terminal_and_receipt_capacity() {
+        let mut terminal = SignerJournal::new(JournalLimits {
+            active_operations: 8,
+            terminal_operations: 1,
+            provider_receipts: 8,
+        })
+        .unwrap();
+        terminal.prepare(request(1)).unwrap();
+        assert_eq!(
+            terminal.prepare(request(2)).unwrap_err().reason(),
+            "terminal_operation_capacity_reserved"
+        );
+
+        let mut receipts = SignerJournal::new(JournalLimits {
+            active_operations: 8,
+            terminal_operations: 8,
+            provider_receipts: 1,
+        })
+        .unwrap();
+        receipts.prepare(request(1)).unwrap();
+        assert_eq!(
+            receipts.prepare(request(2)).unwrap_err().reason(),
+            "provider_receipt_capacity_reserved"
+        );
+    }
+
+'''
+              text = text[:anchor] + test + text[anchor:]
+          path.write_text(text, encoding='utf-8')
+
+          # Conformance: SG2 requires immutable/instrumented equivalence in addition to candidate equivalence.
+          path, text = read('crates/trnm-conformance-core/src/lib.rs')
+          mandatory_start = text.index('    pub fn mandatory_coverage_complete(')
+          mandatory_end = text.index('\n}\n', mandatory_start)
+          mandatory = '''    fn instrumented_equivalent(&self, case: CaseId, consumer: ConsumerId) -> bool {
+        let mut completed = 0_u8;
+        let mut digest = None;
+        for attempt in 1..=REQUIRED_REPEAT_RUNS {
+            let immutable = self.observations.get(&(
+                case,
+                consumer,
+                SubjectSide::ImmutableOracle,
+                attempt,
+            ));
+            let instrumented = self.observations.get(&(
+                case,
+                consumer,
+                SubjectSide::InstrumentedOracle,
+                attempt,
+            ));
+            let (Some(immutable), Some(instrumented)) = (immutable, instrumented) else {
+                continue;
+            };
+            let equal = immutable.normalized_wire_digest == instrumented.normalized_wire_digest
+                && immutable.durable_state_digest == instrumented.durable_state_digest
+                && immutable.effect_digest == instrumented.effect_digest
+                && immutable.public_error_digest == instrumented.public_error_digest
+                && immutable.applied_normalizers == instrumented.applied_normalizers;
+            if !equal
+                || digest.is_some_and(|value| {
+                    value != instrumented.normalized_wire_digest
+                })
+            {
+                return false;
+            }
+            digest = Some(instrumented.normalized_wire_digest);
+            completed += 1;
+        }
+        completed == REQUIRED_REPEAT_RUNS
+    }
+
+    pub fn mandatory_coverage_complete(&self, profile: &Profile) -> bool {
+        let mandatory = self
+            .leaves
+            .values()
+            .filter(|leaf| leaf.mandatory && &leaf.profile == profile)
+            .collect::<Vec<_>>();
+        !mandatory.is_empty()
+            && mandatory.iter().all(|leaf| {
+                leaf.implementation_digest.is_some()
+                    && self.cases.get(&leaf.test_case).is_some_and(|case| {
+                        case.instrumented_oracle.is_some()
+                            && case.required_consumers.iter().all(|consumer| {
+                                self.case_result(case.id, *consumer).is_ok_and(|result| {
+                                    result.status == CaseStatus::ReproducibleEquivalent
+                                }) && self.instrumented_equivalent(case.id, *consumer)
+                            })
+                    })
+            })
+    }
+'''
+          text = text[:mandatory_start] + mandatory + text[mandatory_end:]
+          tests_start = text.index('#[cfg(test)]\nmod tests {')
+          tests_module = r'''#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id<T>(
+        byte: u8,
+        constructor: fn([u8; 16]) -> Result<T, ConformanceError>,
+    ) -> T {
+        constructor([byte; 16]).unwrap()
+    }
+
+    fn digest(byte: u8) -> Digest32 {
+        Digest32::new([byte; 32]).unwrap()
+    }
+
+    fn source(byte: u8) -> SourceIdentity {
+        SourceIdentity {
+            repository_digest: digest(byte),
+            commit: digest(byte + 1),
+            tree: digest(byte + 2),
+            artifact_digest: digest(byte + 3),
+            toolchain_digest: digest(byte + 4),
+        }
+    }
+
+    fn counts() -> AssertionCounts {
+        AssertionCounts {
+            collected: 1,
+            executed: 1,
+            passed: 1,
+            failed: 0,
+            skipped: 0,
+        }
+    }
+
+    fn registry() -> (ConformanceRegistry, Profile, LeafId, CaseId, ConsumerId) {
+        let mut registry = ConformanceRegistry::new(Limits {
+            leaves: 16,
+            cases: 16,
+            consumers: 16,
+            normalizers: 16,
+            observations: 512,
+        })
+        .unwrap();
+        let profile = Profile::new("postgres-json").unwrap();
+        let leaf = id(1, LeafId::new);
+        let case = id(2, CaseId::new);
+        let consumer = id(3, ConsumerId::new);
+        registry
+            .register_leaf(DenominatorLeaf {
+                id: leaf,
+                family: DenominatorFamily::Api,
+                profile: profile.clone(),
+                upstream: source(10),
+                signature_digest: digest(20),
+                mandatory: true,
+                implementation_digest: Some(digest(21)),
+                test_case: case,
+            })
+            .unwrap();
+        registry
+            .register_consumer(OfficialConsumer {
+                id: consumer,
+                language: ConsumerLanguage::Go,
+                version: ConsumerVersion::new("v1.0.0").unwrap(),
+                artifact_digest: digest(30),
+                supported_transports: BTreeSet::from([TransportProfile::HttpJson]),
+            })
+            .unwrap();
+        registry
+            .register_case(
+                ConformanceCase {
+                    id: case,
+                    profile: profile.clone(),
+                    transport: TransportProfile::HttpJson,
+                    input_digest: digest(40),
+                    fixture_digest: digest(41),
+                    environment_digest: digest(42),
+                    immutable_oracle: source(50),
+                    instrumented_oracle: Some(source(55)),
+                    candidate: source(60),
+                    leaf_ids: BTreeSet::from([leaf]),
+                    required_consumers: BTreeSet::from([consumer]),
+                }
+                .validate()
+                .unwrap(),
+            )
+            .unwrap();
+        (registry, profile, leaf, case, consumer)
+    }
+
+    fn observation(
+        byte: u8,
+        case: CaseId,
+        consumer: ConsumerId,
+        side: SubjectSide,
+        attempt: u8,
+        normalized: u8,
+    ) -> Observation {
+        let subject = match side {
+            SubjectSide::ImmutableOracle => source(50),
+            SubjectSide::InstrumentedOracle => source(55),
+            SubjectSide::Candidate => source(60),
+        };
+        Observation {
+            id: id(byte, ObservationId::new),
+            case,
+            consumer,
+            side,
+            attempt,
+            subject,
+            raw_wire_digest: digest(byte),
+            normalized_wire_digest: digest(normalized),
+            durable_state_digest: digest(70),
+            effect_digest: digest(71),
+            public_error_digest: digest(72),
+            applied_normalizers: BTreeSet::new(),
+            assertions: counts(),
+            artifact_digest: digest(73),
+        }
+    }
+
+    fn record_triplet(
+        registry: &mut ConformanceRegistry,
+        case: CaseId,
+        consumer: ConsumerId,
+        attempt: u8,
+        normalized: u8,
+    ) {
+        registry
+            .record_observation(observation(
+                attempt,
+                case,
+                consumer,
+                SubjectSide::ImmutableOracle,
+                attempt,
+                normalized,
+            ))
+            .unwrap();
+        registry
+            .record_observation(observation(
+                attempt + 20,
+                case,
+                consumer,
+                SubjectSide::InstrumentedOracle,
+                attempt,
+                normalized,
+            ))
+            .unwrap();
+        registry
+            .record_observation(observation(
+                attempt + 40,
+                case,
+                consumer,
+                SubjectSide::Candidate,
+                attempt,
+                normalized,
+            ))
+            .unwrap();
+    }
+
+    #[test]
+    fn contractual_fields_cannot_be_normalized() {
+        for class in [
+            ContractClass::Identity,
+            ContractClass::Authorization,
+            ContractClass::Money,
+            ContractClass::RevisionGenerationSequence,
+            ContractClass::Version,
+            ContractClass::Cursor,
+            ContractClass::PublicError,
+            ContractClass::DurableEffect,
+            ContractClass::Payload,
+        ] {
+            let rule = NormalizerRule {
+                id: id(1, NormalizerId::new),
+                field_path: "$.field".to_owned(),
+                class,
+                implementation_digest: digest(1),
+            };
+            assert_eq!(
+                rule.validate().unwrap_err().reason(),
+                "contractual_field_normalization_forbidden"
+            );
+        }
+    }
+
+    #[test]
+    fn partial_assertion_collection_is_rejected() {
+        let (mut registry, _, _, case, consumer) = registry();
+        let mut partial = observation(
+            1,
+            case,
+            consumer,
+            SubjectSide::Candidate,
+            1,
+            1,
+        );
+        partial.assertions = AssertionCounts {
+            collected: 2,
+            executed: 1,
+            passed: 1,
+            failed: 0,
+            skipped: 0,
+        };
+        assert_eq!(
+            registry.record_observation(partial).unwrap_err().reason(),
+            "assertion_counts_not_fully_passing"
+        );
+    }
+
+    #[test]
+    fn ten_exact_triplets_are_required_for_complete_coverage() {
+        let (mut registry, profile, _, case, consumer) = registry();
+        for attempt in 1..REQUIRED_REPEAT_RUNS {
+            record_triplet(&mut registry, case, consumer, attempt, 80);
+        }
+        assert!(!registry.mandatory_coverage_complete(&profile));
+        record_triplet(
+            &mut registry,
+            case,
+            consumer,
+            REQUIRED_REPEAT_RUNS,
+            80,
+        );
+        assert_eq!(
+            registry.case_result(case, consumer).unwrap().status,
+            CaseStatus::ReproducibleEquivalent
+        );
+        assert!(registry.mandatory_coverage_complete(&profile));
+    }
+
+    #[test]
+    fn instrumented_oracle_difference_blocks_profile_coverage() {
+        let (mut registry, profile, _, case, consumer) = registry();
+        for attempt in 1..=REQUIRED_REPEAT_RUNS {
+            registry
+                .record_observation(observation(
+                    attempt,
+                    case,
+                    consumer,
+                    SubjectSide::ImmutableOracle,
+                    attempt,
+                    80,
+                ))
+                .unwrap();
+            registry
+                .record_observation(observation(
+                    attempt + 20,
+                    case,
+                    consumer,
+                    SubjectSide::InstrumentedOracle,
+                    attempt,
+                    if attempt == 5 { 81 } else { 80 },
+                ))
+                .unwrap();
+            registry
+                .record_observation(observation(
+                    attempt + 40,
+                    case,
+                    consumer,
+                    SubjectSide::Candidate,
+                    attempt,
+                    80,
+                ))
+                .unwrap();
+        }
+        assert_eq!(
+            registry.case_result(case, consumer).unwrap().status,
+            CaseStatus::ReproducibleEquivalent
+        );
+        assert!(!registry.mandatory_coverage_complete(&profile));
+    }
+
+    #[test]
+    fn durable_or_effect_difference_blocks_candidate_equivalence() {
+        let (mut registry, _, _, case, consumer) = registry();
+        let immutable = observation(
+            1,
+            case,
+            consumer,
+            SubjectSide::ImmutableOracle,
+            1,
+            80,
+        );
+        let instrumented = observation(
+            21,
+            case,
+            consumer,
+            SubjectSide::InstrumentedOracle,
+            1,
+            80,
+        );
+        let mut candidate = observation(
+            41,
+            case,
+            consumer,
+            SubjectSide::Candidate,
+            1,
+            80,
+        );
+        candidate.effect_digest = digest(99);
+        registry.record_observation(immutable).unwrap();
+        registry.record_observation(instrumented).unwrap();
+        registry.record_observation(candidate).unwrap();
+        assert_eq!(
+            registry.case_result(case, consumer).unwrap().status,
+            CaseStatus::Diverged
+        );
+    }
+
+    #[test]
+    fn repeated_normalized_hash_drift_is_divergence() {
+        let (mut registry, _, _, case, consumer) = registry();
+        record_triplet(&mut registry, case, consumer, 1, 80);
+        record_triplet(&mut registry, case, consumer, 2, 81);
+        assert_eq!(
+            registry.case_result(case, consumer).unwrap().status,
+            CaseStatus::Diverged
+        );
+    }
+
+    #[test]
+    fn wrong_subject_and_asymmetric_normalizer_fail_closed() {
+        let (mut registry, _, _, case, consumer) = registry();
+        let mut wrong = observation(
+            1,
+            case,
+            consumer,
+            SubjectSide::Candidate,
+            1,
+            80,
+        );
+        wrong.subject = source(61);
+        assert_eq!(
+            registry.record_observation(wrong).unwrap_err().reason(),
+            "observation_subject_identity_mismatch"
+        );
+
+        let normalizer = NormalizerRule {
+            id: id(9, NormalizerId::new),
+            field_path: "$.elapsed_ms".to_owned(),
+            class: ContractClass::NonContractualTiming,
+            implementation_digest: digest(9),
+        };
+        registry.register_normalizer(normalizer.clone()).unwrap();
+        let mut immutable = observation(
+            2,
+            case,
+            consumer,
+            SubjectSide::ImmutableOracle,
+            1,
+            80,
+        );
+        immutable.applied_normalizers.insert(normalizer.id);
+        registry.record_observation(immutable).unwrap();
+        registry
+            .record_observation(observation(
+                22,
+                case,
+                consumer,
+                SubjectSide::InstrumentedOracle,
+                1,
+                80,
+            ))
+            .unwrap();
+        registry
+            .record_observation(observation(
+                42,
+                case,
+                consumer,
+                SubjectSide::Candidate,
+                1,
+                80,
+            ))
+            .unwrap();
+        assert_eq!(
+            registry.case_result(case, consumer).unwrap().status,
+            CaseStatus::Diverged
+        );
+    }
+}
+'''
+          text = text[:tests_start] + tests_module
+          path.write_text(text, encoding='utf-8')
+
+          # Recovery: PITR point must be inside the bounded backup/source observation window.
+          path, text = read('crates/trnm-recovery-core/src/lib.rs')
+          attempt_start = text.index('impl RecoveryAttempt {')
+          attempt_end = text.index('#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\npub enum DecisionKind', attempt_start)
+          attempt = text[attempt_start:attempt_end]
+          if 'self.recovery_point_ms < packet.backup_started_at_ms' not in attempt:
+              marker = '            || self.recovery_point_ms == 0\n'
+              attempt = attempt.replace(
+                  marker,
+                  marker + '            || self.recovery_point_ms < packet.backup_started_at_ms\n',
+                  1,
+              )
+              text = text[:attempt_start] + attempt + text[attempt_end:]
+          path.write_text(text, encoding='utf-8')
+
+          # Endurance: use conservative ceiling for errors and floor for successful reconnects.
+          path, text = read('crates/trnm-endurance-core/src/lib.rs')
+          metrics_start = text.index('impl RunMetrics {')
+          metrics_end = text.index('#[derive(Clone, Debug, Eq, PartialEq)]\npub struct EndurancePacket', metrics_start)
+          metrics = text[metrics_start:metrics_end]
+          metrics = metrics.replace(
+              'let expected_error_basis_points = basis_points(',
+              'let expected_error_basis_points = basis_points_ceil(',
+          )
+          metrics = metrics.replace(
+              'let expected_reconnect_basis_points = basis_points(',
+              'let expected_reconnect_basis_points = basis_points_floor(',
+          )
+          text = text[:metrics_start] + metrics + text[metrics_end:]
+          helper_start = text.index('fn basis_points(')
+          helper_end = text.index('fn minimum_sample_count(', helper_start)
+          helpers = '''fn basis_points_floor(numerator: u64, denominator: u64) -> Result<u32, EnduranceError> {
+    if denominator == 0 || numerator > denominator {
+        return Err(EnduranceError::invalid("rate_denominator_invalid"));
+    }
+    let value = u128::from(numerator)
+        .checked_mul(u128::from(MAX_BASIS_POINTS))
+        .and_then(|product| product.checked_div(u128::from(denominator)))
+        .ok_or_else(|| EnduranceError::invalid("rate_calculation_failed"))?;
+    u32::try_from(value).map_err(|_| EnduranceError::invalid("rate_out_of_range"))
+}
+
+fn basis_points_ceil(numerator: u64, denominator: u64) -> Result<u32, EnduranceError> {
+    if denominator == 0 || numerator > denominator {
+        return Err(EnduranceError::invalid("rate_denominator_invalid"));
+    }
+    let denominator = u128::from(denominator);
+    let product = u128::from(numerator)
+        .checked_mul(u128::from(MAX_BASIS_POINTS))
+        .ok_or_else(|| EnduranceError::invalid("rate_calculation_failed"))?;
+    let value = product
+        .checked_add(denominator - 1)
+        .and_then(|rounded| rounded.checked_div(denominator))
+        .ok_or_else(|| EnduranceError::invalid("rate_calculation_failed"))?;
+    u32::try_from(value).map_err(|_| EnduranceError::invalid("rate_out_of_range"))
+}
+
+'''
+          text = text[:helper_start] + helpers + text[helper_end:]
+          tests_start = text.index('#[cfg(test)]\nmod tests {')
+          if 'fn tiny_error_rate_rounds_up_fail_closed()' not in text:
+              anchor = text.index('    #[test]\n    fn slo_or_cost_miss_blocks_run_without_duration_credit()', tests_start)
+              test = '''    #[test]
+    fn tiny_error_rate_rounds_up_fail_closed() {
+        let mut registry = registry();
+        let mut run = run(20, DurationClass::Hours24);
+        run.metrics.total_requests = 100_000;
+        run.metrics.successful_requests = 99_999;
+        run.metrics.failed_requests = 1;
+        run.metrics.error_basis_points = 0;
+        run.metrics.success_basis_points = MAX_BASIS_POINTS;
+        assert_eq!(
+            registry.record_run(run).unwrap_err().reason(),
+            "reported_rate_mismatch"
+        );
+    }
+
+'''
+              text = text[:anchor] + test + text[anchor:]
+          path.write_text(text, encoding='utf-8')
+
+          # Cutover: full subject identity, conservative errors, staged retirement evidence, terminal immutability.
+          path, text = read('crates/trnm-cutover-controller/src/lib.rs')
+          text = text.replace(
+              '#[derive(Clone, Debug, Eq, PartialEq)]\npub struct SubjectIdentity',
+              '#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\npub struct SubjectIdentity',
+              1,
+          )
+          text = text.replace('pub subject_digest: Digest32,', 'pub subject: SubjectIdentity,')
+          text = text.replace('self.subject_digest != plan.subject.tree', 'self.subject != plan.subject')
+          text = text.replace(
+              'let derived_error_basis_points = basis_points(',
+              'let derived_error_basis_points = basis_points_ceil(',
+              1,
+          )
+          helper_start = text.index('fn basis_points(')
+          helper_end = text.index('#[cfg(test)]\nmod tests {', helper_start)
+          helper = '''fn basis_points_ceil(numerator: u64, denominator: u64) -> Result<u32, CutoverError> {
+    if denominator == 0 || numerator > denominator {
+        return Err(CutoverError::invalid("cutover_rate_denominator_invalid"));
+    }
+    let denominator = u128::from(denominator);
+    let product = u128::from(numerator)
+        .checked_mul(u128::from(MAX_BASIS_POINTS))
+        .ok_or_else(|| CutoverError::invalid("cutover_rate_calculation_failed"))?;
+    let value = product
+        .checked_add(denominator - 1)
+        .and_then(|rounded| rounded.checked_div(denominator))
+        .ok_or_else(|| CutoverError::invalid("cutover_rate_calculation_failed"))?;
+    u32::try_from(value).map_err(|_| CutoverError::invalid("cutover_rate_out_of_range"))
+}
+
+'''
+          text = text[:helper_start] + helper + text[helper_end:]
+
+          record_start = text.index('    pub fn record_artifact(')
+          record_end = text.index('    pub fn assign_cohort(', record_start)
+          record = text[record_start:record_end]
+          if 'retirement_artifact_wrong_stage' not in record:
+              anchor = '        if current.artifacts.contains_key(&artifact.kind) {'
+              check = '''        if artifact.kind == EvidenceKind::Retirement
+            && current.stage != CutoverStage::NakamaReadOnly
+        {
+            return Err(CutoverError::new(
+                StableCutoverCode::FailedPrecondition,
+                "retirement_artifact_wrong_stage",
+                false,
+            ));
+        }
+'''
+              record = record.replace(anchor, check + anchor, 1)
+              text = text[:record_start] + record + text[record_end:]
+
+          for_update_start = text.index('    fn for_update(')
+          for_update_end = text.index('    fn replay(', for_update_start)
+          for_update = text[for_update_start:for_update_end]
+          if 'cutover_plan_retired' not in for_update:
+              marker = '        if state.revision != expected_revision {'
+              check = '''        if state.stage == CutoverStage::Retired {
+            return Err(CutoverError::new(
+                StableCutoverCode::FailedPrecondition,
+                "cutover_plan_retired",
+                false,
+            ));
+        }
+'''
+              for_update = for_update.replace(marker, check + marker, 1)
+              text = text[:for_update_start] + for_update + text[for_update_end:]
+
+          transition_start = text.index('fn validate_transition(')
+          transition_end = text.index('fn writer_allowed(', transition_start)
+          transition = text[transition_start:transition_end]
+          retired_start = transition.index('(CutoverStage::NakamaReadOnly, CutoverStage::Retired)')
+          retired_end = transition.index('            _ => false,', retired_start)
+          retired = transition[retired_start:retired_end]
+          if 'rehearsal(state, CutoverStage::NakamaReadOnly, CutoverStage::RustPrimary)' not in retired:
+              marker = '                    clean_window(state, CutoverStage::NakamaReadOnly)\n'
+              retired = retired.replace(
+                  marker,
+                  marker
+                  + '                        && rehearsal(\n'
+                  + '                            state,\n'
+                  + '                            CutoverStage::NakamaReadOnly,\n'
+                  + '                            CutoverStage::RustPrimary,\n'
+                  + '                        )\n',
+                  1,
+              )
+              transition = transition[:retired_start] + retired + transition[retired_end:]
+              text = text[:transition_start] + transition + text[transition_end:]
+
+          tests_start = text.index('#[cfg(test)]\nmod tests {')
+          tests = text[tests_start:]
+          tests = tests.replace('subject_digest: digest(3),', 'subject: subject(),')
+          tests = tests.replace('wrong.subject_digest = digest(9);', 'wrong.subject = SubjectIdentity { tree: digest(9), ..subject() };')
+          if 'fn premature_retirement_artifact_and_retired_mutation_are_rejected()' not in tests:
+              anchor = tests.index('    #[test]\n    fn exact_command_replay_does_not_repeat_mutation()')
+              test = '''    #[test]
+    fn premature_retirement_artifact_and_retired_mutation_are_rejected() {
+        let mut registry = registry();
+        assert_eq!(
+            registry
+                .record_artifact(
+                    command(30),
+                    plan().id,
+                    1,
+                    artifact(30, EvidenceKind::Retirement),
+                )
+                .unwrap_err()
+                .reason(),
+            "retirement_artifact_wrong_stage"
+        );
+        let state = registry.plans.get_mut(&plan().id).unwrap();
+        state.stage = CutoverStage::Retired;
+        state.revision = 2;
+        assert_eq!(
+            registry
+                .assign_cohort(
+                    command(31),
+                    plan().id,
+                    2,
+                    id(31, CohortId::new),
+                    Writer::Rust,
+                )
+                .unwrap_err()
+                .reason(),
+            "cutover_plan_retired"
+        );
+    }
+
+'''
+              tests = tests[:anchor] + test + tests[anchor:]
+          text = text[:tests_start] + tests
+          path.write_text(text, encoding='utf-8')
+
+          # Extend the repository-wide hardening contract.
+          checker = Path('scripts/check-plan-v32-product-hardening.py')
+          check = checker.read_text(encoding='utf-8')
+          check = check.replace(
+              '"dispatch_owners", "OutcomeAuthenticator", "provider_receipt_reused"',
+              '"dispatch_owners", "OutcomeAuthenticator", "provider_receipt_reused", "terminal_operation_capacity_reserved", "provider_receipt_capacity_reserved"',
+          )
+          check = check.replace(
+              '"oracle.applied_normalizers == candidate.applied_normalizers", "self.executed != self.collected"',
+              '"oracle.applied_normalizers == candidate.applied_normalizers", "self.executed != self.collected", "instrumented_equivalent"',
+          )
+          check = check.replace(
+              '"MAX_ASSERTIONS_PER_ATTEMPT as u64"',
+              '"MAX_ASSERTIONS_PER_ATTEMPT as u64", "self.recovery_point_ms < packet.backup_started_at_ms"',
+          )
+          check = check.replace(
+              '"self.p99_latency_us < self.p95_latency_us"',
+              '"self.p99_latency_us < self.p95_latency_us", "basis_points_ceil", "basis_points_floor"',
+          )
+          check = check.replace(
+              '"plan.subject.tree", "rollback_authority_shape",',
+              '"self.subject != plan.subject", "rollback_authority_shape",',
+          )
+          check = check.replace(
+              '"cutover_error_rate_invalid"',
+              '"cutover_error_rate_invalid", "retirement_artifact_wrong_stage", "cutover_plan_retired", "basis_points_ceil"',
+          )
+          checker.write_text(check, encoding='utf-8')
+          PY
+
+      - name: Update assurance state without promoting claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('docs/status/CURRENT_STATE.json')
+          state = json.loads(path.read_text())
+          state.setdefault('implementation', {})['product_assurance_v2_source_candidate'] = True
+          for key in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'):
+              state.setdefault('claims', {})[key] = False
+          path.write_text(json.dumps(state, indent=2) + '\n')
+          PY
+
+      - name: Publish and fully qualify assurance v2
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          python3 scripts/check-plan-v32-product-hardening.py
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs scripts tests
+          git commit -m 'fix(assurance): enforce terminal capacity oracle and retirement invariants'
+          head_sha="$(git rev-parse HEAD)"
+          head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Second-layer Plan v3.2 source assurance stacked on Wave 16.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds KMS terminal/receipt reservation, immutable↔instrumented oracle equivalence, bounded PITR recovery point, conservative endurance/cutover error rates, full cutover subject identity, staged retirement evidence and terminal retired-state immutability.
+
+          This is source assurance only. External provider/oracle/HA/endurance/governance/human evidence remains mandatory and false until independently produced.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 17] Enforce terminal, oracle and retirement invariants' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
+            cargo test --manifest-path "$manifest" --all-targets --locked
+            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
+          done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-plan-v32-product-hardening.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "Wave 17 assurance carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. No external or production claim is promoted."
+          gh issue comment 129 --repo "$REPOSITORY" --body "Second-layer product assurance carrier finished with status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`. #129 remains open pending exact-head CI, independent review and real evidence."
