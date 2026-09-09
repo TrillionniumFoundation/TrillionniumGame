@@ -1,4 +1,4 @@
-name: world-pr116-module-wave1-v3-qualification-20260909
+name: world-pr115-converged-module-qualification-20260910
 
 on:
   pull_request:
@@ -8,15 +8,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr116-module-wave1-v3-${{ github.event.pull_request.number || github.ref }}
+  group: world-pr115-converged-module-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_PR_NUMBER: '115'
   WORLD_BASE_SHA: 956462f95675d3d4db89af03bc4b7cc8c9a3c975
-  WORLD_HEAD_SHA: 0ad3a80e5b7374fdf3984524330f570223880ce7
+  WORLD_HEAD_SHA: 0f9943d931c15ebf934366e51a978659c739c106
   WORLD_HEAD_TREE: 2aaf56f8793d99a887e0916b3b4fb1eec1d6d932
-  WORLD_MERGE_SHA: e74a40875160daaf6e72617a2f1f08bb19dc9929
+  WORLD_MERGE_SHA: c84a9620eb47b13cecbc5e283f9c0f6c404684ed
   WORLD_MERGE_TREE: 2aaf56f8793d99a887e0916b3b4fb1eec1d6d932
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
@@ -26,11 +27,43 @@ env:
 
 jobs:
   qualify:
-    name: world-pr116/source-head-and-merge
+    name: world-pr115/source-head-and-merge
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
-      - name: Fetch and verify immutable World PR 116 tuple
+      - name: Read and verify live World PR 115 tuple
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${WORLD_REPOSITORY}/pulls/${WORLD_PR_NUMBER}" \
+            > "$RUNNER_TEMP/world-pr-start.json"
+          python3 - "$RUNNER_TEMP/world-pr-start.json" <<'PY'
+          import json
+          import os
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              pull = json.load(handle)
+          expected = {
+              "base": os.environ["WORLD_BASE_SHA"],
+              "head": os.environ["WORLD_HEAD_SHA"],
+              "merge": os.environ["WORLD_MERGE_SHA"],
+          }
+          actual = {
+              "base": pull["base"]["sha"],
+              "head": pull["head"]["sha"],
+              "merge": pull["merge_commit_sha"],
+          }
+          assert actual == expected, (actual, expected)
+          assert pull["state"] == "open", pull["state"]
+          assert pull["draft"] is True, pull["draft"]
+          print("TRNM_WORLD_PR115_LIVE_TUPLE_START=PASS")
+          PY
+
+      - name: Fetch and verify immutable World objects
         shell: bash
         run: |
           set -euo pipefail
@@ -41,7 +74,7 @@ jobs:
             rm -rf "$dir"
             git init "$dir"
             git -C "$dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
-            git -C "$dir" fetch --no-tags --depth=2 origin "$sha"
+            git -C "$dir" fetch --no-tags --depth=16 origin "$sha"
             git -C "$dir" checkout --detach FETCH_HEAD
           done
           test "$(git -C "$RUNNER_TEMP/world-head" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
@@ -49,8 +82,10 @@ jobs:
           test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse HEAD)" = "$WORLD_MERGE_SHA"
           test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')" = "$WORLD_MERGE_TREE"
           test "$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
+          test "$(git -C "$RUNNER_TEMP/world-head" show -s --format=%P HEAD)" = \
+            '4a416369cff292fb9bbce3dbd87e6c7a55d3513b 0ad3a80e5b7374fdf3984524330f570223880ce7'
 
-      - name: Verify explicit module ownership contract
+      - name: Verify explicit module ownership and P0 contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -58,6 +93,7 @@ jobs:
             python3 - "$dir" <<'PY'
           from pathlib import Path
           import sys
+
           root = Path(sys.argv[1])
           lib = root / "trillionnium/crates/trnm-campaign-core/src/lib.rs"
           text = lib.read_text(encoding="utf-8")
@@ -81,10 +117,24 @@ jobs:
               assert marker in text, marker
           assert 'pub use rts_mapping::{map_rpg_to_rts_stats, typed_equipment_modifier};' in text
           assert 'pub(crate) use rts_mapping::{' in text
-          assert 'include!(concat!(' in (
-              root / "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs"
+          tests = (
+              root
+              / "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs"
           ).read_text(encoding="utf-8")
-          print("TRNM_WORLD_PR116_MODULE_CONTRACT=PASS")
+          assert tests.count("include!(concat!(") == 3
+          p0 = (
+              root
+              / "trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
+          ).read_text(encoding="utf-8")
+          for marker in (
+              "closed_scope_binding",
+              "shadowed_binding",
+              "mixed_receivers",
+              "captured_backend_binding_before",
+              "mask_rust_comments_and_literals",
+          ):
+              assert marker in p0, marker
+          print("TRNM_WORLD_PR115_SOURCE_CONTRACT=PASS")
           PY
           done
 
@@ -104,11 +154,12 @@ jobs:
           rustfmt --version
 
       - name: Qualify exact head and prospective merge source
+        id: source
         shell: bash
         run: |
           set -uo pipefail
-          head_log="$RUNNER_TEMP/world-pr116-head-source.log"
-          merge_log="$RUNNER_TEMP/world-pr116-merge-source.log"
+          head_log="$RUNNER_TEMP/world-pr115-head-source.log"
+          merge_log="$RUNNER_TEMP/world-pr115-merge-source.log"
           head_status=0
           merge_status=0
           (set -euo pipefail; cd "$RUNNER_TEMP/world-head"; bash scripts/run-trnm-world-v6-qualification-v2.sh source) >"$head_log" 2>&1 || head_status=$?
@@ -119,13 +170,13 @@ jobs:
           actual_merge_tree="$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')"
           actual_parents="$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)"
           {
-            printf '## World PR 116 source qualification\n\n```text\n'
+            printf '## World PR 115 source qualification\n\n```text\n'
             printf 'world_base=%s\nworld_head=%s\nworld_head_tree=%s\n' "$WORLD_BASE_SHA" "$actual_head" "$actual_head_tree"
             printf 'world_merge=%s\nworld_merge_tree=%s\nworld_merge_parents=%s\n' "$actual_merge" "$actual_merge_tree" "$actual_parents"
             printf 'source_head_exit=%s\nsource_merge_exit=%s\nproduction_authorization=not_granted\n```\n' "$head_status" "$merge_status"
           } >> "$GITHUB_STEP_SUMMARY"
-          if test "$head_status" -ne 0; then printf '%s\n' '--- exact head source failure tail ---'; tail -n 300 "$head_log"; else printf 'WORLD_PR116_HEAD_SOURCE=PASS\n'; fi
-          if test "$merge_status" -ne 0; then printf '%s\n' '--- prospective merge source failure tail ---'; tail -n 300 "$merge_log"; else printf 'WORLD_PR116_MERGE_SOURCE=PASS\n'; fi
+          if test "$head_status" -ne 0; then printf '%s\n' '--- exact head source failure tail ---'; tail -n 300 "$head_log"; else printf 'WORLD_PR115_HEAD_SOURCE=PASS\n'; fi
+          if test "$merge_status" -ne 0; then printf '%s\n' '--- prospective merge source failure tail ---'; tail -n 300 "$merge_log"; else printf 'WORLD_PR115_MERGE_SOURCE=PASS\n'; fi
           test "$actual_head" = "$WORLD_HEAD_SHA"
           test "$actual_head_tree" = "$WORLD_HEAD_TREE"
           test "$actual_merge" = "$WORLD_MERGE_SHA"
@@ -133,4 +184,37 @@ jobs:
           test "$actual_parents" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
           test "$head_status" -eq 0
           test "$merge_status" -eq 0
-          printf 'WORLD_PR116_SOURCE_QUALIFICATION=PASS\n'
+          printf 'WORLD_PR115_SOURCE_QUALIFICATION=PASS\n'
+
+      - name: Re-read World PR 115 and reject tuple movement
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${WORLD_REPOSITORY}/pulls/${WORLD_PR_NUMBER}" \
+            > "$RUNNER_TEMP/world-pr-finish.json"
+          python3 - "$RUNNER_TEMP/world-pr-finish.json" <<'PY'
+          import json
+          import os
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              pull = json.load(handle)
+          expected = (
+              os.environ["WORLD_BASE_SHA"],
+              os.environ["WORLD_HEAD_SHA"],
+              os.environ["WORLD_MERGE_SHA"],
+          )
+          actual = (
+              pull["base"]["sha"],
+              pull["head"]["sha"],
+              pull["merge_commit_sha"],
+          )
+          assert actual == expected, (actual, expected)
+          assert pull["state"] == "open", pull["state"]
+          assert pull["draft"] is True, pull["draft"]
+          print("TRNM_WORLD_PR115_LIVE_TUPLE_FINISH=PASS")
+          PY
