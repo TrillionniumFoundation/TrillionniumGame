@@ -1,0 +1,220 @@
+name: world-pr115-fast-v6-20260910
+
+on:
+  push:
+    branches:
+      - ops/world-pr115-fast-v6-20260910
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-pr115-fast-v6-20260910
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_PR_NUMBER: '115'
+  WORLD_RUST_TOOLCHAIN: '1.98.1'
+  RUSTUP_TOOLCHAIN: '1.98.1'
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+  RUST_BACKTRACE: '1'
+  RUST_TEST_THREADS: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+  PGHOST: 127.0.0.1
+  PGPORT: '5432'
+  PGUSER: postgres
+  PGPASSWORD: postgres
+  PGDATABASE: postgres
+  TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+  TRNM_WORLD_POSTGRES_CLIENT_IMAGE: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+
+jobs:
+  qualify:
+    name: world-pr115/fast-head-and-merge-all-scopes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    services:
+      postgres:
+        image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Freeze live World PR 115 tuple
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${WORLD_REPOSITORY}/pulls/${WORLD_PR_NUMBER}" \
+            > "$RUNNER_TEMP/world-pr-start.json"
+          python3 - "$RUNNER_TEMP/world-pr-start.json" "$GITHUB_ENV" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              pull = json.load(handle)
+          assert pull["number"] == 115
+          assert pull["state"] == "open"
+          assert pull["draft"] is True
+          assert pull["base"]["ref"] == "main"
+          assert pull["head"]["repo"]["full_name"] == "TrillionniumFoundation/Trillionnium-World"
+          assert pull["merge_commit_sha"]
+          values = {
+              "WORLD_BASE_SHA": pull["base"]["sha"],
+              "WORLD_HEAD_SHA": pull["head"]["sha"],
+              "WORLD_MERGE_SHA": pull["merge_commit_sha"],
+          }
+          with open(sys.argv[2], "a", encoding="utf-8") as env:
+              for key, value in values.items():
+                  env.write(f"{key}={value}\n")
+          print("WORLD_PR115_LIVE_TUPLE_START=PASS")
+          print(values)
+          PY
+
+      - name: Fetch and verify immutable World objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tuple in "head:$WORLD_HEAD_SHA" "merge:$WORLD_MERGE_SHA"; do
+            name="${tuple%%:*}"
+            sha="${tuple#*:}"
+            dir="$RUNNER_TEMP/world-$name"
+            git init "$dir"
+            git -C "$dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+            git -C "$dir" fetch --no-tags --depth=2 origin "$sha"
+            git -C "$dir" checkout --detach FETCH_HEAD
+            test "$(git -C "$dir" rev-parse HEAD)" = "$sha"
+          done
+          test "$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
+          head_tree="$(git -C "$RUNNER_TEMP/world-head" rev-parse 'HEAD^{tree}')"
+          merge_tree="$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')"
+          test "$head_tree" = "$merge_tree"
+          printf 'WORLD_HEAD_TREE=%s\nWORLD_MERGE_TREE=%s\n' "$head_tree" "$merge_tree" >> "$GITHUB_ENV"
+
+      - name: Install pinned Rust and native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+          rustup default "$WORLD_RUST_TOOLCHAIN"
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.list.save
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libudev-dev libx11-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev pkg-config postgresql-client
+          rustc --version --verbose
+          cargo --version --verbose
+          rustfmt --version
+          psql --version
+
+      - name: Qualify truth and source on exact head and prospective merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          for object in head merge; do
+            for scope in truth source; do
+              log="$RUNNER_TEMP/world-${object}-${scope}.log"
+              if (cd "$RUNNER_TEMP/world-$object" && bash scripts/run-trnm-world-v6-qualification-v2.sh "$scope") >"$log" 2>&1; then
+                printf 'WORLD_PR115_%s_%s=PASS\n' "${object^^}" "${scope^^}"
+              else
+                status=$?
+                printf '%s\n' "--- $object $scope failure tail ---"
+                tail -n 500 "$log"
+                exit "$status"
+              fi
+            done
+          done
+
+      - name: Qualify PostgreSQL on exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/world-head-postgres.log"
+          if (cd "$RUNNER_TEMP/world-head" && bash scripts/run-trnm-world-v6-qualification-v2.sh postgres) >"$log" 2>&1; then
+            printf 'WORLD_PR115_HEAD_POSTGRES=PASS\n'
+          else
+            status=$?
+            tail -n 500 "$log"
+            exit "$status"
+          fi
+
+      - name: Reset PostgreSQL before prospective merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -d postgres -Atc "select datname from pg_database where datistemplate = false and datname <> 'postgres'" | while read -r database; do
+            test -n "$database" || continue
+            psql -d postgres -v ON_ERROR_STOP=1 -c "select pg_terminate_backend(pid) from pg_stat_activity where datname = '$database' and pid <> pg_backend_pid()"
+            dropdb --if-exists "$database"
+          done
+
+      - name: Qualify PostgreSQL on prospective merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/world-merge-postgres.log"
+          if (cd "$RUNNER_TEMP/world-merge" && bash scripts/run-trnm-world-v6-qualification-v2.sh postgres) >"$log" 2>&1; then
+            printf 'WORLD_PR115_MERGE_POSTGRES=PASS\n'
+          else
+            status=$?
+            tail -n 500 "$log"
+            exit "$status"
+          fi
+
+      - name: Qualify package on exact head and prospective merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          for object in head merge; do
+            log="$RUNNER_TEMP/world-${object}-package.log"
+            if (cd "$RUNNER_TEMP/world-$object" && bash scripts/run-trnm-world-v6-qualification-v2.sh package) >"$log" 2>&1; then
+              printf 'WORLD_PR115_%s_PACKAGE=PASS\n' "${object^^}"
+            else
+              status=$?
+              printf '%s\n' "--- $object package failure tail ---"
+              tail -n 500 "$log"
+              exit "$status"
+            fi
+          done
+
+      - name: Re-read World PR 115 and reject tuple movement
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${WORLD_REPOSITORY}/pulls/${WORLD_PR_NUMBER}" \
+            > "$RUNNER_TEMP/world-pr-finish.json"
+          python3 - "$RUNNER_TEMP/world-pr-start.json" "$RUNNER_TEMP/world-pr-finish.json" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              start = json.load(handle)
+          with open(sys.argv[2], encoding="utf-8") as handle:
+              finish = json.load(handle)
+          def subject(pull):
+              return (
+                  pull["base"]["sha"],
+                  pull["head"]["sha"],
+                  pull["merge_commit_sha"],
+                  pull["state"],
+                  pull["draft"],
+              )
+          assert subject(start) == subject(finish), (subject(start), subject(finish))
+          print("WORLD_PR115_FAST_V6_QUALIFICATION=PASS")
+          print("PRODUCTION_AUTHORIZATION=not_granted")
+          PY
