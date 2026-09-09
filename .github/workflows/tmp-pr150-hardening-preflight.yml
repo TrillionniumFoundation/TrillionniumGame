@@ -46,6 +46,7 @@ jobs:
           rm -rf .preflight .github/workflows/tmp-pr150-hardening-preflight.yml
           test ! -e .preflight
           test ! -e .github/workflows/tmp-pr150-hardening-preflight.yml
+          git add -A
       - name: Format and verify dependency lock
         shell: bash
         run: |
@@ -57,7 +58,8 @@ jobs:
           path = Path("Cargo.lock")
           path.write_text(path.read_text(encoding="utf-8").rstrip("\n") + "\n", encoding="utf-8")
           PY
-          git diff --check
+          git add -A
+          git diff --cached --check
           cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/cargo-metadata.json"
           test -s "$RUNNER_TEMP/cargo-metadata.json"
           grep -q '"name":"zeroize"' "$RUNNER_TEMP/cargo-metadata.json"
@@ -103,11 +105,10 @@ jobs:
           test -n "$GH_TOKEN"
           test ! -e .preflight
           test ! -e .github/workflows/tmp-pr150-hardening-preflight.yml
-          git diff --check
+          git diff --cached --check
+          test -n "$(git status --porcelain)"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          test -n "$(git status --porcelain)"
           git commit -m 'fix: derive storage integrity and zeroize software keys'
           printf 'https://x-access-token:%s@github.com\n' "$GH_TOKEN" > "$RUNNER_TEMP/git-credentials"
           chmod 600 "$RUNNER_TEMP/git-credentials"
