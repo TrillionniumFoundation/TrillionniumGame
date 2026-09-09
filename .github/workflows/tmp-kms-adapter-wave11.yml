@@ -1,0 +1,929 @@
+name: tmp-kms-adapter-wave11
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-kms-adapter-wave11.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-migration-core-20260909
+  FEATURE_BRANCH: feature/plan-v32-kms-adapter-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-kms-adapter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Wait for exact Wave 10 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 840); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 30
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write KMS dispatch and authenticated outcome adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-kms-provider-adapter/src
+          cat > crates/trnm-kms-provider-adapter/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-kms-provider-adapter"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Opaque KMS dispatch ambiguity and authenticated outcome adapter"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-kms-provider-adapter/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::collections::BTreeMap;
+          use std::fmt::{self, Debug, Formatter};
+
+          pub const MAX_ACTIVE_OPERATIONS: usize = 65_536;
+          pub const MAX_TERMINAL_OPERATIONS: usize = 1_000_000;
+          pub const MAX_PROVIDER_RECEIPTS: usize = 1_000_000;
+          pub const MAX_HANDLE_BYTES: usize = 1024;
+          pub const MAX_DEADLINE_MS: u64 = 120_000;
+
+          macro_rules! id16 {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(value: [u8; 16]) -> Result<Self, KmsError> {
+                          if value.iter().all(|byte| *byte == 0) {
+                              Err(KmsError::invalid($reason))
+                          } else {
+                              Ok(Self(value))
+                          }
+                      }
+                  }
+              };
+          }
+
+          id16!(OperationId, "operation_id_zero");
+          id16!(DispatchId, "dispatch_id_zero");
+          id16!(ProviderReceiptId, "provider_receipt_id_zero");
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Digest32([u8; 32]);
+
+          impl Digest32 {
+              pub fn new(value: [u8; 32]) -> Result<Self, KmsError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      Err(KmsError::invalid("digest_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Signature32([u8; 32]);
+
+          impl Signature32 {
+              pub fn new(value: [u8; 32]) -> Result<Self, KmsError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      Err(KmsError::invalid("signature_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum KeyDomain {
+              Access,
+              Refresh,
+              Console,
+              Runtime,
+              Socket,
+              Authority,
+              ProviderCallback,
+              Evidence,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct KeyEpoch(u64);
+
+          impl KeyEpoch {
+              pub fn new(value: u64) -> Result<Self, KmsError> {
+                  if value == 0 {
+                      Err(KmsError::invalid("key_epoch_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct KeyHandle(String);
+
+          impl KeyHandle {
+              pub fn new(value: impl Into<String>) -> Result<Self, KmsError> {
+                  let value = value.into();
+                  if value.is_empty()
+                      || value.len() > MAX_HANDLE_BYTES
+                      || value.bytes().any(|byte| byte.is_ascii_control())
+                  {
+                      return Err(KmsError::invalid("key_handle_invalid"));
+                  }
+                  Ok(Self(value))
+              }
+          }
+
+          impl Debug for KeyHandle {
+              fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+                  formatter.write_str("KeyHandle(<redacted>)")
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct ProviderIdentity(pub Digest32);
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct EndpointIdentity(pub Digest32);
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct SignRequest {
+              pub operation: OperationId,
+              pub domain: KeyDomain,
+              pub epoch: KeyEpoch,
+              pub handle: KeyHandle,
+              pub payload_digest: Digest32,
+              pub requested_at_ms: u64,
+              pub deadline_at_ms: u64,
+          }
+
+          impl SignRequest {
+              pub fn validate(self) -> Result<Self, KmsError> {
+                  if self.requested_at_ms == 0
+                      || self.deadline_at_ms <= self.requested_at_ms
+                      || self.deadline_at_ms - self.requested_at_ms > MAX_DEADLINE_MS
+                  {
+                      Err(KmsError::invalid("sign_request_deadline_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct DispatchIdentity {
+              pub id: DispatchId,
+              pub provider: ProviderIdentity,
+              pub endpoint: EndpointIdentity,
+              pub attempt: u32,
+              pub dispatched_at_ms: u64,
+          }
+
+          impl DispatchIdentity {
+              pub fn validate(self, request: &SignRequest) -> Result<Self, KmsError> {
+                  if self.attempt == 0
+                      || self.dispatched_at_ms < request.requested_at_ms
+                      || self.dispatched_at_ms >= request.deadline_at_ms
+                  {
+                      Err(KmsError::invalid("dispatch_identity_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct OutcomeEvidence {
+              pub operation: OperationId,
+              pub dispatch: DispatchIdentity,
+              pub provider_receipt: ProviderReceiptId,
+              pub signature: Signature32,
+              pub signature_digest: Digest32,
+              pub provider_evidence_digest: Digest32,
+              pub completed_at_ms: u64,
+          }
+
+          pub trait OutcomeAuthenticator: Debug {
+              fn authenticate(
+                  &self,
+                  request: &SignRequest,
+                  evidence: &OutcomeEvidence,
+              ) -> Result<(), KmsError>;
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum OperationState {
+              Prepared,
+              Dispatched(DispatchIdentity),
+              Indeterminate(DispatchIdentity),
+              Confirmed(OutcomeEvidence),
+              Rejected { stable_code: u32, rejected_at_ms: u64 },
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct OperationRecord {
+              pub request: SignRequest,
+              pub state: OperationState,
+              pub revision: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum ReconcileDisposition {
+              Confirmed,
+              ExactConfirmedReplay,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableKmsCode {
+              InvalidArgument,
+              NotFound,
+              AlreadyExists,
+              FailedPrecondition,
+              Aborted,
+              DeadlineExceeded,
+              ResourceExhausted,
+              Unavailable,
+              Internal,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct KmsError {
+              code: StableKmsCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl KmsError {
+              #[must_use]
+              pub const fn new(code: StableKmsCode, reason: &'static str, retryable: bool) -> Self {
+                  Self { code, reason, retryable }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableKmsCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableKmsCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct JournalLimits {
+              pub active_operations: usize,
+              pub terminal_operations: usize,
+              pub provider_receipts: usize,
+          }
+
+          impl JournalLimits {
+              pub fn validate(self) -> Result<Self, KmsError> {
+                  if self.active_operations == 0 || self.active_operations > MAX_ACTIVE_OPERATIONS
+                      || self.terminal_operations == 0 || self.terminal_operations > MAX_TERMINAL_OPERATIONS
+                      || self.provider_receipts == 0 || self.provider_receipts > MAX_PROVIDER_RECEIPTS
+                  {
+                      Err(KmsError::invalid("journal_limits_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct SignerJournal {
+              operations: BTreeMap<OperationId, OperationRecord>,
+              receipt_owners: BTreeMap<ProviderReceiptId, OperationId>,
+              active_count: usize,
+              terminal_count: usize,
+              limits: JournalLimits,
+          }
+
+          impl SignerJournal {
+              pub fn new(limits: JournalLimits) -> Result<Self, KmsError> {
+                  Ok(Self {
+                      operations: BTreeMap::new(),
+                      receipt_owners: BTreeMap::new(),
+                      active_count: 0,
+                      terminal_count: 0,
+                      limits: limits.validate()?,
+                  })
+              }
+
+              pub fn prepare(&mut self, request: SignRequest) -> Result<OperationRecord, KmsError> {
+                  let request = request.validate()?;
+                  if self.operations.contains_key(&request.operation) {
+                      return Err(KmsError::new(
+                          StableKmsCode::AlreadyExists,
+                          "operation_exists",
+                          false,
+                      ));
+                  }
+                  if self.active_count >= self.limits.active_operations {
+                      return Err(KmsError::new(
+                          StableKmsCode::ResourceExhausted,
+                          "active_operation_capacity_exhausted",
+                          true,
+                      ));
+                  }
+                  let record = OperationRecord {
+                      request: request.clone(),
+                      state: OperationState::Prepared,
+                      revision: 1,
+                  };
+                  self.operations.insert(request.operation, record.clone());
+                  self.active_count += 1;
+                  Ok(record)
+              }
+
+              pub fn dispatch(
+                  &mut self,
+                  operation: OperationId,
+                  expected_revision: u64,
+                  dispatch: DispatchIdentity,
+              ) -> Result<OperationRecord, KmsError> {
+                  let current = self.for_update(operation, expected_revision)?.clone();
+                  if current.state != OperationState::Prepared {
+                      return Err(KmsError::new(
+                          StableKmsCode::FailedPrecondition,
+                          "operation_not_prepared",
+                          false,
+                      ));
+                  }
+                  let dispatch = dispatch.validate(&current.request)?;
+                  if self.operations.values().any(|record| {
+                      matches!(record.state, OperationState::Dispatched(existing) | OperationState::Indeterminate(existing) if existing.id == dispatch.id)
+                  }) {
+                      return Err(KmsError::new(
+                          StableKmsCode::AlreadyExists,
+                          "dispatch_id_exists",
+                          false,
+                      ));
+                  }
+                  let mut updated = current;
+                  updated.state = OperationState::Dispatched(dispatch);
+                  updated.revision = next_revision(updated.revision)?;
+                  self.operations.insert(operation, updated.clone());
+                  Ok(updated)
+              }
+
+              pub fn mark_indeterminate(
+                  &mut self,
+                  operation: OperationId,
+                  expected_revision: u64,
+                  observed_at_ms: u64,
+              ) -> Result<OperationRecord, KmsError> {
+                  let current = self.for_update(operation, expected_revision)?.clone();
+                  let OperationState::Dispatched(dispatch) = current.state else {
+                      return Err(KmsError::new(
+                          StableKmsCode::FailedPrecondition,
+                          "operation_not_dispatched",
+                          false,
+                      ));
+                  };
+                  if observed_at_ms < dispatch.dispatched_at_ms {
+                      return Err(KmsError::invalid("indeterminate_time_regression"));
+                  }
+                  let mut updated = current;
+                  updated.state = OperationState::Indeterminate(dispatch);
+                  updated.revision = next_revision(updated.revision)?;
+                  self.operations.insert(operation, updated.clone());
+                  Ok(updated)
+              }
+
+              pub fn reconcile<A: OutcomeAuthenticator>(
+                  &mut self,
+                  operation: OperationId,
+                  expected_revision: u64,
+                  evidence: OutcomeEvidence,
+                  authenticator: &A,
+              ) -> Result<ReconcileDisposition, KmsError> {
+                  let current = self.for_update(operation, expected_revision)?.clone();
+                  if evidence.operation != operation {
+                      return Err(KmsError::new(
+                          StableKmsCode::Aborted,
+                          "outcome_operation_mismatch",
+                          false,
+                      ));
+                  }
+                  match current.state {
+                      OperationState::Confirmed(existing) => {
+                          if existing != evidence {
+                              return Err(KmsError::new(
+                                  StableKmsCode::AlreadyExists,
+                                  "confirmed_outcome_conflict",
+                                  false,
+                              ));
+                          }
+                          authenticator.authenticate(&current.request, &evidence)?;
+                          return Ok(ReconcileDisposition::ExactConfirmedReplay);
+                      }
+                      OperationState::Dispatched(dispatch)
+                      | OperationState::Indeterminate(dispatch) => {
+                          if evidence.dispatch != dispatch {
+                              return Err(KmsError::new(
+                                  StableKmsCode::Aborted,
+                                  "outcome_dispatch_mismatch",
+                                  false,
+                              ));
+                          }
+                      }
+                      OperationState::Prepared => {
+                          return Err(KmsError::new(
+                              StableKmsCode::FailedPrecondition,
+                              "operation_not_dispatched",
+                              false,
+                          ));
+                      }
+                      OperationState::Rejected { .. } => {
+                          return Err(KmsError::new(
+                              StableKmsCode::FailedPrecondition,
+                              "operation_rejected",
+                              false,
+                          ));
+                      }
+                  }
+                  if evidence.completed_at_ms < evidence.dispatch.dispatched_at_ms {
+                      return Err(KmsError::invalid("outcome_time_regression"));
+                  }
+                  authenticator.authenticate(&current.request, &evidence)?;
+                  if let Some(owner) = self.receipt_owners.get(&evidence.provider_receipt) {
+                      if *owner != operation {
+                          return Err(KmsError::new(
+                              StableKmsCode::AlreadyExists,
+                              "provider_receipt_reused",
+                              false,
+                          ));
+                      }
+                  } else if self.receipt_owners.len() >= self.limits.provider_receipts {
+                      return Err(KmsError::new(
+                          StableKmsCode::ResourceExhausted,
+                          "provider_receipt_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  if self.terminal_count >= self.limits.terminal_operations {
+                      return Err(KmsError::new(
+                          StableKmsCode::ResourceExhausted,
+                          "terminal_operation_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let mut updated = current;
+                  updated.state = OperationState::Confirmed(evidence);
+                  updated.revision = next_revision(updated.revision)?;
+                  let mut candidate = self.clone();
+                  candidate.receipt_owners.insert(evidence.provider_receipt, operation);
+                  candidate.operations.insert(operation, updated);
+                  candidate.active_count = candidate.active_count.checked_sub(1).ok_or_else(|| KmsError::new(
+                      StableKmsCode::Internal,
+                      "active_operation_underflow",
+                      false,
+                  ))?;
+                  candidate.terminal_count += 1;
+                  *self = candidate;
+                  Ok(ReconcileDisposition::Confirmed)
+              }
+
+              pub fn reject(
+                  &mut self,
+                  operation: OperationId,
+                  expected_revision: u64,
+                  stable_code: u32,
+                  rejected_at_ms: u64,
+              ) -> Result<OperationRecord, KmsError> {
+                  if stable_code == 0 || rejected_at_ms == 0 {
+                      return Err(KmsError::invalid("rejection_invalid"));
+                  }
+                  let current = self.for_update(operation, expected_revision)?.clone();
+                  if matches!(current.state, OperationState::Confirmed(_) | OperationState::Rejected { .. }) {
+                      return Err(KmsError::new(
+                          StableKmsCode::FailedPrecondition,
+                          "operation_terminal",
+                          false,
+                      ));
+                  }
+                  if self.terminal_count >= self.limits.terminal_operations {
+                      return Err(KmsError::new(
+                          StableKmsCode::ResourceExhausted,
+                          "terminal_operation_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let mut updated = current;
+                  updated.state = OperationState::Rejected { stable_code, rejected_at_ms };
+                  updated.revision = next_revision(updated.revision)?;
+                  self.active_count = self.active_count.checked_sub(1).ok_or_else(|| KmsError::new(
+                      StableKmsCode::Internal,
+                      "active_operation_underflow",
+                      false,
+                  ))?;
+                  self.terminal_count += 1;
+                  self.operations.insert(operation, updated.clone());
+                  Ok(updated)
+              }
+
+              pub fn dispatchable(&self, operation: OperationId, now_ms: u64) -> Result<bool, KmsError> {
+                  let record = self.operations.get(&operation).ok_or_else(|| KmsError::new(
+                      StableKmsCode::NotFound,
+                      "operation_not_found",
+                      false,
+                  ))?;
+                  if now_ms >= record.request.deadline_at_ms {
+                      return Err(KmsError::new(
+                          StableKmsCode::DeadlineExceeded,
+                          "operation_deadline_exceeded",
+                          false,
+                      ));
+                  }
+                  Ok(record.state == OperationState::Prepared)
+              }
+
+              fn for_update(
+                  &self,
+                  operation: OperationId,
+                  expected_revision: u64,
+              ) -> Result<&OperationRecord, KmsError> {
+                  let record = self.operations.get(&operation).ok_or_else(|| KmsError::new(
+                      StableKmsCode::NotFound,
+                      "operation_not_found",
+                      false,
+                  ))?;
+                  if record.revision != expected_revision {
+                      return Err(KmsError::new(
+                          StableKmsCode::Aborted,
+                          "operation_revision_mismatch",
+                          true,
+                      ));
+                  }
+                  Ok(record)
+              }
+
+              #[must_use]
+              pub fn record(&self, operation: OperationId) -> Option<&OperationRecord> {
+                  self.operations.get(&operation)
+              }
+          }
+
+          fn next_revision(current: u64) -> Result<u64, KmsError> {
+              current.checked_add(1).ok_or_else(|| KmsError::new(
+                  StableKmsCode::Internal,
+                  "operation_revision_overflow",
+                  false,
+              ))
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn id<T>(byte: u8, constructor: fn([u8;16]) -> Result<T,KmsError>) -> T {
+                  constructor([byte;16]).unwrap()
+              }
+
+              fn digest(byte: u8) -> Digest32 {
+                  Digest32::new([byte;32]).unwrap()
+              }
+
+              fn request(byte: u8) -> SignRequest {
+                  SignRequest {
+                      operation: id(byte, OperationId::new),
+                      domain: KeyDomain::Access,
+                      epoch: KeyEpoch::new(1).unwrap(),
+                      handle: KeyHandle::new("opaque/key/1").unwrap(),
+                      payload_digest: digest(byte),
+                      requested_at_ms: 10,
+                      deadline_at_ms: 100,
+                  }
+              }
+
+              fn dispatch(byte: u8) -> DispatchIdentity {
+                  DispatchIdentity {
+                      id: id(byte, DispatchId::new),
+                      provider: ProviderIdentity(digest(10)),
+                      endpoint: EndpointIdentity(digest(11)),
+                      attempt: 1,
+                      dispatched_at_ms: 20,
+                  }
+              }
+
+              fn evidence(operation: OperationId, dispatch: DispatchIdentity, receipt: u8) -> OutcomeEvidence {
+                  OutcomeEvidence {
+                      operation,
+                      dispatch,
+                      provider_receipt: id(receipt, ProviderReceiptId::new),
+                      signature: Signature32::new([12;32]).unwrap(),
+                      signature_digest: digest(13),
+                      provider_evidence_digest: digest(14),
+                      completed_at_ms: 30,
+                  }
+              }
+
+              #[derive(Debug)]
+              struct Authenticator { accept: bool }
+
+              impl OutcomeAuthenticator for Authenticator {
+                  fn authenticate(&self, request: &SignRequest, evidence: &OutcomeEvidence) -> Result<(), KmsError> {
+                      if self.accept
+                          && request.operation == evidence.operation
+                          && request.payload_digest == Digest32([request.operation.0[0];32])
+                      {
+                          Ok(())
+                      } else {
+                          Err(KmsError::new(StableKmsCode::Unauthenticated, "provider_outcome_not_authenticated", false))
+                      }
+                  }
+              }
+
+              fn journal() -> SignerJournal {
+                  SignerJournal::new(JournalLimits { active_operations: 8, terminal_operations: 8, provider_receipts: 8 }).unwrap()
+              }
+
+              #[test]
+              fn opaque_handle_debug_never_exposes_value() {
+                  let handle = KeyHandle::new("secret/provider/key").unwrap();
+                  let rendered = format!("{handle:?}");
+                  assert_eq!(rendered, "KeyHandle(<redacted>)");
+                  assert!(!rendered.contains("secret"));
+              }
+
+              #[test]
+              fn ambiguous_dispatch_cannot_be_dispatched_again() {
+                  let mut journal = journal();
+                  let request = request(1);
+                  journal.prepare(request.clone()).unwrap();
+                  journal.dispatch(request.operation, 1, dispatch(1)).unwrap();
+                  journal.mark_indeterminate(request.operation, 2, 25).unwrap();
+                  assert!(!journal.dispatchable(request.operation, 26).unwrap());
+                  assert_eq!(journal.dispatch(request.operation, 3, dispatch(2)).unwrap_err().reason(), "operation_not_prepared");
+              }
+
+              #[test]
+              fn unauthenticated_outcome_preserves_indeterminate_state() {
+                  let mut journal = journal();
+                  let request = request(1);
+                  let dispatch = dispatch(1);
+                  journal.prepare(request.clone()).unwrap();
+                  journal.dispatch(request.operation, 1, dispatch).unwrap();
+                  journal.mark_indeterminate(request.operation, 2, 25).unwrap();
+                  assert_eq!(journal.reconcile(request.operation, 3, evidence(request.operation, dispatch, 1), &Authenticator { accept:false }).unwrap_err().reason(), "provider_outcome_not_authenticated");
+                  assert!(matches!(journal.record(request.operation).unwrap().state, OperationState::Indeterminate(_)));
+              }
+
+              #[test]
+              fn exact_confirmed_replay_requires_fresh_authentication() {
+                  let mut journal = journal();
+                  let request = request(1);
+                  let dispatch = dispatch(1);
+                  let outcome = evidence(request.operation, dispatch, 1);
+                  journal.prepare(request.clone()).unwrap();
+                  journal.dispatch(request.operation, 1, dispatch).unwrap();
+                  assert_eq!(journal.reconcile(request.operation, 2, outcome, &Authenticator { accept:true }).unwrap(), ReconcileDisposition::Confirmed);
+                  let revision = journal.record(request.operation).unwrap().revision;
+                  assert_eq!(journal.reconcile(request.operation, revision, outcome, &Authenticator { accept:true }).unwrap(), ReconcileDisposition::ExactConfirmedReplay);
+                  assert_eq!(journal.reconcile(request.operation, revision, outcome, &Authenticator { accept:false }).unwrap_err().reason(), "provider_outcome_not_authenticated");
+              }
+
+              #[test]
+              fn provider_receipt_cannot_bind_two_operations() {
+                  let mut journal = journal();
+                  for byte in [1,2] {
+                      let request = request(byte);
+                      journal.prepare(request.clone()).unwrap();
+                      journal.dispatch(request.operation, 1, dispatch(byte)).unwrap();
+                  }
+                  let first = request(1);
+                  journal.reconcile(first.operation, 2, evidence(first.operation, dispatch(1), 7), &Authenticator { accept:true }).unwrap();
+                  let second = request(2);
+                  assert_eq!(journal.reconcile(second.operation, 2, evidence(second.operation, dispatch(2), 7), &Authenticator { accept:true }).unwrap_err().reason(), "provider_receipt_reused");
+                  assert!(matches!(journal.record(second.operation).unwrap().state, OperationState::Dispatched(_)));
+              }
+
+              #[test]
+              fn wrong_dispatch_or_operation_never_mutates() {
+                  let mut journal = journal();
+                  let request = request(1);
+                  journal.prepare(request.clone()).unwrap();
+                  journal.dispatch(request.operation, 1, dispatch(1)).unwrap();
+                  let wrong = evidence(request.operation, dispatch(2), 1);
+                  assert_eq!(journal.reconcile(request.operation, 2, wrong, &Authenticator { accept:true }).unwrap_err().reason(), "outcome_dispatch_mismatch");
+                  assert!(matches!(journal.record(request.operation).unwrap().state, OperationState::Dispatched(_)));
+              }
+
+              #[test]
+              fn deadline_blocks_new_dispatch_but_does_not_fabricate_rejection() {
+                  let mut journal = journal();
+                  let request = request(1);
+                  journal.prepare(request.clone()).unwrap();
+                  assert_eq!(journal.dispatchable(request.operation, 100).unwrap_err().code(), StableKmsCode::DeadlineExceeded);
+                  assert!(matches!(journal.record(request.operation).unwrap().state, OperationState::Prepared));
+              }
+          }
+          EOF
+
+          # StableKmsCode needs a public unauthenticated class for verifier failures.
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('crates/trnm-kms-provider-adapter/src/lib.rs')
+          t=p.read_text()
+          t=t.replace('    InvalidArgument,\n    NotFound,', '    InvalidArgument,\n    Unauthenticated,\n    NotFound,', 1)
+          p.write_text(t)
+          PY
+
+          cat > crates/trnm-kms-provider-adapter/README.md <<'EOF'
+          # trnm-kms-provider-adapter
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-kms-provider-adapter`  
+          Workspace class: `root`  
+          Lifecycle: `security-critical-provider-adapter`  
+          Owner role: `security`
+
+          ## Status and authority
+
+          This document is the module contract for opaque KMS/HSM dispatch, transport ambiguity and authenticated outcome reconciliation. It is a source candidate and does not establish a real provider deployment, key custody or production security approval.
+
+          ## Responsibilities
+
+          The crate owns opaque redacted key handles, key domain/epoch request binding, exact dispatch provider/endpoint/attempt identity, Prepared/Dispatched/Indeterminate/Confirmed/Rejected state, provider receipt uniqueness, deadlines, bounded journals and trusted outcome authentication.
+
+          It does not contain key bytes, implement HMAC/signature primitives, call a network provider, store credentials, choose rotation schedules or authenticate a concrete cloud/HSM response format.
+
+          ## Architecture and dependencies
+
+          Token/authority services prepare a digest-bound request. A provider transport performs one exact dispatch under a deadline. Transport loss changes the operation to Indeterminate and forbids blind redispatch. A provider-specific `OutcomeAuthenticator` verifies the complete response before confirmation.
+
+          Provider outcome authentication, lifecycle schedule and durable journal persistence remain separate adapters and must commit atomically in production.
+
+          ## Public contracts
+
+          Every request binds operation, key domain, epoch, opaque handle, payload digest and deadline. Every dispatch binds provider identity, endpoint identity, attempt and time. Outcome evidence binds exact dispatch, receipt, actual signature bytes and evidence digest.
+
+          Confirmed replay is idempotent only after fresh authenticator acceptance. A receipt cannot belong to two operations. Unknown operation, stale revision, wrong dispatch and unauthenticated evidence fail without mutation.
+
+          ## Correctness and failure model
+
+          An ambiguous dispatched operation cannot be dispatched again. Confirmation updates operation, receipt ownership and active/terminal accounting on a candidate copy. Capacity or verifier failure preserves the prior state.
+
+          Deadline expiry blocks new dispatch but does not fabricate a provider rejection or signature outcome.
+
+          ## Security and privacy
+
+          `KeyHandle` Debug is permanently redacted. Provider credentials, raw payload, tokens and endpoint locations are excluded from logs and metric labels. Nonzero digest, receipt or signature shape is never treated as authenticity.
+
+          A production authenticator must verify the provider's signed/MACed response or HSM attestation against the exact request and dispatch. Software fixtures grant no production custody credit.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-kms-provider-adapter --all-targets --locked
+          cargo clippy --package trnm-kms-provider-adapter --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover handle redaction, ambiguous no-redispatch, unauthenticated no-mutation, freshly authenticated exact replay, receipt reuse, wrong dispatch and deadline behavior.
+
+          ## Operations
+
+          Adapters expose provider/domain/epoch, dispatch latency, indeterminate count, reconciliation result, authenticator failure, receipt conflict, deadline and bounded journal health without handles, signatures, payloads or credentials.
+
+          ## Compatibility and evidence
+
+          Complete #124 requires at least one real approved KMS/HSM/secret-manager implementation, durable multi-node journal/lifecycle storage, response-loss reconciliation, rotation/revoke convergence, fault injection, dependency/provenance review and independent cryptography/security acceptance.
+
+          This source cannot establish provider authenticity, availability, custody, FIPS/compliance status or production readiness.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P0-CRYPTO-001`, `GAP-P1-CRYPTO-002`, `GAP-P0-CI-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires concrete provider transport/authenticator, durable journal/checkpoint restore, real failure injection, rotation/revoke integration, retained exact-head evidence and conflict-free security review.
+          EOF
+
+      - name: Register KMS adapter module fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          member='crates/trnm-kms-provider-adapter'
+          p=Path('Cargo.toml'); t=p.read_text();
+          if f'"{member}"' not in t: p.write_text(t.replace(']\nexclude = [',f'  "{member}",\n]\nexclude = [',1))
+          mp=Path('docs/status/MODULE_DOCUMENTATION.json'); m=json.loads(mp.read_text())
+          if not any(r['id']=='trnm-kms-provider-adapter' for r in m['modules']):
+              m['modules'].append({'id':'trnm-kms-provider-adapter','path':member,'manifest':f'{member}/Cargo.toml','documentation':f'{member}/README.md','workspace':'root','lifecycle':'security-critical-provider-adapter','maturity':'source-candidate','owner_role':'security','authority':'opaque KMS dispatch ambiguity and authenticated provider outcome boundary','blocking_gaps':['GAP-P0-CRYPTO-001','GAP-P1-CRYPTO-002','GAP-P0-CI-001','GAP-P1-REVIEW-001'],'claim_credit':False})
+          m['modules'].sort(key=lambda r:r['id']); m['summary'].update({'module_count':len(m['modules']),'documented_count':len(m['modules']),'root_workspace_count':sum(r['workspace']=='root' for r in m['modules']),'isolated_workspace_count':sum(r['workspace']=='isolated' for r in m['modules']),'undocumented_count':0}); mp.write_text(json.dumps(m,indent=2)+'\n')
+          ap=Path('docs/development/RUST_PACKAGE_AUTHORITY.json'); a=json.loads(ap.read_text());
+          if member not in a['workspace']['members']: a['workspace']['members'].append(member); a['workspace']['members'].sort()
+          for k in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'): a.setdefault('claim_boundary',{})[k]=False
+          ap.write_text(json.dumps(a,indent=2)+'\n')
+          ip=Path('docs/status/IMPLEMENTATION_INVENTORY.json'); inv=json.loads(ip.read_text())
+          if not any(r.get('id')=='COMP-KMS-PROVIDER-ADAPTER' for r in inv['components']):
+              inv['components'].append({'id':'COMP-KMS-PROVIDER-ADAPTER','path':member,'kind':'rust-security-adapter','workstreams':['W3','W15'],'status':'source-candidate','implemented':['opaque redacted key handle and exact request dispatch identity','indeterminate no-redispatch and authenticated reconciliation','provider receipt uniqueness and bounded journal accounting'],'missing':['real KMS HSM or secret-manager transport and authenticator','durable multi-node journal/lifecycle convergence','rotation revoke and failure injection evidence','independent cryptography security acceptance'],'blocking_gaps':['GAP-P0-CRYPTO-001','GAP-P1-CRYPTO-002','GAP-P0-CI-001','GAP-P1-REVIEW-001'],'parity_ids':[],'evidence_ids':[],'claim_credit':False})
+          ip.write_text(json.dumps(inv,indent=2)+'\n')
+          sp=Path('docs/status/CURRENT_STATE.json'); st=json.loads(sp.read_text()); st.setdefault('implementation',{})['kms_provider_adapter_source_candidate']=True
+          for k in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'): st.setdefault('claims',{})[k]=False
+          sp.write_text(json.dumps(st,indent=2)+'\n')
+          PY
+
+      - name: Publish Draft and qualify exact source
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git commit -m 'feat(security): add KMS dispatch and authenticated outcome adapter'
+          head_sha="$(git rev-parse HEAD)"; head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Repository-controlled source candidate for #124, stacked on migration Wave 10.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds opaque/redacted key handles, exact provider/endpoint/attempt dispatch identity, ambiguous no-redispatch state, authenticated outcome reconciliation, receipt uniqueness and bounded journal accounting.
+
+          No concrete provider, credential, KMS/HSM custody, durable multi-node lifecycle, rotation/revoke evidence or production security acceptance is claimed.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 11] Add KMS dispatch and outcome adapter boundary' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do cargo test --manifest-path "$manifest" --all-targets --locked; cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings; done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "KMS adapter Wave 11 carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and all claim ceilings remain binding."
+          gh issue comment 124 --repo "$REPOSITORY" --body "KMS adapter source carrier status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`; #124 remains open pending a real provider deployment and accepted evidence."
