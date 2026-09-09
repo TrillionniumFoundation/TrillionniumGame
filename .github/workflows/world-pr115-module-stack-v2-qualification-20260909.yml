@@ -1,4 +1,4 @@
-name: world-pr115-module-stack-v2-qualification-20260909
+name: world-pr116-module-wave1-v3-qualification-20260909
 
 on:
   pull_request:
@@ -8,16 +8,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr115-module-stack-v2-${{ github.event.pull_request.number || github.ref }}
+  group: world-pr116-module-wave1-v3-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_BASE_SHA: 956462f95675d3d4db89af03bc4b7cc8c9a3c975
-  WORLD_HEAD_SHA: 4a416369cff292fb9bbce3dbd87e6c7a55d3513b
-  WORLD_HEAD_TREE: a33b9f00e7dfc4b9e3304d202b4276eb3f74f579
-  WORLD_MERGE_SHA: f00738b52fec1db07715faa741eac91fc0032490
-  WORLD_MERGE_TREE: a33b9f00e7dfc4b9e3304d202b4276eb3f74f579
+  WORLD_HEAD_SHA: 19c4bf7ede2212b1e8d4c5496be42e464a3940e0
+  WORLD_HEAD_TREE: db2236424e237d9a49bea9a64499ba9d0a9bf9e8
+  WORLD_MERGE_SHA: da1e033210325c59cc126419a8c40654b622dbb0
+  WORLD_MERGE_TREE: db2236424e237d9a49bea9a64499ba9d0a9bf9e8
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_INCREMENTAL: '0'
@@ -26,11 +26,11 @@ env:
 
 jobs:
   qualify:
-    name: world-pr115/source-head-and-merge
+    name: world-pr116/source-head-and-merge
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
-      - name: Fetch and verify immutable World PR 115 tuple
+      - name: Fetch and verify immutable World PR 116 tuple
         shell: bash
         run: |
           set -euo pipefail
@@ -82,8 +82,10 @@ jobs:
               assert marker in text, marker
           assert 'pub use rts_mapping::{map_rpg_to_rts_stats, typed_equipment_modifier};' in text
           assert 'pub(crate) use rts_mapping::{' in text
-          assert 'include!(concat!(' in (root / "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs").read_text(encoding="utf-8")
-          print("TRNM_WORLD_PR115_MODULE_CONTRACT=PASS")
+          assert 'include!(concat!(' in (
+              root / "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs"
+          ).read_text(encoding="utf-8")
+          print("TRNM_WORLD_PR116_MODULE_CONTRACT=PASS")
           PY
           done
 
@@ -93,6 +95,9 @@ jobs:
           set -euo pipefail
           rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
           rustup override set "$WORLD_RUST_TOOLCHAIN"
+          sudo rm -f \
+            /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.list.save
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev libudev-dev libx11-dev libxi-dev \
@@ -105,8 +110,8 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          head_log="$RUNNER_TEMP/world-pr115-head-source.log"
-          merge_log="$RUNNER_TEMP/world-pr115-merge-source.log"
+          head_log="$RUNNER_TEMP/world-pr116-head-source.log"
+          merge_log="$RUNNER_TEMP/world-pr116-merge-source.log"
           head_status=0
           merge_status=0
           (set -euo pipefail; cd "$RUNNER_TEMP/world-head"; bash scripts/run-trnm-world-v6-qualification-v2.sh source) >"$head_log" 2>&1 || head_status=$?
@@ -118,14 +123,14 @@ jobs:
           actual_merge_tree="$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')"
           actual_parents="$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)"
           {
-            printf '## World PR 115 source qualification\n\n```text\n'
+            printf '## World PR 116 source qualification\n\n```text\n'
             printf 'world_base=%s\nworld_head=%s\nworld_head_tree=%s\n' "$WORLD_BASE_SHA" "$actual_head" "$actual_head_tree"
             printf 'world_merge=%s\nworld_merge_tree=%s\nworld_merge_parents=%s\n' "$actual_merge" "$actual_merge_tree" "$actual_parents"
             printf 'source_head_exit=%s\nsource_merge_exit=%s\nproduction_authorization=not_granted\n```\n' "$head_status" "$merge_status"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if test "$head_status" -ne 0; then printf '%s\n' '--- exact head source failure tail ---'; tail -n 300 "$head_log"; else printf 'WORLD_PR115_HEAD_SOURCE=PASS\n'; fi
-          if test "$merge_status" -ne 0; then printf '%s\n' '--- prospective merge source failure tail ---'; tail -n 300 "$merge_log"; else printf 'WORLD_PR115_MERGE_SOURCE=PASS\n'; fi
+          if test "$head_status" -ne 0; then printf '%s\n' '--- exact head source failure tail ---'; tail -n 300 "$head_log"; else printf 'WORLD_PR116_HEAD_SOURCE=PASS\n'; fi
+          if test "$merge_status" -ne 0; then printf '%s\n' '--- prospective merge source failure tail ---'; tail -n 300 "$merge_log"; else printf 'WORLD_PR116_MERGE_SOURCE=PASS\n'; fi
 
           test "$actual_head" = "$WORLD_HEAD_SHA"
           test "$actual_head_tree" = "$WORLD_HEAD_TREE"
@@ -134,4 +139,4 @@ jobs:
           test "$actual_parents" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
           test "$head_status" -eq 0
           test "$merge_status" -eq 0
-          printf 'WORLD_PR115_SOURCE_QUALIFICATION=PASS\n'
+          printf 'WORLD_PR116_SOURCE_QUALIFICATION=PASS\n'
