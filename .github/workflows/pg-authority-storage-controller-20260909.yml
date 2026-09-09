@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/pg-authority-storage-controller-20260909.yml
       - tools/compose_pg_authority_storage.py
+      - tools/finalize_pg_authority_storage_contracts.py
 
 permissions:
   contents: write
@@ -57,7 +58,9 @@ jobs:
           set -euo pipefail
           C="$GITHUB_WORKSPACE/controller"
           T="$GITHUB_WORKSPACE/target"
-          python3 -m py_compile "$C/tools/compose_pg_authority_storage.py"
+          python3 -m py_compile \
+            "$C/tools/compose_pg_authority_storage.py" \
+            "$C/tools/finalize_pg_authority_storage_contracts.py"
           python3 "$C/tools/compose_pg_authority_storage.py" "$T"
           python3 - <<'PY'
           from pathlib import Path
@@ -69,12 +72,18 @@ jobs:
               1,
           )
           text = text.replace(
+              "use super::{\n    data_loss, decode_digest, decode_id16, error, invalid, map_postgres_error, to_i64,\n    PgRepository,\n};",
+              "use super::{\n    data_loss, decode_digest, error, invalid, map_postgres_error, to_i64, PgRepository,\n};\n#[cfg(test)]\nuse super::decode_id16;",
+              1,
+          )
+          text = text.replace(
               "\nfn decode_storage_key(\n",
               "\n#[cfg(test)]\nfn decode_storage_key(\n",
               1,
           )
           path.write_text(text, encoding="utf-8")
           PY
+          python3 "$C/tools/finalize_pg_authority_storage_contracts.py" "$T"
           git -C "$T" diff --check
       - name: Validate control, Rust and live-test contracts
         shell: bash
@@ -88,6 +97,8 @@ jobs:
           cargo fmt --all
           cargo fmt --all -- --check
           python3 scripts/check-schema-authority.py
+          python3 scripts/check-rust-foundation.py
+          python3 scripts/check-trnm-server.py
           python3 scripts/check-rust-package-inventory.py
           python3 scripts/check-documentation-authority.py
           python3 -m compileall -q scripts tests
