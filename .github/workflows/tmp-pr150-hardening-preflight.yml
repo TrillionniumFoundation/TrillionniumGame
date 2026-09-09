@@ -52,6 +52,11 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           cargo fmt --all
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("Cargo.lock")
+          path.write_text(path.read_text(encoding="utf-8").rstrip("\n") + "\n", encoding="utf-8")
+          PY
           git diff --check
           cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/cargo-metadata.json"
           test -s "$RUNNER_TEMP/cargo-metadata.json"
