@@ -1,0 +1,100 @@
+name: world-pr114-rts-mapping-qualification-20260909
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-pr114-rts-mapping-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_BASE_SHA: 08547523180cf4ae790fe35bbaf7f097d0a812cc
+  WORLD_HEAD_SHA: bc6121786781203f366cf4341db05aa9ef7ef18f
+  WORLD_HEAD_TREE: 2a06d8da60410e0f7c184990dd96f9fe7a36f7b8
+  WORLD_MERGE_SHA: 49edca37007924d6e297762eed45f29162562ff3
+  WORLD_MERGE_TREE: 2a06d8da60410e0f7c184990dd96f9fe7a36f7b8
+  WORLD_RUST_TOOLCHAIN: '1.98.1'
+  RUSTUP_TOOLCHAIN: '1.98.1'
+  CARGO_INCREMENTAL: '0'
+  RUST_TEST_THREADS: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  qualify:
+    name: world-pr114/source-head-and-merge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Fetch and verify immutable World PR 114 tuple
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tuple in "head:$WORLD_HEAD_SHA" "merge:$WORLD_MERGE_SHA"; do
+            name="${tuple%%:*}"
+            sha="${tuple#*:}"
+            dir="$RUNNER_TEMP/world-$name"
+            rm -rf "$dir"
+            git init "$dir"
+            git -C "$dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+            git -C "$dir" fetch --no-tags --depth=2 origin "$sha"
+            git -C "$dir" checkout --detach FETCH_HEAD
+          done
+          test "$(git -C "$RUNNER_TEMP/world-head" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+          test "$(git -C "$RUNNER_TEMP/world-head" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
+          test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse HEAD)" = "$WORLD_MERGE_SHA"
+          test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')" = "$WORLD_MERGE_TREE"
+          test "$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
+
+      - name: Install pinned Rust and native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+          rustup override set "$WORLD_RUST_TOOLCHAIN"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libudev-dev libx11-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev pkg-config
+          rustc --version --verbose
+          cargo --version --verbose
+          rustfmt --version
+
+      - name: Qualify exact head and prospective merge source
+        shell: bash
+        run: |
+          set -uo pipefail
+          head_log="$RUNNER_TEMP/world-pr114-head-source.log"
+          merge_log="$RUNNER_TEMP/world-pr114-merge-source.log"
+          head_status=0
+          merge_status=0
+          (set -euo pipefail; cd "$RUNNER_TEMP/world-head"; bash scripts/run-trnm-world-v6-qualification-v2.sh source) >"$head_log" 2>&1 || head_status=$?
+          (set -euo pipefail; cd "$RUNNER_TEMP/world-merge"; bash scripts/run-trnm-world-v6-qualification-v2.sh source) >"$merge_log" 2>&1 || merge_status=$?
+
+          actual_head="$(git -C "$RUNNER_TEMP/world-head" rev-parse HEAD)"
+          actual_head_tree="$(git -C "$RUNNER_TEMP/world-head" rev-parse 'HEAD^{tree}')"
+          actual_merge="$(git -C "$RUNNER_TEMP/world-merge" rev-parse HEAD)"
+          actual_merge_tree="$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')"
+          actual_parents="$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)"
+          {
+            printf '## World PR 114 source qualification\n\n```text\n'
+            printf 'world_base=%s\nworld_head=%s\nworld_head_tree=%s\n' "$WORLD_BASE_SHA" "$actual_head" "$actual_head_tree"
+            printf 'world_merge=%s\nworld_merge_tree=%s\nworld_merge_parents=%s\n' "$actual_merge" "$actual_merge_tree" "$actual_parents"
+            printf 'source_head_exit=%s\nsource_merge_exit=%s\nproduction_authorization=not_granted\n```\n' "$head_status" "$merge_status"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if test "$head_status" -ne 0; then printf '%s\n' '--- exact head source failure tail ---'; tail -n 240 "$head_log"; else printf 'WORLD_PR114_HEAD_SOURCE=PASS\n'; fi
+          if test "$merge_status" -ne 0; then printf '%s\n' '--- prospective merge source failure tail ---'; tail -n 240 "$merge_log"; else printf 'WORLD_PR114_MERGE_SOURCE=PASS\n'; fi
+
+          test "$actual_head" = "$WORLD_HEAD_SHA"
+          test "$actual_head_tree" = "$WORLD_HEAD_TREE"
+          test "$actual_merge" = "$WORLD_MERGE_SHA"
+          test "$actual_merge_tree" = "$WORLD_MERGE_TREE"
+          test "$actual_parents" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
+          test "$head_status" -eq 0
+          test "$merge_status" -eq 0
+          printf 'WORLD_PR114_SOURCE_QUALIFICATION=PASS\n'
