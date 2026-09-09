@@ -1,24 +1,25 @@
-name: world-rustfmt-a315-20260909
+name: world-rustfmt-bd1603-20260909
 
 on:
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: world-rustfmt-a315-20260909-${{ github.event.pull_request.number || github.ref }}
+  group: world-rustfmt-bd1603-20260909-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
-  WORLD_HEAD_SHA: a31556d3979b21b99592030ba57ee89e09fd66f9
+  WORLD_HEAD_SHA: bd1603ea6087f71ee1fe2d7940c729931105c25f
   RUSTUP_TOOLCHAIN: '1.98.1'
 
 jobs:
   format:
     name: world-rustfmt/materialize-patch
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -54,34 +55,46 @@ jobs:
           cargo fmt --manifest-path "$root/trillionnium/contracts/trnm-world-transition-v1/Cargo.toml"
           cargo fmt --manifest-path "$root/contracts/Cargo.toml" --all
           git -C "$root" diff --check
-          git -C "$root" diff --name-only > "$GITHUB_WORKSPACE/world-rustfmt-files.txt"
-          git -C "$root" diff --binary > "$GITHUB_WORKSPACE/world-rustfmt.patch"
-          test -s "$GITHUB_WORKSPACE/world-rustfmt.patch"
-          cat "$GITHUB_WORKSPACE/world-rustfmt-files.txt"
+          git -C "$root" diff --name-only > "$RUNNER_TEMP/world-rustfmt-files.txt"
+          git -C "$root" diff --binary > "$RUNNER_TEMP/world-rustfmt.patch"
+          test -s "$RUNNER_TEMP/world-rustfmt.patch"
+          cat "$RUNNER_TEMP/world-rustfmt-files.txt"
 
-      - name: Record immutable input and patch digests
+      - name: Publish deterministic patch on the temporary runner branch
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           set -euo pipefail
+          test -n "$TARGET_BRANCH"
+          runner="$RUNNER_TEMP/runner-repository"
+          rm -rf "$runner"
+          git init "$runner"
+          git -C "$runner" remote add origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$runner" fetch --no-tags --depth=1 origin "$TARGET_BRANCH"
+          git -C "$runner" checkout -B "$TARGET_BRANCH" FETCH_HEAD
+          out="$runner/.world-diagnostics/rustfmt-bd1603"
+          mkdir -p "$out"
+          cp "$RUNNER_TEMP/world-rustfmt.patch" "$out/world-rustfmt.patch"
+          cp "$RUNNER_TEMP/world-rustfmt-files.txt" "$out/world-rustfmt-files.txt"
           {
             printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
             printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
             printf 'rustfmt=%s\n' "$(rustfmt --version)"
-            printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
-            printf 'runner_commit=%s\n' "$GITHUB_SHA"
-            printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
             printf 'production_authorization=not_granted\n'
-          } > world-rustfmt-identity.txt
-          sha256sum world-rustfmt.patch world-rustfmt-files.txt world-rustfmt-identity.txt > SHA256SUMS
-
-      - name: Upload rustfmt patch
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: world-rustfmt-a315-${{ env.WORLD_HEAD_SHA }}-${{ github.run_attempt }}
-          path: |
-            world-rustfmt.patch
-            world-rustfmt-files.txt
-            world-rustfmt-identity.txt
-            SHA256SUMS
-          if-no-files-found: error
-          retention-days: 30
+          } > "$out/identity.txt"
+          (
+            cd "$out"
+            sha256sum world-rustfmt.patch world-rustfmt-files.txt identity.txt > SHA256SUMS
+          )
+          git -C "$runner" add .world-diagnostics/rustfmt-bd1603
+          if git -C "$runner" diff --cached --quiet; then
+            echo 'deterministic rustfmt patch already published'
+            exit 0
+          fi
+          git -C "$runner" config user.name 'github-actions[bot]'
+          git -C "$runner" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C "$runner" commit -m 'chore(ci): retain World bd1603 rustfmt patch'
+          git -C "$runner" push origin "HEAD:$TARGET_BRANCH"
