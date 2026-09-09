@@ -1,0 +1,1219 @@
+name: tmp-provider-value-wave9
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-provider-value-wave9.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-console-core-20260909
+  FEATURE_BRANCH: feature/plan-v32-provider-value-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-provider-value-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Wait for exact Wave 8 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 600); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 30
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write atomic provider value state core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-provider-value-core/src
+          cat > crates/trnm-provider-value-core/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-provider-value-core"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Atomic provider event wallet IAP subscription and reconciliation state"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-provider-value-core/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::collections::BTreeMap;
+
+          pub const MAX_PROVIDER_ID_BYTES: usize = 256;
+          pub const MAX_PRODUCT_ID_BYTES: usize = 256;
+          pub const MAX_CURRENCY_BYTES: usize = 16;
+          pub const MAX_EVENTS: usize = 1_000_000;
+          pub const MAX_TRANSACTIONS: usize = 1_000_000;
+          pub const MAX_LEDGER_ENTRIES: usize = 2_000_000;
+          pub const MAX_OUTBOX_INTENTS: usize = 2_000_000;
+          pub const MAX_RECEIPTS: usize = 2_000_000;
+
+          macro_rules! id16 {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(value: [u8; 16]) -> Result<Self, ValueError> {
+                          if value.iter().all(|byte| *byte == 0) {
+                              Err(ValueError::invalid($reason))
+                          } else {
+                              Ok(Self(value))
+                          }
+                      }
+                  }
+              };
+          }
+
+          id16!(ProjectId, "project_id_zero");
+          id16!(UserId, "user_id_zero");
+          id16!(CommandId, "command_id_zero");
+          id16!(LedgerEntryId, "ledger_entry_id_zero");
+          id16!(OutboxIntentId, "outbox_intent_id_zero");
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Digest32([u8; 32]);
+
+          impl Digest32 {
+              pub fn new(value: [u8; 32]) -> Result<Self, ValueError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      Err(ValueError::invalid("digest_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum Provider {
+              Apple,
+              GooglePlay,
+              Steam,
+              FacebookInstant,
+              Huawei,
+              Microsoft,
+              Sony,
+              Nintendo,
+              Custom,
+          }
+
+          #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct ProviderId(String);
+
+          impl ProviderId {
+              pub fn new(value: impl Into<String>) -> Result<Self, ValueError> {
+                  let value = value.into();
+                  validate_token(&value, MAX_PROVIDER_ID_BYTES, "provider_id_invalid")?;
+                  Ok(Self(value))
+              }
+
+              #[must_use]
+              pub fn as_str(&self) -> &str {
+                  &self.0
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct ProductId(String);
+
+          impl ProductId {
+              pub fn new(value: impl Into<String>) -> Result<Self, ValueError> {
+                  let value = value.into();
+                  validate_token(&value, MAX_PRODUCT_ID_BYTES, "product_id_invalid")?;
+                  Ok(Self(value))
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Currency(String);
+
+          impl Currency {
+              pub fn new(value: impl Into<String>) -> Result<Self, ValueError> {
+                  let value = value.into();
+                  if value.is_empty()
+                      || value.len() > MAX_CURRENCY_BYTES
+                      || !value.bytes().all(|byte| byte.is_ascii_uppercase())
+                  {
+                      return Err(ValueError::invalid("currency_invalid"));
+                  }
+                  Ok(Self(value))
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum ProviderEventKind {
+              Purchase,
+              SubscriptionStart,
+              SubscriptionRenewal,
+              SubscriptionCancellation,
+              Refund,
+              Void,
+              Chargeback,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct VerifiedProviderEvent {
+              pub provider: Provider,
+              pub event_id: ProviderId,
+              pub transaction_id: ProviderId,
+              pub original_transaction_id: ProviderId,
+              pub project: ProjectId,
+              pub user: UserId,
+              pub product: ProductId,
+              pub currency: Currency,
+              pub amount_minor: i64,
+              pub kind: ProviderEventKind,
+              pub provider_sequence: u64,
+              pub occurred_at_ms: u64,
+              pub entitlement_expires_at_ms: Option<u64>,
+              pub evidence_digest: Digest32,
+          }
+
+          impl VerifiedProviderEvent {
+              pub fn validate(self) -> Result<Self, ValueError> {
+                  if self.provider_sequence == 0 || self.occurred_at_ms == 0 {
+                      return Err(ValueError::invalid("provider_event_sequence_or_time_invalid"));
+                  }
+                  match self.kind {
+                      ProviderEventKind::Purchase => {
+                          if self.amount_minor <= 0 || self.entitlement_expires_at_ms.is_some() {
+                              return Err(ValueError::invalid("purchase_event_invalid"));
+                          }
+                      }
+                      ProviderEventKind::SubscriptionStart
+                      | ProviderEventKind::SubscriptionRenewal => {
+                          if self.amount_minor <= 0
+                              || self
+                                  .entitlement_expires_at_ms
+                                  .is_none_or(|expires| expires <= self.occurred_at_ms)
+                          {
+                              return Err(ValueError::invalid("subscription_value_event_invalid"));
+                          }
+                      }
+                      ProviderEventKind::SubscriptionCancellation => {
+                          if self.amount_minor != 0 || self.entitlement_expires_at_ms.is_some() {
+                              return Err(ValueError::invalid("subscription_cancel_event_invalid"));
+                          }
+                      }
+                      ProviderEventKind::Refund
+                      | ProviderEventKind::Void
+                      | ProviderEventKind::Chargeback => {
+                          if self.amount_minor != 0 || self.entitlement_expires_at_ms.is_some() {
+                              return Err(ValueError::invalid("reversal_event_invalid"));
+                          }
+                      }
+                  }
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum PurchaseState {
+              Active,
+              Refunded,
+              Voided,
+              ChargedBack,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct Purchase {
+              pub provider: Provider,
+              pub transaction_id: ProviderId,
+              pub original_transaction_id: ProviderId,
+              pub project: ProjectId,
+              pub user: UserId,
+              pub product: ProductId,
+              pub currency: Currency,
+              pub credited_minor: i64,
+              pub state: PurchaseState,
+              pub last_provider_sequence: u64,
+              pub revision: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum SubscriptionState {
+              Active,
+              Cancelled,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct Subscription {
+              pub provider: Provider,
+              pub original_transaction_id: ProviderId,
+              pub project: ProjectId,
+              pub user: UserId,
+              pub product: ProductId,
+              pub currency: Currency,
+              pub entitlement_expires_at_ms: u64,
+              pub state: SubscriptionState,
+              pub last_provider_sequence: u64,
+              pub revision: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum LedgerKind {
+              PurchaseCredit,
+              SubscriptionCredit,
+              RefundDebit,
+              VoidDebit,
+              ChargebackDebit,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct LedgerEntry {
+              pub id: LedgerEntryId,
+              pub project: ProjectId,
+              pub user: UserId,
+              pub currency: Currency,
+              pub delta_minor: i64,
+              pub resulting_balance_minor: i64,
+              pub kind: LedgerKind,
+              pub provider: Provider,
+              pub provider_event_id: ProviderId,
+              pub occurred_at_ms: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum IntentKind {
+              EntitlementGranted,
+              EntitlementRenewed,
+              EntitlementCancelled,
+              ValueReversed,
+              ManualReconciliationRequired,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct OutboxIntent {
+              pub id: OutboxIntentId,
+              pub project: ProjectId,
+              pub user: UserId,
+              pub kind: IntentKind,
+              pub provider: Provider,
+              pub provider_event_id: ProviderId,
+              pub payload_digest: Digest32,
+              pub available_at_ms: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct CommandIdentity {
+              pub command: CommandId,
+              pub fingerprint: Digest32,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ApplyProviderEvent {
+              pub command: CommandIdentity,
+              pub event: VerifiedProviderEvent,
+              pub ledger_entry: Option<LedgerEntryId>,
+              pub outbox_intent: OutboxIntentId,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ValueResult {
+              pub provider: Provider,
+              pub event_id: ProviderId,
+              pub transaction_id: ProviderId,
+              pub balance_minor: i64,
+              pub purchase_state: Option<PurchaseState>,
+              pub subscription_state: Option<SubscriptionState>,
+              pub entitlement_expires_at_ms: Option<u64>,
+              pub ledger_entry: Option<LedgerEntryId>,
+              pub outbox_intent: Option<OutboxIntentId>,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ValueReceipt {
+              pub command: CommandId,
+              pub result: ValueResult,
+              pub duplicate_command: bool,
+              pub duplicate_provider_event: bool,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          struct StoredCommandReceipt {
+              fingerprint: Digest32,
+              receipt: ValueReceipt,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          struct StoredProviderEvent {
+              event: VerifiedProviderEvent,
+              result: ValueResult,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct ValuePolicy {
+              pub allow_negative_balance: bool,
+              pub maximum_absolute_balance_minor: i64,
+          }
+
+          impl ValuePolicy {
+              pub fn validate(self) -> Result<Self, ValueError> {
+                  if self.maximum_absolute_balance_minor <= 0 {
+                      Err(ValueError::invalid("value_policy_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct Limits {
+              pub events: usize,
+              pub transactions: usize,
+              pub ledger_entries: usize,
+              pub outbox_intents: usize,
+              pub receipts: usize,
+          }
+
+          impl Limits {
+              pub fn validate(self) -> Result<Self, ValueError> {
+                  if self.events == 0 || self.events > MAX_EVENTS
+                      || self.transactions == 0 || self.transactions > MAX_TRANSACTIONS
+                      || self.ledger_entries == 0 || self.ledger_entries > MAX_LEDGER_ENTRIES
+                      || self.outbox_intents == 0 || self.outbox_intents > MAX_OUTBOX_INTENTS
+                      || self.receipts == 0 || self.receipts > MAX_RECEIPTS
+                  {
+                      Err(ValueError::invalid("value_limits_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableValueCode {
+              InvalidArgument,
+              NotFound,
+              AlreadyExists,
+              FailedPrecondition,
+              Aborted,
+              OutOfRange,
+              ResourceExhausted,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ValueError {
+              code: StableValueCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl ValueError {
+              #[must_use]
+              pub const fn new(code: StableValueCode, reason: &'static str, retryable: bool) -> Self {
+                  Self { code, reason, retryable }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableValueCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableValueCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct ValueRegistry {
+              purchases: BTreeMap<(Provider, ProviderId), Purchase>,
+              subscriptions: BTreeMap<(Provider, ProviderId), Subscription>,
+              balances: BTreeMap<(ProjectId, UserId, Currency), i64>,
+              provider_events: BTreeMap<(Provider, ProviderId), StoredProviderEvent>,
+              command_receipts: BTreeMap<CommandId, StoredCommandReceipt>,
+              ledger: BTreeMap<LedgerEntryId, LedgerEntry>,
+              outbox: BTreeMap<OutboxIntentId, OutboxIntent>,
+              policy: ValuePolicy,
+              limits: Limits,
+          }
+
+          impl ValueRegistry {
+              pub fn new(policy: ValuePolicy, limits: Limits) -> Result<Self, ValueError> {
+                  Ok(Self {
+                      purchases: BTreeMap::new(),
+                      subscriptions: BTreeMap::new(),
+                      balances: BTreeMap::new(),
+                      provider_events: BTreeMap::new(),
+                      command_receipts: BTreeMap::new(),
+                      ledger: BTreeMap::new(),
+                      outbox: BTreeMap::new(),
+                      policy: policy.validate()?,
+                      limits: limits.validate()?,
+                  })
+              }
+
+              pub fn apply(&mut self, request: ApplyProviderEvent) -> Result<ValueReceipt, ValueError> {
+                  if let Some(stored) = self.command_receipts.get(&request.command.command) {
+                      if stored.fingerprint != request.command.fingerprint {
+                          return Err(ValueError::new(
+                              StableValueCode::AlreadyExists,
+                              "command_fingerprint_conflict",
+                              false,
+                          ));
+                      }
+                      let mut receipt = stored.receipt.clone();
+                      receipt.duplicate_command = true;
+                      return Ok(receipt);
+                  }
+                  if self.command_receipts.len() >= self.limits.receipts {
+                      return Err(ValueError::new(
+                          StableValueCode::ResourceExhausted,
+                          "command_receipt_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let event = request.event.validate()?;
+                  let event_key = (event.provider, event.event_id.clone());
+                  if let Some(stored) = self.provider_events.get(&event_key) {
+                      if stored.event != event {
+                          return Err(ValueError::new(
+                              StableValueCode::AlreadyExists,
+                              "provider_event_identity_conflict",
+                              false,
+                          ));
+                      }
+                      let receipt = ValueReceipt {
+                          command: request.command.command,
+                          result: stored.result.clone(),
+                          duplicate_command: false,
+                          duplicate_provider_event: true,
+                      };
+                      self.command_receipts.insert(
+                          request.command.command,
+                          StoredCommandReceipt {
+                              fingerprint: request.command.fingerprint,
+                              receipt: receipt.clone(),
+                          },
+                      );
+                      return Ok(receipt);
+                  }
+                  if self.provider_events.len() >= self.limits.events {
+                      return Err(ValueError::new(
+                          StableValueCode::ResourceExhausted,
+                          "provider_event_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  if self.outbox.contains_key(&request.outbox_intent) {
+                      return Err(ValueError::new(
+                          StableValueCode::AlreadyExists,
+                          "outbox_intent_exists",
+                          false,
+                      ));
+                  }
+                  if self.outbox.len() >= self.limits.outbox_intents {
+                      return Err(ValueError::new(
+                          StableValueCode::ResourceExhausted,
+                          "outbox_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  let result = candidate.apply_new_event(&event, request.ledger_entry, request.outbox_intent)?;
+                  let receipt = ValueReceipt {
+                      command: request.command.command,
+                      result: result.clone(),
+                      duplicate_command: false,
+                      duplicate_provider_event: false,
+                  };
+                  candidate.provider_events.insert(
+                      event_key,
+                      StoredProviderEvent {
+                          event,
+                          result,
+                      },
+                  );
+                  candidate.command_receipts.insert(
+                      request.command.command,
+                      StoredCommandReceipt {
+                          fingerprint: request.command.fingerprint,
+                          receipt: receipt.clone(),
+                      },
+                  );
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              fn apply_new_event(
+                  &mut self,
+                  event: &VerifiedProviderEvent,
+                  ledger_id: Option<LedgerEntryId>,
+                  outbox_id: OutboxIntentId,
+              ) -> Result<ValueResult, ValueError> {
+                  let purchase_key = (event.provider, event.original_transaction_id.clone());
+                  let subscription_key = purchase_key.clone();
+                  let balance_key = (event.project, event.user, event.currency.clone());
+                  let current_balance = self.balances.get(&balance_key).copied().unwrap_or(0);
+                  let mut purchase_state = None;
+                  let mut subscription_state = None;
+                  let mut entitlement_expires_at_ms = None;
+                  let (delta, ledger_kind, intent_kind) = match event.kind {
+                      ProviderEventKind::Purchase => {
+                          self.require_transaction_capacity(&purchase_key)?;
+                          if self.purchases.contains_key(&purchase_key) {
+                              return Err(ValueError::new(
+                                  StableValueCode::AlreadyExists,
+                                  "purchase_transaction_exists",
+                                  false,
+                              ));
+                          }
+                          let purchase = Purchase {
+                              provider: event.provider,
+                              transaction_id: event.transaction_id.clone(),
+                              original_transaction_id: event.original_transaction_id.clone(),
+                              project: event.project,
+                              user: event.user,
+                              product: event.product.clone(),
+                              currency: event.currency.clone(),
+                              credited_minor: event.amount_minor,
+                              state: PurchaseState::Active,
+                              last_provider_sequence: event.provider_sequence,
+                              revision: 1,
+                          };
+                          purchase_state = Some(PurchaseState::Active);
+                          self.purchases.insert(purchase_key, purchase);
+                          (event.amount_minor, Some(LedgerKind::PurchaseCredit), IntentKind::EntitlementGranted)
+                      }
+                      ProviderEventKind::SubscriptionStart => {
+                          self.require_transaction_capacity(&purchase_key)?;
+                          if self.purchases.contains_key(&purchase_key)
+                              || self.subscriptions.contains_key(&subscription_key)
+                          {
+                              return Err(ValueError::new(
+                                  StableValueCode::AlreadyExists,
+                                  "subscription_transaction_exists",
+                                  false,
+                              ));
+                          }
+                          let expires = event.entitlement_expires_at_ms.expect("validated subscription expiry");
+                          self.purchases.insert(purchase_key, Purchase {
+                              provider: event.provider,
+                              transaction_id: event.transaction_id.clone(),
+                              original_transaction_id: event.original_transaction_id.clone(),
+                              project: event.project,
+                              user: event.user,
+                              product: event.product.clone(),
+                              currency: event.currency.clone(),
+                              credited_minor: event.amount_minor,
+                              state: PurchaseState::Active,
+                              last_provider_sequence: event.provider_sequence,
+                              revision: 1,
+                          });
+                          self.subscriptions.insert(subscription_key, Subscription {
+                              provider: event.provider,
+                              original_transaction_id: event.original_transaction_id.clone(),
+                              project: event.project,
+                              user: event.user,
+                              product: event.product.clone(),
+                              currency: event.currency.clone(),
+                              entitlement_expires_at_ms: expires,
+                              state: SubscriptionState::Active,
+                              last_provider_sequence: event.provider_sequence,
+                              revision: 1,
+                          });
+                          purchase_state = Some(PurchaseState::Active);
+                          subscription_state = Some(SubscriptionState::Active);
+                          entitlement_expires_at_ms = Some(expires);
+                          (event.amount_minor, Some(LedgerKind::SubscriptionCredit), IntentKind::EntitlementGranted)
+                      }
+                      ProviderEventKind::SubscriptionRenewal => {
+                          let subscription = self.subscriptions.get_mut(&subscription_key).ok_or_else(|| ValueError::new(
+                              StableValueCode::NotFound,
+                              "subscription_not_found",
+                              false,
+                          ))?;
+                          validate_event_owner(event, subscription.project, subscription.user, &subscription.product, &subscription.currency)?;
+                          if subscription.state != SubscriptionState::Active
+                              || event.provider_sequence <= subscription.last_provider_sequence
+                          {
+                              return Err(ValueError::new(
+                                  StableValueCode::Aborted,
+                                  "subscription_sequence_or_state_invalid",
+                                  false,
+                              ));
+                          }
+                          let expires = event.entitlement_expires_at_ms.expect("validated renewal expiry");
+                          if expires <= subscription.entitlement_expires_at_ms {
+                              return Err(ValueError::new(
+                                  StableValueCode::FailedPrecondition,
+                                  "subscription_expiry_not_advanced",
+                                  false,
+                              ));
+                          }
+                          subscription.entitlement_expires_at_ms = expires;
+                          subscription.last_provider_sequence = event.provider_sequence;
+                          subscription.revision = next_revision(subscription.revision)?;
+                          subscription_state = Some(subscription.state);
+                          entitlement_expires_at_ms = Some(expires);
+                          (event.amount_minor, Some(LedgerKind::SubscriptionCredit), IntentKind::EntitlementRenewed)
+                      }
+                      ProviderEventKind::SubscriptionCancellation => {
+                          let subscription = self.subscriptions.get_mut(&subscription_key).ok_or_else(|| ValueError::new(
+                              StableValueCode::NotFound,
+                              "subscription_not_found",
+                              false,
+                          ))?;
+                          validate_event_owner(event, subscription.project, subscription.user, &subscription.product, &subscription.currency)?;
+                          if subscription.state != SubscriptionState::Active
+                              || event.provider_sequence <= subscription.last_provider_sequence
+                          {
+                              return Err(ValueError::new(
+                                  StableValueCode::Aborted,
+                                  "subscription_sequence_or_state_invalid",
+                                  false,
+                              ));
+                          }
+                          subscription.state = SubscriptionState::Cancelled;
+                          subscription.last_provider_sequence = event.provider_sequence;
+                          subscription.revision = next_revision(subscription.revision)?;
+                          subscription_state = Some(SubscriptionState::Cancelled);
+                          entitlement_expires_at_ms = Some(subscription.entitlement_expires_at_ms);
+                          (0, None, IntentKind::EntitlementCancelled)
+                      }
+                      ProviderEventKind::Refund
+                      | ProviderEventKind::Void
+                      | ProviderEventKind::Chargeback => {
+                          let purchase = self.purchases.get_mut(&purchase_key).ok_or_else(|| ValueError::new(
+                              StableValueCode::NotFound,
+                              "purchase_not_found",
+                              false,
+                          ))?;
+                          validate_event_owner(event, purchase.project, purchase.user, &purchase.product, &purchase.currency)?;
+                          if purchase.state != PurchaseState::Active
+                              || event.provider_sequence <= purchase.last_provider_sequence
+                          {
+                              return Err(ValueError::new(
+                                  StableValueCode::Aborted,
+                                  "purchase_sequence_or_state_invalid",
+                                  false,
+                              ));
+                          }
+                          let (state, kind) = match event.kind {
+                              ProviderEventKind::Refund => (PurchaseState::Refunded, LedgerKind::RefundDebit),
+                              ProviderEventKind::Void => (PurchaseState::Voided, LedgerKind::VoidDebit),
+                              ProviderEventKind::Chargeback => (PurchaseState::ChargedBack, LedgerKind::ChargebackDebit),
+                              _ => unreachable!("matched reversal"),
+                          };
+                          purchase.state = state;
+                          purchase.last_provider_sequence = event.provider_sequence;
+                          purchase.revision = next_revision(purchase.revision)?;
+                          purchase_state = Some(state);
+                          if let Some(subscription) = self.subscriptions.get_mut(&subscription_key) {
+                              subscription.state = SubscriptionState::Cancelled;
+                              subscription.last_provider_sequence = subscription.last_provider_sequence.max(event.provider_sequence);
+                              subscription.revision = next_revision(subscription.revision)?;
+                              subscription_state = Some(SubscriptionState::Cancelled);
+                              entitlement_expires_at_ms = Some(subscription.entitlement_expires_at_ms);
+                          }
+                          (-purchase.credited_minor, Some(kind), IntentKind::ValueReversed)
+                      }
+                  };
+
+                  let resulting_balance = current_balance.checked_add(delta).ok_or_else(|| ValueError::new(
+                      StableValueCode::OutOfRange,
+                      "wallet_balance_overflow",
+                      false,
+                  ))?;
+                  if (!self.policy.allow_negative_balance && resulting_balance < 0)
+                      || resulting_balance.checked_abs().is_none_or(|value| value > self.policy.maximum_absolute_balance_minor)
+                  {
+                      return Err(ValueError::new(
+                          StableValueCode::FailedPrecondition,
+                          "wallet_balance_policy_violation",
+                          false,
+                      ));
+                  }
+                  let ledger_entry = match (ledger_kind, ledger_id) {
+                      (Some(kind), Some(id)) => {
+                          if self.ledger.contains_key(&id) {
+                              return Err(ValueError::new(
+                                  StableValueCode::AlreadyExists,
+                                  "ledger_entry_exists",
+                                  false,
+                              ));
+                          }
+                          if self.ledger.len() >= self.limits.ledger_entries {
+                              return Err(ValueError::new(
+                                  StableValueCode::ResourceExhausted,
+                                  "ledger_capacity_exhausted",
+                                  false,
+                              ));
+                          }
+                          self.ledger.insert(id, LedgerEntry {
+                              id,
+                              project: event.project,
+                              user: event.user,
+                              currency: event.currency.clone(),
+                              delta_minor: delta,
+                              resulting_balance_minor: resulting_balance,
+                              kind,
+                              provider: event.provider,
+                              provider_event_id: event.event_id.clone(),
+                              occurred_at_ms: event.occurred_at_ms,
+                          });
+                          Some(id)
+                      }
+                      (None, None) => None,
+                      _ => return Err(ValueError::invalid("ledger_identity_requirement_mismatch")),
+                  };
+                  self.balances.insert(balance_key, resulting_balance);
+                  self.outbox.insert(outbox_id, OutboxIntent {
+                      id: outbox_id,
+                      project: event.project,
+                      user: event.user,
+                      kind: intent_kind,
+                      provider: event.provider,
+                      provider_event_id: event.event_id.clone(),
+                      payload_digest: event.evidence_digest,
+                      available_at_ms: event.occurred_at_ms,
+                  });
+                  Ok(ValueResult {
+                      provider: event.provider,
+                      event_id: event.event_id.clone(),
+                      transaction_id: event.transaction_id.clone(),
+                      balance_minor: resulting_balance,
+                      purchase_state,
+                      subscription_state,
+                      entitlement_expires_at_ms,
+                      ledger_entry,
+                      outbox_intent: Some(outbox_id),
+                  })
+              }
+
+              fn require_transaction_capacity(
+                  &self,
+                  key: &(Provider, ProviderId),
+              ) -> Result<(), ValueError> {
+                  if !self.purchases.contains_key(key) && self.purchases.len() >= self.limits.transactions {
+                      Err(ValueError::new(
+                          StableValueCode::ResourceExhausted,
+                          "transaction_capacity_exhausted",
+                          false,
+                      ))
+                  } else {
+                      Ok(())
+                  }
+              }
+
+              #[must_use]
+              pub fn balance(&self, project: ProjectId, user: UserId, currency: &Currency) -> i64 {
+                  self.balances
+                      .get(&(project, user, currency.clone()))
+                      .copied()
+                      .unwrap_or(0)
+              }
+
+              #[must_use]
+              pub fn purchase(&self, provider: Provider, original: &ProviderId) -> Option<&Purchase> {
+                  self.purchases.get(&(provider, original.clone()))
+              }
+
+              #[must_use]
+              pub fn subscription(&self, provider: Provider, original: &ProviderId) -> Option<&Subscription> {
+                  self.subscriptions.get(&(provider, original.clone()))
+              }
+
+              #[must_use]
+              pub fn ledger_len(&self) -> usize {
+                  self.ledger.len()
+              }
+
+              #[must_use]
+              pub fn outbox_len(&self) -> usize {
+                  self.outbox.len()
+              }
+          }
+
+          fn validate_event_owner(
+              event: &VerifiedProviderEvent,
+              project: ProjectId,
+              user: UserId,
+              product: &ProductId,
+              currency: &Currency,
+          ) -> Result<(), ValueError> {
+              if event.project != project
+                  || event.user != user
+                  || &event.product != product
+                  || &event.currency != currency
+              {
+                  Err(ValueError::new(
+                      StableValueCode::FailedPrecondition,
+                      "provider_event_owner_or_product_mismatch",
+                      false,
+                  ))
+              } else {
+                  Ok(())
+              }
+          }
+
+          fn next_revision(current: u64) -> Result<u64, ValueError> {
+              current.checked_add(1).ok_or_else(|| ValueError::new(
+                  StableValueCode::OutOfRange,
+                  "revision_overflow",
+                  false,
+              ))
+          }
+
+          fn validate_token(value: &str, maximum: usize, reason: &'static str) -> Result<(), ValueError> {
+              if value.is_empty()
+                  || value.len() > maximum
+                  || value.bytes().any(|byte| byte.is_ascii_control())
+              {
+                  Err(ValueError::invalid(reason))
+              } else {
+                  Ok(())
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn id<T>(byte: u8, constructor: fn([u8;16]) -> Result<T, ValueError>) -> T {
+                  constructor([byte;16]).unwrap()
+              }
+
+              fn digest(byte: u8) -> Digest32 {
+                  Digest32::new([byte;32]).unwrap()
+              }
+
+              fn event(kind: ProviderEventKind, event_id: &str, sequence: u64) -> VerifiedProviderEvent {
+                  VerifiedProviderEvent {
+                      provider: Provider::Apple,
+                      event_id: ProviderId::new(event_id).unwrap(),
+                      transaction_id: ProviderId::new(format!("tx-{event_id}")).unwrap(),
+                      original_transaction_id: ProviderId::new("original-1").unwrap(),
+                      project: id(1, ProjectId::new),
+                      user: id(2, UserId::new),
+                      product: ProductId::new("coins.100").unwrap(),
+                      currency: Currency::new("USD").unwrap(),
+                      amount_minor: match kind {
+                          ProviderEventKind::Purchase | ProviderEventKind::SubscriptionStart | ProviderEventKind::SubscriptionRenewal => 100,
+                          _ => 0,
+                      },
+                      kind,
+                      provider_sequence: sequence,
+                      occurred_at_ms: sequence * 10,
+                      entitlement_expires_at_ms: match kind {
+                          ProviderEventKind::SubscriptionStart | ProviderEventKind::SubscriptionRenewal => Some(1000 + sequence * 100),
+                          _ => None,
+                      },
+                      evidence_digest: digest(u8::try_from(sequence).unwrap()),
+                  }
+              }
+
+              fn request(byte: u8, event: VerifiedProviderEvent, ledger: bool) -> ApplyProviderEvent {
+                  ApplyProviderEvent {
+                      command: CommandIdentity { command: id(byte, CommandId::new), fingerprint: digest(byte) },
+                      event,
+                      ledger_entry: ledger.then(|| id(byte, LedgerEntryId::new)),
+                      outbox_intent: id(byte, OutboxIntentId::new),
+                  }
+              }
+
+              fn registry(allow_negative: bool) -> ValueRegistry {
+                  ValueRegistry::new(
+                      ValuePolicy { allow_negative_balance: allow_negative, maximum_absolute_balance_minor: 10_000 },
+                      Limits { events: 32, transactions: 32, ledger_entries: 32, outbox_intents: 32, receipts: 64 },
+                  ).unwrap()
+              }
+
+              #[test]
+              fn purchase_and_exact_callback_replay_have_one_value_effect() {
+                  let mut registry = registry(false);
+                  let purchase = event(ProviderEventKind::Purchase, "event-1", 1);
+                  let first = registry.apply(request(1, purchase.clone(), true)).unwrap();
+                  assert_eq!(first.result.balance_minor, 100);
+                  assert_eq!(registry.ledger_len(), 1);
+                  assert_eq!(registry.outbox_len(), 1);
+                  let replay = registry.apply(request(2, purchase, true)).unwrap();
+                  assert!(replay.duplicate_provider_event);
+                  assert_eq!(replay.result.balance_minor, 100);
+                  assert_eq!(registry.ledger_len(), 1);
+                  assert_eq!(registry.outbox_len(), 1);
+              }
+
+              #[test]
+              fn provider_event_identity_conflict_is_rejected() {
+                  let mut registry = registry(false);
+                  let first = event(ProviderEventKind::Purchase, "event-1", 1);
+                  registry.apply(request(1, first.clone(), true)).unwrap();
+                  let mut changed = first;
+                  changed.user = id(9, UserId::new);
+                  assert_eq!(registry.apply(request(2, changed, true)).unwrap_err().reason(), "provider_event_identity_conflict");
+                  assert_eq!(registry.balance(id(1, ProjectId::new), id(2, UserId::new), &Currency::new("USD").unwrap()), 100);
+              }
+
+              #[test]
+              fn refund_reverses_exact_original_credit_atomically() {
+                  let mut registry = registry(false);
+                  registry.apply(request(1, event(ProviderEventKind::Purchase, "event-1", 1), true)).unwrap();
+                  let refund = registry.apply(request(2, event(ProviderEventKind::Refund, "event-2", 2), true)).unwrap();
+                  assert_eq!(refund.result.balance_minor, 0);
+                  assert_eq!(refund.result.purchase_state, Some(PurchaseState::Refunded));
+                  assert_eq!(registry.ledger_len(), 2);
+                  assert_eq!(registry.outbox_len(), 2);
+                  assert_eq!(registry.purchase(Provider::Apple, &ProviderId::new("original-1").unwrap()).unwrap().state, PurchaseState::Refunded);
+              }
+
+              #[test]
+              fn failed_negative_balance_policy_preserves_purchase_and_ledger() {
+                  let mut registry = registry(false);
+                  let mut start = event(ProviderEventKind::Purchase, "event-1", 1);
+                  start.amount_minor = 100;
+                  registry.apply(request(1, start, true)).unwrap();
+                  let key = ProviderId::new("original-1").unwrap();
+                  registry.balances.insert((id(1,ProjectId::new),id(2,UserId::new),Currency::new("USD").unwrap()), 50);
+                  let error = registry.apply(request(2, event(ProviderEventKind::Refund, "event-2", 2), true)).unwrap_err();
+                  assert_eq!(error.reason(), "wallet_balance_policy_violation");
+                  assert_eq!(registry.purchase(Provider::Apple, &key).unwrap().state, PurchaseState::Active);
+                  assert_eq!(registry.ledger_len(), 1);
+                  assert_eq!(registry.outbox_len(), 1);
+              }
+
+              #[test]
+              fn renewal_requires_monotonic_sequence_and_expiry() {
+                  let mut registry = registry(false);
+                  registry.apply(request(1, event(ProviderEventKind::SubscriptionStart, "event-1", 1), true)).unwrap();
+                  let renewal = registry.apply(request(2, event(ProviderEventKind::SubscriptionRenewal, "event-2", 2), true)).unwrap();
+                  assert_eq!(renewal.result.subscription_state, Some(SubscriptionState::Active));
+                  assert_eq!(renewal.result.entitlement_expires_at_ms, Some(1200));
+                  let mut stale = event(ProviderEventKind::SubscriptionRenewal, "event-3", 2);
+                  stale.entitlement_expires_at_ms = Some(1300);
+                  assert_eq!(registry.apply(request(3, stale, true)).unwrap_err().reason(), "subscription_sequence_or_state_invalid");
+              }
+
+              #[test]
+              fn cancellation_has_no_ledger_entry_but_one_intent() {
+                  let mut registry = registry(false);
+                  registry.apply(request(1, event(ProviderEventKind::SubscriptionStart, "event-1", 1), true)).unwrap();
+                  let before = registry.ledger_len();
+                  let result = registry.apply(request(2, event(ProviderEventKind::SubscriptionCancellation, "event-2", 2), false)).unwrap();
+                  assert_eq!(result.result.subscription_state, Some(SubscriptionState::Cancelled));
+                  assert_eq!(registry.ledger_len(), before);
+                  assert_eq!(registry.outbox_len(), 2);
+              }
+
+              #[test]
+              fn changed_command_fingerprint_does_not_replay() {
+                  let mut registry = registry(false);
+                  let request = request(1, event(ProviderEventKind::Purchase, "event-1", 1), true);
+                  registry.apply(request.clone()).unwrap();
+                  let changed = ApplyProviderEvent {
+                      command: CommandIdentity { fingerprint: digest(9), ..request.command },
+                      ..request
+                  };
+                  assert_eq!(registry.apply(changed).unwrap_err().reason(), "command_fingerprint_conflict");
+              }
+          }
+          EOF
+
+          # Keep the source compatible with the pinned Rust toolchain.
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('crates/trnm-provider-value-core/src/lib.rs')
+          t=p.read_text()
+          t=t.replace('.is_none_or(|expires| expires <= self.occurred_at_ms)', '.map_or(true, |expires| expires <= self.occurred_at_ms)')
+          t=t.replace('.is_none_or(|value| value > self.policy.maximum_absolute_balance_minor)', '.map_or(true, |value| value > self.policy.maximum_absolute_balance_minor)')
+          p.write_text(t)
+          PY
+
+          cat > crates/trnm-provider-value-core/README.md <<'EOF'
+          # trnm-provider-value-core
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-provider-value-core`  
+          Workspace class: `root`  
+          Lifecycle: `product-library`  
+          Owner role: `payments`
+
+          ## Status and authority
+
+          This document is the module contract for verified provider events, wallet value, purchases, subscriptions, ledger entries, outbox intents and exact receipts. It is a source candidate and does not establish provider authenticity, payment compliance, IAP compatibility or production custody.
+
+          ## Responsibilities
+
+          The crate owns bounded provider/event/transaction identities, replay and conflict detection, purchase/subscription transition rules, wallet arithmetic policy, exact reversal amounts, ledger/outbox coupling and command receipts.
+
+          It does not parse or cryptographically verify provider payloads, call provider networks, execute external entitlement delivery, persist SQL, hold money, settle fiat or provide tax/accounting records.
+
+          ## Architecture and dependencies
+
+          A provider-specific verifier converts an untrusted callback or receipt into `VerifiedProviderEvent` only after signature, audience/application, environment, time and replay checks. A durable repository applies this pure transition in one transaction and writes event index, purchase/subscription, wallet, ledger, outbox and command receipt together.
+
+          Outbox workers deliver notifications/entitlements after commit and reconcile ambiguous provider outcomes; no external I/O occurs inside the value transaction.
+
+          ## Public contracts
+
+          Provider event ID is unique within a provider. Exact repeated events return the original result without another ledger or outbox effect; changed content under the same event ID fails. Commands have an independent exact identity/fingerprint receipt.
+
+          Purchase and subscription value events require positive minor-unit amounts. Reversal events derive the debit from the original credited amount rather than caller input. Provider sequence is monotonic per original transaction.
+
+          ## Correctness and failure model
+
+          The registry clones before applying a new event. Any invalid transition, owner/product mismatch, sequence regression, balance overflow/policy failure, duplicate ledger/outbox identity or capacity exhaustion preserves purchases, subscriptions, balances, ledger, outbox, event index and receipts.
+
+          Subscription renewal must advance expiry. Refund/void/chargeback are terminal for the active purchase and cancel a linked subscription.
+
+          ## Security and privacy
+
+          Only verified typed events may enter this core. Raw receipts, store credentials, signatures, user data and transaction payloads are never logged or used as metric labels. Evidence digests are identifiers, not proof of provider authenticity by themselves.
+
+          Value-affecting callbacks require replay protection, exact application/environment binding, provider deadlines and independent payment/security review.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-provider-value-core --all-targets --locked
+          cargo clippy --package trnm-provider-value-core --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover one-effect provider replay, event identity conflict, atomic exact refund, negative-balance rollback, monotonic renewal, cancellation without ledger and changed command fingerprint rejection.
+
+          ## Operations
+
+          Adapters expose verification result, event replay/conflict, transaction state, value delta class, ledger/outbox backlog, reversal/reconciliation and provider latency with bounded labels. Provider IDs, user IDs and raw receipts are excluded.
+
+          ## Compatibility and evidence
+
+          Complete #146 requires each Nakama provider and IAP/subscription endpoint, signed fixtures and sandboxes, wallet semantics, receipt validation, refund/void/renewal/reconciliation, notifications, official SDK/oracle differential and compliance review.
+
+          This core does not prove real provider behavior, exactly-once external delivery, custody, accounting, tax, fraud resistance or production readiness.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P0-SERVER-001`, `GAP-P0-DATA-001`, `GAP-P0-CRYPTO-001`, `GAP-P0-SCOPE-001`, `GAP-P0-CI-001`, `GAP-P1-OUTBOX-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires real provider verifier adapters, sandbox/fixture matrices, durable transactional repositories, outbox reconciliation, full public API, official consumer differential, security/compliance evidence and conflict-free payment/database review.
+          EOF
+
+      - name: Register provider value module fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          member='crates/trnm-provider-value-core'
+          p=Path('Cargo.toml'); t=p.read_text();
+          if f'"{member}"' not in t: p.write_text(t.replace(']\nexclude = [',f'  "{member}",\n]\nexclude = [',1))
+          mp=Path('docs/status/MODULE_DOCUMENTATION.json'); m=json.loads(mp.read_text())
+          if not any(r['id']=='trnm-provider-value-core' for r in m['modules']):
+              m['modules'].append({'id':'trnm-provider-value-core','path':member,'manifest':f'{member}/Cargo.toml','documentation':f'{member}/README.md','workspace':'root','lifecycle':'product-library','maturity':'source-candidate','owner_role':'payments','authority':'verified provider event wallet IAP subscription ledger and outbox value state','blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-DATA-001','GAP-P0-CRYPTO-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-OUTBOX-001','GAP-P1-REVIEW-001'],'claim_credit':False})
+          m['modules'].sort(key=lambda r:r['id']); m['summary'].update({'module_count':len(m['modules']),'documented_count':len(m['modules']),'root_workspace_count':sum(r['workspace']=='root' for r in m['modules']),'isolated_workspace_count':sum(r['workspace']=='isolated' for r in m['modules']),'undocumented_count':0}); mp.write_text(json.dumps(m,indent=2)+'\n')
+          ap=Path('docs/development/RUST_PACKAGE_AUTHORITY.json'); a=json.loads(ap.read_text());
+          if member not in a['workspace']['members']: a['workspace']['members'].append(member); a['workspace']['members'].sort()
+          for k in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'): a.setdefault('claim_boundary',{})[k]=False
+          ap.write_text(json.dumps(a,indent=2)+'\n')
+          ip=Path('docs/status/IMPLEMENTATION_INVENTORY.json'); inv=json.loads(ip.read_text())
+          if not any(r.get('id')=='COMP-PROVIDER-VALUE-CORE' for r in inv['components']):
+              inv['components'].append({'id':'COMP-PROVIDER-VALUE-CORE','path':member,'kind':'rust-library','workstreams':['W12'],'status':'source-candidate','implemented':['verified provider event replay and conflict state','atomic purchase subscription wallet ledger outbox transitions','exact reversal and command receipt behavior'],'missing':['real provider signature/audience/sandbox adapters','durable repository and external effect reconciliation','complete public API and official SDK/oracle differential','security compliance and independent payment acceptance'],'blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-DATA-001','GAP-P0-CRYPTO-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-OUTBOX-001','GAP-P1-REVIEW-001'],'parity_ids':[],'evidence_ids':[],'claim_credit':False})
+          ip.write_text(json.dumps(inv,indent=2)+'\n')
+          sp=Path('docs/status/CURRENT_STATE.json'); st=json.loads(sp.read_text()); st.setdefault('implementation',{})['provider_value_core_source_candidate']=True; st['implementation']['complete_console_provider_iap_surface']=False
+          for k in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'): st.setdefault('claims',{})[k]=False
+          sp.write_text(json.dumps(st,indent=2)+'\n')
+          PY
+
+      - name: Publish Draft and qualify exact source
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git commit -m 'feat(value): add provider wallet IAP subscription core'
+          head_sha="$(git rev-parse HEAD)"; head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Source candidate for #146, stacked on Console Wave 8.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds verified provider-event replay/conflict boundaries and atomic wallet, purchase, subscription, ledger, outbox and command-receipt transitions including refund/void/chargeback and renewal.
+
+          Real provider verification, sandbox evidence, durable database integration, external-effect reconciliation, full API, compliance and official SDK/oracle differential remain open. No compatibility, custody or production credit.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 9] Add provider wallet IAP subscription value core' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do cargo test --manifest-path "$manifest" --all-targets --locked; cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings; done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "Provider value Wave 9 carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and all claim ceilings remain binding."
+          gh issue comment 146 --repo "$REPOSITORY" --body "Provider value core carrier status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`; #146 remains open pending real providers, durable effects and evidence."
