@@ -211,65 +211,93 @@ jobs:
           PACKAGE_MERGE: ${{ steps.package_merge.outcome }}
         run: |
           set -euo pipefail
-          head_dir="$RUNNER_TEMP/world-head"
-          merge_dir="$RUNNER_TEMP/world-merge"
-          actual_head="$(git -C "$head_dir" rev-parse HEAD)"
-          actual_head_tree="$(git -C "$head_dir" rev-parse 'HEAD^{tree}')"
-          actual_merge="$(git -C "$merge_dir" rev-parse HEAD)"
-          actual_merge_tree="$(git -C "$merge_dir" rev-parse 'HEAD^{tree}')"
-          actual_parents="$(git -C "$merge_dir" show -s --format=%P HEAD)"
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
 
-          {
-            printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
-            printf 'world_base_sha=%s\n' "$WORLD_BASE_SHA"
-            printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
-            printf 'world_head_tree=%s\n' "$WORLD_HEAD_TREE"
-            printf 'world_merge_sha=%s\n' "$WORLD_MERGE_SHA"
-            printf 'world_merge_tree=%s\n' "$WORLD_MERGE_TREE"
-            printf 'actual_head=%s\n' "$actual_head"
-            printf 'actual_head_tree=%s\n' "$actual_head_tree"
-            printf 'actual_merge=%s\n' "$actual_merge"
-            printf 'actual_merge_tree=%s\n' "$actual_merge_tree"
-            printf 'actual_merge_parents=%s\n' "$actual_parents"
-            printf 'truth_head=%s\n' "$TRUTH_HEAD"
-            printf 'truth_merge=%s\n' "$TRUTH_MERGE"
-            printf 'source_head=%s\n' "$SOURCE_HEAD"
-            printf 'source_merge=%s\n' "$SOURCE_MERGE"
-            printf 'postgres_head=%s\n' "$POSTGRES_HEAD"
-            printf 'postgres_merge=%s\n' "$POSTGRES_MERGE"
-            printf 'package_head=%s\n' "$PACKAGE_HEAD"
-            printf 'package_merge=%s\n' "$PACKAGE_MERGE"
-            printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
-            printf 'runner_commit=%s\n' "$GITHUB_SHA"
-            printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
-            printf 'runner_run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
-            printf 'production_authorization=not_granted\n'
-          } | tee "$RUNNER_TEMP/world-v6-evidence/identity.txt"
+          def git(repo: str, *args: str) -> str:
+              return subprocess.check_output(
+                  ["git", "-C", repo, *args], text=True
+              ).strip()
 
-          {
-            printf '## World V6 immutable qualification tuple\n\n```text\n'
-            cat "$RUNNER_TEMP/world-v6-evidence/identity.txt"
-            printf '```\n'
-          } >> "$GITHUB_STEP_SUMMARY"
+          runner_temp = os.environ["RUNNER_TEMP"]
+          head_dir = f"{runner_temp}/world-head"
+          merge_dir = f"{runner_temp}/world-merge"
+          evidence_dir = Path(runner_temp) / "world-v6-evidence"
+          evidence_dir.mkdir(parents=True, exist_ok=True)
 
-          failed=0
-          for outcome in \
-            "$TRUTH_HEAD" "$TRUTH_MERGE" \
-            "$SOURCE_HEAD" "$SOURCE_MERGE" \
-            "$POSTGRES_HEAD" "$POSTGRES_MERGE" \
-            "$PACKAGE_HEAD" "$PACKAGE_MERGE"
-          do
-            if test "$outcome" != success; then
-              failed=1
-            fi
-          done
-          test "$actual_head" = "$WORLD_HEAD_SHA" || failed=1
-          test "$actual_head_tree" = "$WORLD_HEAD_TREE" || failed=1
-          test "$actual_merge" = "$WORLD_MERGE_SHA" || failed=1
-          test "$actual_merge_tree" = "$WORLD_MERGE_TREE" || failed=1
-          test "$actual_parents" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA" || failed=1
-          test "$failed" -eq 0
-          printf 'WORLD_V6_EXTERNAL_REQUIRED=PASS\n'
+          actual = {
+              "world_repository": os.environ["WORLD_REPOSITORY"],
+              "world_base_sha": os.environ["WORLD_BASE_SHA"],
+              "world_head_sha": os.environ["WORLD_HEAD_SHA"],
+              "world_head_tree": os.environ["WORLD_HEAD_TREE"],
+              "world_merge_sha": os.environ["WORLD_MERGE_SHA"],
+              "world_merge_tree": os.environ["WORLD_MERGE_TREE"],
+              "actual_head": git(head_dir, "rev-parse", "HEAD"),
+              "actual_head_tree": git(head_dir, "rev-parse", "HEAD^{tree}"),
+              "actual_merge": git(merge_dir, "rev-parse", "HEAD"),
+              "actual_merge_tree": git(merge_dir, "rev-parse", "HEAD^{tree}"),
+              "actual_merge_parents": git(merge_dir, "show", "-s", "--format=%P", "HEAD"),
+              "truth_head": os.environ["TRUTH_HEAD"],
+              "truth_merge": os.environ["TRUTH_MERGE"],
+              "source_head": os.environ["SOURCE_HEAD"],
+              "source_merge": os.environ["SOURCE_MERGE"],
+              "postgres_head": os.environ["POSTGRES_HEAD"],
+              "postgres_merge": os.environ["POSTGRES_MERGE"],
+              "package_head": os.environ["PACKAGE_HEAD"],
+              "package_merge": os.environ["PACKAGE_MERGE"],
+              "runner_repository": os.environ["GITHUB_REPOSITORY"],
+              "runner_commit": os.environ["GITHUB_SHA"],
+              "runner_run_id": os.environ["GITHUB_RUN_ID"],
+              "runner_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "production_authorization": "not_granted",
+          }
+
+          identity = "".join(f"{key}={value}\n" for key, value in actual.items())
+          (evidence_dir / "identity.txt").write_text(identity, encoding="utf-8")
+          print(identity, end="")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## World V6 immutable qualification tuple\n\n```text\n")
+              summary.write(identity)
+              summary.write("```\n")
+
+          expected = {
+              "actual_head": os.environ["WORLD_HEAD_SHA"],
+              "actual_head_tree": os.environ["WORLD_HEAD_TREE"],
+              "actual_merge": os.environ["WORLD_MERGE_SHA"],
+              "actual_merge_tree": os.environ["WORLD_MERGE_TREE"],
+              "actual_merge_parents": (
+                  f'{os.environ["WORLD_BASE_SHA"]} {os.environ["WORLD_HEAD_SHA"]}'
+              ),
+          }
+          failures = [
+              f"{key}: expected {value}, got {actual[key]}"
+              for key, value in expected.items()
+              if actual[key] != value
+          ]
+          for key in (
+              "truth_head",
+              "truth_merge",
+              "source_head",
+              "source_merge",
+              "postgres_head",
+              "postgres_merge",
+              "package_head",
+              "package_merge",
+          ):
+              if actual[key] != "success":
+                  failures.append(f"{key}: expected success, got {actual[key]}")
+
+          if failures:
+              print("World V6 immutable qualification failed:", file=sys.stderr)
+              for failure in failures:
+                  print(f"- {failure}", file=sys.stderr)
+              raise SystemExit(1)
+
+          print("WORLD_V6_EXTERNAL_REQUIRED=PASS")
+          PY
 
       - name: Stop PostgreSQL
         if: always()
