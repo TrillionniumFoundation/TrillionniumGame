@@ -1,0 +1,112 @@
+{
+  "claim_boundary": {
+    "accepted_evidence": false,
+    "all_gaps_closed": false,
+    "cutover_authorized": false,
+    "independent_acceptance": false,
+    "nakama_retired": false,
+    "production_ready": false
+  },
+  "external_blockers": [
+    "conflict-free role-qualified database and data-integrity acceptance",
+    "administrator-scoped branch/ruleset/actions/environment read-back",
+    "PostgreSQL primary failover and approved PITR/RPO/RTO evidence",
+    "CockroachDB node and leaseholder failover plus approved recovery objectives",
+    "24h 72h and 7d endurance and capacity evidence",
+    "fourteen denominator family locks and separate global SG1 decision",
+    "complete Nakama API RTAPI Runtime Console provider IAP and official SDK evidence",
+    "ordinary protected admission merged-main packet production promotion cutover and retirement decisions"
+  ],
+  "generated_at": "2026-09-09T02:59:25+00:00",
+  "layers": [
+    {
+      "accepted_non_author_reviews": [],
+      "aggregate_run_id": null,
+      "branch": "codex/postgresql-authority-storage-closure-2026-09-09",
+      "head_commit": null,
+      "head_tree": null,
+      "latest_workflow_failures": [],
+      "latest_workflow_names": 0,
+      "latest_workflows_terminal_success": false,
+      "prospective_merge_commit": null,
+      "prospective_merge_run_id": null,
+      "prospective_merge_tree": null,
+      "pull_request": null,
+      "repository_controlled_qualified": false,
+      "requested_reviewers": []
+    },
+    {
+      "accepted_non_author_reviews": [],
+      "aggregate_run_id": null,
+      "branch": "codex/postgresql-fault-recovery-closure-2026-09-09",
+      "head_commit": "1637d40da355da47558896f101cf059e9c2b3a3a",
+      "head_tree": "dec8fef3a7a43af747a5f00dce42c32a098e1c04",
+      "latest_workflow_failures": [],
+      "latest_workflow_names": 0,
+      "latest_workflows_terminal_success": false,
+      "prospective_merge_commit": null,
+      "prospective_merge_run_id": null,
+      "prospective_merge_tree": null,
+      "pull_request": null,
+      "repository_controlled_qualified": false,
+      "requested_reviewers": []
+    },
+    {
+      "accepted_non_author_reviews": [],
+      "aggregate_run_id": null,
+      "branch": "codex/postgresql-semantic-recovery-closure-2026-09-09",
+      "head_commit": null,
+      "head_tree": null,
+      "latest_workflow_failures": [],
+      "latest_workflow_names": 0,
+      "latest_workflows_terminal_success": false,
+      "prospective_merge_commit": null,
+      "prospective_merge_run_id": null,
+      "prospective_merge_tree": null,
+      "pull_request": null,
+      "repository_controlled_qualified": false,
+      "requested_reviewers": []
+    },
+    {
+      "accepted_non_author_reviews": [],
+      "aggregate_run_id": null,
+      "branch": "codex/cockroachdb-semantic-recovery-closure-2026-09-09",
+      "head_commit": null,
+      "head_tree": null,
+      "latest_workflow_failures": [],
+      "latest_workflow_names": 0,
+      "latest_workflows_terminal_success": false,
+      "prospective_merge_commit": null,
+      "prospective_merge_run_id": null,
+      "prospective_merge_tree": null,
+      "pull_request": null,
+      "repository_controlled_qualified": false,
+      "requested_reviewers": []
+    },
+    {
+      "accepted_non_author_reviews": [],
+      "aggregate_run_id": null,
+      "branch": "codex/postgresql-recovery-barrier-closure-2026-09-09",
+      "head_commit": null,
+      "head_tree": null,
+      "latest_workflow_failures": [],
+      "latest_workflow_names": 0,
+      "latest_workflows_terminal_success": false,
+      "prospective_merge_commit": null,
+      "prospective_merge_run_id": null,
+      "prospective_merge_tree": null,
+      "pull_request": null,
+      "repository_controlled_qualified": false,
+      "requested_reviewers": []
+    }
+  ],
+  "repository": "TrillionniumFoundation/TrillionniumGame",
+  "schema": "trillionnium.database-closure-live-ledger.v1",
+  "summary": {
+    "expected_layers": 5,
+    "independently_approved_layers": 0,
+    "materialized_layers": 1,
+    "open_pull_requests": 0,
+    "repository_controlled_qualified_layers": 0
+  }
+}
