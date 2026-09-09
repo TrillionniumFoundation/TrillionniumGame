@@ -1,0 +1,201 @@
+name: tmp-reviewer-capacity-readback
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-reviewer-capacity-readback.yml
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  SOURCE_BRANCH: integration/plan-v32-main-rebind-2026-09-09
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  readback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch current review matrix and repository principals
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/reviewer-capacity"
+          mkdir -p "$work"
+          gh api "repos/${REPOSITORY}/contents/docs/review/INDEPENDENT_REVIEW_MATRIX.json?ref=${SOURCE_BRANCH}" \
+            --jq '.content' | base64 --decode > "$work/matrix.json"
+          gh api "repos/${REPOSITORY}/pulls/150/commits?per_page=100" > "$work/pr150-commits.json"
+          gh api "repos/${REPOSITORY}/pulls/150/reviews?per_page=100" > "$work/pr150-reviews.json"
+          gh api "repos/${REPOSITORY}/collaborators?affiliation=all&per_page=100" > "$work/collaborators.json" 2> "$work/collaborators.err" || printf '[]\n' > "$work/collaborators.json"
+          gh api "orgs/TrillionniumFoundation/members?per_page=100" > "$work/members.json" 2> "$work/members.err" || printf '[]\n' > "$work/members.json"
+
+      - name: Evaluate exact live capacity without inventing roles
+        id: evaluate
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/reviewer-capacity"
+          python3 - "$work" <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from collections import defaultdict
+          from pathlib import Path
+
+          work = Path(sys.argv[1])
+          matrix = json.loads((work / 'matrix.json').read_text())
+          commits = json.loads((work / 'pr150-commits.json').read_text())
+          reviews = json.loads((work / 'pr150-reviews.json').read_text())
+          collaborators = json.loads((work / 'collaborators.json').read_text())
+          members = json.loads((work / 'members.json').read_text())
+
+          login_re = re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$')
+          known_principals = set()
+          role_mentions = defaultdict(set)
+
+          def walk(value, trail=()):
+              if isinstance(value, dict):
+                  for key, item in value.items():
+                      yield from walk(item, trail + (str(key),))
+              elif isinstance(value, list):
+                  for index, item in enumerate(value):
+                      yield from walk(item, trail + (str(index),))
+              elif isinstance(value, str):
+                  yield trail, value
+
+          role_words = {
+              'governance', 'security', 'cryptography', 'database', 'data',
+              'protocol', 'realtime', 'compatibility', 'qa', 'sre', 'runtime',
+              'operations', 'console', 'payments', 'migration',
+          }
+          for trail, value in walk(matrix):
+              clean = value.removeprefix('@')
+              if login_re.fullmatch(clean) and any(
+                  token in '.'.join(trail).lower()
+                  for token in ('reviewer', 'principal', 'login', 'username', 'user')
+              ):
+                  known_principals.add(clean)
+                  roles = role_words.intersection(
+                      re.split(r'[^a-z]+', '.'.join(trail).lower())
+                  )
+                  for role in roles:
+                      role_mentions[role].add(clean)
+
+          for item in collaborators if isinstance(collaborators, list) else []:
+              login = item.get('login')
+              if login:
+                  known_principals.add(login)
+          for item in members if isinstance(members, list) else []:
+              login = item.get('login')
+              if login:
+                  known_principals.add(login)
+
+          conflicted = set()
+          for commit in commits if isinstance(commits, list) else []:
+              for key in ('author', 'committer'):
+                  login = (commit.get(key) or {}).get('login')
+                  if login:
+                      conflicted.add(login)
+          # Review authors may still be eligible, but a prior self/source mutation conflict
+          # cannot be erased by another comment. Keep the canonical known conflict set.
+          conflicted.update({'ProfHepta', 'Franksudoman', 'Tomasrgbsf'})
+
+          permissions = {}
+          for login in sorted(known_principals):
+              result = subprocess.run(
+                  ['gh', 'api', f'repos/{os.environ["REPOSITORY"]}/collaborators/{login}/permission'],
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+              )
+              if result.returncode == 0:
+                  data = json.loads(result.stdout)
+                  permissions[login] = data.get('permission') or data.get('role_name')
+              else:
+                  permissions[login] = None
+
+          eligible = sorted(
+              login for login, permission in permissions.items()
+              if login not in conflicted
+              and permission in {'read', 'triage', 'write', 'maintain', 'admin'}
+          )
+          required_roles = [
+              'governance', 'security', 'cryptography', 'database', 'data',
+              'protocol', 'realtime', 'compatibility', 'qa', 'sre',
+          ]
+          role_coverage = {
+              role: sorted(role_mentions.get(role, set()).intersection(eligible))
+              for role in required_roles
+          }
+          missing_roles = [role for role, users in role_coverage.items() if not users]
+
+          report = {
+              'schema': 'trillionnium.reviewer-capacity-readback.v1',
+              'repository': os.environ['REPOSITORY'],
+              'matrix_principals': sorted(known_principals),
+              'conflicted_principals': sorted(conflicted),
+              'permissions': permissions,
+              'eligible_unconflicted_principals': eligible,
+              'role_coverage': role_coverage,
+              'missing_roles': missing_roles,
+              'complete': bool(eligible) and not missing_roles,
+              'claim_boundary': {
+                  'permission_readback_is_not_review': True,
+                  'approval_present': False,
+                  'accepted_evidence': False,
+              },
+          }
+          (work / 'report.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          lines = [
+              '## Independent reviewer capacity readback',
+              '',
+              f"- eligible unconflicted principals: `{len(eligible)}`",
+              f"- missing required roles: `{', '.join(missing_roles) if missing_roles else 'none'}`",
+              '',
+          ]
+          if eligible:
+              lines.append('Eligible repository principals discovered: ' + ', '.join(f'`@{login}`' for login in eligible))
+          else:
+              lines.append('No conflict-free repository principal with readable permission was discovered.')
+          lines += [
+              '',
+              'Permission readback does not constitute an approval or a specialist qualification decision.',
+          ]
+          (work / 'summary.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          if not report['complete']:
+              raise SystemExit(2)
+          PY
+        continue-on-error: true
+
+      - name: Publish sanitized result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/reviewer-capacity"
+          if test -f "$work/summary.md"; then
+            cat "$work/summary.md" >> "$GITHUB_STEP_SUMMARY"
+            gh issue comment 130 --repo "$REPOSITORY" --body-file "$work/summary.md"
+          else
+            gh issue comment 130 --repo "$REPOSITORY" --body "Reviewer-capacity readback failed before producing a report in run \`${GITHUB_RUN_ID}\`. No review credit."
+          fi
+
+      - name: Fail closed when role coverage is incomplete
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '.complete == true' "$RUNNER_TEMP/reviewer-capacity/report.json" >/dev/null
+          jq -e '.claim_boundary.approval_present == false' "$RUNNER_TEMP/reviewer-capacity/report.json" >/dev/null
