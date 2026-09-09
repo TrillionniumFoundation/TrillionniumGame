@@ -1565,6 +1565,7 @@ dependencies = [
  "trnm-contracts",
  "trnm-realtime-wire",
  "trnm-session-core",
+ "trnm-storage-core",
  "trnm-token-crypto-provider",
  "trnm-token-jwt-adapter",
  "trnm-token-jwt-provider-adapter",

@@ -59,6 +59,7 @@ EXPECTED_DEPENDENCIES: dict[str, dict[str, Any]] = {'crates/trnm-authority-core'
                                 'trnm-contracts': {'path': '../trnm-contracts'},
                                 'trnm-realtime-wire': {'path': '../trnm-realtime-wire'},
                                 'trnm-session-core': {'path': '../trnm-session-core'},
+                                'trnm-storage-core': {'path': '../trnm-storage-core'},
                                 'trnm-token-crypto-provider': {'path': '../trnm-token-crypto-provider'},
                                 'trnm-token-jwt-adapter': {'path': '../trnm-token-jwt-adapter'},
                                 'trnm-token-jwt-provider-adapter': {'path': '../trnm-token-jwt-provider-adapter'}},
@@ -121,6 +122,8 @@ REQUIRED_TESTS = {
     "commit_is_atomic_and_records_events_and_outbox",
     "outbox_lease_generation_fences_stale_worker",
     "pgwire_commit_duplicate_conflict_and_fence_contract",
+    "storage_occ_acl_and_batch_rollback_are_transactional",
+    "authority_takeover_fences_stale_generation",
 }
 
 

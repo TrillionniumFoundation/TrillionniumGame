@@ -1,13 +1,16 @@
 #![forbid(unsafe_code)]
 
 mod auth;
+mod authority;
 mod outbox;
 mod pool;
 mod session;
+mod storage;
 
 pub use auth::{
     parse_refresh_credential, AccessTokenVerifier, ParsedRefreshCredential, SessionPrincipal,
 };
+pub use authority::AuthorityLease;
 pub use outbox::{OutboxClaimBatch, OutboxLease, OutboxRetryOutcome};
 pub use pool::{PgPool, PgPoolConfig, PgPoolSnapshot, PgTlsConfig};
 #[cfg(feature = "session-test-hooks")]
@@ -15,6 +18,12 @@ pub use session::SessionMutationPoint;
 pub use session::{
     CreateSessionFamily, RefreshRotationOutcome, RefreshTokenCredential, RotateRefreshToken,
     SessionFamilyRecord,
+};
+pub use trnm_storage_core::{
+    Actor as StorageActor, BatchOperation as StorageBatchOperation, ContentVersion,
+    DeleteOperation as StorageDeleteOperation, IntegrityDigest,
+    MutationReceipt as StorageMutationReceipt, ReadPermission, StorageObject, StorageObjectKey,
+    VersionCheck, WriteOperation as StorageWriteOperation, WritePermission,
 };
 
 use std::collections::BTreeSet;

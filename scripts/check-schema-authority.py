@@ -196,7 +196,11 @@ def scan_forbidden_consumers() -> None:
 
 
 def validate_sql_abi() -> None:
-    adapter = (ROOT / "crates/trnm-persistence-pg/src/lib.rs").read_text(encoding="utf-8")
+    adapter_root = ROOT / "crates/trnm-persistence-pg/src"
+    adapter = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(adapter_root.rglob("*.rs"))
+    )
     missing_adapter = sorted(table for table in REQUIRED_TABLES if table not in adapter)
     adapter_owned = {
         "trnm_schema_metadata",
@@ -217,11 +221,10 @@ def validate_sql_abi() -> None:
         )
         missing = sorted(table for table in REQUIRED_TABLES if table not in sql)
         require(not missing, f"{profile}: missing authoritative tables {missing}")
-    if missing_adapter:
-        print(
-            "schema authority note: adapter does not yet access all authoritative tables: "
-            + ", ".join(missing_adapter)
-        )
+    require(
+        not missing_adapter,
+        "adapter missing authoritative table references " + ", ".join(missing_adapter),
+    )
 
 
 def main() -> int:

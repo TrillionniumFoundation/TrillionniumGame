@@ -145,3 +145,11 @@ cargo test -p trnm-persistence-pg --features diagnostic-compat-server --locked -
 The second command requires the isolated live database environment and explicit
 required flag in its workflow to earn execution credit. Both workflows retain
 source/unit and live jobs, nonempty-result assertions and exact definition pins.
+
+## Authority lease and storage adapters
+
+The adapter owns typed SQL access to all ten authoritative tables. Authority lease acquisition locks the entity head and lease in a serializable transaction; an expired-owner takeover advances both lease and authority generations before a new owner is returned. Renewal and release require the exact entity, owner, lease generation and authority generation.
+
+Storage reads and mutation batches use `trnm-storage-core` public version, integrity, OCC and ACL types. Batch keys are locked in deterministic order and every write/delete commits in one serializable transaction. The public Nakama-compatible content version is recomputed from exact value bytes while the schema stores the separate internal integrity digest.
+
+These paths are source candidates. PostgreSQL/CockroachDB live execution, exact-head evidence admission, profile-specific failover/restore and independent database/storage review remain required before production credit.
