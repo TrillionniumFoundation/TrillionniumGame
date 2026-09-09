@@ -116,7 +116,7 @@ jobs:
           patch = '''bash "$RUNNER_TEMP/v5-prepare.sh"
           python3 - <<'INNER'
           from pathlib import Path
-          reset = Path("/home/runner/work/_temp/v4-reset.sh")
+          reset = Path("/home/runner/work/_temp/reset-reconstruct.sh")
           source = reset.read_text(encoding="utf-8")
           old = 'fetch --no-tags --depth=8 origin'
           if source.count(old) != 1:
