@@ -1,0 +1,512 @@
+name: tmp-product-hardening-wave16
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-product-hardening-wave16.yml
+
+permissions:
+  checks: read
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-cutover-controller-20260909
+  FEATURE_BRANCH: feature/plan-v32-product-hardening-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  harden:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Wait for stable exact Cutover head
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=''
+          stable=0
+          for _ in $(seq 1 1080); do
+            current="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            if test -z "$current"; then
+              sleep 20
+              continue
+            fi
+            if test "$current" != "$head"; then
+              head="$current"
+              stable=0
+            fi
+            payload="$(gh api "repos/${REPOSITORY}/commits/${head}/check-runs?per_page=100" 2>/dev/null || echo '{"check_runs":[]}')"
+            canonical="$(jq -c '
+              reduce .check_runs[] as $run ({};
+                if .[$run.name] == null
+                   or ((.[$run.name].started_at // "") < ($run.started_at // ""))
+                then .[$run.name] = $run else . end)
+              | [.[]]
+            ' <<<"$payload")"
+            total="$(jq 'length' <<<"$canonical")"
+            pending="$(jq '[.[]|select(.status!="completed")]|length' <<<"$canonical")"
+            failed="$(jq '[.[]|select(.status=="completed" and (.conclusion!="success" and .conclusion!="neutral" and .conclusion!="skipped"))]|length' <<<"$canonical")"
+            aggregate="$(jq '[.[]|select(.name=="trillionnium-game-merge-gate" and .status=="completed" and .conclusion=="success")]|length' <<<"$canonical")"
+            if test "$total" -gt 0 && test "$pending" -eq 0 && test "$failed" -eq 0 && test "$aggregate" -gt 0; then
+              stable=$((stable+1))
+            else
+              stable=0
+            fi
+            if test "$stable" -ge 2; then
+              printf 'base_sha=%s\n' "$head" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo 'Cutover branch never reached a stable exact-head aggregate.' >&2
+          exit 1
+
+      - name: Fetch exact base
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=4 origin '${{ steps.base.outputs.base_sha }}'
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = '${{ steps.base.outputs.base_sha }}'
+
+      - name: Apply final cross-module hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def require(path: Path) -> str:
+              if not path.is_file():
+                  raise SystemExit(f'missing required source: {path}')
+              return path.read_text(encoding='utf-8')
+
+          # Recovery: assertion corpus is explicitly bounded and fully executed.
+          recovery_path = Path('crates/trnm-recovery-core/src/lib.rs')
+          recovery = require(recovery_path)
+          if 'self.collected > MAX_ASSERTIONS_PER_ATTEMPT as u64' not in recovery:
+              marker = '        if self.collected == 0\n'
+              if marker not in recovery:
+                  raise SystemExit('recovery assertion validation anchor missing')
+              recovery = recovery.replace(
+                  marker,
+                  '        if self.collected == 0\n'
+                  '            || self.collected > MAX_ASSERTIONS_PER_ATTEMPT as u64\n',
+                  1,
+              )
+          recovery_path.write_text(recovery, encoding='utf-8')
+
+          # Endurance: p99 cannot be below p95 and rates/artifacts must be derived/reserved.
+          endurance_path = Path('crates/trnm-endurance-core/src/lib.rs')
+          endurance = require(endurance_path)
+          if 'self.p99_latency_us < self.p95_latency_us' not in endurance:
+              marker = '        if self.total_requests == 0\n'
+              if marker not in endurance:
+                  raise SystemExit('endurance metrics validation anchor missing')
+              endurance = endurance.replace(
+                  marker,
+                  '        if self.total_requests == 0\n'
+                  '            || self.p99_latency_us < self.p95_latency_us\n',
+                  1,
+              )
+          endurance_path.write_text(endurance, encoding='utf-8')
+
+          # Cutover: a complete, exact zero matrix and derived error rate are mandatory.
+          cutover_path = Path('crates/trnm-cutover-controller/src/lib.rs')
+          cutover = require(cutover_path)
+          if 'const REQUIRED_DIVERGENCES' not in cutover:
+              enum_start = cutover.index('pub enum DivergenceClass {')
+              enum_end = cutover.index('\n}\n', enum_start) + 3
+              constant = '''
+const REQUIRED_DIVERGENCES: [DivergenceClass; 10] = [
+    DivergenceClass::Identity,
+    DivergenceClass::Authorization,
+    DivergenceClass::Money,
+    DivergenceClass::RevisionGenerationSequence,
+    DivergenceClass::Version,
+    DivergenceClass::Cursor,
+    DivergenceClass::PublicError,
+    DivergenceClass::DurableEffect,
+    DivergenceClass::DataLoss,
+    DivergenceClass::DuplicateWriter,
+];
+'''
+              cutover = cutover[:enum_end] + constant + cutover[enum_end:]
+          if 'const REQUIRED_CUTOVER_INVARIANTS' not in cutover:
+              enum_start = cutover.index('pub enum CorrectnessInvariant {')
+              enum_end = cutover.index('\n}\n', enum_start) + 3
+              constant = '''
+const REQUIRED_CUTOVER_INVARIANTS: [CorrectnessInvariant; 7] = [
+    CorrectnessInvariant::AcknowledgedCommandLoss,
+    CorrectnessInvariant::DuplicateVisibleValue,
+    CorrectnessInvariant::StaleAuthorityAcceptedWrite,
+    CorrectnessInvariant::PartialCommit,
+    CorrectnessInvariant::UnreconciledOutbox,
+    CorrectnessInvariant::UnreconciledProviderValue,
+    CorrectnessInvariant::SecurityBoundaryViolation,
+];
+'''
+              cutover = cutover[:enum_end] + constant + cutover[enum_end:]
+          window_struct_start = cutover.index('pub struct ObservationWindow {')
+          window_struct_end = cutover.index('\n}\n', window_struct_start)
+          window_struct = cutover[window_struct_start:window_struct_end]
+          if 'pub failed_requests: u64' not in window_struct:
+              window_struct = window_struct.replace(
+                  '    pub observed_requests: u64,\n',
+                  '    pub observed_requests: u64,\n    pub failed_requests: u64,\n',
+                  1,
+              )
+              cutover = cutover[:window_struct_start] + window_struct + cutover[window_struct_end:]
+
+          window_impl_start = cutover.index('impl ObservationWindow {')
+          window_impl_end = cutover.index('#[derive(Clone, Debug, Eq, PartialEq)]\npub struct RollbackRehearsal', window_impl_start)
+          window_impl = '''impl ObservationWindow {
+    pub fn validate(self, plan: &CutoverPlan) -> Result<Self, CutoverError> {
+        let complete_divergence_matrix = self.divergences.len() == REQUIRED_DIVERGENCES.len()
+            && REQUIRED_DIVERGENCES.iter().all(|class| {
+                self.divergences.get(class).copied() == Some(0)
+            });
+        let complete_invariant_matrix =
+            self.invariant_violations.len() == REQUIRED_CUTOVER_INVARIANTS.len()
+                && REQUIRED_CUTOVER_INVARIANTS.iter().all(|invariant| {
+                    self.invariant_violations.get(invariant).copied() == Some(0)
+                });
+        if self.plan != plan.id
+            || self.subject_digest != plan.subject.tree
+            || matches!(self.stage, CutoverStage::Planned | CutoverStage::Retired)
+            || self.started_at_ms == 0
+            || self.completed_at_ms <= self.started_at_ms
+            || self.observed_requests == 0
+            || self.failed_requests > self.observed_requests
+            || !complete_divergence_matrix
+            || !complete_invariant_matrix
+            || self.replication_lag_ms > plan.thresholds.maximum_replication_lag_ms
+            || self.reconciliation_backlog > plan.thresholds.maximum_reconciliation_backlog
+        {
+            return Err(CutoverError::new(
+                StableCutoverCode::FailedPrecondition,
+                "cutover_window_invalid",
+                false,
+            ));
+        }
+        let derived_error_basis_points = basis_points(
+            self.failed_requests,
+            self.observed_requests,
+        )?;
+        if self.error_basis_points != derived_error_basis_points
+            || derived_error_basis_points > plan.thresholds.maximum_error_basis_points
+        {
+            return Err(CutoverError::new(
+                StableCutoverCode::FailedPrecondition,
+                "cutover_error_rate_invalid",
+                false,
+            ));
+        }
+        let elapsed = self
+            .completed_at_ms
+            .checked_sub(self.started_at_ms)
+            .ok_or_else(|| CutoverError::invalid("cutover_window_time_invalid"))?;
+        if elapsed < plan.thresholds.minimum_window_ms(self.stage) {
+            return Err(CutoverError::new(
+                StableCutoverCode::FailedPrecondition,
+                "cutover_window_too_short",
+                false,
+            ));
+        }
+        if self.stage == CutoverStage::Shadow && self.shadow_external_effects != 0 {
+            return Err(CutoverError::new(
+                StableCutoverCode::FailedPrecondition,
+                "shadow_external_effect_forbidden",
+                false,
+            ));
+        }
+        Ok(self)
+    }
+}
+
+'''
+          cutover = cutover[:window_impl_start] + window_impl + cutover[window_impl_end:]
+
+          helper_anchor = '#[cfg(test)]\nmod tests {'
+          if 'fn basis_points(' not in cutover:
+              helper = '''fn basis_points(numerator: u64, denominator: u64) -> Result<u32, CutoverError> {
+    if denominator == 0 || numerator > denominator {
+        return Err(CutoverError::invalid("cutover_rate_denominator_invalid"));
+    }
+    let value = u128::from(numerator)
+        .checked_mul(u128::from(MAX_BASIS_POINTS))
+        .and_then(|product| product.checked_div(u128::from(denominator)))
+        .ok_or_else(|| CutoverError::invalid("cutover_rate_calculation_failed"))?;
+    u32::try_from(value).map_err(|_| CutoverError::invalid("cutover_rate_out_of_range"))
+}
+
+'''
+              cutover = cutover.replace(helper_anchor, helper + helper_anchor, 1)
+
+          tests_start = cutover.index('#[cfg(test)]\nmod tests {')
+          if 'fn clean_divergences()' not in cutover[tests_start:]:
+              insert_anchor = '    fn registry() -> CutoverRegistry {'
+              helper = '''    fn clean_divergences() -> BTreeMap<DivergenceClass, u64> {
+        REQUIRED_DIVERGENCES
+            .into_iter()
+            .map(|class| (class, 0))
+            .collect()
+    }
+
+    fn clean_invariants() -> BTreeMap<CorrectnessInvariant, u64> {
+        REQUIRED_CUTOVER_INVARIANTS
+            .into_iter()
+            .map(|invariant| (invariant, 0))
+            .collect()
+    }
+
+'''
+              cutover = cutover.replace(insert_anchor, helper + insert_anchor, 1)
+          test_segment = cutover[tests_start:]
+          test_segment = re.sub(
+              r'(observed_requests:\s*\d+,\n)(\s*)(?!failed_requests:)',
+              r'\1\2failed_requests: 0,\n\2',
+              test_segment,
+          )
+          test_segment = test_segment.replace(
+              'divergences: BTreeMap::new(),',
+              'divergences: clean_divergences(),',
+          )
+          test_segment = test_segment.replace(
+              'invariant_violations: BTreeMap::new(),',
+              'invariant_violations: clean_invariants(),',
+          )
+          cutover = cutover[:tests_start] + test_segment
+
+          if 'fn incomplete_window_matrix_and_fake_error_rate_are_rejected()' not in cutover:
+              test_anchor = '    fn one_cohort_has_exactly_one_current_writer() {'
+              insert = cutover.index('    #[test]\n' + test_anchor, tests_start)
+              test = '''    #[test]
+    fn incomplete_window_matrix_and_fake_error_rate_are_rejected() {
+        let mut incomplete = ObservationWindow {
+            id: id(30, WindowId::new),
+            plan: plan().id,
+            subject_digest: digest(3),
+            stage: CutoverStage::Shadow,
+            started_at_ms: 1,
+            completed_at_ms: 20,
+            observed_requests: 100,
+            failed_requests: 0,
+            shadow_external_effects: 0,
+            error_basis_points: 0,
+            replication_lag_ms: 1,
+            reconciliation_backlog: 1,
+            divergences: clean_divergences(),
+            invariant_violations: clean_invariants(),
+            artifact_digest: digest(50),
+        };
+        incomplete.divergences.remove(&DivergenceClass::Money);
+        assert_eq!(
+            incomplete.validate(&plan()).unwrap_err().reason(),
+            "cutover_window_invalid"
+        );
+
+        let mut fake_rate = ObservationWindow {
+            id: id(31, WindowId::new),
+            plan: plan().id,
+            subject_digest: digest(3),
+            stage: CutoverStage::Shadow,
+            started_at_ms: 1,
+            completed_at_ms: 20,
+            observed_requests: 100,
+            failed_requests: 1,
+            shadow_external_effects: 0,
+            error_basis_points: 0,
+            replication_lag_ms: 1,
+            reconciliation_backlog: 1,
+            divergences: clean_divergences(),
+            invariant_violations: clean_invariants(),
+            artifact_digest: digest(51),
+        };
+        assert_eq!(
+            fake_rate.validate(&plan()).unwrap_err().reason(),
+            "cutover_error_rate_invalid"
+        );
+        fake_rate.error_basis_points = 100;
+        assert_eq!(
+            fake_rate.validate(&plan()).unwrap_err().reason(),
+            "cutover_error_rate_invalid"
+        );
+    }
+
+'''
+              cutover = cutover[:insert] + test + cutover[insert:]
+
+          cutover_path.write_text(cutover, encoding='utf-8')
+
+          # Machine-checkable repository-wide hardening contract.
+          checker = Path('scripts/check-plan-v32-product-hardening.py')
+          checker.write_text('''#!/usr/bin/env python3
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+REQUIRED = {
+    "crates/trnm-console-core/src/lib.rs": ["pub struct ActionRequest", "expire_actions"],
+    "crates/trnm-kms-provider-adapter/src/lib.rs": ["dispatch_owners", "OutcomeAuthenticator", "provider_receipt_reused"],
+    "crates/trnm-conformance-core/src/lib.rs": ["immutable_oracle", "observation_subject_identity_mismatch", "oracle.applied_normalizers == candidate.applied_normalizers", "self.executed != self.collected"],
+    "crates/trnm-recovery-core/src/lib.rs": ["source_observed_at_ms", "expected_catalog_digest", "expected_semantic_digest", "assertion_digest", "REQUIRED_INVARIANTS", "self.executed != self.collected", "MAX_ASSERTIONS_PER_ATTEMPT as u64"],
+    "crates/trnm-endurance-core/src/lib.rs": ["artifact_owners", "fn basis_points", "fn minimum_sample_count", "reported_rate_mismatch", "self.p99_latency_us < self.p95_latency_us"],
+    "crates/trnm-migration-core/src/lib.rs": ["current.active_target_authorities > 0", "retirement_preserves_positive_rust_authority"],
+    "crates/trnm-cutover-controller/src/lib.rs": ["plan.subject.tree", "rollback_authority_shape", "REQUIRED_DIVERGENCES", "REQUIRED_CUTOVER_INVARIANTS", "failed_requests", "cutover_error_rate_invalid"],
+}
+
+
+def validate() -> None:
+    failures = []
+    for relative, markers in REQUIRED.items():
+        path = ROOT / relative
+        if not path.is_file():
+            failures.append(f"missing file: {relative}")
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in text:
+                failures.append(f"{relative}: missing hardening marker: {marker}")
+    if failures:
+        raise SystemExit("product hardening contract failed:\\n- " + "\\n- ".join(failures))
+
+
+if __name__ == "__main__":
+    validate()
+    print("Plan v3.2 product hardening contract passed")
+''', encoding='utf-8')
+          checker.chmod(0o755)
+
+          test_path = Path('tests/control_plane/test_plan_v32_product_hardening.py')
+          test_path.write_text('''import importlib.util
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts/check-plan-v32-product-hardening.py"
+SPEC = importlib.util.spec_from_file_location("product_hardening", SCRIPT)
+assert SPEC and SPEC.loader
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+
+
+class ProductHardeningContractTests(unittest.TestCase):
+    def test_current_repository_passes(self):
+        MODULE.validate()
+
+    def test_missing_marker_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            relative = next(iter(MODULE.REQUIRED))
+            target = root / relative
+            target.parent.mkdir(parents=True)
+            target.write_text("incomplete", encoding="utf-8")
+            with mock.patch.object(MODULE, "ROOT", root):
+                with self.assertRaises(SystemExit):
+                    MODULE.validate()
+
+
+if __name__ == "__main__":
+    unittest.main()
+''', encoding='utf-8')
+          PY
+
+      - name: Register assurance status without promoting claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          state_path = Path('docs/status/CURRENT_STATE.json')
+          state = json.loads(state_path.read_text())
+          state.setdefault('implementation', {})['product_hardening_assurance_source_candidate'] = True
+          for key in (
+              'wire_compatible', 'behavior_compatible', 'data_migration_compatible',
+              'operationally_replaceable', 'supported_full_replacement',
+              'production_ready', 'public_online', 'nakama_retired'
+          ):
+              state.setdefault('claims', {})[key] = False
+          state_path.write_text(json.dumps(state, indent=2) + '\n')
+          PY
+
+      - name: Publish and fully qualify assurance head
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          python3 scripts/check-plan-v32-product-hardening.py
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs scripts tests
+          git commit -m 'fix(assurance): enforce final product hardening contract'
+          head_sha="$(git rev-parse HEAD)"
+          head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Final repository-controlled Plan v3.2 hardening fence stacked on Cutover Wave 15.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Enforces exact KMS dispatch ownership, conformance subject/normalizer symmetry, time-based recovery evidence, complete recovery/cutover zero matrices, derived endurance/cutover rates, unique endurance artifacts, positive Rust authority at retirement and stage-correct rollback.
+
+          This remains source assurance only. It creates no independent acceptance, real provider/oracle/HA/endurance evidence, production readiness, cutover authorization or retirement fact.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 16] Enforce final product hardening contract' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
+            cargo test --manifest-path "$manifest" --all-targets --locked
+            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
+          done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-plan-v32-product-hardening.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "Wave 16 assurance carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and every external/production claim ceiling remain binding."
+          gh issue comment 129 --repo "$REPOSITORY" --body "The final product-hardening assurance fence carrier finished with status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`. #129 remains open pending exact-head CI, independent review and real evidence."
