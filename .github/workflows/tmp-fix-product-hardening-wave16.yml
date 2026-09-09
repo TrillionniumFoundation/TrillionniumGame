@@ -1,0 +1,209 @@
+name: tmp-fix-product-hardening-wave16
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-fix-product-hardening-wave16.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-product-hardening-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Wait for Wave 16 branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=''
+          for _ in $(seq 1 1080); do
+            head="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$head" && break
+            sleep 20
+          done
+          test -n "$head"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=4 origin "$head"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$FEATURE_BRANCH" "$head"
+
+      - name: Seal all three exact-subject paths
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('crates/trnm-cutover-controller/src/lib.rs')
+          text = path.read_text(encoding='utf-8')
+
+          text = re.sub(
+              r'pub fn validate\(\s*self,\s*plan: &CutoverPlan,\s*subject_digest: Digest32,\s*\)',
+              'pub fn validate(self, plan: &CutoverPlan)',
+              text,
+          )
+          text = text.replace(
+              'self.subject_digest != subject_digest',
+              'self.subject_digest != plan.subject.tree',
+          )
+
+          for method, value in (
+              ('record_artifact', 'artifact'),
+              ('record_window', 'window'),
+              ('record_rehearsal', 'rehearsal'),
+          ):
+              start = text.index(f'    pub fn {method}(')
+              end = text.index('\n    pub fn ', start + 20)
+              block = text[start:end]
+              block = re.sub(r'\s*subject_digest: Digest32,\n', '\n', block, count=1)
+              block = block.replace(
+                  f'{value}.validate(&current.plan, subject_digest)?',
+                  f'{value}.validate(&current.plan)?',
+              )
+              if f'{value}.validate(&current.plan)?' not in block:
+                  raise SystemExit(f'{method}: exact-subject validation not established')
+              text = text[:start] + block + text[end:]
+
+          def match_paren(source: str, opening: int) -> int:
+              depth = 0
+              quote = None
+              escaped = False
+              for index in range(opening, len(source)):
+                  char = source[index]
+                  if quote is not None:
+                      if escaped:
+                          escaped = False
+                      elif char == '\\':
+                          escaped = True
+                      elif char == quote:
+                          quote = None
+                      continue
+                  if char in {'"', "'"}:
+                      quote = char
+                  elif char == '(':
+                      depth += 1
+                  elif char == ')':
+                      depth -= 1
+                      if depth == 0:
+                          return index
+              raise ValueError('unclosed invocation')
+
+          def split_args(value: str) -> list[str]:
+              parts, stack, quote, escaped, start = [], [], None, False, 0
+              pairs = {')': '(', ']': '[', '}': '{'}
+              for index, char in enumerate(value):
+                  if quote is not None:
+                      if escaped:
+                          escaped = False
+                      elif char == '\\':
+                          escaped = True
+                      elif char == quote:
+                          quote = None
+                      continue
+                  if char in {'"', "'"}:
+                      quote = char
+                  elif char in '([{':
+                      stack.append(char)
+                  elif char in ')]}':
+                      if not stack or stack.pop() != pairs[char]:
+                          raise ValueError('unbalanced invocation')
+                  elif char == ',' and not stack:
+                      parts.append(value[start:index].strip())
+                      start = index + 1
+              parts.append(value[start:].strip())
+              return parts
+
+          replacements = []
+          for method in ('record_artifact', 'record_window', 'record_rehearsal'):
+              needle = f'.{method}('
+              cursor = 0
+              while True:
+                  found = text.find(needle, cursor)
+                  if found < 0:
+                      break
+                  opening = found + len(needle) - 1
+                  closing = match_paren(text, opening)
+                  args = split_args(text[opening + 1:closing])
+                  if len(args) == 5:
+                      args.pop(3)
+                      replacements.append((found, closing + 1, needle + ', '.join(args) + ')'))
+                  elif len(args) != 4:
+                      raise SystemExit(f'{method}: unexpected argument count {len(args)}')
+                  cursor = closing + 1
+          for start, end, replacement in reversed(replacements):
+              text = text[:start] + replacement + text[end:]
+
+          text = re.sub(
+              r'\.validate\(&plan\(\),\s*subject_digest\(&subject\(\)\)\)',
+              '.validate(&plan())',
+              text,
+          )
+          text = re.sub(
+              r'fn subject_digest\(subject: &SubjectIdentity\) -> Digest32 \{\s*subject\.tree\s*\}\s*',
+              '',
+              text,
+              count=1,
+          )
+          if text.count('self.subject_digest != plan.subject.tree') < 3:
+              raise SystemExit('artifact/window/rehearsal exact-subject paths are incomplete')
+
+          path.write_text(text, encoding='utf-8')
+
+          checker = Path('scripts/check-plan-v32-product-hardening.py')
+          check = checker.read_text(encoding='utf-8')
+          if 'text.count("self.subject_digest != plan.subject.tree")' not in check:
+              check += '''
+
+def validate_cutover_subject_count() -> None:
+    text = (ROOT / "crates/trnm-cutover-controller/src/lib.rs").read_text(encoding="utf-8")
+    if text.count("self.subject_digest != plan.subject.tree") < 3:
+        raise SystemExit("cutover exact-subject validation must cover artifact, window and rehearsal")
+
+
+_original_validate = validate
+
+def validate() -> None:
+    _original_validate()
+    validate_cutover_subject_count()
+'''
+          checker.write_text(check, encoding='utf-8')
+          PY
+          if git diff --quiet; then echo 'changed=false' >> "$GITHUB_OUTPUT"; else echo 'changed=true' >> "$GITHUB_OUTPUT"; fi
+
+      - name: Qualify and publish sealed Wave 16 head
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo test --package trnm-cutover-controller --all-targets --locked
+          cargo clippy --package trnm-cutover-controller --all-targets --locked -- -D warnings
+          python3 scripts/check-plan-v32-product-hardening.py
+          python3 -m unittest tests.control_plane.test_plan_v32_product_hardening -v
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-cutover-controller/src/lib.rs scripts/check-plan-v32-product-hardening.py
+          git commit -m 'fix(assurance): seal all cutover subject validation paths'
+          remote="$(git ls-remote origin "refs/heads/${FEATURE_BRANCH}" | awk '{print $1}')"
+          git push --force-with-lease="refs/heads/${FEATURE_BRANCH}:${remote}" origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Sealed artifact, observation-window and rollback-rehearsal subject validation against the registered exact plan subject. Focused tests, strict Clippy and the repository hardening checker passed in carrier run `${GITHUB_RUN_ID}`; exact-head CI must requalify."
