@@ -1,0 +1,223 @@
+name: tmp-product-status-snapshot-v3
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-product-status-snapshot-v3.yml
+
+permissions:
+  checks: read
+  contents: write
+  pull-requests: read
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  CONTROL_BRANCH: ops/product-wave1-carrier-20260909
+  STATUS_BRANCH: ops/product-wave-status-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Capture exact live state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/status"
+          cat > "$RUNNER_TEMP/branches.txt" <<'EOF'
+          integration/plan-v32-main-rebind-2026-09-09
+          feature/plan-v32-product-wave1-20260909-v3
+          feature/plan-v32-storage-service-20260909
+          feature/plan-v32-competition-core-20260909
+          feature/plan-v32-multiplayer-core-20260909
+          feature/plan-v32-api-gateway-core-20260909
+          feature/plan-v32-rtapi-service-20260909
+          feature/plan-v32-runtime-core-20260909
+          feature/plan-v32-console-core-20260909
+          feature/plan-v32-provider-value-core-20260909
+          feature/plan-v32-migration-core-20260909
+          feature/plan-v32-kms-adapter-20260909
+          feature/plan-v32-conformance-core-20260909
+          feature/plan-v32-recovery-core-20260909
+          feature/plan-v32-endurance-core-20260909
+          feature/plan-v32-cutover-controller-20260909
+          feature/plan-v32-product-hardening-20260909
+          feature/plan-v32-product-assurance-v2-20260909
+          integration/plan-v32-product-surface-v3-20260909
+          EOF
+          python3 - "$RUNNER_TEMP/branches.txt" "$RUNNER_TEMP/status" <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import subprocess
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          branches = [line.strip() for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]
+          output = Path(sys.argv[2])
+          repository = os.environ['REPOSITORY']
+
+          def api(endpoint):
+              result = subprocess.run(
+                  ['gh', 'api', endpoint],
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+              )
+              if result.returncode:
+                  return None, result.stderr.strip()
+              try:
+                  return json.loads(result.stdout), None
+              except json.JSONDecodeError as exc:
+                  return None, str(exc)
+
+          def canonical(items):
+              result = {}
+              for item in items:
+                  name = item.get('name') or ''
+                  stamp = item.get('started_at') or item.get('completed_at') or ''
+                  prior = result.get(name)
+                  prior_stamp = (prior.get('started_at') or prior.get('completed_at') or '') if prior else ''
+                  if prior is None or prior_stamp < stamp:
+                      result[name] = item
+              return list(result.values())
+
+          rows = []
+          for branch in branches:
+              branch_data, error = api(f'repos/{repository}/branches/{branch}')
+              row = {
+                  'branch': branch,
+                  'present': branch_data is not None,
+                  'head': None,
+                  'tree': None,
+                  'pr': None,
+                  'draft': None,
+                  'checks': 0,
+                  'pending': 0,
+                  'failed': 0,
+                  'aggregate': 'absent',
+                  'prospective': 'absent',
+                  'error': error,
+              }
+              if branch_data is not None:
+                  commit = branch_data.get('commit') or {}
+                  row['head'] = commit.get('sha')
+                  row['tree'] = ((commit.get('commit') or {}).get('tree') or {}).get('sha')
+                  pulls, _ = api(f'repos/{repository}/pulls?state=open&head=TrillionniumFoundation:{branch}&per_page=10')
+                  if isinstance(pulls, list) and pulls:
+                      row['pr'] = pulls[0].get('number')
+                      row['draft'] = pulls[0].get('draft')
+                  checks_data, _ = api(f'repos/{repository}/commits/{row["head"]}/check-runs?per_page=100')
+                  checks = canonical((checks_data or {}).get('check_runs') or []) if isinstance(checks_data, dict) else []
+                  row['checks'] = len(checks)
+                  row['pending'] = sum(item.get('status') != 'completed' for item in checks)
+                  row['failed'] = sum(
+                      item.get('status') == 'completed'
+                      and item.get('conclusion') not in {'success', 'neutral', 'skipped'}
+                      for item in checks
+                  )
+                  for item in checks:
+                      if item.get('name') == 'trillionnium-game-merge-gate':
+                          row['aggregate'] = f"{item.get('status')}/{item.get('conclusion')}"
+                      if item.get('name') == 'prospective-merge-gate':
+                          row['prospective'] = f"{item.get('status')}/{item.get('conclusion')}"
+              rows.append(row)
+
+          carrier_runs, carrier_error = api(
+              f'repos/{repository}/actions/runs?branch={os.environ["CONTROL_BRANCH"]}&per_page=100'
+          )
+          controller_rows = []
+          if isinstance(carrier_runs, dict):
+              for run in carrier_runs.get('workflow_runs') or []:
+                  controller_rows.append({
+                      'name': run.get('name'),
+                      'id': run.get('id'),
+                      'head': run.get('head_sha'),
+                      'status': run.get('status'),
+                      'conclusion': run.get('conclusion'),
+                      'updated_at': run.get('updated_at'),
+                  })
+
+          snapshot = {
+              'schema': 'trillionnium.product-wave-status.v3',
+              'repository': repository,
+              'observed_at': datetime.now(timezone.utc).isoformat(),
+              'product_rows': rows,
+              'controller_runs': controller_rows,
+              'controller_error': carrier_error,
+              'summary': {
+                  'surfaces': len(rows),
+                  'present': sum(row['present'] for row in rows),
+                  'missing': sum(not row['present'] for row in rows),
+                  'pending': sum(row['pending'] > 0 for row in rows),
+                  'failed': sum(row['failed'] > 0 for row in rows),
+                  'aggregate_success': sum(row['aggregate'] == 'completed/success' for row in rows),
+                  'prospective_success': sum(row['prospective'] == 'completed/success' for row in rows),
+              },
+              'claim_boundary': {
+                  'independent_review_complete': False,
+                  'accepted_evidence_complete': False,
+                  'production_ready': False,
+                  'cutover_authorized': False,
+                  'nakama_retired': False,
+                  'all_gaps_closed': False,
+              },
+          }
+          (output / 'product-wave-status-v3.json').write_text(
+              json.dumps(snapshot, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          lines = [
+              '# TrillionniumGame product-wave status v3',
+              '',
+              f"Observed: `{snapshot['observed_at']}`",
+              '',
+              '| Branch | Present | Head | PR | Draft | Checks | Pending | Failed | Aggregate | Prospective |',
+              '|---|---:|---|---:|---:|---:|---:|---:|---|---|',
+          ]
+          for row in rows:
+              lines.append(
+                  f"| `{row['branch']}` | {str(row['present']).lower()} | "
+                  f"`{(row['head'] or '')[:12]}` | {row['pr'] or '—'} | "
+                  f"{row['draft'] if row['draft'] is not None else '—'} | "
+                  f"{row['checks']} | {row['pending']} | {row['failed']} | "
+                  f"{row['aggregate']} | {row['prospective']} |"
+              )
+          lines += [
+              '',
+              'Observation only: source/check success does not create independent acceptance, real external evidence, production readiness, cutover authorization, retirement, or all-gap closure.',
+          ]
+          (output / 'product-wave-status-v3.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+
+      - name: Publish snapshot on isolated status branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          base="$(gh api "repos/${REPOSITORY}/branches/${CONTROL_BRANCH}" --jq '.commit.sha')"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$base"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$STATUS_BRANCH" FETCH_HEAD
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p ops/status
+          cp "$RUNNER_TEMP/status/product-wave-status-v3.json" ops/status/
+          cp "$RUNNER_TEMP/status/product-wave-status-v3.md" ops/status/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ops/status/product-wave-status-v3.json ops/status/product-wave-status-v3.md
+          git commit -m 'chore(status): publish isolated exact product-wave snapshot'
+          remote="$(git ls-remote origin "refs/heads/${STATUS_BRANCH}" | awk '{print $1}')"
+          if test -n "$remote"; then
+            git push --force-with-lease="refs/heads/${STATUS_BRANCH}:${remote}" origin "HEAD:refs/heads/${STATUS_BRANCH}"
+          else
+            git push origin "HEAD:refs/heads/${STATUS_BRANCH}"
+          fi
+          cat ops/status/product-wave-status-v3.md >> "$GITHUB_STEP_SUMMARY"
