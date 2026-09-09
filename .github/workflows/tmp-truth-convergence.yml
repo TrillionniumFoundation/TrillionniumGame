@@ -1,0 +1,422 @@
+name: tmp-truth-convergence
+
+on:
+  push:
+    branches:
+      - integration/plan-v32-truth-convergence-2026-09-09
+    paths:
+      - .github/workflows/tmp-truth-convergence.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-truth-convergence
+  cancel-in-progress: false
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Fetch exact branch
+        shell: bash
+        env:
+          BRANCH: integration/plan-v32-truth-convergence-2026-09-09
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
+          test "$GITHUB_REF_NAME" = "$BRANCH"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Apply semantic truth patch
+        shell: bash
+        env:
+          BRANCH: integration/plan-v32-truth-convergence-2026-09-09
+          MAIN_COMMIT: 17952b49f7cd9699d153d9a16518cba56166367c
+          MAIN_TREE: 01d528735ac10653eb811500e0febb2f4a6eef14
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+
+          ROOT = Path('.')
+          BRANCH = 'integration/plan-v32-truth-convergence-2026-09-09'
+          MAIN_COMMIT = '17952b49f7cd9699d153d9a16518cba56166367c'
+          MAIN_TREE = '01d528735ac10653eb811500e0febb2f4a6eef14'
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = ROOT / path
+              text = target.read_text(encoding='utf-8')
+              if old not in text:
+                  raise SystemExit(f'{path}: expected stale text is absent')
+              target.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          def write_json(path: str, value: object) -> None:
+              (ROOT / path).write_text(
+                  json.dumps(value, ensure_ascii=False, indent=2) + '\n',
+                  encoding='utf-8',
+              )
+
+          replace_once(
+              'CURRENT_PLAN.md',
+              '当前 canonical database-backed server 仍位于 `crates/trnm-persistence-pg`；`crates/trnm-server` 是受限 foundation executable。最终必须收敛到一个生产 composition root，并把 persistence、protocol、service 和 process lifecycle 分层。现有局部成功不能推导完整 Nakama parity。',
+              '`crates/trnm-server` 是当前唯一默认第一方 `trnm-server` composition-root source candidate；`crates/trnm-persistence-pg/src/bin/trnm-server.rs` 仅在 `diagnostic-compat-server` feature 下构建为 `trnm-pg-compat-server`，是诊断兼容 harness，不是第二个生产权威。源码权威收敛不等于完整 Nakama parity、运行证据或生产批准。',
+          )
+          replace_once(
+              'README.md',
+              'It now also contains a bounded first-party Rust HTTP/WebSocket/database vertical-slice candidate under `crates/trnm-persistence-pg`; that slice is an integration seam, not a complete Nakama server or a production topology.',
+              'It now also contains one default first-party Rust composition-root candidate under `crates/trnm-server`, backed by the PostgreSQL/CockroachDB adapter in `crates/trnm-persistence-pg`; the feature-gated `trnm-pg-compat-server` target is a diagnostic compatibility harness, not a second production authority. This remains an integration seam, not a complete Nakama server or a production topology.',
+          )
+          replace_once(
+              'crates/trnm-server/README.md',
+              '`crates/trnm-server` contains a candidate composition root assembled from the repository\'s reviewed persistence, session/JWT, gRPC, and realtime-wire components.\nIts non-authoritative package-local binary is named `trnm-server`.\nThe currently admitted canonical process remains `crates/trnm-persistence-pg/src/bin/trnm-server.rs` until a separate atomic authority-transfer change removes that duplicate entry point, updates every consumer, and receives exact-object review.\nThis source candidate does not by itself establish compatibility, durability, release, deployment, or production authority.',
+              '`crates/trnm-server` contains the repository\'s unique default first-party `trnm-server` composition-root source candidate, assembled from the persistence, session/JWT, gRPC, and realtime-wire components.\n`crates/trnm-persistence-pg/src/bin/trnm-server.rs` is retained only as the feature-gated `trnm-pg-compat-server` diagnostic compatibility target; it is not a second default process or production authority.\nThis source-authority convergence does not by itself establish compatibility, durability, release, deployment, or production authority.',
+          )
+          replace_once(
+              'crates/trnm-server/README.md',
+              'The persistence-owned canonical `trnm-server` entry point still exists, so this PR is an extraction/convergence candidate rather than an authority transfer.\nA later atomic change must leave exactly one first-party process entry point and must update package authority, workflow coverage, contracts, deployment references, and retained evidence together.',
+              'The persistence-owned source file remains only as the explicitly feature-gated `trnm-pg-compat-server` diagnostic target. Any later removal or convergence of that harness must update package authority, workflow coverage, contracts, deployment references and retained evidence together without introducing a second default `trnm-server`.',
+          )
+
+          persistence_readme = ROOT / 'crates/trnm-persistence-pg/README.md'
+          ptext = persistence_readme.read_text(encoding='utf-8')
+          marker = 'The only default first-party server composition authority is `crates/trnm-server`.'
+          if marker not in ptext:
+              anchor = '## Known gaps and exit criteria'
+              if anchor not in ptext:
+                  raise SystemExit('persistence README missing insertion anchor')
+              block = (
+                  '## Composition authority\n\n'
+                  + marker
+                  + ' This package owns database adapters and the feature-gated '
+                    '`trnm-pg-compat-server` diagnostic compatibility harness; it does not own a second production process.\n\n'
+              )
+              persistence_readme.write_text(ptext.replace(anchor, block + anchor, 1), encoding='utf-8')
+
+          module_path = ROOT / 'docs/status/MODULE_DOCUMENTATION.json'
+          modules = json.loads(module_path.read_text(encoding='utf-8'))
+          rows = {row['id']: row for row in modules['modules']}
+          rows['trnm-server']['lifecycle'] = 'server-composition-root'
+          rows['trnm-server']['maturity'] = 'canonical-composition-authority-source-candidate'
+          rows['trnm-server']['authority'] = 'unique default first-party trnm-server composition authority source candidate'
+          rows['trnm-persistence-pg']['lifecycle'] = 'product-adapter-and-diagnostic-compatibility-harness'
+          rows['trnm-persistence-pg']['authority'] = 'authoritative PostgreSQL/CockroachDB adapter and feature-gated diagnostic compatibility harness'
+          write_json(module_path.as_posix(), modules)
+
+          inventory_path = ROOT / 'docs/status/IMPLEMENTATION_INVENTORY.json'
+          inventory = json.loads(inventory_path.read_text(encoding='utf-8'))
+          components = {row['id']: row for row in inventory['components']}
+          pg = components['COMP-PERSISTENCE-PG']
+          pg['kind'] = 'rust-persistence-adapter-and-feature-gated-diagnostic-harness'
+          pg['status'] = 'authority-storage-database-adapter-source-candidate'
+          pg['implemented'] = [
+              ('feature-gated trnm-pg-compat-server diagnostic check-config/migrate/serve harness'
+               if item == 'trnm-server check-config/migrate/serve binary' else item)
+              for item in pg.get('implemented', [])
+          ]
+          server = components['COMP-TRNM-SERVER']
+          server['path'] = 'crates/trnm-server'
+          server['kind'] = 'canonical-first-party-rust-server-composition-source-candidate'
+          server['status'] = 'http-grpc-websocket-session-database-source-candidate'
+          server['implemented'] = [
+              'unique default first-party trnm-server composition root',
+              'typed and redacted configuration with check-config/migrate/serve lifecycle',
+              'bounded HTTP framing and stable public errors',
+              'generated Nakama Healthcheck gRPC source',
+              'bounded WebSocket JSON and protobuf envelope paths',
+              'access-token and session-family source integration',
+              'PostgreSQL/CockroachDB repository composition',
+              'acknowledgement only after commit or exact receipt replay',
+              'bounded connection admission, drain, retry and cancellation controls',
+              'health, readiness and low-cardinality metrics source paths',
+          ]
+          server['missing'] = [
+              'complete Nakama HTTP/gRPC/grpc-gateway surface',
+              'complete RTAPI and distributed realtime lifecycle',
+              'complete account, social, leaderboard, tournament, matchmaker and multiplayer domains',
+              'complete Runtime, Console, provider and IAP surfaces',
+              'production KMS/HSM, HA, PITR, capacity and endurance evidence',
+              'official SDK and immutable-oracle differential acceptance',
+          ]
+          write_json(inventory_path.as_posix(), inventory)
+
+          state_path = ROOT / 'docs/status/CURRENT_STATE.json'
+          state = json.loads(state_path.read_text(encoding='utf-8'))
+          state['observed_at'] = '2026-09-09T04:31:18Z'
+          authority = state['authority']
+          authority['audited_main_commit'] = MAIN_COMMIT
+          authority['audited_main_tree'] = MAIN_TREE
+          authority['candidate_branch'] = BRANCH
+          authority['candidate_commit'] = None
+          authority['candidate_tree'] = None
+          if 'singular_main_target_pull_request' in authority:
+              authority['singular_main_target_pull_request'] = None
+          governance = state['repository_governance']
+          governance['main_protected'] = True
+          governance['required_checks_configured'] = True
+          governance['required_aggregate_context'] = 'trillionnium-game-merge-gate'
+          governance['status'] = 'source baseline admitted; complete administrative read-back and independent acceptance remain open'
+          runtime = state['runtime_topology']
+          runtime['rust_server_binary_present'] = True
+          runtime['rust_server_binary_authority'] = 'crates/trnm-server/Cargo.toml::trnm-server'
+          runtime['rust_server_stage'] = 'http-grpc-websocket-session-database-source-candidate'
+          runtime['status'] = 'One default Rust composition authority exists; complete compatibility and production evidence remain open.'
+          state['active_priority'] = [
+              'qualify the main-rebound Plan v3.2 source and truth-convergence candidate',
+              'obtain conflict-free specialist review and complete administration-scoped governance read-back',
+              'independently accept retained exact-object evidence and a post-merge main packet',
+              'classify and independently lock all D0-D8 denominator leaves and global SG1',
+              'implement the complete API RTAPI Runtime Console provider IAP and product-domain surface',
+              'complete KMS/HSM HA PITR capacity endurance migration canary cutover and retirement evidence',
+          ]
+          write_json(state_path.as_posix(), state)
+
+          active_path = ROOT / 'docs/governance/ACTIVE_BRANCHES.json'
+          active = json.loads(active_path.read_text(encoding='utf-8'))
+          active['generated_at'] = '2026-09-09T04:31:18Z'
+          active['active_branches'] = [
+              {'name': 'main', 'role': 'protected-integration-authority', 'pull_request': None},
+              {'name': BRANCH, 'role': 'plan-v3.2-main-rebound-truth-convergence-candidate', 'pull_request': None},
+          ]
+          active['claims']['active_line_declared'] = True
+          active['claims']['branch_cleanup_reviewed'] = False
+          active['claims']['branch_cleanup_executed'] = False
+          active['claims']['cleanup_complete'] = False
+          active['claims']['sg0_complete'] = False
+          write_json(active_path.as_posix(), active)
+
+          checker = r'''#!/usr/bin/env python3
+          """Enforce one default server composition authority across source and documentation."""
+          from __future__ import annotations
+
+          import argparse
+          import json
+          import tomllib
+          from pathlib import Path
+
+
+          class ValidationError(RuntimeError):
+              """Raised when server source or documentation authority diverges."""
+
+
+          def require(condition: bool, message: str) -> None:
+              if not condition:
+                  raise ValidationError(message)
+
+
+          def load_toml(path: Path) -> dict:
+              with path.open("rb") as handle:
+                  value = tomllib.load(handle)
+              require(isinstance(value, dict), f"{path}: TOML root must be a table")
+              return value
+
+
+          def load_json(path: Path) -> dict:
+              value = json.loads(path.read_text(encoding="utf-8"))
+              require(isinstance(value, dict), f"{path}: JSON root must be an object")
+              return value
+
+
+          def validate(root: Path) -> dict[str, object]:
+              root = root.resolve()
+              workspace = load_toml(root / "Cargo.toml")
+              members = workspace.get("workspace", {}).get("members", [])
+              require("crates/trnm-server" in members, "canonical trnm-server must be a root workspace member")
+              require("crates/trnm-persistence-pg" in members, "persistence adapter must be a root workspace member")
+
+              server_manifest = load_toml(root / "crates/trnm-server/Cargo.toml")
+              server_bins = server_manifest.get("bin", [])
+              require(
+                  server_bins == [{"name": "trnm-server", "path": "src/main.rs"}],
+                  "crates/trnm-server must own exactly the default trnm-server target",
+              )
+
+              pg_manifest = load_toml(root / "crates/trnm-persistence-pg/Cargo.toml")
+              require(pg_manifest.get("package", {}).get("autobins") is False, "persistence package must disable autobins")
+              features = pg_manifest.get("features", {})
+              require("diagnostic-compat-server" in features, "diagnostic compatibility feature is missing")
+              diagnostic = [row for row in pg_manifest.get("bin", []) if row.get("name") == "trnm-pg-compat-server"]
+              require(len(diagnostic) == 1, "exactly one diagnostic compatibility target is required")
+              require(diagnostic[0].get("path") == "src/bin/trnm-server.rs", "diagnostic source path changed")
+              require(
+                  diagnostic[0].get("required-features") == ["diagnostic-compat-server"],
+                  "diagnostic target must require diagnostic-compat-server",
+              )
+
+              owners: list[str] = []
+              for manifest in sorted((root / "crates").glob("*/Cargo.toml")):
+                  for row in load_toml(manifest).get("bin", []):
+                      if row.get("name") == "trnm-server":
+                          owners.append(manifest.relative_to(root).as_posix())
+              require(owners == ["crates/trnm-server/Cargo.toml"], f"default trnm-server authority is not unique: {owners}")
+
+              required_text = {
+                  "README.md": ["crates/trnm-server", "trnm-pg-compat-server", "not a second production authority"],
+                  "CURRENT_PLAN.md": ["唯一默认第一方 `trnm-server`", "trnm-pg-compat-server", "不是第二个生产权威"],
+                  "docs/ARCHITECTURE.md": ["only package allowed to publish the default `trnm-server`", "trnm-pg-compat-server"],
+                  "docs/DEVELOPMENT.md": ["only default server binary", "trnm-pg-compat-server"],
+                  "crates/trnm-server/README.md": ["unique default first-party `trnm-server`", "trnm-pg-compat-server", "not a second default process"],
+                  "crates/trnm-persistence-pg/README.md": ["only default first-party server composition authority", "trnm-pg-compat-server"],
+              }
+              for relative, fragments in required_text.items():
+                  text = (root / relative).read_text(encoding="utf-8")
+                  for fragment in fragments:
+                      require(fragment in text, f"{relative}: missing server-authority truth fragment: {fragment}")
+
+              forbidden = {
+                  "CURRENT_PLAN.md": ["canonical database-backed server 仍位于 `crates/trnm-persistence-pg`"],
+                  "crates/trnm-server/README.md": [
+                      "non-authoritative package-local binary",
+                      "currently admitted canonical process remains `crates/trnm-persistence-pg",
+                      "persistence-owned canonical `trnm-server` entry point still exists",
+                  ],
+              }
+              for relative, fragments in forbidden.items():
+                  text = (root / relative).read_text(encoding="utf-8")
+                  for fragment in fragments:
+                      require(fragment not in text, f"{relative}: stale server-authority claim remains: {fragment}")
+
+              modules = load_json(root / "docs/status/MODULE_DOCUMENTATION.json")
+              module_rows = {row["id"]: row for row in modules.get("modules", [])}
+              require("unique default first-party" in module_rows["trnm-server"]["authority"], "module registry demotes canonical server")
+              require("diagnostic compatibility harness" in module_rows["trnm-persistence-pg"]["authority"], "module registry promotes diagnostic server")
+
+              inventory = load_json(root / "docs/status/IMPLEMENTATION_INVENTORY.json")
+              component_rows = {row["id"]: row for row in inventory.get("components", [])}
+              require(component_rows["COMP-TRNM-SERVER"]["path"] == "crates/trnm-server", "implementation inventory points at the wrong server")
+              require("canonical" in component_rows["COMP-TRNM-SERVER"]["kind"], "implementation inventory lacks canonical server authority")
+              require("diagnostic" in component_rows["COMP-PERSISTENCE-PG"]["kind"], "persistence inventory lacks diagnostic boundary")
+
+              state = load_json(root / "docs/status/CURRENT_STATE.json")
+              require(
+                  state.get("runtime_topology", {}).get("rust_server_binary_authority")
+                  == "crates/trnm-server/Cargo.toml::trnm-server",
+                  "current state points at the wrong server authority",
+              )
+              return {"canonical_manifest": owners[0], "diagnostic_target": "trnm-pg-compat-server"}
+
+
+          def main() -> int:
+              parser = argparse.ArgumentParser()
+              parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+              args = parser.parse_args()
+              result = validate(args.root)
+              print(
+                  "single server authority valid: "
+                  f"canonical={result['canonical_manifest']} diagnostic={result['diagnostic_target']}"
+              )
+              return 0
+
+
+          if __name__ == "__main__":
+              try:
+                  raise SystemExit(main())
+              except ValidationError as error:
+                  print(f"single server authority invalid: {error}")
+                  raise SystemExit(1) from error
+          '''
+          checker = '\n'.join(line[10:] if line.startswith('          ') else line for line in checker.splitlines()) + '\n'
+          (ROOT / 'scripts/check-single-server-authority.py').write_text(checker, encoding='utf-8')
+
+          test_source = r'''from __future__ import annotations
+
+          import importlib.util
+          import shutil
+          import tempfile
+          import unittest
+          from pathlib import Path
+
+          ROOT = Path(__file__).resolve().parents[2]
+          CHECKER = ROOT / "scripts/check-single-server-authority.py"
+
+
+          def load_checker():
+              spec = importlib.util.spec_from_file_location("single_server_authority", CHECKER)
+              assert spec is not None and spec.loader is not None
+              module = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(module)
+              return module
+
+
+          class SingleServerAuthorityTests(unittest.TestCase):
+              def test_repository_truth_is_consistent(self) -> None:
+                  result = load_checker().validate(ROOT)
+                  self.assertEqual(result["canonical_manifest"], "crates/trnm-server/Cargo.toml")
+                  self.assertEqual(result["diagnostic_target"], "trnm-pg-compat-server")
+
+              def test_stale_canonical_document_claim_is_rejected(self) -> None:
+                  module = load_checker()
+                  with tempfile.TemporaryDirectory() as directory:
+                      fixture = Path(directory) / "repo"
+                      shutil.copytree(ROOT, fixture, ignore=shutil.ignore_patterns(".git", "target", "__pycache__"))
+                      plan = fixture / "CURRENT_PLAN.md"
+                      plan.write_text(
+                          plan.read_text(encoding="utf-8")
+                          + "\n当前 canonical database-backed server 仍位于 `crates/trnm-persistence-pg`\n",
+                          encoding="utf-8",
+                      )
+                      with self.assertRaises(module.ValidationError):
+                          module.validate(fixture)
+
+              def test_second_default_binary_is_rejected(self) -> None:
+                  module = load_checker()
+                  with tempfile.TemporaryDirectory() as directory:
+                      fixture = Path(directory) / "repo"
+                      shutil.copytree(ROOT, fixture, ignore=shutil.ignore_patterns(".git", "target", "__pycache__"))
+                      manifest = fixture / "crates/trnm-persistence-pg/Cargo.toml"
+                      manifest.write_text(
+                          manifest.read_text(encoding="utf-8")
+                          + '\n[[bin]]\nname = "trnm-server"\npath = "src/bin/trnm-server.rs"\n',
+                          encoding="utf-8",
+                      )
+                      with self.assertRaises(module.ValidationError):
+                          module.validate(fixture)
+
+
+          if __name__ == "__main__":
+              unittest.main()
+          '''
+          test_source = '\n'.join(line[10:] if line.startswith('          ') else line for line in test_source.splitlines()) + '\n'
+          (ROOT / 'tests/control_plane/test_single_server_authority.py').write_text(test_source, encoding='utf-8')
+
+          Path('.github/workflows/tmp-truth-convergence.yml').unlink()
+          PY
+      - name: Validate truth convergence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 scripts/check-single-server-authority.py
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          python3 -m unittest tests.control_plane.test_single_server_authority -v
+          python3 -m json.tool docs/status/CURRENT_STATE.json >/dev/null
+          python3 -m json.tool docs/status/MODULE_DOCUMENTATION.json >/dev/null
+          python3 -m json.tool docs/status/IMPLEMENTATION_INVENTORY.json >/dev/null
+          python3 -m json.tool docs/governance/ACTIVE_BRANCHES.json >/dev/null
+          test ! -e .github/workflows/tmp-truth-convergence.yml
+      - name: Commit verified patch and remove transport workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: integration/plan-v32-truth-convergence-2026-09-09
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
+          test "$(git diff --cached --name-only | grep -c '^\.github/workflows/tmp-truth-convergence.yml$')" -eq 1
+          git commit -m 'docs: converge canonical server and current-state truth'
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${BRANCH}"
