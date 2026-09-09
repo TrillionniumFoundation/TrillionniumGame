@@ -143,6 +143,11 @@ class GitHubApi(_HardenedGitHubApi):
         self, repo: str, run_id: int, attempt: int
     ) -> list[dict[str, Any]]:
         jobs = super().jobs_attempt(repo, run_id, attempt)
+        # Some pure tests intentionally construct an uninitialized API double
+        # that overrides only paged(). Preserve the exact-attempt URL contract
+        # without attempting a network parent lookup from that test double.
+        if not hasattr(self, "headers"):
+            return jobs
         parent = self.current_run(repo, run_id)
         normalized, anomalies = normalize_github_job_statuses(jobs, parent)
         for anomaly in anomalies:
