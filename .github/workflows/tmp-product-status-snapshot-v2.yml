@@ -1,0 +1,203 @@
+name: tmp-product-status-snapshot-v2
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-product-status-snapshot-v2.yml
+
+permissions:
+  checks: read
+  contents: write
+  pull-requests: read
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  CONTROL_BRANCH: ops/product-wave1-carrier-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch exact carrier
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$CONTROL_BRANCH" FETCH_HEAD
+
+      - name: Capture public GitHub state
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p ops/status
+          cat > "$RUNNER_TEMP/branches.txt" <<'EOF'
+          integration/plan-v32-main-rebind-2026-09-09
+          feature/plan-v32-product-wave1-20260909-v3
+          feature/plan-v32-storage-service-20260909
+          feature/plan-v32-competition-core-20260909
+          feature/plan-v32-multiplayer-core-20260909
+          feature/plan-v32-api-gateway-core-20260909
+          feature/plan-v32-rtapi-service-20260909
+          feature/plan-v32-runtime-core-20260909
+          feature/plan-v32-console-core-20260909
+          feature/plan-v32-provider-value-core-20260909
+          feature/plan-v32-migration-core-20260909
+          feature/plan-v32-kms-adapter-20260909
+          feature/plan-v32-conformance-core-20260909
+          feature/plan-v32-recovery-core-20260909
+          feature/plan-v32-endurance-core-20260909
+          feature/plan-v32-cutover-controller-20260909
+          feature/plan-v32-product-hardening-20260909
+          feature/plan-v32-product-assurance-v2-20260909
+          integration/plan-v32-product-surface-v3-20260909
+          EOF
+          python3 - "$RUNNER_TEMP/branches.txt" <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import subprocess
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          branches = [line.strip() for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]
+          repository = os.environ['REPOSITORY']
+
+          def gh(endpoint: str):
+              result = subprocess.run(
+                  ['gh', 'api', endpoint],
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+              )
+              if result.returncode != 0:
+                  return result.returncode, {'message': result.stderr.strip()}
+              try:
+                  return 0, json.loads(result.stdout)
+              except json.JSONDecodeError:
+                  return 1, {'message': 'invalid JSON'}
+
+          def canonical(checks):
+              latest = {}
+              for item in checks:
+                  name = item.get('name') or ''
+                  stamp = item.get('started_at') or item.get('completed_at') or ''
+                  previous = latest.get(name)
+                  previous_stamp = (previous.get('started_at') or previous.get('completed_at') or '') if previous else ''
+                  if previous is None or previous_stamp < stamp:
+                      latest[name] = item
+              return list(latest.values())
+
+          rows = []
+          for branch in branches:
+              code, branch_data = gh(f'repos/{repository}/branches/{branch}')
+              row = {
+                  'branch': branch,
+                  'present': code == 0,
+                  'head': None,
+                  'tree': None,
+                  'pr': None,
+                  'draft': None,
+                  'checks_total': 0,
+                  'checks_pending': 0,
+                  'checks_failed': 0,
+                  'aggregate': 'absent',
+                  'prospective_merge': 'absent',
+                  'error': None,
+              }
+              if code != 0:
+                  row['error'] = branch_data.get('message')
+                  rows.append(row)
+                  continue
+              commit = branch_data.get('commit') or {}
+              row['head'] = commit.get('sha')
+              row['tree'] = ((commit.get('commit') or {}).get('tree') or {}).get('sha')
+              _, pull_rows = gh(f'repos/{repository}/pulls?state=open&head=TrillionniumFoundation:{branch}&per_page=10')
+              if isinstance(pull_rows, list) and pull_rows:
+                  row['pr'] = pull_rows[0].get('number')
+                  row['draft'] = pull_rows[0].get('draft')
+              _, check_data = gh(f'repos/{repository}/commits/{row["head"]}/check-runs?per_page=100')
+              checks = canonical((check_data or {}).get('check_runs') or []) if isinstance(check_data, dict) else []
+              row['checks_total'] = len(checks)
+              row['checks_pending'] = sum(item.get('status') != 'completed' for item in checks)
+              row['checks_failed'] = sum(
+                  item.get('status') == 'completed'
+                  and item.get('conclusion') not in {'success', 'neutral', 'skipped'}
+                  for item in checks
+              )
+              for item in checks:
+                  if item.get('name') == 'trillionnium-game-merge-gate':
+                      row['aggregate'] = f"{item.get('status')}/{item.get('conclusion')}"
+                  elif item.get('name') == 'prospective-merge-gate':
+                      row['prospective_merge'] = f"{item.get('status')}/{item.get('conclusion')}"
+              rows.append(row)
+
+          snapshot = {
+              'schema': 'trillionnium.product-wave-status.v2',
+              'repository': repository,
+              'observed_at': datetime.now(timezone.utc).isoformat(),
+              'rows': rows,
+              'summary': {
+                  'branch_count': len(rows),
+                  'present': sum(row['present'] for row in rows),
+                  'missing': sum(not row['present'] for row in rows),
+                  'with_terminal_failures': sum(row['checks_failed'] > 0 for row in rows),
+                  'with_pending_checks': sum(row['checks_pending'] > 0 for row in rows),
+                  'aggregate_success': sum(row['aggregate'] == 'completed/success' for row in rows),
+                  'prospective_success': sum(row['prospective_merge'] == 'completed/success' for row in rows),
+              },
+              'claim_boundary': {
+                  'independent_review_complete': False,
+                  'accepted_evidence_complete': False,
+                  'production_ready': False,
+                  'cutover_authorized': False,
+                  'nakama_retired': False,
+                  'all_gaps_closed': False,
+              },
+          }
+          output = Path('ops/status/product-wave-status-v2.json')
+          output.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+
+          lines = [
+              '# Product-wave status snapshot v2',
+              '',
+              f"Observed: `{snapshot['observed_at']}`",
+              '',
+              '| Branch | Present | Head | PR | Draft | Checks | Pending | Failed | Aggregate | Prospective |',
+              '|---|---:|---|---:|---:|---:|---:|---:|---|---|',
+          ]
+          for row in rows:
+              lines.append(
+                  f"| `{row['branch']}` | {str(row['present']).lower()} | "
+                  f"`{(row['head'] or '')[:12]}` | {row['pr'] or '—'} | "
+                  f"{row['draft'] if row['draft'] is not None else '—'} | "
+                  f"{row['checks_total']} | {row['checks_pending']} | {row['checks_failed']} | "
+                  f"{row['aggregate']} | {row['prospective_merge']} |"
+              )
+          lines += [
+              '',
+              'This is an observation only. Green source checks do not create independent review, accepted evidence, production readiness, cutover authorization, retirement, or global gap closure.',
+          ]
+          Path('ops/status/product-wave-status-v2.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+
+      - name: Commit immutable observation to carrier history
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ops/status/product-wave-status-v2.json ops/status/product-wave-status-v2.md
+          git commit -m 'chore(status): snapshot product-wave exact GitHub state'
+          git push origin "HEAD:refs/heads/${CONTROL_BRANCH}"
+          cat ops/status/product-wave-status-v2.md >> "$GITHUB_STEP_SUMMARY"
