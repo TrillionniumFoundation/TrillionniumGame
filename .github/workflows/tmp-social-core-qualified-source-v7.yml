@@ -100,13 +100,34 @@ jobs:
           '''
           path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
           PY
-      - name: Reconstruct exact social candidate
+      - name: Reconstruct exact social candidate with complete carrier ancestry
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           bash "$RUNNER_TEMP/v6-extract.sh"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("/home/runner/work/_temp/v6-reconstruct.sh")
+          text = path.read_text(encoding="utf-8")
+          anchor = 'bash "$RUNNER_TEMP/v5-prepare.sh"\n'
+          patch = '''bash "$RUNNER_TEMP/v5-prepare.sh"
+          python3 - <<'INNER'
+          from pathlib import Path
+          reset = Path("/home/runner/work/_temp/v4-reset.sh")
+          source = reset.read_text(encoding="utf-8")
+          old = 'fetch --no-tags --depth=8 origin'
+          if source.count(old) != 1:
+              raise SystemExit("social shallow-fetch anchor drifted")
+          reset.write_text(source.replace(old, 'fetch --no-tags --depth=64 origin', 1), encoding="utf-8")
+          INNER
+          '''
+          if text.count(anchor) != 1:
+              raise SystemExit("v6 prepare anchor drifted")
+          path.write_text(text.replace(anchor, patch, 1), encoding="utf-8")
+          PY
           bash "$RUNNER_TEMP/v6-reconstruct.sh"
       - name: Apply typed notification input transformation
         shell: bash
