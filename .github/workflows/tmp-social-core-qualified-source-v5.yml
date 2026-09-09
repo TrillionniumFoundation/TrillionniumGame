@@ -61,11 +61,32 @@ jobs:
             "$RUNNER_TEMP/v4-prove.sh" \
             "$RUNNER_TEMP/v4-validate.sh" \
             "$RUNNER_TEMP/v4-publish.sh"
-      - name: Prepare reusable scripts
+      - name: Prepare reusable scripts and repair parent-shell cwd
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash "$RUNNER_TEMP/v4-extract.sh" && bash "$RUNNER_TEMP/v4-prepare.sh"
+        run: |
+          set -euo pipefail
+          bash "$RUNNER_TEMP/v4-extract.sh"
+          bash "$RUNNER_TEMP/v4-prepare.sh"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("/home/runner/work/_temp/reset-reconstruct.sh")
+          text = path.read_text(encoding="utf-8")
+          old = '''bash "$RUNNER_TEMP/generate-social.sh"
+          rm -f .github/workflows/tmp-social-core-qualified-source-v3.yml
+          git add -A
+          '''
+          new = '''bash "$RUNNER_TEMP/generate-social.sh"
+          cd "$GITHUB_WORKSPACE"
+          rm -f .github/workflows/tmp-social-core-qualified-source-v3.yml
+          git add -A
+          '''
+          if text.count(old) != 1:
+              raise SystemExit("social post-generator cwd anchor drifted")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
       - name: Reconstruct source from exact parent
         shell: bash
         env:
