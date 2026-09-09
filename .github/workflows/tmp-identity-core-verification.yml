@@ -1,0 +1,168 @@
+name: tmp-identity-core-verification
+
+on:
+  push:
+    branches:
+      - ops/identity-core-verification-20260909
+    paths:
+      - .github/workflows/tmp-identity-core-verification.yml
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: identity-core-verification
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      FEATURE_BRANCH: feature/plan-v32-identity-core-20260909
+    steps:
+      - name: Resolve exact feature head and pull request
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! feature_sha="$(gh api "repos/${REPOSITORY}/git/ref/heads/${FEATURE_BRANCH}" --jq '.object.sha')"; then
+            gh issue comment 137 --repo "$REPOSITORY" --body '<!-- identity-core-verification-missing -->The identity-core verification controller could not resolve `feature/plan-v32-identity-core-20260909`. No source or status claim was changed.'
+            exit 1
+          fi
+          feature_tree="$(gh api "repos/${REPOSITORY}/git/commits/${feature_sha}" --jq '.tree.sha')"
+          pr_number="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state all --limit 20 --json number,state --jq '[.[] | select(.state == "OPEN")][0].number // empty')"
+          echo "FEATURE_SHA=$feature_sha" >> "$GITHUB_ENV"
+          echo "FEATURE_TREE=$feature_tree" >> "$GITHUB_ENV"
+          echo "PR_NUMBER=$pr_number" >> "$GITHUB_ENV"
+      - name: Fetch exact feature candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$FEATURE_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$FEATURE_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD^{tree})" = "$FEATURE_TREE"
+      - name: Verify source, package and fixture contracts
+        id: checks
+        shell: bash
+        run: |
+          set -uo pipefail
+          cd "$GITHUB_WORKSPACE"
+          : > /tmp/identity-checks.log
+          failures=0
+          run_check() {
+            name="$1"
+            shift
+            printf '\n===== %s =====\n' "$name" | tee -a /tmp/identity-checks.log
+            if "$@" 2>&1 | tee -a /tmp/identity-checks.log; then
+              printf 'RESULT %s PASS\n' "$name" | tee -a /tmp/identity-checks.log
+            else
+              printf 'RESULT %s FAIL\n' "$name" | tee -a /tmp/identity-checks.log
+              failures=$((failures + 1))
+            fi
+          }
+
+          run_check expected-files test -f crates/trnm-identity-core/Cargo.toml
+          run_check expected-readme test -f crates/trnm-identity-core/README.md
+          run_check provider-fixture test -f crates/trnm-identity-core/testdata/provider-classes-v1.json
+          run_check no-product-temp-workflows bash -c '! git ls-tree -r --name-only HEAD | grep -Eq "^\.github/workflows/tmp-"'
+          run_check json-fixture python3 -m json.tool crates/trnm-identity-core/testdata/provider-classes-v1.json
+          run_check provider-fixture-contract python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          source = Path('crates/trnm-identity-core/src/lib.rs').read_text(encoding='utf-8')
+          fixture = json.loads(Path('crates/trnm-identity-core/testdata/provider-classes-v1.json').read_text(encoding='utf-8'))
+          expected = [
+              'custom', 'device', 'email', 'facebook', 'facebook_instant_game',
+              'apple', 'google', 'game_center', 'steam'
+          ]
+          if fixture.get('schema') != 'trnm.identity-provider-classes.v1':
+              raise SystemExit('wrong provider fixture schema')
+          if fixture.get('providers') != expected:
+              raise SystemExit('provider fixture order/content changed')
+          variants = re.search(r'pub enum IdentityProvider \{(?P<body>.*?)\n\}', source, re.S)
+          if variants is None:
+              raise SystemExit('IdentityProvider enum missing')
+          found = re.findall(r'^\s{4}([A-Z][A-Za-z0-9]+),$', variants.group('body'), re.M)
+          normalized = []
+          for value in found:
+              normalized.append(re.sub(r'(?<!^)(?=[A-Z])', '_', value).lower())
+          if normalized != expected:
+              raise SystemExit(f'provider enum/fixture mismatch: {normalized!r}')
+          if fixture['bounds']['provider_identity_bytes'] != 512:
+              raise SystemExit('provider identity byte bound changed')
+          if fixture['bounds']['identities_per_account_hard_max'] != 16:
+              raise SystemExit('identity hard maximum changed')
+          if any(fixture['claim_boundary'].get(key) is not False for key in ('provider_verification','compatibility_credit','production_ready')):
+              raise SystemExit('fixture overclaims provider verification or production')
+          PY
+          run_check cargo-metadata cargo metadata --format-version 1 --no-deps --locked
+          run_check cargo-format cargo fmt --all -- --check
+          run_check identity-tests cargo test --package trnm-identity-core --all-targets --locked
+          run_check identity-clippy cargo clippy --package trnm-identity-core --all-targets --locked -- -D warnings
+          run_check documentation-authority python3 scripts/check-documentation-authority.py
+          run_check package-inventory python3 scripts/check-rust-package-inventory.py
+          run_check plan-control python3 scripts/check-plan.py
+          run_check repository-diff git diff --exit-code
+
+          echo "FAILURES=$failures" >> "$GITHUB_ENV"
+          if test "$failures" -gt 0; then
+            exit 1
+          fi
+      - name: Publish exact verification result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          failures="${FAILURES:-1}"
+          result=failed
+          if test "$failures" = 0; then
+            result=passed
+          fi
+          summary="$(grep '^RESULT ' /tmp/identity-checks.log 2>/dev/null | tail -n 30 || true)"
+          if test -z "$summary"; then
+            summary='No completed check summary was produced.'
+          fi
+          body_file=/tmp/identity-verification-comment.md
+          cat > "$body_file" <<EOF
+          <!-- identity-core-verification:${FEATURE_SHA} -->
+          Identity core exact-source verification **${result}**.
+
+          ```text
+          repository=${REPOSITORY}
+          branch=${FEATURE_BRANCH}
+          commit=${FEATURE_SHA}
+          tree=${FEATURE_TREE}
+          pull_request=${PR_NUMBER:-none}
+          failed_check_count=${failures}
+          compatibility_credit=false
+          accepted_evidence=false
+          issue_137_complete=false
+          production_ready=false
+          ```
+
+          Check summary:
+
+          ```text
+          ${summary}
+          ```
+
+          This result covers the bounded domain source candidate only. Provider-token verification, HTTP/gRPC adapters, durable persistence, session issuance, official-consumer/oracle differential, retained promotable evidence and independent acceptance remain open.
+          EOF
+          existing="$(gh api "repos/${REPOSITORY}/issues/137/comments?per_page=100" --jq --arg marker "<!-- identity-core-verification:${FEATURE_SHA} -->" '[.[] | select(.body | contains($marker))] | length')"
+          if test "$existing" -eq 0; then
+            gh issue comment 137 --repo "$REPOSITORY" --body-file "$body_file"
+          fi
+          if test "$result" = passed && test -n "${PR_NUMBER:-}"; then
+            gh api --method POST "repos/${REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" -f 'reviewers[]=Tomasrgbsf' >/dev/null || true
+          fi
