@@ -34,25 +34,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          head_dir="$RUNNER_TEMP/world-head"
-          merge_dir="$RUNNER_TEMP/world-merge"
-          rm -rf "$head_dir" "$merge_dir"
+          for tuple in "head:$WORLD_HEAD_SHA" "merge:$WORLD_MERGE_SHA"; do
+            name="${tuple%%:*}"
+            sha="${tuple#*:}"
+            dir="$RUNNER_TEMP/world-$name"
+            rm -rf "$dir"
+            git init "$dir"
+            git -C "$dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+            git -C "$dir" fetch --no-tags --depth=2 origin "$sha"
+            git -C "$dir" checkout --detach FETCH_HEAD
+          done
 
-          git init "$head_dir"
-          git -C "$head_dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
-          git -C "$head_dir" fetch --no-tags --depth=1 origin "$WORLD_HEAD_SHA"
-          git -C "$head_dir" checkout --detach FETCH_HEAD
-
-          git init "$merge_dir"
-          git -C "$merge_dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
-          git -C "$merge_dir" fetch --no-tags --depth=2 origin "$WORLD_MERGE_SHA"
-          git -C "$merge_dir" checkout --detach FETCH_HEAD
-
-          test "$(git -C "$head_dir" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
-          test "$(git -C "$head_dir" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
-          test "$(git -C "$merge_dir" rev-parse HEAD)" = "$WORLD_MERGE_SHA"
-          test "$(git -C "$merge_dir" rev-parse 'HEAD^{tree}')" = "$WORLD_MERGE_TREE"
-          test "$(git -C "$merge_dir" show -s --format=%P HEAD)" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
+          test "$(git -C "$RUNNER_TEMP/world-head" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+          test "$(git -C "$RUNNER_TEMP/world-head" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
+          test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse HEAD)" = "$WORLD_MERGE_SHA"
+          test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')" = "$WORLD_MERGE_TREE"
+          test "$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
 
       - name: Install pinned Rust and native dependencies
         shell: bash
@@ -68,32 +65,27 @@ jobs:
           cargo --version --verbose
           rustfmt --version
 
-      - name: Qualify exact head source
-        id: source_head
-        continue-on-error: true
+      - name: Qualify exact head and prospective merge source
         shell: bash
         run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/world-head"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh source
+          set -uo pipefail
+          head_log="$RUNNER_TEMP/world-pr109-head-source.log"
+          merge_log="$RUNNER_TEMP/world-pr109-merge-source.log"
+          head_status=0
+          merge_status=0
 
-      - name: Qualify prospective merge source
-        id: source_merge
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/world-merge"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh source
+          (
+            set -euo pipefail
+            cd "$RUNNER_TEMP/world-head"
+            bash scripts/run-trnm-world-v6-qualification-v2.sh source
+          ) >"$head_log" 2>&1 || head_status=$?
 
-      - name: Enforce exact tuple and both source outcomes
-        if: always()
-        shell: bash
-        env:
-          SOURCE_HEAD: ${{ steps.source_head.outcome }}
-          SOURCE_MERGE: ${{ steps.source_merge.outcome }}
-        run: |
-          set -euo pipefail
+          (
+            set -euo pipefail
+            cd "$RUNNER_TEMP/world-merge"
+            bash scripts/run-trnm-world-v6-qualification-v2.sh source
+          ) >"$merge_log" 2>&1 || merge_status=$?
+
           actual_head="$(git -C "$RUNNER_TEMP/world-head" rev-parse HEAD)"
           actual_head_tree="$(git -C "$RUNNER_TEMP/world-head" rev-parse 'HEAD^{tree}')"
           actual_merge="$(git -C "$RUNNER_TEMP/world-merge" rev-parse HEAD)"
@@ -108,17 +100,30 @@ jobs:
             printf 'world_merge=%s\n' "$actual_merge"
             printf 'world_merge_tree=%s\n' "$actual_merge_tree"
             printf 'world_merge_parents=%s\n' "$actual_parents"
-            printf 'source_head=%s\n' "$SOURCE_HEAD"
-            printf 'source_merge=%s\n' "$SOURCE_MERGE"
+            printf 'source_head_exit=%s\n' "$head_status"
+            printf 'source_merge_exit=%s\n' "$merge_status"
             printf 'production_authorization=not_granted\n'
             printf '```\n'
           } >> "$GITHUB_STEP_SUMMARY"
+
+          if test "$head_status" -ne 0; then
+            printf '%s\n' '--- exact head source failure tail ---'
+            tail -n 240 "$head_log"
+          else
+            printf 'WORLD_PR109_HEAD_SOURCE=PASS\n'
+          fi
+          if test "$merge_status" -ne 0; then
+            printf '%s\n' '--- prospective merge source failure tail ---'
+            tail -n 240 "$merge_log"
+          else
+            printf 'WORLD_PR109_MERGE_SOURCE=PASS\n'
+          fi
 
           test "$actual_head" = "$WORLD_HEAD_SHA"
           test "$actual_head_tree" = "$WORLD_HEAD_TREE"
           test "$actual_merge" = "$WORLD_MERGE_SHA"
           test "$actual_merge_tree" = "$WORLD_MERGE_TREE"
           test "$actual_parents" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
-          test "$SOURCE_HEAD" = success
-          test "$SOURCE_MERGE" = success
+          test "$head_status" -eq 0
+          test "$merge_status" -eq 0
           printf 'WORLD_PR109_SOURCE_QUALIFICATION=PASS\n'
