@@ -1,0 +1,1093 @@
+{
+  "claim_boundary": {
+    "accepted_evidence_complete": false,
+    "all_gaps_closed": false,
+    "cutover_authorized": false,
+    "independent_review_complete": false,
+    "nakama_retired": false,
+    "production_ready": false
+  },
+  "controller_error": null,
+  "controller_runs": [
+    {
+      "conclusion": null,
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332750245,
+      "name": "tmp-product-status-snapshot-v3",
+      "status": "in_progress",
+      "updated_at": "2026-09-09T09:05:39Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332748649,
+      "name": ".github/workflows/tmp-product-assurance-wave17.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:35Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332749994,
+      "name": "tmp-controller-audit",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:46Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332747559,
+      "name": ".github/workflows/tmp-product-hardening-wave16.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:34Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332744867,
+      "name": ".github/workflows/tmp-fix-migration-wave10-v3.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:33Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332746335,
+      "name": ".github/workflows/tmp-fix-migration-wave10.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:33Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332743766,
+      "name": ".github/workflows/tmp-fix-cutover-wave15.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:32Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332741415,
+      "name": ".github/workflows/tmp-fix-kms-wave11.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:31Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332742521,
+      "name": ".github/workflows/tmp-fix-migration-wave10-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:31Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332740417,
+      "name": ".github/workflows/tmp-fix-recovery-wave13.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:30Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332739407,
+      "name": ".github/workflows/tmp-fix-product-hardening-wave16.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:29Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332738356,
+      "name": ".github/workflows/tmp-fix-cutover-wave15-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:29Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332737460,
+      "name": ".github/workflows/tmp-export-product-assurance-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:28Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332735962,
+      "name": ".github/workflows/tmp-fix-console-wave8.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:27Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332734355,
+      "name": ".github/workflows/tmp-fix-conformance-wave12.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:26Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332732362,
+      "name": ".github/workflows/tmp-fix-endurance-wave14.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:25Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332733282,
+      "name": ".github/workflows/tmp-fix-conformance-wave12-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:25Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "cf7ef63f0a85588439a5a2b6e27b29d98e600bfb",
+      "id": 34332731290,
+      "name": ".github/workflows/tmp-fix-recovery-wave13-v3.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:05:24Z"
+    },
+    {
+      "conclusion": null,
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332671769,
+      "name": "tmp-add-product-surface-registry-wave17",
+      "status": "in_progress",
+      "updated_at": "2026-09-09T09:04:52Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332671710,
+      "name": "tmp-controller-audit",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:58Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332669143,
+      "name": ".github/workflows/tmp-export-product-assurance-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:47Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332670219,
+      "name": ".github/workflows/tmp-fix-cutover-wave15.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:47Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332668237,
+      "name": ".github/workflows/tmp-product-hardening-wave16.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:46Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332666091,
+      "name": ".github/workflows/tmp-fix-migration-wave10.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:45Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332667215,
+      "name": ".github/workflows/tmp-fix-recovery-wave13-v3.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:45Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332665020,
+      "name": ".github/workflows/tmp-fix-endurance-wave14.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:44Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332662900,
+      "name": ".github/workflows/tmp-fix-cutover-wave15-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:43Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332663873,
+      "name": ".github/workflows/tmp-fix-product-hardening-wave16.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:43Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332661908,
+      "name": ".github/workflows/tmp-fix-console-wave8.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:42Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332659836,
+      "name": ".github/workflows/tmp-fix-migration-wave10-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:41Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332660866,
+      "name": ".github/workflows/tmp-product-assurance-wave17.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:41Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332658822,
+      "name": ".github/workflows/tmp-fix-kms-wave11.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:40Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332656548,
+      "name": ".github/workflows/tmp-fix-conformance-wave12-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:39Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332657594,
+      "name": ".github/workflows/tmp-fix-conformance-wave12.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:39Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332655371,
+      "name": ".github/workflows/tmp-fix-recovery-wave13.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:38Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "571f9069b5203c2cabc1720ff87159e6c4c73399",
+      "id": 34332654195,
+      "name": ".github/workflows/tmp-fix-migration-wave10-v3.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:04:37Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332557352,
+      "name": "tmp-controller-audit",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:52Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332555990,
+      "name": "tmp-reviewer-capacity-readback",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:50Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332554458,
+      "name": ".github/workflows/tmp-fix-cutover-wave15.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:34Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332553640,
+      "name": ".github/workflows/tmp-fix-cutover-wave15-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:33Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332552618,
+      "name": ".github/workflows/tmp-fix-conformance-wave12-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:33Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332551695,
+      "name": ".github/workflows/tmp-export-product-assurance-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:32Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332550830,
+      "name": ".github/workflows/tmp-fix-product-hardening-wave16.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:31Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332549771,
+      "name": ".github/workflows/tmp-fix-recovery-wave13-v3.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:31Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332548680,
+      "name": ".github/workflows/tmp-fix-kms-wave11.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:30Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332546735,
+      "name": ".github/workflows/tmp-fix-conformance-wave12.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:29Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332547691,
+      "name": ".github/workflows/tmp-fix-console-wave8.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:29Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332545808,
+      "name": ".github/workflows/tmp-product-assurance-wave17.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:28Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332544928,
+      "name": ".github/workflows/tmp-fix-recovery-wave13.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:27Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332543970,
+      "name": ".github/workflows/tmp-fix-migration-wave10.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:27Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332542060,
+      "name": ".github/workflows/tmp-fix-migration-wave10-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:26Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332542961,
+      "name": ".github/workflows/tmp-fix-migration-wave10-v3.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:26Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332541004,
+      "name": ".github/workflows/tmp-fix-endurance-wave14.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:25Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "897f83d1dbeefbfbc66a60a42b10a6d90f942418",
+      "id": 34332540110,
+      "name": ".github/workflows/tmp-product-hardening-wave16.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:24Z"
+    },
+    {
+      "conclusion": null,
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332493144,
+      "name": "tmp-review-bundle-wave17",
+      "status": "in_progress",
+      "updated_at": "2026-09-09T09:02:57Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332492938,
+      "name": "tmp-controller-audit",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:03:05Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332491622,
+      "name": ".github/workflows/tmp-fix-migration-wave10-v3.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:53Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332490219,
+      "name": ".github/workflows/tmp-export-product-assurance-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:52Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332487274,
+      "name": ".github/workflows/tmp-fix-recovery-wave13-v3.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:51Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332488756,
+      "name": ".github/workflows/tmp-fix-migration-wave10-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:51Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332486285,
+      "name": ".github/workflows/tmp-fix-endurance-wave14.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:50Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332484282,
+      "name": ".github/workflows/tmp-fix-conformance-wave12-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:49Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332485268,
+      "name": ".github/workflows/tmp-fix-conformance-wave12.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:49Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332483112,
+      "name": ".github/workflows/tmp-fix-product-hardening-wave16.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:48Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332481915,
+      "name": ".github/workflows/tmp-fix-kms-wave11.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:47Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332479430,
+      "name": ".github/workflows/tmp-fix-cutover-wave15-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:46Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332480663,
+      "name": ".github/workflows/tmp-fix-cutover-wave15.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:46Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332478296,
+      "name": ".github/workflows/tmp-fix-console-wave8.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:45Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332477196,
+      "name": ".github/workflows/tmp-product-hardening-wave16.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:44Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332474734,
+      "name": ".github/workflows/tmp-fix-recovery-wave13.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:43Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332475966,
+      "name": ".github/workflows/tmp-product-assurance-wave17.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:43Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "d9756bba24b8dd6adaf9afca230e09afe5f7e678",
+      "id": 34332473516,
+      "name": ".github/workflows/tmp-fix-migration-wave10.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:42Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332408880,
+      "name": "tmp-controller-audit",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:09Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332408789,
+      "name": "tmp-fix-controller-audit",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:02:12Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332407288,
+      "name": ".github/workflows/tmp-fix-recovery-wave13.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:59Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332405092,
+      "name": ".github/workflows/tmp-fix-cutover-wave15.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:58Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332406141,
+      "name": ".github/workflows/tmp-fix-kms-wave11.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:58Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332404135,
+      "name": ".github/workflows/tmp-fix-conformance-wave12-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:57Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332401550,
+      "name": ".github/workflows/tmp-fix-migration-wave10.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:56Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332402787,
+      "name": ".github/workflows/tmp-fix-product-hardening-wave16.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:56Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332400258,
+      "name": ".github/workflows/tmp-fix-cutover-wave15-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:55Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332399260,
+      "name": ".github/workflows/tmp-fix-console-wave8.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:54Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332398296,
+      "name": ".github/workflows/tmp-product-assurance-wave17.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:54Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332397244,
+      "name": ".github/workflows/tmp-fix-conformance-wave12.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:53Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332396216,
+      "name": ".github/workflows/tmp-export-product-assurance-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:52Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332394097,
+      "name": ".github/workflows/tmp-fix-migration-wave10-v3.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:51Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332395116,
+      "name": ".github/workflows/tmp-fix-recovery-wave13-v3.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:51Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332393016,
+      "name": ".github/workflows/tmp-fix-migration-wave10-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:50Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332390482,
+      "name": ".github/workflows/tmp-product-hardening-wave16.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:49Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "3b94049a5c3a6763cb491f5c67aa57748474c8c2",
+      "id": 34332391722,
+      "name": ".github/workflows/tmp-fix-endurance-wave14.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:49Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "fc165fb0aad684f861a4ca111689e6eb52344ddb",
+      "id": 34332373496,
+      "name": "tmp-controller-audit",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:50Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "fc165fb0aad684f861a4ca111689e6eb52344ddb",
+      "id": 34332373546,
+      "name": "tmp-remove-export-v2",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:50Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "fc165fb0aad684f861a4ca111689e6eb52344ddb",
+      "id": 34332371985,
+      "name": ".github/workflows/tmp-fix-migration-wave10-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:38Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "fc165fb0aad684f861a4ca111689e6eb52344ddb",
+      "id": 34332370942,
+      "name": ".github/workflows/tmp-fix-endurance-wave14.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:37Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "fc165fb0aad684f861a4ca111689e6eb52344ddb",
+      "id": 34332369880,
+      "name": ".github/workflows/tmp-product-assurance-wave17.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:36Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "fc165fb0aad684f861a4ca111689e6eb52344ddb",
+      "id": 34332368594,
+      "name": ".github/workflows/tmp-fix-recovery-wave13-v3.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:36Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "fc165fb0aad684f861a4ca111689e6eb52344ddb",
+      "id": 34332367671,
+      "name": ".github/workflows/tmp-fix-product-hardening-wave16.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:35Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "fc165fb0aad684f861a4ca111689e6eb52344ddb",
+      "id": 34332365683,
+      "name": ".github/workflows/tmp-fix-kms-wave11.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:34Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "fc165fb0aad684f861a4ca111689e6eb52344ddb",
+      "id": 34332366584,
+      "name": ".github/workflows/tmp-export-product-assurance-v2.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:34Z"
+    },
+    {
+      "conclusion": "failure",
+      "head": "fc165fb0aad684f861a4ca111689e6eb52344ddb",
+      "id": 34332364754,
+      "name": ".github/workflows/tmp-fix-cutover-wave15.yml",
+      "status": "completed",
+      "updated_at": "2026-09-09T09:01:33Z"
+    }
+  ],
+  "observed_at": "2026-09-09T09:05:48.850486+00:00",
+  "product_rows": [
+    {
+      "aggregate": "completed/success",
+      "branch": "integration/plan-v32-main-rebind-2026-09-09",
+      "checks": 77,
+      "draft": true,
+      "error": null,
+      "failed": 0,
+      "head": "d306a9385e154babc0173bfb214b5726a0f2942c",
+      "pending": 0,
+      "pr": 150,
+      "present": true,
+      "prospective": "completed/success",
+      "tree": "7c06b974eb67201d0cd452a00db5e6143344bf62"
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-product-wave1-20260909-v3",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-storage-service-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-competition-core-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-multiplayer-core-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-api-gateway-core-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-rtapi-service-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-runtime-core-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-console-core-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-provider-value-core-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-migration-core-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-kms-adapter-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-conformance-core-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-recovery-core-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-endurance-core-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-cutover-controller-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-product-hardening-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "feature/plan-v32-product-assurance-v2-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    },
+    {
+      "aggregate": "absent",
+      "branch": "integration/plan-v32-product-surface-v3-20260909",
+      "checks": 0,
+      "draft": null,
+      "error": "gh: Branch not found (HTTP 404)",
+      "failed": 0,
+      "head": null,
+      "pending": 0,
+      "pr": null,
+      "present": false,
+      "prospective": "absent",
+      "tree": null
+    }
+  ],
+  "repository": "TrillionniumFoundation/TrillionniumGame",
+  "schema": "trillionnium.product-wave-status.v3",
+  "summary": {
+    "aggregate_success": 1,
+    "failed": 0,
+    "missing": 18,
+    "pending": 0,
+    "present": 1,
+    "prospective_success": 1,
+    "surfaces": 19
+  }
+}
