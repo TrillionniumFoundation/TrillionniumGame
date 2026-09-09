@@ -11,11 +11,7 @@ members = [
   "crates/trnm-token-core",
   "crates/trnm-presence-core",
   "crates/trnm-query-core",
-]
-exclude = [
   "crates/trnm-token-jwt-adapter",
-  "crates/trnm-token-jwt-adapter-gate",
-  "crates/trnm-token-jwt-adapter-gate-v2",
   "crates/trnm-presence-router-v2",
   "crates/trnm-server",
   "crates/trnm-persistence-runtime-policy",
@@ -23,6 +19,10 @@ exclude = [
   "crates/trnm-storage-nakama-version",
   "crates/trnm-token-crypto-provider",
   "crates/trnm-token-jwt-provider-adapter",
+]
+exclude = [
+  "crates/trnm-token-jwt-adapter-gate",
+  "crates/trnm-token-jwt-adapter-gate-v2",
 ]
 resolver = "2"
 

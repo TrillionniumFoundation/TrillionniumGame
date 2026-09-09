@@ -2,7 +2,7 @@
 
 Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
 Path: `crates/trnm-canonical-core`  
-Workspace class: `root`  
+Workspace class: `root`
 Lifecycle: `product-library`  
 Owner role: `protocol`
 

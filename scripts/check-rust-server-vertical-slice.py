@@ -49,7 +49,7 @@ def main() -> int:
         contract = load(CONTRACT_PATH)
         status = load(STATUS_PATH)
         manifest = read(CRATE / "Cargo.toml")
-        lock = read(CRATE / "Cargo.lock")
+        lock = read(ROOT / "Cargo.lock")
         readme = read(CRATE / "README.md")
         source_paths = [CRATE / "src/lib.rs", CRATE / "src/main.rs"] + sorted(
             (CRATE / "src/runtime").glob("*.rs")
@@ -59,7 +59,7 @@ def main() -> int:
         require(contract.get("schema") == "trillionnium.rust-server-vertical-slice.v1", "wrong server contract schema")
         require(contract.get("contract_version") == 2, "server contract version drift")
         require(contract.get("status") == "source-candidate", "contract status must fail closed")
-        require(contract.get("binary") == "trnm-server-composition-candidate", "contract binary drift")
+        require(contract.get("binary") == "trnm-server", "contract binary drift")
         require(status.get("status") == "source-candidate", "status must fail closed")
         require(status.get("gap_id") == "GAP-P0-SERVER-001", "wrong gap binding")
         require(status.get("contract") == str(CONTRACT_PATH.relative_to(ROOT)), "contract path drift")
@@ -75,7 +75,7 @@ def main() -> int:
             require(f'name = "{dependency}"' in lock, f"lock omits {dependency}")
         require('name = "trnm-server"' in manifest, "server package missing")
         require('name = "trnm-server"' in lock, "server lock entry missing")
-        require("[workspace]" in manifest, "isolated workspace boundary missing")
+        require("[workspace]" not in manifest, "nested server workspace returned")
 
         required_source = (
             "#![forbid(unsafe_code)]",

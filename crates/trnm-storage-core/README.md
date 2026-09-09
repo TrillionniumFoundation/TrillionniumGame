@@ -2,7 +2,7 @@
 
 Status: **module documentation; public-version-source-candidate; no automatic compatibility or production credit**  
 Path: `crates/trnm-storage-core`  
-Workspace class: `root`  
+Workspace class: `root`
 Lifecycle: `product-library`  
 Owner role: `storage`
 

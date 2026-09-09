@@ -28,7 +28,7 @@ DEFAULT_MANIFEST = _hardened.DEFAULT_MANIFEST
 Requirement = _hardened.Requirement
 Manifest = _hardened.Manifest
 Run = _hardened.Run
-GitHubApi = _hardened.GitHubApi
+_HardenedGitHubApi = _hardened.GitHubApi
 valid_repo = _hardened.valid_repo
 valid_path = _hardened.valid_path
 _core_blob_sha = _hardened.blob_sha
@@ -56,6 +56,112 @@ def blob_sha(value: bytes | bytearray | Path) -> str:
     if not isinstance(value, bytes):
         raise TypeError("blob_sha requires bytes, bytearray, or Path")
     return _core_blob_sha(value)
+
+
+def _successful_execution_steps_are_terminal(job: dict[str, Any]) -> bool:
+    """Return true only for a non-empty, wholly successful execution step set."""
+
+    steps = job.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return False
+    effective = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and not _hardened.is_framework_step(str(step.get("name", "")))
+    ]
+    if not effective:
+        return False
+
+    successful = 0
+    for step in effective:
+        status = str(step.get("status", ""))
+        conclusion = (
+            None
+            if step.get("conclusion") is None
+            else str(step.get("conclusion"))
+        )
+        if conclusion == "skipped":
+            continue
+        if status != "completed" or conclusion != "success":
+            return False
+        successful += 1
+    return successful > 0
+
+
+def normalize_github_job_statuses(
+    jobs: list[dict[str, Any]], parent: Run
+) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
+    """Normalize only GitHub's stale status with independently terminal evidence.
+
+    GitHub may return a workflow run as completed/success while an exact-attempt
+    job still reports status=in_progress, conclusion=success, even though every
+    execution step, including the runner completion step, is completed/success.
+    This function preserves fail-closed behavior: normalization is allowed only
+    when the parent run is terminal-success, the job conclusion is success, and
+    every non-framework, non-skipped step is completed/success.
+    """
+
+    if parent.status != "completed" or parent.conclusion != "success":
+        return jobs, ()
+
+    normalized: list[dict[str, Any]] = []
+    anomalies: list[str] = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            normalized.append(job)
+            continue
+        status = str(job.get("status", ""))
+        conclusion = (
+            None
+            if job.get("conclusion") is None
+            else str(job.get("conclusion"))
+        )
+        if (
+            status != "completed"
+            and conclusion == "success"
+            and _successful_execution_steps_are_terminal(job)
+        ):
+            replacement = dict(job)
+            replacement["status"] = "completed"
+            replacement["trnm_observed_status"] = status
+            replacement["trnm_status_normalized"] = True
+            normalized.append(replacement)
+            anomalies.append(
+                f"{job.get('name', '<unnamed>')}: "
+                f"observed status={status!r}, conclusion='success'"
+            )
+        else:
+            normalized.append(job)
+    return normalized, tuple(anomalies)
+
+
+class GitHubApi(_HardenedGitHubApi):
+    """Harden exact-attempt reads against one documented GitHub API anomaly."""
+
+    def jobs_attempt(
+        self, repo: str, run_id: int, attempt: int
+    ) -> list[dict[str, Any]]:
+        jobs = super().jobs_attempt(repo, run_id, attempt)
+        # Some pure tests intentionally construct an uninitialized API double
+        # that overrides only paged(). Preserve the exact-attempt URL contract
+        # without attempting a network parent lookup from that test double.
+        if not hasattr(self, "headers"):
+            return jobs
+        parent = self.current_run(repo, run_id)
+        normalized, anomalies = normalize_github_job_statuses(jobs, parent)
+        for anomaly in anomalies:
+            print(
+                "required workflow gate: normalized stale GitHub job status "
+                f"for terminal-success parent run={run_id} attempt={attempt}: "
+                f"{anomaly}",
+                file=sys.stderr,
+            )
+        return normalized
+
+
+# The hardened core resolves this global at execution time.
+_hardened.GitHubApi = GitHubApi
 
 
 def canonical_overlay_digest(value: dict[str, Any]) -> str:

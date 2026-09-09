@@ -1,0 +1,184 @@
+{
+  "schema": "trillionnium.crypto-path-authority.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "revision": "2026-09-08",
+  "claim_rule": "A reviewed primitive on one active path does not approve the complete token, key-lifecycle, durable-digest or production security boundary. Every production binary and cryptographic operation must be classified separately.",
+  "approved_primitive_providers": [
+    {
+      "id": "PROVIDER-OPENSSL-SOFTWARE-CRYPTO",
+      "package": "openssl",
+      "version": "0.10.81",
+      "operations": [
+        "HMAC-SHA256 verification for the current database-backed access-token path",
+        "SHA-256 digest for the current refresh-token credential path",
+        "SHA-256 durable spool receipt, failure-reason and deterministic retry-jitter material",
+        "constant-time fixed-length access, administrator and durable spool comparison"
+      ],
+      "source_paths": [
+        "crates/trnm-persistence-pg/src/auth.rs",
+        "crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs",
+        "crates/trnm-persistence-pg/src/bin/trnm_server/app.rs"
+      ],
+      "profile": "source-candidate-software-provider",
+      "production_approval": false,
+      "independent_security_acceptance": false
+    },
+    {
+      "id": "PROVIDER-RUSTCRYPTO-JWT",
+      "packages": [
+        {
+          "name": "hmac",
+          "version": "0.13.0"
+        },
+        {
+          "name": "sha2",
+          "version": "0.11.0"
+        },
+        {
+          "name": "subtle",
+          "version": "2.6.1"
+        }
+      ],
+      "operations": [
+        "SHA-256 digest",
+        "HMAC-SHA256 issue and verification",
+        "constant-time equal-length byte comparison"
+      ],
+      "source_paths": [
+        "crates/trnm-token-jwt-adapter/src/sha256.rs"
+      ],
+      "profile": "reviewed-library-source-candidate",
+      "production_approval": false,
+      "independent_security_acceptance": false
+    }
+  ],
+  "provider_contracts": [
+    {
+      "id": "CONTRACT-HS256-OPAQUE-PROVIDER",
+      "paths": [
+        "crates/trnm-token-crypto-provider",
+        "crates/trnm-token-jwt-provider-adapter"
+      ],
+      "status": "active-access-verification-source-composed",
+      "composed_consumers": [
+        "crates/trnm-persistence-pg/src/auth.rs"
+      ],
+      "remaining_boundary": "The software constructor still materializes key bytes inside an OpenSSL provider object. Production profiles require an accepted remote KMS, HSM or secret-manager resolver and independent security evidence."
+    }
+  ],
+  "path_classifications": [
+    {
+      "id": "CRYPTO-PATH-ACTIVE-ACCESS-AUTH",
+      "classification": "active-server-authentication-opaque-provider-source-candidate",
+      "entrypoints": [
+        "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
+        "crates/trnm-server/src/main.rs"
+      ],
+      "implementation": "trnm-token-jwt-provider-adapter composes AuthenticationProfile, KeyResolver and Hs256Provider before claims parsing",
+      "provider_contract": "CONTRACT-HS256-OPAQUE-PROVIDER",
+      "primitive_provider": "CONTRACT-HS256-OPAQUE-PROVIDER",
+      "opaque_provider_composed": true,
+      "private_primitive_reachable": false,
+      "required_remediation": "Replace the development software provider with an accepted KMS or HSM provider and retain rotation, revoke, timeout, cancellation and audit evidence.",
+      "gap_links": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P1-CRYPTO-002",
+        "GAP-P0-SERVER-001"
+      ],
+      "claim_credit": false,
+      "required_acceptance": "Production KMS/HSM profile, rotation, revoke, deadlines, audit and independent cryptographic review remain required."
+    },
+    {
+      "id": "CRYPTO-PATH-ACTIVE-ADMIN-AUTH",
+      "classification": "active-administrator-bearer-comparison-source-candidate",
+      "entrypoints": [
+        "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
+        "crates/trnm-server/src/main.rs"
+      ],
+      "implementation": "crates/trnm-persistence-pg/src/bin/trnm_server/app.rs",
+      "primitive_provider": "PROVIDER-OPENSSL-SOFTWARE-CRYPTO",
+      "private_primitive_reachable": false,
+      "required_remediation": "Replace the static administrator bearer token with an accepted operator identity and authorization profile before production approval.",
+      "gap_links": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P0-SERVER-001",
+        "GAP-P1-REVIEW-001"
+      ],
+      "claim_credit": false
+    },
+    {
+      "id": "CRYPTO-PATH-ACTIVE-OUTBOX-DIGEST",
+      "classification": "active-durable-spool-reviewed-primitive-source-candidate",
+      "entrypoints": [
+        "crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs"
+      ],
+      "implementation": "OpenSSL SHA-256 and constant-time comparison over byte-stable spool and retry material",
+      "primitive_provider": "PROVIDER-OPENSSL-SOFTWARE-CRYPTO",
+      "private_primitive_reachable": false,
+      "gap_links": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P1-OUTBOX-001"
+      ],
+      "claim_credit": false,
+      "required_acceptance": "Byte-stability, fault, data-integrity and security evidence remain independently accepted facts.",
+      "required_remediation": "Retain byte-stable receipt and retry-jitter fault evidence, then obtain independent data-integrity and security acceptance."
+    },
+    {
+      "id": "CRYPTO-PATH-COMPATIBILITY-REFERENCE",
+      "classification": "non-production-compatibility-adapter-reviewed-library-source-candidate",
+      "entrypoints": [
+        "crates/trnm-token-jwt-adapter",
+        "crates/trnm-token-jwt-adapter-gate",
+        "crates/trnm-token-jwt-adapter-gate-v2"
+      ],
+      "implementation": "strict JWT adapter backed by RustCrypto hmac and sha2 plus subtle constant-time comparison",
+      "primitive_provider": "PROVIDER-RUSTCRYPTO-JWT",
+      "private_primitive_reachable": false,
+      "gap_links": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P1-CRYPTO-002",
+        "GAP-P1-REVIEW-001"
+      ],
+      "claim_credit": false,
+      "required_acceptance": "Three-way Nakama differential, malformed-token/fuzz corpus, provenance and independent cryptographic review remain required.",
+      "required_remediation": "Retain three-way Nakama differential, malformed-token and fuzz evidence plus independent cryptographic acceptance."
+    }
+  ],
+  "production_requirements": [
+    "Access, refresh, Console, runtime HTTP, socket and authority key domains are separate.",
+    "Protocol, domain and persistence handlers receive opaque operations or key references, never production raw key bytes.",
+    "Unknown or malformed key epochs never fall back to the legacy route.",
+    "Remote provider deadlines and cancellation occur outside mutable database transactions.",
+    "Rotation, verification-only grace, emergency revoke and node convergence are rehearsed.",
+    "No private hash, MAC, signature, cipher, random or constant-time primitive is reachable from any production binary.",
+    "Dependency identity, checksums, license, SBOM, advisories, malformed corpus, fuzzing and independent security decisions are retained."
+  ],
+  "exit_criteria": [
+    "CRYPTO-PATH-ACTIVE-ACCESS-AUTH uses an accepted production provider rather than only the software source candidate.",
+    "CRYPTO-PATH-ACTIVE-ADMIN-AUTH uses an accepted operator identity and authorization profile.",
+    "CRYPTO-PATH-ACTIVE-OUTBOX-DIGEST has byte-stable old/new regression evidence and independent acceptance.",
+    "The compatibility reference is non-shipping or removed after accepted three-way differential evidence.",
+    "Production KMS, HSM or approved secret-manager profiles pass rotation, revoke, permission, timeout, cancellation and audit tests.",
+    "Independent cryptography and application-security reviewers accept the exact source, dependency and evidence objects."
+  ],
+  "summary": {
+    "classified_paths": 4,
+    "active_access_opaque_provider_composed": true,
+    "active_access_auth_private_primitive_reachable": false,
+    "active_admin_auth_private_primitive_reachable": false,
+    "active_outbox_digest_private_primitive_reachable": false,
+    "classified_active_paths_use_reviewed_primitives": true,
+    "all_production_crypto_paths_classified_and_accepted": false,
+    "production_key_provider_accepted": false,
+    "private_compatibility_implementation_removed": true,
+    "gap_closed": false,
+    "production_ready": false,
+    "all_active_crypto_paths_reviewed_provider_backed": true
+  },
+  "key_contracts": {
+    "hs256_minimum_actual_key_bytes": 32,
+    "encoded_length_may_substitute": false,
+    "padding_hashing_or_truncation_may_substitute": false
+  }
+}

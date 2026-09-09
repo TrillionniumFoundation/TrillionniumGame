@@ -2,7 +2,7 @@
 
 Status: **module documentation; outbox-terminal-source-candidate; no automatic compatibility or production credit**  
 Path: `crates/trnm-persistence-core`  
-Workspace class: `root`  
+Workspace class: `root`
 Lifecycle: `product-library`  
 Owner role: `database-migration`
 

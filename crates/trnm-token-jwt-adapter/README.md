@@ -2,7 +2,7 @@
 
 Status: **module documentation; length-fix-source-candidate; no automatic compatibility or production credit**  
 Path: `crates/trnm-token-jwt-adapter`  
-Workspace class: `isolated`  
+Workspace class: `root`
 Lifecycle: `security-critical-compatibility-adapter`  
 Owner role: `security`
 

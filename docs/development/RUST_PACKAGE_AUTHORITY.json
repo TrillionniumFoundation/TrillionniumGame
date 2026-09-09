@@ -3,7 +3,7 @@
   "project_id": "trillionnium-game",
   "plan_version": 3,
   "effective_date": "2026-08-29",
-  "last_reviewed_at": "2026-08-30",
+  "last_reviewed_at": "2026-09-09",
   "workspace": {
     "root_manifest": "Cargo.toml",
     "members": [
@@ -17,7 +17,15 @@
       "crates/trnm-transport-core",
       "crates/trnm-token-core",
       "crates/trnm-presence-core",
-      "crates/trnm-query-core"
+      "crates/trnm-query-core",
+      "crates/trnm-token-jwt-adapter",
+      "crates/trnm-presence-router-v2",
+      "crates/trnm-server",
+      "crates/trnm-persistence-runtime-policy",
+      "crates/trnm-realtime-wire",
+      "crates/trnm-storage-nakama-version",
+      "crates/trnm-token-crypto-provider",
+      "crates/trnm-token-jwt-provider-adapter"
     ],
     "required_commands": [
       "cargo fmt --all -- --check",
@@ -27,11 +35,6 @@
   },
   "isolated_workspaces": [
     {
-      "manifest": "crates/trnm-token-jwt-adapter/Cargo.toml",
-      "classification": "security-critical-compatibility-adapter",
-      "aggregate_gate_required": true
-    },
-    {
       "manifest": "crates/trnm-token-jwt-adapter-gate/Cargo.toml",
       "classification": "security-critical-source-gate",
       "aggregate_gate_required": true
@@ -39,41 +42,6 @@
     {
       "manifest": "crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml",
       "classification": "security-critical-source-gate-v2",
-      "aggregate_gate_required": true
-    },
-    {
-      "manifest": "crates/trnm-presence-router-v2/Cargo.toml",
-      "classification": "realtime-integration-candidate",
-      "aggregate_gate_required": true
-    },
-    {
-      "manifest": "crates/trnm-server/Cargo.toml",
-      "classification": "server-foundation-prototype",
-      "aggregate_gate_required": true
-    },
-    {
-      "manifest": "crates/trnm-persistence-runtime-policy/Cargo.toml",
-      "classification": "database-runtime-policy-candidate",
-      "aggregate_gate_required": true
-    },
-    {
-      "manifest": "crates/trnm-realtime-wire/Cargo.toml",
-      "classification": "realtime-wire-compatibility-candidate",
-      "aggregate_gate_required": true
-    },
-    {
-      "manifest": "crates/trnm-storage-nakama-version/Cargo.toml",
-      "classification": "storage-version-compatibility-adapter",
-      "aggregate_gate_required": true
-    },
-    {
-      "manifest": "crates/trnm-token-crypto-provider/Cargo.toml",
-      "classification": "security-critical-crypto-provider",
-      "aggregate_gate_required": true
-    },
-    {
-      "manifest": "crates/trnm-token-jwt-provider-adapter/Cargo.toml",
-      "classification": "security-critical-jwt-provider-adapter",
       "aggregate_gate_required": true
     }
   ],
@@ -85,24 +53,23 @@
   },
   "server_binary_authority": {
     "name": "trnm-server",
-    "manifest": "crates/trnm-persistence-pg/Cargo.toml",
-    "source": "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
-    "status": "temporary-composition-authority-source-candidate",
-    "reason": "The current database-backed vertical slice shares the exact persistence adapter and authoritative migration ABI. A later package extraction must be atomic and independently reviewed.",
+    "manifest": "crates/trnm-server/Cargo.toml",
+    "source": "crates/trnm-server/src/main.rs",
+    "status": "canonical-composition-authority-source-candidate",
+    "reason": "The root-workspace trnm-server package is the only default server binary; the persistence-owned source is feature-gated diagnostic compatibility only.",
     "replacement_contract": [
-      "one change introduces the replacement package and moves all source/tests/status references",
-      "the old binary target is removed in the same accepted change",
-      "no two first-party targets named trnm-server coexist",
-      "workspace, lockfile, merge gate and evidence identity are updated together",
-      "exact-head build/test/Clippy and database evidence pass before the new target becomes authority"
+      "no second default first-party trnm-server target",
+      "diagnostic compatibility target requires diagnostic-compat-server",
+      "workspace lockfile gate and evidence identity move together",
+      "exact-head prospective-merge and independent review remain required"
     ]
   },
   "foundation_prototype": {
-    "name": "trnm-server-foundation",
-    "manifest": "crates/trnm-server/Cargo.toml",
-    "source": "crates/trnm-server/src/main.rs",
-    "status": "standalone-source-candidate",
-    "relationship": "This prototype exercises process/config/transport boundaries but is not the canonical trnm-server binary while the temporary database-backed composition authority exists.",
+    "name": "trnm-pg-compat-server",
+    "manifest": "crates/trnm-persistence-pg/Cargo.toml",
+    "source": "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
+    "status": "feature-gated-diagnostic-compatibility-source-candidate",
+    "relationship": "Not a second production authority.",
     "compatibility_credit": false,
     "production_credit": false
   },

@@ -61,11 +61,11 @@ jobs:
       - name: Verify formatting
         run: cargo fmt --all -- --check
       - name: Run server retry tests without a live database
-        run: cargo test -p trnm-persistence-pg --locked --bin trnm-server retry
+        run: cargo test -p trnm-persistence-pg --features diagnostic-compat-server --locked --bin trnm-pg-compat-server retry
       - name: Strict lint server retry targets
         run: >-
           cargo clippy -p trnm-persistence-pg --locked
-          --bin trnm-server -- -D warnings
+          --features diagnostic-compat-server --bin trnm-pg-compat-server -- -D warnings
 
   live-cockroach-serialization-retry:
     runs-on: ubuntu-24.04
@@ -130,7 +130,7 @@ jobs:
           TRNM_TEST_COCKROACH_URL: postgresql://root@127.0.0.1:26257/defaultdb?sslmode=disable
         run: |
           set -euo pipefail
-          cargo test -p trnm-persistence-pg --locked --bin trnm-server \
+          cargo test -p trnm-persistence-pg --features diagnostic-compat-server --locked --bin trnm-pg-compat-server \
             live_cockroach_serialization_failure_retries_entire_command \
             -- --nocapture | tee run-cockroach-retry.log
           grep -Eq '^test result: ok[.] 1 passed; 0 failed; 0 ignored;' \

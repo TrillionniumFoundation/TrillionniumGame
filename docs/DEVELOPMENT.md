@@ -25,7 +25,7 @@ database/schema/v2/       non-authoritative design history
 docs/                     current human docs plus machine state/evidence
 ```
 
-The database-backed server candidate is `crates/trnm-persistence-pg/src/bin/trnm-server.rs`. The standalone `crates/trnm-server` executable is a foundation candidate, not a second production authority. New server behavior must move toward the single composition-root architecture described in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+The only default server binary is `crates/trnm-server`::`trnm-server`. The database-backed source at `crates/trnm-persistence-pg/src/bin/trnm-server.rs` builds only as the explicit `diagnostic-compat-server` target `trnm-pg-compat-server`. New server behavior must move toward the single composition-root architecture described in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## 3. Toolchains
 
@@ -52,7 +52,7 @@ cargo test --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-The repository also contains intentionally isolated Cargo workspaces. The aggregate merge gate discovers the package authority and runs format, all-target tests and strict Clippy for every isolated workspace. A root-workspace pass alone is not whole-repository coverage.
+All long-lived Rust products and adapters are members of the root Cargo workspace. Only the two temporary JWT differential gate packages remain isolated until an accepted retirement packet exists. The aggregate merge gate runs the root workspace and both temporary gates; a root-workspace pass alone does not retire a gate.
 
 Run the Go migration input checks:
 
@@ -92,7 +92,7 @@ Canonical database-backed source:
 
 ```bash
 python3 scripts/check-trnm-server.py
-cargo test --package trnm-persistence-pg --bin trnm-server --locked
+cargo test --package trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server --locked
 ```
 
 Live database scripts require their documented environment and immutable images. A missing required profile must fail rather than silently skip.

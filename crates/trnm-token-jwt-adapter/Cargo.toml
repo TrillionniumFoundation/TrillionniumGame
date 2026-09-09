@@ -1,13 +1,19 @@
 [package]
 name = "trnm-token-jwt-adapter"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.85"
-license = "Apache-2.0"
-description = "Strict dependency-free HS256 legacy and key-epoch JWT adapter"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Strict RustCrypto-backed HS256 legacy and key-epoch JWT adapter"
+publish.workspace = true
+
+[dependencies]
+hmac = "=0.13.0"
+sha2 = "=0.11.0"
+subtle = "=2.6.1"
 
 [lib]
 path = "src/lib.rs"
 
-[workspace]
+[lints]
+workspace = true

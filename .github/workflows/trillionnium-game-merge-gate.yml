@@ -54,6 +54,16 @@ jobs:
         run: python3 scripts/check-rust-package-inventory.py
       - name: Validate Rust server source contract
         run: python3 scripts/check-trnm-server.py
+      - name: Validate active authentication provider composition
+        run: python3 scripts/check-auth-provider-composition.py
+      - name: Validate production cryptographic paths
+        run: python3 scripts/check-production-crypto-paths.py
+      - name: Validate JWT RustCrypto backend
+        run: python3 scripts/check-jwt-rustcrypto-backend.py
+      - name: Validate converged Rust workspace topology
+        run: python3 scripts/check-workspace-convergence.py
+      - name: Validate unique server composition authority
+        run: python3 scripts/check-single-server-authority.py
       - name: Validate closed required-workflow manifest JSON
         run: python3 -m json.tool docs/governance/REQUIRED_WORKFLOWS_V1.json >/dev/null
       - name: Compile control scripts
@@ -112,26 +122,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - component: token-jwt-adapter
-            manifest: crates/trnm-token-jwt-adapter/Cargo.toml
           - component: token-jwt-adapter-gate
             manifest: crates/trnm-token-jwt-adapter-gate/Cargo.toml
           - component: token-jwt-adapter-gate-v2
             manifest: crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml
-          - component: presence-router-v2
-            manifest: crates/trnm-presence-router-v2/Cargo.toml
-          - component: trnm-server-foundation
-            manifest: crates/trnm-server/Cargo.toml
-          - component: persistence-runtime-policy
-            manifest: crates/trnm-persistence-runtime-policy/Cargo.toml
-          - component: realtime-wire
-            manifest: crates/trnm-realtime-wire/Cargo.toml
-          - component: storage-nakama-version
-            manifest: crates/trnm-storage-nakama-version/Cargo.toml
-          - component: token-crypto-provider
-            manifest: crates/trnm-token-crypto-provider/Cargo.toml
-          - component: token-jwt-provider-adapter
-            manifest: crates/trnm-token-jwt-provider-adapter/Cargo.toml
     steps:
       - name: Fetch exact candidate without external actions
         shell: bash
