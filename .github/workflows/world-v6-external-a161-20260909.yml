@@ -1,4 +1,4 @@
-name: world-v6-external-c51a3c-20260909
+name: world-v6-external-7cb23b-20260909
 
 on:
   pull_request:
@@ -8,17 +8,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-v6-external-c51a3c-20260909-${{ github.event.pull_request.number || github.ref }}
+  group: world-v6-external-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_BASE_SHA: 0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
-  WORLD_HEAD_SHA: c51a3c27d93ec5de1ddbde4f7bc5f7fee072a1e6
-  WORLD_HEAD_TREE: 07f55944205f033c27e826e3985572ff880e41d0
+  WORLD_HEAD_SHA: 7cb23bdc554d9c5718de1bff59cc89544d2762a2
+  WORLD_HEAD_TREE: 6f149dc7d8f9fc4a73f6d01b20ef3efe77796ee1
   WORLD_MERGE_REF: refs/pull/104/merge
-  WORLD_MERGE_SHA: c3a68548b3d64e39add10bc1e6b8cabddd2eeafa
-  WORLD_MERGE_TREE: 07f55944205f033c27e826e3985572ff880e41d0
+  WORLD_MERGE_SHA: ae861cc6c337de63ce140c790211c02916db015d
+  WORLD_MERGE_TREE: 6f149dc7d8f9fc4a73f6d01b20ef3efe77796ee1
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_INCREMENTAL: '0'
@@ -42,8 +42,9 @@ jobs:
           head_dir="$RUNNER_TEMP/world-head"
           merge_dir="$RUNNER_TEMP/world-merge"
           state_dir="$RUNNER_TEMP/world-v6-state"
-          rm -rf "$head_dir" "$merge_dir" "$state_dir"
-          mkdir -p "$state_dir"
+          evidence_dir="$RUNNER_TEMP/world-v6-evidence"
+          rm -rf "$head_dir" "$merge_dir" "$state_dir" "$evidence_dir"
+          mkdir -p "$state_dir" "$evidence_dir/logs" "$evidence_dir/head" "$evidence_dir/merge"
           git init "$head_dir"
           git -C "$head_dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
           git -C "$head_dir" fetch --no-tags --depth=1 origin "$WORLD_HEAD_SHA"
@@ -108,8 +109,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/world-head"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh truth
+          (cd "$RUNNER_TEMP/world-head" && bash scripts/run-trnm-world-v6-qualification-v2.sh truth) \
+            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/truth-head.log"
           touch "$RUNNER_TEMP/world-v6-state/truth_head.ok"
 
       - name: Qualify merge truth
@@ -118,8 +119,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/world-merge"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh truth
+          (cd "$RUNNER_TEMP/world-merge" && bash scripts/run-trnm-world-v6-qualification-v2.sh truth) \
+            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/truth-merge.log"
           touch "$RUNNER_TEMP/world-v6-state/truth_merge.ok"
 
       - name: Qualify head source
@@ -128,8 +129,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/world-head"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh source
+          (cd "$RUNNER_TEMP/world-head" && bash scripts/run-trnm-world-v6-qualification-v2.sh source) \
+            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/source-head.log"
           touch "$RUNNER_TEMP/world-v6-state/source_head.ok"
 
       - name: Qualify merge source
@@ -138,8 +139,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/world-merge"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh source
+          (cd "$RUNNER_TEMP/world-merge" && bash scripts/run-trnm-world-v6-qualification-v2.sh source) \
+            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/source-merge.log"
           touch "$RUNNER_TEMP/world-v6-state/source_merge.ok"
 
       - name: Qualify head PostgreSQL
@@ -151,8 +152,8 @@ jobs:
           TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/world_head
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/world-head"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh postgres
+          (cd "$RUNNER_TEMP/world-head" && bash scripts/run-trnm-world-v6-qualification-v2.sh postgres) \
+            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/postgres-head.log"
           touch "$RUNNER_TEMP/world-v6-state/postgres_head.ok"
 
       - name: Qualify merge PostgreSQL
@@ -164,8 +165,8 @@ jobs:
           TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/world_merge
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/world-merge"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh postgres
+          (cd "$RUNNER_TEMP/world-merge" && bash scripts/run-trnm-world-v6-qualification-v2.sh postgres) \
+            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/postgres-merge.log"
           touch "$RUNNER_TEMP/world-v6-state/postgres_merge.ok"
 
       - name: Qualify head package
@@ -174,8 +175,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/world-head"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh package
+          (cd "$RUNNER_TEMP/world-head" && bash scripts/run-trnm-world-v6-qualification-v2.sh package) \
+            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/package-head.log"
           touch "$RUNNER_TEMP/world-v6-state/package_head.ok"
 
       - name: Qualify merge package
@@ -184,26 +185,62 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/world-merge"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh package
+          (cd "$RUNNER_TEMP/world-merge" && bash scripts/run-trnm-world-v6-qualification-v2.sh package) \
+            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/package-merge.log"
           touch "$RUNNER_TEMP/world-v6-state/package_merge.ok"
 
-      - name: Enforce every exact-tuple scope and emit immutable identity
+      - name: Collect tuple-bound evidence and checksums
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/world-v6-evidence"
+          state_dir="$RUNNER_TEMP/world-v6-state"
+          for scope in truth source postgres package; do
+            if test -d "$RUNNER_TEMP/world-head/run/world-v6-v2/$scope"; then
+              mkdir -p "$evidence_dir/head/$scope"
+              cp -R "$RUNNER_TEMP/world-head/run/world-v6-v2/$scope/." "$evidence_dir/head/$scope/"
+            fi
+            if test -d "$RUNNER_TEMP/world-merge/run/world-v6-v2/$scope"; then
+              mkdir -p "$evidence_dir/merge/$scope"
+              cp -R "$RUNNER_TEMP/world-merge/run/world-v6-v2/$scope/." "$evidence_dir/merge/$scope/"
+            fi
+          done
+          {
+            printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
+            printf 'world_base_sha=%s\n' "$WORLD_BASE_SHA"
+            printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
+            printf 'world_head_tree=%s\n' "$WORLD_HEAD_TREE"
+            printf 'world_merge_sha=%s\n' "$WORLD_MERGE_SHA"
+            printf 'world_merge_tree=%s\n' "$WORLD_MERGE_TREE"
+            printf 'world_merge_parents=%s\n' "$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD 2>/dev/null || true)"
+            printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'runner_commit=%s\n' "$GITHUB_SHA"
+            printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'runner_run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            for scope in truth_head truth_merge source_head source_merge postgres_head postgres_merge package_head package_merge; do
+              if test -f "$state_dir/$scope.ok"; then
+                printf '%s=success\n' "$scope"
+              else
+                printf '%s=failure\n' "$scope"
+              fi
+            done
+            printf 'production_authorization=not_granted\n'
+          } > "$evidence_dir/identity.txt"
+          (
+            cd "$evidence_dir"
+            LC_ALL=C find . -type f ! -name SHA256SUMS -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+          )
+
+      - name: Enforce every exact-tuple scope
         if: always()
         shell: bash
         run: |
           set -euo pipefail
           state_dir="$RUNNER_TEMP/world-v6-state"
           failed=0
-          printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
-          printf 'world_base_sha=%s\n' "$WORLD_BASE_SHA"
-          printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
-          printf 'world_head_tree=%s\n' "$WORLD_HEAD_TREE"
-          printf 'world_merge_sha=%s\n' "$WORLD_MERGE_SHA"
-          printf 'world_merge_tree=%s\n' "$WORLD_MERGE_TREE"
-          printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
-          printf 'runner_commit=%s\n' "$GITHUB_SHA"
-          printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
           for scope in \
             truth_head truth_merge \
             source_head source_merge \
@@ -218,18 +255,24 @@ jobs:
             fi
             printf '%s=%s\n' "$scope" "$status"
           done
+          test "$(git -C "$RUNNER_TEMP/world-head" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+          test "$(git -C "$RUNNER_TEMP/world-head" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
+          test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse HEAD)" = "$WORLD_MERGE_SHA"
+          test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')" = "$WORLD_MERGE_TREE"
+          test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^1')" = "$WORLD_BASE_SHA"
+          test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^2')" = "$WORLD_HEAD_SHA"
           printf 'production_authorization=not_granted\n'
           test "$failed" -eq 0
-          head_dir="$RUNNER_TEMP/world-head"
-          merge_dir="$RUNNER_TEMP/world-merge"
-          test "$(git -C "$head_dir" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
-          test "$(git -C "$head_dir" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
-          test "$(git -C "$merge_dir" rev-parse HEAD)" = "$WORLD_MERGE_SHA"
-          test "$(git -C "$merge_dir" rev-parse 'HEAD^{tree}')" = "$WORLD_MERGE_TREE"
-          test "$(git -C "$merge_dir" rev-parse 'HEAD^1')" = "$WORLD_BASE_SHA"
-          test "$(git -C "$merge_dir" rev-parse 'HEAD^2')" = "$WORLD_HEAD_SHA"
-          printf 'world_merge_parents=%s\n' "$(git -C "$merge_dir" show -s --format=%P HEAD)"
           printf 'WORLD_V6_EXTERNAL_REQUIRED=PASS\n'
+
+      - name: Upload immutable diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-v6-external-7cb23b-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-v6-evidence
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Stop PostgreSQL
         if: always()
