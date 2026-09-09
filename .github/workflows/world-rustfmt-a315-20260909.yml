@@ -60,7 +60,7 @@ jobs:
           test -s "$RUNNER_TEMP/world-rustfmt.patch"
           cat "$RUNNER_TEMP/world-rustfmt-files.txt"
 
-      - name: Publish deterministic patch on the temporary runner branch
+      - name: Publish deterministic patch and formatted files on the temporary runner branch
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -68,6 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$TARGET_BRANCH"
+          world="$RUNNER_TEMP/world"
           runner="$RUNNER_TEMP/runner-repository"
           rm -rf "$runner"
           git init "$runner"
@@ -76,9 +77,18 @@ jobs:
           git -C "$runner" fetch --no-tags --depth=1 origin "$TARGET_BRANCH"
           git -C "$runner" checkout -B "$TARGET_BRANCH" FETCH_HEAD
           out="$runner/.world-diagnostics/rustfmt-bd1603"
-          mkdir -p "$out"
+          rm -rf "$out"
+          mkdir -p "$out/files"
           cp "$RUNNER_TEMP/world-rustfmt.patch" "$out/world-rustfmt.patch"
           cp "$RUNNER_TEMP/world-rustfmt-files.txt" "$out/world-rustfmt-files.txt"
+          while IFS= read -r relative; do
+            test -n "$relative"
+            source="$world/$relative"
+            target="$out/files/$relative"
+            test -f "$source" && test ! -L "$source"
+            mkdir -p "$(dirname "$target")"
+            cp "$source" "$target"
+          done < "$RUNNER_TEMP/world-rustfmt-files.txt"
           {
             printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
             printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
@@ -88,13 +98,14 @@ jobs:
           (
             cd "$out"
             sha256sum world-rustfmt.patch world-rustfmt-files.txt identity.txt > SHA256SUMS
+            find files -type f -print0 | sort -z | xargs -0 sha256sum > FORMATTED-SHA256SUMS
           )
           git -C "$runner" add .world-diagnostics/rustfmt-bd1603
           if git -C "$runner" diff --cached --quiet; then
-            echo 'deterministic rustfmt patch already published'
+            echo 'deterministic rustfmt files already published'
             exit 0
           fi
           git -C "$runner" config user.name 'github-actions[bot]'
           git -C "$runner" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git -C "$runner" commit -m 'chore(ci): retain World bd1603 rustfmt patch'
+          git -C "$runner" commit -m 'chore(ci): retain formatted World bd1603 sources'
           git -C "$runner" push origin "HEAD:$TARGET_BRANCH"
