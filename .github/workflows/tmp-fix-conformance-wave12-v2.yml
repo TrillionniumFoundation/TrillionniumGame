@@ -1,0 +1,243 @@
+name: tmp-fix-conformance-wave12-v2
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-fix-conformance-wave12-v2.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-conformance-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Wait for exact conformance branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha=''
+          for _ in $(seq 1 1080); do
+            head_sha="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$head_sha" && break
+            sleep 20
+          done
+          test -n "$head_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=4 origin "$head_sha"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$FEATURE_BRANCH" "$head_sha"
+
+      - name: Apply format-independent conformance repair
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('crates/trnm-conformance-core/src/lib.rs')
+          text = path.read_text(encoding='utf-8')
+
+          if 'pub immutable_oracle: SourceIdentity' not in text:
+              pattern = re.compile(
+                  r'(pub environment_digest: Digest32,\n)(\s*pub leaf_ids: BTreeSet<LeafId>,)'
+              )
+              text, count = pattern.subn(
+                  r'\1    pub immutable_oracle: SourceIdentity,\n'
+                  r'    pub instrumented_oracle: Option<SourceIdentity>,\n'
+                  r'    pub candidate: SourceIdentity,\n\2',
+                  text,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit('ConformanceCase identity insertion failed')
+
+          text = text.replace(
+              'self.executed > self.collected',
+              'self.executed != self.collected',
+              1,
+          )
+
+          if 'observation_subject_identity_mismatch' not in text:
+              function_start = text.index('    pub fn record_observation(')
+              key_anchor = text.index(
+                  '        let key = (',
+                  function_start,
+              )
+              subject_check = '''        let expected_subject = match observation.side {
+            SubjectSide::ImmutableOracle => Some(&case.immutable_oracle),
+            SubjectSide::InstrumentedOracle => case.instrumented_oracle.as_ref(),
+            SubjectSide::Candidate => Some(&case.candidate),
+        }
+        .ok_or_else(|| {
+            ConformanceError::new(
+                StableConformanceCode::FailedPrecondition,
+                "observation_side_not_configured",
+                false,
+            )
+        })?;
+        if &observation.subject != expected_subject {
+            return Err(ConformanceError::new(
+                StableConformanceCode::Aborted,
+                "observation_subject_identity_mismatch",
+                false,
+            ));
+        }
+'''
+              text = text[:key_anchor] + subject_check + text[key_anchor:]
+
+          case_result_start = text.index('    pub fn case_result(')
+          result_end = text.index('    pub fn mandatory_coverage_complete(', case_result_start)
+          result_block = text[case_result_start:result_end]
+          if 'oracle.applied_normalizers == candidate.applied_normalizers' not in result_block:
+              error_line = '                && oracle.public_error_digest == candidate.public_error_digest'
+              if error_line not in result_block:
+                  raise SystemExit('case-result equality anchor missing')
+              result_block = result_block.replace(
+                  error_line,
+                  error_line
+                  + '\n                && oracle.applied_normalizers == candidate.applied_normalizers',
+                  1,
+              )
+              text = text[:case_result_start] + result_block + text[result_end:]
+
+          tests_start = text.index('#[cfg(test)]\nmod tests {')
+          registry_start = text.index('    fn registry()', tests_start)
+          registry_end = text.index('    fn observation(', registry_start)
+          registry_block = text[registry_start:registry_end]
+          if 'immutable_oracle:' not in registry_block:
+              environment = re.compile(r'(\s*environment_digest:\s*digest\(42\),\n)')
+              registry_block, count = environment.subn(
+                  r'\1                immutable_oracle: source(50),\n'
+                  r'                instrumented_oracle: None,\n'
+                  r'                candidate: source(50),\n',
+                  registry_block,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit('test ConformanceCase identity insertion failed')
+              text = text[:registry_start] + registry_block + text[registry_end:]
+
+          assertion_anchor = '    fn skipped_or_empty_assertions_never_enter_registry() {'
+          if 'fn partially_executed_assertion_collection_is_rejected()' not in text:
+              anchor_at = text.index('    #[test]\n' + assertion_anchor, tests_start)
+              test = '''    #[test]
+    fn partially_executed_assertion_collection_is_rejected() {
+        let (mut registry, _, _, case, consumer) = registry();
+        let mut partial = observation(
+            1,
+            case,
+            consumer,
+            SubjectSide::Candidate,
+            1,
+            1,
+        );
+        partial.assertions = AssertionCounts {
+            collected: 2,
+            executed: 1,
+            passed: 1,
+            failed: 0,
+            skipped: 0,
+        };
+        assert_eq!(
+            registry.record_observation(partial).unwrap_err().reason(),
+            "assertion_counts_not_fully_passing"
+        );
+    }
+
+'''
+              text = text[:anchor_at] + test + text[anchor_at:]
+
+          unknown_anchor = '    fn unknown_normalizer_and_wrong_consumer_fail_before_insert() {'
+          if 'fn wrong_subject_and_asymmetric_normalizers_block_equivalence()' not in text:
+              anchor_at = text.index('    #[test]\n' + unknown_anchor, tests_start)
+              test = '''    #[test]
+    fn wrong_subject_and_asymmetric_normalizers_block_equivalence() {
+        let (mut registry, _, _, case, consumer) = registry();
+        let mut wrong_subject = observation(
+            1,
+            case,
+            consumer,
+            SubjectSide::Candidate,
+            1,
+            70,
+        );
+        wrong_subject.subject = source(51);
+        assert_eq!(
+            registry.record_observation(wrong_subject).unwrap_err().reason(),
+            "observation_subject_identity_mismatch"
+        );
+
+        let normalizer = NormalizerRule {
+            id: id(9, NormalizerId::new),
+            field_path: "$.elapsed_ms".to_owned(),
+            class: ContractClass::NonContractualTiming,
+            implementation_digest: digest(9),
+        };
+        registry.register_normalizer(normalizer.clone()).unwrap();
+        let mut oracle = observation(
+            2,
+            case,
+            consumer,
+            SubjectSide::ImmutableOracle,
+            1,
+            70,
+        );
+        oracle.applied_normalizers.insert(normalizer.id);
+        registry.record_observation(oracle).unwrap();
+        registry
+            .record_observation(observation(
+                3,
+                case,
+                consumer,
+                SubjectSide::Candidate,
+                1,
+                70,
+            ))
+            .unwrap();
+        assert_eq!(
+            registry.case_result(case, consumer).unwrap().status,
+            CaseStatus::Diverged
+        );
+    }
+
+'''
+              text = text[:anchor_at] + test + text[anchor_at:]
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          if git diff --quiet; then echo 'changed=false' >> "$GITHUB_OUTPUT"; else echo 'changed=true' >> "$GITHUB_OUTPUT"; fi
+
+      - name: Qualify and publish structural conformance repair
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo test --package trnm-conformance-core --all-targets --locked
+          cargo clippy --package trnm-conformance-core --all-targets --locked -- -D warnings
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-conformance-core/src/lib.rs
+          git commit -m 'fix(compatibility): bind exact subjects and symmetric normalizers'
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Applied a format-independent repair binding observations to registered exact subjects, requiring symmetric normalizers and rejecting partially executed assertion collections. Focused tests and strict Clippy passed in carrier run `${GITHUB_RUN_ID}`; exact-head checks must requalify."
