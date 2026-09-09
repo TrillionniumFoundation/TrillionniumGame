@@ -1,0 +1,113 @@
+name: tmp-pr150-hardening-preflight
+
+on:
+  push:
+    branches:
+      - fix/pr150-storage-integrity-zeroize-preflight-20260909
+    paths:
+      - .github/workflows/tmp-pr150-hardening-preflight.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-pr150-hardening-preflight
+  cancel-in-progress: false
+
+jobs:
+  validate-and-publish-clean-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      TARGET_BRANCH: fix/pr150-storage-integrity-zeroize-preflight-20260909
+      EXPECTED_PATCH_SHA256: 60f8433835d30dba61f70a482e4bce89c537803fce26ed136c437b860645a208
+    steps:
+      - name: Fetch exact workflow commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
+          test "$GITHUB_REF_NAME" = "$TARGET_BRANCH"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Reconstruct and verify patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cat .preflight/pr150-hardening.patch.b64.* | base64 --decode > "$RUNNER_TEMP/pr150-hardening.patch"
+          printf '%s  %s\n' "$EXPECTED_PATCH_SHA256" "$RUNNER_TEMP/pr150-hardening.patch" | sha256sum --check --strict
+          git apply --check "$RUNNER_TEMP/pr150-hardening.patch"
+          git apply "$RUNNER_TEMP/pr150-hardening.patch"
+          rm -rf .preflight .github/workflows/tmp-pr150-hardening-preflight.yml
+          test ! -e .preflight
+          test ! -e .github/workflows/tmp-pr150-hardening-preflight.yml
+      - name: Format and verify dependency lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo fmt --all
+          git diff --check
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/cargo-metadata.json"
+          test -s "$RUNNER_TEMP/cargo-metadata.json"
+          grep -q '"name":"zeroize"' "$RUNNER_TEMP/cargo-metadata.json"
+      - name: Validate documentation and control plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 -m compileall -q scripts tools tests
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-foundation.py
+          python3 scripts/check-plan.py
+          python3 -m unittest \
+            tests.control_plane.test_storage_integrity_contract \
+            tests.control_plane.test_secret_zeroization_contract \
+            tests.control_plane.test_rust_foundation_dependency_alignment \
+            tests.control_plane.test_trnm_server_dependency_contract -v
+      - name: Test focused Rust trust boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo test --package trnm-storage-core --all-targets --locked
+          cargo clippy --package trnm-storage-core --all-targets --locked -- -D warnings
+          cargo test --package trnm-token-crypto-provider --all-targets --locked
+          cargo clippy --package trnm-token-crypto-provider --all-targets --locked -- -D warnings
+          cargo test --package trnm-persistence-pg --all-targets --locked
+          cargo clippy --package trnm-persistence-pg --all-targets --locked -- -D warnings
+      - name: Test complete Rust workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Publish clean source commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test -n "$GH_TOKEN"
+          test ! -e .preflight
+          test ! -e .github/workflows/tmp-pr150-hardening-preflight.yml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          test -n "$(git status --porcelain)"
+          git commit -m 'fix: derive storage integrity and zeroize software keys'
+          printf 'https://x-access-token:%s@github.com\n' "$GH_TOKEN" > "$RUNNER_TEMP/git-credentials"
+          chmod 600 "$RUNNER_TEMP/git-credentials"
+          git config credential.helper "store --file=$RUNNER_TEMP/git-credentials"
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          rm -f "$RUNNER_TEMP/git-credentials"
+          printf 'clean_source_commit=%s\nclean_source_tree=%s\n' \
+            "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})" >> "$GITHUB_STEP_SUMMARY"
