@@ -1,4 +1,4 @@
-name: world-v6-external-final-956462-20260909
+name: world-v6-external-final-4de7cc-20260910
 
 on:
   pull_request:
@@ -8,16 +8,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-v6-external-final-956462-20260909-${{ github.event.pull_request.number || github.ref }}
+  group: world-v6-external-final-4de7cc-20260910-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_BASE_SHA: 0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
-  WORLD_HEAD_SHA: 956462f95675d3d4db89af03bc4b7cc8c9a3c975
-  WORLD_HEAD_TREE: f428550e5cffcf0acb6c6461824290e828a875c7
-  WORLD_MERGE_SHA: 36884e1f410ae198edac9fc7692d50f130a91450
-  WORLD_MERGE_TREE: f428550e5cffcf0acb6c6461824290e828a875c7
+  WORLD_HEAD_SHA: 4de7cc027116fc1345727a73b604c2f6cf991ca9
+  WORLD_HEAD_TREE: 669360375ff589a2d864dedcc68b6407cc47b07d
+  WORLD_MERGE_SHA: fe8ef11d86dfc0d2d58deef3d4dc4d6266344a08
+  WORLD_MERGE_TREE: 669360375ff589a2d864dedcc68b6407cc47b07d
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_INCREMENTAL: '0'
@@ -27,7 +27,7 @@ env:
   PGPORT: '5432'
   PGUSER: postgres
   PGPASSWORD: postgres
-  TRNM_WORLD_POSTGRES_CLIENT_IMAGE: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+  TRNM_WORLD_POSTGRES_IMAGE: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
 
 jobs:
   qualify:
@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - name: Fetch and verify immutable World tuple
+      - name: Fetch and verify immutable World objects
         shell: bash
         run: |
           set -euo pipefail
@@ -43,7 +43,7 @@ jobs:
           merge_dir="$RUNNER_TEMP/world-merge"
           evidence_dir="$RUNNER_TEMP/world-v6-evidence"
           rm -rf "$head_dir" "$merge_dir" "$evidence_dir"
-          mkdir -p "$evidence_dir/logs"
+          mkdir -p "$evidence_dir/logs" "$evidence_dir/status"
 
           git init "$head_dir"
           git -C "$head_dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
@@ -61,12 +61,6 @@ jobs:
           actual_merge_tree="$(git -C "$merge_dir" rev-parse 'HEAD^{tree}')"
           actual_parents="$(git -C "$merge_dir" show -s --format=%P HEAD)"
 
-          printf 'actual_head=%s\n' "$actual_head"
-          printf 'actual_head_tree=%s\n' "$actual_head_tree"
-          printf 'actual_merge=%s\n' "$actual_merge"
-          printf 'actual_merge_tree=%s\n' "$actual_merge_tree"
-          printf 'actual_merge_parents=%s\n' "$actual_parents"
-
           test "$actual_head" = "$WORLD_HEAD_SHA"
           test "$actual_head_tree" = "$WORLD_HEAD_TREE"
           test "$actual_merge" = "$WORLD_MERGE_SHA"
@@ -75,11 +69,23 @@ jobs:
           test -z "$(git -C "$head_dir" status --porcelain=v1 --untracked-files=no)"
           test -z "$(git -C "$merge_dir" status --porcelain=v1 --untracked-files=no)"
 
+          {
+            printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
+            printf 'world_base_sha=%s\n' "$WORLD_BASE_SHA"
+            printf 'world_head_sha=%s\n' "$actual_head"
+            printf 'world_head_tree=%s\n' "$actual_head_tree"
+            printf 'world_merge_sha=%s\n' "$actual_merge"
+            printf 'world_merge_tree=%s\n' "$actual_merge_tree"
+            printf 'world_merge_parents=%s\n' "$actual_parents"
+            printf 'production_authorization=not_granted\n'
+          } | tee "$evidence_dir/tuple.txt"
+
       - name: Install pinned toolchain and native dependencies
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+          rustup toolchain install "$WORLD_RUST_TOOLCHAIN" \
+            --profile minimal --component rustfmt --component clippy
           rustup override set "$WORLD_RUST_TOOLCHAIN"
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -101,7 +107,7 @@ jobs:
             -e POSTGRES_PASSWORD=postgres \
             -e POSTGRES_DB=postgres \
             -p 5432:5432 \
-            "$TRNM_WORLD_POSTGRES_CLIENT_IMAGE"
+            "$TRNM_WORLD_POSTGRES_IMAGE"
           for attempt in $(seq 1 60); do
             if docker exec trnm-world-postgres pg_isready -U postgres -d postgres; then
               break
@@ -111,193 +117,85 @@ jobs:
           done
           docker exec trnm-world-postgres createdb -U postgres world_head
           docker exec trnm-world-postgres createdb -U postgres world_merge
-          psql -d postgres -Atqc "select datname from pg_database where datname in ('world_head','world_merge') order by datname"
 
-      - name: Qualify head truth
-        id: truth_head
-        continue-on-error: true
+      - name: Execute all eight qualification scopes
         shell: bash
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/world-head"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh truth 2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/truth-head.log"
+          evidence_dir="$RUNNER_TEMP/world-v6-evidence"
+          failures=0
 
-      - name: Qualify merge truth
-        id: truth_merge
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/world-merge"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh truth 2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/truth-merge.log"
+          run_scope() {
+            local object="$1"
+            local repository="$2"
+            local scope="$3"
+            local database="${4:-}"
+            local label="${scope}-${object}"
+            local log="$evidence_dir/logs/${label}.log"
+            local status="$evidence_dir/status/${label}.txt"
 
-      - name: Qualify head source
-        id: source_head
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/world-head"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh source 2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/source-head.log"
+            if [[ "$scope" == "package" ]]; then
+              find "$repository" -type d -name '__pycache__' -prune -print0 |
+                xargs -0 -r rm -rf
+              find "$repository" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+            fi
 
-      - name: Qualify merge source
-        id: source_merge
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/world-merge"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh source 2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/source-merge.log"
+            set +e
+            if [[ -n "$database" ]]; then
+              (
+                cd "$repository"
+                export PGDATABASE="$database"
+                export TRNM_SETTLEMENT_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/${database}"
+                bash scripts/run-trnm-world-v6-qualification-v2.sh "$scope"
+              ) 2>&1 | tee "$log"
+            else
+              (
+                cd "$repository"
+                bash scripts/run-trnm-world-v6-qualification-v2.sh "$scope"
+              ) 2>&1 | tee "$log"
+            fi
+            local result="${PIPESTATUS[0]}"
+            set -e
 
-      - name: Qualify head PostgreSQL
-        id: postgres_head
-        continue-on-error: true
-        shell: bash
-        env:
-          PGDATABASE: world_head
-          TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/world_head
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/world-head"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh postgres 2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/postgres-head.log"
-
-      - name: Qualify merge PostgreSQL
-        id: postgres_merge
-        continue-on-error: true
-        shell: bash
-        env:
-          PGDATABASE: world_merge
-          TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/world_merge
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/world-merge"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh postgres 2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/postgres-merge.log"
-
-      - name: Qualify head package
-        id: package_head
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/world-head"
-          find . -type d -name '__pycache__' -prune -print0 | xargs -0 -r rm -rf
-          find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
-          test -z "$(git status --porcelain=v1 --untracked-files=all)"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh package 2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/package-head.log"
-
-      - name: Qualify merge package
-        id: package_merge
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/world-merge"
-          find . -type d -name '__pycache__' -prune -print0 | xargs -0 -r rm -rf
-          find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
-          test -z "$(git status --porcelain=v1 --untracked-files=all)"
-          bash scripts/run-trnm-world-v6-qualification-v2.sh package 2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/package-merge.log"
-
-      - name: Enforce all exact-tuple outcomes and emit immutable summary
-        if: always()
-        shell: bash
-        env:
-          TRUTH_HEAD: ${{ steps.truth_head.outcome }}
-          TRUTH_MERGE: ${{ steps.truth_merge.outcome }}
-          SOURCE_HEAD: ${{ steps.source_head.outcome }}
-          SOURCE_MERGE: ${{ steps.source_merge.outcome }}
-          POSTGRES_HEAD: ${{ steps.postgres_head.outcome }}
-          POSTGRES_MERGE: ${{ steps.postgres_merge.outcome }}
-          PACKAGE_HEAD: ${{ steps.package_head.outcome }}
-          PACKAGE_MERGE: ${{ steps.package_merge.outcome }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os
-          import subprocess
-          import sys
-          from pathlib import Path
-
-          def git(repo: str, *args: str) -> str:
-              return subprocess.check_output(
-                  ["git", "-C", repo, *args], text=True
-              ).strip()
-
-          runner_temp = os.environ["RUNNER_TEMP"]
-          head_dir = f"{runner_temp}/world-head"
-          merge_dir = f"{runner_temp}/world-merge"
-          evidence_dir = Path(runner_temp) / "world-v6-evidence"
-          evidence_dir.mkdir(parents=True, exist_ok=True)
-
-          actual = {
-              "world_repository": os.environ["WORLD_REPOSITORY"],
-              "world_base_sha": os.environ["WORLD_BASE_SHA"],
-              "world_head_sha": os.environ["WORLD_HEAD_SHA"],
-              "world_head_tree": os.environ["WORLD_HEAD_TREE"],
-              "world_merge_sha": os.environ["WORLD_MERGE_SHA"],
-              "world_merge_tree": os.environ["WORLD_MERGE_TREE"],
-              "actual_head": git(head_dir, "rev-parse", "HEAD"),
-              "actual_head_tree": git(head_dir, "rev-parse", "HEAD^{tree}"),
-              "actual_merge": git(merge_dir, "rev-parse", "HEAD"),
-              "actual_merge_tree": git(merge_dir, "rev-parse", "HEAD^{tree}"),
-              "actual_merge_parents": git(merge_dir, "show", "-s", "--format=%P", "HEAD"),
-              "truth_head": os.environ["TRUTH_HEAD"],
-              "truth_merge": os.environ["TRUTH_MERGE"],
-              "source_head": os.environ["SOURCE_HEAD"],
-              "source_merge": os.environ["SOURCE_MERGE"],
-              "postgres_head": os.environ["POSTGRES_HEAD"],
-              "postgres_merge": os.environ["POSTGRES_MERGE"],
-              "package_head": os.environ["PACKAGE_HEAD"],
-              "package_merge": os.environ["PACKAGE_MERGE"],
-              "runner_repository": os.environ["GITHUB_REPOSITORY"],
-              "runner_commit": os.environ["GITHUB_SHA"],
-              "runner_run_id": os.environ["GITHUB_RUN_ID"],
-              "runner_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
-              "production_authorization": "not_granted",
+            if [[ "$result" -eq 0 ]]; then
+              printf 'success\n' | tee "$status"
+            else
+              printf 'failure:%s\n' "$result" | tee "$status"
+              ((failures += 1))
+            fi
           }
 
-          identity = "".join(f"{key}={value}\n" for key, value in actual.items())
-          (evidence_dir / "identity.txt").write_text(identity, encoding="utf-8")
-          print(identity, end="")
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-              summary.write("## World V6 immutable qualification tuple\n\n```text\n")
-              summary.write(identity)
-              summary.write("```\n")
+          run_scope head "$RUNNER_TEMP/world-head" truth
+          run_scope merge "$RUNNER_TEMP/world-merge" truth
+          run_scope head "$RUNNER_TEMP/world-head" source
+          run_scope merge "$RUNNER_TEMP/world-merge" source
+          run_scope head "$RUNNER_TEMP/world-head" postgres world_head
+          run_scope merge "$RUNNER_TEMP/world-merge" postgres world_merge
+          run_scope head "$RUNNER_TEMP/world-head" package
+          run_scope merge "$RUNNER_TEMP/world-merge" package
 
-          expected = {
-              "actual_head": os.environ["WORLD_HEAD_SHA"],
-              "actual_head_tree": os.environ["WORLD_HEAD_TREE"],
-              "actual_merge": os.environ["WORLD_MERGE_SHA"],
-              "actual_merge_tree": os.environ["WORLD_MERGE_TREE"],
-              "actual_merge_parents": (
-                  f'{os.environ["WORLD_BASE_SHA"]} {os.environ["WORLD_HEAD_SHA"]}'
-              ),
-          }
-          failures = [
-              f"{key}: expected {value}, got {actual[key]}"
-              for key, value in expected.items()
-              if actual[key] != value
-          ]
-          for key in (
-              "truth_head",
-              "truth_merge",
-              "source_head",
-              "source_merge",
-              "postgres_head",
-              "postgres_merge",
-              "package_head",
-              "package_merge",
-          ):
-              if actual[key] != "success":
-                  failures.append(f"{key}: expected success, got {actual[key]}")
+          {
+            cat "$evidence_dir/tuple.txt"
+            for label in \
+              truth-head truth-merge source-head source-merge \
+              postgres-head postgres-merge package-head package-merge; do
+              printf '%s=%s\n' "$label" "$(cat "$evidence_dir/status/${label}.txt")"
+            done
+            printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'runner_commit=%s\n' "$GITHUB_SHA"
+            printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'runner_run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'failed_scope_count=%s\n' "$failures"
+          } | tee "$evidence_dir/identity.txt"
 
-          if failures:
-              print("World V6 immutable qualification failed:", file=sys.stderr)
-              for failure in failures:
-                  print(f"- {failure}", file=sys.stderr)
-              raise SystemExit(1)
+          {
+            printf '## World V6 exact-object qualification\n\n```text\n'
+            cat "$evidence_dir/identity.txt"
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          print("WORLD_V6_EXTERNAL_REQUIRED=PASS")
-          PY
+          test "$failures" -eq 0
+          printf 'WORLD_V6_EXTERNAL_REQUIRED=PASS\n'
 
       - name: Stop PostgreSQL
         if: always()
