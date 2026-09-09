@@ -1,0 +1,47 @@
+name: world-pr115-source-bundle-20260910
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    name: world-pr115/source-bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch exact World source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init world
+          git -C world remote add origin https://github.com/TrillionniumFoundation/Trillionnium-World.git
+          git -C world fetch --no-tags --depth=1 origin bcbce0640d1c8ce943c5331ac8582d340499f51f
+          git -C world checkout --detach FETCH_HEAD
+          test "$(git -C world rev-parse HEAD)" = bcbce0640d1c8ce943c5331ac8582d340499f51f
+          test "$(git -C world rev-parse 'HEAD^{tree}')" = c8a08d4c8e8066fc9b5cffd7c000161f6d20ceed
+      - name: Create deterministic source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C world archive --format=tar --prefix=Trillionnium-World/ HEAD | gzip -n > world-pr115-source.tar.gz
+          sha256sum world-pr115-source.tar.gz > SHA256SUMS
+          printf '%s\n' \
+            'repository=TrillionniumFoundation/Trillionnium-World' \
+            'pull_request=115' \
+            'commit=bcbce0640d1c8ce943c5331ac8582d340499f51f' \
+            'tree=c8a08d4c8e8066fc9b5cffd7c000161f6d20ceed' \
+            'production_authorization=not_granted' > identity.txt
+      - name: Upload immutable source bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-pr115-source-bcbce064
+          path: |
+            world-pr115-source.tar.gz
+            SHA256SUMS
+            identity.txt
+          if-no-files-found: error
+          retention-days: 1
