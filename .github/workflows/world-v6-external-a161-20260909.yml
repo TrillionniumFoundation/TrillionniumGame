@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-v6-external-${{ github.event.pull_request.number || github.ref }}
+  group: world-v6-external-7cb23b-20260909-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -109,8 +109,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd "$RUNNER_TEMP/world-head" && bash scripts/run-trnm-world-v6-qualification-v2.sh truth) \
-            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/truth-head.log"
+          cd "$RUNNER_TEMP/world-head"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh truth 2>&1 \
+            | tee "$RUNNER_TEMP/world-v6-evidence/logs/truth-head.log"
           touch "$RUNNER_TEMP/world-v6-state/truth_head.ok"
 
       - name: Qualify merge truth
@@ -119,8 +120,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd "$RUNNER_TEMP/world-merge" && bash scripts/run-trnm-world-v6-qualification-v2.sh truth) \
-            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/truth-merge.log"
+          cd "$RUNNER_TEMP/world-merge"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh truth 2>&1 \
+            | tee "$RUNNER_TEMP/world-v6-evidence/logs/truth-merge.log"
           touch "$RUNNER_TEMP/world-v6-state/truth_merge.ok"
 
       - name: Qualify head source
@@ -129,8 +131,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd "$RUNNER_TEMP/world-head" && bash scripts/run-trnm-world-v6-qualification-v2.sh source) \
-            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/source-head.log"
+          cd "$RUNNER_TEMP/world-head"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh source 2>&1 \
+            | tee "$RUNNER_TEMP/world-v6-evidence/logs/source-head.log"
           touch "$RUNNER_TEMP/world-v6-state/source_head.ok"
 
       - name: Qualify merge source
@@ -139,8 +142,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd "$RUNNER_TEMP/world-merge" && bash scripts/run-trnm-world-v6-qualification-v2.sh source) \
-            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/source-merge.log"
+          cd "$RUNNER_TEMP/world-merge"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh source 2>&1 \
+            | tee "$RUNNER_TEMP/world-v6-evidence/logs/source-merge.log"
           touch "$RUNNER_TEMP/world-v6-state/source_merge.ok"
 
       - name: Qualify head PostgreSQL
@@ -152,8 +156,9 @@ jobs:
           TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/world_head
         run: |
           set -euo pipefail
-          (cd "$RUNNER_TEMP/world-head" && bash scripts/run-trnm-world-v6-qualification-v2.sh postgres) \
-            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/postgres-head.log"
+          cd "$RUNNER_TEMP/world-head"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh postgres 2>&1 \
+            | tee "$RUNNER_TEMP/world-v6-evidence/logs/postgres-head.log"
           touch "$RUNNER_TEMP/world-v6-state/postgres_head.ok"
 
       - name: Qualify merge PostgreSQL
@@ -165,8 +170,9 @@ jobs:
           TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/world_merge
         run: |
           set -euo pipefail
-          (cd "$RUNNER_TEMP/world-merge" && bash scripts/run-trnm-world-v6-qualification-v2.sh postgres) \
-            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/postgres-merge.log"
+          cd "$RUNNER_TEMP/world-merge"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh postgres 2>&1 \
+            | tee "$RUNNER_TEMP/world-v6-evidence/logs/postgres-merge.log"
           touch "$RUNNER_TEMP/world-v6-state/postgres_merge.ok"
 
       - name: Qualify head package
@@ -175,8 +181,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd "$RUNNER_TEMP/world-head" && bash scripts/run-trnm-world-v6-qualification-v2.sh package) \
-            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/package-head.log"
+          cd "$RUNNER_TEMP/world-head"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh package 2>&1 \
+            | tee "$RUNNER_TEMP/world-v6-evidence/logs/package-head.log"
           touch "$RUNNER_TEMP/world-v6-state/package_head.ok"
 
       - name: Qualify merge package
@@ -185,11 +192,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd "$RUNNER_TEMP/world-merge" && bash scripts/run-trnm-world-v6-qualification-v2.sh package) \
-            2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/package-merge.log"
+          cd "$RUNNER_TEMP/world-merge"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh package 2>&1 \
+            | tee "$RUNNER_TEMP/world-v6-evidence/logs/package-merge.log"
           touch "$RUNNER_TEMP/world-v6-state/package_merge.ok"
 
-      - name: Collect tuple-bound evidence and checksums
+      - name: Collect and hash tuple-bound evidence
         if: always()
         shell: bash
         run: |
@@ -232,7 +240,18 @@ jobs:
             LC_ALL=C find . -type f ! -name SHA256SUMS -print0 \
               | LC_ALL=C sort -z \
               | xargs -0 sha256sum > SHA256SUMS
+            tar -czf ../world-v6-evidence.tar.gz .
           )
+          sha256sum "$RUNNER_TEMP/world-v6-evidence.tar.gz" | tee "$evidence_dir/archive.sha256"
+          cat "$evidence_dir/identity.txt"
+          cat "$evidence_dir/SHA256SUMS"
+          {
+            printf '## World V6 external tuple\n\n```text\n'
+            cat "$evidence_dir/identity.txt"
+            printf 'archive_sha256='
+            cut -d' ' -f1 "$evidence_dir/archive.sha256"
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enforce every exact-tuple scope
         if: always()
@@ -264,15 +283,6 @@ jobs:
           printf 'production_authorization=not_granted\n'
           test "$failed" -eq 0
           printf 'WORLD_V6_EXTERNAL_REQUIRED=PASS\n'
-
-      - name: Upload immutable diagnostic evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: world-v6-external-7cb23b-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-v6-evidence
-          if-no-files-found: error
-          retention-days: 30
 
       - name: Stop PostgreSQL
         if: always()
