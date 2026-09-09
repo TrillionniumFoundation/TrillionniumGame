@@ -1,4 +1,4 @@
-name: world-pr115-converged-module-qualification-20260910
+name: world-pr115-current-v6-external-qualification
 
 on:
   pull_request:
@@ -8,218 +8,345 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr115-converged-module-${{ github.event.pull_request.number || github.ref }}
+  group: world-pr115-current-v6-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_PR_NUMBER: '115'
-  WORLD_BASE_SHA: 956462f95675d3d4db89af03bc4b7cc8c9a3c975
-  WORLD_HEAD_SHA: 16755155c7aaeb805979fa79d655ef0e8fa9e5a9
-  WORLD_HEAD_TREE: 548134fc77ebc134acf093e18894e60a2778e1a0
-  WORLD_MERGE_SHA: 0a2a4136c7f1bf9cc6f01aa17d25fa80438d81d5
-  WORLD_MERGE_TREE: 548134fc77ebc134acf093e18894e60a2778e1a0
+  WORLD_BASE_SHA: 0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
+  WORLD_HEAD_SHA: bcbce0640d1c8ce943c5331ac8582d340499f51f
+  WORLD_HEAD_TREE: c8a08d4c8e8066fc9b5cffd7c000161f6d20ceed
+  WORLD_MERGE_SHA: 3a0815fa8c2520f825e19295f5e78a87afa21625
+  WORLD_MERGE_TREE: c8a08d4c8e8066fc9b5cffd7c000161f6d20ceed
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
+  CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: '0'
+  RUST_BACKTRACE: '1'
   RUST_TEST_THREADS: '1'
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
-  qualify:
-    name: world-pr115/source-head-and-merge
+  truth:
+    name: world-pr115/truth-head-and-merge
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 45
     steps:
-      - name: Read and verify live World PR 115 tuple
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --silent --show-error --location \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "https://api.github.com/repos/${WORLD_REPOSITORY}/pulls/${WORLD_PR_NUMBER}" \
-            > "$RUNNER_TEMP/world-pr-start.json"
-          python3 - "$RUNNER_TEMP/world-pr-start.json" <<'PY'
-          import json
-          import os
-          import sys
-
-          with open(sys.argv[1], encoding="utf-8") as handle:
-              pull = json.load(handle)
-          expected = {
-              "base": os.environ["WORLD_BASE_SHA"],
-              "head": os.environ["WORLD_HEAD_SHA"],
-              "merge": os.environ["WORLD_MERGE_SHA"],
-          }
-          actual = {
-              "base": pull["base"]["sha"],
-              "head": pull["head"]["sha"],
-              "merge": pull["merge_commit_sha"],
-          }
-          assert actual == expected, (actual, expected)
-          assert pull["state"] == "open", pull["state"]
-          assert pull["draft"] is True, pull["draft"]
-          print("TRNM_WORLD_PR115_LIVE_TUPLE_START=PASS")
-          PY
-
       - name: Fetch and verify immutable World objects
         shell: bash
         run: |
           set -euo pipefail
-          for tuple in "head:$WORLD_HEAD_SHA" "merge:$WORLD_MERGE_SHA"; do
+          for tuple in "head:$WORLD_HEAD_SHA:$WORLD_HEAD_TREE" "merge:$WORLD_MERGE_SHA:$WORLD_MERGE_TREE"; do
             name="${tuple%%:*}"
-            sha="${tuple#*:}"
+            rest="${tuple#*:}"
+            sha="${rest%%:*}"
+            tree="${rest#*:}"
             dir="$RUNNER_TEMP/world-$name"
-            rm -rf "$dir"
             git init "$dir"
             git -C "$dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
-            git -C "$dir" fetch --no-tags --depth=16 origin "$sha"
+            git -C "$dir" fetch --no-tags --depth=2 origin "$sha"
             git -C "$dir" checkout --detach FETCH_HEAD
+            test "$(git -C "$dir" rev-parse HEAD)" = "$sha"
+            test "$(git -C "$dir" rev-parse 'HEAD^{tree}')" = "$tree"
           done
-          test "$(git -C "$RUNNER_TEMP/world-head" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
-          test "$(git -C "$RUNNER_TEMP/world-head" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
-          test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse HEAD)" = "$WORLD_MERGE_SHA"
-          test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')" = "$WORLD_MERGE_TREE"
           test "$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
-          test "$(git -C "$RUNNER_TEMP/world-head" show -s --format=%P HEAD)" = \
-            '3f0721c7921f2c683fc4872b1f62429ca1b1688c'
-
-      - name: Verify explicit module ownership and P0 contracts
+      - name: Qualify truth on exact head
         shell: bash
         run: |
           set -euo pipefail
-          for dir in "$RUNNER_TEMP/world-head" "$RUNNER_TEMP/world-merge"; do
-            python3 - "$dir" <<'PY'
-          from pathlib import Path
-          import sys
+          cd "$RUNNER_TEMP/world-head"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh truth
+      - name: Qualify truth on prospective merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world-merge"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh truth
+      - name: Preserve truth evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence/truth/head" "$RUNNER_TEMP/evidence/truth/merge"
+          cp -R "$RUNNER_TEMP/world-head/run/world-v6-v2/truth/." "$RUNNER_TEMP/evidence/truth/head/" 2>/dev/null || true
+          cp -R "$RUNNER_TEMP/world-merge/run/world-v6-v2/truth/." "$RUNNER_TEMP/evidence/truth/merge/" 2>/dev/null || true
+          printf '%s\n' "$WORLD_BASE_SHA" "$WORLD_HEAD_SHA" "$WORLD_HEAD_TREE" "$WORLD_MERGE_SHA" "$WORLD_MERGE_TREE" > "$RUNNER_TEMP/evidence/truth/identity.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: world-pr115-truth-${{ env.WORLD_HEAD_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence/truth/**
+          if-no-files-found: error
+          retention-days: 30
 
-          root = Path(sys.argv[1])
-          lib = root / "trillionnium/crates/trnm-campaign-core/src/lib.rs"
-          text = lib.read_text(encoding="utf-8")
-          removed = (
-              'include!("lib_parts/campaign_storage/part_01.rs");',
-              'include!("lib_parts/save_slots/part_01.rs");',
-              'include!("lib_parts/player_settings/part_01.rs");',
-              'include!("lib_parts/rts_mapping/part_01.rs");',
-              'include!("lib_parts/tests/part_01.rs");',
-          )
-          required = (
-              '#[path = "lib_parts/campaign_storage/part_01.rs"]\nmod campaign_storage;',
-              '#[path = "lib_parts/save_slots/part_01.rs"]\nmod save_slots;',
-              '#[path = "lib_parts/player_settings/part_01.rs"]\nmod player_settings;',
-              '#[path = "lib_parts/rts_mapping/part_01.rs"]\nmod rts_mapping;',
-              '#[path = "lib_parts/tests/part_01.rs"]\nmod tests;',
-          )
-          for marker in removed:
-              assert marker not in text, marker
-          for marker in required:
-              assert marker in text, marker
-          assert 'pub use rts_mapping::{map_rpg_to_rts_stats, typed_equipment_modifier};' in text
-          assert 'pub(crate) use rts_mapping::{' in text
-          tests = (
-              root
-              / "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs"
-          ).read_text(encoding="utf-8")
-          assert tests.count("include!(concat!(") == 3
-          p0 = (
-              root
-              / "trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
-          ).read_text(encoding="utf-8")
-          for marker in (
-              "closed_scope_binding",
-              "shadowed_binding",
-              "reassigned_binding",
-              "mixed_receivers",
-              "qualified_decoy_argument",
-              "qualified_decoy_initializer",
-              "exact_captured_backend_constructor",
-              "literal_masker_is_total_and_preserves_lifetime_syntax",
-              "captured_backend_binding_before",
-              "mask_rust_comments_and_literals",
-          ):
-              assert marker in p0, marker
-          print("TRNM_WORLD_PR115_SOURCE_CONTRACT=PASS")
-          PY
+  source:
+    name: world-pr115/source-head-and-merge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Fetch and verify immutable World objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tuple in "head:$WORLD_HEAD_SHA:$WORLD_HEAD_TREE" "merge:$WORLD_MERGE_SHA:$WORLD_MERGE_TREE"; do
+            name="${tuple%%:*}"
+            rest="${tuple#*:}"
+            sha="${rest%%:*}"
+            tree="${rest#*:}"
+            dir="$RUNNER_TEMP/world-$name"
+            git init "$dir"
+            git -C "$dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+            git -C "$dir" fetch --no-tags --depth=2 origin "$sha"
+            git -C "$dir" checkout --detach FETCH_HEAD
+            test "$(git -C "$dir" rev-parse HEAD)" = "$sha"
+            test "$(git -C "$dir" rev-parse 'HEAD^{tree}')" = "$tree"
           done
-
+          test "$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
       - name: Install pinned Rust and native dependencies
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
-          rustup override set "$WORLD_RUST_TOOLCHAIN"
+          rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+          rustup default "$WORLD_RUST_TOOLCHAIN"
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.list.save
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libudev-dev libx11-dev libxi-dev \
-            libxkbcommon-dev libwayland-dev pkg-config
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libx11-dev libxi-dev libxkbcommon-dev libwayland-dev pkg-config
           rustc --version --verbose
           cargo --version --verbose
           rustfmt --version
-
-      - name: Qualify exact head and prospective merge source
-        id: source
+      - name: Qualify source on exact head
         shell: bash
         run: |
-          set -uo pipefail
-          head_log="$RUNNER_TEMP/world-pr115-head-source.log"
-          merge_log="$RUNNER_TEMP/world-pr115-merge-source.log"
-          head_status=0
-          merge_status=0
-          (set -euo pipefail; cd "$RUNNER_TEMP/world-head"; bash scripts/run-trnm-world-v6-qualification-v2.sh source) >"$head_log" 2>&1 || head_status=$?
-          (set -euo pipefail; cd "$RUNNER_TEMP/world-merge"; bash scripts/run-trnm-world-v6-qualification-v2.sh source) >"$merge_log" 2>&1 || merge_status=$?
-          actual_head="$(git -C "$RUNNER_TEMP/world-head" rev-parse HEAD)"
-          actual_head_tree="$(git -C "$RUNNER_TEMP/world-head" rev-parse 'HEAD^{tree}')"
-          actual_merge="$(git -C "$RUNNER_TEMP/world-merge" rev-parse HEAD)"
-          actual_merge_tree="$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')"
-          actual_parents="$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)"
-          {
-            printf '## World PR 115 source qualification\n\n```text\n'
-            printf 'world_base=%s\nworld_head=%s\nworld_head_tree=%s\n' "$WORLD_BASE_SHA" "$actual_head" "$actual_head_tree"
-            printf 'world_merge=%s\nworld_merge_tree=%s\nworld_merge_parents=%s\n' "$actual_merge" "$actual_merge_tree" "$actual_parents"
-            printf 'source_head_exit=%s\nsource_merge_exit=%s\nproduction_authorization=not_granted\n```\n' "$head_status" "$merge_status"
-          } >> "$GITHUB_STEP_SUMMARY"
-          if test "$head_status" -ne 0; then printf '%s\n' '--- exact head source failure tail ---'; tail -n 300 "$head_log"; else printf 'WORLD_PR115_HEAD_SOURCE=PASS\n'; fi
-          if test "$merge_status" -ne 0; then printf '%s\n' '--- prospective merge source failure tail ---'; tail -n 300 "$merge_log"; else printf 'WORLD_PR115_MERGE_SOURCE=PASS\n'; fi
-          test "$actual_head" = "$WORLD_HEAD_SHA"
-          test "$actual_head_tree" = "$WORLD_HEAD_TREE"
-          test "$actual_merge" = "$WORLD_MERGE_SHA"
-          test "$actual_merge_tree" = "$WORLD_MERGE_TREE"
-          test "$actual_parents" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
-          test "$head_status" -eq 0
-          test "$merge_status" -eq 0
-          printf 'WORLD_PR115_SOURCE_QUALIFICATION=PASS\n'
-
-      - name: Re-read World PR 115 and reject tuple movement
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world-head"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh source
+      - name: Qualify source on prospective merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world-merge"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh source
+      - name: Preserve source evidence
         if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence/source/head" "$RUNNER_TEMP/evidence/source/merge"
+          cp -R "$RUNNER_TEMP/world-head/run/world-v6-v2/source/." "$RUNNER_TEMP/evidence/source/head/" 2>/dev/null || true
+          cp -R "$RUNNER_TEMP/world-merge/run/world-v6-v2/source/." "$RUNNER_TEMP/evidence/source/merge/" 2>/dev/null || true
+          printf '%s\n' "$WORLD_BASE_SHA" "$WORLD_HEAD_SHA" "$WORLD_HEAD_TREE" "$WORLD_MERGE_SHA" "$WORLD_MERGE_TREE" > "$RUNNER_TEMP/evidence/source/identity.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: world-pr115-source-${{ env.WORLD_HEAD_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence/source/**
+          if-no-files-found: error
+          retention-days: 30
+
+  postgres:
+    name: world-pr115/postgres-head-and-merge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    services:
+      postgres:
+        image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+      TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+      TRNM_WORLD_POSTGRES_CLIENT_IMAGE: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+    steps:
+      - name: Fetch and verify immutable World objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tuple in "head:$WORLD_HEAD_SHA:$WORLD_HEAD_TREE" "merge:$WORLD_MERGE_SHA:$WORLD_MERGE_TREE"; do
+            name="${tuple%%:*}"
+            rest="${tuple#*:}"
+            sha="${rest%%:*}"
+            tree="${rest#*:}"
+            dir="$RUNNER_TEMP/world-$name"
+            git init "$dir"
+            git -C "$dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+            git -C "$dir" fetch --no-tags --depth=2 origin "$sha"
+            git -C "$dir" checkout --detach FETCH_HEAD
+            test "$(git -C "$dir" rev-parse HEAD)" = "$sha"
+            test "$(git -C "$dir" rev-parse 'HEAD^{tree}')" = "$tree"
+          done
+          test "$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$WORLD_RUST_TOOLCHAIN"
+          rustc --version --verbose
+          psql --version
+      - name: Qualify PostgreSQL on exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world-head"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh postgres
+      - name: Reset PostgreSQL between immutable objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -d postgres -Atc "select datname from pg_database where datname like 'trnm_%'" | while read -r database; do
+            test -n "$database" || continue
+            psql -d postgres -c "select pg_terminate_backend(pid) from pg_stat_activity where datname = '$database' and pid <> pg_backend_pid()"
+            dropdb --if-exists "$database"
+          done
+      - name: Qualify PostgreSQL on prospective merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world-merge"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh postgres
+      - name: Preserve PostgreSQL evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence/postgres/head" "$RUNNER_TEMP/evidence/postgres/merge"
+          cp -R "$RUNNER_TEMP/world-head/run/world-v6-v2/postgres/." "$RUNNER_TEMP/evidence/postgres/head/" 2>/dev/null || true
+          cp -R "$RUNNER_TEMP/world-merge/run/world-v6-v2/postgres/." "$RUNNER_TEMP/evidence/postgres/merge/" 2>/dev/null || true
+          printf '%s\n' "$WORLD_BASE_SHA" "$WORLD_HEAD_SHA" "$WORLD_HEAD_TREE" "$WORLD_MERGE_SHA" "$WORLD_MERGE_TREE" > "$RUNNER_TEMP/evidence/postgres/identity.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: world-pr115-postgres-${{ env.WORLD_HEAD_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence/postgres/**
+          if-no-files-found: error
+          retention-days: 30
+
+  package:
+    name: world-pr115/package-head-and-merge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Fetch and verify immutable World objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tuple in "head:$WORLD_HEAD_SHA:$WORLD_HEAD_TREE" "merge:$WORLD_MERGE_SHA:$WORLD_MERGE_TREE"; do
+            name="${tuple%%:*}"
+            rest="${tuple#*:}"
+            sha="${rest%%:*}"
+            tree="${rest#*:}"
+            dir="$RUNNER_TEMP/world-$name"
+            git init "$dir"
+            git -C "$dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+            git -C "$dir" fetch --no-tags --depth=2 origin "$sha"
+            git -C "$dir" checkout --detach FETCH_HEAD
+            test "$(git -C "$dir" rev-parse HEAD)" = "$sha"
+            test "$(git -C "$dir" rev-parse 'HEAD^{tree}')" = "$tree"
+          done
+          test "$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
+      - name: Install pinned Rust and native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$WORLD_RUST_TOOLCHAIN"
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.list.save
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libx11-dev libxi-dev libxkbcommon-dev libwayland-dev pkg-config
+          rustc --version --verbose
+      - name: Qualify package on exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world-head"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh package
+      - name: Qualify package on prospective merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world-merge"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh package
+      - name: Preserve package evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence/package/head" "$RUNNER_TEMP/evidence/package/merge"
+          cp -R "$RUNNER_TEMP/world-head/run/world-v6-v2/package/." "$RUNNER_TEMP/evidence/package/head/" 2>/dev/null || true
+          cp -R "$RUNNER_TEMP/world-merge/run/world-v6-v2/package/." "$RUNNER_TEMP/evidence/package/merge/" 2>/dev/null || true
+          printf '%s\n' "$WORLD_BASE_SHA" "$WORLD_HEAD_SHA" "$WORLD_HEAD_TREE" "$WORLD_MERGE_SHA" "$WORLD_MERGE_TREE" > "$RUNNER_TEMP/evidence/package/identity.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: world-pr115-package-${{ env.WORLD_HEAD_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence/package/**
+          if-no-files-found: error
+          retention-days: 30
+
+  required:
+    name: world-pr115/external-required
+    if: always()
+    needs: [truth, source, postgres, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Enforce all non-empty execution families
+        env:
+          TRUTH_RESULT: ${{ needs.truth.result }}
+          SOURCE_RESULT: ${{ needs.source.result }}
+          POSTGRES_RESULT: ${{ needs.postgres.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$TRUTH_RESULT" = success
+          test "$SOURCE_RESULT" = success
+          test "$POSTGRES_RESULT" = success
+          test "$PACKAGE_RESULT" = success
+      - name: Re-read World PR and reject tuple movement
         shell: bash
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --location \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "https://api.github.com/repos/${WORLD_REPOSITORY}/pulls/${WORLD_PR_NUMBER}" \
-            > "$RUNNER_TEMP/world-pr-finish.json"
-          python3 - "$RUNNER_TEMP/world-pr-finish.json" <<'PY'
+            "https://api.github.com/repos/${WORLD_REPOSITORY}/pulls/${WORLD_PR_NUMBER}" > "$RUNNER_TEMP/world-pr.json"
+          python3 - "$RUNNER_TEMP/world-pr.json" <<'PY'
           import json
           import os
           import sys
 
-          with open(sys.argv[1], encoding="utf-8") as handle:
+          with open(sys.argv[1], encoding='utf-8') as handle:
               pull = json.load(handle)
-          expected = (
-              os.environ["WORLD_BASE_SHA"],
-              os.environ["WORLD_HEAD_SHA"],
-              os.environ["WORLD_MERGE_SHA"],
-          )
           actual = (
-              pull["base"]["sha"],
-              pull["head"]["sha"],
-              pull["merge_commit_sha"],
+              pull['base']['sha'],
+              pull['head']['sha'],
+              pull['merge_commit_sha'],
+              pull['state'],
+              pull['draft'],
+          )
+          expected = (
+              os.environ['WORLD_BASE_SHA'],
+              os.environ['WORLD_HEAD_SHA'],
+              os.environ['WORLD_MERGE_SHA'],
+              'open',
+              True,
           )
           assert actual == expected, (actual, expected)
-          assert pull["state"] == "open", pull["state"]
-          assert pull["draft"] is True, pull["draft"]
-          print("TRNM_WORLD_PR115_LIVE_TUPLE_FINISH=PASS")
+          print('WORLD_PR115_CURRENT_V6_EXTERNAL_QUALIFICATION=PASS')
+          print('PRODUCTION_AUTHORIZATION=not_granted')
           PY
