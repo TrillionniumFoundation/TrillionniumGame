@@ -1,0 +1,473 @@
+{
+  "claim_boundary": {
+    "accepted_evidence": false,
+    "all_controllers_success": false,
+    "all_gaps_closed": false,
+    "independent_acceptance": false,
+    "production_ready": false
+  },
+  "controller_branch": "codex/plan-v32-controller-v2-2026-09-09",
+  "generated_at": "2026-09-09T03:45:50+00:00",
+  "repository": "TrillionniumFoundation/TrillionniumGame",
+  "runs": [
+    {
+      "api_error": null,
+      "conclusion": "success",
+      "created_at": "2026-09-08T23:45:21Z",
+      "failure_log": null,
+      "failure_log_sha256": null,
+      "head_sha": "1ed75579becfa5700e11e85dfe9b7350b26ff94b",
+      "jobs": [
+        {
+          "conclusion": "success",
+          "id": 102280488789,
+          "name": "converge-and-validate",
+          "status": "completed"
+        }
+      ],
+      "run_id": 34292045962,
+      "status": "completed",
+      "updated_at": "2026-09-08T23:48:57Z",
+      "workflow": "plan-v32-controller-v4-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": "success",
+      "created_at": "2026-09-09T00:04:12Z",
+      "failure_log": null,
+      "failure_log_sha256": null,
+      "head_sha": "38bb4a39d7290503725366ba06e884f709577903",
+      "jobs": [
+        {
+          "conclusion": "success",
+          "id": 102284652710,
+          "name": "compose-validate-publish",
+          "status": "completed"
+        }
+      ],
+      "run_id": 34293396785,
+      "status": "completed",
+      "updated_at": "2026-09-09T00:05:41Z",
+      "workflow": "pg-authority-storage-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": "failure",
+      "created_at": "2026-09-09T02:45:34Z",
+      "failure_log": "docs/internal/plan-v32-controller-failures-v2/commit-fault-boundary-controller-v4-20260909.log",
+      "failure_log_sha256": "d755787635d31d3d47b2351a11ed45b2bd90df3d0199234168404546efbad574",
+      "head_sha": "b1f33cc9bd71027e5fd46b34a316f77a0219df2a",
+      "jobs": [
+        {
+          "conclusion": "failure",
+          "id": 102318219459,
+          "name": "converge-and-prove-fixed-point",
+          "status": "completed"
+        }
+      ],
+      "run_id": 34304488421,
+      "status": "completed",
+      "updated_at": "2026-09-09T02:47:46Z",
+      "workflow": "commit-fault-boundary-controller-v4-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": "failure",
+      "created_at": "2026-09-09T02:45:43Z",
+      "failure_log": "docs/internal/plan-v32-controller-failures-v2/postgresql-semantic-recovery-controller-v2-20260909.log",
+      "failure_log_sha256": "d08ff80916e73c4a957e79fe2e9067a37a199ed44bce067a3d7e8cae755e8709",
+      "head_sha": "8e5488f548d0422f7743f9bf8be52772d140f8e6",
+      "jobs": [
+        {
+          "conclusion": "failure",
+          "id": 102318290029,
+          "name": "converge-and-prove-fixed-point",
+          "status": "completed"
+        }
+      ],
+      "run_id": 34304496867,
+      "status": "completed",
+      "updated_at": "2026-09-09T03:08:43Z",
+      "workflow": "postgresql-semantic-recovery-controller-v2-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": "failure",
+      "created_at": "2026-09-09T02:53:16Z",
+      "failure_log": "docs/internal/plan-v32-controller-failures-v2/cockroachdb-semantic-recovery-controller-20260909.log",
+      "failure_log_sha256": "03e302f8e0ddd908e1954629b52cd4438c29706bf4dc1a66b7d89a4c018f545a",
+      "head_sha": "c92b7e52ddd1731a5484758c92b14fb01cb4d87e",
+      "jobs": [
+        {
+          "conclusion": "failure",
+          "id": 102319672409,
+          "name": "converge-and-prove-fixed-point",
+          "status": "completed"
+        }
+      ],
+      "run_id": 34304976864,
+      "status": "completed",
+      "updated_at": "2026-09-09T03:17:42Z",
+      "workflow": "cockroachdb-semantic-recovery-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": "failure",
+      "created_at": "2026-09-09T02:56:15Z",
+      "failure_log": "docs/internal/plan-v32-controller-failures-v2/postgresql-recovery-barrier-controller-20260909.log",
+      "failure_log_sha256": "c3cf31ddee94d2ab766b55364b84ca4ac8fc87d741f0b52f0d355d6f3cf4ea8a",
+      "head_sha": "dbe84b0a6f9f8584f9f2cb961b89d4fb142c4304",
+      "jobs": [
+        {
+          "conclusion": "failure",
+          "id": 102320228264,
+          "name": "converge-and-prove-fixed-point",
+          "status": "completed"
+        }
+      ],
+      "run_id": 34305166675,
+      "status": "completed",
+      "updated_at": "2026-09-09T03:25:10Z",
+      "workflow": "postgresql-recovery-barrier-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": "failure",
+      "created_at": "2026-09-09T03:01:50Z",
+      "failure_log": "docs/internal/plan-v32-controller-failures-v2/postgresql-connection-fault-controller-20260909.log",
+      "failure_log_sha256": "c34ac297df2cc40652c3b981a1f5a9522ffef181b2f1d35dcd919d5f3618f356",
+      "head_sha": "ab1a83588867dc87545b2211eed38e830d6bce0c",
+      "jobs": [
+        {
+          "conclusion": "failure",
+          "id": 102321291103,
+          "name": "converge-and-prove-fixed-point",
+          "status": "completed"
+        }
+      ],
+      "run_id": 34305521658,
+      "status": "completed",
+      "updated_at": "2026-09-09T03:35:02Z",
+      "workflow": "postgresql-connection-fault-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": "failure",
+      "created_at": "2026-09-09T03:04:38Z",
+      "failure_log": "docs/internal/plan-v32-controller-failures-v2/postgresql-primary-failover-controller-20260909.log",
+      "failure_log_sha256": "8a60b5c42bdb7fa7e7e4f32eb5f6817c6fa445777d4d9de438ebf67d159f018d",
+      "head_sha": "9ce83b5b7c95e0f8b4d13d065b077ca7210087c8",
+      "jobs": [
+        {
+          "conclusion": "failure",
+          "id": 102321824565,
+          "name": "converge-and-prove-fixed-point",
+          "status": "completed"
+        }
+      ],
+      "run_id": 34305700030,
+      "status": "completed",
+      "updated_at": "2026-09-09T03:41:12Z",
+      "workflow": "postgresql-primary-failover-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": null,
+      "created_at": "2026-09-09T03:07:36Z",
+      "failure_log": null,
+      "failure_log_sha256": null,
+      "head_sha": "fd477e0d562b8f46a69ad03924c3fc2c1b5be441",
+      "jobs": [
+        {
+          "conclusion": null,
+          "id": 102322410063,
+          "name": "converge-and-prove-fixed-point",
+          "status": "in_progress"
+        }
+      ],
+      "run_id": 34305903653,
+      "status": "in_progress",
+      "updated_at": "2026-09-09T03:07:40Z",
+      "workflow": "cockroachdb-node-failover-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": null,
+      "created_at": "2026-09-09T03:10:12Z",
+      "failure_log": null,
+      "failure_log_sha256": null,
+      "head_sha": "cbf3750156cb7a23fc8abe4c115641ebe9349d2c",
+      "jobs": [
+        {
+          "conclusion": null,
+          "id": 102322908164,
+          "name": "converge-and-prove-fixed-point",
+          "status": "in_progress"
+        }
+      ],
+      "run_id": 34306069143,
+      "status": "in_progress",
+      "updated_at": "2026-09-09T03:10:17Z",
+      "workflow": "postgresql-pitr-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": null,
+      "created_at": "2026-09-09T03:16:35Z",
+      "failure_log": null,
+      "failure_log_sha256": null,
+      "head_sha": "35b685bed25de9c3ada8057cdbcc5c0a84a90454",
+      "jobs": [
+        {
+          "conclusion": null,
+          "id": 102324154385,
+          "name": "converge-and-prove-fixed-point",
+          "status": "in_progress"
+        }
+      ],
+      "run_id": 34306490129,
+      "status": "in_progress",
+      "updated_at": "2026-09-09T03:16:39Z",
+      "workflow": "remote-mac-provider-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": null,
+      "created_at": "2026-09-09T03:19:58Z",
+      "failure_log": null,
+      "failure_log_sha256": null,
+      "head_sha": "4e7895988024ddaf115dfcaa51d94568a8393094",
+      "jobs": [
+        {
+          "conclusion": null,
+          "id": 102324799651,
+          "name": "converge-and-prove-fixed-point",
+          "status": "in_progress"
+        }
+      ],
+      "run_id": 34306707037,
+      "status": "in_progress",
+      "updated_at": "2026-09-09T03:20:02Z",
+      "workflow": "durability-state-model-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": null,
+      "created_at": "2026-09-09T03:24:14Z",
+      "failure_log": null,
+      "failure_log_sha256": null,
+      "head_sha": "e63c0193d03e8c14ea267a63bf1cc98e6234f90c",
+      "jobs": [
+        {
+          "conclusion": null,
+          "id": 102325608210,
+          "name": "converge-and-prove-fixed-point",
+          "status": "in_progress"
+        }
+      ],
+      "run_id": 34306983749,
+      "status": "in_progress",
+      "updated_at": "2026-09-09T03:24:17Z",
+      "workflow": "database-capacity-endurance-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": null,
+      "created_at": "2026-09-09T03:28:42Z",
+      "failure_log": null,
+      "failure_log_sha256": null,
+      "head_sha": "5e9f178be1ac954e65c032cd89762beec81052b2",
+      "jobs": [
+        {
+          "conclusion": null,
+          "id": 102326457234,
+          "name": "converge-and-prove-fixed-point",
+          "status": "in_progress"
+        }
+      ],
+      "run_id": 34307267633,
+      "status": "in_progress",
+      "updated_at": "2026-09-09T03:28:45Z",
+      "workflow": "denominator-review-packet-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": null,
+      "created_at": "2026-09-09T03:34:21Z",
+      "failure_log": null,
+      "failure_log_sha256": null,
+      "head_sha": "a68a8f6fc5dde7e541bd08be6fada17a9981228e",
+      "jobs": [
+        {
+          "conclusion": null,
+          "id": 102327535592,
+          "name": "apply-capture-and-publish",
+          "status": "in_progress"
+        }
+      ],
+      "run_id": 34307639549,
+      "status": "in_progress",
+      "updated_at": "2026-09-09T03:34:24Z",
+      "workflow": "github-governance-readback-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": null,
+      "created_at": "2026-09-09T03:41:09Z",
+      "failure_log": null,
+      "failure_log_sha256": null,
+      "head_sha": "3081aad57437fd30a179ca3047583b4e2199b820",
+      "jobs": [
+        {
+          "conclusion": null,
+          "id": 102328822909,
+          "name": "converge-and-prove-fixed-point",
+          "status": "in_progress"
+        }
+      ],
+      "run_id": 34308071989,
+      "status": "in_progress",
+      "updated_at": "2026-09-09T03:41:13Z",
+      "workflow": "remote-mac-unix-transport-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": null,
+      "created_at": "2026-09-09T03:43:59Z",
+      "failure_log": null,
+      "failure_log_sha256": null,
+      "head_sha": "038299405f1c59140482d2b1de3dbc68ceae9fb6",
+      "jobs": [
+        {
+          "conclusion": null,
+          "id": 102329341423,
+          "name": "converge-and-prove-fixed-point",
+          "status": "in_progress"
+        }
+      ],
+      "run_id": 34308249776,
+      "status": "in_progress",
+      "updated_at": "2026-09-09T03:44:03Z",
+      "workflow": "cutover-state-machine-controller-20260909.yml"
+    },
+    {
+      "api_error": null,
+      "conclusion": null,
+      "created_at": "2026-09-09T03:44:15Z",
+      "failure_log": null,
+      "failure_log_sha256": null,
+      "head_sha": "38d00ceffda4c9b87e88267c57691b440d20b183",
+      "jobs": [
+        {
+          "conclusion": null,
+          "id": 102329390933,
+          "name": "qualify (codex/database-capacity-endurance-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391113,
+          "name": "qualify (codex/postgresql-semantic-recovery-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391117,
+          "name": "qualify (codex/remote-mac-provider-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391167,
+          "name": "qualify (codex/postgresql-authority-storage-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391198,
+          "name": "qualify (codex/cockroachdb-node-failover-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391202,
+          "name": "qualify (codex/postgresql-recovery-barrier-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391218,
+          "name": "qualify (codex/durability-state-model-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391237,
+          "name": "qualify (codex/github-governance-readback-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391243,
+          "name": "qualify (codex/postgresql-fault-recovery-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391254,
+          "name": "qualify (codex/postgresql-connection-fault-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391280,
+          "name": "qualify (codex/postgresql-pitr-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391350,
+          "name": "qualify (codex/cockroachdb-semantic-recovery-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391435,
+          "name": "qualify (codex/cutover-state-machine-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391488,
+          "name": "qualify (codex/postgresql-primary-failover-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391539,
+          "name": "qualify (codex/remote-mac-unix-transport-closure-2026-09-09)",
+          "status": "in_progress"
+        },
+        {
+          "conclusion": null,
+          "id": 102329391563,
+          "name": "qualify (codex/denominator-review-packets-closure-2026-09-09)",
+          "status": "in_progress"
+        }
+      ],
+      "run_id": 34308266604,
+      "status": "in_progress",
+      "updated_at": "2026-09-09T03:44:35Z",
+      "workflow": "stacked-database-pr-qualifier-v15-20260909.yml"
+    }
+  ],
+  "schema": "trillionnium.plan-v32-controller-runs.v2",
+  "summary": {
+    "absent": 0,
+    "expected": 18,
+    "failure": 6,
+    "other_terminal": 0,
+    "queued_or_running": 10,
+    "success": 2
+  }
+}
