@@ -1,16 +1,16 @@
 name: world-source-bundle-3ca6-20260909
 
 on:
-  push:
-    branches:
-      - ops/world-source-bundle-3ca6-20260909
+  pull_request:
+    paths:
+      - '.github/workflows/world-source-bundle-3ca6-20260909.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: world-source-bundle-3ca6-20260909
+  group: world-source-bundle-3ca6-20260909-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
