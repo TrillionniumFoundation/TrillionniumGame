@@ -2,9 +2,9 @@ use std::env;
 
 use trnm_contracts::{CommandId, Digest32, StableCode, UserId};
 use trnm_persistence_pg::{
-    CommitRequest, DatabaseProfile, EntityId, IntegrityDigest, NodeId, PgRepository,
-    ReadPermission, StorageActor, StorageBatchOperation, StorageDeleteOperation, StorageObjectKey,
-    StorageWriteOperation, VersionCheck, WritePermission,
+    CommitRequest, DatabaseProfile, EntityId, NodeId, PgRepository, ReadPermission, StorageActor,
+    StorageBatchOperation, StorageDeleteOperation, StorageObjectKey, StorageWriteOperation,
+    VersionCheck, WritePermission,
 };
 
 fn digest(value: u8) -> Digest32 {
@@ -107,7 +107,6 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
             &[StorageBatchOperation::Write(StorageWriteOperation {
                 key: key.clone(),
                 value: b"v1".to_vec(),
-                integrity_digest: IntegrityDigest::new(digest(0x83)).unwrap(),
                 expected: VersionCheck::MustNotExist,
                 read_permission: ReadPermission::Owner,
                 write_permission: WritePermission::Owner,
@@ -116,13 +115,11 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
         )
         .unwrap();
     let version = created[0].current_version.unwrap();
-    assert_eq!(
-        repository
-            .read_storage_object(StorageActor::User(user), &key)
-            .unwrap()
-            .value,
-        b"v1"
-    );
+    let stored_v1 = repository
+        .read_storage_object(StorageActor::User(user), &key)
+        .unwrap();
+    assert_eq!(stored_v1.value, b"v1");
+    assert!(stored_v1.integrity_digest.matches_value(&stored_v1.value));
     assert_eq!(
         repository
             .read_storage_object(StorageActor::User(other), &key)
@@ -137,7 +134,6 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
             &[StorageBatchOperation::Write(StorageWriteOperation {
                 key: key.clone(),
                 value: b"v2".to_vec(),
-                integrity_digest: IntegrityDigest::new(digest(0x84)).unwrap(),
                 expected: VersionCheck::Exact(version),
                 read_permission: ReadPermission::Public,
                 write_permission: WritePermission::Owner,
@@ -145,13 +141,11 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
             20,
         )
         .unwrap();
-    assert_eq!(
-        repository
-            .read_storage_object(StorageActor::User(other), &key)
-            .unwrap()
-            .value,
-        b"v2"
-    );
+    let stored_v2 = repository
+        .read_storage_object(StorageActor::User(other), &key)
+        .unwrap();
+    assert_eq!(stored_v2.value, b"v2");
+    assert!(stored_v2.integrity_digest.matches_value(&stored_v2.value));
 
     let stale = repository
         .apply_storage_batch(
@@ -159,7 +153,6 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
             &[StorageBatchOperation::Write(StorageWriteOperation {
                 key: key.clone(),
                 value: b"v3".to_vec(),
-                integrity_digest: IntegrityDigest::new(digest(0x85)).unwrap(),
                 expected: VersionCheck::Exact(version),
                 read_permission: ReadPermission::Owner,
                 write_permission: WritePermission::Owner,

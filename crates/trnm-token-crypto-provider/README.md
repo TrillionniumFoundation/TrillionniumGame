@@ -30,7 +30,7 @@ Non-goals: this crate does not define JWT format, implement HS256, expose raw pr
 
 ## Architecture and dependencies
 
-JWT and token services call opaque operations through this boundary. Local deterministic providers are development-only profiles. `KeyEpochRegistry` stores routing metadata only: domain, opaque handle, epoch and time windows. Provider calls, durable persistence and cross-node convergence remain outside the registry.
+JWT and token services call opaque operations through this boundary. Local deterministic providers are development-only profiles. Software key buffers use the pinned `zeroize` primitive when dropped so clearing is not represented by an ordinary optimizable fill; this remains a best-effort process-memory control and does not provide register clearing, memory locking, core-dump protection or HSM custody. `KeyEpochRegistry` stores routing metadata only: domain, opaque handle, epoch and time windows. Provider calls, durable persistence and cross-node convergence remain outside the registry.
 
 Signer-journal trust is deliberately split:
 

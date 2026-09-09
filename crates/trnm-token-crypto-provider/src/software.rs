@@ -5,6 +5,7 @@ use std::sync::RwLock;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
+use zeroize::Zeroize;
 
 use super::{
     validate_signing_input, Hs256Provider, KeyDomain, KeyReference, ProviderError, Signature32,
@@ -44,7 +45,7 @@ impl fmt::Debug for SecretKeyMaterial {
 
 impl Drop for SecretKeyMaterial {
     fn drop(&mut self) {
-        self.0.fill(0);
+        self.0.zeroize();
     }
 }
 
@@ -169,6 +170,13 @@ mod tests {
             Some(epoch),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn secret_material_uses_the_reviewed_zeroize_primitive() {
+        let mut material = SecretKeyMaterial::new(vec![0x5a; 32]).unwrap();
+        material.0.zeroize();
+        assert!(material.0.is_empty());
     }
 
     #[test]
