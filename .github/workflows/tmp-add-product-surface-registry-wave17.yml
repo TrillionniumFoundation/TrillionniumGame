@@ -1,0 +1,267 @@
+name: tmp-add-product-surface-registry-wave17
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-add-product-surface-registry-wave17.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-product-assurance-v2-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  register:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Wait for repaired Wave 17 checker head
+        id: subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous=''
+          stable=0
+          for _ in $(seq 1 1080); do
+            head="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            if test -z "$head"; then sleep 20; continue; fi
+            content="$(gh api "repos/${REPOSITORY}/contents/scripts/check-plan-v32-product-hardening.py?ref=${FEATURE_BRANCH}" --jq '.content' 2>/dev/null | base64 --decode || true)"
+            if ! grep -q 'cutover exact-subject validation must cover artifact, window and rehearsal' <<<"$content"; then
+              stable=0
+              sleep 20
+              continue
+            fi
+            if test "$head" = "$previous"; then stable=$((stable+1)); else previous="$head"; stable=1; fi
+            if test "$stable" -ge 2; then printf 'head=%s\n' "$head" >> "$GITHUB_OUTPUT"; exit 0; fi
+            sleep 20
+          done
+          exit 1
+
+      - name: Fetch exact repaired Wave 17 head
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=4 origin '${{ steps.subject.outputs.head }}'
+          git -C "$GITHUB_WORKSPACE" checkout -B "$FEATURE_BRANCH" FETCH_HEAD
+
+      - name: Register every product and external-evidence surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          rows = [
+              (124, 'production-key-provider', ['trnm-kms-provider-adapter'], ['real-kms-or-hsm', 'provider-outcome-authentication', 'rotation-revoke-failure-injection']),
+              (125, 'oracle-sdk-conformance', ['trnm-conformance-core'], ['immutable-oracle-runs', 'instrumented-oracle-equivalence', 'official-sdk-blackbox', 'independent-normalizer-review']),
+              (126, 'ha-pitr-recovery', ['trnm-recovery-core'], ['postgresql-ha-pitr', 'cockroachdb-ha-pitr', 'approved-rpo-rto', 'independent-database-sre-review']),
+              (127, 'capacity-endurance', ['trnm-endurance-core'], ['approved-hardware-workload', '24h-run', '72h-run', '7d-run', 'independent-performance-sre-review']),
+              (128, 'shadow-canary-cutover-retirement', ['trnm-cutover-controller'], ['live-shadow', 'exclusive-canary', 'rollback-rehearsal', 'cutover-decision', 'retirement-evidence']),
+              (137, 'account-auth-provider-identity', ['trnm-identity-core', 'trnm-identity-service'], ['provider-sandbox', 'official-sdk-differential', 'identity-migration', 'independent-security-review']),
+              (138, 'users-friends-groups-chat-notifications', ['trnm-social-core'], ['public-api-differential', 'persistent-social-repository', 'realtime-delivery', 'independent-protocol-review']),
+              (139, 'storage-public-api', ['trnm-storage-service'], ['http-grpc-storage-differential', 'cursor-listing', 'live-database-effects', 'independent-storage-review']),
+              (140, 'leaderboards-tournaments-scheduler', ['trnm-competition-core'], ['public-api-differential', 'scheduler-failover', 'reward-effects', 'independent-domain-review']),
+              (141, 'parties-matchmaker-multiplayer', ['trnm-multiplayer-core'], ['official-sdk-differential', 'multi-node-routing', 'partition-takeover', 'capacity-endurance']),
+              (142, 'complete-http-grpc-gateway', ['trnm-api-gateway-core'], ['complete-denominator-binding', 'raw-wire-differential', 'parser-fuzz', 'independent-protocol-review']),
+              (143, 'complete-websocket-rtapi', ['trnm-rtapi-service'], ['complete-opcode-binding', 'reconnect-failover', 'slow-consumer-load', 'official-sdk-differential']),
+              (144, 'runtime-language-profiles', ['trnm-runtime-core'], ['lua-differential', 'javascript-typescript-differential', 'wasm-rust-capability-proof', 'sandbox-security-review']),
+              (145, 'console-rbac-mfa-audit', ['trnm-console-core'], ['console-api-ui-differential', 'rbac-mfa-negative-matrix', 'dangerous-action-review', 'accessibility-large-data']),
+              (146, 'provider-wallet-iap-subscriptions', ['trnm-provider-value-core'], ['provider-sandboxes', 'signed-callback-fixtures', 'refund-renewal-reconciliation', 'independent-payments-security-review']),
+              (147, 'legacy-go-state-migration', ['trnm-migration-core'], ['snapshot-backfill-cdc', 'semantic-comparison', 'write-fence', 'rollback-export', 'go-disposition-evidence']),
+          ]
+          document = {
+              'schema': 'trillionnium.plan-v32-product-surface.v1',
+              'project_id': 'trillionnium-game',
+              'plan_version': 3,
+              'claim_rule': 'Source registration grants no compatibility, accepted-evidence, production, cutover or retirement credit.',
+              'surfaces': [
+                  {
+                      'issue': issue,
+                      'id': surface,
+                      'modules': modules,
+                      'status': 'source-candidate',
+                      'required_external_evidence': evidence,
+                      'accepted': False,
+                  }
+                  for issue, surface, modules, evidence in rows
+              ],
+              'summary': {
+                  'surface_count': len(rows),
+                  'source_candidate_count': len(rows),
+                  'accepted_count': 0,
+                  'all_external_evidence_complete': False,
+                  'complete_nakama_compatibility': False,
+                  'production_ready': False,
+                  'cutover_authorized': False,
+                  'nakama_retired': False,
+                  'all_gaps_closed': False,
+              },
+          }
+          output = Path('docs/status/PLAN_V32_PRODUCT_SURFACE.json')
+          output.write_text(json.dumps(document, indent=2) + '\n', encoding='utf-8')
+
+          authority_path = Path('docs/DOCUMENTATION_AUTHORITY.json')
+          authority = json.loads(authority_path.read_text())
+          controls = authority.setdefault('machine_control_documents', [])
+          relative = 'docs/status/PLAN_V32_PRODUCT_SURFACE.json'
+          if relative not in controls:
+              controls.append(relative)
+              controls.sort()
+          authority_path.write_text(json.dumps(authority, indent=2) + '\n', encoding='utf-8')
+          PY
+
+          cat > scripts/check-plan-v32-product-surface.py <<'PY'
+          #!/usr/bin/env python3
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          ROOT = Path(__file__).resolve().parents[1]
+          REGISTRY = ROOT / 'docs/status/PLAN_V32_PRODUCT_SURFACE.json'
+          MODULES = ROOT / 'docs/status/MODULE_DOCUMENTATION.json'
+          EXPECTED_ISSUES = {124, 125, 126, 127, 128, *range(137, 148)}
+
+
+          class SurfaceError(RuntimeError):
+              pass
+
+
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise SurfaceError(f'duplicate JSON key: {key}')
+                  result[key] = value
+              return result
+
+
+          def load(path: Path):
+              return json.loads(path.read_text(encoding='utf-8'), object_pairs_hook=unique_object)
+
+
+          def validate(root: Path = ROOT) -> None:
+              registry = load(root / REGISTRY.relative_to(ROOT))
+              if registry.get('schema') != 'trillionnium.plan-v32-product-surface.v1':
+                  raise SurfaceError('unexpected product surface schema')
+              rows = registry.get('surfaces')
+              if not isinstance(rows, list) or not rows:
+                  raise SurfaceError('product surface rows are required')
+              issues = {row.get('issue') for row in rows}
+              if issues != EXPECTED_ISSUES or len(rows) != len(EXPECTED_ISSUES):
+                  raise SurfaceError('product issue denominator changed')
+              module_registry = load(root / MODULES.relative_to(ROOT))
+              registered = {row.get('id') for row in module_registry.get('modules', [])}
+              for row in rows:
+                  issue = row.get('issue')
+                  modules = row.get('modules')
+                  evidence = row.get('required_external_evidence')
+                  if row.get('status') != 'source-candidate' or row.get('accepted') is not False:
+                      raise SurfaceError(f'issue {issue}: premature acceptance')
+                  if not isinstance(modules, list) or not modules or len(modules) != len(set(modules)):
+                      raise SurfaceError(f'issue {issue}: modules must be nonempty and unique')
+                  if not isinstance(evidence, list) or not evidence or len(evidence) != len(set(evidence)):
+                      raise SurfaceError(f'issue {issue}: external evidence is required')
+                  for module in modules:
+                      if module not in registered:
+                          raise SurfaceError(f'issue {issue}: unregistered module {module}')
+                      base = root / 'crates' / module
+                      if not (base / 'Cargo.toml').is_file() or not (base / 'README.md').is_file():
+                          raise SurfaceError(f'issue {issue}: missing module source/docs {module}')
+              summary = registry.get('summary') or {}
+              if summary.get('surface_count') != len(rows):
+                  raise SurfaceError('surface summary count is stale')
+              if summary.get('source_candidate_count') != len(rows) or summary.get('accepted_count') != 0:
+                  raise SurfaceError('surface claim summary is stale')
+              for key in (
+                  'all_external_evidence_complete', 'complete_nakama_compatibility',
+                  'production_ready', 'cutover_authorized', 'nakama_retired',
+                  'all_gaps_closed',
+              ):
+                  if summary.get(key) is not False:
+                      raise SurfaceError(f'premature product claim: {key}')
+
+
+          if __name__ == '__main__':
+              validate()
+              print('Plan v3.2 product surface registry passed')
+          PY
+          chmod +x scripts/check-plan-v32-product-surface.py
+
+          cat > tests/control_plane/test_plan_v32_product_surface.py <<'PY'
+          import importlib.util
+          import json
+          import tempfile
+          import unittest
+          from pathlib import Path
+
+          ROOT = Path(__file__).resolve().parents[2]
+          SCRIPT = ROOT / 'scripts/check-plan-v32-product-surface.py'
+          SPEC = importlib.util.spec_from_file_location('product_surface', SCRIPT)
+          assert SPEC and SPEC.loader
+          MODULE = importlib.util.module_from_spec(SPEC)
+          SPEC.loader.exec_module(MODULE)
+
+
+          class ProductSurfaceRegistryTests(unittest.TestCase):
+              def test_current_registry_passes(self):
+                  MODULE.validate()
+
+              def test_premature_acceptance_fails(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      root = Path(directory)
+                      for relative in (
+                          'docs/status/PLAN_V32_PRODUCT_SURFACE.json',
+                          'docs/status/MODULE_DOCUMENTATION.json',
+                      ):
+                          target = root / relative
+                          target.parent.mkdir(parents=True, exist_ok=True)
+                          target.write_bytes((ROOT / relative).read_bytes())
+                      registry = json.loads(
+                          (root / 'docs/status/PLAN_V32_PRODUCT_SURFACE.json').read_text()
+                      )
+                      registry['surfaces'][0]['accepted'] = True
+                      (root / 'docs/status/PLAN_V32_PRODUCT_SURFACE.json').write_text(
+                          json.dumps(registry)
+                      )
+                      with self.assertRaises(MODULE.SurfaceError):
+                          MODULE.validate(root)
+
+
+          if __name__ == '__main__':
+              unittest.main()
+          PY
+
+      - name: Qualify and publish registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          python3 scripts/check-plan-v32-product-surface.py
+          python3 -m unittest tests.control_plane.test_plan_v32_product_surface -v
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan.py
+          python3 -m unittest discover -s tests/control_plane -p 'test_plan_v32_product_*.py' -v
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/DOCUMENTATION_AUTHORITY.json docs/status/PLAN_V32_PRODUCT_SURFACE.json scripts/check-plan-v32-product-surface.py tests/control_plane/test_plan_v32_product_surface.py
+          git commit -m 'feat(control): register non-shrinkable Plan v3.2 product surfaces'
+          remote="$(git ls-remote origin "refs/heads/${FEATURE_BRANCH}" | awk '{print $1}')"
+          git push --force-with-lease="refs/heads/${FEATURE_BRANCH}:${remote}" origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Registered all 16 Plan v3.2 product/evidence surfaces as non-shrinkable source candidates. Every issue maps to real modules/docs and explicit external evidence; accepted/product/production/cutover/retirement flags remain false. Checks passed in carrier run `${GITHUB_RUN_ID}`; exact-head CI must requalify."
