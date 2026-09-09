@@ -1,0 +1,123 @@
+name: tmp-plan-v32-admission-controller
+
+on:
+  push:
+    branches:
+      - ops/plan-v32-admission-controller-20260909
+    paths:
+      - .github/workflows/tmp-plan-v32-admission-controller.yml
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: plan-v32-admission-controller
+  cancel-in-progress: false
+
+jobs:
+  admit-without-bypass:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      PR_NUMBER: '150'
+      EXPECTED_HEAD_BRANCH: integration/plan-v32-final-2026-09-09
+      EXPECTED_BASE_BRANCH: main
+      IMPLEMENTATION_AUTHOR: ProfHepta
+    steps:
+      - name: Poll exact-head checks and independent review
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 40); do
+            if ! payload="$(gh pr view "$PR_NUMBER" --repo "$REPOSITORY" \
+              --json state,mergedAt,headRefName,headRefOid,baseRefName,mergeable,reviewDecision,isDraft 2>/dev/null)"; then
+              gh issue comment 129 --repo "$REPOSITORY" --body \
+                '<!-- plan-v32-controller -->Plan v3.2 admission controller could not read PR #150. No merge or claim change was performed.'
+              exit 1
+            fi
+            state="$(jq -r '.state' <<<"$payload")"
+            if test "$state" = MERGED; then
+              echo 'PR already merged through a protected path.'
+              exit 0
+            fi
+            test "$(jq -r '.headRefName' <<<"$payload")" = "$EXPECTED_HEAD_BRANCH"
+            test "$(jq -r '.baseRefName' <<<"$payload")" = "$EXPECTED_BASE_BRANCH"
+            head="$(jq -r '.headRefOid' <<<"$payload")"
+            test "$head" != null
+            test "$head" != ''
+
+            temporary_present=false
+            for path in \
+              .github/workflows/tmp-plan-v32-finalize.yml \
+              .github/workflows/tmp-fix-plan-v32-main-binding.yml; do
+              if gh api -H 'Accept: application/vnd.github+json' \
+                "repos/${REPOSITORY}/contents/${path}?ref=${head}" >/dev/null 2>&1; then
+                temporary_present=true
+              fi
+            done
+
+            required_state=success
+            if ! gh pr checks "$PR_NUMBER" --repo "$REPOSITORY" --required >/tmp/required-checks.txt 2>&1; then
+              code=$?
+              if test "$code" -eq 8; then
+                required_state=pending
+              else
+                required_state=failed
+              fi
+            fi
+
+            reviews="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
+            independent_exact_approval="$(jq --arg head "$head" --arg author "$IMPLEMENTATION_AUTHOR" \
+              '[.[] | select(.state == "APPROVED" and .commit_id == $head and .user.login != $author)] | length' \
+              <<<"$reviews")"
+            review_decision="$(jq -r '.reviewDecision // ""' <<<"$payload")"
+            draft="$(jq -r '.isDraft' <<<"$payload")"
+            mergeable="$(jq -r '.mergeable' <<<"$payload")"
+
+            printf 'attempt=%s head=%s required=%s exact_independent_approvals=%s decision=%s draft=%s mergeable=%s temporary_present=%s\n' \
+              "$attempt" "$head" "$required_state" "$independent_exact_approval" "$review_decision" "$draft" "$mergeable" "$temporary_present"
+
+            if test "$required_state" = success \
+              && test "$independent_exact_approval" -gt 0 \
+              && test "$review_decision" = APPROVED \
+              && test "$draft" = false \
+              && test "$mergeable" = MERGEABLE \
+              && test "$temporary_present" = false; then
+              gh pr merge "$PR_NUMBER" --repo "$REPOSITORY" \
+                --squash \
+                --match-head-commit "$head" \
+                --subject 'architecture: admit Plan v3.2 canonical server convergence (#150)' \
+                --body 'Admit the exact main-rebound Plan v3.2 source candidate after all required checks and an exact-head independent approval. Compatibility, accepted evidence, production readiness, public-online, cutover, and Nakama retirement remain false until their separate gates are satisfied.'
+              echo "merged exact head ${head} without administrator bypass"
+              exit 0
+            fi
+            sleep 30
+          done
+
+          payload="$(gh pr view "$PR_NUMBER" --repo "$REPOSITORY" \
+            --json state,headRefOid,mergeable,reviewDecision,isDraft)"
+          head="$(jq -r '.headRefOid' <<<"$payload")"
+          checks='unavailable'
+          if gh pr checks "$PR_NUMBER" --repo "$REPOSITORY" --required >/tmp/required-checks.txt 2>&1; then
+            checks='success'
+          else
+            checks="$(tr '\n' ';' </tmp/required-checks.txt | head -c 3000)"
+          fi
+          reviews="$(gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
+          independent="$(jq --arg head "$head" --arg author "$IMPLEMENTATION_AUTHOR" \
+            '[.[] | select(.state == "APPROVED" and .commit_id == $head and .user.login != $author)] | length' \
+            <<<"$reviews")"
+          marker='<!-- plan-v32-controller-timeout -->'
+          body="${marker}\nProtected admission remains blocked after the bounded polling window.\n\n\`\`\`text\nhead=${head}\nrequired_checks=${checks}\nexact_independent_approvals=${independent}\nreview_decision=$(jq -r '.reviewDecision // ""' <<<"$payload")\nmergeable=$(jq -r '.mergeable' <<<"$payload")\ndraft=$(jq -r '.isDraft' <<<"$payload")\nadministrator_bypass=false\n\`\`\`"
+          existing="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
+            --jq '[.[] | select(.body | contains("<!-- plan-v32-controller-timeout -->"))] | length')"
+          if test "$existing" -eq 0; then
+            gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "$body"
+          fi
+          exit 1
