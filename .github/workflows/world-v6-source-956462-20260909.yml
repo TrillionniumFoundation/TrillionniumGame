@@ -1,0 +1,39 @@
+name: world-v6-source-956462-20260909
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    name: world-source-fetch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+      WORLD_BASE_SHA: 0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
+      WORLD_HEAD_SHA: 956462f95675d3d4db89af03bc4b7cc8c9a3c975
+      WORLD_HEAD_TREE: f428550e5cffcf0acb6c6461824290e828a875c7
+      WORLD_MERGE_SHA: 36884e1f410ae198edac9fc7692d50f130a91450
+    steps:
+      - name: Fetch and verify exact immutable World source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf world-source
+          git init world-source
+          git -C world-source remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C world-source fetch --no-tags origin \
+            "$WORLD_BASE_SHA" "$WORLD_HEAD_SHA" "$WORLD_MERGE_SHA"
+          git -C world-source checkout --detach "$WORLD_HEAD_SHA"
+          test "$(git -C world-source rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+          test "$(git -C world-source rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
+          test "$(git -C world-source rev-parse "$WORLD_MERGE_SHA^1")" = "$WORLD_BASE_SHA"
+          test "$(git -C world-source rev-parse "$WORLD_MERGE_SHA^2")" = "$WORLD_HEAD_SHA"
+          test "$(git -C world-source rev-parse "$WORLD_MERGE_SHA^{tree}")" = "$WORLD_HEAD_TREE"
+          test -z "$(git -C world-source status --porcelain=v1 --untracked-files=no)"
+          printf 'WORLD_SOURCE_FETCH=PASS\n'
+          printf 'production_authorization=not_granted\n'
