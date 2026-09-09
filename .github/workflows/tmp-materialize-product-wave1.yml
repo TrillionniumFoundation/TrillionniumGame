@@ -1,0 +1,430 @@
+name: tmp-materialize-product-wave1
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-materialize-product-wave1.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: integration/plan-v32-main-rebind-2026-09-09
+  BASE_SHA: d306a9385e154babc0173bfb214b5726a0f2942c
+  FEATURE_BRANCH: feature/plan-v32-product-wave1-20260909-v2
+
+jobs:
+  materialize-and-qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Fetch exact Plan v3.2 base
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$BASE_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$BASE_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$BASE_SHA"
+          git -C "$GITHUB_WORKSPACE" ls-tree -d --name-only HEAD crates/ > /tmp/base-crates.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Fetch exact source and repair carriers
+        shell: bash
+        run: |
+          set -euo pipefail
+          fetch_file() {
+            local branch="$1" path="$2" output="$3"
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "repos/${REPOSITORY}/contents/${path}?ref=${branch}" \
+              --jq '.content' | base64 --decode > "$output"
+            test -s "$output"
+          }
+          fetch_file ops/identity-core-source-20260909 \
+            .github/workflows/tmp-identity-core-source.yml /tmp/identity-source.yml
+          fetch_file ops/identity-core-repair-20260909 \
+            .github/workflows/tmp-identity-core-repair.yml /tmp/identity-repair.yml
+          fetch_file ops/identity-service-source-20260909 \
+            .github/workflows/tmp-identity-service-source.yml /tmp/identity-service-source.yml
+          fetch_file ops/identity-service-repair-20260909 \
+            .github/workflows/tmp-identity-service-repair.yml /tmp/identity-service-repair.yml
+          fetch_file ops/social-core-source-20260909 \
+            .github/workflows/tmp-social-core-source.yml /tmp/social-core-source.yml
+          fetch_file ops/social-core-repair-20260909 \
+            .github/workflows/tmp-social-core-repair.yml /tmp/social-core-repair.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Materialize product source from reviewed carriers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import re
+          import subprocess
+          import textwrap
+          from pathlib import Path
+
+          pairs = [
+              (Path('/tmp/identity-source.yml'), Path('/tmp/identity-repair.yml')),
+              (Path('/tmp/identity-service-source.yml'), Path('/tmp/identity-service-repair.yml')),
+              (Path('/tmp/social-core-source.yml'), Path('/tmp/social-core-repair.yml')),
+          ]
+
+          def python_blocks(path: Path) -> list[str]:
+              lines = path.read_text(encoding='utf-8').splitlines()
+              blocks: list[str] = []
+              index = 0
+              marker = re.compile(r"^\s*python3\s+-\s+<<'(?P<tag>[A-Za-z0-9_]+)'\s*$")
+              while index < len(lines):
+                  match = marker.match(lines[index])
+                  if match is None:
+                      index += 1
+                      continue
+                  tag = match.group('tag')
+                  index += 1
+                  body: list[str] = []
+                  while index < len(lines) and lines[index].strip() != tag:
+                      body.append(lines[index])
+                      index += 1
+                  if index >= len(lines):
+                      raise SystemExit(f'unclosed Python heredoc in {path}')
+                  blocks.append(textwrap.dedent('\n'.join(body)) + '\n')
+                  index += 1
+              return blocks
+
+          def direct_files(path: Path) -> int:
+              lines = path.read_text(encoding='utf-8').splitlines()
+              marker = re.compile(
+                  r"^(?P<indent>\s*)cat\s+>\s+(?P<path>crates/[A-Za-z0-9_./-]+)\s+<<'(?P<tag>[A-Za-z0-9_]+)'\s*$"
+              )
+              written = 0
+              index = 0
+              while index < len(lines):
+                  match = marker.match(lines[index])
+                  if match is None:
+                      index += 1
+                      continue
+                  target = Path(match.group('path'))
+                  tag = match.group('tag')
+                  index += 1
+                  body: list[str] = []
+                  while index < len(lines) and lines[index].strip() != tag:
+                      body.append(lines[index])
+                      index += 1
+                  if index >= len(lines):
+                      raise SystemExit(f'unclosed file heredoc for {target} in {path}')
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  target.write_text(textwrap.dedent('\n'.join(body)) + '\n', encoding='utf-8')
+                  written += 1
+                  index += 1
+              return written
+
+          # First materialize every direct product file from the original source carriers.
+          total = sum(direct_files(source) for source, _ in pairs)
+          if total < 9:
+              raise SystemExit(f'expected at least nine product files, materialized {total}')
+
+          # Then execute the bounded repair/materialization blocks. These blocks read the
+          # already fetched /tmp/*-source.yml files and update source plus machine registries.
+          executed = 0
+          for _source, repair in pairs:
+              for code in python_blocks(repair):
+                  selected = (
+                      ('/tmp/' in code and '-source.yml' in code)
+                      or (
+                          any(name in code for name in (
+                              'trnm-identity-core',
+                              'trnm-identity-service',
+                              'trnm-provider-identity',
+                              'trnm-social-core',
+                          ))
+                          and any(token in code for token in (
+                              'write_text(', '.replace(', 'subprocess.run(',
+                          ))
+                      )
+                  )
+                  if not selected:
+                      continue
+                  subprocess.run(['python3', '-c', code], check=True)
+                  executed += 1
+          if executed < 3:
+              raise SystemExit(f'expected at least three repair blocks, executed {executed}')
+
+          manifests = sorted(Path('crates').glob('trnm-*/Cargo.toml'))
+          names = []
+          for manifest in manifests:
+              text = manifest.read_text(encoding='utf-8')
+              match = re.search(r'^name\s*=\s*"([^"]+)"', text, re.M)
+              if match:
+                  names.append(match.group(1))
+          required = {'trnm-identity-core', 'trnm-social-core'}
+          if not required.issubset(names):
+              raise SystemExit(f'missing required product crates: names={names!r}')
+          identity_service = [name for name in names if 'identity' in name and name != 'trnm-identity-core']
+          if not identity_service:
+              raise SystemExit(f'identity service/provider crate not materialized: names={names!r}')
+          print('materialized product packages:', ', '.join(sorted(set(names) - {
+              'trnm-contracts','trnm-authority-core','trnm-session-core','trnm-storage-core',
+              'trnm-persistence-core','trnm-persistence-pg','trnm-canonical-core',
+              'trnm-transport-core','trnm-token-core','trnm-presence-core','trnm-query-core',
+              'trnm-token-jwt-adapter','trnm-token-jwt-adapter-gate',
+              'trnm-token-jwt-adapter-gate-v2','trnm-presence-router-v2','trnm-server',
+              'trnm-persistence-runtime-policy','trnm-realtime-wire',
+              'trnm-storage-nakama-version','trnm-token-crypto-provider',
+              'trnm-token-jwt-provider-adapter'
+          })))
+          PY
+
+      - name: Reconcile fail-closed package and status authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import re
+          from pathlib import Path
+
+          root_manifest = Path('Cargo.toml')
+          text = root_manifest.read_text(encoding='utf-8')
+          discovered = sorted(
+              path.parent.as_posix()
+              for path in Path('crates').glob('*/Cargo.toml')
+              if 'gate' not in path.parent.name
+          )
+          for member in discovered:
+              if f'"{member}"' not in text:
+                  anchor = ']\nexclude = ['
+                  if anchor not in text:
+                      raise SystemExit('root workspace member anchor missing')
+                  text = text.replace(anchor, f'  "{member}",\n{anchor}', 1)
+          root_manifest.write_text(text, encoding='utf-8')
+
+          module_path = Path('docs/status/MODULE_DOCUMENTATION.json')
+          module = json.loads(module_path.read_text(encoding='utf-8'))
+          rows = module['modules']
+          by_path = {row['path']: row for row in rows}
+          owner_map = {
+              'trnm-identity-core': ('identity', 'account and provider identity domain authority', 'product-library'),
+              'trnm-identity-service': ('identity', 'verified provider identity application-service boundary', 'product-service'),
+              'trnm-provider-identity': ('identity-security', 'provider assertion verification boundary', 'security-critical-adapter'),
+              'trnm-social-core': ('social', 'bounded users friends groups chat and notification domain authority', 'product-library'),
+          }
+          for manifest in sorted(Path('crates').glob('trnm-*/Cargo.toml')):
+              crate = manifest.parent.name
+              path = manifest.parent.as_posix()
+              if path in by_path:
+                  row = by_path[path]
+                  row['claim_credit'] = False
+                  continue
+              readme = manifest.parent / 'README.md'
+              if not readme.is_file():
+                  raise SystemExit(f'{crate}: README missing')
+              owner, authority, lifecycle = owner_map.get(
+                  crate,
+                  ('foundation-runtime', f'{crate} bounded source authority', 'product-library'),
+              )
+              rows.append({
+                  'id': crate,
+                  'path': path,
+                  'manifest': manifest.as_posix(),
+                  'documentation': readme.as_posix(),
+                  'workspace': 'root',
+                  'lifecycle': lifecycle,
+                  'maturity': 'source-candidate',
+                  'owner_role': owner,
+                  'authority': authority,
+                  'blocking_gaps': ['GAP-P0-SERVER-001', 'GAP-P0-SCOPE-001', 'GAP-P0-CI-001'],
+                  'claim_credit': False,
+              })
+          rows.sort(key=lambda row: row['id'])
+          root_count = sum(row['workspace'] == 'root' for row in rows)
+          isolated_count = sum(row['workspace'] == 'isolated' for row in rows)
+          module['summary'].update({
+              'module_count': len(rows),
+              'documented_count': len(rows),
+              'root_workspace_count': root_count,
+              'isolated_workspace_count': isolated_count,
+              'undocumented_count': 0,
+          })
+          module_path.write_text(json.dumps(module, indent=2) + '\n', encoding='utf-8')
+
+          authority_path = Path('docs/development/RUST_PACKAGE_AUTHORITY.json')
+          authority = json.loads(authority_path.read_text(encoding='utf-8'))
+          authority['workspace']['members'] = sorted(
+              row['path'] for row in rows if row['workspace'] == 'root'
+          )
+          boundary = authority.setdefault('claim_boundary', {})
+          boundary['package_inventory_source_checked'] = False
+          boundary['exact_head_compiled'] = False
+          boundary['server_runtime_verified'] = False
+          boundary['compatibility_credit'] = False
+          boundary['production_ready'] = False
+          authority_path.write_text(json.dumps(authority, indent=2) + '\n', encoding='utf-8')
+
+          inventory_path = Path('docs/status/IMPLEMENTATION_INVENTORY.json')
+          inventory = json.loads(inventory_path.read_text(encoding='utf-8'))
+          known_paths = {row.get('path') for row in inventory['components']}
+          for row in rows:
+              if row['path'] in known_paths or row['path'] not in {
+                  'crates/trnm-identity-core',
+                  'crates/trnm-identity-service',
+                  'crates/trnm-provider-identity',
+                  'crates/trnm-social-core',
+              }:
+                  continue
+              inventory['components'].append({
+                  'id': 'COMP-' + row['id'].removeprefix('trnm-').upper().replace('-', '-'),
+                  'path': row['path'],
+                  'kind': 'rust-library',
+                  'workstreams': ['W3'] if 'identity' in row['id'] else ['W5', 'W6'],
+                  'status': 'source-candidate',
+                  'implemented': [row['authority']],
+                  'missing': [
+                      'public HTTP and generated gRPC adapters',
+                      'profile-specific durable repository integration',
+                      'official SDK and immutable-oracle differential',
+                      'exact-head accepted evidence and independent review',
+                  ],
+                  'blocking_gaps': row['blocking_gaps'],
+                  'parity_ids': [],
+                  'evidence_ids': [],
+                  'claim_credit': False,
+              })
+          inventory_path.write_text(json.dumps(inventory, indent=2) + '\n', encoding='utf-8')
+
+          state_path = Path('docs/status/CURRENT_STATE.json')
+          state = json.loads(state_path.read_text(encoding='utf-8'))
+          impl = state.setdefault('implementation', {})
+          impl['identity_domain_source_candidate'] = True
+          impl['identity_provider_service_source_candidate'] = True
+          impl['social_domain_source_candidate'] = True
+          impl['complete_protocol_server'] = False
+          impl['complete_realtime_server'] = False
+          impl['complete_runtime_host'] = False
+          impl['complete_data_migration'] = False
+          impl['complete_console_provider_iap_surface'] = False
+          claims = state.setdefault('claims', {})
+          for key in ('wire_compatible','behavior_compatible','data_migration_compatible',
+                      'operationally_replaceable','supported_full_replacement','production_ready',
+                      'public_online','nakama_retired'):
+              claims[key] = False
+          state_path.write_text(json.dumps(state, indent=2) + '\n', encoding='utf-8')
+
+          # Remove unsound ExactSizeIterator promises from product-facing streaming accessors.
+          for source in Path('crates').glob('trnm-*/src/**/*.rs'):
+              current = source.read_text(encoding='utf-8')
+              if source.parts[1] in {'trnm-identity-core','trnm-identity-service','trnm-provider-identity','trnm-social-core'}:
+                  updated = re.sub(
+                      r'impl ExactSizeIterator<Item = ([^>]+)>',
+                      r'impl Iterator<Item = \1>',
+                      current,
+                  )
+                  if updated != current:
+                      source.write_text(updated, encoding='utf-8')
+          PY
+
+      - name: Format, compile and run complete repository qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo fmt --manifest-path crates/trnm-token-jwt-adapter-gate/Cargo.toml -- --check
+          cargo test --manifest-path crates/trnm-token-jwt-adapter-gate/Cargo.toml --all-targets --locked
+          cargo clippy --manifest-path crates/trnm-token-jwt-adapter-gate/Cargo.toml --all-targets --locked -- -D warnings
+          cargo fmt --manifest-path crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml -- --check
+          cargo test --manifest-path crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml --all-targets --locked
+          cargo clippy --manifest-path crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml --all-targets --locked -- -D warnings
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --check
+
+      - name: Commit product wave and open stacked pull request
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test ! -e .github/workflows/tmp-materialize-product-wave1.yml
+          test -d crates/trnm-identity-core
+          test -d crates/trnm-social-core
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
+          git commit -m 'feat(product): add bounded identity and social Wave 1 cores'
+          head_sha="$(git rev-parse HEAD)"
+          head_tree="$(git rev-parse HEAD^{tree})"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          body_file="$RUNNER_TEMP/product-wave1-pr.md"
+          cat > "$body_file" <<EOF
+          ## Scope
+
+          Repository-controlled Wave 1 implementation for #137 and #138, stacked on exact Plan v3.2 source candidate PR #150.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${BASE_SHA}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          This change adds bounded, transport-independent account/provider identity and social state/service boundaries, exact command receipts, revision fencing, atomic no-mutation rejection, explicit capacity limits, hostile tests, module/package/inventory registration and fail-closed claim state.
+
+          It does **not** claim complete #137/#138 coverage, wire compatibility, durable database integration, provider authenticity, official SDK/oracle differential, accepted evidence, production readiness, cutover or retirement.
+
+          Required next steps are exact-head and prospective-merge CI, independent identity/security/social/protocol review, PostgreSQL/CockroachDB adapters, public HTTP/gRPC/RTAPI integration and official consumer differential.
+
+          \`\`\`text
+          source_candidate=true
+          complete_identity_surface=false
+          complete_social_surface=false
+          accepted_evidence=false
+          production_ready=false
+          all_gaps_closed=false
+          \`\`\`
+          EOF
+          if gh pr view "$FEATURE_BRANCH" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            gh pr edit "$FEATURE_BRANCH" --repo "$REPOSITORY" \
+              --title '[Plan v3.2][Wave 1] Add bounded identity and social product cores' \
+              --body-file "$body_file" --add-reviewer Tomasrgbsf --add-reviewer Franksudoman
+          else
+            gh pr create --repo "$REPOSITORY" --draft \
+              --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" \
+              --title '[Plan v3.2][Wave 1] Add bounded identity and social product cores' \
+              --body-file "$body_file" \
+              --reviewer Tomasrgbsf --reviewer Franksudoman
+          fi
+          gh issue comment 137 --repo "$REPOSITORY" --body \
+            "Wave 1 source candidate published at ${FEATURE_BRANCH}@${head_sha}; exact-head CI and independent review remain required. No compatibility or production credit."
+          gh issue comment 138 --repo "$REPOSITORY" --body \
+            "Wave 1 source candidate published at ${FEATURE_BRANCH}@${head_sha}; exact-head CI and independent review remain required. No compatibility or production credit."
+        env:
+          GH_TOKEN: ${{ github.token }}
