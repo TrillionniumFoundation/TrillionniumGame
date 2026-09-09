@@ -1,0 +1,124 @@
+name: tmp-fix-migration-wave10
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-fix-migration-wave10.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-migration-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Wait for exact migration branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha=''
+          for _ in $(seq 1 720); do
+            head_sha="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$head_sha" && break
+            sleep 30
+          done
+          test -n "$head_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$head_sha"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$FEATURE_BRANCH" "$head_sha"
+
+      - name: Apply migration correctness repairs
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/trnm-migration-core/src/lib.rs')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              '    pub const fn semantically_equal(&self) -> bool {',
+              '    pub fn semantically_equal(&self) -> bool {',
+              1,
+          )
+          old = '''        updated.stage = previous;
+        updated.default_new_entity_writer = Writer::Nakama;
+        updated.rollback = RollbackState::Reversible;
+'''
+          new = '''        updated.stage = previous;
+        updated.default_new_entity_writer = match previous {
+            MigrationStage::NakamaPrimary | MigrationStage::RustShadowNoEffect => Writer::Nakama,
+            MigrationStage::RustCanaryNewEntities | MigrationStage::RustPrimaryNewEntities => Writer::Rust,
+            MigrationStage::NakamaReadOnly | MigrationStage::NakamaRetired => Writer::None,
+        };
+        updated.rollback = RollbackState::Reversible;
+'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('rollback writer repair anchor missing')
+          anchor = '''    #[test]
+    fn irreversible_stage_cannot_roll_back() {'''
+          if 'fn rollback_restores_the_target_stage_writer_policy()' not in text:
+              addition = '''    #[test]
+    fn rollback_restores_the_target_stage_writer_policy() {
+        let mut registry = registered();
+        let domain = registry.domains.get_mut(&DomainKind::Match).unwrap();
+        domain.stage = MigrationStage::NakamaReadOnly;
+        domain.rollback = RollbackState::ReverseDeltaComplete;
+        domain.reverse_delta_complete = true;
+        domain.revision = 2;
+        registry
+            .rollback(
+                command(2),
+                DomainKind::Match,
+                2,
+                MigrationStage::RustPrimaryNewEntities,
+            )
+            .unwrap();
+        let domain = registry.domain(DomainKind::Match).unwrap();
+        assert_eq!(domain.stage, MigrationStage::RustPrimaryNewEntities);
+        assert_eq!(domain.default_new_entity_writer, Writer::Rust);
+    }
+
+'''
+              if anchor not in text:
+                  raise SystemExit('rollback test anchor missing')
+              text = text.replace(anchor, addition + anchor, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+          if git diff --quiet; then echo 'changed=false' >> "$GITHUB_OUTPUT"; else echo 'changed=true' >> "$GITHUB_OUTPUT"; fi
+
+      - name: Qualify and publish migration repair
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo test --package trnm-migration-core --all-targets --locked
+          cargo clippy --package trnm-migration-core --all-targets --locked -- -D warnings
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-migration-core/src/lib.rs
+          git commit -m 'fix(migration): compare digests at runtime and restore writer policy'
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Repaired pinned-toolchain digest comparison and made rollback restore the writer policy of the target stage. Focused tests and strict Clippy passed in carrier run `${GITHUB_RUN_ID}`; exact-head checks must requalify the new source."
