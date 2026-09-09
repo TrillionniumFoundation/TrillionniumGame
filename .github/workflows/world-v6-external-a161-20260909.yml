@@ -1,4 +1,4 @@
-name: world-v6-external-7cb23b-20260909
+name: world-v6-external-956462-20260909
 
 on:
   pull_request:
@@ -8,17 +8,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-v6-external-7cb23b-20260909-${{ github.event.pull_request.number || github.ref }}
+  group: world-v6-external-956462-20260909-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_BASE_SHA: 0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
-  WORLD_HEAD_SHA: 7cb23bdc554d9c5718de1bff59cc89544d2762a2
-  WORLD_HEAD_TREE: 6f149dc7d8f9fc4a73f6d01b20ef3efe77796ee1
+  WORLD_HEAD_SHA: 956462f95675d3d4db89af03bc4b7cc8c9a3c975
+  WORLD_HEAD_TREE: f428550e5cffcf0acb6c6461824290e828a875c7
   WORLD_MERGE_REF: refs/pull/104/merge
-  WORLD_MERGE_SHA: ae861cc6c337de63ce140c790211c02916db015d
-  WORLD_MERGE_TREE: 6f149dc7d8f9fc4a73f6d01b20ef3efe77796ee1
+  WORLD_MERGE_SHA: 36884e1f410ae198edac9fc7692d50f130a91450
+  WORLD_MERGE_TREE: f428550e5cffcf0acb6c6461824290e828a875c7
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_INCREMENTAL: '0'
@@ -180,10 +180,21 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           cd "$RUNNER_TEMP/world-head"
+          set +e
           bash scripts/run-trnm-world-v6-qualification-v2.sh package 2>&1 \
             | tee "$RUNNER_TEMP/world-v6-evidence/logs/package-head.log"
+          scope_status=${PIPESTATUS[0]}
+          set -e
+          if test "$scope_status" -ne 0; then
+            printf '%s\n' 'PACKAGE_HEAD_WORKTREE_STATUS_BEGIN'
+            git status --porcelain=v1 --untracked-files=all
+            printf '%s\n' 'PACKAGE_HEAD_TRACKED_DIFF_NAMES_BEGIN'
+            git diff --name-status
+            printf '%s\n' 'PACKAGE_HEAD_WORKTREE_STATUS_END'
+          fi
+          test "$scope_status" -eq 0
           touch "$RUNNER_TEMP/world-v6-state/package_head.ok"
 
       - name: Qualify merge package
@@ -191,10 +202,21 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           cd "$RUNNER_TEMP/world-merge"
+          set +e
           bash scripts/run-trnm-world-v6-qualification-v2.sh package 2>&1 \
             | tee "$RUNNER_TEMP/world-v6-evidence/logs/package-merge.log"
+          scope_status=${PIPESTATUS[0]}
+          set -e
+          if test "$scope_status" -ne 0; then
+            printf '%s\n' 'PACKAGE_MERGE_WORKTREE_STATUS_BEGIN'
+            git status --porcelain=v1 --untracked-files=all
+            printf '%s\n' 'PACKAGE_MERGE_TRACKED_DIFF_NAMES_BEGIN'
+            git diff --name-status
+            printf '%s\n' 'PACKAGE_MERGE_WORKTREE_STATUS_END'
+          fi
+          test "$scope_status" -eq 0
           touch "$RUNNER_TEMP/world-v6-state/package_merge.ok"
 
       - name: Collect and hash tuple-bound evidence
