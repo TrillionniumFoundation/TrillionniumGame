@@ -1,0 +1,50 @@
+name: tmp-pr150-source-export
+
+on:
+  push:
+    branches:
+      - ops/pr150-source-export-20260909-a
+    paths:
+      - .github/workflows/tmp-pr150-source-export.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tmp-pr150-source-export
+  cancel-in-progress: false
+
+jobs:
+  export-exact-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Fetch exact immutable PR head
+        shell: bash
+        run: |
+          set -euo pipefail
+          target='d306a9385e154babc0173bfb214b5726a0f2942c'
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$target"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$target"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD^{tree})" = '7c06b974eb67201d0cd452a00db5e6143344bf62'
+      - name: Create bounded deterministic archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/trillionnium-game-pr150-d306a938.tar.gz"
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner --exclude=.git \
+            -cf - -C "$GITHUB_WORKSPACE" . | gzip -n > "$archive"
+          test -s "$archive"
+          test "$(stat -c %s "$archive")" -le 67108864
+          sha256sum "$archive"
+          printf 'SOURCE_ARCHIVE=%s\n' "$archive" >> "$GITHUB_ENV"
+      - name: Upload exact source archive
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: pr150-source-d306a938
+          path: ${{ env.SOURCE_ARCHIVE }}
+          mime_type: application/gzip
