@@ -1,0 +1,84 @@
+name: tmp-social-core-qualified-source-v5
+
+on:
+  push:
+    branches:
+      - feature/plan-v32-social-core-20260909
+    paths:
+      - .github/workflows/tmp-social-core-qualified-source-v5.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: tmp-social-core-qualified-source-v5
+  cancel-in-progress: false
+
+jobs:
+  execute-bound-pipeline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      FEATURE_BRANCH: feature/plan-v32-social-core-20260909
+      EXPECTED_BASE_SHA: 541016f34f2dbaf7c2be10cd45afdd04223c49f2
+      BASE_BRANCH: integration/plan-v32-main-rebind-2026-09-09
+      GENERATOR_REF: ops/social-core-source-20260909
+      V2_REF: cfe6e4831fcc88556194cadc167fe517025276a3
+      V3_REF: b2a62b190ecc1251ea444e1e7c327512de07a88a
+      V4_REF: 79fcfa45fbd0077989b964753768f463bbfbd9ea
+    steps:
+      - name: Extract immutable v4 execution steps
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${REPOSITORY}/contents/.github/workflows/tmp-social-core-qualified-source-v4.yml?ref=${V4_REF}" \
+            --jq .content | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/social-v4.yml"
+          ruby -ryaml -e '
+            document = YAML.safe_load(File.read(ARGV[0]), aliases: true)
+            steps = document.fetch("jobs").fetch("rebuild-qualify-and-publish").fetch("steps")
+            names = [
+              "Extract and repair reusable v3 steps",
+              "Prepare reusable scripts",
+              "Reset and reconstruct from exact parent",
+              "Prove atomic state commit",
+              "Validate package workspace and control plane",
+              "Publish clean source branch"
+            ]
+            names.each_with_index do |name, index|
+              step = steps.find { |entry| entry["name"] == name }
+              abort("missing v4 step: #{name}") unless step && step["run"]
+              File.write(ARGV[index + 1], step.fetch("run"))
+            end
+          ' "$RUNNER_TEMP/social-v4.yml" \
+            "$RUNNER_TEMP/v4-extract.sh" \
+            "$RUNNER_TEMP/v4-prepare.sh" \
+            "$RUNNER_TEMP/v4-reset.sh" \
+            "$RUNNER_TEMP/v4-prove.sh" \
+            "$RUNNER_TEMP/v4-validate.sh" \
+            "$RUNNER_TEMP/v4-publish.sh"
+      - name: Prepare reusable scripts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash "$RUNNER_TEMP/v4-extract.sh" && bash "$RUNNER_TEMP/v4-prepare.sh"
+      - name: Reconstruct source from exact parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash "$RUNNER_TEMP/v4-reset.sh"
+      - name: Prove atomic source semantics
+        shell: bash
+        run: bash "$RUNNER_TEMP/v4-prove.sh"
+      - name: Validate all source and control contracts
+        shell: bash
+        run: bash "$RUNNER_TEMP/v4-validate.sh"
+      - name: Publish clean source branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash "$RUNNER_TEMP/v4-publish.sh"
