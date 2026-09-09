@@ -2,14 +2,13 @@
 
 Status: **module documentation; source candidate; no compatibility, durability, SG4, production, public-online, cutover, or retirement credit**
 
-This document is the module-level authority for the isolated Rust server composition package.
+This document is the module-level authority for the root-workspace Rust server composition package.
 
 ## Status and authority
 
-`crates/trnm-server` contains a candidate composition root assembled from the repository's reviewed persistence, session/JWT, gRPC, and realtime-wire components.
-Its non-authoritative package-local binary is named `trnm-server`.
-The currently admitted canonical process remains `crates/trnm-persistence-pg/src/bin/trnm-server.rs` until a separate atomic authority-transfer change removes that duplicate entry point, updates every consumer, and receives exact-object review.
-This source candidate does not by itself establish compatibility, durability, release, deployment, or production authority.
+`crates/trnm-server` contains the repository's only default `trnm-server` composition authority source candidate, assembled from the persistence, session/JWT, gRPC, and realtime-wire components.
+`crates/trnm-persistence-pg/src/bin/trnm-server.rs` is retained only as the feature-gated `trnm-pg-compat-server` diagnostic harness and is not a second default or production authority.
+The authority transfer is complete at the source/package level, but this source candidate does not by itself establish compatibility, durability, release, deployment, or production authority.
 
 ```text
 compatibility_credit=false
@@ -34,7 +33,7 @@ It enforces explicit limits for listener workers, accepted connections, request/
 `runtime/server.rs` owns bounded listener admission and shared drain state.
 `runtime/http.rs`, `runtime/grpc.rs`, and `runtime/websocket.rs` own their protocol boundaries.
 `runtime/config.rs`, `runtime/pool.rs`, `runtime/retry.rs`, and `runtime/schema.rs` own validated configuration and database lifecycle policy.
-The isolated workspace pins every registry dependency, uses path dependencies for first-party crates, carries its own lockfile, and forbids unsafe code.
+The package is a member of the root workspace, uses the root lockfile, pins reviewed registry dependencies, uses path dependencies for first-party crates, and forbids unsafe code.
 
 The package consumes:
 
@@ -90,7 +89,7 @@ No production credential, deployment, traffic shift, canary, cutover, rollback-b
 
 ## Build and test
 
-- Use Rust 1.85.1 with the isolated `Cargo.lock`.
+- Use Rust 1.85.1 with the root workspace `Cargo.lock`.
 - Required source checks are `cargo fmt --check`, all-target tests and strict Clippy.
 - The bounded process smoke verifies configuration parsing, redaction and fail-closed startup without claiming live database ingress.
 - PostgreSQL and CockroachDB live lanes, protocol differentials and prospective-merge execution remain separate required evidence.
@@ -98,14 +97,13 @@ No production credential, deployment, traffic shift, canary, cutover, rollback-b
 ## Compatibility and evidence
 
 - These routes are not a complete Nakama API, gRPC gateway or RTAPI implementation.
-- Source equivalence to the persistence-owned process does not transfer canonical authority or prove deployed behavior.
+- Source-level canonical authority does not prove deployed behavior, compatibility, durability, or production acceptance.
 - Compatibility, database durability, SG4, production, public-online, cutover and retirement claims require retained exact-object evidence and conflict-free specialist review.
 - A green unit or smoke result alone cannot close `GAP-P0-SERVER-001`, `GAP-P0-DATA-001` or `GAP-P0-CRYPTO-001`.
 
 ## Known gaps and exit criteria
 
-The persistence-owned canonical `trnm-server` entry point still exists, so this PR is an extraction/convergence candidate rather than an authority transfer.
-A later atomic change must leave exactly one first-party process entry point and must update package authority, workflow coverage, contracts, deployment references, and retained evidence together.
+Exactly one default first-party `trnm-server` target now exists. The persistence package retains only the explicitly feature-gated `trnm-pg-compat-server` diagnostic target. A later retirement change may remove that harness only after its differential and migration use is replaced and the package authority, workflow coverage, contracts and retained evidence are updated together.
 Complete official protocol and SDK differential coverage remains open.
 Real KMS/HSM custody, provider/IAP, Console, multi-node routing, partition and node-loss recovery, HA, backup/PITR, capacity, rolling upgrade, and 24h/72h/7d endurance remain open.
 Migration snapshot, backfill, CDC, semantic comparison, write fencing, shadow, canary, rollback, cutover, and Nakama retirement remain open.

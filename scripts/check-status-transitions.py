@@ -703,12 +703,12 @@ def validate_inventory(
             require(evidence_ids <= accepted, f"{component_id}: claim credit evidence not accepted")
     server = components["COMP-TRNM-SERVER"]
     require(
-        server.get("status") == "http-websocket-source-candidate",
+        server.get("status") == "http-grpc-websocket-session-database-source-candidate",
         "server inventory stage",
     )
     require(server.get("claim_credit") is False, "server inventory must not claim credit")
     require(
-        (ROOT / "crates/trnm-persistence-pg/src/bin/trnm-server.rs").is_file(),
+        (ROOT / "crates/trnm-server/src/main.rs").is_file(),
         "server inventory source missing",
     )
     design = components["COMP-SCHEMA-DESIGN-V2"]
@@ -724,6 +724,7 @@ def validate_server_status(gaps: dict[str, dict[str, Any]]) -> None:
         in {
             "http-websocket-database-vertical-source-candidate",
             "http-websocket-session-database-vertical-source-candidate",
+            "canonical-http-grpc-websocket-session-database-source-candidate",
         },
         "server status stage",
     )

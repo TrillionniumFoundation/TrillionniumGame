@@ -2,7 +2,7 @@
   "schema": "trillionnium.module-documentation.v1",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "generated_at": "2026-09-02",
+  "generated_at": "2026-09-09",
   "claim_rule": "Module documentation proves a declared engineering boundary only. It grants no automatic compatibility, security, durability, operational or production credit.",
   "required_sections": [
     "## Status and authority",
@@ -272,10 +272,10 @@
       "manifest": "crates/trnm-server/Cargo.toml",
       "documentation": "crates/trnm-server/README.md",
       "workspace": "root",
-      "lifecycle": "server-foundation-prototype",
-      "maturity": "standalone-source-candidate",
+      "lifecycle": "canonical-server-composition-root",
+      "maturity": "canonical-composition-authority-source-candidate",
       "owner_role": "foundation-runtime",
-      "authority": "foundation process prototype; not the canonical production binary",
+      "authority": "only default first-party trnm-server composition authority source candidate",
       "blocking_gaps": [
         "GAP-P0-SERVER-001",
         "GAP-P1-PG-001",

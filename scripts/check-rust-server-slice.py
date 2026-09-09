@@ -98,7 +98,7 @@ def validate() -> dict[str, object]:
     gaps = status.get("not_implemented")
     require(isinstance(gaps, list), "not_implemented list required")
     for required_gap in (
-        "accepted exact-head authority-transfer evidence",
+        "accepted exact-head canonical-composition evidence for the current rebind",
         "complete Nakama HTTP gRPC gateway and RTAPI parity",
         "accepted PostgreSQL and CockroachDB durability and ambiguity evidence",
         "conflict-free database protocol security SRE and whole-candidate review",

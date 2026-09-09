@@ -433,7 +433,7 @@ def main() -> int:
     status = json.loads(
         (ROOT / "docs/status/TRNM_SERVER_STATUS.json").read_text(encoding="utf-8")
     )
-    if status.get("stage") != "http-websocket-session-database-vertical-source-candidate":
+    if status.get("stage") != "canonical-http-grpc-websocket-session-database-source-candidate":
         fail("unexpected server status stage")
     claims = status.get("claims", {})
     forbidden_positive_claims = [

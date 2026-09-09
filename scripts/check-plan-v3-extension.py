@@ -130,6 +130,15 @@ def validate() -> dict[str, Any]:
         "foundation server status",
     )
     require(server.get("claims", {}).get("source_exists") is True, "server source")
+    require(
+        server.get("claims", {}).get("canonical_binary_authority") is True,
+        "canonical server source authority",
+    )
+    require(
+        server.get("canonical_server_binary", {}).get("manifest")
+        == "crates/trnm-server/Cargo.toml",
+        "canonical server manifest",
+    )
     for key in (
         "remote_verified",
         "http_compatible",
@@ -157,8 +166,8 @@ def validate() -> dict[str, Any]:
     ).read_text(encoding="utf-8")
     for marker in (
         "name: trillionnium-game-merge-gate",
-        "scripts/check-gap-register.py",
-        "crates/trnm-server/Cargo.toml",
+        "scripts/check-status-transitions.py",
+        "scripts/check-single-server-authority.py",
         'test "$CONTROL_PLANE" = success',
     ):
         require(marker in workflow, f"aggregate workflow missing: {marker}")

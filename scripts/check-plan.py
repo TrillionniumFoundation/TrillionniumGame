@@ -480,6 +480,7 @@ def main() -> int:
         run_child("scripts/derive-gates.py")
         run_child("scripts/check-schema-authority.py")
         run_child("scripts/check-rust-package-inventory.py")
+        run_child("scripts/check-workspace-convergence.py")
     except ValidationError as exc:
         print(f"plan validation failed: {exc}", file=sys.stderr)
         return 1
