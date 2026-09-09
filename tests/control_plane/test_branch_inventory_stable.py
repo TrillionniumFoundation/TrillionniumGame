@@ -55,7 +55,10 @@ class StableBranchInventoryTests(unittest.TestCase):
                     self.module.BASE.VerificationError,
                     "captured branch moved",
                 ):
-                    self.module.compare_snapshot_to_live([self.main, self.candidate], [self.main, moved])
+                    self.module.compare_snapshot_to_live(
+                        [self.main, self.candidate],
+                        [self.main, moved],
+                    )
 
     def test_duplicate_names_are_rejected(self) -> None:
         duplicate = [self.main, ("main", "e" * 40, "f" * 40)]
@@ -73,12 +76,84 @@ class StableBranchInventoryTests(unittest.TestCase):
     def test_additions_are_bounded(self) -> None:
         live = list(self.captured)
         for index in range(self.module.MAX_CONCURRENT_ADDITIONS + 1):
-            live.append((f"codex/new-{index}", f"{index:040x}", f"{index + 1:040x}"))
+            live.append(
+                (f"codex/new-{index}", f"{index:040x}", f"{index + 1:040x}")
+            )
         with self.assertRaisesRegex(
             self.module.BASE.VerificationError,
             "additions exceeded verification bound",
         ):
             self.module.compare_snapshot_to_live(self.captured, live)
+
+    def test_current_attempt_producer_is_accepted(self) -> None:
+        head = "a" * 40
+        self.assertEqual(
+            self.module.retained_producer_attempt(
+                f"branch-inventory-{head}-123-2",
+                head_sha=head,
+                run_id="123",
+                verifier_run_attempt="2",
+                producer_job_attempt=2,
+            ),
+            "2",
+        )
+
+    def test_reused_prior_attempt_producer_is_accepted(self) -> None:
+        head = "b" * 40
+        self.assertEqual(
+            self.module.retained_producer_attempt(
+                f"branch-inventory-{head}-456-1",
+                head_sha=head,
+                run_id="456",
+                verifier_run_attempt="2",
+                producer_job_attempt=1,
+            ),
+            "1",
+        )
+
+    def test_newer_or_mismatched_producer_attempt_is_rejected(self) -> None:
+        head = "c" * 40
+        with self.assertRaisesRegex(
+            self.module.BASE.VerificationError,
+            "newer than verifier",
+        ):
+            self.module.retained_producer_attempt(
+                f"branch-inventory-{head}-789-3",
+                head_sha=head,
+                run_id="789",
+                verifier_run_attempt="2",
+            )
+        with self.assertRaisesRegex(
+            self.module.BASE.VerificationError,
+            "job/envelope attempt mismatch",
+        ):
+            self.module.retained_producer_attempt(
+                f"branch-inventory-{head}-789-1",
+                head_sha=head,
+                run_id="789",
+                verifier_run_attempt="2",
+                producer_job_attempt=2,
+            )
+
+    def test_wrong_run_head_or_noncanonical_attempt_is_rejected(self) -> None:
+        head = "d" * 40
+        for name in (
+            f"branch-inventory-{'e' * 40}-123-1",
+            f"branch-inventory-{head}-124-1",
+            f"branch-inventory-{head}-123-01",
+            f"branch-inventory-{head}-123-1-extra",
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    self.module.BASE.VerificationError,
+                    "envelope",
+                ):
+                    self.module.retained_producer_attempt(
+                        name,
+                        head_sha=head,
+                        run_id="123",
+                        verifier_run_attempt="2",
+                    )
 
 
 if __name__ == "__main__":

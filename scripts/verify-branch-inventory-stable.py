@@ -6,6 +6,12 @@ later must reject deletion or movement of every captured ref, but a newly added
 branch cannot invalidate the already retained snapshot. This wrapper preserves
 all validation in verify-branch-inventory-log.py and narrows the live comparison
 to that safety property.
+
+GitHub may re-run only the verifier job while reusing a successful producer from
+an earlier attempt of the same workflow run. The retained producer artifact is
+therefore bound to its own attempt, while the verifier remains bound to the
+current attempt. A producer from a later attempt, another run, another head, or
+a non-successful/non-exact producer job remains rejected.
 """
 from __future__ import annotations
 
@@ -35,6 +41,157 @@ def load_base() -> Any:
 BASE = load_base()
 ORIGINAL_REMOTE_REFS = BASE.remote_refs
 ORIGINAL_VALIDATE_INVENTORY = BASE.validate_inventory
+ORIGINAL_VERIFY = BASE.verify
+ORIGINAL_PARSE = BASE.EMITTER.parse
+ORIGINAL_VALIDATE_PRODUCER_JOB = BASE.validate_producer_job
+_VERIFY_CONTEXT: dict[str, Any] | None = None
+
+
+def retained_producer_attempt(
+    name: object,
+    *,
+    head_sha: str,
+    run_id: str,
+    verifier_run_attempt: str,
+    producer_job_attempt: object = None,
+) -> str:
+    """Validate and return the attempt bound into a retained producer name."""
+
+    prefix = f"branch-inventory-{head_sha}-{run_id}-"
+    BASE.require(
+        isinstance(name, str) and name.startswith(prefix),
+        "inventory envelope name mismatch",
+    )
+    attempt = name[len(prefix) :]
+    BASE.require(
+        BASE.RUN_ID.fullmatch(attempt) is not None,
+        "inventory envelope attempt is invalid",
+    )
+    BASE.require(
+        BASE.RUN_ID.fullmatch(verifier_run_attempt) is not None,
+        "verifier run attempt is invalid",
+    )
+    BASE.require(
+        int(attempt) <= int(verifier_run_attempt),
+        "inventory producer attempt is newer than verifier attempt",
+    )
+    if producer_job_attempt is not None:
+        BASE.require(
+            isinstance(producer_job_attempt, (int, str))
+            and not isinstance(producer_job_attempt, bool),
+            "inventory producer job attempt is invalid",
+        )
+        normalized = str(producer_job_attempt)
+        BASE.require(
+            BASE.RUN_ID.fullmatch(normalized) is not None,
+            "inventory producer job attempt is invalid",
+        )
+        BASE.require(
+            attempt == normalized,
+            "inventory producer job/envelope attempt mismatch",
+        )
+    return attempt
+
+
+def _context() -> dict[str, Any]:
+    BASE.require(_VERIFY_CONTEXT is not None, "inventory verifier context is absent")
+    return _VERIFY_CONTEXT
+
+
+def validate_attempt_scoped_producer(jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Retain the base producer checks and record its own attempt when present."""
+
+    job = ORIGINAL_VALIDATE_PRODUCER_JOB(jobs)
+    attempt = job.get("run_attempt")
+    if attempt is not None:
+        _context()["producer_job_attempt"] = attempt
+    return job
+
+
+def parse_attempt_scoped_artifact(text: str) -> tuple[bytes, dict[str, object]]:
+    """Parse an exact artifact and normalize only the base verifier comparison."""
+
+    archive, envelope = ORIGINAL_PARSE(text)
+    context = _context()
+    producer_attempt = retained_producer_attempt(
+        envelope.get("name"),
+        head_sha=context["head_sha"],
+        run_id=context["run_id"],
+        verifier_run_attempt=context["verifier_run_attempt"],
+        producer_job_attempt=context.get("producer_job_attempt"),
+    )
+    actual_name = envelope["name"]
+    BASE.require(isinstance(actual_name, str), "inventory envelope name mismatch")
+    context["producer_run_attempt"] = producer_attempt
+    context["archive_name"] = actual_name
+
+    # The base verifier historically compares the envelope with the verifier's
+    # attempt. Normalize only that one comparison after independently proving
+    # the producer's exact run/head/name/attempt relationship above.
+    normalized = dict(envelope)
+    normalized["name"] = (
+        f"branch-inventory-{context['head_sha']}-{context['run_id']}-"
+        f"{context['verifier_run_attempt']}"
+    )
+    return archive, normalized
+
+
+def verify(
+    *,
+    token: str,
+    repository: str,
+    head_sha: str,
+    run_id: str,
+    run_attempt: str,
+    output: Path,
+) -> dict[str, Any]:
+    """Run the base verifier with exact support for reused prior-attempt producers."""
+
+    global _VERIFY_CONTEXT
+    BASE.require(_VERIFY_CONTEXT is None, "nested inventory verification is forbidden")
+    context: dict[str, Any] = {
+        "head_sha": head_sha,
+        "run_id": run_id,
+        "verifier_run_attempt": run_attempt,
+    }
+    _VERIFY_CONTEXT = context
+    previous_parse = BASE.EMITTER.parse
+    previous_validate_producer = BASE.validate_producer_job
+    BASE.EMITTER.parse = parse_attempt_scoped_artifact
+    BASE.validate_producer_job = validate_attempt_scoped_producer
+    try:
+        summary = ORIGINAL_VERIFY(
+            token=token,
+            repository=repository,
+            head_sha=head_sha,
+            run_id=run_id,
+            run_attempt=run_attempt,
+            output=output,
+        )
+    finally:
+        BASE.EMITTER.parse = previous_parse
+        BASE.validate_producer_job = previous_validate_producer
+        _VERIFY_CONTEXT = None
+
+    producer_attempt = context.get("producer_run_attempt")
+    archive_name = context.get("archive_name")
+    BASE.require(
+        isinstance(producer_attempt, str)
+        and BASE.RUN_ID.fullmatch(producer_attempt) is not None,
+        "inventory producer attempt was not retained",
+    )
+    BASE.require(
+        isinstance(archive_name, str),
+        "inventory producer archive name was not retained",
+    )
+    summary["producer_run_attempt"] = producer_attempt
+    summary["archive_name"] = archive_name
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return summary
 
 
 def snapshot_refs(inventory_bytes: bytes) -> list[tuple[str, str, str]]:
@@ -139,6 +296,7 @@ def validate_inventory(
 
 def main() -> int:
     BASE.validate_inventory = validate_inventory
+    BASE.verify = verify
     return BASE.main()
 
 
