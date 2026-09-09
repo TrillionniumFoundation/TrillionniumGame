@@ -1,0 +1,1630 @@
+name: tmp-cutover-wave15
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-cutover-wave15.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-endurance-core-20260909
+  FEATURE_BRANCH: feature/plan-v32-cutover-controller-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-cutover-controller:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Wait for exact Wave 14 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 1080); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 20
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write fail-closed cutover controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-cutover-controller/src
+          cat > crates/trnm-cutover-controller/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-cutover-controller"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Fail-closed shadow canary rollback cutover and retirement controller"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-cutover-controller/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::collections::{BTreeMap, BTreeSet};
+
+          pub const MAX_PLANS: usize = 1024;
+          pub const MAX_COHORTS: usize = 65_536;
+          pub const MAX_ARTIFACTS: usize = 4096;
+          pub const MAX_WINDOWS: usize = 4096;
+          pub const MAX_REHEARSALS: usize = 4096;
+          pub const MAX_RECEIPTS: usize = 1_000_000;
+          pub const MAX_BASIS_POINTS: u32 = 10_000;
+
+          macro_rules! id16 {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(value: [u8; 16]) -> Result<Self, CutoverError> {
+                          if value.iter().all(|byte| *byte == 0) {
+                              Err(CutoverError::invalid($reason))
+                          } else {
+                              Ok(Self(value))
+                          }
+                      }
+                  }
+              };
+          }
+
+          id16!(PlanId, "plan_id_zero");
+          id16!(CohortId, "cohort_id_zero");
+          id16!(ArtifactId, "artifact_id_zero");
+          id16!(WindowId, "window_id_zero");
+          id16!(RehearsalId, "rehearsal_id_zero");
+          id16!(CommandId, "command_id_zero");
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Digest32([u8; 32]);
+
+          impl Digest32 {
+              pub fn new(value: [u8; 32]) -> Result<Self, CutoverError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      Err(CutoverError::invalid("digest_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct SubjectIdentity {
+              pub repository: Digest32,
+              pub commit: Digest32,
+              pub tree: Digest32,
+              pub schema: Digest32,
+              pub migration_plan: Digest32,
+              pub release_artifacts: Digest32,
+              pub environment: Digest32,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum CutoverStage {
+              Planned,
+              Shadow,
+              Canary,
+              RustPrimary,
+              NakamaReadOnly,
+              Retired,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum Writer {
+              Nakama,
+              Rust,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum EvidenceKind {
+              SourceQualified,
+              DenominatorSg1,
+              OracleSdk,
+              SecurityKms,
+              Migration,
+              PostgreSqlRecovery,
+              CockroachRecovery,
+              PostgreSqlEndurance,
+              CockroachEndurance,
+              Governance,
+              Product,
+              Operations,
+              Retirement,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct CutoverThresholds {
+              pub minimum_shadow_ms: u64,
+              pub minimum_canary_ms: u64,
+              pub minimum_primary_observation_ms: u64,
+              pub minimum_read_only_ms: u64,
+              pub maximum_error_basis_points: u32,
+              pub maximum_replication_lag_ms: u64,
+              pub maximum_reconciliation_backlog: u64,
+              pub maximum_rollback_ms: u64,
+          }
+
+          impl CutoverThresholds {
+              pub fn validate(self) -> Result<Self, CutoverError> {
+                  if self.minimum_shadow_ms == 0
+                      || self.minimum_canary_ms == 0
+                      || self.minimum_primary_observation_ms == 0
+                      || self.minimum_read_only_ms == 0
+                      || self.maximum_error_basis_points > MAX_BASIS_POINTS
+                      || self.maximum_replication_lag_ms == 0
+                      || self.maximum_reconciliation_backlog == 0
+                      || self.maximum_rollback_ms == 0
+                  {
+                      Err(CutoverError::invalid("cutover_thresholds_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+
+              #[must_use]
+              pub const fn minimum_window_ms(self, stage: CutoverStage) -> u64 {
+                  match stage {
+                      CutoverStage::Planned | CutoverStage::Retired => 0,
+                      CutoverStage::Shadow => self.minimum_shadow_ms,
+                      CutoverStage::Canary => self.minimum_canary_ms,
+                      CutoverStage::RustPrimary => self.minimum_primary_observation_ms,
+                      CutoverStage::NakamaReadOnly => self.minimum_read_only_ms,
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct CutoverPlan {
+              pub id: PlanId,
+              pub subject: SubjectIdentity,
+              pub thresholds: CutoverThresholds,
+              pub cohort_key_digest: Digest32,
+              pub required_evidence: BTreeSet<EvidenceKind>,
+          }
+
+          impl CutoverPlan {
+              pub fn validate(mut self) -> Result<Self, CutoverError> {
+                  self.thresholds = self.thresholds.validate()?;
+                  let required = BTreeSet::from([
+                      EvidenceKind::SourceQualified,
+                      EvidenceKind::DenominatorSg1,
+                      EvidenceKind::OracleSdk,
+                      EvidenceKind::SecurityKms,
+                      EvidenceKind::Migration,
+                      EvidenceKind::PostgreSqlRecovery,
+                      EvidenceKind::CockroachRecovery,
+                      EvidenceKind::PostgreSqlEndurance,
+                      EvidenceKind::CockroachEndurance,
+                      EvidenceKind::Governance,
+                      EvidenceKind::Product,
+                      EvidenceKind::Operations,
+                      EvidenceKind::Retirement,
+                  ]);
+                  if self.required_evidence != required {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::FailedPrecondition,
+                          "complete_cutover_evidence_set_required",
+                          false,
+                      ));
+                  }
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct AcceptedArtifact {
+              pub id: ArtifactId,
+              pub plan: PlanId,
+              pub subject_digest: Digest32,
+              pub kind: EvidenceKind,
+              pub evidence_digest: Digest32,
+              pub reviewer_digest: Digest32,
+              pub accepted_at_ms: u64,
+              pub independent: bool,
+              pub self_review: bool,
+          }
+
+          impl AcceptedArtifact {
+              pub fn validate(
+                  self,
+                  plan: &CutoverPlan,
+                  subject_digest: Digest32,
+              ) -> Result<Self, CutoverError> {
+                  if self.plan != plan.id
+                      || self.subject_digest != subject_digest
+                      || self.accepted_at_ms == 0
+                      || !self.independent
+                      || self.self_review
+                      || !plan.required_evidence.contains(&self.kind)
+                  {
+                      Err(CutoverError::new(
+                          StableCutoverCode::FailedPrecondition,
+                          "cutover_artifact_not_acceptable",
+                          false,
+                      ))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum DivergenceClass {
+              Identity,
+              Authorization,
+              Money,
+              RevisionGenerationSequence,
+              Version,
+              Cursor,
+              PublicError,
+              DurableEffect,
+              DataLoss,
+              DuplicateWriter,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum CorrectnessInvariant {
+              AcknowledgedCommandLoss,
+              DuplicateVisibleValue,
+              StaleAuthorityAcceptedWrite,
+              PartialCommit,
+              UnreconciledOutbox,
+              UnreconciledProviderValue,
+              SecurityBoundaryViolation,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ObservationWindow {
+              pub id: WindowId,
+              pub plan: PlanId,
+              pub subject_digest: Digest32,
+              pub stage: CutoverStage,
+              pub started_at_ms: u64,
+              pub completed_at_ms: u64,
+              pub observed_requests: u64,
+              pub shadow_external_effects: u64,
+              pub error_basis_points: u32,
+              pub replication_lag_ms: u64,
+              pub reconciliation_backlog: u64,
+              pub divergences: BTreeMap<DivergenceClass, u64>,
+              pub invariant_violations: BTreeMap<CorrectnessInvariant, u64>,
+              pub artifact_digest: Digest32,
+          }
+
+          impl ObservationWindow {
+              pub fn validate(
+                  self,
+                  plan: &CutoverPlan,
+                  subject_digest: Digest32,
+              ) -> Result<Self, CutoverError> {
+                  if self.plan != plan.id
+                      || self.subject_digest != subject_digest
+                      || matches!(self.stage, CutoverStage::Planned | CutoverStage::Retired)
+                      || self.started_at_ms == 0
+                      || self.completed_at_ms <= self.started_at_ms
+                      || self.observed_requests == 0
+                      || self.error_basis_points > plan.thresholds.maximum_error_basis_points
+                      || self.replication_lag_ms > plan.thresholds.maximum_replication_lag_ms
+                      || self.reconciliation_backlog
+                          > plan.thresholds.maximum_reconciliation_backlog
+                      || self.divergences.values().any(|count| *count != 0)
+                      || self
+                          .invariant_violations
+                          .values()
+                          .any(|count| *count != 0)
+                  {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::FailedPrecondition,
+                          "cutover_window_invalid",
+                          false,
+                      ));
+                  }
+                  let elapsed = self
+                      .completed_at_ms
+                      .checked_sub(self.started_at_ms)
+                      .ok_or_else(|| CutoverError::invalid("cutover_window_time_invalid"))?;
+                  if elapsed < plan.thresholds.minimum_window_ms(self.stage) {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::FailedPrecondition,
+                          "cutover_window_too_short",
+                          false,
+                      ));
+                  }
+                  if self.stage == CutoverStage::Shadow && self.shadow_external_effects != 0 {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::FailedPrecondition,
+                          "shadow_external_effect_forbidden",
+                          false,
+                      ));
+                  }
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct RollbackRehearsal {
+              pub id: RehearsalId,
+              pub plan: PlanId,
+              pub subject_digest: Digest32,
+              pub from_stage: CutoverStage,
+              pub to_stage: CutoverStage,
+              pub started_at_ms: u64,
+              pub completed_at_ms: u64,
+              pub reverse_delta_required: bool,
+              pub reverse_delta_complete: bool,
+              pub source_digest: Digest32,
+              pub restored_digest: Digest32,
+              pub source_authorities_after: u64,
+              pub rust_authorities_after: u64,
+              pub artifact_digest: Digest32,
+          }
+
+          impl RollbackRehearsal {
+              pub fn validate(
+                  self,
+                  plan: &CutoverPlan,
+                  subject_digest: Digest32,
+              ) -> Result<Self, CutoverError> {
+                  if self.plan != plan.id
+                      || self.subject_digest != subject_digest
+                      || self.started_at_ms == 0
+                      || self.completed_at_ms <= self.started_at_ms
+                      || self.source_digest != self.restored_digest
+                      || self.source_authorities_after == 0
+                      || self.rust_authorities_after != 0
+                      || (self.reverse_delta_required && !self.reverse_delta_complete)
+                      || !valid_rollback_pair(self.from_stage, self.to_stage)
+                  {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::FailedPrecondition,
+                          "rollback_rehearsal_invalid",
+                          false,
+                      ));
+                  }
+                  let elapsed = self
+                      .completed_at_ms
+                      .checked_sub(self.started_at_ms)
+                      .ok_or_else(|| CutoverError::invalid("rollback_time_invalid"))?;
+                  if elapsed > plan.thresholds.maximum_rollback_ms {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::FailedPrecondition,
+                          "rollback_rehearsal_too_slow",
+                          false,
+                      ));
+                  }
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct RetirementFacts {
+              pub final_delta_complete: bool,
+              pub final_backup_complete: bool,
+              pub legacy_go_state_disposed: bool,
+              pub nakama_keys_revoked: bool,
+              pub no_new_nakama_traffic: bool,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct PlanState {
+              pub plan: CutoverPlan,
+              pub stage: CutoverStage,
+              pub revision: u64,
+              pub cohort_writers: BTreeMap<CohortId, Writer>,
+              pub nakama_write_authorities: u64,
+              pub rust_write_authorities: u64,
+              pub artifacts: BTreeMap<EvidenceKind, AcceptedArtifact>,
+              pub windows: BTreeMap<CutoverStage, ObservationWindow>,
+              pub rehearsals: BTreeMap<(CutoverStage, CutoverStage), RollbackRehearsal>,
+              pub retirement: RetirementFacts,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct CommandIdentity {
+              pub command: CommandId,
+              pub fingerprint: Digest32,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub enum MutationResult {
+              Plan(PlanState),
+              Artifact(AcceptedArtifact),
+              Window(ObservationWindow),
+              Rehearsal(RollbackRehearsal),
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct CutoverReceipt {
+              pub command: CommandId,
+              pub result: MutationResult,
+              pub duplicate: bool,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          struct StoredReceipt {
+              fingerprint: Digest32,
+              receipt: CutoverReceipt,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct Limits {
+              pub plans: usize,
+              pub cohorts: usize,
+              pub artifacts: usize,
+              pub windows: usize,
+              pub rehearsals: usize,
+              pub receipts: usize,
+          }
+
+          impl Limits {
+              pub fn validate(self) -> Result<Self, CutoverError> {
+                  if self.plans == 0
+                      || self.plans > MAX_PLANS
+                      || self.cohorts == 0
+                      || self.cohorts > MAX_COHORTS
+                      || self.artifacts == 0
+                      || self.artifacts > MAX_ARTIFACTS
+                      || self.windows == 0
+                      || self.windows > MAX_WINDOWS
+                      || self.rehearsals == 0
+                      || self.rehearsals > MAX_REHEARSALS
+                      || self.receipts == 0
+                      || self.receipts > MAX_RECEIPTS
+                  {
+                      Err(CutoverError::invalid("cutover_limits_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableCutoverCode {
+              InvalidArgument,
+              NotFound,
+              AlreadyExists,
+              FailedPrecondition,
+              Aborted,
+              OutOfRange,
+              ResourceExhausted,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct CutoverError {
+              code: StableCutoverCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl CutoverError {
+              #[must_use]
+              pub const fn new(
+                  code: StableCutoverCode,
+                  reason: &'static str,
+                  retryable: bool,
+              ) -> Self {
+                  Self { code, reason, retryable }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableCutoverCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableCutoverCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct CutoverRegistry {
+              plans: BTreeMap<PlanId, PlanState>,
+              artifact_ids: BTreeSet<ArtifactId>,
+              window_ids: BTreeSet<WindowId>,
+              rehearsal_ids: BTreeSet<RehearsalId>,
+              receipts: BTreeMap<CommandId, StoredReceipt>,
+              limits: Limits,
+          }
+
+          impl CutoverRegistry {
+              pub fn new(limits: Limits) -> Result<Self, CutoverError> {
+                  Ok(Self {
+                      plans: BTreeMap::new(),
+                      artifact_ids: BTreeSet::new(),
+                      window_ids: BTreeSet::new(),
+                      rehearsal_ids: BTreeSet::new(),
+                      receipts: BTreeMap::new(),
+                      limits: limits.validate()?,
+                  })
+              }
+
+              pub fn register_plan(
+                  &mut self,
+                  identity: CommandIdentity,
+                  plan: CutoverPlan,
+              ) -> Result<CutoverReceipt, CutoverError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let plan = plan.validate()?;
+                  if self.plans.contains_key(&plan.id) {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::AlreadyExists,
+                          "cutover_plan_exists",
+                          false,
+                      ));
+                  }
+                  if self.plans.len() >= self.limits.plans {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::ResourceExhausted,
+                          "cutover_plan_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let state = PlanState {
+                      plan: plan.clone(),
+                      stage: CutoverStage::Planned,
+                      revision: 1,
+                      cohort_writers: BTreeMap::new(),
+                      nakama_write_authorities: 0,
+                      rust_write_authorities: 0,
+                      artifacts: BTreeMap::new(),
+                      windows: BTreeMap::new(),
+                      rehearsals: BTreeMap::new(),
+                      retirement: RetirementFacts {
+                          final_delta_complete: false,
+                          final_backup_complete: false,
+                          legacy_go_state_disposed: false,
+                          nakama_keys_revoked: false,
+                          no_new_nakama_traffic: false,
+                      },
+                  };
+                  self.commit(identity, MutationResult::Plan(state.clone()), |candidate| {
+                      candidate.plans.insert(plan.id, state);
+                      Ok(())
+                  })
+              }
+
+              pub fn record_artifact(
+                  &mut self,
+                  identity: CommandIdentity,
+                  plan_id: PlanId,
+                  expected_revision: u64,
+                  subject_digest: Digest32,
+                  artifact: AcceptedArtifact,
+              ) -> Result<CutoverReceipt, CutoverError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  if self.artifact_ids.contains(&artifact.id) {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::AlreadyExists,
+                          "cutover_artifact_id_exists",
+                          false,
+                      ));
+                  }
+                  if self.artifact_ids.len() >= self.limits.artifacts {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::ResourceExhausted,
+                          "cutover_artifact_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let current = self.for_update(plan_id, expected_revision)?;
+                  let artifact = artifact.validate(&current.plan, subject_digest)?;
+                  if current.artifacts.contains_key(&artifact.kind) {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::AlreadyExists,
+                          "cutover_artifact_kind_exists",
+                          false,
+                      ));
+                  }
+                  self.commit(identity, MutationResult::Artifact(artifact), |candidate| {
+                      candidate.artifact_ids.insert(artifact.id);
+                      let state = candidate.plans.get_mut(&plan_id).expect("plan checked above");
+                      state.artifacts.insert(artifact.kind, artifact);
+                      state.revision = next_revision(state.revision)?;
+                      Ok(())
+                  })
+              }
+
+              pub fn assign_cohort(
+                  &mut self,
+                  identity: CommandIdentity,
+                  plan_id: PlanId,
+                  expected_revision: u64,
+                  cohort: CohortId,
+                  writer: Writer,
+              ) -> Result<CutoverReceipt, CutoverError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let current = self.for_update(plan_id, expected_revision)?;
+                  if current.cohort_writers.len() >= self.limits.cohorts
+                      && !current.cohort_writers.contains_key(&cohort)
+                  {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::ResourceExhausted,
+                          "cutover_cohort_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  writer_allowed(current.stage, writer)?;
+                  let mut updated = current.clone();
+                  updated.cohort_writers.insert(cohort, writer);
+                  updated.revision = next_revision(updated.revision)?;
+                  self.commit(identity, MutationResult::Plan(updated.clone()), |candidate| {
+                      candidate.plans.insert(plan_id, updated);
+                      Ok(())
+                  })
+              }
+
+              pub fn set_authorities(
+                  &mut self,
+                  identity: CommandIdentity,
+                  plan_id: PlanId,
+                  expected_revision: u64,
+                  nakama: u64,
+                  rust: u64,
+              ) -> Result<CutoverReceipt, CutoverError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let current = self.for_update(plan_id, expected_revision)?;
+                  authority_counts_allowed(current.stage, nakama, rust)?;
+                  let mut updated = current.clone();
+                  updated.nakama_write_authorities = nakama;
+                  updated.rust_write_authorities = rust;
+                  updated.revision = next_revision(updated.revision)?;
+                  self.commit(identity, MutationResult::Plan(updated.clone()), |candidate| {
+                      candidate.plans.insert(plan_id, updated);
+                      Ok(())
+                  })
+              }
+
+              pub fn record_window(
+                  &mut self,
+                  identity: CommandIdentity,
+                  plan_id: PlanId,
+                  expected_revision: u64,
+                  subject_digest: Digest32,
+                  window: ObservationWindow,
+              ) -> Result<CutoverReceipt, CutoverError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  if self.window_ids.contains(&window.id) {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::AlreadyExists,
+                          "cutover_window_id_exists",
+                          false,
+                      ));
+                  }
+                  if self.window_ids.len() >= self.limits.windows {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::ResourceExhausted,
+                          "cutover_window_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let current = self.for_update(plan_id, expected_revision)?;
+                  if window.stage != current.stage {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::Aborted,
+                          "cutover_window_stage_mismatch",
+                          false,
+                      ));
+                  }
+                  let window = window.validate(&current.plan, subject_digest)?;
+                  if current.windows.contains_key(&window.stage) {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::AlreadyExists,
+                          "cutover_stage_window_exists",
+                          false,
+                      ));
+                  }
+                  self.commit(identity, MutationResult::Window(window.clone()), |candidate| {
+                      candidate.window_ids.insert(window.id);
+                      let state = candidate.plans.get_mut(&plan_id).expect("plan checked above");
+                      state.windows.insert(window.stage, window);
+                      state.revision = next_revision(state.revision)?;
+                      Ok(())
+                  })
+              }
+
+              pub fn record_rehearsal(
+                  &mut self,
+                  identity: CommandIdentity,
+                  plan_id: PlanId,
+                  expected_revision: u64,
+                  subject_digest: Digest32,
+                  rehearsal: RollbackRehearsal,
+              ) -> Result<CutoverReceipt, CutoverError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  if self.rehearsal_ids.contains(&rehearsal.id) {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::AlreadyExists,
+                          "rollback_rehearsal_id_exists",
+                          false,
+                      ));
+                  }
+                  if self.rehearsal_ids.len() >= self.limits.rehearsals {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::ResourceExhausted,
+                          "rollback_rehearsal_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let current = self.for_update(plan_id, expected_revision)?;
+                  let rehearsal = rehearsal.validate(&current.plan, subject_digest)?;
+                  let key = (rehearsal.from_stage, rehearsal.to_stage);
+                  if current.rehearsals.contains_key(&key) {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::AlreadyExists,
+                          "rollback_rehearsal_pair_exists",
+                          false,
+                      ));
+                  }
+                  self.commit(identity, MutationResult::Rehearsal(rehearsal.clone()), |candidate| {
+                      candidate.rehearsal_ids.insert(rehearsal.id);
+                      let state = candidate.plans.get_mut(&plan_id).expect("plan checked above");
+                      state.rehearsals.insert(key, rehearsal);
+                      state.revision = next_revision(state.revision)?;
+                      Ok(())
+                  })
+              }
+
+              pub fn set_retirement_facts(
+                  &mut self,
+                  identity: CommandIdentity,
+                  plan_id: PlanId,
+                  expected_revision: u64,
+                  facts: RetirementFacts,
+              ) -> Result<CutoverReceipt, CutoverError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let current = self.for_update(plan_id, expected_revision)?;
+                  if !matches!(current.stage, CutoverStage::RustPrimary | CutoverStage::NakamaReadOnly) {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::FailedPrecondition,
+                          "retirement_facts_wrong_stage",
+                          false,
+                      ));
+                  }
+                  let mut updated = current.clone();
+                  updated.retirement = facts;
+                  updated.revision = next_revision(updated.revision)?;
+                  self.commit(identity, MutationResult::Plan(updated.clone()), |candidate| {
+                      candidate.plans.insert(plan_id, updated);
+                      Ok(())
+                  })
+              }
+
+              pub fn transition(
+                  &mut self,
+                  identity: CommandIdentity,
+                  plan_id: PlanId,
+                  expected_revision: u64,
+                  next: CutoverStage,
+              ) -> Result<CutoverReceipt, CutoverError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let current = self.for_update(plan_id, expected_revision)?;
+                  validate_transition(current, next)?;
+                  let mut updated = current.clone();
+                  updated.stage = next;
+                  updated.revision = next_revision(updated.revision)?;
+                  self.commit(identity, MutationResult::Plan(updated.clone()), |candidate| {
+                      candidate.plans.insert(plan_id, updated);
+                      Ok(())
+                  })
+              }
+
+              pub fn rollback(
+                  &mut self,
+                  identity: CommandIdentity,
+                  plan_id: PlanId,
+                  expected_revision: u64,
+                  previous: CutoverStage,
+              ) -> Result<CutoverReceipt, CutoverError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let current = self.for_update(plan_id, expected_revision)?;
+                  if current.stage == CutoverStage::Retired
+                      || !current.rehearsals.contains_key(&(current.stage, previous))
+                      || !valid_rollback_pair(current.stage, previous)
+                  {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::FailedPrecondition,
+                          "cutover_rollback_not_rehearsed",
+                          false,
+                      ));
+                  }
+                  if matches!(current.stage, CutoverStage::RustPrimary | CutoverStage::NakamaReadOnly)
+                      && !current.retirement.final_delta_complete
+                  {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::FailedPrecondition,
+                          "cutover_reverse_delta_incomplete",
+                          false,
+                      ));
+                  }
+                  let mut updated = current.clone();
+                  updated.stage = previous;
+                  updated.nakama_write_authorities = 1;
+                  updated.rust_write_authorities = 0;
+                  for writer in updated.cohort_writers.values_mut() {
+                      *writer = Writer::Nakama;
+                  }
+                  updated.revision = next_revision(updated.revision)?;
+                  self.commit(identity, MutationResult::Plan(updated.clone()), |candidate| {
+                      candidate.plans.insert(plan_id, updated);
+                      Ok(())
+                  })
+              }
+
+              fn for_update(
+                  &self,
+                  plan_id: PlanId,
+                  expected_revision: u64,
+              ) -> Result<&PlanState, CutoverError> {
+                  let state = self.plans.get(&plan_id).ok_or_else(|| {
+                      CutoverError::new(
+                          StableCutoverCode::NotFound,
+                          "cutover_plan_not_found",
+                          false,
+                      )
+                  })?;
+                  if state.revision != expected_revision {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::Aborted,
+                          "cutover_revision_mismatch",
+                          true,
+                      ));
+                  }
+                  Ok(state)
+              }
+
+              fn replay(
+                  &self,
+                  identity: CommandIdentity,
+              ) -> Result<Option<CutoverReceipt>, CutoverError> {
+                  let Some(stored) = self.receipts.get(&identity.command) else {
+                      return Ok(None);
+                  };
+                  if stored.fingerprint != identity.fingerprint {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::AlreadyExists,
+                          "cutover_command_fingerprint_conflict",
+                          false,
+                      ));
+                  }
+                  let mut receipt = stored.receipt.clone();
+                  receipt.duplicate = true;
+                  Ok(Some(receipt))
+              }
+
+              fn commit<F>(
+                  &mut self,
+                  identity: CommandIdentity,
+                  result: MutationResult,
+                  apply: F,
+              ) -> Result<CutoverReceipt, CutoverError>
+              where
+                  F: FnOnce(&mut Self) -> Result<(), CutoverError>,
+              {
+                  if self.receipts.len() >= self.limits.receipts {
+                      return Err(CutoverError::new(
+                          StableCutoverCode::ResourceExhausted,
+                          "cutover_receipt_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let receipt = CutoverReceipt {
+                      command: identity.command,
+                      result,
+                      duplicate: false,
+                  };
+                  let mut candidate = self.clone();
+                  apply(&mut candidate)?;
+                  candidate.receipts.insert(
+                      identity.command,
+                      StoredReceipt {
+                          fingerprint: identity.fingerprint,
+                          receipt: receipt.clone(),
+                      },
+                  );
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              #[must_use]
+              pub fn state(&self, plan_id: PlanId) -> Option<&PlanState> {
+                  self.plans.get(&plan_id)
+              }
+          }
+
+          fn subject_digest(subject: &SubjectIdentity) -> Digest32 {
+              subject.tree
+          }
+
+          fn has_artifacts(state: &PlanState, kinds: &[EvidenceKind]) -> bool {
+              kinds.iter().all(|kind| state.artifacts.contains_key(kind))
+          }
+
+          fn clean_window(state: &PlanState, stage: CutoverStage) -> bool {
+              state.windows.contains_key(&stage)
+          }
+
+          fn rehearsal(state: &PlanState, from: CutoverStage, to: CutoverStage) -> bool {
+              state.rehearsals.contains_key(&(from, to))
+          }
+
+          fn all_cohorts(state: &PlanState, writer: Writer) -> bool {
+              !state.cohort_writers.is_empty()
+                  && state.cohort_writers.values().all(|current| *current == writer)
+          }
+
+          fn validate_transition(state: &PlanState, next: CutoverStage) -> Result<(), CutoverError> {
+              let valid = match (state.stage, next) {
+                  (CutoverStage::Planned, CutoverStage::Shadow) => {
+                      has_artifacts(
+                          state,
+                          &[
+                              EvidenceKind::SourceQualified,
+                              EvidenceKind::DenominatorSg1,
+                              EvidenceKind::OracleSdk,
+                              EvidenceKind::SecurityKms,
+                              EvidenceKind::Governance,
+                          ],
+                      ) && state.rust_write_authorities == 0
+                          && state
+                              .cohort_writers
+                              .values()
+                              .all(|writer| *writer == Writer::Nakama)
+                  }
+                  (CutoverStage::Shadow, CutoverStage::Canary) => {
+                      clean_window(state, CutoverStage::Shadow)
+                          && rehearsal(state, CutoverStage::Shadow, CutoverStage::Planned)
+                          && has_artifacts(state, &[EvidenceKind::Migration])
+                  }
+                  (CutoverStage::Canary, CutoverStage::RustPrimary) => {
+                      clean_window(state, CutoverStage::Canary)
+                          && rehearsal(state, CutoverStage::Canary, CutoverStage::Shadow)
+                          && has_artifacts(
+                              state,
+                              &[
+                                  EvidenceKind::PostgreSqlRecovery,
+                                  EvidenceKind::CockroachRecovery,
+                                  EvidenceKind::PostgreSqlEndurance,
+                                  EvidenceKind::CockroachEndurance,
+                                  EvidenceKind::Product,
+                                  EvidenceKind::Operations,
+                              ],
+                          )
+                          && state
+                              .cohort_writers
+                              .values()
+                              .any(|writer| *writer == Writer::Rust)
+                          && state.nakama_write_authorities == 0
+                          && state.rust_write_authorities > 0
+                  }
+                  (CutoverStage::RustPrimary, CutoverStage::NakamaReadOnly) => {
+                      clean_window(state, CutoverStage::RustPrimary)
+                          && rehearsal(state, CutoverStage::RustPrimary, CutoverStage::Canary)
+                          && all_cohorts(state, Writer::Rust)
+                          && state.nakama_write_authorities == 0
+                          && state.rust_write_authorities > 0
+                          && state.retirement.final_delta_complete
+                  }
+                  (CutoverStage::NakamaReadOnly, CutoverStage::Retired) => {
+                      clean_window(state, CutoverStage::NakamaReadOnly)
+                          && all_cohorts(state, Writer::Rust)
+                          && state.nakama_write_authorities == 0
+                          && state.rust_write_authorities > 0
+                          && state.retirement.final_delta_complete
+                          && state.retirement.final_backup_complete
+                          && state.retirement.legacy_go_state_disposed
+                          && state.retirement.nakama_keys_revoked
+                          && state.retirement.no_new_nakama_traffic
+                          && has_artifacts(state, &[EvidenceKind::Retirement])
+                  }
+                  _ => false,
+              };
+              if valid {
+                  Ok(())
+              } else {
+                  Err(CutoverError::new(
+                      StableCutoverCode::FailedPrecondition,
+                      "cutover_transition_preconditions_not_met",
+                      false,
+                  ))
+              }
+          }
+
+          fn writer_allowed(stage: CutoverStage, writer: Writer) -> Result<(), CutoverError> {
+              let allowed = match stage {
+                  CutoverStage::Planned | CutoverStage::Shadow => writer == Writer::Nakama,
+                  CutoverStage::Canary => true,
+                  CutoverStage::RustPrimary
+                  | CutoverStage::NakamaReadOnly
+                  | CutoverStage::Retired => writer == Writer::Rust,
+              };
+              if allowed {
+                  Ok(())
+              } else {
+                  Err(CutoverError::new(
+                      StableCutoverCode::FailedPrecondition,
+                      "writer_not_allowed_for_cutover_stage",
+                      false,
+                  ))
+              }
+          }
+
+          fn authority_counts_allowed(
+              stage: CutoverStage,
+              nakama: u64,
+              rust: u64,
+          ) -> Result<(), CutoverError> {
+              let allowed = match stage {
+                  CutoverStage::Planned | CutoverStage::Shadow => nakama > 0 && rust == 0,
+                  CutoverStage::Canary => nakama > 0 && rust > 0,
+                  CutoverStage::RustPrimary
+                  | CutoverStage::NakamaReadOnly
+                  | CutoverStage::Retired => nakama == 0 && rust > 0,
+              };
+              if allowed {
+                  Ok(())
+              } else {
+                  Err(CutoverError::new(
+                      StableCutoverCode::FailedPrecondition,
+                      "authority_counts_not_allowed_for_stage",
+                      false,
+                  ))
+              }
+          }
+
+          fn valid_rollback_pair(from: CutoverStage, to: CutoverStage) -> bool {
+              matches!(
+                  (from, to),
+                  (CutoverStage::Shadow, CutoverStage::Planned)
+                      | (CutoverStage::Canary, CutoverStage::Shadow)
+                      | (CutoverStage::RustPrimary, CutoverStage::Canary)
+                      | (CutoverStage::NakamaReadOnly, CutoverStage::RustPrimary)
+              )
+          }
+
+          fn next_revision(current: u64) -> Result<u64, CutoverError> {
+              current.checked_add(1).ok_or_else(|| {
+                  CutoverError::new(
+                      StableCutoverCode::OutOfRange,
+                      "cutover_revision_overflow",
+                      false,
+                  )
+              })
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn id<T>(byte: u8, constructor: fn([u8; 16]) -> Result<T, CutoverError>) -> T {
+                  constructor([byte; 16]).unwrap()
+              }
+
+              fn digest(byte: u8) -> Digest32 {
+                  Digest32::new([byte; 32]).unwrap()
+              }
+
+              fn subject() -> SubjectIdentity {
+                  SubjectIdentity {
+                      repository: digest(1),
+                      commit: digest(2),
+                      tree: digest(3),
+                      schema: digest(4),
+                      migration_plan: digest(5),
+                      release_artifacts: digest(6),
+                      environment: digest(7),
+                  }
+              }
+
+              fn required_evidence() -> BTreeSet<EvidenceKind> {
+                  BTreeSet::from([
+                      EvidenceKind::SourceQualified,
+                      EvidenceKind::DenominatorSg1,
+                      EvidenceKind::OracleSdk,
+                      EvidenceKind::SecurityKms,
+                      EvidenceKind::Migration,
+                      EvidenceKind::PostgreSqlRecovery,
+                      EvidenceKind::CockroachRecovery,
+                      EvidenceKind::PostgreSqlEndurance,
+                      EvidenceKind::CockroachEndurance,
+                      EvidenceKind::Governance,
+                      EvidenceKind::Product,
+                      EvidenceKind::Operations,
+                      EvidenceKind::Retirement,
+                  ])
+              }
+
+              fn plan() -> CutoverPlan {
+                  CutoverPlan {
+                      id: id(1, PlanId::new),
+                      subject: subject(),
+                      thresholds: CutoverThresholds {
+                          minimum_shadow_ms: 10,
+                          minimum_canary_ms: 10,
+                          minimum_primary_observation_ms: 10,
+                          minimum_read_only_ms: 10,
+                          maximum_error_basis_points: 10,
+                          maximum_replication_lag_ms: 10,
+                          maximum_reconciliation_backlog: 10,
+                          maximum_rollback_ms: 20,
+                      },
+                      cohort_key_digest: digest(8),
+                      required_evidence: required_evidence(),
+                  }
+              }
+
+              fn command(byte: u8) -> CommandIdentity {
+                  CommandIdentity {
+                      command: id(byte, CommandId::new),
+                      fingerprint: digest(byte),
+                  }
+              }
+
+              fn registry() -> CutoverRegistry {
+                  let mut registry = CutoverRegistry::new(Limits {
+                      plans: 4,
+                      cohorts: 16,
+                      artifacts: 64,
+                      windows: 16,
+                      rehearsals: 16,
+                      receipts: 128,
+                  })
+                  .unwrap();
+                  registry.register_plan(command(1), plan()).unwrap();
+                  registry
+              }
+
+              fn artifact(byte: u8, kind: EvidenceKind) -> AcceptedArtifact {
+                  AcceptedArtifact {
+                      id: id(byte, ArtifactId::new),
+                      plan: id(1, PlanId::new),
+                      subject_digest: digest(3),
+                      kind,
+                      evidence_digest: digest(byte + 20),
+                      reviewer_digest: digest(byte + 30),
+                      accepted_at_ms: 10,
+                      independent: true,
+                      self_review: false,
+                  }
+              }
+
+              #[test]
+              fn self_review_and_wrong_subject_artifacts_are_rejected() {
+                  let mut registry = registry();
+                  let mut self_review = artifact(2, EvidenceKind::SourceQualified);
+                  self_review.self_review = true;
+                  assert_eq!(
+                      registry
+                          .record_artifact(command(2), plan().id, 1, digest(3), self_review)
+                          .unwrap_err()
+                          .reason(),
+                      "cutover_artifact_not_acceptable"
+                  );
+                  let wrong = artifact(3, EvidenceKind::SourceQualified);
+                  assert_eq!(
+                      registry
+                          .record_artifact(command(3), plan().id, 1, digest(9), wrong)
+                          .unwrap_err()
+                          .reason(),
+                      "cutover_artifact_not_acceptable"
+                  );
+              }
+
+              #[test]
+              fn shadow_cannot_start_from_source_presence_alone() {
+                  let mut registry = registry();
+                  assert_eq!(
+                      registry
+                          .transition(command(2), plan().id, 1, CutoverStage::Shadow)
+                          .unwrap_err()
+                          .reason(),
+                      "cutover_transition_preconditions_not_met"
+                  );
+                  assert_eq!(
+                      registry.state(plan().id).unwrap().stage,
+                      CutoverStage::Planned
+                  );
+              }
+
+              #[test]
+              fn shadow_observation_rejects_external_effects() {
+                  let window = ObservationWindow {
+                      id: id(2, WindowId::new),
+                      plan: plan().id,
+                      subject_digest: digest(3),
+                      stage: CutoverStage::Shadow,
+                      started_at_ms: 1,
+                      completed_at_ms: 20,
+                      observed_requests: 100,
+                      shadow_external_effects: 1,
+                      error_basis_points: 0,
+                      replication_lag_ms: 1,
+                      reconciliation_backlog: 1,
+                      divergences: BTreeMap::new(),
+                      invariant_violations: BTreeMap::new(),
+                      artifact_digest: digest(40),
+                  };
+                  assert_eq!(
+                      window
+                          .validate(&plan(), subject_digest(&subject()))
+                          .unwrap_err()
+                          .reason(),
+                      "shadow_external_effect_forbidden"
+                  );
+              }
+
+              #[test]
+              fn one_cohort_has_exactly_one_current_writer() {
+                  let mut registry = registry();
+                  let cohort = id(2, CohortId::new);
+                  registry
+                      .assign_cohort(command(2), plan().id, 1, cohort, Writer::Nakama)
+                      .unwrap();
+                  assert_eq!(
+                      registry
+                          .assign_cohort(command(3), plan().id, 2, cohort, Writer::Rust)
+                          .unwrap_err()
+                          .reason(),
+                      "writer_not_allowed_for_cutover_stage"
+                  );
+                  assert_eq!(
+                      registry.state(plan().id).unwrap().cohort_writers[&cohort],
+                      Writer::Nakama
+                  );
+              }
+
+              #[test]
+              fn rust_primary_requires_zero_nakama_and_positive_rust_authority() {
+                  let mut registry = registry();
+                  let state = registry.plans.get_mut(&plan().id).unwrap();
+                  state.stage = CutoverStage::Canary;
+                  state.revision = 2;
+                  state.cohort_writers.insert(id(2, CohortId::new), Writer::Rust);
+                  state.windows.insert(
+                      CutoverStage::Canary,
+                      ObservationWindow {
+                          id: id(3, WindowId::new),
+                          plan: plan().id,
+                          subject_digest: digest(3),
+                          stage: CutoverStage::Canary,
+                          started_at_ms: 1,
+                          completed_at_ms: 20,
+                          observed_requests: 100,
+                          shadow_external_effects: 0,
+                          error_basis_points: 0,
+                          replication_lag_ms: 1,
+                          reconciliation_backlog: 1,
+                          divergences: BTreeMap::new(),
+                          invariant_violations: BTreeMap::new(),
+                          artifact_digest: digest(40),
+                      },
+                  );
+                  state.rehearsals.insert(
+                      (CutoverStage::Canary, CutoverStage::Shadow),
+                      RollbackRehearsal {
+                          id: id(4, RehearsalId::new),
+                          plan: plan().id,
+                          subject_digest: digest(3),
+                          from_stage: CutoverStage::Canary,
+                          to_stage: CutoverStage::Shadow,
+                          started_at_ms: 1,
+                          completed_at_ms: 10,
+                          reverse_delta_required: false,
+                          reverse_delta_complete: false,
+                          source_digest: digest(50),
+                          restored_digest: digest(50),
+                          source_authorities_after: 1,
+                          rust_authorities_after: 0,
+                          artifact_digest: digest(51),
+                      },
+                  );
+                  for kind in [
+                      EvidenceKind::PostgreSqlRecovery,
+                      EvidenceKind::CockroachRecovery,
+                      EvidenceKind::PostgreSqlEndurance,
+                      EvidenceKind::CockroachEndurance,
+                      EvidenceKind::Product,
+                      EvidenceKind::Operations,
+                  ] {
+                      state.artifacts.insert(kind, artifact(kind as u8 + 10, kind));
+                  }
+                  state.nakama_write_authorities = 1;
+                  state.rust_write_authorities = 1;
+                  assert_eq!(
+                      registry
+                          .transition(command(20), plan().id, 2, CutoverStage::RustPrimary)
+                          .unwrap_err()
+                          .reason(),
+                      "cutover_transition_preconditions_not_met"
+                  );
+              }
+
+              #[test]
+              fn retirement_requires_live_rust_and_every_retirement_fact() {
+                  let mut registry = registry();
+                  let state = registry.plans.get_mut(&plan().id).unwrap();
+                  state.stage = CutoverStage::NakamaReadOnly;
+                  state.revision = 2;
+                  state.cohort_writers.insert(id(2, CohortId::new), Writer::Rust);
+                  state.nakama_write_authorities = 0;
+                  state.rust_write_authorities = 1;
+                  state.windows.insert(
+                      CutoverStage::NakamaReadOnly,
+                      ObservationWindow {
+                          id: id(3, WindowId::new),
+                          plan: plan().id,
+                          subject_digest: digest(3),
+                          stage: CutoverStage::NakamaReadOnly,
+                          started_at_ms: 1,
+                          completed_at_ms: 20,
+                          observed_requests: 100,
+                          shadow_external_effects: 0,
+                          error_basis_points: 0,
+                          replication_lag_ms: 1,
+                          reconciliation_backlog: 1,
+                          divergences: BTreeMap::new(),
+                          invariant_violations: BTreeMap::new(),
+                          artifact_digest: digest(40),
+                      },
+                  );
+                  state.artifacts.insert(
+                      EvidenceKind::Retirement,
+                      artifact(20, EvidenceKind::Retirement),
+                  );
+                  state.retirement = RetirementFacts {
+                      final_delta_complete: true,
+                      final_backup_complete: true,
+                      legacy_go_state_disposed: true,
+                      nakama_keys_revoked: true,
+                      no_new_nakama_traffic: false,
+                  };
+                  assert_eq!(
+                      registry
+                          .transition(command(21), plan().id, 2, CutoverStage::Retired)
+                          .unwrap_err()
+                          .reason(),
+                      "cutover_transition_preconditions_not_met"
+                  );
+                  assert_eq!(registry.state(plan().id).unwrap().rust_write_authorities, 1);
+              }
+
+              #[test]
+              fn exact_command_replay_does_not_repeat_mutation() {
+                  let mut registry = registry();
+                  let identity = command(2);
+                  let first = registry
+                      .assign_cohort(
+                          identity,
+                          plan().id,
+                          1,
+                          id(2, CohortId::new),
+                          Writer::Nakama,
+                      )
+                      .unwrap();
+                  let replay = registry
+                      .assign_cohort(
+                          identity,
+                          plan().id,
+                          1,
+                          id(2, CohortId::new),
+                          Writer::Nakama,
+                      )
+                      .unwrap();
+                  assert!(!first.duplicate);
+                  assert!(replay.duplicate);
+                  assert_eq!(registry.state(plan().id).unwrap().revision, 2);
+              }
+          }
+          EOF
+
+          cat > crates/trnm-cutover-controller/README.md <<'EOF'
+          # trnm-cutover-controller
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-cutover-controller`  
+          Workspace class: `root`  
+          Lifecycle: `cutover-control`  
+          Owner role: `program-sre`
+
+          ## Status and authority
+
+          This document is the engineering contract for fail-closed shadow, canary, Rust-primary, Nakama-read-only, rollback and retirement control state. It is a source candidate and does not route traffic, change authority, deploy, cut over or retire Nakama.
+
+          ## Responsibilities
+
+          The crate owns exact plan/subject identity, complete evidence-kind requirements, cohort writer ownership, stage-specific authority counts, clean observation windows, rollback rehearsals, final migration/backup/legacy/key/traffic facts, exact receipts and irreversible retirement state.
+
+          It does not authenticate evidence, operate infrastructure, mutate database ownership, revoke real keys, route users or supply human decisions.
+
+          ## Architecture and dependencies
+
+          Compatibility, migration, KMS, recovery, endurance, governance, product and operations systems produce independently accepted artifacts bound to the same subject. A deployment adapter executes the controller's approved intent under a separate authorization and then reports observed facts.
+
+          Every cohort has one current writer. Shadow performs no external effects. Canary may split exclusive cohorts between Nakama and Rust; Rust-primary and later stages require zero Nakama write authority and positive Rust authority.
+
+          ## Public contracts
+
+          The only forward sequence is Planned → Shadow → Canary → RustPrimary → NakamaReadOnly → Retired. Every observation window has a minimum duration, zero contractual divergences/invariant violations and bounded errors, lag and reconciliation backlog.
+
+          Rollback must be rehearsed for the exact stage pair, restore semantic equality inside the rollback objective and return write authority to Nakama. Rust-primary/read-only rollback additionally requires a completed reverse delta.
+
+          ## Correctness and failure model
+
+          Missing artifact, self-review, wrong subject, stale revision, duplicate identity, wrong writer/authority shape, short/dirty window, absent rehearsal, incomplete final delta/backup/legacy/key/traffic fact or receipt capacity failure changes no state.
+
+          Retirement requires all cohorts on Rust, zero Nakama write authority, positive Rust authority, a clean read-only observation and accepted retirement evidence. Retired state cannot roll back.
+
+          ## Security and privacy
+
+          Evidence and reviewer digests are structural inputs only. The evidence layer must authenticate independent acceptance and exact source/artifact provenance. No production credential, token, key or user payload belongs in this state.
+
+          Deployment and key-revoke adapters require least privilege, dual approval, audit and incident rollback boundaries.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-cutover-controller --all-targets --locked
+          cargo clippy --package trnm-cutover-controller --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover self-review/subject rejection, no source-only shadow, shadow no-effect, one-writer cohorts, Rust-primary authority requirements, retirement facts and exact receipt replay.
+
+          ## Operations
+
+          Adapters expose stage, cohort writers, authority counts, observation duration/results, rollback readiness, artifact coverage and abort reason with bounded labels. Cohort/user identities and raw evidence are not labels.
+
+          ## Compatibility and evidence
+
+          Complete #128 requires real authenticated artifacts from #124–#127, protected governance, live shadow/canary cohorts, traffic and write fencing, rollback rehearsals, final backups/audits, key rotation, legacy disposition and independent cutover/retirement decisions.
+
+          This controller cannot establish C5, production readiness, cutover authorization or Nakama retirement by itself.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P0-GOV-001`, `GAP-P0-EVIDENCE-001`, `GAP-P0-DATA-001`, `GAP-P0-SERVER-001`, `GAP-P0-CRYPTO-001`, `GAP-P0-SCOPE-001`, `GAP-P0-CI-001`, `GAP-P1-BRANCH-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires authenticated upstream evidence, real deployment adapters, successful shadow/canary/rollback/read-only windows, final authority/data/security audit and conflict-free program/SRE acceptance.
+          EOF
+
+      - name: Register cutover controller fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          member='crates/trnm-cutover-controller'
+          p=Path('Cargo.toml'); t=p.read_text();
+          if f'"{member}"' not in t: p.write_text(t.replace(']\nexclude = [',f'  "{member}",\n]\nexclude = [',1))
+          mp=Path('docs/status/MODULE_DOCUMENTATION.json'); m=json.loads(mp.read_text())
+          if not any(r['id']=='trnm-cutover-controller' for r in m['modules']):
+              m['modules'].append({'id':'trnm-cutover-controller','path':member,'manifest':f'{member}/Cargo.toml','documentation':f'{member}/README.md','workspace':'root','lifecycle':'cutover-control','maturity':'source-candidate','owner_role':'program-sre','authority':'fail-closed shadow canary rollback cutover and retirement state','blocking_gaps':['GAP-P0-GOV-001','GAP-P0-EVIDENCE-001','GAP-P0-DATA-001','GAP-P0-SERVER-001','GAP-P0-CRYPTO-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-BRANCH-001','GAP-P1-REVIEW-001'],'claim_credit':False})
+          m['modules'].sort(key=lambda r:r['id']); m['summary'].update({'module_count':len(m['modules']),'documented_count':len(m['modules']),'root_workspace_count':sum(r['workspace']=='root' for r in m['modules']),'isolated_workspace_count':sum(r['workspace']=='isolated' for r in m['modules']),'undocumented_count':0}); mp.write_text(json.dumps(m,indent=2)+'\n')
+          ap=Path('docs/development/RUST_PACKAGE_AUTHORITY.json'); a=json.loads(ap.read_text());
+          if member not in a['workspace']['members']: a['workspace']['members'].append(member); a['workspace']['members'].sort()
+          for k in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'): a.setdefault('claim_boundary',{})[k]=False
+          ap.write_text(json.dumps(a,indent=2)+'\n')
+          ip=Path('docs/status/IMPLEMENTATION_INVENTORY.json'); inv=json.loads(ip.read_text())
+          if not any(r.get('id')=='COMP-CUTOVER-CONTROLLER' for r in inv['components']):
+              inv['components'].append({'id':'COMP-CUTOVER-CONTROLLER','path':member,'kind':'rust-cutover-control','workstreams':['W14','W16'],'status':'source-candidate','implemented':['complete evidence-kind and exact-subject gate','one-writer cohort and stage authority control','shadow canary observation rollback and retirement preconditions'],'missing':['authenticated accepted artifacts and protected governance','real traffic deployment key and authority adapters','live shadow canary rollback and read-only windows','final audit and independent cutover retirement acceptance'],'blocking_gaps':['GAP-P0-GOV-001','GAP-P0-EVIDENCE-001','GAP-P0-DATA-001','GAP-P0-SERVER-001','GAP-P0-CRYPTO-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-BRANCH-001','GAP-P1-REVIEW-001'],'parity_ids':[],'evidence_ids':[],'claim_credit':False})
+          ip.write_text(json.dumps(inv,indent=2)+'\n')
+          sp=Path('docs/status/CURRENT_STATE.json'); st=json.loads(sp.read_text()); st.setdefault('implementation',{})['cutover_controller_source_candidate']=True
+          for k in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'): st.setdefault('claims',{})[k]=False
+          sp.write_text(json.dumps(st,indent=2)+'\n')
+          PY
+
+      - name: Publish Draft and qualify exact source
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git commit -m 'feat(cutover): add shadow canary rollback and retirement controller'
+          head_sha="$(git rev-parse HEAD)"; head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Repository-controlled source candidate for #128, stacked on endurance Wave 14.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds complete accepted-evidence kinds, exact-subject binding, exclusive cohort writers, stage authority constraints, clean observation windows, rollback rehearsal and retirement prerequisites.
+
+          No real traffic, deployment, authority transfer, key revoke, cutover, C5 or Nakama retirement is claimed.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 15] Add shadow canary rollback and retirement controller' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do cargo test --manifest-path "$manifest" --all-targets --locked; cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings; done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "Cutover Wave 15 carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and all claim ceilings remain binding."
+          gh issue comment 128 --repo "$REPOSITORY" --body "Cutover controller carrier status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`; #128 remains open pending real shadow/canary/rollback and accepted retirement evidence."
