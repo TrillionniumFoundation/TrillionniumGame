@@ -1,0 +1,87 @@
+name: world-rustfmt-a315-20260909
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-rustfmt-a315-20260909-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_HEAD_SHA: a31556d3979b21b99592030ba57ee89e09fd66f9
+  RUSTUP_TOOLCHAIN: '1.98.1'
+
+jobs:
+  format:
+    name: world-rustfmt/materialize-patch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Fetch exact World head
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world"
+          rm -rf "$root"
+          git init "$root"
+          git -C "$root" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$root" fetch --no-tags --depth=1 origin "$WORLD_HEAD_SHA"
+          git -C "$root" checkout --detach FETCH_HEAD
+          test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+          test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
+
+      - name: Install exact rustfmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt
+          rustup override set "$RUSTUP_TOOLCHAIN"
+          rustfmt --version
+          cargo --version --verbose
+
+      - name: Format every current Rust workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world"
+          cargo fmt --manifest-path "$root/trillionnium/Cargo.toml" --all
+          cargo fmt --manifest-path "$root/trillionnium/crates/world-authority/Cargo.toml" --all
+          cargo fmt --manifest-path "$root/trillionnium/contracts/trnm-world-transition-v1/Cargo.toml"
+          cargo fmt --manifest-path "$root/contracts/Cargo.toml" --all
+          git -C "$root" diff --check
+          git -C "$root" diff --name-only > "$GITHUB_WORKSPACE/world-rustfmt-files.txt"
+          git -C "$root" diff --binary > "$GITHUB_WORKSPACE/world-rustfmt.patch"
+          test -s "$GITHUB_WORKSPACE/world-rustfmt.patch"
+          cat "$GITHUB_WORKSPACE/world-rustfmt-files.txt"
+
+      - name: Record immutable input and patch digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
+            printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
+            printf 'rustfmt=%s\n' "$(rustfmt --version)"
+            printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'runner_commit=%s\n' "$GITHUB_SHA"
+            printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'production_authorization=not_granted\n'
+          } > world-rustfmt-identity.txt
+          sha256sum world-rustfmt.patch world-rustfmt-files.txt world-rustfmt-identity.txt > SHA256SUMS
+
+      - name: Upload rustfmt patch
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-rustfmt-a315-${{ env.WORLD_HEAD_SHA }}-${{ github.run_attempt }}
+          path: |
+            world-rustfmt.patch
+            world-rustfmt-files.txt
+            world-rustfmt-identity.txt
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
