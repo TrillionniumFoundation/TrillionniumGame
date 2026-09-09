@@ -1,0 +1,191 @@
+name: commit-fault-boundary-controller-20260909
+
+on:
+  push:
+    branches:
+      - codex/plan-v32-controller-v2-2026-09-09
+    paths:
+      - .github/workflows/commit-fault-boundary-controller-20260909.yml
+      - tools/compose_commit_fault_boundaries.py
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: commit-fault-boundary-controller-20260909
+  cancel-in-progress: true
+
+jobs:
+  compose-qualify-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      TARGET_BRANCH: codex/postgresql-fault-recovery-closure-2026-09-09
+      FAULT_MODE: stage
+    steps:
+      - name: Fetch exact controller and stable target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in controller target; do
+            rm -rf "$GITHUB_WORKSPACE/$name"
+            git init "$GITHUB_WORKSPACE/$name"
+            git -C "$GITHUB_WORKSPACE/$name" remote add origin \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          done
+          git -C "$GITHUB_WORKSPACE/controller" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/controller" checkout --detach FETCH_HEAD
+          previous=''
+          stable=0
+          for _ in $(seq 1 8); do
+            current=$(git -C "$GITHUB_WORKSPACE/controller" ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
+            test -n "$current"
+            if [[ "$current" == "$previous" ]]; then stable=$((stable + 1)); else previous=$current; stable=1; fi
+            if [[ "$stable" -ge 2 ]]; then break; fi
+            sleep 5
+          done
+          test "$stable" -ge 2
+          printf '%s\n' "$previous" > "$RUNNER_TEMP/original-head"
+          git -C "$GITHUB_WORKSPACE/target" fetch --no-tags origin "$previous"
+          git -C "$GITHUB_WORKSPACE/target" checkout -b "$TARGET_BRANCH" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/target" rev-parse HEAD)" = "$previous"
+
+      - name: Compose deterministic fault-boundary source
+        shell: bash
+        run: |
+          set -euo pipefail
+          C="$GITHUB_WORKSPACE/controller"
+          T="$GITHUB_WORKSPACE/target"
+          python3 -m py_compile "$C/tools/compose_commit_fault_boundaries.py"
+          python3 "$C/tools/compose_commit_fault_boundaries.py" "$T"
+          git -C "$T" diff --check
+
+      - name: Qualify control plane and Rust targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$GITHUB_WORKSPACE/target"
+          cd "$T"
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          cargo fmt --all -- --check
+          python3 scripts/check-schema-authority.py
+          python3 scripts/check-rust-foundation.py
+          python3 scripts/check-trnm-server.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-documentation-authority.py
+          python3 -m compileall -q scripts tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -q
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test -p trnm-persistence-pg --features transaction-test-hooks --all-targets --locked
+          cargo clippy -p trnm-persistence-pg --features transaction-test-hooks --all-targets --locked -- -D warnings
+
+      - name: Execute exact PostgreSQL durable-boundary packet
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          T="$GITHUB_WORKSPACE/target"
+          cd "$T"
+          image=$(python3 - <<'PY'
+          import re
+          from pathlib import Path
+          text='\n'.join(p.read_text(encoding='utf-8') for p in Path('.github/workflows').glob('*.yml'))
+          matches=re.findall(r'[A-Za-z0-9._/-]*postgres[A-Za-z0-9._:@/-]*@sha256:[0-9a-f]{64}', text, flags=re.I)
+          if not matches:
+              raise SystemExit('no repository-pinned PostgreSQL OCI image found')
+          print(sorted(set(matches))[0])
+          PY
+          )
+          docker pull "$image"
+          docker run -d --name trnm-commit-pg \
+            -e POSTGRES_USER=trnm -e POSTGRES_PASSWORD=trnm -e POSTGRES_DB=trnm \
+            -p 55432:5432 "$image"
+          trap 'docker logs trnm-commit-pg || true; docker rm -f trnm-commit-pg || true' EXIT
+          for _ in $(seq 1 90); do
+            if docker exec trnm-commit-pg pg_isready -U trnm -d trnm >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec trnm-commit-pg pg_isready -U trnm -d trnm
+          cat $(find migrations/postgresql -maxdepth 1 -type f -name '*_up.sql' | sort) | \
+            docker exec -i trnm-commit-pg psql -v ON_ERROR_STOP=1 -U trnm -d trnm
+          TRNM_REQUIRE_LIVE_DATABASE=1 \
+          TRNM_DATABASE_PROFILE=postgresql \
+          TRNM_DATABASE_URL='postgresql://trnm:trnm@127.0.0.1:55432/trnm' \
+            cargo test -p trnm-persistence-pg --features transaction-test-hooks \
+              --test commit_fault_boundaries --locked -- --nocapture
+          docker inspect --format='postgresql_image_id={{.Image}}' trnm-commit-pg
+          docker rm -f trnm-commit-pg
+          trap - EXIT
+
+      - name: Execute exact CockroachDB durable-boundary packet
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          T="$GITHUB_WORKSPACE/target"
+          cd "$T"
+          image=$(python3 - <<'PY'
+          import re
+          from pathlib import Path
+          text='\n'.join(p.read_text(encoding='utf-8') for p in Path('.github/workflows').glob('*.yml'))
+          matches=re.findall(r'[A-Za-z0-9._/-]*cockroach[A-Za-z0-9._:@/-]*@sha256:[0-9a-f]{64}', text, flags=re.I)
+          if not matches:
+              raise SystemExit('no repository-pinned CockroachDB OCI image found')
+          print(sorted(set(matches))[0])
+          PY
+          )
+          docker pull "$image"
+          docker run -d --name trnm-commit-crdb -p 26257:26257 -p 18080:8080 "$image" \
+            start-single-node --insecure --listen-addr=0.0.0.0:26257 --http-addr=0.0.0.0:8080
+          trap 'docker logs trnm-commit-crdb || true; docker rm -f trnm-commit-crdb || true' EXIT
+          for _ in $(seq 1 120); do
+            if docker exec trnm-commit-crdb cockroach sql --insecure --host=127.0.0.1:26257 -e 'SELECT 1' >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec trnm-commit-crdb cockroach sql --insecure --host=127.0.0.1:26257 -e 'CREATE DATABASE trnm'
+          cat $(find migrations/cockroachdb -maxdepth 1 -type f -name '*_up.sql' | sort) | \
+            docker exec -i trnm-commit-crdb cockroach sql --insecure --host=127.0.0.1:26257 --database=trnm
+          TRNM_REQUIRE_LIVE_DATABASE=1 \
+          TRNM_DATABASE_PROFILE=cockroachdb \
+          TRNM_DATABASE_URL='postgresql://root@127.0.0.1:26257/trnm?sslmode=disable' \
+            cargo test -p trnm-persistence-pg --features transaction-test-hooks \
+              --test commit_fault_boundaries --locked -- --nocapture
+          docker inspect --format='cockroachdb_image_id={{.Image}}' trnm-commit-crdb
+          docker rm -f trnm-commit-crdb
+          trap - EXIT
+
+      - name: Publish or prove exact fixed point
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$GITHUB_WORKSPACE/target"
+          cd "$T"
+          original=$(cat "$RUNNER_TEMP/original-head")
+          remote=$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
+          test "$remote" = "$original"
+          git add -A
+          git diff --cached --check
+          if [[ "$FAULT_MODE" == validate ]]; then
+            git diff --quiet
+            git diff --cached --quiet
+            head=$(git rev-parse HEAD)
+            tree=$(git rev-parse 'HEAD^{tree}')
+            gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/36/comments" \
+              -f body="Exact-head durable-boundary qualification passed at \`${head}\` (tree \`${tree}\`) for all five internal command transaction boundaries on separate PostgreSQL and CockroachDB profiles. This is a remote-verified fault-evidence candidate; independent data-integrity review, HA/PITR/RPO/RTO, endurance and production acceptance remain false." >/dev/null
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'database: prove rollback at every command durable boundary'
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          head=$(git rev-parse HEAD)
+          tree=$(git rev-parse 'HEAD^{tree}')
+          gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/36/comments" \
+            -f body="Durable-boundary source candidate passed complete control/Rust qualification and separate live PostgreSQL/CockroachDB rollback packets, then fast-forwarded to \`${head}\` (tree \`${tree}\`). Exact-head requalification and independent acceptance remain required." >/dev/null
