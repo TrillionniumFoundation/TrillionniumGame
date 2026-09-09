@@ -1,0 +1,2854 @@
+diff --git a/contracts/bridge-relay/src/lib.rs b/contracts/bridge-relay/src/lib.rs
+index e2d9bfd..01ef495 100644
+--- a/contracts/bridge-relay/src/lib.rs
++++ b/contracts/bridge-relay/src/lib.rs
+@@ -1,5 +1,5 @@
+ use audit_events::AuditEvent;
+-use ed25519_dalek::{Signature, VerifyingKey, Verifier};
++use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+ use sha2::{Digest as Sha256Digest, Sha256};
+ use sha3::Keccak256;
+ 
+@@ -186,7 +186,10 @@ impl BridgeRelay {
+             });
+         }
+ 
+-        self.validate_validator_signature_config(self.min_validator_signatures, self.validators.len())?;
++        self.validate_validator_signature_config(
++            self.min_validator_signatures,
++            self.validators.len(),
++        )?;
+         self.validate_message_domain(message, now_ts, current_chain_id, self_bridge)?;
+         self.validate_message_config(message)?;
+         self.validate_message_receipt(message)?;
+@@ -259,12 +262,11 @@ impl BridgeRelay {
+             old_admin,
+             new_admin,
+         });
+-        self.audit_log
+-            .push(BridgeRelayEvent::ConfigVersionUpdated {
+-                actor: *caller,
+-                old_version,
+-                new_version,
+-            });
++        self.audit_log.push(BridgeRelayEvent::ConfigVersionUpdated {
++            actor: *caller,
++            old_version,
++            new_version,
++        });
+         Ok(())
+     }
+ 
+@@ -302,7 +304,9 @@ impl BridgeRelay {
+     ) -> Result<(), BridgeRelayError> {
+         self.require_admin(caller)?;
+         let previous_count = self.validators.len();
+-        let new_validators = validators.into_iter().collect::<std::collections::HashSet<_>>();
++        let new_validators = validators
++            .into_iter()
++            .collect::<std::collections::HashSet<_>>();
+         let new_count = new_validators.len();
+ 
+         self.validate_validator_signature_config(self.min_validator_signatures, new_count)?;
+@@ -317,12 +321,11 @@ impl BridgeRelay {
+             previous_count,
+             new_count: self.validators.len(),
+         });
+-        self.audit_log
+-            .push(BridgeRelayEvent::ConfigVersionUpdated {
+-                actor: *caller,
+-                old_version,
+-                new_version,
+-            });
++        self.audit_log.push(BridgeRelayEvent::ConfigVersionUpdated {
++            actor: *caller,
++            old_version,
++            new_version,
++        });
+         Ok(())
+     }
+ 
+@@ -375,7 +378,10 @@ impl BridgeRelay {
+         min_validator_signatures: usize,
+         validator_count: usize,
+     ) -> Result<(), BridgeRelayError> {
+-        if validator_count == 0 || min_validator_signatures == 0 || min_validator_signatures > validator_count {
++        if validator_count == 0
++            || min_validator_signatures == 0
++            || min_validator_signatures > validator_count
++        {
+             return Err(BridgeRelayError::InvalidValidatorConfiguration {
+                 min_validator_signatures,
+                 available_validators: validator_count,
+@@ -504,10 +510,16 @@ impl BridgeRelay {
+                 normalized.related_id = Some("config_version".to_string());
+                 normalized.amount = Some(*new_version as u128);
+                 normalized.reason = Some("config_version_rotation".to_string());
+-                normalized.note = Some(format!("old_version={old_version}, new_version={new_version}"));
++                normalized.note = Some(format!(
++                    "old_version={old_version}, new_version={new_version}"
++                ));
+                 normalized
+             }
+-            BridgeRelayEvent::MinSignaturesUpdated { actor, old_min, new_min } => {
++            BridgeRelayEvent::MinSignaturesUpdated {
++                actor,
++                old_min,
++                new_min,
++            } => {
+                 let mut normalized =
+                     AuditEvent::new("bridge-relay", "bridge_relay.min_signatures_updated");
+                 normalized.actor = Some(hex32(actor));
+@@ -651,9 +663,7 @@ impl BridgeRelay {
+     }
+ }
+ 
+-fn parse_validator_signature(
+-    signature: &[u8],
+-) -> Result<([u8; 32], Signature), BridgeRelayError> {
++fn parse_validator_signature(signature: &[u8]) -> Result<([u8; 32], Signature), BridgeRelayError> {
+     if signature.len() != VALIDATOR_SIGNATURE_LEN {
+         return Err(BridgeRelayError::InvalidValidatorSignatureLength {
+             got: signature.len(),
+@@ -666,10 +676,7 @@ fn parse_validator_signature(
+     let mut raw_signature = [0u8; VALIDATOR_SIGNATURE_BYTES_LEN];
+     raw_signature.copy_from_slice(&signature[VALIDATOR_SIGNATURE_KEY_LEN..]);
+ 
+-    Ok((
+-        validator,
+-        Signature::from_bytes(&raw_signature),
+-    ))
++    Ok((validator, Signature::from_bytes(&raw_signature)))
+ }
+ 
+ pub fn nonce_key(
+@@ -814,11 +821,26 @@ mod tests {
+             .consume_nonce(1, b32(1), 31338, addr(9), action_settlement_finalize(), 10)
+             .unwrap();
+ 
+-        assert_ne!(n1, n3, "different source bridge ids should isolate nonce domains");
+-        assert_ne!(n1, n4, "different target bridges should isolate nonce domains");
+-        assert_ne!(n1, n5, "different target chain ids should isolate nonce domains");
+-        assert_ne!(n3, n4, "source and target bridge domains should stay independently isolated");
+-        assert_ne!(n4, n5, "target bridge and target chain must stay independently isolated");
++        assert_ne!(
++            n1, n3,
++            "different source bridge ids should isolate nonce domains"
++        );
++        assert_ne!(
++            n1, n4,
++            "different target bridges should isolate nonce domains"
++        );
++        assert_ne!(
++            n1, n5,
++            "different target chain ids should isolate nonce domains"
++        );
++        assert_ne!(
++            n3, n4,
++            "source and target bridge domains should stay independently isolated"
++        );
++        assert_ne!(
++            n4, n5,
++            "target bridge and target chain must stay independently isolated"
++        );
+ 
+         let err = relay
+             .consume_nonce(1, b32(1), 31337, addr(9), action_settlement_finalize(), 10)
+@@ -842,7 +864,14 @@ mod tests {
+         let msg = sample_msg();
+ 
+         let err = relay
+-            .submit_proof(&msg, &[sig_for(&msg, 7)], msg.deadline - 1, 999, 31337, addr(9))
++            .submit_proof(
++                &msg,
++                &[sig_for(&msg, 7)],
++                msg.deadline - 1,
++                999,
++                31337,
++                addr(9),
++            )
+             .unwrap_err();
+ 
+         assert!(matches!(
+@@ -852,7 +881,10 @@ mod tests {
+                 got,
+             } if expected == msg.deadline && got == msg.deadline - 1
+         ));
+-        assert!(relay.audit_log().is_empty(), "mismatched deadline must not append audit events");
++        assert!(
++            relay.audit_log().is_empty(),
++            "mismatched deadline must not append audit events"
++        );
+     }
+ 
+     #[test]
+@@ -949,13 +981,21 @@ mod tests {
+         fresh_msg.nonce += 1;
+ 
+         let fresh_proof = relay
+-            .submit_proof(&fresh_msg, &[sig_for(&fresh_msg, 7)], 1_000, 999, 31337, addr(9))
++            .submit_proof(
++                &fresh_msg,
++                &[sig_for(&fresh_msg, 7)],
++                1_000,
++                999,
++                31337,
++                addr(9),
++            )
+             .unwrap();
+         assert_ne!(fresh_proof, proof_digest);
+     }
+ 
+     #[test]
+-    fn finalize_settlement_replay_with_invalid_signature_after_terminal_still_blocked_by_terminal_bound() {
++    fn finalize_settlement_replay_with_invalid_signature_after_terminal_still_blocked_by_terminal_bound(
++    ) {
+         let mut relay = relay(1, &[7]);
+         let msg = sample_msg();
+ 
+@@ -1061,14 +1101,13 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn duplicate_finalize_with_stale_config_version_after_governance_change_still_stops_at_terminal_state() {
++    fn duplicate_finalize_with_stale_config_version_after_governance_change_still_stops_at_terminal_state(
++    ) {
+         let mut relay = BridgeRelay::with_admin(2, vec![validator_pub(7)], b32(9));
+         relay
+             .set_validators(&b32(9), vec![validator_pub(7), validator_pub(8)])
+             .unwrap();
+-        relay
+-            .set_min_validator_signatures(&b32(9), 2)
+-            .unwrap();
++        relay.set_min_validator_signatures(&b32(9), 2).unwrap();
+ 
+         let mut msg = sample_msg();
+         msg.config_version = relay.config_version();
+@@ -1111,14 +1150,13 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn duplicate_finalize_with_fresh_config_version_after_governance_change_still_stops_at_terminal_state() {
++    fn duplicate_finalize_with_fresh_config_version_after_governance_change_still_stops_at_terminal_state(
++    ) {
+         let mut relay = BridgeRelay::with_admin(2, vec![validator_pub(7)], b32(9));
+         relay
+             .set_validators(&b32(9), vec![validator_pub(7), validator_pub(8)])
+             .unwrap();
+-        relay
+-            .set_min_validator_signatures(&b32(9), 2)
+-            .unwrap();
++        relay.set_min_validator_signatures(&b32(9), 2).unwrap();
+ 
+         let mut msg = sample_msg();
+         msg.config_version = relay.config_version();
+@@ -1482,16 +1520,20 @@ mod tests {
+             )
+             .unwrap();
+ 
+-        let fallback = relay.consume_nonce(
+-            settled_msg.source_chain_id,
+-            settled_msg.source_bridge_id,
+-            settled_msg.target_chain_id,
+-            settled_msg.target_bridge,
+-            action_settlement_finalize(),
+-            settled_msg.nonce,
+-        )
+-        .unwrap_err();
+-        assert!(matches!(fallback, BridgeRelayError::NonceAlreadyUsed { .. }));
++        let fallback = relay
++            .consume_nonce(
++                settled_msg.source_chain_id,
++                settled_msg.source_bridge_id,
++                settled_msg.target_chain_id,
++                settled_msg.target_bridge,
++                action_settlement_finalize(),
++                settled_msg.nonce,
++            )
++            .unwrap_err();
++        assert!(matches!(
++            fallback,
++            BridgeRelayError::NonceAlreadyUsed { .. }
++        ));
+ 
+         assert_ne!(settlement_id, [0u8; 32]);
+     }
+@@ -1501,15 +1543,16 @@ mod tests {
+         let mut relay = relay(1, &[7]);
+         let msg = sample_msg();
+ 
+-        relay.consume_nonce(
+-            msg.source_chain_id,
+-            msg.source_bridge_id,
+-            msg.target_chain_id,
+-            msg.target_bridge,
+-            action_settlement_finalize(),
+-            msg.nonce,
+-        )
+-        .unwrap();
++        relay
++            .consume_nonce(
++                msg.source_chain_id,
++                msg.source_bridge_id,
++                msg.target_chain_id,
++                msg.target_bridge,
++                action_settlement_finalize(),
++                msg.nonce,
++            )
++            .unwrap();
+         let audit_len_before = relay.audit_log().len();
+         let normalized_before = relay.normalized_audit_log();
+ 
+@@ -1551,9 +1594,7 @@ mod tests {
+         relay
+             .set_validators(&b32(9), vec![validator_pub(7), validator_pub(8)])
+             .unwrap();
+-        relay
+-            .set_min_validator_signatures(&b32(9), 2)
+-            .unwrap();
++        relay.set_min_validator_signatures(&b32(9), 2).unwrap();
+ 
+         let mut stale = sample_msg();
+         relay.set_admin(&b32(9), b32(10)).unwrap();
+@@ -1602,9 +1643,7 @@ mod tests {
+         relay
+             .set_validators(&b32(9), vec![validator_pub(7), validator_pub(8)])
+             .unwrap();
+-        relay
+-            .set_min_validator_signatures(&b32(9), 2)
+-            .unwrap();
++        relay.set_min_validator_signatures(&b32(9), 2).unwrap();
+ 
+         let mut stale = sample_msg();
+         stale.nonce = 123;
+@@ -1656,13 +1695,15 @@ mod tests {
+     fn config_version_gating_rejects_stale_expected_version() {
+         let mut relay = BridgeRelay::with_admin(2, vec![validator_pub(7)], b32(9));
+         relay
+-            .set_validators_with_version(&b32(9), relay.config_version(), vec![validator_pub(7), validator_pub(8)])
++            .set_validators_with_version(
++                &b32(9),
++                relay.config_version(),
++                vec![validator_pub(7), validator_pub(8)],
++            )
+             .unwrap();
+ 
+         let expected = relay.config_version();
+-        relay
+-            .set_min_validator_signatures(&b32(9), 2)
+-            .unwrap();
++        relay.set_min_validator_signatures(&b32(9), 2).unwrap();
+ 
+         let err = relay
+             .set_admin_with_version(&b32(9), expected, b32(10))
+@@ -1684,7 +1725,11 @@ mod tests {
+         let admin_before = b32(9);
+ 
+         relay
+-            .set_validators_with_version(&admin_before, relay.config_version(), vec![validator_pub(7), validator_pub(8)])
++            .set_validators_with_version(
++                &admin_before,
++                relay.config_version(),
++                vec![validator_pub(7), validator_pub(8)],
++            )
+             .unwrap();
+         let stale_version = relay.config_version();
+ 
+@@ -1706,7 +1751,10 @@ mod tests {
+                 got,
+             } if expected == current_version && got == stale_version
+         ));
+-        assert_eq!(relay.admin, admin_before, "stale write must not rotate admin");
++        assert_eq!(
++            relay.admin, admin_before,
++            "stale write must not rotate admin"
++        );
+         assert_eq!(
+             relay.config_version(),
+             current_version,
+@@ -1729,7 +1777,11 @@ mod tests {
+         let admin = b32(9);
+ 
+         relay
+-            .set_validators_with_version(&admin, relay.config_version(), vec![validator_pub(7), validator_pub(8)])
++            .set_validators_with_version(
++                &admin,
++                relay.config_version(),
++                vec![validator_pub(7), validator_pub(8)],
++            )
+             .unwrap();
+         let stale_version = relay.config_version();
+ 
+@@ -1749,8 +1801,7 @@ mod tests {
+                 if expected == current_version && got == stale_version
+         ));
+         assert_eq!(
+-            relay.min_validator_signatures,
+-            1,
++            relay.min_validator_signatures, 1,
+             "stale threshold write must leave the previous quorum intact"
+         );
+         assert_eq!(
+@@ -1776,13 +1827,15 @@ mod tests {
+         let admin = b32(9);
+ 
+         relay
+-            .set_validators_with_version(&admin, relay.config_version(), vec![validator_pub(7), validator_pub(8)])
++            .set_validators_with_version(
++                &admin,
++                relay.config_version(),
++                vec![validator_pub(7), validator_pub(8)],
++            )
+             .unwrap();
+         let stale_version = relay.config_version();
+ 
+-        relay
+-            .set_min_validator_signatures(&admin, 2)
+-            .unwrap();
++        relay.set_min_validator_signatures(&admin, 2).unwrap();
+ 
+         let current_version = relay.config_version();
+         let audit_len_before = relay.audit_log().len();
+@@ -1879,7 +1932,8 @@ mod tests {
+ 
+     #[test]
+     fn stale_validator_rotation_does_not_admit_new_validator() {
+-        let mut relay = BridgeRelay::with_admin(2, vec![validator_pub(7), validator_pub(8)], b32(9));
++        let mut relay =
++            BridgeRelay::with_admin(2, vec![validator_pub(7), validator_pub(8)], b32(9));
+         let admin = b32(9);
+         let stale_version = relay.config_version();
+ 
+@@ -1987,7 +2041,11 @@ mod tests {
+         let expected = relay.config_version();
+ 
+         relay
+-            .set_validators_with_version(&b32(9), expected, vec![validator_pub(7), validator_pub(8)])
++            .set_validators_with_version(
++                &b32(9),
++                expected,
++                vec![validator_pub(7), validator_pub(8)],
++            )
+             .unwrap();
+ 
+         assert_eq!(relay.config_version(), expected + 1);
+@@ -2030,14 +2088,7 @@ mod tests {
+ 
+         let replay_sig = sig_for(&replay_msg, 7);
+         let err = relay
+-            .finalize_settlement(
+-                &replay_msg,
+-                &vec![replay_sig],
+-                1_000,
+-                999,
+-                31337,
+-                addr(9),
+-            )
++            .finalize_settlement(&replay_msg, &vec![replay_sig], 1_000, 999, 31337, addr(9))
+             .unwrap_err();
+ 
+         assert!(matches!(
+@@ -2070,7 +2121,8 @@ mod tests {
+         replay_msg.nonce += 1;
+         let replay_sig = sig_for(&replay_msg, 7);
+         let replay_sig2 = sig_for(&replay_msg, 8);
+-        let mut relay2 = BridgeRelay::with_admin(2, vec![validator_pub(7), validator_pub(8)], b32(9));
++        let mut relay2 =
++            BridgeRelay::with_admin(2, vec![validator_pub(7), validator_pub(8)], b32(9));
+         relay2
+             .finalize_settlement(
+                 &replay_msg,
+@@ -2203,7 +2255,10 @@ mod tests {
+ 
+         assert_eq!(event.actor.as_deref(), Some(hex32(&old_admin).as_str()));
+         assert_eq!(event.object_id.as_deref(), Some(hex32(&new_admin).as_str()));
+-        assert_eq!(event.related_id.as_deref(), Some(hex32(&old_admin).as_str()));
++        assert_eq!(
++            event.related_id.as_deref(),
++            Some(hex32(&old_admin).as_str())
++        );
+         assert_eq!(event.reason.as_deref(), Some("admin_rotation"));
+         assert_eq!(event.amount, None);
+     }
+diff --git a/contracts/governance-guard/src/lib.rs b/contracts/governance-guard/src/lib.rs
+index 9f7d6ec..129877c 100644
+--- a/contracts/governance-guard/src/lib.rs
++++ b/contracts/governance-guard/src/lib.rs
+@@ -423,7 +423,10 @@ impl GovernanceGuard {
+         }
+         if self.proposals.values().any(|proposal| {
+             proposal.kind == ProposalKind::EmergencyUnpause
+-                && matches!(proposal.status, ProposalStatus::Pending | ProposalStatus::Queued)
++                && matches!(
++                    proposal.status,
++                    ProposalStatus::Pending | ProposalStatus::Queued
++                )
+         }) {
+             return Err(Error::PauseRestoreAlreadyScheduled);
+         }
+@@ -642,7 +645,9 @@ impl GovernanceGuard {
+                 normalized.object_id = Some("emergency_pause".to_string());
+                 normalized.related_id = Some("pause_state".to_string());
+                 normalized.reason = Some("pause_activation".to_string());
+-                normalized.note = Some(format!("state={previous_state}->{next_state}, reason_hash={reason_hash}"));
++                normalized.note = Some(format!(
++                    "state={previous_state}->{next_state}, reason_hash={reason_hash}"
++                ));
+                 normalized
+             }
+             GovernanceEvent::PauseRestoreScheduled {
+@@ -1436,7 +1441,10 @@ mod tests {
+         gov.cancel("alice", pid).unwrap();
+         let audit_len_before_requeue = gov.audit_log().len();
+ 
+-        assert_eq!(gov.queue("alice", pid).unwrap_err(), Error::AlreadyFinalized);
++        assert_eq!(
++            gov.queue("alice", pid).unwrap_err(),
++            Error::AlreadyFinalized
++        );
+ 
+         let proposal = gov.proposal(pid).unwrap();
+         assert_eq!(proposal.status, ProposalStatus::Cancelled);
+@@ -1656,7 +1664,8 @@ mod tests {
+ 
+         let now = 5_800;
+         let eta = now + 60;
+-        gov.emergency_pause("guardian", "incident-self-exec").unwrap();
++        gov.emergency_pause("guardian", "incident-self-exec")
++            .unwrap();
+         let pid = gov
+             .schedule_unpause("guardian", eta, "recover-self-exec", now)
+             .unwrap();
+@@ -1717,10 +1726,10 @@ mod tests {
+         assert!(gov.bridge_state().emergency_paused);
+         assert_eq!(gov.proposals.len(), 0);
+         assert_eq!(gov.audit_log().len(), audit_len_before);
+-        assert!(!gov.audit_log().iter().any(|event| matches!(
+-            event,
+-            GovernanceEvent::PauseRestoreScheduled { .. }
+-        )));
++        assert!(!gov
++            .audit_log()
++            .iter()
++            .any(|event| matches!(event, GovernanceEvent::PauseRestoreScheduled { .. })));
+     }
+ 
+     #[test]
+@@ -1765,7 +1774,8 @@ mod tests {
+         let now = 6_500;
+         let eta = now + 60;
+ 
+-        gov.emergency_pause("guardian", "incident-non-exec").unwrap();
++        gov.emergency_pause("guardian", "incident-non-exec")
++            .unwrap();
+         let pid = gov
+             .schedule_unpause("guardian", eta, "recover-non-exec", now)
+             .unwrap();
+@@ -1998,7 +2008,10 @@ mod tests {
+             })
+             .unwrap();
+ 
+-        assert_eq!(queued.related_id.as_deref(), Some("challenge_window_blocks"));
++        assert_eq!(
++            queued.related_id.as_deref(),
++            Some("challenge_window_blocks")
++        );
+         assert_eq!(queued.reason.as_deref(), Some("kind=ParamChange"));
+         assert_eq!(event.related_id.as_deref(), Some("challenge_window_blocks"));
+         assert_eq!(event.amount, Some(1));
+@@ -2038,7 +2051,8 @@ mod tests {
+         let now = 7_300;
+         let eta = now + 60;
+ 
+-        gov.emergency_pause("guardian", "incident-finalized").unwrap();
++        gov.emergency_pause("guardian", "incident-finalized")
++            .unwrap();
+         let pid = gov
+             .schedule_unpause("guardian", eta, "recover-finalized", now)
+             .unwrap();
+@@ -2147,7 +2161,10 @@ mod tests {
+ 
+         gov.set_guardian("admin", "guardian", false).unwrap();
+ 
+-        assert_eq!(gov.cancel("guardian", pid).unwrap_err(), Error::Unauthorized);
++        assert_eq!(
++            gov.cancel("guardian", pid).unwrap_err(),
++            Error::Unauthorized
++        );
+ 
+         let proposal = gov.proposal(pid).unwrap();
+         assert_eq!(proposal.kind, ProposalKind::EmergencyUnpause);
+@@ -2203,7 +2220,8 @@ mod tests {
+         let now = 7_540;
+         let eta = now + 60;
+ 
+-        gov.emergency_pause("guardian", "incident-reschedule").unwrap();
++        gov.emergency_pause("guardian", "incident-reschedule")
++            .unwrap();
+         let first_pid = gov
+             .schedule_unpause("guardian", eta, "recover-first", now)
+             .unwrap();
+@@ -2227,10 +2245,7 @@ mod tests {
+         assert_eq!(
+             gov.audit_log()
+                 .iter()
+-                .filter(|event| matches!(
+-                    event,
+-                    GovernanceEvent::PauseRestoreScheduled { .. }
+-                ))
++                .filter(|event| matches!(event, GovernanceEvent::PauseRestoreScheduled { .. }))
+                 .count(),
+             2
+         );
+diff --git a/contracts/settlement-vault/src/lib.rs b/contracts/settlement-vault/src/lib.rs
+index 87045af..a5125e4 100644
+--- a/contracts/settlement-vault/src/lib.rs
++++ b/contracts/settlement-vault/src/lib.rs
+@@ -562,7 +562,9 @@ mod tests {
+         );
+ 
+         assert_eq!(
+-            vault.lock("owner", " req-padded ", "alice", 10).unwrap_err(),
++            vault
++                .lock("owner", " req-padded ", "alice", 10)
++                .unwrap_err(),
+             VaultError::InvalidRequestId
+         );
+         assert!(vault.lock_record(" req-padded ").is_none());
+@@ -582,7 +584,10 @@ mod tests {
+             matches!(
+                 &event.event_type[..],
+                 "vault.locked" | "vault.released" | "vault.slashed"
+-            ) && matches!(event.object_id.as_deref(), Some("   ") | Some(" req-padded "))
++            ) && matches!(
++                event.object_id.as_deref(),
++                Some("   ") | Some(" req-padded ")
++            )
+         }));
+     }
+ 
+@@ -614,14 +619,18 @@ mod tests {
+     fn rejected_actions_do_not_append_audit_events() {
+         let mut vault = SettlementVault::new("owner");
+ 
+-        assert_eq!(vault.deposit("mallory", "alice", 10).unwrap_err(), VaultError::Unauthorized);
++        assert_eq!(
++            vault.deposit("mallory", "alice", 10).unwrap_err(),
++            VaultError::Unauthorized
++        );
+         assert!(vault.audit_log().is_empty());
+ 
+         vault.deposit("owner", "alice", 10).unwrap();
+         let audit_len_after_deposit = vault.audit_log().len();
+ 
+         assert_eq!(
+-            vault.lock("mallory", "req-unauthorized", "alice", 5)
++            vault
++                .lock("mallory", "req-unauthorized", "alice", 5)
+                 .unwrap_err(),
+             VaultError::Unauthorized
+         );
+@@ -645,22 +654,29 @@ mod tests {
+         let mut vault = SettlementVault::new("owner");
+ 
+         vault.deposit("owner", "alice", 50).unwrap();
+-        vault.lock("owner", "req-paused-release-slash", "alice", 20)
++        vault
++            .lock("owner", "req-paused-release-slash", "alice", 20)
+             .unwrap();
+         vault.pause("owner").unwrap();
+         let audit_len_while_paused = vault.audit_log().len();
+ 
+         assert_eq!(
+-            vault.release("owner", "req-paused-release-slash").unwrap_err(),
++            vault
++                .release("owner", "req-paused-release-slash")
++                .unwrap_err(),
+             VaultError::Paused
+         );
+         assert_eq!(
+-            vault.slash("owner", "req-paused-release-slash", "treasury")
++            vault
++                .slash("owner", "req-paused-release-slash", "treasury")
+                 .unwrap_err(),
+             VaultError::Paused
+         );
+         assert_eq!(
+-            vault.lock_record("req-paused-release-slash").unwrap().status,
++            vault
++                .lock_record("req-paused-release-slash")
++                .unwrap()
++                .status,
+             LockStatus::Locked
+         );
+         assert_eq!(vault.balance_of("alice"), 30);
+@@ -713,7 +729,8 @@ mod tests {
+             VaultError::Unauthorized
+         );
+         assert_eq!(
+-            vault.lock("mallory", "req-auth-paused-2", "alice", 1)
++            vault
++                .lock("mallory", "req-auth-paused-2", "alice", 1)
+                 .unwrap_err(),
+             VaultError::Unauthorized
+         );
+@@ -722,7 +739,8 @@ mod tests {
+             VaultError::Unauthorized
+         );
+         assert_eq!(
+-            vault.slash("mallory", "req-auth-paused", "treasury")
++            vault
++                .slash("mallory", "req-auth-paused", "treasury")
+                 .unwrap_err(),
+             VaultError::Unauthorized
+         );
+@@ -785,7 +803,8 @@ mod tests {
+         let mut vault = SettlementVault::new("owner");
+ 
+         vault.deposit("owner", "alice", 100).unwrap();
+-        vault.lock("owner", "req-release-replay", "alice", 30)
++        vault
++            .lock("owner", "req-release-replay", "alice", 30)
+             .unwrap();
+         vault.release("owner", "req-release-replay").unwrap();
+         let released_audit_len = vault.audit_log().len();
+@@ -803,8 +822,12 @@ mod tests {
+         );
+         assert_eq!(vault.audit_log().len(), released_audit_len);
+ 
+-        vault.lock("owner", "req-slash-replay", "alice", 40).unwrap();
+-        vault.slash("owner", "req-slash-replay", "treasury").unwrap();
++        vault
++            .lock("owner", "req-slash-replay", "alice", 40)
++            .unwrap();
++        vault
++            .slash("owner", "req-slash-replay", "treasury")
++            .unwrap();
+         let slashed_audit_len = vault.audit_log().len();
+ 
+         assert_eq!(
+@@ -866,7 +889,10 @@ mod tests {
+     fn unauthorized_pause_and_unpause_do_not_leak_state_or_append_audit_events() {
+         let mut vault = SettlementVault::new("owner");
+ 
+-        assert_eq!(vault.pause("mallory").unwrap_err(), VaultError::Unauthorized);
++        assert_eq!(
++            vault.pause("mallory").unwrap_err(),
++            VaultError::Unauthorized
++        );
+         assert!(!vault.is_paused());
+         assert!(vault.audit_log().is_empty());
+ 
+@@ -874,8 +900,14 @@ mod tests {
+         let audit_len_after_pause = vault.audit_log().len();
+         assert!(vault.is_paused());
+ 
+-        assert_eq!(vault.pause("mallory").unwrap_err(), VaultError::Unauthorized);
+-        assert_eq!(vault.unpause("mallory").unwrap_err(), VaultError::Unauthorized);
++        assert_eq!(
++            vault.pause("mallory").unwrap_err(),
++            VaultError::Unauthorized
++        );
++        assert_eq!(
++            vault.unpause("mallory").unwrap_err(),
++            VaultError::Unauthorized
++        );
+         assert!(vault.is_paused());
+         assert_eq!(vault.audit_log().len(), audit_len_after_pause);
+ 
+@@ -883,7 +915,10 @@ mod tests {
+         let audit_len_after_unpause = vault.audit_log().len();
+         assert!(!vault.is_paused());
+ 
+-        assert_eq!(vault.unpause("mallory").unwrap_err(), VaultError::Unauthorized);
++        assert_eq!(
++            vault.unpause("mallory").unwrap_err(),
++            VaultError::Unauthorized
++        );
+         assert!(!vault.is_paused());
+         assert_eq!(vault.audit_log().len(), audit_len_after_unpause);
+     }
+@@ -918,7 +953,9 @@ mod tests {
+         let mut vault = SettlementVault::new("owner");
+ 
+         vault.deposit("owner", "alice", 20).unwrap();
+-        vault.lock("owner", "req-paused-slash", "alice", 20).unwrap();
++        vault
++            .lock("owner", "req-paused-slash", "alice", 20)
++            .unwrap();
+         let audit_len_before_pause = vault.audit_log().len();
+         vault.pause("owner").unwrap();
+         let audit_len_while_paused = vault.audit_log().len();
+@@ -942,7 +979,8 @@ mod tests {
+         let mut vault = SettlementVault::new("owner");
+ 
+         vault.deposit("owner", "alice", 20).unwrap();
+-        vault.lock("owner", "req-paused-release", "alice", 20)
++        vault
++            .lock("owner", "req-paused-release", "alice", 20)
+             .unwrap();
+         let audit_len_before_pause = vault.audit_log().len();
+         vault.pause("owner").unwrap();
+@@ -970,12 +1008,14 @@ mod tests {
+         let audit_len_while_paused = vault.audit_log().len();
+ 
+         assert_eq!(
+-            vault.release("owner", "req-missing")
++            vault
++                .release("owner", "req-missing")
+                 .expect_err("paused release should not reveal request absence"),
+             VaultError::Paused
+         );
+         assert_eq!(
+-            vault.slash("owner", "req-missing", "treasury")
++            vault
++                .slash("owner", "req-missing", "treasury")
+                 .expect_err("paused slash should not reveal request absence"),
+             VaultError::Paused
+         );
+diff --git a/trillionnium/contracts/trnm-world-transition-v1/src/canonical.rs b/trillionnium/contracts/trnm-world-transition-v1/src/canonical.rs
+index 4062e79..26d59f0 100644
+--- a/trillionnium/contracts/trnm-world-transition-v1/src/canonical.rs
++++ b/trillionnium/contracts/trnm-world-transition-v1/src/canonical.rs
+@@ -49,7 +49,10 @@ impl fmt::Display for CanonicalError {
+         match self {
+             Self::Empty => formatter.write_str("canonical JSON is empty"),
+             Self::TooLarge { actual, maximum } => {
+-                write!(formatter, "canonical JSON is too large ({actual} > {maximum})")
++                write!(
++                    formatter,
++                    "canonical JSON is too large ({actual} > {maximum})"
++                )
+             }
+             Self::InvalidUtf8 => formatter.write_str("canonical JSON is not valid UTF-8"),
+             Self::InvalidRoot => formatter.write_str("canonical JSON root must be object or array"),
+@@ -212,7 +215,10 @@ impl Parser<'_> {
+         if depth > MAX_CANONICAL_DEPTH {
+             return Err(CanonicalError::DepthExceeded);
+         }
+-        let byte = *self.bytes.get(self.index).ok_or(CanonicalError::UnexpectedEnd)?;
++        let byte = *self
++            .bytes
++            .get(self.index)
++            .ok_or(CanonicalError::UnexpectedEnd)?;
+         match byte {
+             b'{' => self.parse_object(depth),
+             b'[' => self.parse_array(depth),
+@@ -247,7 +253,10 @@ impl Parser<'_> {
+                 return Err(CanonicalError::UnexpectedByte { index: self.index });
+             }
+             let key = self.parse_string()?;
+-            if previous.as_ref().is_some_and(|prior| key.as_str() <= prior.as_str()) {
++            if previous
++                .as_ref()
++                .is_some_and(|prior| key.as_str() <= prior.as_str())
++            {
+                 return Err(CanonicalError::DuplicateOrUnsortedKey { key });
+             }
+             previous = Some(key.clone());
+@@ -321,7 +330,10 @@ impl Parser<'_> {
+         self.expect_byte(b'"')?;
+         let mut output = String::new();
+         loop {
+-            let byte = *self.bytes.get(self.index).ok_or(CanonicalError::UnexpectedEnd)?;
++            let byte = *self
++                .bytes
++                .get(self.index)
++                .ok_or(CanonicalError::UnexpectedEnd)?;
+             match byte {
+                 b'"' => {
+                     self.index += 1;
+@@ -353,7 +365,10 @@ impl Parser<'_> {
+     }
+ 
+     fn parse_escape(&mut self, output: &mut String) -> Result<(), CanonicalError> {
+-        let escape = *self.bytes.get(self.index).ok_or(CanonicalError::UnexpectedEnd)?;
++        let escape = *self
++            .bytes
++            .get(self.index)
++            .ok_or(CanonicalError::UnexpectedEnd)?;
+         self.index += 1;
+         match escape {
+             b'"' => output.push('"'),
+@@ -378,7 +393,10 @@ impl Parser<'_> {
+     fn parse_lower_hex4(&mut self) -> Result<u16, CanonicalError> {
+         let mut value = 0_u16;
+         for _ in 0..4 {
+-            let byte = *self.bytes.get(self.index).ok_or(CanonicalError::UnexpectedEnd)?;
++            let byte = *self
++                .bytes
++                .get(self.index)
++                .ok_or(CanonicalError::UnexpectedEnd)?;
+             self.index += 1;
+             let digit = match byte {
+                 b'0'..=b'9' => u16::from(byte - b'0'),
+@@ -439,27 +457,25 @@ mod tests {
+             "{ \"a\":1}",
+             "{}x",
+         ] {
+-            assert!(parse_canonical(raw, 4096).is_err(), "unexpected pass: {raw}");
++            assert!(
++                parse_canonical(raw, 4096).is_err(),
++                "unexpected pass: {raw}"
++            );
+         }
+     }
+ 
+     #[test]
+     fn forbidden_authority_key_fails_recursively() {
+-        let error = parse_canonical(
+-            "{\"a\":{\"nakama_private_key\":\"x\"}}",
+-            4096,
+-        )
+-        .unwrap_err();
+-        assert!(matches!(error, CanonicalError::ForbiddenAuthorityKey { .. }));
++        let error = parse_canonical("{\"a\":{\"nakama_private_key\":\"x\"}}", 4096).unwrap_err();
++        assert!(matches!(
++            error,
++            CanonicalError::ForbiddenAuthorityKey { .. }
++        ));
+     }
+ 
+     #[test]
+     fn escaped_authority_key_still_fails_closed() {
+-        assert!(parse_canonical(
+-            "{\"nakama_\\u0070rivate_key\":\"x\"}",
+-            4096,
+-        )
+-        .is_err());
++        assert!(parse_canonical("{\"nakama_\\u0070rivate_key\":\"x\"}", 4096,).is_err());
+     }
+ 
+     #[test]
+diff --git a/trillionnium/contracts/trnm-world-transition-v1/src/lib.rs b/trillionnium/contracts/trnm-world-transition-v1/src/lib.rs
+index 73b09d2..6b762f5 100644
+--- a/trillionnium/contracts/trnm-world-transition-v1/src/lib.rs
++++ b/trillionnium/contracts/trnm-world-transition-v1/src/lib.rs
+@@ -156,11 +156,7 @@ impl CanonicalPayloadV1 {
+         Ok(payload)
+     }
+ 
+-    pub fn validate(
+-        &self,
+-        field: &'static str,
+-        maximum_bytes: usize,
+-    ) -> Result<(), ContractError> {
++    pub fn validate(&self, field: &'static str, maximum_bytes: usize) -> Result<(), ContractError> {
+         validate_identifier("payload.schema_id", &self.schema_id)?;
+         parse_canonical(&self.canonical_json, maximum_bytes)?;
+         validate_sha256(field, &self.sha256)?;
+@@ -271,7 +267,9 @@ impl WorldTransitionRequestV1 {
+     pub fn to_canonical_json(&self) -> Result<String, ContractError> {
+         self.validate()?;
+         let mut output = String::with_capacity(
+-            self.previous_state.canonical_json.len() + self.command.payload.canonical_json.len() + 768,
++            self.previous_state.canonical_json.len()
++                + self.command.payload.canonical_json.len()
++                + 768,
+         );
+         output.push_str("{\"command\":");
+         output.push_str(&self.command.to_canonical_json());
+@@ -526,7 +524,8 @@ impl WorldTransitionRejectedV1 {
+         code: TransitionErrorCodeV1,
+         detail: impl AsRef<str>,
+     ) -> Self {
+-        let transition_id = if validate_identifier("transition_id", &request.transition_id).is_ok() {
++        let transition_id = if validate_identifier("transition_id", &request.transition_id).is_ok()
++        {
+             request.transition_id.clone()
+         } else {
+             "invalid-transition".to_string()
+@@ -624,13 +623,11 @@ pub fn execute_transition<A: WorldRulesAdapterV1>(
+     };
+     match WorldTransitionAcceptedV1::from_output(request, output) {
+         Ok(value) => WorldTransitionResultV1::Accepted(value),
+-        Err(error) => WorldTransitionResultV1::Rejected(
+-            WorldTransitionRejectedV1::from_request(
+-                request,
+-                contract_error_code(&error),
+-                error.to_string(),
+-            ),
+-        ),
++        Err(error) => WorldTransitionResultV1::Rejected(WorldTransitionRejectedV1::from_request(
++            request,
++            contract_error_code(&error),
++            error.to_string(),
++        )),
+     }
+ }
+ 
+@@ -705,7 +702,11 @@ fn validate_sha256(field: &'static str, value: &str) -> Result<(), ContractError
+ fn sanitize_detail(detail: &str) -> String {
+     let mut output = String::with_capacity(detail.len().min(MAX_ERROR_DETAIL_BYTES));
+     for character in detail.chars() {
+-        let replacement = if character.is_control() { ' ' } else { character };
++        let replacement = if character.is_control() {
++            ' '
++        } else {
++            character
++        };
+         if output.len() + replacement.len_utf8() > MAX_ERROR_DETAIL_BYTES {
+             break;
+         }
+@@ -744,8 +745,7 @@ mod tests {
+     use super::*;
+     use std::collections::BTreeSet;
+ 
+-    const EMPTY_HASH: &str =
+-        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
++    const EMPTY_HASH: &str = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
+ 
+     fn payload(schema: &str, value: &str, maximum: usize) -> CanonicalPayloadV1 {
+         CanonicalPayloadV1::new(schema, value, maximum).unwrap()
+@@ -797,8 +797,14 @@ mod tests {
+         assert_eq!(state.sha256, EMPTY_HASH);
+         let first = request("{}");
+         let second = request("{}");
+-        assert_eq!(first.request_hash().unwrap(), second.request_hash().unwrap());
+-        assert_ne!(first.request_hash().unwrap(), request("{\"a\":1}").request_hash().unwrap());
++        assert_eq!(
++            first.request_hash().unwrap(),
++            second.request_hash().unwrap()
++        );
++        assert_ne!(
++            first.request_hash().unwrap(),
++            request("{\"a\":1}").request_hash().unwrap()
++        );
+     }
+ 
+     #[test]
+diff --git a/trillionnium/contracts/trnm-world-transition-v1/src/sha256.rs b/trillionnium/contracts/trnm-world-transition-v1/src/sha256.rs
+index a0e6b0d..bd72460 100644
+--- a/trillionnium/contracts/trnm-world-transition-v1/src/sha256.rs
++++ b/trillionnium/contracts/trnm-world-transition-v1/src/sha256.rs
+@@ -11,17 +11,16 @@ pub fn sha256_hex(input: &[u8]) -> String {
+ 
+ fn sha256(input: &[u8]) -> [u8; 32] {
+     const K: [u32; 64] = [
+-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
+-        0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+-        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+-        0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+-        0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+-        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+-        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+-        0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+-        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
++        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
++        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
++        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
++        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
++        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
++        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
++        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
++        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
++        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
++        0xc67178f2,
+     ];
+     let mut state = [
+         0x6a09e667u32,
+diff --git a/trillionnium/contracts/trnm-world-transition-v1/tests/vectors.rs b/trillionnium/contracts/trnm-world-transition-v1/tests/vectors.rs
+index 12aab7a..254f05d 100644
+--- a/trillionnium/contracts/trnm-world-transition-v1/tests/vectors.rs
++++ b/trillionnium/contracts/trnm-world-transition-v1/tests/vectors.rs
+@@ -1,12 +1,10 @@
+ use trnm_world_transition_contract::{
+-    parse_canonical_bytes, sha256_hex, CanonicalPayloadV1, WorldCommandV1, WorldTransitionRequestV1,
+-    MAX_COMMAND_PAYLOAD_BYTES, MAX_STATE_PAYLOAD_BYTES,
++    parse_canonical_bytes, sha256_hex, CanonicalPayloadV1, WorldCommandV1,
++    WorldTransitionRequestV1, MAX_COMMAND_PAYLOAD_BYTES, MAX_STATE_PAYLOAD_BYTES,
+ };
+ 
+-const EMPTY_HASH: &str =
+-    "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
+-const REQUEST_HASH: &str =
+-    "134c0257d4b51fe1061779a84680900726034a7b333fc20410bd3575f738c130";
++const EMPTY_HASH: &str = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
++const REQUEST_HASH: &str = "134c0257d4b51fe1061779a84680900726034a7b333fc20410bd3575f738c130";
+ 
+ fn request() -> WorldTransitionRequestV1 {
+     WorldTransitionRequestV1::new(
+@@ -42,9 +40,8 @@ mod negative_vectors;
+ 
+ #[test]
+ fn published_negative_fixture_matches_exact_json_identity() {
+-    let published = include_bytes!(
+-        "../../../../docs/protocol/vectors/trnm-world-transition-negative-v1.json"
+-    );
++    let published =
++        include_bytes!("../../../../docs/protocol/vectors/trnm-world-transition-negative-v1.json");
+     assert_eq!(sha256_hex(published), negative_vectors::SOURCE_SHA256);
+     assert!(negative_vectors::CASES.len() >= 20);
+     let names: std::collections::BTreeSet<_> = negative_vectors::CASES
+diff --git a/trillionnium/crates/trnm-campaign-core/src/lib.rs b/trillionnium/crates/trnm-campaign-core/src/lib.rs
+index 1fc8521..973a51b 100644
+--- a/trillionnium/crates/trnm-campaign-core/src/lib.rs
++++ b/trillionnium/crates/trnm-campaign-core/src/lib.rs
+@@ -87,8 +87,8 @@ mod player_settings {
+     use super::*;
+     include!("lib_parts/player_settings/part_01.rs");
+ }
+-pub use player_settings::*;
+ use player_settings::atomic_write_json;
++pub use player_settings::*;
+ 
+ // Ownership section: campaign_storage. Ordinary Git-tracked source.
+ include!("lib_parts/campaign_storage/part_01.rs");
+diff --git a/trillionnium/crates/trnm-game-server/src/bin/http_policy/mod.rs b/trillionnium/crates/trnm-game-server/src/bin/http_policy/mod.rs
+index 2917bf1..c1769fe 100644
+--- a/trillionnium/crates/trnm-game-server/src/bin/http_policy/mod.rs
++++ b/trillionnium/crates/trnm-game-server/src/bin/http_policy/mod.rs
+@@ -90,12 +90,8 @@ mod tests {
+     }
+ 
+     async fn assert_redirect_stops(status: u16, relative: bool) {
+-        let origin = TcpListener::bind("127.0.0.1:0")
+-            .await
+-            .expect("origin bind");
+-        let target = TcpListener::bind("127.0.0.1:0")
+-            .await
+-            .expect("target bind");
++        let origin = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
++        let target = TcpListener::bind("127.0.0.1:0").await.expect("target bind");
+         let origin_url = format!("http://{}/authorized", origin.local_addr().unwrap());
+         let target_url = format!("http://{}/not-authorized", target.local_addr().unwrap());
+         let location = if relative {
+@@ -150,7 +146,10 @@ mod tests {
+         assert_original_request(&request);
+         assert_eq!(actual_status, status, "redirect response was replaced");
+         assert!(!same_origin_followed, "same-origin redirect was followed");
+-        assert!(!cross_origin_followed, "credentialed request crossed origin");
++        assert!(
++            !cross_origin_followed,
++            "credentialed request crossed origin"
++        );
+     }
+ 
+     #[tokio::test]
+@@ -185,9 +184,7 @@ mod tests {
+ 
+     #[tokio::test]
+     async fn direct_success_still_sends_the_original_credentials_and_body() {
+-        let listener = TcpListener::bind("127.0.0.1:0")
+-            .await
+-            .expect("origin bind");
++        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+         let url = format!("http://{}/authorized", listener.local_addr().unwrap());
+         let task = tokio::spawn(async move {
+             let (mut stream, _) = timeout(IO_LIMIT, listener.accept())
+diff --git a/trillionnium/crates/trnm-game-server/src/bin/online_e2e/async_http_tests.rs b/trillionnium/crates/trnm-game-server/src/bin/online_e2e/async_http_tests.rs
+index adede28..3288bc5 100644
+--- a/trillionnium/crates/trnm-game-server/src/bin/online_e2e/async_http_tests.rs
++++ b/trillionnium/crates/trnm-game-server/src/bin/online_e2e/async_http_tests.rs
+@@ -58,7 +58,9 @@ async fn capture_request(stream: &mut AsyncTcpStream) -> CapturedRequest {
+ async fn server(
+     script: Vec<Option<(u16, &'static str)>>,
+ ) -> (String, JoinHandle<Vec<CapturedRequest>>) {
+-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("loopback bind");
++    let listener = TcpListener::bind("127.0.0.1:0")
++        .await
++        .expect("loopback bind");
+     let base_url = format!("http://{}", listener.local_addr().expect("bound address"));
+     let task = tokio::spawn(async move {
+         let mut requests = Vec::new();
+@@ -81,7 +83,9 @@ async fn server(
+             drop(stream);
+         }
+         assert!(
+-            timeout(Duration::from_millis(350), listener.accept()).await.is_err(),
++            timeout(Duration::from_millis(350), listener.accept())
++                .await
++                .is_err(),
+             "unexpected extra request: retry policy changed"
+         );
+         requests
+@@ -106,7 +110,9 @@ fn http_client() -> Client {
+ #[tokio::test]
+ async fn successful_request_is_not_retried() {
+     let (base_url, task) = server(vec![Some((200, "{}"))]).await;
+-    let response = send_with_retry(request(&http_client(), &base_url)).await.expect("response");
++    let response = send_with_retry(request(&http_client(), &base_url))
++        .await
++        .expect("response");
+     assert_eq!(response.status().as_u16(), 200);
+     assert_eq!(task.await.expect("server task").len(), 1);
+ }
+@@ -114,7 +120,9 @@ async fn successful_request_is_not_retried() {
+ #[tokio::test]
+ async fn http_conflict_is_returned_without_transport_retry() {
+     let (base_url, task) = server(vec![Some((409, "{\"recoverable\":true}"))]).await;
+-    let response = send_with_retry(request(&http_client(), &base_url)).await.expect("HTTP response");
++    let response = send_with_retry(request(&http_client(), &base_url))
++        .await
++        .expect("HTTP response");
+     assert_eq!(response.status().as_u16(), 409);
+     assert_eq!(task.await.expect("server task").len(), 1);
+ }
+@@ -130,13 +138,18 @@ async fn lost_success_replays_exact_request_identity_and_body() {
+     assert_eq!(requests.len(), 2);
+     assert_eq!(requests[0].request_line, requests[1].request_line);
+     assert_eq!(requests[0].body, requests[1].body);
+-    assert_eq!(serde_json::from_slice::<Value>(&requests[0].body).unwrap()["command_id"], "same-intent");
++    assert_eq!(
++        serde_json::from_slice::<Value>(&requests[0].body).unwrap()["command_id"],
++        "same-intent"
++    );
+ }
+ 
+ #[tokio::test]
+ async fn transport_failure_replays_exact_bytes_then_stops_on_success() {
+     let (base_url, task) = server(vec![None, Some((200, "{}"))]).await;
+-    send_with_retry(request(&http_client(), &base_url)).await.expect("transport recovery");
++    send_with_retry(request(&http_client(), &base_url))
++        .await
++        .expect("transport recovery");
+     let requests = task.await.expect("server task");
+     assert_eq!(requests.len(), 2);
+     assert_eq!(requests[0].body, requests[1].body);
+@@ -145,7 +158,9 @@ async fn transport_failure_replays_exact_bytes_then_stops_on_success() {
+ #[tokio::test]
+ async fn transport_retries_are_bounded_to_four_attempts() {
+     let (base_url, task) = server(vec![None, None, None, None]).await;
+-    assert!(send_with_retry(request(&http_client(), &base_url)).await.is_err());
++    assert!(send_with_retry(request(&http_client(), &base_url))
++        .await
++        .is_err());
+     let requests = task.await.expect("server task");
+     assert_eq!(requests.len(), 4);
+     assert!(requests.iter().all(|item| item.body == requests[0].body));
+@@ -179,7 +194,11 @@ async fn malformed_success_is_not_reported_as_a_decoded_receipt() {
+         session: "fixture-session".into(),
+     };
+     let result: Result<Value, String> = client
+-        .post(&identity, "/same-intent", &json!({"command_id": "same-intent"}))
++        .post(
++            &identity,
++            "/same-intent",
++            &json!({"command_id": "same-intent"}),
++        )
+         .await;
+     assert!(result.is_err());
+     assert_eq!(task.await.expect("server task").len(), 1);
+diff --git a/trillionnium/crates/trnm-game-server/src/bin/trnm-moderation-console.rs b/trillionnium/crates/trnm-game-server/src/bin/trnm-moderation-console.rs
+index 93946fc..8200422 100644
+--- a/trillionnium/crates/trnm-game-server/src/bin/trnm-moderation-console.rs
++++ b/trillionnium/crates/trnm-game-server/src/bin/trnm-moderation-console.rs
+@@ -41,10 +41,7 @@ async fn run() -> Result<(), String> {
+                 .await
+                 .map_err(|error| error.to_string())?;
+             let status_code = response.status();
+-            let body = response
+-                .text()
+-                .await
+-                .map_err(|error| error.to_string())?;
++            let body = response.text().await.map_err(|error| error.to_string())?;
+             if !status_code.is_success() {
+                 return Err(format!("moderation queue rejected ({status_code}): {body}"));
+             }
+@@ -77,10 +74,7 @@ async fn run() -> Result<(), String> {
+                 .await
+                 .map_err(|error| error.to_string())?;
+             let status_code = response.status();
+-            let body = response
+-                .text()
+-                .await
+-                .map_err(|error| error.to_string())?;
++            let body = response.text().await.map_err(|error| error.to_string())?;
+             if !status_code.is_success() {
+                 return Err(format!(
+                     "moderation action rejected ({status_code}): {body}"
+@@ -106,10 +100,7 @@ async fn run() -> Result<(), String> {
+                 .await
+                 .map_err(|error| error.to_string())?;
+             let status_code = response.status();
+-            let body = response
+-                .text()
+-                .await
+-                .map_err(|error| error.to_string())?;
++            let body = response.text().await.map_err(|error| error.to_string())?;
+             if !status_code.is_success() {
+                 return Err(format!("appeal queue rejected ({status_code}): {body}"));
+             }
+@@ -135,10 +126,7 @@ async fn run() -> Result<(), String> {
+                 .await
+                 .map_err(|error| error.to_string())?;
+             let status_code = response.status();
+-            let body = response
+-                .text()
+-                .await
+-                .map_err(|error| error.to_string())?;
++            let body = response.text().await.map_err(|error| error.to_string())?;
+             if !status_code.is_success() {
+                 return Err(format!("appeal action rejected ({status_code}): {body}"));
+             }
+@@ -168,10 +156,7 @@ async fn run() -> Result<(), String> {
+                     .await
+                     .map_err(|error| error.to_string())?;
+                 let status_code = response.status();
+-                let body = response
+-                    .text()
+-                    .await
+-                    .map_err(|error| error.to_string())?;
++                let body = response.text().await.map_err(|error| error.to_string())?;
+                 if !status_code.is_success() {
+                     return Err(format!(
+                         "season automation rejected ({status_code}): {body}"
+@@ -222,10 +207,7 @@ async fn run() -> Result<(), String> {
+                 .await
+                 .map_err(|error| error.to_string())?;
+             let status_code = response.status();
+-            let body = response
+-                .text()
+-                .await
+-                .map_err(|error| error.to_string())?;
++            let body = response.text().await.map_err(|error| error.to_string())?;
+             if !status_code.is_success() {
+                 return Err(format!("season action rejected ({status_code}): {body}"));
+             }
+@@ -249,10 +231,7 @@ async fn run() -> Result<(), String> {
+                 .await
+                 .map_err(|error| error.to_string())?;
+             let status_code = response.status();
+-            let body = response
+-                .text()
+-                .await
+-                .map_err(|error| error.to_string())?;
++            let body = response.text().await.map_err(|error| error.to_string())?;
+             if !status_code.is_success() {
+                 return Err(format!("fleet action rejected ({status_code}): {body}"));
+             }
+@@ -279,10 +258,7 @@ async fn run() -> Result<(), String> {
+                 .await
+                 .map_err(|error| error.to_string())?;
+             let status_code = response.status();
+-            let body = response
+-                .text()
+-                .await
+-                .map_err(|error| error.to_string())?;
++            let body = response.text().await.map_err(|error| error.to_string())?;
+             if !status_code.is_success() {
+                 return Err(format!("shift start rejected ({status_code}): {body}"));
+             }
+@@ -312,10 +288,7 @@ async fn run() -> Result<(), String> {
+                 .await
+                 .map_err(|error| error.to_string())?;
+             let status_code = response.status();
+-            let body = response
+-                .text()
+-                .await
+-                .map_err(|error| error.to_string())?;
++            let body = response.text().await.map_err(|error| error.to_string())?;
+             if !status_code.is_success() {
+                 return Err(format!("shift {action} rejected ({status_code}): {body}"));
+             }
+@@ -340,10 +313,7 @@ async fn run() -> Result<(), String> {
+                 .await
+                 .map_err(|error| error.to_string())?;
+             let status_code = response.status();
+-            let body = response
+-                .text()
+-                .await
+-                .map_err(|error| error.to_string())?;
++            let body = response.text().await.map_err(|error| error.to_string())?;
+             if !status_code.is_success() {
+                 return Err(format!("case claim rejected ({status_code}): {body}"));
+             }
+diff --git a/trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs b/trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs
+index 377608c..b2d6a70 100644
+--- a/trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs
++++ b/trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs
+@@ -339,10 +339,7 @@ impl OnlineClient {
+             .await
+             .map_err(|error| error.to_string())?;
+         let status = response.status();
+-        let bytes = response
+-            .bytes()
+-            .await
+-            .map_err(|error| error.to_string())?;
++        let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+         if !status.is_success() {
+             return Err(format!(
+                 "POST {path} returned {status}: {}",
+@@ -366,10 +363,7 @@ impl OnlineClient {
+             .json(body);
+         let response = send_with_lost_response_retry(request).await?;
+         let status = response.status();
+-        let bytes = response
+-            .bytes()
+-            .await
+-            .map_err(|error| error.to_string())?;
++        let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+         if !status.is_success() {
+             return Err(format!(
+                 "POST {path} returned {status}: {}",
+@@ -393,10 +387,7 @@ impl OnlineClient {
+         let started = Instant::now();
+         let response = send_with_retry(request).await?;
+         let status = response.status();
+-        let bytes = response
+-            .bytes()
+-            .await
+-            .map_err(|error| error.to_string())?;
++        let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+         if !status.is_success() {
+             return Err(format!(
+                 "POST {path} returned {status}: {}",
+@@ -621,9 +612,7 @@ fn publication_transition_is_recoverable(status: u16, body: &Value) -> bool {
+         && body["recoverable"].as_bool() == Some(true)
+ }
+ 
+-async fn send_with_retry(
+-    request: reqwest::RequestBuilder,
+-) -> Result<reqwest::Response, String> {
++async fn send_with_retry(request: reqwest::RequestBuilder) -> Result<reqwest::Response, String> {
+     send_with_retry_inner(request, false).await
+ }
+ 
+@@ -869,36 +858,38 @@ async fn clear_living_enemies(
+     let host_attack_issued = !host_units.is_empty();
+     let mut attack_snapshot = snapshot;
+     if host_attack_issued {
+-        let _ = client.submit(
+-            host,
+-            match_id,
+-            &attack_snapshot,
+-            CommandSpec {
+-                command_id: format!("{command_prefix}-host-attack"),
+-                kind: RtsOrderKind::Attack,
+-                subjects: host_units,
+-                target: objective,
+-                queued: false,
+-            },
+-        )
+-        .await?;
++        let _ = client
++            .submit(
++                host,
++                match_id,
++                &attack_snapshot,
++                CommandSpec {
++                    command_id: format!("{command_prefix}-host-attack"),
++                    kind: RtsOrderKind::Attack,
++                    subjects: host_units,
++                    target: objective,
++                    queued: false,
++                },
++            )
++            .await?;
+         attack_snapshot = client.snapshot(guest, match_id).await?;
+     }
+     let guest_units = controlled(&attack_snapshot, guest)?;
+     if !guest_units.is_empty() {
+-        let _ = client.submit(
+-            guest,
+-            match_id,
+-            &attack_snapshot,
+-            CommandSpec {
+-                command_id: format!("{command_prefix}-guest-attack"),
+-                kind: RtsOrderKind::Attack,
+-                subjects: guest_units,
+-                target: objective,
+-                queued: host_attack_issued,
+-            },
+-        )
+-        .await?;
++        let _ = client
++            .submit(
++                guest,
++                match_id,
++                &attack_snapshot,
++                CommandSpec {
++                    command_id: format!("{command_prefix}-guest-attack"),
++                    kind: RtsOrderKind::Attack,
++                    subjects: guest_units,
++                    target: objective,
++                    queued: host_attack_issued,
++                },
++            )
++            .await?;
+     }
+ 
+     let cleared = wait_for(client, host, match_id, phase_timeout(), |candidate| {
+@@ -929,19 +920,20 @@ async fn move_squad_to_objective(
+     if units.is_empty() {
+         return Err(format!("{command_prefix} has no living objective holder"));
+     }
+-    let _ = client.submit(
+-        identity,
+-        match_id,
+-        snapshot,
+-        CommandSpec {
+-            command_id: format!("{command_prefix}-move"),
+-            kind: movement.kind,
+-            subjects: units.clone(),
+-            target: movement.target,
+-            queued: false,
+-        },
+-    )
+-    .await?;
++    let _ = client
++        .submit(
++            identity,
++            match_id,
++            snapshot,
++            CommandSpec {
++                command_id: format!("{command_prefix}-move"),
++                kind: movement.kind,
++                subjects: units.clone(),
++                target: movement.target,
++                queued: false,
++            },
++        )
++        .await?;
+     let units = units.into_iter().collect::<std::collections::BTreeSet<_>>();
+     let moved = wait_for(client, identity, match_id, phase_timeout(), |candidate| {
+         candidate.snapshot["phase"] == "complete"
+@@ -1041,19 +1033,20 @@ async fn move_largest_squad_to_objective_and_hold(
+     if hold_units.is_empty() {
+         return Err(format!("{command_prefix} objective squad died before hold"));
+     }
+-    let _ = client.submit(
+-        capture_identity,
+-        match_id,
+-        &moved,
+-        CommandSpec {
+-            command_id: format!("{command_prefix}-hold"),
+-            kind: RtsOrderKind::Hold,
+-            subjects: hold_units,
+-            target: objective,
+-            queued: false,
+-        },
+-    )
+-    .await?;
++    let _ = client
++        .submit(
++            capture_identity,
++            match_id,
++            &moved,
++            CommandSpec {
++                command_id: format!("{command_prefix}-hold"),
++                kind: RtsOrderKind::Hold,
++                subjects: hold_units,
++                target: objective,
++                queued: false,
++            },
++        )
++        .await?;
+     Ok(moved)
+ }
+ 
+@@ -1098,72 +1091,77 @@ async fn run() -> Result<Value, String> {
+     let run_id = format!("online-e2e-{}", chrono::Utc::now().timestamp_millis());
+     let slot_key = std::env::var("TRNM_ONLINE_SLOT_KEY").unwrap_or_else(|_| run_id.clone());
+ 
+-    let campaign: OnlineCampaignView = client.post(
+-        &host,
+-        "/v1/online/campaigns/connect",
+-        &OnlineCampaignConnectRequest {
+-            protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
+-            build_id: ONLINE_AUTHORITY_BUILD.to_string(),
+-            player_id: host.player_id.clone(),
+-            account_id: host.account_id.clone(),
+-            slot_key: slot_key.clone(),
+-        },
+-    )
+-    .await?;
+-    let guest_campaign: OnlineCampaignView = client.post(
+-        &guest,
+-        "/v1/online/campaigns/connect",
+-        &OnlineCampaignConnectRequest {
+-            protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
+-            build_id: ONLINE_AUTHORITY_BUILD.to_string(),
+-            player_id: guest.player_id.clone(),
+-            account_id: guest.account_id.clone(),
+-            slot_key,
+-        },
+-    )
+-    .await?;
++    let campaign: OnlineCampaignView = client
++        .post(
++            &host,
++            "/v1/online/campaigns/connect",
++            &OnlineCampaignConnectRequest {
++                protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
++                build_id: ONLINE_AUTHORITY_BUILD.to_string(),
++                player_id: host.player_id.clone(),
++                account_id: host.account_id.clone(),
++                slot_key: slot_key.clone(),
++            },
++        )
++        .await?;
++    let guest_campaign: OnlineCampaignView = client
++        .post(
++            &guest,
++            "/v1/online/campaigns/connect",
++            &OnlineCampaignConnectRequest {
++                protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
++                build_id: ONLINE_AUTHORITY_BUILD.to_string(),
++                player_id: guest.player_id.clone(),
++                account_id: guest.account_id.clone(),
++                slot_key,
++            },
++        )
++        .await?;
+     let (created, started, start_lost_response_retry_verified) =
+         if let Ok(match_id) = std::env::var("TRNM_ONLINE_EXISTING_MATCH_ID") {
+             let snapshot = client.snapshot(&host, &match_id).await?;
+             (snapshot.view.clone(), snapshot.view, false)
+         } else {
+-            let created: OnlineMatchView = client.post_one_shot_non_idempotent(
+-                &host,
+-                "/v1/online/matches",
+-                &OnlineMatchCreateRequest {
+-                    protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
+-                    build_id: ONLINE_AUTHORITY_BUILD.to_string(),
+-                    campaign_id: campaign.campaign_id.clone(),
+-                    map_id: "first_contact".to_string(),
+-                    expected_campaign_revision: campaign.campaign_revision,
+-                },
+-            )
+-            .await?;
+-            let _: OnlineMatchView = client.post_one_shot_non_idempotent(
+-                &guest,
+-                "/v1/online/matches/join",
+-                &OnlineMatchJoinRequest {
+-                    protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
+-                    build_id: ONLINE_AUTHORITY_BUILD.to_string(),
+-                    player_id: guest.player_id.clone(),
+-                    account_id: guest.account_id.clone(),
+-                    campaign_id: guest_campaign.campaign_id.clone(),
+-                    join_code: created.join_code.clone(),
+-                },
+-            )
+-            .await?;
+-            let started = client.start_with_lost_response_retry(
+-                &host,
+-                &created.match_id,
+-                &OnlineMatchStartRequest {
+-                    protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
+-                    build_id: ONLINE_AUTHORITY_BUILD.to_string(),
+-                    player_id: host.player_id.clone(),
+-                    account_id: host.account_id.clone(),
+-                    expected_match_revision: 0,
+-                },
+-            )
+-            .await?;
++            let created: OnlineMatchView = client
++                .post_one_shot_non_idempotent(
++                    &host,
++                    "/v1/online/matches",
++                    &OnlineMatchCreateRequest {
++                        protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
++                        build_id: ONLINE_AUTHORITY_BUILD.to_string(),
++                        campaign_id: campaign.campaign_id.clone(),
++                        map_id: "first_contact".to_string(),
++                        expected_campaign_revision: campaign.campaign_revision,
++                    },
++                )
++                .await?;
++            let _: OnlineMatchView = client
++                .post_one_shot_non_idempotent(
++                    &guest,
++                    "/v1/online/matches/join",
++                    &OnlineMatchJoinRequest {
++                        protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
++                        build_id: ONLINE_AUTHORITY_BUILD.to_string(),
++                        player_id: guest.player_id.clone(),
++                        account_id: guest.account_id.clone(),
++                        campaign_id: guest_campaign.campaign_id.clone(),
++                        join_code: created.join_code.clone(),
++                    },
++                )
++                .await?;
++            let started = client
++                .start_with_lost_response_retry(
++                    &host,
++                    &created.match_id,
++                    &OnlineMatchStartRequest {
++                        protocol_version: ONLINE_AUTHORITY_PROTOCOL.to_string(),
++                        build_id: ONLINE_AUTHORITY_BUILD.to_string(),
++                        player_id: host.player_id.clone(),
++                        account_id: host.account_id.clone(),
++                        expected_match_revision: 0,
++                    },
++                )
++                .await?;
+             (created, started, true)
+         };
+     if started.phase != OnlineMatchPhase::Running || started.members.len() != 2 {
+@@ -1201,19 +1199,20 @@ async fn run() -> Result<Value, String> {
+         let command_id = format!("{run_id}-host-move");
+         let subjects = host_units.clone();
+         tokio::spawn(async move {
+-            client.submit(
+-                &host,
+-                &match_id,
+-                &snapshot,
+-                CommandSpec {
+-                    command_id,
+-                    kind: RtsOrderKind::Move,
+-                    subjects,
+-                    target: approach,
+-                    queued: true,
+-                },
+-            )
+-            .await
++            client
++                .submit(
++                    &host,
++                    &match_id,
++                    &snapshot,
++                    CommandSpec {
++                        command_id,
++                        kind: RtsOrderKind::Move,
++                        subjects,
++                        target: approach,
++                        queued: true,
++                    },
++                )
++                .await
+         })
+     };
+     let guest_submit = {
+@@ -1224,19 +1223,20 @@ async fn run() -> Result<Value, String> {
+         let command_id = format!("{run_id}-guest-concurrent-move");
+         let subjects = guest_units.clone();
+         tokio::spawn(async move {
+-            client.submit(
+-                &guest,
+-                &match_id,
+-                &snapshot,
+-                CommandSpec {
+-                    command_id,
+-                    kind: RtsOrderKind::Move,
+-                    subjects,
+-                    target: approach,
+-                    queued: true,
+-                },
+-            )
+-            .await
++            client
++                .submit(
++                    &guest,
++                    &match_id,
++                    &snapshot,
++                    CommandSpec {
++                        command_id,
++                        kind: RtsOrderKind::Move,
++                        subjects,
++                        target: approach,
++                        queued: true,
++                    },
++                )
++                .await
+         })
+     };
+     let (first, first_request) = host_submit
+@@ -1276,19 +1276,20 @@ async fn run() -> Result<Value, String> {
+         let effect_units = &host_units;
+         let effect_snapshot = client.snapshot(effect_identity, &created.match_id).await?;
+         let effect_started = Instant::now();
+-        let (receipt, _) = client.submit(
+-            effect_identity,
+-            &created.match_id,
+-            &effect_snapshot,
+-            CommandSpec {
+-                command_id: format!("{run_id}-effect-sample-{sample}"),
+-                kind: RtsOrderKind::Move,
+-                subjects: effect_units.clone(),
+-                target: approach,
+-                queued: false,
+-            },
+-        )
+-        .await?;
++        let (receipt, _) = client
++            .submit(
++                effect_identity,
++                &created.match_id,
++                &effect_snapshot,
++                CommandSpec {
++                    command_id: format!("{run_id}-effect-sample-{sample}"),
++                    kind: RtsOrderKind::Move,
++                    subjects: effect_units.clone(),
++                    target: approach,
++                    queued: false,
++                },
++            )
++            .await?;
+         tokio::task::block_in_place(|| {
+             wait_for_stream_total_order(
+                 &mut state_stream,
+@@ -1327,24 +1328,27 @@ async fn run() -> Result<Value, String> {
+     let reconnect_cursor = 0_u64;
+     let reconnect_hash = "stale-race-snapshot".to_string();
+     let mut reconnect_threads = Vec::with_capacity(reconnect_command_race_pipeline_depth);
+-    let validate_reconnect =
+-        |reconnect_thread: tokio::task::JoinHandle<Result<OnlineReconnectResponse, String>>| async move {
+-            let raced_reconnect = reconnect_thread
+-                .await
+-                .map_err(|_| "reconnect race request panicked".to_string())??;
+-            if raced_reconnect.next_receipt_sequence < reconnect_cursor
+-                || raced_reconnect.view.next_sequence < raced_reconnect.next_receipt_sequence
+-            {
+-                return Err(
+-                    "reconnect race returned a regressed or impossible replay cursor".to_string(),
+-                );
+-            }
+-            Ok(())
+-        };
++    let validate_reconnect = |reconnect_thread: tokio::task::JoinHandle<
++        Result<OnlineReconnectResponse, String>,
++    >| async move {
++        let raced_reconnect = reconnect_thread
++            .await
++            .map_err(|_| "reconnect race request panicked".to_string())??;
++        if raced_reconnect.next_receipt_sequence < reconnect_cursor
++            || raced_reconnect.view.next_sequence < raced_reconnect.next_receipt_sequence
++        {
++            return Err(
++                "reconnect race returned a regressed or impossible replay cursor".to_string(),
++            );
++        }
++        Ok(())
++    };
+     for round in 0..reconnect_command_race_rounds {
+         let command_identity = host.clone();
+         let subjects = host_units.clone();
+-        let command_snapshot = client.snapshot(&command_identity, &created.match_id).await?;
++        let command_snapshot = client
++            .snapshot(&command_identity, &created.match_id)
++            .await?;
+         let barrier = Arc::new(Barrier::new(2));
+         let race_command_id = format!("{run_id}-reconnect-race-{round}");
+         let command_thread = {
+@@ -1353,19 +1357,20 @@ async fn run() -> Result<Value, String> {
+             let barrier = Arc::clone(&barrier);
+             tokio::spawn(async move {
+                 barrier.wait().await;
+-                client.submit(
+-                    &command_identity,
+-                    &match_id,
+-                    &command_snapshot,
+-                    CommandSpec {
+-                        command_id: race_command_id,
+-                        kind: RtsOrderKind::Move,
+-                        subjects,
+-                        target: approach,
+-                        queued: false,
+-                    },
+-                )
+-                .await
++                client
++                    .submit(
++                        &command_identity,
++                        &match_id,
++                        &command_snapshot,
++                        CommandSpec {
++                            command_id: race_command_id,
++                            kind: RtsOrderKind::Move,
++                            subjects,
++                            target: approach,
++                            queued: false,
++                        },
++                    )
++                    .await
+             })
+         };
+         let reconnect_thread = {
+@@ -1376,13 +1381,14 @@ async fn run() -> Result<Value, String> {
+             let last_snapshot_hash = reconnect_hash.clone();
+             tokio::spawn(async move {
+                 barrier.wait().await;
+-                client.reconnect(
+-                    &reconnect_identity,
+-                    &match_id,
+-                    reconnect_cursor,
+-                    last_snapshot_hash,
+-                )
+-                .await
++                client
++                    .reconnect(
++                        &reconnect_identity,
++                        &match_id,
++                        reconnect_cursor,
++                        last_snapshot_hash,
++                    )
++                    .await
+             })
+         };
+         command_thread
+@@ -1396,12 +1402,13 @@ async fn run() -> Result<Value, String> {
+     for reconnect_thread in reconnect_threads {
+         validate_reconnect(reconnect_thread).await?;
+     }
+-    let duplicate: OnlineCommandReceipt = client.post(
+-        &host,
+-        &format!("/v1/online/matches/{}/commands", created.match_id),
+-        &first_request,
+-    )
+-    .await?;
++    let duplicate: OnlineCommandReceipt = client
++        .post(
++            &host,
++            &format!("/v1/online/matches/{}/commands", created.match_id),
++            &first_request,
++        )
++        .await?;
+     if !duplicate.duplicate
+         || duplicate.sequence != first.sequence
+         || duplicate.input_sequence != first.input_sequence
+@@ -1410,12 +1417,13 @@ async fn run() -> Result<Value, String> {
+     }
+     let mut tampered_duplicate = first_request.clone();
+     tampered_duplicate.target_tick = tampered_duplicate.target_tick.saturating_add(1);
+-    let (status, _) = client.post_status(
+-        &host,
+-        &format!("/v1/online/matches/{}/commands", created.match_id),
+-        &tampered_duplicate,
+-    )
+-    .await?;
++    let (status, _) = client
++        .post_status(
++            &host,
++            &format!("/v1/online/matches/{}/commands", created.match_id),
++            &tampered_duplicate,
++        )
++        .await?;
+     if status != 409 {
+         return Err(format!(
+             "tampered duplicate returned HTTP {status}, expected 409"
+@@ -1425,12 +1433,13 @@ async fn run() -> Result<Value, String> {
+     skipped.command_id = format!("{run_id}-sequence-skip");
+     skipped.input_sequence = skipped.input_sequence.map(|value| value.saturating_add(2));
+     skipped.expected_match_revision = first.match_revision;
+-    let (status, _) = client.post_status(
+-        &host,
+-        &format!("/v1/online/matches/{}/commands", created.match_id),
+-        &skipped,
+-    )
+-    .await?;
++    let (status, _) = client
++        .post_status(
++            &host,
++            &format!("/v1/online/matches/{}/commands", created.match_id),
++            &skipped,
++        )
++        .await?;
+     if status != 409 {
+         return Err(format!(
+             "input sequence skip returned HTTP {status}, expected 409"
+@@ -1454,12 +1463,13 @@ async fn run() -> Result<Value, String> {
+     theft.order.frame = u32::try_from(theft.target_tick)
+         .map_err(|_| "control-theft target tick overflow".to_string())?;
+     theft.order.subject_actor_ids = host_units.clone();
+-    let (status, _) = client.post_status(
+-        &guest,
+-        &format!("/v1/online/matches/{}/commands", created.match_id),
+-        &theft,
+-    )
+-    .await?;
++    let (status, _) = client
++        .post_status(
++            &guest,
++            &format!("/v1/online/matches/{}/commands", created.match_id),
++            &theft,
++        )
++        .await?;
+     if status != 403 {
+         return Err(format!(
+             "control theft returned HTTP {status}, expected 403"
+@@ -1468,12 +1478,13 @@ async fn run() -> Result<Value, String> {
+     let mut old_build = theft;
+     old_build.command_id = format!("{run_id}-old-build");
+     old_build.build_id = "trnm-online-old-build".to_string();
+-    let (status, _) = client.post_status(
+-        &guest,
+-        &format!("/v1/online/matches/{}/commands", created.match_id),
+-        &old_build,
+-    )
+-    .await?;
++    let (status, _) = client
++        .post_status(
++            &guest,
++            &format!("/v1/online/matches/{}/commands", created.match_id),
++            &old_build,
++        )
++        .await?;
+     if status != 426 {
+         return Err(format!("old build returned HTTP {status}, expected 426"));
+     }
+@@ -1488,13 +1499,14 @@ async fn run() -> Result<Value, String> {
+     if restart_recovery {
+         restart_server(&base_url).await?;
+     }
+-    let reconnected = client.reconnect(
+-        &guest,
+-        &created.match_id,
+-        0,
+-        "stale-client-snapshot".to_string(),
+-    )
+-    .await?;
++    let reconnected = client
++        .reconnect(
++            &guest,
++            &created.match_id,
++            0,
++            "stale-client-snapshot".to_string(),
++        )
++        .await?;
+     if reconnected.reconnect_count < reconnect_command_race_rounds.saturating_add(1)
+         || !reconnected.full_snapshot_required
+         || reconnected.replayed_commands.len() != before_restart.view.next_sequence as usize
+@@ -1578,19 +1590,20 @@ async fn run() -> Result<Value, String> {
+         ));
+     }
+     let guest_ready = client.snapshot(&guest, &created.match_id).await?;
+-    let _ = client.submit(
+-        &guest,
+-        &created.match_id,
+-        &guest_ready,
+-        CommandSpec {
+-            command_id: format!("{run_id}-guest-ability"),
+-            kind: RtsOrderKind::Ability,
+-            subjects: controlled(&guest_ready, &guest)?,
+-            target: objective,
+-            queued: false,
+-        },
+-    )
+-    .await?;
++    let _ = client
++        .submit(
++            &guest,
++            &created.match_id,
++            &guest_ready,
++            CommandSpec {
++                command_id: format!("{run_id}-guest-ability"),
++                kind: RtsOrderKind::Ability,
++                subjects: controlled(&guest_ready, &guest)?,
++                target: objective,
++                queued: false,
++            },
++        )
++        .await?;
+     // The mission actor accepts a primary order plus queued co-op subjects.
+     // Keep both authority partitions active: the unqueued host order starts
+     // the assault and the queued guest order joins it without replacing it.
+@@ -1603,36 +1616,38 @@ async fn run() -> Result<Value, String> {
+     let host_relay_attack_issued = !host_relay_attack_units.is_empty();
+     let mut guest_relay_snapshot = relay_attack;
+     if host_relay_attack_issued {
+-        let _ = client.submit(
+-            &host,
+-            &created.match_id,
+-            &guest_relay_snapshot,
+-            CommandSpec {
+-                command_id: format!("{run_id}-host-attack-relay"),
+-                kind: RtsOrderKind::Attack,
+-                subjects: host_relay_attack_units,
+-                target: objective,
+-                queued: false,
+-            },
+-        )
+-        .await?;
++        let _ = client
++            .submit(
++                &host,
++                &created.match_id,
++                &guest_relay_snapshot,
++                CommandSpec {
++                    command_id: format!("{run_id}-host-attack-relay"),
++                    kind: RtsOrderKind::Attack,
++                    subjects: host_relay_attack_units,
++                    target: objective,
++                    queued: false,
++                },
++            )
++            .await?;
+         guest_relay_snapshot = client.snapshot(&guest, &created.match_id).await?;
+     }
+     let guest_relay_attack_units = controlled(&guest_relay_snapshot, &guest)?;
+     if !guest_relay_attack_units.is_empty() {
+-        let _ = client.submit(
+-            &guest,
+-            &created.match_id,
+-            &guest_relay_snapshot,
+-            CommandSpec {
+-                command_id: format!("{run_id}-guest-attack-relay"),
+-                kind: RtsOrderKind::Attack,
+-                subjects: guest_relay_attack_units,
+-                target: objective,
+-                queued: host_relay_attack_issued,
+-            },
+-        )
+-        .await?;
++        let _ = client
++            .submit(
++                &guest,
++                &created.match_id,
++                &guest_relay_snapshot,
++                CommandSpec {
++                    command_id: format!("{run_id}-guest-attack-relay"),
++                    kind: RtsOrderKind::Attack,
++                    subjects: guest_relay_attack_units,
++                    target: objective,
++                    queued: host_relay_attack_issued,
++                },
++            )
++            .await?;
+     }
+     let relay = wait_for(
+         &client,
+@@ -1699,19 +1714,20 @@ async fn run() -> Result<Value, String> {
+             .cloned()
+             .collect::<std::collections::BTreeSet<_>>();
+         if selected_signature_ability_ready(&wave_snapshot.snapshot, &ability_selected) {
+-            let _ = client.submit(
+-                ability_identity,
+-                &created.match_id,
+-                &wave_snapshot,
+-                CommandSpec {
+-                    command_id: format!("{run_id}-wave-{wave}-ability"),
+-                    kind: RtsOrderKind::Ability,
+-                    subjects: ability_units,
+-                    target: objective,
+-                    queued: false,
+-                },
+-            )
+-            .await?;
++            let _ = client
++                .submit(
++                    ability_identity,
++                    &created.match_id,
++                    &wave_snapshot,
++                    CommandSpec {
++                        command_id: format!("{run_id}-wave-{wave}-ability"),
++                        kind: RtsOrderKind::Ability,
++                        subjects: ability_units,
++                        target: objective,
++                        queued: false,
++                    },
++                )
++                .await?;
+         }
+         let wave_snapshot = client.snapshot(&host, &created.match_id).await?;
+         let cleared = clear_living_enemies(
+@@ -1781,12 +1797,13 @@ async fn run() -> Result<Value, String> {
+         )
+         .await?
+     };
+-    let terminal_duplicate: OnlineCommandReceipt = client.post(
+-        &host,
+-        &format!("/v1/online/matches/{}/commands", created.match_id),
+-        &first_request,
+-    )
+-    .await?;
++    let terminal_duplicate: OnlineCommandReceipt = client
++        .post(
++            &host,
++            &format!("/v1/online/matches/{}/commands", created.match_id),
++            &first_request,
++        )
++        .await?;
+     if !terminal_duplicate.duplicate || terminal_duplicate.sequence != first.sequence {
+         return Err("terminal exact duplicate did not return the durable receipt".to_string());
+     }
+diff --git a/trillionnium/crates/trnm-game-server/src/cex.rs b/trillionnium/crates/trnm-game-server/src/cex.rs
+index 048264c..27415e4 100644
+--- a/trillionnium/crates/trnm-game-server/src/cex.rs
++++ b/trillionnium/crates/trnm-game-server/src/cex.rs
+@@ -22,8 +22,7 @@ use trnm_economy_protocol::{
+ const PLAYER_SESSION_HEADER: &str = "x-trnm-player-session";
+ const GAME_AUTHORITY_HEADER: &str = "x-trnm-game-authority";
+ const INTENT_HASH_HEADER: &str = "x-trnm-intent-sha256";
+-const CEX_SETTLEMENT_RECEIPT_LOOKUP_CONTRACT: &str =
+-    "trnm_cex_settlement_receipt_lookup_v1";
++const CEX_SETTLEMENT_RECEIPT_LOOKUP_CONTRACT: &str = "trnm_cex_settlement_receipt_lookup_v1";
+ const CEX_SETTLEMENT_RECEIPT_LOOKUP_PATH: &str = "/v1/trnm/economy/receipts/by-intent";
+ const SETTLEMENT_OUTBOX_REQUIRED: &str =
+     "external economy settlement is owned by trnm-settlement-worker; synchronous EconomyBackend I/O is prohibited";
+@@ -226,7 +225,11 @@ fn normalize_service_base_url(raw: &str, variable: &str) -> Result<String, Strin
+                 ));
+             }
+         }
+-        _ => return Err(format!("{variable} must use HTTPS, or HTTP on loopback only")),
++        _ => {
++            return Err(format!(
++                "{variable} must use HTTPS, or HTTP on loopback only"
++            ))
++        }
+     }
+ 
+     url.set_path("");
+@@ -325,10 +328,12 @@ impl CexClient {
+         if signer_token.len() < 32 {
+             return Err("TRNM_ENTITLEMENT_SIGNER_TOKEN must be at least 32 characters".to_string());
+         }
+-        reqwest::header::HeaderValue::from_str(&game_authority_token)
+-            .map_err(|_| "TRNM_GAME_AUTHORITY_TOKEN must be a valid HTTP header value".to_string())?;
+-        reqwest::header::HeaderValue::from_str(&signer_token)
+-            .map_err(|_| "TRNM_ENTITLEMENT_SIGNER_TOKEN must be a valid HTTP header value".to_string())?;
++        reqwest::header::HeaderValue::from_str(&game_authority_token).map_err(|_| {
++            "TRNM_GAME_AUTHORITY_TOKEN must be a valid HTTP header value".to_string()
++        })?;
++        reqwest::header::HeaderValue::from_str(&signer_token).map_err(|_| {
++            "TRNM_ENTITLEMENT_SIGNER_TOKEN must be a valid HTTP header value".to_string()
++        })?;
+         let async_client = reqwest::Client::builder()
+             // Custom credential headers must never be forwarded to a redirect target.
+             .redirect(reqwest::redirect::Policy::none())
+@@ -516,7 +521,10 @@ impl CexClient {
+             .send()
+             .await
+             .map_err(|error| {
+-                ExternalSettlementError::transport("isolated signer receipt lookup transport", error)
++                ExternalSettlementError::transport(
++                    "isolated signer receipt lookup transport",
++                    error,
++                )
+             })?;
+         if response.status() == StatusCode::NOT_FOUND {
+             return Ok(None);
+@@ -605,9 +613,7 @@ impl CexClient {
+             && authorized.amount_credits.unwrap_or_default() > 0
+         {
+             let actor = authorized.actors.first().ok_or_else(|| {
+-                ExternalSettlementError::Permanent(
+-                    "reward intent has no primary actor".to_string(),
+-                )
++                ExternalSettlementError::Permanent("reward intent has no primary actor".to_string())
+             })?;
+             let account_id = actor.account_id.clone().ok_or_else(|| {
+                 ExternalSettlementError::Permanent("reward intent has no account".to_string())
+@@ -625,11 +631,12 @@ impl CexClient {
+                         ))
+                     })
+             };
+-            let issued_at = DateTime::<Utc>::from_timestamp(issued_at_epoch, 0).ok_or_else(|| {
+-                ExternalSettlementError::Permanent(
+-                    "settlement entitlement issued_at is outside chrono range".to_string(),
+-                )
+-            })?;
++            let issued_at =
++                DateTime::<Utc>::from_timestamp(issued_at_epoch, 0).ok_or_else(|| {
++                    ExternalSettlementError::Permanent(
++                        "settlement entitlement issued_at is outside chrono range".to_string(),
++                    )
++                })?;
+             let entitlement = ServerSignedValueEntitlementV2 {
+                 contract_version: SERVER_SIGNED_VALUE_ENTITLEMENT_V2_CONTRACT.to_string(),
+                 entitlement_id: stable_entitlement_id(authorization_request_id),
+@@ -661,10 +668,7 @@ impl CexClient {
+                 nonce: nonce.to_string(),
+                 signature: String::new(),
+             };
+-            let signed = match self
+-                .lookup_signer_receipt(authorization_request_id)
+-                .await?
+-            {
++            let signed = match self.lookup_signer_receipt(authorization_request_id).await? {
+                 Some(existing) => existing,
+                 None => {
+                     self.create_signer_receipt(authorization_request_id, &entitlement)
+@@ -826,10 +830,10 @@ impl EconomyBackend for CexClient {
+ #[cfg(test)]
+ mod tests {
+     use super::{
+-        bounded_error_body, normalize_service_base_url, retryable_status,
+-        serialized_intent_hash, stable_entitlement_id, CexSettlementReceiptLookupResponse,
+-        CexClient, ExternalSettlementError, CEX_SETTLEMENT_RECEIPT_LOOKUP_CONTRACT,
+-        INTENT_HASH_HEADER, MAX_REMOTE_ERROR_BODY_BYTES, SETTLEMENT_OUTBOX_REQUIRED,
++        bounded_error_body, normalize_service_base_url, retryable_status, serialized_intent_hash,
++        stable_entitlement_id, CexClient, CexSettlementReceiptLookupResponse,
++        ExternalSettlementError, CEX_SETTLEMENT_RECEIPT_LOOKUP_CONTRACT, INTENT_HASH_HEADER,
++        MAX_REMOTE_ERROR_BODY_BYTES, SETTLEMENT_OUTBOX_REQUIRED,
+     };
+     use crate::signer_protocol::{
+         EntitlementSignRequest, EntitlementSignResponse, ENTITLEMENT_SIGNER_CONTRACT,
+@@ -1010,9 +1014,7 @@ mod tests {
+             .route("/v1/trnm/economy/intents", post(cex_submit))
+             .route("/oversized-error", get(oversized_chunked_error))
+             .with_state(state.clone());
+-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+-            .await
+-            .unwrap();
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+         let address = listener.local_addr().unwrap();
+         let task = tokio::spawn(async move {
+             axum::serve(listener, app).await.unwrap();
+@@ -1062,7 +1064,10 @@ mod tests {
+         )
+         .unwrap();
+         let intent = base_intent(EconomicIntentKind::CompleteContract, 0);
+-        assert_eq!(client.execute(&intent), Err(SETTLEMENT_OUTBOX_REQUIRED.to_string()));
++        assert_eq!(
++            client.execute(&intent),
++            Err(SETTLEMENT_OUTBOX_REQUIRED.to_string())
++        );
+         assert_eq!(
+             client.wallet_snapshot(
+                 &trnm_economy_protocol::EconomyAccountBinding {
+diff --git a/trillionnium/crates/trnm-game-server/src/cex_response_policy_tests.rs b/trillionnium/crates/trnm-game-server/src/cex_response_policy_tests.rs
+index 8824a80..00b1191 100644
+--- a/trillionnium/crates/trnm-game-server/src/cex_response_policy_tests.rs
++++ b/trillionnium/crates/trnm-game-server/src/cex_response_policy_tests.rs
+@@ -6,17 +6,26 @@ use super::{
+     CEX_SETTLEMENT_RECEIPT_LOOKUP_CONTRACT, MAX_REMOTE_SUCCESS_BODY_BYTES,
+ };
+ use axum::{
+-    body::Body, http::StatusCode, response::Response, routing::{get, post}, Json, Router,
++    body::Body,
++    http::StatusCode,
++    response::Response,
++    routing::{get, post},
++    Json, Router,
+ };
+ use futures_util::{stream, StreamExt};
+ use serde_json::Value;
+ use std::{
+     convert::Infallible,
+-    sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc},
++    sync::{
++        atomic::{AtomicBool, AtomicUsize, Ordering},
++        Arc,
++    },
+     time::Duration,
+ };
+ use tokio::task::JoinHandle;
+-use trnm_economy_protocol::{EconomicIntentKind, EconomicReceipt, ReceiptStatus, SettlementBackendKind};
++use trnm_economy_protocol::{
++    EconomicIntentKind, EconomicReceipt, ReceiptStatus, SettlementBackendKind,
++};
+ 
+ struct TestServer {
+     url: String,
+@@ -33,30 +42,51 @@ async fn serve(app: Router) -> TestServer {
+     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+     let address = listener.local_addr().unwrap();
+     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+-    TestServer { url: format!("http://{address}"), task }
++    TestServer {
++        url: format!("http://{address}"),
++        task,
++    }
+ }
+ 
+ fn client(server: &TestServer) -> CexClient {
+-    CexClient::new(server.url.clone(), "g".repeat(24), server.url.clone(), "s".repeat(32)).unwrap()
++    CexClient::new(
++        server.url.clone(),
++        "g".repeat(24),
++        server.url.clone(),
++        "s".repeat(32),
++    )
++    .unwrap()
+ }
+ 
+ async fn response_for(body: Vec<u8>, chunked: bool) -> (reqwest::Response, TestServer) {
+-    let app = Router::new().route("/", get(move || {
+-        let body = body.clone();
+-        async move {
+-            let body = if chunked {
+-                let chunks: Vec<Result<Vec<u8>, Infallible>> =
+-                    body.chunks(4096).map(|chunk| Ok(chunk.to_vec())).collect();
+-                Body::from_stream(stream::iter(chunks))
+-            } else {
+-                Body::from(body)
+-            };
+-            Response::builder().status(StatusCode::OK).body(body).unwrap()
+-        }
+-    }));
++    let app = Router::new().route(
++        "/",
++        get(move || {
++            let body = body.clone();
++            async move {
++                let body = if chunked {
++                    let chunks: Vec<Result<Vec<u8>, Infallible>> =
++                        body.chunks(4096).map(|chunk| Ok(chunk.to_vec())).collect();
++                    Body::from_stream(stream::iter(chunks))
++                } else {
++                    Body::from(body)
++                };
++                Response::builder()
++                    .status(StatusCode::OK)
++                    .body(body)
++                    .unwrap()
++            }
++        }),
++    );
+     let server = serve(app).await;
+-    let response = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap()
+-        .get(&server.url).send().await.unwrap();
++    let response = reqwest::Client::builder()
++        .timeout(Duration::from_secs(5))
++        .build()
++        .unwrap()
++        .get(&server.url)
++        .send()
++        .await
++        .unwrap();
+     (response, server)
+ }
+ 
+@@ -65,7 +95,10 @@ fn accumulator_preserves_bytes_when_limit_is_exceeded() {
+     let mut body = vec![0; MAX_REMOTE_SUCCESS_BODY_BYTES - 1];
+     append_remote_chunk(&mut body, &[1]).unwrap();
+     let before = body.clone();
+-    assert_eq!(append_remote_chunk(&mut body, &[2]), Err("remote_success_body_too_large"));
++    assert_eq!(
++        append_remote_chunk(&mut body, &[2]),
++        Err("remote_success_body_too_large")
++    );
+     assert_eq!(body, before);
+     append_remote_chunk(&mut body, &[]).unwrap();
+     assert_eq!(body, before);
+@@ -76,10 +109,18 @@ async fn exact_limit_is_accepted_with_known_and_chunked_length() {
+     for chunked in [false, true] {
+         let body = format!("\"{}\"", "x".repeat(MAX_REMOTE_SUCCESS_BODY_BYTES - 2)).into_bytes();
+         let (response, _server) = response_for(body, chunked).await;
+-        if chunked { assert!(response.content_length().is_none()); }
+-        else { assert_eq!(response.content_length(), Some(MAX_REMOTE_SUCCESS_BODY_BYTES as u64)); }
+-        assert_eq!(bounded_remote_json::<String>(response).await.unwrap().len(),
+-                   MAX_REMOTE_SUCCESS_BODY_BYTES - 2);
++        if chunked {
++            assert!(response.content_length().is_none());
++        } else {
++            assert_eq!(
++                response.content_length(),
++                Some(MAX_REMOTE_SUCCESS_BODY_BYTES as u64)
++            );
++        }
++        assert_eq!(
++            bounded_remote_json::<String>(response).await.unwrap().len(),
++            MAX_REMOTE_SUCCESS_BODY_BYTES - 2
++        );
+     }
+ }
+ 
+@@ -88,16 +129,29 @@ async fn oversize_is_rejected_with_known_and_chunked_length() {
+     for chunked in [false, true] {
+         let body = format!("\"{}\"", "x".repeat(MAX_REMOTE_SUCCESS_BODY_BYTES - 1)).into_bytes();
+         let (response, _server) = response_for(body, chunked).await;
+-        if chunked { assert!(response.content_length().is_none()); }
+-        assert_eq!(bounded_remote_json::<String>(response).await, Err("remote_success_body_too_large"));
++        if chunked {
++            assert!(response.content_length().is_none());
++        }
++        assert_eq!(
++            bounded_remote_json::<String>(response).await,
++            Err("remote_success_body_too_large")
++        );
+     }
+ }
+ 
+ #[tokio::test]
+ async fn malformed_or_trailing_input_has_static_diagnostics() {
+-    for body in [b"{\"private-test-value\":".to_vec(), b"{} {}".to_vec(), vec![], vec![0xff]] {
++    for body in [
++        b"{\"private-test-value\":".to_vec(),
++        b"{} {}".to_vec(),
++        vec![],
++        vec![0xff],
++    ] {
+         let (response, _server) = response_for(body, true).await;
+-        assert_eq!(bounded_remote_json::<Value>(response).await, Err("remote_success_json_invalid"));
++        assert_eq!(
++            bounded_remote_json::<Value>(response).await,
++            Err("remote_success_json_invalid")
++        );
+     }
+ }
+ 
+@@ -105,20 +159,37 @@ async fn malformed_or_trailing_input_has_static_diagnostics() {
+ async fn valid_prefix_cannot_hide_an_oversized_tail() {
+     let body = format!("{{}}{}", " ".repeat(MAX_REMOTE_SUCCESS_BODY_BYTES)).into_bytes();
+     let (response, _server) = response_for(body, true).await;
+-    assert_eq!(bounded_remote_json::<Value>(response).await, Err("remote_success_body_too_large"));
++    assert_eq!(
++        bounded_remote_json::<Value>(response).await,
++        Err("remote_success_body_too_large")
++    );
+ }
+ 
+ #[tokio::test]
+ async fn body_timeout_remains_a_read_failure() {
+-    let app = Router::new().route("/", get(|| async {
+-        let first = stream::once(async { Ok::<_, Infallible>("{") });
+-        let pending = stream::pending::<Result<&'static str, Infallible>>();
+-        Response::builder().body(Body::from_stream(first.chain(pending))).unwrap()
+-    }));
++    let app = Router::new().route(
++        "/",
++        get(|| async {
++            let first = stream::once(async { Ok::<_, Infallible>("{") });
++            let pending = stream::pending::<Result<&'static str, Infallible>>();
++            Response::builder()
++                .body(Body::from_stream(first.chain(pending)))
++                .unwrap()
++        }),
++    );
+     let server = serve(app).await;
+-    let response = reqwest::Client::builder().timeout(Duration::from_secs(1)).build().unwrap()
+-        .get(&server.url).send().await.unwrap();
+-    assert_eq!(bounded_remote_json::<Value>(response).await, Err("remote_success_body_read_failed"));
++    let response = reqwest::Client::builder()
++        .timeout(Duration::from_secs(1))
++        .build()
++        .unwrap()
++        .get(&server.url)
++        .send()
++        .await
++        .unwrap();
++    assert_eq!(
++        bounded_remote_json::<Value>(response).await,
++        Err("remote_success_body_read_failed")
++    );
+ }
+ 
+ #[tokio::test]
+@@ -126,16 +197,33 @@ async fn signer_lookup_redirects_never_connect_to_another_origin() {
+     for status in [301_u16, 302, 303, 307, 308] {
+         let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+         let location = format!("http://{}/must-not-receive", target.local_addr().unwrap());
+-        let app = Router::new().route("/v1/signer/receipts/request-a", get(move || {
+-            let location = location.clone();
+-            async move { Response::builder().status(status).header("location", location)
+-                .body(Body::empty()).unwrap() }
+-        }));
++        let app = Router::new().route(
++            "/v1/signer/receipts/request-a",
++            get(move || {
++                let location = location.clone();
++                async move {
++                    Response::builder()
++                        .status(status)
++                        .header("location", location)
++                        .body(Body::empty())
++                        .unwrap()
++                }
++            }),
++        );
+         let server = serve(app).await;
+-        assert!(matches!(client(&server).lookup_signer_receipt("request-a").await,
+-                         Err(ExternalSettlementError::Retryable(_))), "status {status}");
+-        assert!(tokio::time::timeout(Duration::from_millis(200), target.accept()).await.is_err(),
+-                "status {status} contacted a redirect target");
++        assert!(
++            matches!(
++                client(&server).lookup_signer_receipt("request-a").await,
++                Err(ExternalSettlementError::Retryable(_))
++            ),
++            "status {status}"
++        );
++        assert!(
++            tokio::time::timeout(Duration::from_millis(200), target.accept())
++                .await
++                .is_err(),
++            "status {status} contacted a redirect target"
++        );
+     }
+ }
+ 
+@@ -144,26 +232,42 @@ async fn relative_redirect_is_not_followed_either() {
+     let hits = Arc::new(AtomicUsize::new(0));
+     let seen = hits.clone();
+     let app = Router::new()
+-        .route("/v1/signer/receipts/request-a", get(|| async {
+-            Response::builder().status(302).header("location", "/target").body(Body::empty()).unwrap()
+-        }))
+-        .route("/target", get(move || {
+-            seen.fetch_add(1, Ordering::SeqCst);
+-            async { "{}" }
+-        }));
++        .route(
++            "/v1/signer/receipts/request-a",
++            get(|| async {
++                Response::builder()
++                    .status(302)
++                    .header("location", "/target")
++                    .body(Body::empty())
++                    .unwrap()
++            }),
++        )
++        .route(
++            "/target",
++            get(move || {
++                seen.fetch_add(1, Ordering::SeqCst);
++                async { "{}" }
++            }),
++        );
+     let server = serve(app).await;
+-    assert!(matches!(client(&server).lookup_signer_receipt("request-a").await,
+-                     Err(ExternalSettlementError::Retryable(_))));
++    assert!(matches!(
++        client(&server).lookup_signer_receipt("request-a").await,
++        Err(ExternalSettlementError::Retryable(_))
++    ));
+     assert_eq!(hits.load(Ordering::SeqCst), 0);
+ }
+ 
+ #[tokio::test]
+ async fn oversized_signer_lookup_is_not_missing() {
+-    let app = Router::new().route("/v1/signer/receipts/request-a",
+-        get(|| async { "x".repeat(MAX_REMOTE_SUCCESS_BODY_BYTES + 1) }));
++    let app = Router::new().route(
++        "/v1/signer/receipts/request-a",
++        get(|| async { "x".repeat(MAX_REMOTE_SUCCESS_BODY_BYTES + 1) }),
++    );
+     let server = serve(app).await;
+-    assert!(matches!(client(&server).lookup_signer_receipt("request-a").await,
+-                     Err(ExternalSettlementError::Retryable(_))));
++    assert!(matches!(
++        client(&server).lookup_signer_receipt("request-a").await,
++        Err(ExternalSettlementError::Retryable(_))
++    ));
+ }
+ 
+ #[tokio::test]
+@@ -172,16 +276,30 @@ async fn malformed_cex_lookup_never_falls_through_to_submit() {
+         let posts = Arc::new(AtomicUsize::new(0));
+         let seen = posts.clone();
+         let app = Router::new()
+-            .route("/v1/trnm/economy/receipts/by-intent", get(move || async move { body }))
+-            .route("/v1/trnm/economy/intents", post(move || {
+-                seen.fetch_add(1, Ordering::SeqCst);
+-                async { StatusCode::INTERNAL_SERVER_ERROR }
+-            }));
++            .route(
++                "/v1/trnm/economy/receipts/by-intent",
++                get(move || async move { body }),
++            )
++            .route(
++                "/v1/trnm/economy/intents",
++                post(move || {
++                    seen.fetch_add(1, Ordering::SeqCst);
++                    async { StatusCode::INTERNAL_SERVER_ERROR }
++                }),
++            );
+         let server = serve(app).await;
+         let intent = base_intent(EconomicIntentKind::CompleteContract, 0);
+-        assert!(matches!(client(&server).submit_authorized_settlement_intent(&intent).await,
+-                         Err(ExternalSettlementError::Retryable(_))));
+-        assert_eq!(posts.load(Ordering::SeqCst), 0, "malformed lookup caused a submit");
++        assert!(matches!(
++            client(&server)
++                .submit_authorized_settlement_intent(&intent)
++                .await,
++            Err(ExternalSettlementError::Retryable(_))
++        ));
++        assert_eq!(
++            posts.load(Ordering::SeqCst),
++            0,
++            "malformed lookup caused a submit"
++        );
+     }
+ }
+ 
+@@ -190,24 +308,39 @@ async fn oversized_cex_lookup_never_falls_through_to_submit() {
+     let posts = Arc::new(AtomicUsize::new(0));
+     let seen = posts.clone();
+     let app = Router::new()
+-        .route("/v1/trnm/economy/receipts/by-intent",
+-               get(|| async { "x".repeat(MAX_REMOTE_SUCCESS_BODY_BYTES + 1) }))
+-        .route("/v1/trnm/economy/intents", post(move || {
+-            seen.fetch_add(1, Ordering::SeqCst);
+-            async { StatusCode::INTERNAL_SERVER_ERROR }
+-        }));
++        .route(
++            "/v1/trnm/economy/receipts/by-intent",
++            get(|| async { "x".repeat(MAX_REMOTE_SUCCESS_BODY_BYTES + 1) }),
++        )
++        .route(
++            "/v1/trnm/economy/intents",
++            post(move || {
++                seen.fetch_add(1, Ordering::SeqCst);
++                async { StatusCode::INTERNAL_SERVER_ERROR }
++            }),
++        );
+     let server = serve(app).await;
+     let intent = base_intent(EconomicIntentKind::CompleteContract, 0);
+-    assert!(matches!(client(&server).submit_authorized_settlement_intent(&intent).await,
+-                     Err(ExternalSettlementError::Retryable(_))));
++    assert!(matches!(
++        client(&server)
++            .submit_authorized_settlement_intent(&intent)
++            .await,
++        Err(ExternalSettlementError::Retryable(_))
++    ));
+     assert_eq!(posts.load(Ordering::SeqCst), 0);
+ }
+ 
+ #[tokio::test]
+ async fn oversized_committed_success_recovers_through_lookup_without_resubmit() {
+     let intent = base_intent(EconomicIntentKind::CompleteContract, 0);
+-    let receipt = EconomicReceipt::from_intent("receipt-a", &intent, "mock-cex",
+-        SettlementBackendKind::Cex, ReceiptStatus::Settled, chrono::Utc::now().timestamp());
++    let receipt = EconomicReceipt::from_intent(
++        "receipt-a",
++        &intent,
++        "mock-cex",
++        SettlementBackendKind::Cex,
++        ReceiptStatus::Settled,
++        chrono::Utc::now().timestamp(),
++    );
+     let lookup = CexSettlementReceiptLookupResponse {
+         contract_version: CEX_SETTLEMENT_RECEIPT_LOOKUP_CONTRACT.to_string(),
+         intent_id: intent.intent_id.clone(),
+@@ -221,29 +354,43 @@ async fn oversized_committed_success_recovers_through_lookup_without_resubmit()
+     let seen = posts.clone();
+     let expected_intent = serde_json::to_value(&intent).unwrap();
+     let app = Router::new()
+-        .route("/v1/trnm/economy/receipts/by-intent", get(move || {
+-            let committed = get_committed.load(Ordering::SeqCst);
+-            let lookup = lookup.clone();
+-            async move {
+-                if committed {
+-                    Response::builder().status(200).header("content-type", "application/json")
+-                        .body(Body::from(serde_json::to_vec(&lookup).unwrap())).unwrap()
+-                } else {
+-                    Response::builder().status(404).body(Body::empty()).unwrap()
++        .route(
++            "/v1/trnm/economy/receipts/by-intent",
++            get(move || {
++                let committed = get_committed.load(Ordering::SeqCst);
++                let lookup = lookup.clone();
++                async move {
++                    if committed {
++                        Response::builder()
++                            .status(200)
++                            .header("content-type", "application/json")
++                            .body(Body::from(serde_json::to_vec(&lookup).unwrap()))
++                            .unwrap()
++                    } else {
++                        Response::builder().status(404).body(Body::empty()).unwrap()
++                    }
+                 }
+-            }
+-        }))
+-        .route("/v1/trnm/economy/intents", post(move |Json(body): Json<Value>| {
+-            assert_eq!(body["intent"], expected_intent);
+-            seen.fetch_add(1, Ordering::SeqCst);
+-            post_committed.store(true, Ordering::SeqCst);
+-            async { "x".repeat(MAX_REMOTE_SUCCESS_BODY_BYTES + 1) }
+-        }));
++            }),
++        )
++        .route(
++            "/v1/trnm/economy/intents",
++            post(move |Json(body): Json<Value>| {
++                assert_eq!(body["intent"], expected_intent);
++                seen.fetch_add(1, Ordering::SeqCst);
++                post_committed.store(true, Ordering::SeqCst);
++                async { "x".repeat(MAX_REMOTE_SUCCESS_BODY_BYTES + 1) }
++            }),
++        );
+     let server = serve(app).await;
+     let client = client(&server);
+-    assert!(matches!(client.submit_authorized_settlement_intent(&intent).await,
+-                     Err(ExternalSettlementError::Retryable(_))));
+-    let recovered = client.submit_authorized_settlement_intent(&intent).await.unwrap();
++    assert!(matches!(
++        client.submit_authorized_settlement_intent(&intent).await,
++        Err(ExternalSettlementError::Retryable(_))
++    ));
++    let recovered = client
++        .submit_authorized_settlement_intent(&intent)
++        .await
++        .unwrap();
+     recovered.validate_for(&intent).unwrap();
+     assert_eq!(posts.load(Ordering::SeqCst), 1);
+ }
+diff --git a/trillionnium/crates/trnm-rts-protocol/tests/strict_intake.rs b/trillionnium/crates/trnm-rts-protocol/tests/strict_intake.rs
+index 12112ba..fe8f823 100644
+--- a/trillionnium/crates/trnm-rts-protocol/tests/strict_intake.rs
++++ b/trillionnium/crates/trnm-rts-protocol/tests/strict_intake.rs
+@@ -133,7 +133,11 @@ fn enum_fields_require_strings_not_externally_tagged_maps() {
+     ))
+     .unwrap();
+     let mut tested_kinds = std::collections::BTreeSet::new();
+-    for case in corpus.cases.iter().filter(|case| case.id.starts_with("kind-")) {
++    for case in corpus
++        .cases
++        .iter()
++        .filter(|case| case.id.starts_with("kind-"))
++    {
+         let mut value: serde_json::Value = serde_json::from_str(&case.raw).unwrap();
+         let spelling = value["order"]["kind"].as_str().unwrap().to_owned();
+         tested_kinds.insert(spelling.clone());
+diff --git a/trillionnium/crates/world-authority/trnm-world-api/src/lib.rs b/trillionnium/crates/world-authority/trnm-world-api/src/lib.rs
+index 31111a0..f0848bb 100644
+--- a/trillionnium/crates/world-authority/trnm-world-api/src/lib.rs
++++ b/trillionnium/crates/world-authority/trnm-world-api/src/lib.rs
+@@ -202,11 +202,8 @@ pub trait WorldAccountAdapter {
+         display_name: &str,
+     ) -> WorldAccountAuthDecision;
+     fn login_password_account(&self, actor_id: &str) -> WorldAccountAuthDecision;
+-    fn resolve_account_session(
+-        &self,
+-        session_id: &str,
+-        actor_id: &str,
+-    ) -> WorldAccountAuthDecision;
++    fn resolve_account_session(&self, session_id: &str, actor_id: &str)
++        -> WorldAccountAuthDecision;
+     fn revoke_account_session(&self, session_id: &str, actor_id: &str) -> WorldAccountAuthDecision;
+ }
+ 
+@@ -218,11 +215,8 @@ pub trait WorldLedgerAdapter {
+ pub trait WorldRepository {
+     fn load_world(&self, actor_id: &str) -> WorldState;
+     fn load_route_records(&self, actor_id: &str, world: &WorldState) -> WorldRouteRecords;
+-    fn save_world(
+-        &self,
+-        world: &WorldState,
+-        records: &WorldRouteRecords,
+-    ) -> WorldRepositoryReceipt;
++    fn save_world(&self, world: &WorldState, records: &WorldRouteRecords)
++        -> WorldRepositoryReceipt;
+ }
+ 
+ pub trait WorldEvidenceSink {
+diff --git a/trillionnium/crates/world-authority/trnm-world-api/src/production_contract.rs b/trillionnium/crates/world-authority/trnm-world-api/src/production_contract.rs
+index b286a1f..1f394e7 100644
+--- a/trillionnium/crates/world-authority/trnm-world-api/src/production_contract.rs
++++ b/trillionnium/crates/world-authority/trnm-world-api/src/production_contract.rs
+@@ -15,8 +15,7 @@ use super::{
+     WorldMetricReceipt, WorldRepositoryReceipt, WorldSessionDecision,
+ };
+ 
+-pub const WORLD_PRODUCTION_ADAPTER_CONTRACT: &str =
+-    "trillionnium_world_production_adapter_v1";
++pub const WORLD_PRODUCTION_ADAPTER_CONTRACT: &str = "trillionnium_world_production_adapter_v1";
+ pub const WORLD_PRODUCTION_AUTHORIZATION: &str = "not_granted";
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+diff --git a/trillionnium/crates/world-authority/trnm-world-server/src/main.rs b/trillionnium/crates/world-authority/trnm-world-server/src/main.rs
+index 7c963bc..b58139c 100644
+--- a/trillionnium/crates/world-authority/trnm-world-server/src/main.rs
++++ b/trillionnium/crates/world-authority/trnm-world-server/src/main.rs
+@@ -2,8 +2,8 @@ mod runtime_policy;
+ 
+ use anyhow::{bail, Result};
+ use runtime_policy::{
+-    validate_fixture_runtime_bind, FIXTURE_RUNTIME_CLASSIFICATION,
+-    FIXTURE_RUNTIME_OPT_IN_FLAG, FIXTURE_RUNTIME_POLICY_CONTRACT,
++    validate_fixture_runtime_bind, FIXTURE_RUNTIME_CLASSIFICATION, FIXTURE_RUNTIME_OPT_IN_FLAG,
++    FIXTURE_RUNTIME_POLICY_CONTRACT,
+ };
+ use trnm_world_command::WorldCommand;
+ 
+diff --git a/trillionnium/crates/world-authority/trnm-world-server/src/runtime_policy.rs b/trillionnium/crates/world-authority/trnm-world-server/src/runtime_policy.rs
+index 15ac0a7..b96a3f8 100644
+--- a/trillionnium/crates/world-authority/trnm-world-server/src/runtime_policy.rs
++++ b/trillionnium/crates/world-authority/trnm-world-server/src/runtime_policy.rs
+@@ -2,8 +2,7 @@ use std::error::Error;
+ use std::fmt;
+ use std::net::SocketAddr;
+ 
+-pub const FIXTURE_RUNTIME_POLICY_CONTRACT: &str =
+-    "trillionnium_world_fixture_runtime_policy_v1";
++pub const FIXTURE_RUNTIME_POLICY_CONTRACT: &str = "trillionnium_world_fixture_runtime_policy_v1";
+ pub const FIXTURE_RUNTIME_CLASSIFICATION: &str = "development_fixture_only";
+ pub const FIXTURE_RUNTIME_OPT_IN_FLAG: &str = "--allow-fixture-runtime";
+ 

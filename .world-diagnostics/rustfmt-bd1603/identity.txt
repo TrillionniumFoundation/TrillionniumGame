@@ -1,0 +1,4 @@
+world_repository=TrillionniumFoundation/Trillionnium-World
+world_head_sha=bd1603ea6087f71ee1fe2d7940c729931105c25f
+rustfmt=rustfmt 1.9.0-stable (48a229ceae 2026-09-01)
+production_authorization=not_granted
