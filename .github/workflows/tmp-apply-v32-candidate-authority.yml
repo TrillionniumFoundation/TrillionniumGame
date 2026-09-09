@@ -1,0 +1,124 @@
+name: tmp-apply-v32-candidate-authority
+
+on:
+  push:
+    branches:
+      - integration/plan-v32-main-rebind-2026-09-09
+    paths:
+      - .github/workflows/tmp-apply-v32-candidate-authority.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-apply-v32-candidate-authority
+  cancel-in-progress: false
+
+jobs:
+  apply-verified-patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Fetch exact transport head
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: integration/plan-v32-main-rebind-2026-09-09
+          BASE_COMMIT: 3c7de6cce1bb56cf06a4005ea6970979355344ca
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
+          test "$GITHUB_REF_NAME" = "$BRANCH"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=8 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$BRANCH" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$BASE_COMMIT" HEAD
+      - name: Reconstruct and verify patch bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test "$(wc -c < .tmp/v32-candidate-authority/patch.gz.b64.part-00)" -eq 12000
+          test "$(wc -c < .tmp/v32-candidate-authority/patch.gz.b64.part-01)" -eq 10684
+          cat \
+            .tmp/v32-candidate-authority/patch.gz.b64.part-00 \
+            .tmp/v32-candidate-authority/patch.gz.b64.part-01 \
+            > "$RUNNER_TEMP/candidate-authority.patch.gz.b64"
+          printf '%s  %s\n' \
+            277f81d42f6e255d22aec294d1395c644a9ccf7ce5f3d463d7daa5aedd129f87 \
+            "$RUNNER_TEMP/candidate-authority.patch.gz.b64" | sha256sum -c -
+          base64 --decode "$RUNNER_TEMP/candidate-authority.patch.gz.b64" \
+            > "$RUNNER_TEMP/candidate-authority.patch.gz"
+          printf '%s  %s\n' \
+            73d138947def36bda8ddc96db5e8a375b1beae97f2fb568144de808d4af1a238 \
+            "$RUNNER_TEMP/candidate-authority.patch.gz" | sha256sum -c -
+          gzip -dc "$RUNNER_TEMP/candidate-authority.patch.gz" \
+            > "$RUNNER_TEMP/candidate-authority.patch"
+          printf '%s  %s\n' \
+            3df7ed05aefceddd4d19d80e6e0315c449f2d61434aca15d72c00ab72f8c8604 \
+            "$RUNNER_TEMP/candidate-authority.patch" | sha256sum -c -
+          git apply --check "$RUNNER_TEMP/candidate-authority.patch"
+          git apply "$RUNNER_TEMP/candidate-authority.patch"
+          git diff --check
+      - name: Validate candidate-authority migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 -m compileall -q scripts tests
+          python3 scripts/gap_register_scope_policy.py
+          python3 scripts/check-gap-register.py
+          python3 scripts/check-independent-review-matrix.py
+          python3 scripts/check-plan-v3-extension.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/check-plan.py
+          python3 -m unittest -v \
+            tests.control_plane.test_gap_register_scope_lock \
+            tests.control_plane.test_gap_register \
+            tests.control_plane.test_architecture_closure \
+            tests.control_plane.test_independent_review_matrix \
+            tests.control_plane.test_independent_review_domain_contract \
+            tests.control_plane.test_independent_review_domain_integration \
+            tests.control_plane.test_status_transition_policy \
+            tests.control_plane.test_branch_inventory \
+            tests.control_plane.test_workspace_convergence
+      - name: Commit only the reviewed source patch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: integration/plan-v32-main-rebind-2026-09-09
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cat > "$RUNNER_TEMP/expected-files" <<'EOF'
+          docs/review/INDEPENDENT_REVIEW_MATRIX.json
+          docs/roadmap/ARCHITECTURE_CLOSURE.json
+          docs/roadmap/NEXT_MILESTONE.json
+          docs/status/GAP_REGISTER.json
+          scripts/check-independent-review-matrix.py
+          scripts/check-plan-v3-extension.py
+          scripts/check-status-transitions.py
+          scripts/control_baselines/gap-register.v1.json
+          scripts/gap_register_scope_policy.py
+          scripts/status_transition_policy.py
+          tests/control_plane/test_gap_register_scope_lock.py
+          tests/control_plane/test_independent_review_matrix.py
+          EOF
+          sed -i 's/^          //' "$RUNNER_TEMP/expected-files"
+          sort -o "$RUNNER_TEMP/expected-files" "$RUNNER_TEMP/expected-files"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual-files"
+          diff -u "$RUNNER_TEMP/expected-files" "$RUNNER_TEMP/actual-files"
+          xargs -d '\n' git add -- < "$RUNNER_TEMP/expected-files"
+          git diff --cached --name-only | sort > "$RUNNER_TEMP/staged-files"
+          diff -u "$RUNNER_TEMP/expected-files" "$RUNNER_TEMP/staged-files"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: migrate candidate authority from admitted PR 63 to PR 150'
+          git push origin "HEAD:refs/heads/${BRANCH}"
+          echo "committed=$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          echo "tree=$(git rev-parse HEAD^{tree})" >> "$GITHUB_STEP_SUMMARY"
+          echo 'The temporary patch carrier and workflow are not part of the staged source patch and must be removed before review.' >> "$GITHUB_STEP_SUMMARY"
