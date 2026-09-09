@@ -1,0 +1,122 @@
+name: tmp-apply-v32-truth-patch
+
+on:
+  push:
+    branches:
+      - integration/plan-v32-main-rebind-2026-09-09
+    paths:
+      - .github/workflows/tmp-apply-v32-truth-patch.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-apply-v32-truth-patch
+  cancel-in-progress: false
+
+jobs:
+  apply-verified-patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Fetch exact transport head
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: integration/plan-v32-main-rebind-2026-09-09
+          BASE_COMMIT: 8de4ed7bfb7a9090a20f8bc4be97972a7890d73a
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
+          test "$GITHUB_REF_NAME" = "$BRANCH"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=8 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$BRANCH" FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$BASE_COMMIT" HEAD
+      - name: Reconstruct and verify patch bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test "$(wc -c < .tmp/v32-truth-patch/patch.gz.b64.part-00)" -eq 12000
+          test "$(wc -c < .tmp/v32-truth-patch/patch.gz.b64.part-01)" -eq 6280
+          cat \
+            .tmp/v32-truth-patch/patch.gz.b64.part-00 \
+            .tmp/v32-truth-patch/patch.gz.b64.part-01 \
+            > "$RUNNER_TEMP/v32-truth.patch.gz.b64"
+          printf '%s  %s\n' \
+            788bf33fd6116e1ca1481567ce27197dcf9b66daad8db5e31494e55b81cac781 \
+            "$RUNNER_TEMP/v32-truth.patch.gz.b64" | sha256sum -c -
+          base64 --decode "$RUNNER_TEMP/v32-truth.patch.gz.b64" \
+            > "$RUNNER_TEMP/v32-truth.patch.gz"
+          printf '%s  %s\n' \
+            51e43d9a6920c266fcadccb15901208b0dc75d69fd4573a98c167e378e2d36ca \
+            "$RUNNER_TEMP/v32-truth.patch.gz" | sha256sum -c -
+          gzip -dc "$RUNNER_TEMP/v32-truth.patch.gz" \
+            > "$RUNNER_TEMP/v32-truth.patch"
+          printf '%s  %s\n' \
+            a026393e1cd783be53d24e649dad0a662ee75e3f1fbc60d8b829492e3655b609 \
+            "$RUNNER_TEMP/v32-truth.patch" | sha256sum -c -
+          git apply --check "$RUNNER_TEMP/v32-truth.patch"
+          git apply "$RUNNER_TEMP/v32-truth.patch"
+          git diff --check
+      - name: Validate truth convergence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 -m compileall -q scripts tests
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-plan-v3-extension.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/check-rust-server-slice.py
+          python3 scripts/check-rust-server-vertical-slice.py
+          python3 scripts/check-trnm-server.py
+          python3 scripts/check-plan.py
+          python3 -m unittest -v tests.control_plane.test_workspace_convergence
+      - name: Commit only the reviewed source patch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: integration/plan-v32-main-rebind-2026-09-09
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cat > "$RUNNER_TEMP/expected-files" <<'EOF'
+          CURRENT_PLAN.md
+          contracts/server/rust-server-vertical-slice.v1.json
+          crates/trnm-server/README.md
+          docs/governance/ACTIVE_BRANCHES.json
+          docs/status/CURRENT_STATE.json
+          docs/status/IMPLEMENTATION_INVENTORY.json
+          docs/status/MODULE_DOCUMENTATION.json
+          docs/status/RUST_SERVER_STATUS.json
+          docs/status/RUST_SERVER_VERTICAL_SLICE_STATUS.json
+          docs/status/TRNM_SERVER_STATUS.json
+          scripts/check-plan-v3-extension.py
+          scripts/check-plan.py
+          scripts/check-rust-server-slice.py
+          scripts/check-status-transitions.py
+          scripts/check-trnm-server.py
+          scripts/check-workspace-convergence.py
+          tests/control_plane/test_workspace_convergence.py
+          EOF
+          sed -i 's/^          //' "$RUNNER_TEMP/expected-files"
+          sort -o "$RUNNER_TEMP/expected-files" "$RUNNER_TEMP/expected-files"
+          git diff --name-only | sort > "$RUNNER_TEMP/actual-files"
+          diff -u "$RUNNER_TEMP/expected-files" "$RUNNER_TEMP/actual-files"
+          xargs -d '\n' git add -- < "$RUNNER_TEMP/expected-files"
+          git diff --cached --name-only | sort > "$RUNNER_TEMP/staged-files"
+          diff -u "$RUNNER_TEMP/expected-files" "$RUNNER_TEMP/staged-files"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: bind Plan v3.2 state to canonical server authority'
+          git push origin "HEAD:refs/heads/${BRANCH}"
+          echo "committed=$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          echo "tree=$(git rev-parse HEAD^{tree})" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Temporary transport files are not part of the staged source patch and must be removed before review.' >> "$GITHUB_STEP_SUMMARY"
