@@ -51,10 +51,11 @@ jobs:
           wc -c "$RUNNER_TEMP/candidate-authority.patch.gz.b64"
           sha256sum "$RUNNER_TEMP/candidate-authority.patch.gz.b64"
           printf '%s  %s\n' \
-            277f81d42f6e255d22aec294d1395c644a9ccf7ce5f3d463d7daa5aedd129f87 \
+            a598d58dd80afa875ea5282475a0d13d07bb9e15bbcc66c4550473917b0a05d1 \
             "$RUNNER_TEMP/candidate-authority.patch.gz.b64" | sha256sum -c -
           base64 --decode "$RUNNER_TEMP/candidate-authority.patch.gz.b64" \
             > "$RUNNER_TEMP/candidate-authority.patch.gz"
+          gzip -t "$RUNNER_TEMP/candidate-authority.patch.gz"
           sha256sum "$RUNNER_TEMP/candidate-authority.patch.gz"
           printf '%s  %s\n' \
             73d138947def36bda8ddc96db5e8a375b1beae97f2fb568144de808d4af1a238 \
