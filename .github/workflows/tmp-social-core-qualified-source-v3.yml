@@ -1,0 +1,135 @@
+name: tmp-social-core-qualified-source-v3
+
+on:
+  push:
+    branches:
+      - feature/plan-v32-social-core-20260909
+    paths:
+      - .github/workflows/tmp-social-core-qualified-source-v3.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: tmp-social-core-qualified-source-v3
+  cancel-in-progress: false
+
+jobs:
+  rebuild-qualify-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      FEATURE_BRANCH: feature/plan-v32-social-core-20260909
+      EXPECTED_BASE_SHA: 541016f34f2dbaf7c2be10cd45afdd04223c49f2
+      V2_REF: cfe6e4831fcc88556194cadc167fe517025276a3
+    steps:
+      - name: Fetch reusable qualified-source scripts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${REPOSITORY}/contents/.github/workflows/tmp-social-core-qualified-source-v2.yml?ref=${V2_REF}" \
+            --jq .content | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/social-v2.yml"
+          ruby -ryaml -e '
+            document = YAML.safe_load(File.read(ARGV[0]), aliases: true)
+            steps = document.fetch("jobs").fetch("rebuild-qualify-and-publish").fetch("steps")
+            wanted = {
+              "Extract registered social generator" => ARGV[1],
+              "Generate social source and repair atomic commit semantics" => ARGV[2],
+              "Validate social package and repository contracts" => ARGV[3],
+              "Validate complete workspace and control plane" => ARGV[4],
+              "Publish one clean source commit and open stacked draft PR" => ARGV[5]
+            }
+            wanted.each do |name, path|
+              step = steps.find { |entry| entry["name"] == name }
+              abort("missing reusable step: #{name}") unless step && step["run"]
+              File.write(path, step.fetch("run"))
+            end
+          ' "$RUNNER_TEMP/social-v2.yml" \
+            "$RUNNER_TEMP/extract-generator.sh" \
+            "$RUNNER_TEMP/generate-social.sh" \
+            "$RUNNER_TEMP/validate-social.sh" \
+            "$RUNNER_TEMP/validate-workspace.sh" \
+            "$RUNNER_TEMP/publish-social.sh"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("/home/runner/work/_temp/generate-social.sh")
+          text = path.read_text(encoding="utf-8")
+          bad = '''if "candidate.commit(" in text:
+              raise SystemExit("unrepaired candidate commit remains")
+          '''
+          if text.count(bad) != 1:
+              raise SystemExit("v2 false-positive tail detector drifted")
+          path.write_text(text.replace(bad, "", 1), encoding="utf-8")
+          PY
+      - name: Reset to exact parent and reconstruct candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "$REPOSITORY"
+          test "$GITHUB_REF_NAME" = "$FEATURE_BRANCH"
+          carrier_sha="$GITHUB_SHA"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=8 origin "$carrier_sha" "$EXPECTED_BASE_SHA"
+          git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$EXPECTED_BASE_SHA" "$carrier_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$EXPECTED_BASE_SHA"
+          export BASE_SHA="$EXPECTED_BASE_SHA"
+          export BASE_BRANCH=integration/plan-v32-main-rebind-2026-09-09
+          export GENERATOR_REF=ops/social-core-source-20260909
+          bash "$RUNNER_TEMP/extract-generator.sh"
+          bash "$RUNNER_TEMP/generate-social.sh"
+          rm -f .github/workflows/tmp-social-core-qualified-source-v3.yml
+          git add -A
+          git diff --cached --check
+      - name: Prove accepted candidate state is committed atomically
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path("crates/trnm-social-core/src/lib.rs").read_text(encoding="utf-8")
+          bare = [
+              line for line in text.splitlines()
+              if line.lstrip().startswith("candidate.commit(")
+          ]
+          if bare:
+              raise SystemExit(f"bare candidate tail calls remain: {len(bare)}")
+          calls = text.count("let receipt = candidate.commit(")
+          accepted = text.count("*self = candidate;")
+          if calls < 10 or accepted != calls:
+              raise SystemExit(
+                  f"candidate commit/writeback mismatch: calls={calls} accepted={accepted}"
+              )
+          if "impl ExactSizeIterator<Item = &ChatMessage>" in text:
+              raise SystemExit("chat iterator still overclaims ExactSizeIterator")
+          if "impl ExactSizeIterator<Item = &Notification>" in text:
+              raise SystemExit("notification iterator still overclaims ExactSizeIterator")
+          if not text.startswith("#![forbid(unsafe_code)]"):
+              raise SystemExit("social crate does not forbid unsafe code")
+          PY
+      - name: Validate social package and complete repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          export BASE_BRANCH=integration/plan-v32-main-rebind-2026-09-09
+          bash "$RUNNER_TEMP/validate-social.sh"
+          bash "$RUNNER_TEMP/validate-workspace.sh"
+      - name: Publish clean source commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export BASE_BRANCH=integration/plan-v32-main-rebind-2026-09-09
+          export EXPECTED_BASE_SHA=541016f34f2dbaf7c2be10cd45afdd04223c49f2
+          export FEATURE_BRANCH=feature/plan-v32-social-core-20260909
+          bash "$RUNNER_TEMP/publish-social.sh"
