@@ -1,0 +1,250 @@
+name: tmp-governance-readback-v2
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-governance-readback-v2.yml
+
+permissions:
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  OWNER: TrillionniumFoundation
+  REPO: TrillionniumGame
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  readback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Read exact server-side governance surfaces
+        id: readback
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/governance-readback"
+          mkdir -p "$work"
+
+          request() {
+            local name="$1"
+            local endpoint="$2"
+            local code
+            code="$(curl --silent --show-error \
+              --connect-timeout 10 --max-time 30 \
+              --output "$work/${name}.json" \
+              --write-out '%{http_code}' \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/${endpoint}")"
+            printf '%s=%s\n' "$name" "$code" >> "$work/status.tsv"
+          }
+
+          request branch "repos/${REPOSITORY}/branches/main"
+          request protection "repos/${REPOSITORY}/branches/main/protection"
+          request rulesets "repos/${REPOSITORY}/rulesets?includes_parents=true"
+          request effective_rules "repos/${REPOSITORY}/rules/branches/main"
+          request pr150 "repos/${REPOSITORY}/pulls/150"
+          request reviews150 "repos/${REPOSITORY}/pulls/150/reviews?per_page=100"
+          request codeowners \
+            "repos/${REPOSITORY}/contents/.github/CODEOWNERS?ref=integration%2Fplan-v32-main-rebind-2026-09-09"
+
+          graphql_code="$(curl --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            --output "$work/graphql.json" \
+            --write-out '%{http_code}' \
+            --header 'Content-Type: application/json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --data-binary @- \
+            https://api.github.com/graphql <<'JSON'
+          {
+            "query": "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){branchProtectionRules(first:100){nodes{pattern requiresApprovingReviews requiredApprovingReviewCount dismissesStaleReviews requiresCodeOwnerReviews requiresConversationResolution requiresCommitSignatures isAdminEnforced restrictsPushes allowsForcePushes allowsDeletions}} pullRequest(number:$number){number isDraft reviewDecision mergeStateStatus headRefOid baseRefOid reviewThreads(first:100){nodes{isResolved isOutdated}}}}}",
+            "variables": {
+              "owner": "TrillionniumFoundation",
+              "repo": "TrillionniumGame",
+              "number": 150
+            }
+          }
+          JSON
+          )"
+          printf 'graphql=%s\n' "$graphql_code" >> "$work/status.tsv"
+
+          python3 - "$work" <<'PY'
+          from __future__ import annotations
+
+          import json
+          import sys
+          from pathlib import Path
+
+          work = Path(sys.argv[1])
+          statuses = {}
+          for line in (work / "status.tsv").read_text(encoding="utf-8").splitlines():
+              name, value = line.split("=", 1)
+              statuses[name] = int(value)
+
+          failures = []
+          observations = {}
+
+          def load(name):
+              path = work / f"{name}.json"
+              try:
+                  return json.loads(path.read_text(encoding="utf-8"))
+              except Exception as exc:
+                  failures.append(f"{name}: unreadable JSON: {exc}")
+                  return None
+
+          for required in ("branch", "protection", "rulesets", "effective_rules", "pr150", "reviews150", "codeowners", "graphql"):
+              code = statuses.get(required, 0)
+              if code != 200:
+                  body = load(required)
+                  message = body.get("message") if isinstance(body, dict) else "unavailable"
+                  failures.append(f"{required}: HTTP {code}: {message}")
+
+          branch = load("branch")
+          if isinstance(branch, dict):
+              observations["main_protected"] = branch.get("protected") is True
+              observations["main_commit"] = (branch.get("commit") or {}).get("sha")
+              if branch.get("protected") is not True:
+                  failures.append("main: protected flag is false")
+
+          protection = load("protection")
+          if isinstance(protection, dict) and statuses.get("protection") == 200:
+              contexts = set((protection.get("required_status_checks") or {}).get("contexts") or [])
+              contexts.update(
+                  item.get("context")
+                  for item in (protection.get("required_status_checks") or {}).get("checks") or []
+                  if isinstance(item, dict) and item.get("context")
+              )
+              review = protection.get("required_pull_request_reviews") or {}
+              booleans = {
+                  "required_merge_gate": "trillionnium-game-merge-gate" in contexts,
+                  "approvals_required": int(review.get("required_approving_review_count") or 0) >= 1,
+                  "dismiss_stale_reviews": review.get("dismiss_stale_reviews") is True,
+                  "require_code_owner_reviews": review.get("require_code_owner_reviews") is True,
+                  "require_last_push_approval": review.get("require_last_push_approval") is True,
+                  "conversation_resolution": (protection.get("required_conversation_resolution") or {}).get("enabled") is True,
+                  "admins_enforced": (protection.get("enforce_admins") or {}).get("enabled") is True,
+                  "force_push_disabled": (protection.get("allow_force_pushes") or {}).get("enabled") is not True,
+                  "deletion_disabled": (protection.get("allow_deletions") or {}).get("enabled") is not True,
+              }
+              observations.update(booleans)
+              for label, passed in booleans.items():
+                  if not passed:
+                      failures.append(f"branch protection: {label}=false")
+
+          rulesets = load("rulesets")
+          if isinstance(rulesets, list) and statuses.get("rulesets") == 200:
+              active = [item for item in rulesets if item.get("enforcement") == "active"]
+              observations["active_ruleset_count"] = len(active)
+              observations["ruleset_bypass_actor_count"] = sum(
+                  len(item.get("bypass_actors") or []) for item in active
+              )
+              if not active:
+                  failures.append("rulesets: no active repository ruleset")
+              if observations["ruleset_bypass_actor_count"]:
+                  failures.append(
+                      f"rulesets: {observations['ruleset_bypass_actor_count']} bypass actors require explicit independent acceptance"
+                  )
+
+          effective = load("effective_rules")
+          if isinstance(effective, list) and statuses.get("effective_rules") == 200:
+              types = {item.get("type") for item in effective if isinstance(item, dict)}
+              observations["effective_rule_types"] = sorted(value for value in types if value)
+              for required_type in ("pull_request", "required_status_checks", "deletion", "non_fast_forward"):
+                  if required_type not in types:
+                      failures.append(f"effective rules: missing {required_type}")
+
+          pr = load("pr150")
+          if isinstance(pr, dict):
+              observations["pr150_head"] = (pr.get("head") or {}).get("sha")
+              observations["pr150_base"] = (pr.get("base") or {}).get("sha")
+              observations["pr150_draft"] = pr.get("draft")
+              observations["pr150_merged"] = pr.get("merged") is True
+
+          graphql = load("graphql")
+          if isinstance(graphql, dict) and statuses.get("graphql") == 200:
+              if graphql.get("errors"):
+                  failures.append("graphql: returned errors")
+              repo = ((graphql.get("data") or {}).get("repository") or {})
+              rules = ((repo.get("branchProtectionRules") or {}).get("nodes") or [])
+              main_rules = [rule for rule in rules if rule.get("pattern") in {"main", "refs/heads/main"}]
+              observations["graphql_main_rule_count"] = len(main_rules)
+              if not main_rules:
+                  failures.append("graphql: no exact main branch protection rule")
+              pull = repo.get("pullRequest") or {}
+              observations["pr150_review_decision"] = pull.get("reviewDecision")
+              observations["pr150_merge_state"] = pull.get("mergeStateStatus")
+              threads = ((pull.get("reviewThreads") or {}).get("nodes") or [])
+              unresolved = [thread for thread in threads if not thread.get("isResolved")]
+              observations["pr150_unresolved_thread_count"] = len(unresolved)
+              if unresolved:
+                  failures.append(f"PR #150: {len(unresolved)} unresolved review threads")
+
+          report = {
+              "schema": "trillionnium.github-governance-readback.v1",
+              "repository": "TrillionniumFoundation/TrillionniumGame",
+              "statuses": statuses,
+              "observations": observations,
+              "accepted": not failures,
+              "failures": failures,
+              "claim_boundary": {
+                  "source_only": False,
+                  "negative_no_bypass_rehearsal_complete": False,
+                  "independent_acceptance_complete": False,
+                  "production_ready": False,
+              },
+          }
+          (work / "report.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          summary = [
+              "## GitHub governance readback",
+              "",
+              f"- accepted: `{str(not failures).lower()}`",
+              f"- main protected: `{str(observations.get('main_protected', False)).lower()}`",
+              f"- active rulesets: `{observations.get('active_ruleset_count', 'unreadable')}`",
+              f"- bypass actors: `{observations.get('ruleset_bypass_actor_count', 'unreadable')}`",
+              f"- PR #150 review decision: `{observations.get('pr150_review_decision', 'unreadable')}`",
+              f"- PR #150 unresolved threads: `{observations.get('pr150_unresolved_thread_count', 'unreadable')}`",
+              "",
+          ]
+          if failures:
+              summary.append("### Blocking observations")
+              summary.extend(f"- {failure}" for failure in failures)
+          else:
+              summary.append("All readable governance predicates passed; a harmless negative no-bypass rehearsal and independent acceptance remain separate.")
+          (work / "summary.md").write_text("\n".join(summary) + "\n", encoding="utf-8")
+          if failures:
+              raise SystemExit(2)
+          PY
+        continue-on-error: true
+
+      - name: Publish sanitized governance observation
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/governance-readback"
+          if test -f "$work/summary.md"; then
+            cat "$work/summary.md" >> "$GITHUB_STEP_SUMMARY"
+            gh issue comment 130 --repo "$REPOSITORY" --body-file "$work/summary.md"
+          else
+            gh issue comment 130 --repo "$REPOSITORY" --body \
+              "Governance readback run \`${GITHUB_RUN_ID}\` failed before a sanitized report was produced. No governance credit."
+          fi
+
+      - name: Enforce fail-closed readback result
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$RUNNER_TEMP/governance-readback/report.json"
+          jq -e '.accepted == true' "$RUNNER_TEMP/governance-readback/report.json" >/dev/null
+          jq -e '.claim_boundary.negative_no_bypass_rehearsal_complete == false' "$RUNNER_TEMP/governance-readback/report.json" >/dev/null
