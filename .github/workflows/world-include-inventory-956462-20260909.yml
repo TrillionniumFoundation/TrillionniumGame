@@ -23,12 +23,17 @@ jobs:
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/world"
+          archive="$RUNNER_TEMP/Trillionnium-World-956462f.tar.gz"
+          rm -rf "$root" "$archive"
           git init "$root"
           git -C "$root" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
           git -C "$root" fetch --no-tags --depth=1 origin "$WORLD_HEAD_SHA"
           git -C "$root" checkout --detach FETCH_HEAD
           test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
           test "$(git -C "$root" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
+          git -C "$root" archive --format=tar.gz --prefix=Trillionnium-World-956462f/ HEAD -o "$archive"
+          test -s "$archive"
+          printf '%s  %s\n' "$(sha256sum "$archive" | cut -d' ' -f1)" "$(basename "$archive")"
 
       - name: Emit exhaustive tracked include inventory
         shell: bash
@@ -78,3 +83,12 @@ jobs:
                   out.write(f"{row['path']}:{row['line']}:{row['text']}\n")
               out.write("```\n")
           PY
+
+      - name: Upload exact World source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trillionnium-World-956462f-source
+          path: ${{ runner.temp }}/Trillionnium-World-956462f.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
