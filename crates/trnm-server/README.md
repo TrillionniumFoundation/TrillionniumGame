@@ -1,46 +1,69 @@
-# `trnm-server-foundation` source vertical slice
+# trnm-server
 
-Status: **source candidate; no compatibility, durability, SG4 or production credit**.
+Status: **module documentation; source candidate; no compatibility, durability, SG4, production, public-online, cutover, or retirement credit**
 
-Machine claim boundary:
+This document is the module-level authority for the isolated Rust server composition package.
+
+## Status and authority
+
+`crates/trnm-server` contains a candidate composition root assembled from the repository's reviewed persistence, session/JWT, gRPC, and realtime-wire components.
+Its non-authoritative package-local binary is named `trnm-server-composition-candidate`.
+The currently admitted canonical process remains `crates/trnm-persistence-pg/src/bin/trnm-server.rs` until a separate atomic authority-transfer change removes that duplicate entry point, updates every consumer, and receives exact-object review.
+This source candidate does not by itself establish compatibility, durability, release, deployment, or production authority.
 
 ```text
-canonical_server_binary=false
 compatibility_credit=false
 database_durability_credit=false
 sg4_credit=false
 production_ready=false
+public_online=false
+nakama_replaced=false
 ```
 
-This standalone Rust foundation-prototype binary establishes a bounded process composition root for the plan-v3 vertical-slice program. The temporary canonical `trnm-server` binary remains the database-backed target in `crates/trnm-persistence-pg`; this crate cannot receive canonical server, compatibility or production credit while both lines are being consolidated.
+## Responsibilities
 
-It currently provides:
+The package parses bounded process configuration before opening listeners or database connections.
+It composes the PostgreSQL repository with HTTP, generated gRPC Healthcheck, WebSocket JSON/protobuf envelopes, access-token/session operations, retry, cancellation, readiness, metrics, and drain state.
+It constructs successful mutation responses only after `PgRepository` reports a durable commit or an exact prior receipt.
+It enforces explicit limits for listener workers, accepted connections, request/header/body sizes, socket deadlines, WebSocket frames and messages, database pool acquisition, retry attempts, and retry elapsed time.
 
-- typed environment/CLI configuration with explicit bounds;
-- fixed-size worker pool and bounded accepted-connection queue;
-- request read/write deadlines and maximum body/header limits;
-- liveness and readiness endpoints;
-- explicit readiness/draining lifecycle in the library server;
-- one fixed-width bootstrap request;
-- one fixed-width authority command request using `trnm-persistence-core`;
-- exact duplicate receipt replay;
-- revision and authority-generation fencing inherited from the core;
-- transactional in-memory event/outbox creation in the core;
-- malformed request, oversized body, duplicate and stale-revision tests.
+## Architecture and dependencies
 
-## Run
+`src/main.rs` is a thin package-local entry point and `src/runtime/` owns the candidate process modules.
+`runtime/app.rs` maps typed requests to repository and session operations.
+`runtime/server.rs` owns bounded listener admission and shared drain state.
+`runtime/http.rs`, `runtime/grpc.rs`, and `runtime/websocket.rs` own their protocol boundaries.
+`runtime/config.rs`, `runtime/pool.rs`, `runtime/retry.rs`, and `runtime/schema.rs` own validated configuration and database lifecycle policy.
+The isolated workspace pins every registry dependency, uses path dependencies for first-party crates, carries its own lockfile, and forbids unsafe code.
 
-```bash
-cargo run --manifest-path crates/trnm-server/Cargo.toml --locked \
-  --bin trnm-server-foundation -- check-config
-cargo run --manifest-path crates/trnm-server/Cargo.toml --locked \
-  --bin trnm-server-foundation -- serve \
-  --bind 127.0.0.1:7350 \
-  --workers 4 \
-  --queue-capacity 128
-```
+The package consumes:
 
-Required verification:
+- `trnm-contracts` and `trnm-persistence-core` for stable domain and persistence invariants;
+- `trnm-persistence-pg` for PostgreSQL/Cockroach-compatible repository operations;
+- `trnm-realtime-wire` for bounded realtime envelopes;
+- `trnm-session-core` and `trnm-token-jwt-adapter` for session and access-token checks.
+
+## Public contracts
+
+The candidate CLI exposes `check-config`, `migrate`, and `serve`.
+The source includes:
+
+- `GET /healthz`, `GET /readyz`, and `GET /metrics`;
+- authenticated `POST /-/drain`;
+- authenticated `POST /v1/authority/bootstrap` and `POST /v1/authority/commit`;
+- `GET /v1/session/me`, `POST /v1/session/refresh`, and `POST /v1/session/logout`;
+- generated Nakama Healthcheck gRPC service on a separately configured listener;
+- bounded WebSocket JSON and schema-bound protobuf-envelope candidate subprotocols.
+
+These are narrow source contracts, not a claim of complete Nakama API, RTAPI, Runtime, Console, provider, IAP, social, leaderboard, tournament, matchmaker, party, or multiplayer parity.
+Public errors remain typed and redact database, credential, token, and cryptographic detail.
+
+## Operations
+
+The source exposes liveness, readiness, redacted metrics, bounded listener workers, shared drain state, and cancellation accounting.
+Non-loopback listeners require explicit opt-in.
+Database transport, pool size, acquisition, statement, lock, retry, and cancellation policies are explicit and bounded.
+The package must be tested with Rust 1.85.1 using:
 
 ```bash
 cargo fmt --manifest-path crates/trnm-server/Cargo.toml -- --check
@@ -48,28 +71,53 @@ cargo test --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked
 cargo clippy --manifest-path crates/trnm-server/Cargo.toml --all-targets --locked -- -D warnings
 ```
 
-## Current wire format
+Repository-wide exact-head and actual prospective-merge gates, PostgreSQL and CockroachDB live profiles, fault injection, retained artifacts, and independent specialist decisions remain separate evidence.
+No production credential, deployment, traffic shift, canary, cutover, rollback-barrier removal, or retirement is authorized by this module.
 
-The two mutation endpoints deliberately use bounded fixed-width binary request bodies. They are internal vertical-slice contracts, not Nakama API compatibility surfaces.
+## Correctness and failure model
 
-- `POST /v1/bootstrap`: 56 bytes = entity ID (16), authority generation (u64 big-endian), state digest (32).
-- `POST /v1/command`: 208 bytes = entity ID, command ID, fingerprint, expected revision, authority generation, next-state digest, one event ID/digest and one outbox ID/digest.
+- Command admission preserves typed validation, idempotency keys, bounded retry budgets and explicit ambiguous-commit handling.
+- Accepted work is not reported as durable until the PostgreSQL transaction and acknowledgement fence have both succeeded.
+- Cancellation is propagated through the bounded repository wrapper; stale or failed work does not become a success claim.
+- The extracted composition root remains a source candidate until its database and protocol evidence is independently accepted.
 
-Responses are bounded JSON with stable source-slice fields. `GET /healthz` is liveness. `GET /readyz` reflects the server lifecycle.
+## Security and privacy
 
-## Deliberately unresolved
+- Database URLs, administrator tokens, session keys and client credentials are redacted from diagnostics.
+- Non-loopback listeners and plaintext database transport require explicit candidate-only opt-in.
+- HTTP body size, read/write deadlines, listener workers, queue depth and WebSocket message counts are bounded.
+- No production credential, personal data set, custody key or protected environment secret is stored in this crate.
 
-The following are blockers, not implied capabilities:
+## Build and test
 
-- canonical server package extraction and removal of the temporary dual implementation line;
-- PostgreSQL/CockroachDB repository wiring and acknowledgement-after-durable-commit;
-- database retry, pool, TLS, migration and outbox worker execution;
-- HTTP/JSON v2, gRPC, grpc-gateway and official SDK compatibility;
-- WebSocket JSON/protobuf, heartbeat, close and reconnect behavior;
-- session/JWT verification and revocation fanout;
-- OS signal integration, supervised async task tree and zero-downtime drain;
-- metrics/traces and evidence artifact production;
-- immutable Nakama differential;
-- independent protocol, database, security and SRE review.
+- Use Rust 1.85.1 with the isolated `Cargo.lock`.
+- Required source checks are `cargo fmt --check`, all-target tests and strict Clippy.
+- The bounded process smoke verifies configuration parsing, redaction and fail-closed startup without claiming live database ingress.
+- PostgreSQL and CockroachDB live lanes, protocol differentials and prospective-merge execution remain separate required evidence.
 
-No endpoint in this crate may be advertised as Nakama-compatible until it is replaced or wrapped by a denominator-bound adapter with exact oracle evidence.
+## Compatibility and evidence
+
+- These routes are not a complete Nakama API, gRPC gateway or RTAPI implementation.
+- Source equivalence to the persistence-owned process does not transfer canonical authority or prove deployed behavior.
+- Compatibility, database durability, SG4, production, public-online, cutover and retirement claims require retained exact-object evidence and conflict-free specialist review.
+- A green unit or smoke result alone cannot close `GAP-P0-SERVER-001`, `GAP-P0-DATA-001` or `GAP-P0-CRYPTO-001`.
+
+## Known gaps and exit criteria
+
+The persistence-owned canonical `trnm-server` entry point still exists, so this PR is an extraction/convergence candidate rather than an authority transfer.
+A later atomic change must leave exactly one first-party process entry point and must update package authority, workflow coverage, contracts, deployment references, and retained evidence together.
+Complete official protocol and SDK differential coverage remains open.
+Real KMS/HSM custody, provider/IAP, Console, multi-node routing, partition and node-loss recovery, HA, backup/PITR, capacity, rolling upgrade, and 24h/72h/7d endurance remain open.
+Migration snapshot, backfill, CDC, semantic comparison, write fencing, shadow, canary, rollback, cutover, and Nakama retirement remain open.
+
+Exit requires terminal-success exact-head and prospective-merge packets, accepted live database and protocol evidence, resolved conversations, conflict-free specialist approval, ordinary protected admission, and accepted post-merge evidence.
+Until every linked criterion is satisfied:
+
+```text
+accepted_evidence=false
+gap_closed=false
+complete_nakama_compatibility=false
+production_ready=false
+public_online=false
+nakama_retired=false
+```

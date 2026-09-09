@@ -1,0 +1,47 @@
+{
+  "schema": "trillionnium.exact-head-workflow-observation.v1",
+  "project_id": "trillionnium-game",
+  "observed_date": "2026-08-31",
+  "candidate": {
+    "repository": "TrillionniumFoundation/TrillionniumGame",
+    "pull_request": 55,
+    "commit": "5fc924a11e884eef807ebf6de61d128ef92861ac",
+    "tree": "f5b9e3480feef920cb8e8c6c4b646586dec5c18b"
+  },
+  "workflow_runs": [
+    {"name":"trillionnium-game-merge-gate","run_id":33326546105,"status":"completed","conclusion":"success"},
+    {"name":"trillionnium-game-rust-foundation","run_id":33326546120,"status":"completed","conclusion":"success"},
+    {"name":"trillionnium-game-plan-contract","run_id":33326546130,"status":"completed","conclusion":"success"},
+    {"name":"pg-server-response-loss","run_id":33326546107,"status":"completed","conclusion":"success"},
+    {"name":"candidate-identity-manifest","run_id":33326546108,"status":"completed","conclusion":"success"},
+    {"name":"source-candidate-boundaries","run_id":33326546117,"status":"completed","conclusion":"success"},
+    {"name":"pull-request-contract","run_id":33326546093,"status":"completed","conclusion":"success"},
+    {"name":"trnm-server-live","run_id":33326546118,"status":"completed","conclusion":"success"},
+    {"name":"pg-server-vertical-slice","run_id":33326546129,"status":"completed","conclusion":"success"},
+    {"name":"pgwire-vertical-slice","run_id":33326546096,"status":"completed","conclusion":"success"},
+    {"name":"trillionnium-game-actions-unblock-smoke","run_id":33326546097,"status":"completed","conclusion":"success"},
+    {"name":"database-backup-restore","run_id":33326546204,"status":"completed","conclusion":"success"},
+    {"name":"outbox-spool-worker","run_id":33326546111,"status":"completed","conclusion":"success"}
+  ],
+  "assertions": {
+    "exact_commit_and_tree_bound": true,
+    "workflow_run_count": 13,
+    "all_observed_runs_terminal_success": true,
+    "job_non_empty_readback_available": false,
+    "artifact_digest_collection_complete": false,
+    "independent_review_accepted": false
+  },
+  "review": null,
+  "claims": {
+    "execution_observed": true,
+    "remote_verification_candidate": true,
+    "accepted_evidence": false,
+    "compatibility_credit": false,
+    "production_ready": false
+  },
+  "limitations": [
+    "The current connector observation exposes workflow run identity and terminal conclusion but did not return job or artifact subresources for these run IDs.",
+    "No independent reviewer has accepted this exact commit and tree.",
+    "This observation cannot close a P0/P1 gap and cannot grant SG, compatibility, production, cutover or retirement credit."
+  ]
+}

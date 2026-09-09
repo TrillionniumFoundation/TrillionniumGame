@@ -19,7 +19,12 @@ def normalize(sql: str) -> str:
     return re.sub(r"\s+", " ", sql.strip()).lower()
 
 
-def inspect_profile(profile: str, path: Path, contract: dict[str, object], root: Path) -> dict[str, object]:
+def inspect_profile(
+    profile: str,
+    path: Path,
+    contract: dict[str, object],
+    root: Path,
+) -> dict[str, object]:
     sql = path.read_text(encoding="utf-8")
     normalized = normalize(sql)
     tables = CREATE_TABLE.findall(sql)
@@ -28,7 +33,9 @@ def inspect_profile(profile: str, path: Path, contract: dict[str, object], root:
     if set(tables) != set(required):
         missing = sorted(set(required) - set(tables))
         extra = sorted(set(tables) - set(required))
-        raise SchemaError(f"{profile}: table mismatch missing={missing} extra={extra}")
+        raise SchemaError(
+            f"{profile}: table mismatch missing={missing} extra={extra}"
+        )
     if len(tables) != len(set(tables)):
         raise SchemaError(f"{profile}: duplicate CREATE TABLE")
 
@@ -37,7 +44,9 @@ def inspect_profile(profile: str, path: Path, contract: dict[str, object], root:
         raise SchemaError(f"{profile}: expected binary type {expected_binary}")
     wrong_binary = "bytes" if expected_binary == "bytea" else "bytea"
     if re.search(rf"\b{wrong_binary}\b", normalized):
-        raise SchemaError(f"{profile}: contains other profile binary type {wrong_binary}")
+        raise SchemaError(
+            f"{profile}: contains other profile binary type {wrong_binary}"
+        )
 
     for pattern in (
         r"\bserial\b",
@@ -87,7 +96,9 @@ def inspect_profile(profile: str, path: Path, contract: dict[str, object], root:
 
 
 def validate(root: Path = ROOT) -> dict[str, object]:
-    contract = json.loads((root / CONTRACT.relative_to(ROOT)).read_text(encoding="utf-8"))
+    contract = json.loads(
+        (root / CONTRACT.relative_to(ROOT)).read_text(encoding="utf-8")
+    )
     if contract.get("schema") != "trillionnium.foundation-schema-contract.v1":
         raise SchemaError("unexpected contract schema")
     if any(contract.get("claims", {}).values()):
@@ -96,7 +107,10 @@ def validate(root: Path = ROOT) -> dict[str, object]:
         raise SchemaError("raw session token storage must be false")
     if contract.get("security", {}).get("raw_refresh_token_storage_allowed") is not False:
         raise SchemaError("raw refresh token storage must be false")
-    if contract.get("rollback", {}).get("automatic_destructive_down_migration") is not False:
+    if (
+        contract.get("rollback", {}).get("automatic_destructive_down_migration")
+        is not False
+    ):
         raise SchemaError("automatic destructive rollback must be false")
 
     profiles = []
@@ -106,13 +120,21 @@ def validate(root: Path = ROOT) -> dict[str, object]:
     if profiles[0]["tables"] != profiles[1]["tables"]:
         raise SchemaError("logical table order differs between profiles")
 
-    rollback = (root / "docs/development/FOUNDATION_SCHEMA_ROLLBACK.md").read_text(encoding="utf-8")
-    if "drop table` is not an accepted" not in rollback.lower():
-        raise SchemaError("rollback barrier is missing")
+    operations = (root / "docs/OPERATIONS_AND_RELEASE.md").read_text(
+        encoding="utf-8"
+    )
+    for marker in (
+        "`migrations/postgresql/` and `migrations/cockroachdb/` are the only production DDL chains",
+        "Rollback must account for sessions, parties, tickets, matches, schedulers, IAP transactions, outbox effects and Rust-only schema state.",
+        "Crossing an irreversible barrier requires explicit approval and evidence.",
+    ):
+        if marker not in operations:
+            raise SchemaError(f"current operations documentation missing: {marker}")
 
     return {
         "status": "foundation-schema-static-contract-passed",
         "profiles": profiles,
+        "rollback_authority": "docs/OPERATIONS_AND_RELEASE.md",
         "runtime_execution_verified": False,
         "database_durable": False,
         "migration_compatible": False,

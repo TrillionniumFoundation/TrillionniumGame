@@ -3,23 +3,14 @@ name: denominator-materialization-gate
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'scripts/check-denominator-materialization.py'
-      - 'tests/control_plane/test_denominator_materialization.py'
-      - 'docs/status/DENOMINATOR_MATERIALIZATION.json'
-      - 'docs/review/DENOMINATOR_REVIEW_PACKET.md'
-      - 'manifests/upstream/candidates/**'
-      - 'manifests/upstream/review-requests/**'
-      - 'manifests/upstream/denominator-review-worklist.json'
-      - 'manifests/upstream/denominator-review-packet.draft.json'
-      - '.github/workflows/denominator-materialization-gate.yml'
   push:
     branches: [main]
     paths:
       - 'scripts/check-denominator-materialization.py'
       - 'tests/control_plane/test_denominator_materialization.py'
-      - 'docs/status/DENOMINATOR_MATERIALIZATION.json'
-      - 'docs/review/DENOMINATOR_REVIEW_PACKET.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'manifests/upstream/candidates/**'
       - 'manifests/upstream/review-requests/**'
       - 'manifests/upstream/denominator-review-worklist.json'
@@ -55,6 +46,11 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+      - name: Validate current review and evidence authority
+        run: |
+          set -euo pipefail
+          grep -q 'Every mandatory leaf records' docs/COMPATIBILITY.md
+          grep -q 'Automation, implementation authors, generated summaries and PR prose cannot provide independent acceptance' docs/TESTING_AND_EVIDENCE.md
       - name: Require complete committed review input
         run: |
           set -euo pipefail

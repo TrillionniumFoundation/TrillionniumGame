@@ -27,20 +27,30 @@ A security issue is not considered fixed merely because source changed. Required
 
 ## Supported versions
 
-The project has not released a production-supported version. `main`, branches, pull requests, crates, workflows and current Go migration inputs are development candidates. No C1–C5 compatibility, production-readiness, public-online or replacement support commitment exists unless a future signed release explicitly states one.
+The project has not released a production-supported version. `main`, branches, pull requests, crates, workflows and the current Go migration input are development candidates. No C1–C5 compatibility, production-readiness, public-online or replacement support commitment exists unless a future signed release explicitly states one.
 
-## Security boundaries
+## Current engineering controls
 
-Binding design and evidence controls include:
+The active security and evidence contracts are:
 
-- `docs/security/CRYPTOGRAPHY_AND_KEYS.md`
-- `docs/testing/TEST_POLICY.md`
-- `docs/development/EVIDENCE_MODEL.md`
-- `docs/evidence/index.json`
-- `docs/status/GAP_REGISTER.json`
-- `docs/status/PRODUCT_GATES.json`
+- [`docs/SECURITY_AND_PRIVACY.md`](docs/SECURITY_AND_PRIVACY.md)
+- [`docs/TESTING_AND_EVIDENCE.md`](docs/TESTING_AND_EVIDENCE.md)
+- [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md)
+- [`docs/evidence/index.json`](docs/evidence/index.json)
+- [`docs/status/GAP_REGISTER.json`](docs/status/GAP_REGISTER.json)
+- [`docs/status/PRODUCT_GATES.json`](docs/status/PRODUCT_GATES.json)
 
-Security-critical paths require independent review and must be covered by the aggregate merge gate. Empty, skipped, cancelled or older-head checks are not security evidence.
+`docs/DOCUMENTATION_AUTHORITY.json` defines the current documentation set. Historical/versioned security notes are not active policy.
+
+Security-critical paths require independent review and aggregate-gate coverage. Empty, skipped, cancelled, zero-job, startup-failure or older-head checks are not security evidence.
+
+### Secret-bearing configuration and operator output
+
+Configuration objects that can carry database URLs, administrative tokens, session-authentication keys, provider credentials or private-key paths must never be passed to generic formatting, logging, tracing, panic, metric-label or error-rendering sinks, even when their current `Debug` implementation is redacted. Field-insensitive dataflow analysis and future struct changes make whole-object logging an unsafe boundary.
+
+Operator messages for configuration validation, migration completion and process startup must be static, low-cardinality strings. They must not interpolate configuration fields or values derived from secret-bearing configuration. Detailed non-secret operational state belongs in separately typed, explicitly allow-listed telemetry whose fields are reviewed and tested. A scanner suppression or a claim that a value is “normally redacted” is not a substitute for removing the dataflow.
+
+This contract applies uniformly to the layered `trnm-server` composition root, the temporary `trnm-persistence-pg` server compatibility binary, the outbox worker and every live/process harness that asserts their output. A second executable entrypoint must not retain an older redacted-`Debug` or configuration-derived output contract after the primary entrypoint is hardened.
 
 ## Disclosure and remediation
 

@@ -3,17 +3,6 @@ name: pgwire-vertical-slice
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'config/database-test-images.json'
-      - 'crates/trnm-contracts/**'
-      - 'crates/trnm-persistence-core/**'
-      - 'crates/trnm-persistence-pg/**'
-      - 'migrations/**'
-      - 'scripts/ci-pgwire-vertical-slice.sh'
-      - 'docs/development/PGWIRE_*.md'
-      - '.github/workflows/pgwire-vertical-slice.yml'
   push:
     branches: [main]
     paths:

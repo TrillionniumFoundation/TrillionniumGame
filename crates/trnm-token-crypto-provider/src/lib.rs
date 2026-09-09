@@ -5,9 +5,21 @@
 //!
 //! This crate contains no SHA, HMAC, constant-time or key-storage
 //! implementation. Production providers must be supplied by separately
-//! reviewed software or remote-key adapters.
+//! reviewed software or remote-key adapters. Operational key checkpoints are
+//! locally shape-validated before any external verifier runs: signing authority
+//! retains exactly one `Active` record at the highest epoch, authority loss
+//! retains none, and verification/terminal lifecycle timestamps must remain
+//! consistent with activation and the checkpoint time high-water.
+
+mod lifecycle;
 
 use core::fmt;
+
+pub use lifecycle::{
+    DomainLifecycleStatus, EpochWindow, KeyEpochRegistry, LifecycleAction, LifecycleAuditEvent,
+    LifecycleError, LifecycleHealth, LifecycleMutation, ALL_KEY_DOMAINS, MAX_EPOCHS_PER_DOMAIN,
+    MAX_LIFECYCLE_AUDIT_EVENTS, MAX_VERIFICATION_EPOCHS_AT_ONCE,
+};
 
 pub const MAX_SIGNING_INPUT_BYTES: usize = 32 * 1024;
 pub const SIGNATURE_BYTES: usize = 32;
@@ -22,7 +34,7 @@ pub enum KeyDomain {
     Authority,
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct KeyHandle(String);
 
 impl KeyHandle {
@@ -42,6 +54,12 @@ impl KeyHandle {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl fmt::Debug for KeyHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyHandle(<redacted-key-handle>)")
     }
 }
 
@@ -255,6 +273,16 @@ mod tests {
     }
 
     #[test]
+    fn key_handle_debug_is_always_redacted() {
+        let handle = KeyHandle::new("kms://tenant/production-signing-key").unwrap();
+        let key = KeyReference::new(KeyDomain::Authority, handle, Some(9)).unwrap();
+        let rendered = format!("{key:?}");
+        assert!(rendered.contains("<redacted-key-handle>"));
+        assert!(!rendered.contains("tenant"));
+        assert!(!rendered.contains("production-signing-key"));
+    }
+
+    #[test]
     fn exact_signing_input_is_forwarded_without_claim_parsing() {
         let provider = RecordingProvider::default();
         let input = b"encoded-header.encoded-payload";
@@ -296,3 +324,20 @@ mod tests {
         ));
     }
 }
+
+mod key_domain;
+mod key_epoch;
+mod signer_journal;
+
+pub use key_epoch::{
+    KeyEpoch, KeyEpochArchiveCheckpoint, KeyEpochArchiveVerifier, KeyEpochError, KeyEpochRecord,
+    KeyEpochRegistry as OperationalKeyEpochRegistry, KeyEpochState, KeyId,
+};
+pub use signer_journal::{
+    SignerDispatchIdentity, SignerJournal, SignerJournalArchiveVerifier, SignerJournalCheckpoint,
+    SignerJournalEpoch, SignerJournalError, SignerOutcomeEvidence, SignerOutcomeVerificationError,
+    SignerOutcomeVerifier, SignerReceiptBinding, SigningOperationHandle, SigningOperationId,
+    SigningOperationRecord, SigningOperationState, SigningOperationTombstone, SigningRequest,
+};
+
+pub use key_domain::{DomainBoundKeyId, DomainKeyEpochRegistry, KeyDomainError};

@@ -2,7 +2,7 @@
   "schema": "trillionnium.jwt-crypto-provider.v1",
   "project_id": "trillionnium-game",
   "status": "interface-source-candidate",
-  "adr": "docs/adr/ADR-0002-JWT-CRYPTO-PROVIDER.md",
+  "adr": "docs/SECURITY_AND_PRIVACY.md",
   "crate": "crates/trnm-token-crypto-provider",
   "key_domains": [
     "access-token",
@@ -12,35 +12,72 @@
     "socket",
     "authority"
   ],
-  "provider_operations": ["sign-hs256", "verify-hs256"],
+  "provider_operations": [
+    "sign-hs256",
+    "verify-hs256"
+  ],
+  "lifecycle_operations": [
+    "install-epoch",
+    "select-active-signing-epoch",
+    "select-exact-verification-epoch",
+    "revoke-epoch",
+    "retire-revoked-or-expired-epoch",
+    "bounded-status",
+    "bounded-health",
+    "bounded-audit"
+  ],
+  "lifecycle_limits": {
+    "epochs_per_domain": 8,
+    "simultaneous_verification_epochs": 2,
+    "audit_events": 256
+  },
   "invariants": [
     "the exact encoded header.payload bytes are passed to the provider",
     "signature input is bounded",
     "signature length is checked before provider verification",
-    "key handles are opaque and never key bytes",
-    "access and refresh domains are distinct",
-    "unknown epoch fallback is forbidden",
+    "key handles are opaque, debug-redacted, and never key bytes",
+    "all six key domains are isolated",
+    "epochs are nonzero and strictly monotonic within a domain",
+    "signing windows never overlap within a domain",
+    "verification overlap is bounded to two epochs within a domain",
+    "unknown domain or epoch fallback is forbidden",
+    "revoke is immediate, monotonic, and idempotent",
+    "retirement requires revocation or verification expiry and preserves the epoch high-watermark",
+    "mutations are fenced by exact revision and non-regressing time",
+    "revision and audit exhaustion fail before schedule mutation",
     "provider I/O is outside mutable database transactions"
   ],
   "production_implementation_required": [
     "reviewed Rust software provider or approved KMS/HSM adapter",
+    "durable lifecycle persistence and cross-node convergence",
     "dependency and license lock",
     "cross-provider exact vectors",
     "malformed and fuzz corpus",
-    "rotation, revoke, refresh replay and socket disconnect",
-    "independent security review"
+    "real rotation, emergency revoke, refresh replay and socket disconnect",
+    "provider deadline and cancellation implementation",
+    "independent security and cryptography review"
   ],
   "not_implemented": [
     "reviewed RustCrypto provider",
     "remote KMS/HSM provider",
-    "integration into the JWT compatibility adapter",
+    "durable lifecycle repository",
+    "cross-node lifecycle distribution",
+    "integration into every token compatibility adapter",
     "stable provider error mapping",
-    "provider deadline and cancellation implementation"
+    "provider deadline and cancellation implementation",
+    "production key ceremony or rotation rehearsal"
   ],
-  "gap_ids": ["GAP-P0-CRYPTO-001"],
+  "gap_ids": [
+    "GAP-P0-CRYPTO-001",
+    "GAP-P1-CRYPTO-002",
+    "GAP-P1-REVIEW-001"
+  ],
   "claims": {
     "provider_interface_exists": true,
+    "lifecycle_registry_exists": true,
+    "key_handle_debug_redacted": true,
     "production_provider_exists": false,
+    "durable_lifecycle_exists": false,
     "jwt_adapter_integrated": false,
     "security_review_accepted": false,
     "production_ready": false

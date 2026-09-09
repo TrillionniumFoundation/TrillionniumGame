@@ -806,3 +806,10 @@ mod tests {
         );
     }
 }
+
+mod migration_fence;
+
+pub use migration_fence::{
+    AuthorityMode, FenceEpoch, MigrationCursor, MigrationDigest, MigrationFence,
+    MigrationFenceError, MigrationFenceSnapshot, MigrationIdentity, MigrationPhase,
+};

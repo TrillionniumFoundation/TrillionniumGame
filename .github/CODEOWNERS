@@ -1,37 +1,58 @@
-# Initial ownership map for TrillionniumGame.
-# @Tomasrgbsf is the current maintainer fallback. Replace/add named independent
-# users or organization teams before any independent-review gate can close.
+# Redundant named ownership for TrillionniumGame.
+# GitHub branch/ruleset enforcement remains a separate administrative gate.
+# The candidate author cannot approve their own pull request; at least one of
+# the other named owners must bind approval to the exact latest head.
 
-* @Tomasrgbsf
+* @ProfHepta @Franksudoman @Tomasrgbsf
 
-# Governance, CI, evidence and release control plane
-/.github/ @Tomasrgbsf
-/CURRENT_PLAN.md @Tomasrgbsf
-/PROJECT_BOUNDARY.* @Tomasrgbsf
-/docs/governance/ @Tomasrgbsf
-/docs/evidence/ @Tomasrgbsf
-/docs/status/ @Tomasrgbsf
-/scripts/check-plan.py @Tomasrgbsf
-/scripts/check-status-transitions.py @Tomasrgbsf
-/scripts/derive-gates.py @Tomasrgbsf
+# Governance, CI, evidence, review and release control plane
+/.github/ @ProfHepta @Franksudoman @Tomasrgbsf
+/CURRENT_PLAN.md @ProfHepta @Franksudoman @Tomasrgbsf
+/PROJECT_BOUNDARY.* @ProfHepta @Franksudoman @Tomasrgbsf
+/docs/DOCUMENTATION_AUTHORITY.json @ProfHepta @Franksudoman @Tomasrgbsf
+/docs/GOVERNANCE.md @ProfHepta @Franksudoman @Tomasrgbsf
+/docs/TESTING_AND_EVIDENCE.md @ProfHepta @Franksudoman @Tomasrgbsf
+/docs/governance/ @ProfHepta @Franksudoman @Tomasrgbsf
+/docs/evidence/ @ProfHepta @Franksudoman @Tomasrgbsf
+/docs/review/ @ProfHepta @Franksudoman @Tomasrgbsf
+/docs/status/ @ProfHepta @Franksudoman @Tomasrgbsf
+/scripts/check-plan.py @ProfHepta @Franksudoman @Tomasrgbsf
+/scripts/check-status-transitions.py @ProfHepta @Franksudoman @Tomasrgbsf
+/scripts/derive-gates.py @ProfHepta @Franksudoman @Tomasrgbsf
 
 # Database, data integrity and migration
-/migrations/ @Tomasrgbsf
-/database/ @Tomasrgbsf
-/crates/trnm-persistence-core/ @Tomasrgbsf
-/crates/trnm-persistence-pg/ @Tomasrgbsf
-/docs/development/SCHEMA_AUTHORITY.json @Tomasrgbsf
+/migrations/ @ProfHepta @Franksudoman @Tomasrgbsf
+/database/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-persistence-core/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-persistence-pg/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-persistence-runtime-policy/ @ProfHepta @Franksudoman @Tomasrgbsf
+/docs/development/SCHEMA_AUTHORITY.json @ProfHepta @Franksudoman @Tomasrgbsf
 
-# Security and identity
-/SECURITY.md @Tomasrgbsf
-/docs/security/ @Tomasrgbsf
-/crates/trnm-token-core/ @Tomasrgbsf
-/crates/trnm-token-jwt-adapter/ @Tomasrgbsf
-/crates/trnm-session-core/ @Tomasrgbsf
+# Security, cryptography and identity
+/SECURITY.md @ProfHepta @Franksudoman @Tomasrgbsf
+/docs/SECURITY_AND_PRIVACY.md @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-token-core/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-token-jwt-adapter/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-token-jwt-adapter-gate/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-token-jwt-adapter-gate-v2/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-token-crypto-provider/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-token-jwt-provider-adapter/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-session-core/ @ProfHepta @Franksudoman @Tomasrgbsf
 
-# Protocol and realtime ownership
-/crates/trnm-canonical-core/ @Tomasrgbsf
-/crates/trnm-transport-core/ @Tomasrgbsf
-/crates/trnm-presence-core/ @Tomasrgbsf
-/crates/trnm-presence-router-v2/ @Tomasrgbsf
-/runtime/ @Tomasrgbsf
+# Protocol and compatibility
+/contracts/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-contracts/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-canonical-core/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-transport-core/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-realtime-wire/ @ProfHepta @Franksudoman @Tomasrgbsf
+/docs/COMPATIBILITY.md @ProfHepta @Franksudoman @Tomasrgbsf
+
+# Realtime, runtime and distributed ownership
+/crates/trnm-presence-core/ @ProfHepta @Franksudoman @Tomasrgbsf
+/crates/trnm-presence-router-v2/ @ProfHepta @Franksudoman @Tomasrgbsf
+/runtime/ @ProfHepta @Franksudoman @Tomasrgbsf
+
+# Operations, deployment and recovery
+/deploy/ @ProfHepta @Franksudoman @Tomasrgbsf
+/compose.yaml @ProfHepta @Franksudoman @Tomasrgbsf
+/docs/OPERATIONS_AND_RELEASE.md @ProfHepta @Franksudoman @Tomasrgbsf

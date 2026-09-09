@@ -3,19 +3,6 @@ name: trnm-server-live
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'crates/trnm-contracts/**'
-      - 'crates/trnm-persistence-pg/**'
-      - 'migrations/**'
-      - 'scripts/check-trnm-server.py'
-      - 'scripts/ci-trnm-server-live.sh'
-      - 'scripts/trnm-server-live-client.py'
-      - 'docs/development/TRNM_SERVER_VERTICAL_SLICE.md'
-      - 'docs/status/TRNM_SERVER_STATUS.json'
-      - '.github/workflows/trnm-server-live.yml'
   push:
     branches: [main]
     paths:
@@ -28,8 +15,15 @@ on:
       - 'scripts/check-trnm-server.py'
       - 'scripts/ci-trnm-server-live.sh'
       - 'scripts/trnm-server-live-client.py'
-      - 'docs/development/TRNM_SERVER_VERTICAL_SLICE.md'
+      - 'scripts/wait-postgres-final-ready.py'
+      - 'tests/control_plane/test_postgres_final_ready.py'
+      - 'docs/ARCHITECTURE.md'
+      - 'docs/DEVELOPMENT.md'
+      - 'docs/OPERATIONS_AND_RELEASE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/TRNM_SERVER_STATUS.json'
+      - 'scripts/upload-actions-artifact.py'
+      - '.github/actions/upload-evidence/**'
       - '.github/workflows/trnm-server-live.yml'
 
 permissions:
@@ -69,7 +63,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/check-trnm-server.py
-          python3 -m py_compile scripts/check-trnm-server.py scripts/trnm-server-live-client.py
+          python3 -m py_compile \
+            scripts/check-trnm-server.py \
+            scripts/trnm-server-live-client.py \
+            scripts/wait-postgres-final-ready.py
+          python3 -m unittest tests.control_plane.test_postgres_final_ready -v
           bash -n scripts/ci-trnm-server-live.sh
 
   live-profile:
@@ -106,7 +104,7 @@ jobs:
           TRNM_EVIDENCE_ROOT: run/server-live
           TRNM_RUN_ID: ${{ github.run_id }}-${{ matrix.profile }}
         run: bash scripts/ci-trnm-server-live.sh '${{ matrix.profile }}'
-      - name: Seal exact-head evidence digest in immutable job log
+      - name: Seal exact-head evidence packet
         if: always()
         env:
           PROFILE: ${{ matrix.profile }}
@@ -155,6 +153,25 @@ jobs:
           cat "$evidence/summary.json"
           cat "$evidence/database-assertions.txt"
           cat "$evidence/SHA256SUMS"
+      - name: Retain exact-head live profile packet
+        id: retained-live-profile
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: trnm-server-live-${{ matrix.profile }}-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/trnm-server-live-${{ matrix.profile }}.tar.gz
+          mime_type: application/gzip
+      - name: Verify retained live profile receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n '${{ steps.retained-live-profile.outputs.artifact_id }}'
+          test '${{ steps.retained-live-profile.outputs.sha256 }}' != ''
+          test '${{ steps.retained-live-profile.outputs.size_bytes }}' -gt 0
+          printf 'profile=%s artifact_id=%s sha256=%s size_bytes=%s\n' \
+            '${{ matrix.profile }}' \
+            '${{ steps.retained-live-profile.outputs.artifact_id }}' \
+            '${{ steps.retained-live-profile.outputs.sha256 }}' \
+            '${{ steps.retained-live-profile.outputs.size_bytes }}'
 
   trnm-server-live:
     name: trnm-server-live

@@ -8,7 +8,7 @@ mkdir -p "$TMP/runtime/internal" "$TMP/contracts" "$TMP/docs" "$TMP/scripts" "$T
 cp -a "$ROOT/runtime/internal/worldcommand" "$TMP/runtime/internal/worldcommand"
 cp "$ROOT/contracts/world-command-runtime-v1-status.json" "$TMP/contracts/"
 cp "$ROOT/contracts/world-command-fault-evidence-v1.schema.json" "$TMP/contracts/"
-cp "$ROOT/docs/WORLD_COMMAND_RUNTIME_V1.md" "$TMP/docs/"
+cp "$ROOT/docs/ARCHITECTURE.md" "$TMP/docs/"
 cp "$CHECKER" "$TMP/scripts/"
 cp "$ROOT/tools/summarize_world_command_faults.py" "$TMP/tools/"
 
@@ -23,7 +23,10 @@ fi
 rm "$TMP/runtime/internal/worldcommand/forbidden.go"
 
 python3 - "$TMP/contracts/world-command-runtime-v1-status.json" <<'PY'
-import json, pathlib, sys
+import json
+import pathlib
+import sys
+
 path = pathlib.Path(sys.argv[1])
 data = json.loads(path.read_text())
 data["authority"]["cutover_authorized"] = True

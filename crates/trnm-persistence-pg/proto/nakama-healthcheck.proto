@@ -1,0 +1,19 @@
+// Copyright 2018 The Nakama Authors
+// Licensed under the Apache License, Version 2.0.
+//
+// Exact method signature derived from:
+// heroiclabs/nakama@d4d92f93f78bbbe62c7fc50a3f85c772ec121a09
+// apigrpc/apigrpc.proto blob 1cc63aae1aaa5dc56ede9c9d0b6f9a95ff91361c
+//
+// This file intentionally contains only the Healthcheck method. It is not the
+// complete Nakama service denominator and grants no broad gRPC compatibility.
+syntax = "proto3";
+
+package nakama.api;
+
+import "google/protobuf/empty.proto";
+
+service Nakama {
+  // A healthcheck which load balancers can use to check the service.
+  rpc Healthcheck (google.protobuf.Empty) returns (google.protobuf.Empty);
+}

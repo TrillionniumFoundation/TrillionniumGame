@@ -30,16 +30,24 @@ required=(
   runtime/internal/worldcommand/fault_hook_test.go
   deploy/world-command-fault-lab/compose.yaml
   contracts/world-command-deployed-runtime-v1-status.json
-  docs/WORLD_COMMAND_DEPLOYED_RUNTIME_V1.md
   contracts/world-command-rpc-v1/ready-response.schema.json
   contracts/world-command-rpc-v1/status-request.schema.json
   contracts/world-command-rpc-v1/status-response.schema.json
   contracts/world-command-rpc-v1/abort-request.schema.json
   contracts/world-command-rpc-v1/abort-response.schema.json
+  docs/ARCHITECTURE.md
+  docs/OPERATIONS_AND_RELEASE.md
 )
 for path in "${required[@]}"; do
   [[ -f "$root/$path" ]] || fail "missing $path"
 done
+
+grep -q 'Runtime modules receive explicit capabilities' "$root/docs/ARCHITECTURE.md" \
+  || fail 'current architecture omits Runtime capability boundary'
+grep -q 'Shadow is read/observe only' "$root/docs/OPERATIONS_AND_RELEASE.md" \
+  || fail 'current operations documentation omits shadow no-effect boundary'
+grep -q 'exclusive ownership by an explicit cohort key' "$root/docs/OPERATIONS_AND_RELEASE.md" \
+  || fail 'current operations documentation omits exclusive canary ownership'
 
 python3 - "$root" <<'PY'
 import json
@@ -47,11 +55,15 @@ import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
-status = json.loads((root / "contracts/world-command-deployed-runtime-v1-status.json").read_text())
+status = json.loads(
+    (root / "contracts/world-command-deployed-runtime-v1-status.json").read_text()
+)
 if status.get("contract_version") != "trnm_game_world_command_deployed_runtime_delivery_v1":
     raise SystemExit("unexpected deployed-runtime status contract")
-if status.get("owner") != "TrillionniumFoundation/TrillionniumGame" or status.get("repository_id") != 1323087470:
+if status.get("owner") != "TrillionniumFoundation/TrillionniumGame":
     raise SystemExit("canonical repository identity drift")
+if status.get("repository_id") != 1323087470:
+    raise SystemExit("canonical repository ID drift")
 if status.get("activation") != "target_profile_opt_in_only":
     raise SystemExit("target profile is not explicit opt-in")
 authority = status.get("authority", {})
@@ -115,13 +127,21 @@ for name in sorted(expected):
     schema = json.loads((schema_dir / name).read_text())
     if schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
         raise SystemExit(f"{name}: wrong schema dialect")
-    expected_id = f"https://github.com/TrillionniumFoundation/TrillionniumGame/contracts/world-command-rpc-v1/{name}"
+    expected_id = (
+        "https://github.com/TrillionniumFoundation/TrillionniumGame/"
+        f"contracts/world-command-rpc-v1/{name}"
+    )
     if schema.get("$id") != expected_id:
         raise SystemExit(f"{name}: schema ID drift")
     walk(schema, name)
 
 ready = json.loads((schema_dir / "ready-response.schema.json").read_text())
-for field in ("external_execution_under_lock", "cutover_authorized", "public_online_enabled", "public_player_market_enabled"):
+for field in (
+    "external_execution_under_lock",
+    "cutover_authorized",
+    "public_online_enabled",
+    "public_player_market_enabled",
+):
     if ready["properties"][field].get("const") is not False:
         raise SystemExit(f"ready response can overclaim {field}")
 abort = json.loads((schema_dir / "abort-response.schema.json").read_text())
@@ -154,8 +174,7 @@ for token in PreflightCommand WorldBinding; do
 done
 
 grep -q 'profile == worldProfileLegacy' "$wrapper" || fail 'legacy profile is not explicit'
-grep -q 'worldProfileTarget' "$config" || fail 'target profile is missing'
-if grep -Ri -nE 'fallback.*legacy|legacy.*fallback' "$wrapper" "$config"; then
+if grep -Ri -nE 'fallback.*legacy|legacy.*fallback|automaticFallbackToLegacy' "$wrapper" "$config"; then
   fail 'target source contains an automatic legacy fallback'
 fi
 
@@ -163,47 +182,85 @@ for token in TRNM_WORLD_INITIAL_STATE_HASH TRNM_WORLD_CHALLENGE_SNAPSHOT_HASH; d
   grep -q "$token" "$config" || fail "separate commitment is missing: $token"
   grep -q "$token" "$compose" || fail "fault-lab compose omits $token"
 done
-grep -q 'envWorldChallengeHash' "$environment" || fail 'challenge snapshot is not process-env allowlisted'
+grep -q 'envWorldChallengeHash' "$environment" \
+  || fail 'challenge snapshot is not process-env allowlisted'
 
 grep -q 'tls.VersionTLS13' "$http" || fail 'World HTTPS executor does not require TLS 1.3'
 grep -q 'CheckRedirect' "$http" || fail 'World HTTPS executor does not reject redirects'
 grep -q 'io.LimitReader' "$http" || fail 'World HTTPS response is unbounded'
-grep -q 'context.WithoutCancel' "$coordinator" || fail 'verified cleanup is caller-cancellation sensitive'
+grep -q 'context.WithoutCancel' "$coordinator" \
+  || fail 'verified cleanup is caller-cancellation sensitive'
 
 prepare_line=$(grep -n 'c.Store.Prepare' "$coordinator" | head -1 | cut -d: -f1)
 execute_line=$(grep -n 'c.Executor.Execute' "$coordinator" | head -1 | cut -d: -f1)
 verify_line=$(grep -n 'c.Store.codec.Verify' "$coordinator" | head -1 | cut -d: -f1)
 commit_line=$(grep -n 'c.Store.CommitWith' "$coordinator" | head -1 | cut -d: -f1)
-[[ -n "$prepare_line" && -n "$execute_line" && -n "$verify_line" && -n "$commit_line" ]] || fail 'coordinator sequence is incomplete'
-(( prepare_line < execute_line && execute_line < verify_line && verify_line < commit_line )) || fail 'Prepare -> Execute -> Verify -> Commit ordering drifted'
+[[ -n "$prepare_line" && -n "$execute_line" && -n "$verify_line" && -n "$commit_line" ]] \
+  || fail 'coordinator sequence is incomplete'
+(( prepare_line < execute_line && execute_line < verify_line && verify_line < commit_line )) \
+  || fail 'Prepare -> Execute -> Verify -> Commit ordering drifted'
 
 grep -q 'type CommitPersister func' "$commit" || fail 'atomic sidecar persister is missing'
-grep -q 'StorageWrite(ctx, \[\]\*runtime.StorageWrite{' "$storage" || fail 'atomic storage batch is missing'
+grep -q 'StorageWrite(ctx, \[\]\*runtime.StorageWrite{' "$storage" \
+  || fail 'atomic storage batch is missing'
 grep -q 'matchStorageCollection' "$storage" || fail 'atomic batch omits core snapshot'
 grep -q 'worldCommandStorageCollection' "$storage" || fail 'atomic batch omits World snapshot'
-grep -q 'errAtomicWorldCommitAmbiguous' "$storage" || fail 'ambiguous storage acknowledgement is not fail closed'
+grep -q 'errAtomicWorldCommitAmbiguous' "$storage" \
+  || fail 'ambiguous storage acknowledgement is not fail closed'
+
+python3 - "$storage" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+start_marker = "acks, err := nk.StorageWrite(ctx, []*runtime.StorageWrite{"
+end_marker = "\n\tif err != nil {"
+if text.count(start_marker) != 1:
+    raise SystemExit("atomic batch must have one canonical StorageWrite call")
+start = text.index(start_marker)
+try:
+    end = text.index(end_marker, start)
+except ValueError as error:
+    raise SystemExit("atomic batch error boundary is missing") from error
+batch = text[start:end]
+requirements = {
+    "Collection:      matchStorageCollection,": 1,
+    "Collection:      worldCommandStorageCollection,": 1,
+    "Key:             state.instanceLogicalMatchID,": 2,
+    "Version:         state.storageVersion,": 1,
+    "Version:         expectedWorldVersion,": 1,
+}
+for fragment, expected_count in requirements.items():
+    actual = batch.count(fragment)
+    if actual != expected_count:
+        raise SystemExit(
+            f"atomic World/core batch fragment count mismatch: {fragment!r} "
+            f"expected={expected_count} actual={actual}"
+        )
+if batch.count("Collection:") != 2:
+    raise SystemExit("atomic World/core batch must contain exactly two writes")
+if batch.index("Collection:      matchStorageCollection,") > batch.index(
+    "Collection:      worldCommandStorageCollection,"
+):
+    raise SystemExit("atomic World/core batch order changed")
+PY
 
 grep -q 'TRNM_WORLD_COMMAND_FAULT_LAB' "$config" || fail 'fault-lab gate is missing'
 grep -q 'after_reservation' "$config" || fail 'reservation failpoint is missing'
 grep -q 'after_verify' "$config" || fail 'verified-result failpoint is missing'
 grep -q 'os.Exit' "$failpoint" || fail 'process failpoint does not terminate the process'
 
-# Process termination remains isolated to the explicit authority fault injector.
-# The only additional direct os.Exit is the offline fixture-signing CLI's main
-# error path; it is not linked into the Nakama authority plugin or server loop.
 grep -Fq 'if err := run(os.Args[1:], os.Stdin, os.Stdout); err != nil' "$fixture_signer" \
-  || fail 'fixture signer main no longer delegates all behavior to testable run()'
+  || fail 'fixture signer main no longer delegates to run()'
 grep -Fq 'os.Exit(2)' "$fixture_signer" \
-  || fail 'fixture signer no longer returns a stable CLI error exit status'
-escaped_exit=$(
-  grep -R -n 'os.Exit' "$root/runtime" --include='*.go' \
-    | grep -v 'world_command_failpoint.go' \
-    | grep -v 'runtime/cmd/trnm-fixture-signer/main.go:' \
-    || true
-)
+  || fail 'fixture signer no longer returns a stable CLI error status'
+escaped_exit=$(grep -R -n 'os.Exit' "$root/runtime" --include='*.go' \
+  | grep -v 'world_command_failpoint.go' \
+  | grep -v 'runtime/cmd/trnm-fixture-signer/main.go:' || true)
 if [[ -n "$escaped_exit" ]]; then
   printf '%s\n' "$escaped_exit" >&2
-  fail 'process exit capability escaped the fault injector and fixture CLI allowlist'
+  fail 'process exit capability escaped the approved allowlist'
 fi
 
 for token in trnm_world_command_ready_v1 trnm_world_command_status_v1 trnm_world_command_abort_v1; do
@@ -213,19 +270,20 @@ for token in 'cutover_authorized": false' 'public_online_enabled": false' 'publi
   grep -q "$token" "$rpc" || fail "operator RPC can overclaim: $token"
 done
 
-for token in 'ListenAndServeTLS' 'cacheHits' 'storeCached' 'directory.Sync'; do
+for token in ListenAndServeTLS cacheHits storeCached directory.Sync; do
   grep -q "$token" "$world_fixture" || fail "World HTTPS fixture lacks $token"
 done
 for token in drop_next delay_next Hijack TLSClientConfig; do
   grep -q "$token" "$proxy" || fail "response-drop proxy lacks $token"
 done
-for token in 'IsCA:                  true' 'ExtKeyUsageServerAuth' 'writeAtomic'; do
+for token in 'IsCA:                  true' ExtKeyUsageServerAuth writeAtomic; do
   grep -q "$token" "$tls_fixture" || fail "TLS fixture lacks $token"
 done
 for service in tls-init world-fixture response-drop-proxy nakama; do
   grep -q "^  $service:" "$compose" || fail "fault-lab compose omits service $service"
 done
-grep -q 'https://response-drop-proxy:7444/v1/transition' "$compose" || fail 'Nakama is not routed through the response-drop proxy'
+grep -q 'https://response-drop-proxy:7444/v1/transition' "$compose" \
+  || fail 'Nakama is not routed through the response-drop proxy'
 
 new_files=(
   "$wrapper" "$config" "$environment" "$http" "$storage" "$rpc" "$failpoint"

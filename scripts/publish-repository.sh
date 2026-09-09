@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -euo pipefail
 cat >&2 <<'MSG'
-This project already lives in the existing Trillionnium-Nakama repository.
-Creating a second TrillionniumGame repository would break repository identity,
-history, pull-request and evidence continuity.
+TrillionniumGame already uses the canonical repository
+TrillionniumFoundation/TrillionniumGame (repository ID 1323087470).
 
-Read docs/development/REPOSITORY_TRANSITION_RUNBOOK.md, then run:
+Creating, publishing or renaming to another repository would break source,
+pull-request, issue, workflow and evidence identity. Repository migration is
+complete; this guard intentionally performs no mutation.
 
-  TRNM_REPOSITORY_RENAME_CONFIRM=rename-Trillionnium-Nakama-to-TrillionniumGame \
-    bash scripts/rename-existing-repository.sh
+Read docs/GOVERNANCE.md and PROJECT_BOUNDARY.md for the current authority.
 MSG
 exit 64

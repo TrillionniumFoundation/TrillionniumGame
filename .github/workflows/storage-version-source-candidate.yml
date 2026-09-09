@@ -2,18 +2,13 @@ name: storage-version-source-candidate
 
 on:
   pull_request:
-    paths:
-      - 'crates/trnm-storage-nakama-version/**'
-      - 'contracts/storage/nakama-public-version-v1.json'
-      - 'docs/development/STORAGE_PUBLIC_VERSION_COMPATIBILITY_V1.md'
-      - 'scripts/check-storage-version-compat.py'
-      - '.github/workflows/storage-version-source-candidate.yml'
   push:
     branches: [main]
     paths:
       - 'crates/trnm-storage-nakama-version/**'
       - 'contracts/storage/nakama-public-version-v1.json'
-      - 'docs/development/STORAGE_PUBLIC_VERSION_COMPATIBILITY_V1.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'scripts/check-storage-version-compat.py'
       - '.github/workflows/storage-version-source-candidate.yml'
   workflow_dispatch:

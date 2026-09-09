@@ -3,13 +3,6 @@ name: trillionnium-game-pinned-upstream-source
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'tools/upstream/**'
-      - 'scripts/fetch-pinned-upstream.py'
-      - 'scripts/check-pinned-upstream-fetch.sh'
-      - 'tests/upstream/**'
-      - 'docs/development/PINNED_UPSTREAM_SOURCE_FETCH.md'
-      - '.github/workflows/w0-pinned-source-fetch.yml'
   push:
     branches: [main]
     paths:
@@ -17,7 +10,8 @@ on:
       - 'scripts/fetch-pinned-upstream.py'
       - 'scripts/check-pinned-upstream-fetch.sh'
       - 'tests/upstream/**'
-      - 'docs/development/PINNED_UPSTREAM_SOURCE_FETCH.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/w0-pinned-source-fetch.yml'
 
 permissions:

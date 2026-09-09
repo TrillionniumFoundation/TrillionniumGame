@@ -3,19 +3,6 @@ name: trillionnium-game-sg1-sdk-denominator
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'config/sdk-source-snapshots.json'
-      - 'tools/sdk/**'
-      - 'tools/upstream/**'
-      - 'scripts/fetch-pinned-upstream.py'
-      - 'scripts/repair-pinned-github-archive.py'
-      - 'scripts/generate-sdk-denominator.py'
-      - 'scripts/check-sdk-denominator.sh'
-      - 'tests/sdk/**'
-      - 'tests/upstream/**'
-      - 'docs/development/SDK_DENOMINATOR_CANDIDATE.md'
-      - '.github/workflows/sg1-sdk-denominator.yml'
-
 permissions:
   contents: read
 
@@ -46,6 +33,11 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+      - name: Validate current SDK denominator contract
+        run: |
+          set -euo pipefail
+          grep -q 'Official SDK tests are black-box consumers' docs/COMPATIBILITY.md
+          grep -q 'Generated internal tests cannot substitute for official consumer behavior' docs/COMPATIBILITY.md
       - name: Validate SDK registry, archive verifier and negative fixtures
         run: |
           set -euo pipefail
@@ -63,9 +55,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Diagnostic output never grants credit or relaxes the pinned root.
-          # It exposes exact path/mode/object differences before the strict
-          # archive-tree and canonical-tree verification below.
           python3 tools/upstream/diagnose_pinned_tree.py \
             --registry config/sdk-source-snapshots.json \
             --profile cpp \

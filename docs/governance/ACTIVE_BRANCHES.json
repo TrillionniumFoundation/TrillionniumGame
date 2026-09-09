@@ -1,0 +1,35 @@
+{
+  "schema": "trillionnium.active-branches.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "generated_at": "2026-09-02T05:34:00Z",
+  "active_branches": [
+    {
+      "name": "main",
+      "role": "protected-integration-authority",
+      "pull_request": null
+    },
+    {
+      "name": "codex/branch-evidence-closure-2026-09-02",
+      "role": "singular-plan-v3.1-integration-candidate",
+      "pull_request": 63
+    }
+  ],
+  "policy": {
+    "exact_name_required": true,
+    "active_branch_may_be_nonancestor": true,
+    "active_branch_never_auto_deleted": true,
+    "main_must_be_active": true,
+    "maximum_active_branch_count": 4,
+    "cleanup_requires_independent_review": true,
+    "cleanup_requires_before_and_after_manifests": true,
+    "nonancestor_branch_deletion_allowed": false
+  },
+  "claims": {
+    "active_line_declared": true,
+    "branch_cleanup_reviewed": false,
+    "branch_cleanup_executed": false,
+    "cleanup_complete": false,
+    "sg0_complete": false
+  }
+}

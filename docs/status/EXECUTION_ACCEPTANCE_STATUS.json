@@ -1,0 +1,70 @@
+{
+  "schema": "trillionnium.execution-acceptance-status.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "status": "source-candidate",
+  "base_commit": "c66deb47298faa19164c7060cd0efa2584210e07",
+  "task_ids": [
+    "TG-V3-001",
+    "TG-V3-002"
+  ],
+  "gap_ids": [
+    "GAP-P0-PLAN-001",
+    "GAP-P0-EVIDENCE-001"
+  ],
+  "source": "scripts/check-status-transitions.py",
+  "source_blob": "18308d4d0b24c7869c13791ebc7f2942c4edfa6c",
+  "regression_suite": "tests/control_plane/test_execution_acceptance.py",
+  "test_blob": "a2ed5efb0de344ab412a4db989de81601197eee9",
+  "evidence_admission_regression": "tests/control_plane/test_evidence_admission.py",
+  "evidence_admission_test_blob": "8085037bee674862e6895fd073757f4e2d66b8c1",
+  "evidence_schema": "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
+  "evidence_schema_blob": "3e12e964054fa890bfbbf0622c336eecc36a878e",
+  "reproduced_defects": [
+    "A backlog task could replace its immutable gate, blocker and evidence scope with a smaller mutable override and pass accepted-task validation.",
+    "The accepted-task validator required roadmap IDs such as TG-V3-002 in evidence, while the evidence schema rejected every TG-V3 task ID, making legitimate roadmap acceptance impossible.",
+    "Without a digest-bound milestone semantic projection, a future status-only edit could remove a roadmap dependency, gap or evidence class before acceptance."
+  ],
+  "implemented": [
+    "Digest-bound 120-task identity, dependency, gate membership and workstream scope; unspecified tasks remain planned.",
+    "Digest-bound product-gate semantic scope with derived canonical blockers and evidence classes for accepted backlog tasks.",
+    "Every accepted backlog task requires all canonical gates passed for one exact target and retained evidence mapped to both task and gate with full type coverage.",
+    "Digest-bound current-milestone identities, dependencies, gaps, deliverables, acceptance clauses and required evidence; only status, target and evidence references are mutable.",
+    "Evidence schema supports canonical TG-W backlog and TG-V3 roadmap task IDs while rejecting malformed or unapproved version namespaces.",
+    "Existing shared retained-evidence admission and product-gate derivation remain the only credit and gate-status authorities."
+  ],
+  "validation_rule": "Local regression results are retained separately with the exact tested tree; this record alone grants no execution, gap, gate or product acceptance credit.",
+  "limitations": [
+    "Validates current snapshot assertions, not historical Git transitions.",
+    "Digest pins require reviewed updates when the approved backlog, product-gate semantics or current milestone semantics change.",
+    "Does not authenticate live GitHub review provenance, expertise, administrator policy or completeness of every semantic criterion.",
+    "Positive tests use synthetic retained evidence and do not manufacture real approval or accepted product evidence.",
+    "No Rust, Go, DDL, production workflow definitions, required checks, credentials or existing gap/gate statuses are changed."
+  ],
+  "claims": {
+    "source_fix_present": true,
+    "native_final_head_verified": false,
+    "independently_accepted": false,
+    "gap_closed": false,
+    "compatibility_credit": false,
+    "production_ready": false
+  },
+  "gap_evidence_mapping": {
+    "status": "source-candidate",
+    "source": "scripts/evidence_admission.py",
+    "schema": "docs/evidence/schemas/trillionnium-evidence-v1.schema.json",
+    "regression_suite": "tests/control_plane/test_evidence_admission.py",
+    "reproduced_defect": "Accepted evidence of the right type and candidate could close an unrelated gap because no exact gap mapping was required.",
+    "implemented": [
+      "Accepted index rows and retained manifests require identical nonempty canonical gap_ids.",
+      "Gap closure requires every cited evidence row to map explicitly to the exact gap ID.",
+      "Shared admission and the real gap-register consumer both reject cross-gap evidence reuse."
+    ],
+    "native_final_head_verified": false,
+    "independently_accepted": false,
+    "gap_closed": false,
+    "source_blob": "9446e7a99b5c17a1e73eae309d8a5ed31abdb0a0",
+    "schema_blob": "3e12e964054fa890bfbbf0622c336eecc36a878e",
+    "test_blob": "8085037bee674862e6895fd073757f4e2d66b8c1"
+  }
+}

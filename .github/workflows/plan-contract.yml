@@ -2,20 +2,6 @@ name: trillionnium-game-plan-contract
 
 on:
   pull_request:
-    paths:
-      - 'CURRENT_PLAN.md'
-      - 'PROJECT_*'
-      - 'README.md'
-      - 'NOTICE'
-      - 'LICENSE'
-      - 'AGENTS.md'
-      - 'CONTRIBUTING.md'
-      - 'docs/**'
-      - 'scripts/check-plan.py'
-      - 'scripts/generate-api-rtapi-denominator.py'
-      - 'scripts/check-api-rtapi-denominator.sh'
-      - 'tests/test_api_rtapi_denominator.py'
-      - '.github/workflows/plan-contract.yml'
   push:
     branches: [main]
     paths:

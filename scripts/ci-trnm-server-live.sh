@@ -53,13 +53,22 @@ if [[ "$profile" == postgresql ]]; then
     -e POSTGRES_PASSWORD=trnm_live_password \
     -p "127.0.0.1:${db_port}:5432" \
     "$postgres_image" > "$evidence/container-id.txt"
-  for _ in $(seq 1 120); do
-    if docker exec "$container" pg_isready -U trnm -d trnm >/dev/null 2>&1; then
-      break
-    fi
-    sleep 0.25
-  done
-  docker exec "$container" pg_isready -U trnm -d trnm
+
+  # The official image exposes a temporary Unix-socket initialization server
+  # before starting the final TCP postmaster. A single in-container pg_isready
+  # can observe that transient process. Require a bounded run of real SQL
+  # transactions over 127.0.0.1:5432 while the container remains running.
+  python3 scripts/wait-postgres-final-ready.py \
+    --container "$container" \
+    --user trnm \
+    --database trnm \
+    --attempts 160 \
+    --consecutive-successes 6 \
+    --interval-seconds 0.25 \
+    > "$evidence/postgres-final-readiness.json"
+  python3 -m json.tool "$evidence/postgres-final-readiness.json" >/dev/null
+  cat "$evidence/postgres-final-readiness.json"
+
   db_scalar() {
     docker exec "$container" psql -X -U trnm -d trnm -At -v ON_ERROR_STOP=1 -c "$1"
   }
@@ -75,13 +84,19 @@ else
     --listen-addr=127.0.0.1:26257 \
     --http-addr=127.0.0.1:18081 \
     --store=/cockroach/cockroach-data > "$evidence/container-id.txt"
+  ready=false
   for _ in $(seq 1 160); do
     if docker exec "$container" /cockroach/cockroach sql \
       --insecure --host=127.0.0.1:26257 --execute='SELECT 1' >/dev/null 2>&1; then
+      ready=true
       break
     fi
     sleep 0.25
   done
+  if [[ "$ready" != true ]]; then
+    docker logs "$container" >&2 || true
+    exit 1
+  fi
   docker exec "$container" /cockroach/cockroach sql \
     --insecure --host=127.0.0.1:26257 \
     --execute='CREATE DATABASE IF NOT EXISTS trnm'
@@ -119,6 +134,7 @@ export TRNM_SERVER_READ_TIMEOUT_MS=5000
 export TRNM_SERVER_WRITE_TIMEOUT_MS=10000
 
 "$binary" check-config > "$evidence/check-config.log" 2>&1
+grep -qx 'trnm-server configuration valid' "$evidence/check-config.log"
 if grep -F 'trnm_live_password' "$evidence/check-config.log"; then
   echo 'database credential leaked by check-config' >&2
   exit 1
@@ -128,7 +144,65 @@ if grep -F "$admin_token" "$evidence/check-config.log"; then
   exit 1
 fi
 "$binary" migrate > "$evidence/migrate.log" 2>&1
-grep -F "migration profile=${profile} applied=true table_count=10" "$evidence/migrate.log"
+grep -qx 'trnm-server migration completed' "$evidence/migrate.log"
+
+CARGO_TERM_COLOR=never \
+TRNM_REQUIRE_LIVE_DATABASE=1 \
+TRNM_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE="$profile" \
+  cargo test -p trnm-persistence-pg --features session-test-hooks --locked \
+    --test session_response_loss -- --nocapture --test-threads=1 2>&1 | tee "$evidence/session-response-loss.log"
+session_test_count=$(
+  sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
+    "$evidence/session-response-loss.log"
+)
+[[ "$session_test_count" =~ ^[0-9]+$ ]]
+test "$session_test_count" -ge 8
+
+response_loss_family_hex=$(printf '71%.0s' {1..16})
+test "$(db_scalar "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex')")" = 1
+test "$(db_scalar "SELECT count(*) FROM trnm_refresh_tokens WHERE family_id = decode('${response_loss_family_hex}', 'hex')")" = 2
+test "$(db_scalar "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex') AND active_token_id IS NULL AND revoked_reason = 2")" = 1
+
+concurrency_logout_families=0
+for family_byte in 90 91 92 93 94 95 96 97 98 99 9a 9b 9c 9d 9e 9f; do
+  family_hex=$(printf "${family_byte}%.0s" {1..16})
+  test "$(db_scalar "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${family_hex}', 'hex') AND active_token_id IS NULL AND revoked_reason = 0")" = 1
+  concurrency_logout_families=$((concurrency_logout_families + 1))
+done
+test "$concurrency_logout_families" = 16
+
+assert_interleaving_family() {
+  local family_byte=$1
+  local generation=$2
+  local active_byte=$3
+  local revoked_reason=$4
+  local token_count=$5
+  local active_count=$6
+  local family_hex active_clause revocation_clause active_hex
+  family_hex=$(printf "${family_byte}%.0s" {1..16})
+  if [[ "$active_byte" == none ]]; then
+    active_clause='active_token_id IS NULL'
+  else
+    active_hex=$(printf "${active_byte}%.0s" {1..16})
+    active_clause="active_token_id = decode('${active_hex}', 'hex')"
+  fi
+  if [[ "$revoked_reason" == none ]]; then
+    revocation_clause='revoked_reason IS NULL'
+  else
+    revocation_clause="revoked_reason = ${revoked_reason}"
+  fi
+  test "$(db_scalar "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${family_hex}', 'hex') AND generation = ${generation} AND ${active_clause} AND ${revocation_clause}")" = 1
+  test "$(db_scalar "SELECT count(*) FROM trnm_refresh_tokens WHERE family_id = decode('${family_hex}', 'hex')")" = "$token_count"
+  test "$(db_scalar "SELECT count(*) FROM trnm_refresh_tokens WHERE family_id = decode('${family_hex}', 'hex') AND state = 0")" = "$active_count"
+}
+
+assert_interleaving_family 40 1 44 none 2 1
+assert_interleaving_family 46 2 4c none 3 1
+assert_interleaving_family 4e 2 none 2 3 0
+assert_interleaving_family 56 1 none 2 2 0
+assert_interleaving_family 5e 1 none 2 2 0
+interleaving_family_count=5
 
 start_server() {
   phase=$1
@@ -198,9 +272,30 @@ printf 'pending_outbox=%s\n' "$pending" >> "$evidence/database-assertions.txt"
 source_commit=$(db_scalar 'SELECT source_commit FROM trnm_schema_metadata WHERE singleton = 1')
 test "$source_commit" = "$candidate_sha"
 printf 'schema_source_commit=%s\n' "$source_commit" >> "$evidence/database-assertions.txt"
+printf 'session_test_count=%s\n' "$session_test_count" \
+  >> "$evidence/database-assertions.txt"
+printf 'response_loss_family_rows=%s\n' \
+  "$(db_scalar "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex')")" \
+  >> "$evidence/database-assertions.txt"
+printf 'response_loss_refresh_tokens=%s\n' \
+  "$(db_scalar "SELECT count(*) FROM trnm_refresh_tokens WHERE family_id = decode('${response_loss_family_hex}', 'hex')")" \
+  >> "$evidence/database-assertions.txt"
+printf 'response_loss_replay_revoked=%s\n' \
+  "$(db_scalar "SELECT count(*) FROM trnm_session_families WHERE family_id = decode('${response_loss_family_hex}', 'hex') AND active_token_id IS NULL AND revoked_reason = 2")" \
+  >> "$evidence/database-assertions.txt"
+printf 'concurrency_logout_families=%s\n' "$concurrency_logout_families" \
+  >> "$evidence/database-assertions.txt"
+printf 'deterministic_interleaving_families=%s\n' "$interleaving_family_count" \
+  >> "$evidence/database-assertions.txt"
+printf 'diagnostic_total_session_families=%s\n' \
+  "$(db_scalar 'SELECT count(*) FROM trnm_session_families')" \
+  >> "$evidence/database-assertions.txt"
+printf 'diagnostic_total_refresh_tokens=%s\n' \
+  "$(db_scalar 'SELECT count(*) FROM trnm_refresh_tokens')" \
+  >> "$evidence/database-assertions.txt"
 
 cat > "$evidence/summary.json" <<EOF
-{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
+{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
 EOF
 python3 -m json.tool "$evidence/summary.json" >/dev/null
 find "$evidence" -type f ! -name SHA256SUMS -print0 \

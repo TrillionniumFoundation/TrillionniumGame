@@ -4,13 +4,53 @@
 
 ## Current status
 
-The repository contains substantial **source-level implementation candidates** for authority sequencing, sessions, canonical framing, storage, persistence/outbox, token policy and JWT compatibility, query parsing, transport errors, presence routing and separate PostgreSQL/CockroachDB foundations. It now also contains a bounded first-party Rust HTTP/WebSocket/database vertical-slice candidate under `crates/trnm-persistence-pg`; that slice is an integration seam, not a complete Nakama server or a production topology. Selected database and fault slices have exact-head workflow results, but evidence targeting an older commit, lacking the v3 evidence/review contract or not accepted by an independent reviewer earns no compatibility or production claim credit.
+The repository contains substantial source and exact-head workflow candidates for authority, sessions, canonical framing, storage, persistence/outbox, JWT/token policy, query, transport errors, presence, PostgreSQL/CockroachDB foundations, a bounded database-backed HTTP/WebSocket server slice and the pinned Nakama gRPC Healthcheck signature.
 
-The currently proven broad runnable path is still official Nakama `v3.40.0` loading the first-party Go plugin under `runtime/`. That Go module is a migration input and compatibility oracle. The Rust candidate does not yet implement or prove the complete declared Nakama HTTP/gRPC/realtime/runtime/Console surface.
+The broadly proven runnable path remains official Nakama `v3.40.0` with the first-party Go plugin under `runtime/`. The Go code is migration input and an oracle fixture. The Rust server candidates do not yet implement or prove the complete Nakama HTTP/gRPC/RTAPI, Runtime, Console, provider, migration or operational denominator.
 
-This repository **does not yet claim complete Nakama compatibility, C1–C5, production readiness, public-online approval, drop-in replacement, or Nakama retirement**. Empty, absent, skipped, cancelled, older-head or unreviewed checks/evidence do not change that boundary.
+Current repository-wide claims remain:
 
-Initial compatibility baseline:
+```text
+complete Nakama compatibility = false
+C1-C5 = false
+SG1-SG9 = false
+production-ready = false
+public-online = false
+drop-in replacement = false
+Nakama retired = false
+```
+
+## Documentation
+
+There is one active human documentation system. Start at [`docs/README.md`](docs/README.md).
+
+- [`CURRENT_PLAN.md`](CURRENT_PLAN.md) — complete execution plan and closure rules
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — current/target runtime and dependency boundaries
+- [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — development workflow and local commands
+- [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) — pinned baseline, denominator and oracle
+- [`docs/TESTING_AND_EVIDENCE.md`](docs/TESTING_AND_EVIDENCE.md) — test classes, CI, artifacts and review
+- [`docs/SECURITY_AND_PRIVACY.md`](docs/SECURITY_AND_PRIVACY.md) — cryptography, identity, secrets and privacy
+- [`docs/OPERATIONS_AND_RELEASE.md`](docs/OPERATIONS_AND_RELEASE.md) — lifecycle, databases, HA, migration and release
+- [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md) — branch, merge, CODEOWNERS and administrative policy
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — critical path and team parallelization
+
+`docs/DOCUMENTATION_AUTHORITY.json` defines the exact live Markdown allowlist. Historical/versioned human docs are removed from the active tree and remain available through Git history. Dated machine evidence is retained under `docs/evidence/` and cannot act as a current plan.
+
+## Machine control plane
+
+Human summaries do not override:
+
+- `docs/status/CURRENT_STATE.json`
+- `docs/status/EXECUTION_STATUS.json`
+- `docs/status/GAP_REGISTER.json`
+- `docs/status/IMPLEMENTATION_INVENTORY.json`
+- `docs/status/PRODUCT_GATES.json`
+- `docs/status/RISK_REGISTER.json`
+- `docs/roadmap/NEXT_MILESTONE.json`
+- `docs/evidence/index.json`
+- `docs/development/PARITY_DENOMINATORS.json`
+
+## Compatibility baseline
 
 - Nakama `v3.40.0`
 - Nakama commit `d4d92f93f78bbbe62c7fc50a3f85c772ec121a09`
@@ -18,42 +58,17 @@ Initial compatibility baseline:
 - nakama-common `v1.47.0`
 - nakama-common commit `449b77ecc8789aa466c36b67f6e498033dfcd9c5`
 
-## Plan v3 execution control
-
-Plan v3 separates immutable scope from mutable execution state and makes gap/gate promotion evidence-driven:
-
-- [`CURRENT_PLAN.md`](CURRENT_PLAN.md) — binding full-scope plan and closure rules;
-- [`docs/status/CURRENT_STATE.json`](docs/status/CURRENT_STATE.json) — current fail-closed state snapshot;
-- [`docs/status/GAP_REGISTER.json`](docs/status/GAP_REGISTER.json) — P0/P1/P2 gaps and exact close criteria;
-- [`docs/status/EXECUTION_STATUS.json`](docs/status/EXECUTION_STATUS.json) — workstream and stage execution state;
-- [`docs/status/IMPLEMENTATION_INVENTORY.json`](docs/status/IMPLEMENTATION_INVENTORY.json) — source-to-capability/test/evidence map;
-- [`docs/evidence/index.json`](docs/evidence/index.json) — evidence registry and target-identity boundary;
-- [`docs/status/PRODUCT_GATES.json`](docs/status/PRODUCT_GATES.json) — evidence-derived product gates;
-- [`docs/roadmap/NEXT_MILESTONE.json`](docs/roadmap/NEXT_MILESTONE.json) — current blocker-first execution queue.
-
-The first critical path is repository-native CI/governance, one database schema authority, security/durability source fixes and the first end-to-end Rust server vertical slice. Broad domain expansion may not bypass those dependencies.
-
-## Architecture and engineering contracts
-
-- [Current and target runtime](docs/architecture/CURRENT_AND_TARGET_RUNTIME.md)
-- [Rust server reference architecture](docs/architecture/RUST_SERVER_REFERENCE_ARCHITECTURE.md)
-- [Parity denominator specification](docs/development/PARITY_DENOMINATOR_SPEC.md)
-- [Compatibility divergences](docs/development/COMPATIBILITY_DIVERGENCES.json)
-- [Schema authority](docs/development/SCHEMA_AUTHORITY.json)
-- [Test and verification policy](docs/testing/TEST_POLICY.md)
-- [Cryptography and key lifecycle](docs/security/CRYPTOGRAPHY_AND_KEYS.md)
-- [Branch and merge policy](docs/governance/BRANCH_AND_MERGE_POLICY.md)
-- [Security reporting policy](SECURITY.md)
-
 ## Validation
 
-Run the complete offline control-plane contract:
+Control plane and documentation:
 
 ```bash
+python3 scripts/check-documentation-authority.py
 python3 scripts/check-plan.py
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-Core source preflight:
+Root Rust workspace:
 
 ```bash
 cargo fmt --all -- --check
@@ -61,8 +76,12 @@ cargo test --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-The JWT compatibility adapter and other standalone workspaces are intentionally checked by the aggregate merge gate even while they remain outside the root workspace. A local pass is development feedback, not remote or compatibility evidence.
+The aggregate merge gate additionally checks every registered isolated Rust workspace, the Go migration input, database profiles and path-relevant source/evidence contracts. Local success is not remote or compatibility evidence.
 
-## License and attribution
+## Contributing and security
 
-The repository is licensed under Apache License 2.0. Compatibility work is based on the Apache-2.0-licensed Nakama OSS project. See [`NOTICE`](NOTICE) and the pinned upstream metadata for attribution and exact source identities.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for change requirements, [`SECURITY.md`](SECURITY.md) for vulnerability reporting and [`PROJECT_BOUNDARY.md`](PROJECT_BOUNDARY.md) for repository scope.
+
+## License
+
+Apache License 2.0. See [`NOTICE`](NOTICE) for attribution and pinned upstream metadata for exact source identities.

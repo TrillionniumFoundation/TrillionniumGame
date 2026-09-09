@@ -3,17 +3,6 @@ name: world-transition-v1-adapter
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'contracts/world-transition-v1*'
-      - 'docs/WORLD_TRANSITION_V1_**'
-      - 'runtime/world_transition_v1/**'
-      - 'runtime/internal/worldtransition/**'
-      - 'scripts/check-world-transition-v1-boundary.sh'
-      - 'scripts/test-world-transition-v1-boundary-negative.sh'
-      - 'testdata/world-transition-v1/**'
-      - 'tests/test_world_transition_v1.py'
-      - 'tools/emit_world_transition_v1_shadow_fixture.py'
-      - '.github/workflows/world-transition-v1-adapter.yml'
   push:
     branches:
       - main

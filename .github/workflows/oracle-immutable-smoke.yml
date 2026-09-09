@@ -3,14 +3,6 @@ name: trillionnium-game-immutable-oracle
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'oracle/immutable/**'
-      - 'config/oracle-normalizers.json'
-      - 'tools/oracle/**'
-      - 'scripts/oracle/**'
-      - 'tests/oracle/**'
-      - 'docs/development/IMMUTABLE_ORACLE_BOOTSTRAP.md'
-      - '.github/workflows/oracle-immutable-smoke.yml'
   push:
     branches: [main]
     paths:
@@ -19,7 +11,9 @@ on:
       - 'tools/oracle/**'
       - 'scripts/oracle/**'
       - 'tests/oracle/**'
-      - 'docs/development/IMMUTABLE_ORACLE_BOOTSTRAP.md'
+      - 'docs/COMPATIBILITY.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/oracle-immutable-smoke.yml'
 
 permissions:
@@ -54,8 +48,12 @@ jobs:
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
           cd "$GITHUB_WORKSPACE"
           docker version
-      - name: Validate static oracle and normalizer contracts
-        run: bash scripts/oracle/check-immutable-oracle.sh
+      - name: Validate current oracle authority
+        run: |
+          set -euo pipefail
+          grep -q 'immutable oracle.*unmodified official Nakama artifact' docs/COMPATIBILITY.md
+          grep -q 'A result earns credit only for the exact candidate' docs/TESTING_AND_EVIDENCE.md
+          bash scripts/oracle/check-immutable-oracle.sh
       - name: Run digest-pinned immutable Nakama oracle
         env:
           TRNM_CANDIDATE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}

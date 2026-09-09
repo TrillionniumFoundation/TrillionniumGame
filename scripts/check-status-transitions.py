@@ -2,7 +2,11 @@
 """Validate mutable execution, gap, evidence, gate and roadmap state."""
 from __future__ import annotations
 
+import gzip
+import hashlib
+import io
 import json
+import importlib.util
 import re
 import sys
 from collections import defaultdict, deque
@@ -10,6 +14,16 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+
+_SPEC = importlib.util.spec_from_file_location(
+    "trnm_evidence_admission_" + Path(__file__).stem.replace("-", "_"),
+    Path(__file__).with_name("evidence_admission.py"),
+)
+if _SPEC is None or _SPEC.loader is None:
+    raise RuntimeError("cannot load shared evidence admission contract")
+EVIDENCE = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = EVIDENCE
+_SPEC.loader.exec_module(EVIDENCE)
 
 TASK_STATES = {
     "planned",
@@ -48,6 +62,24 @@ DIVERGENCE_STATES = {
     "rejected",
 }
 ACCEPTED_EVIDENCE_STATUS = "accepted"
+BACKLOG_PATH = "docs/development/backlog/EXECUTION_BACKLOG.v2.json.gz"
+BACKLOG_SHA256 = "6a3b94c1c76a44b31966e2d5919aa3c5ebc87822fc6169377b174a4a3a50c114"
+MAX_BACKLOG_BYTES = 2 * 1024 * 1024
+PRODUCT_GATE_SCOPE_KEYS = (
+    "id",
+    "owner",
+    "depends_on",
+    "stage_gates",
+    "blocking_gap_ids",
+    "pass_criteria",
+    "evidence_types",
+    "freshness_days",
+    "blocked_claims",
+)
+PRODUCT_GATE_SCOPE_SHA256 = "6393058c799a5efd24309aaedc5fa84f25ae972fab3d3cced61ce0c080eba7eb"
+ROADMAP_SCOPE_SHA256 = "dc7af646e78d3beb976b78e2a7a8787b8f4a5139d65c996b296dfef0e9060678"
+ROADMAP_MUTABLE_ROOT_FIELDS = {"status", "updated_at", "items", "acceptance_target"}
+ROADMAP_MUTABLE_ITEM_FIELDS = {"status", "evidence_ids", "acceptance_target"}
 
 
 class ValidationError(RuntimeError):
@@ -60,12 +92,9 @@ def fail(message: str) -> None:
 
 def load_json(path: str) -> dict[str, Any]:
     try:
-        value = json.loads((ROOT / path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        fail(f"{path}: invalid JSON: {exc}")
-    if not isinstance(value, dict):
-        fail(f"{path}: top-level value must be an object")
-    return value
+        return EVIDENCE.load_object(ROOT / path)
+    except (OSError, ValueError, RecursionError) as error:
+        raise ValidationError(f"invalid control JSON: {error}") from error
 
 
 def require(condition: bool, message: str) -> None:
@@ -74,8 +103,10 @@ def require(condition: bool, message: str) -> None:
 
 
 def unique_rows(rows: list[dict[str, Any]], key: str, label: str) -> dict[str, dict[str, Any]]:
+    require(isinstance(rows, list), f"{label}: rows must be an array")
     values: dict[str, dict[str, Any]] = {}
     for row in rows:
+        require(isinstance(row, dict), f"{label}: row must be an object")
         value = row.get(key)
         require(isinstance(value, str) and value, f"{label}: missing {key}")
         require(value not in values, f"{label}: duplicate {key} {value}")
@@ -107,21 +138,16 @@ def require_dag(graph: dict[str, list[str]], label: str) -> None:
 
 
 def evidence_is_accepted(row: dict[str, Any]) -> bool:
-    review = row.get("independent_review")
-    return (
-        row.get("status") == ACCEPTED_EVIDENCE_STATUS
-        and row.get("schema_valid") is True
-        and row.get("target_identity_verified_by_current_repo") is True
-        and isinstance(review, dict)
-        and review.get("decision") == "accepted"
-        and bool(review.get("reviewer_identity"))
-    )
+    return EVIDENCE.entry_eligible(row, root=ROOT)
 
 
 def validate_evidence() -> tuple[dict[str, dict[str, Any]], set[str]]:
     index = load_json("docs/evidence/index.json")
     require(index.get("schema") == "trillionnium.evidence-index.v1", "evidence index schema")
-    entries = unique_rows(index.get("entries", []), "evidence_id", "evidence entries")
+    try:
+        entries = {row["evidence_id"]: row for row in EVIDENCE.index_rows(index)}
+    except EVIDENCE.AdmissionError as error:
+        raise ValidationError(str(error)) from error
     accepted = {evidence_id for evidence_id, row in entries.items() if evidence_is_accepted(row)}
     require(index.get("accepted_entry_count") == len(accepted), "accepted evidence count mismatch")
     for evidence_id, row in entries.items():
@@ -129,7 +155,7 @@ def validate_evidence() -> tuple[dict[str, dict[str, Any]], set[str]]:
         require(isinstance(row.get("gate_ids"), list), f"{evidence_id}: gate_ids")
         require(isinstance(row.get("task_ids"), list), f"{evidence_id}: task_ids")
         require(isinstance(row.get("parity_ids"), list), f"{evidence_id}: parity_ids")
-        if row.get("compatibility_credit") is True:
+        if row.get("status") == "accepted" or row.get("compatibility_credit") is True:
             require(evidence_id in accepted, f"{evidence_id}: credit requires accepted evidence")
     return entries, accepted
 
@@ -153,6 +179,10 @@ def validate_gaps(
         unknown_evidence = set(evidence_ids) - set(evidence)
         require(not unknown_evidence, f"{gap_id}: unknown evidence {sorted(unknown_evidence)}")
         if row.get("status") == "closed":
+            try:
+                EVIDENCE.validate_gap_evidence(row, evidence, root=ROOT)
+            except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+                raise ValidationError(f"{gap_id}: {error}") from error
             require(bool(evidence_ids), f"{gap_id}: closed gap requires evidence")
             require(set(evidence_ids) <= accepted_evidence, f"{gap_id}: evidence not accepted")
             if row.get("severity") in {"P0", "P1"}:
@@ -168,7 +198,7 @@ def validate_gaps(
 def validate_execution(gaps: dict[str, dict[str, Any]]) -> None:
     state = load_json("docs/status/EXECUTION_STATUS.json")
     require(state.get("schema") == "trillionnium.execution-status.v1", "execution status schema")
-    require(state.get("default_task_state") in TASK_STATES, "default task state")
+    require(state.get("default_task_state") == "planned", "default task state must remain planned")
     require(state.get("fail_closed") is True, "execution status must fail closed")
     workstreams = unique_rows(state.get("workstreams", []), "id", "workstreams")
     require(list(workstreams) == [f"W{i}" for i in range(17)], "workstream order/coverage")
@@ -193,8 +223,50 @@ def validate_execution(gaps: dict[str, dict[str, Any]]) -> None:
         require(not unknown, f"{task_id}: unknown gaps {sorted(unknown)}")
 
 
-def validate_roadmap(gaps: dict[str, dict[str, Any]]) -> None:
+def load_roadmap_acceptance_scope() -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Bind the active milestone requirements while permitting status/evidence updates."""
     roadmap = load_json("docs/roadmap/NEXT_MILESTONE.json")
+    require(roadmap.get("schema") == "trillionnium.next-milestone.v1",
+            "roadmap acceptance schema")
+    require(roadmap.get("project_id") == "trillionnium-game",
+            "roadmap acceptance project")
+    require(roadmap.get("plan_version") == 3, "roadmap acceptance plan version")
+    items = unique_rows(roadmap.get("items", []), "id", "roadmap acceptance items")
+    root_scope = {
+        key: value for key, value in roadmap.items()
+        if key not in ROADMAP_MUTABLE_ROOT_FIELDS
+    }
+    item_scope = {
+        item_id: {
+            key: value for key, value in row.items()
+            if key not in ROADMAP_MUTABLE_ITEM_FIELDS
+        }
+        for item_id, row in items.items()
+    }
+    projection = {"root": root_scope, "items": list(item_scope.values())}
+    encoded = json.dumps(projection, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False).encode("utf-8")
+    require(hashlib.sha256(encoded).hexdigest() == ROADMAP_SCOPE_SHA256,
+            "immutable roadmap acceptance scope digest drift")
+    require(len(items) == 12, "roadmap acceptance item count changed")
+    graph: dict[str, list[str]] = {}
+    for item_id, row in item_scope.items():
+        require(re.fullmatch(r"TG-V3-\d{3}", item_id) is not None,
+                f"{item_id}: invalid roadmap acceptance ID")
+        graph[item_id] = reference_list(row.get("depends_on", []),
+                                        f"{item_id}: immutable depends_on")
+        reference_list(row.get("gap_ids"), f"{item_id}: immutable gap_ids",
+                       nonempty=True)
+        required = reference_list(row.get("required_evidence"),
+                                  f"{item_id}: immutable required_evidence", nonempty=True)
+        require(set(required) <= EVIDENCE.EVIDENCE_TYPES,
+                f"{item_id}: immutable roadmap evidence type")
+    require_dag(graph, "roadmap acceptance scope")
+    return roadmap, item_scope
+
+
+def validate_roadmap(gaps: dict[str, dict[str, Any]]) -> None:
+    roadmap, _ = load_roadmap_acceptance_scope()
     require(roadmap.get("schema") == "trillionnium.next-milestone.v1", "roadmap schema")
     items = unique_rows(roadmap.get("items", []), "id", "roadmap items")
     graph: dict[str, list[str]] = {}
@@ -230,6 +302,319 @@ def validate_gates(gaps: dict[str, dict[str, Any]]) -> None:
     summary = document.get("summary", {})
     for state, count in counts.items():
         require(summary.get(state) == count, f"product gate summary {state}")
+
+
+
+def reference_list(value: Any, label: str, *, nonempty: bool = False) -> list[str]:
+    require(isinstance(value, list), f"{label}: array required")
+    require(not nonempty or bool(value), f"{label}: nonempty array required")
+    require(all(EVIDENCE.canonical_text(item) for item in value), f"{label}: invalid reference")
+    require(len(value) == len(set(value)), f"{label}: duplicate reference")
+    return value
+
+
+def acceptance_target(row: dict[str, Any]) -> tuple[str, str, str]:
+    target = row.get("acceptance_target")
+    require(isinstance(target, dict) and set(target) == {"repository", "commit", "tree"},
+            f"{row.get('id', 'milestone')}: exact acceptance_target required")
+    try:
+        return EVIDENCE.target_identity({"target": target})
+    except ValueError as error:
+        raise ValidationError(f"invalid acceptance target: {error}") from error
+
+
+def require_closed_gaps(row: dict[str, Any], key: str,
+                        gaps: dict[str, dict[str, Any]]) -> None:
+    ids = reference_list(row.get(key, []), f"{row.get('id')}: {key}")
+    require(set(ids) <= set(gaps), f"{row.get('id')}: unknown blocking gap")
+    require(all(gaps[item].get("status") == "closed" for item in ids),
+            f"{row.get('id')}: accepted state has an open blocking gap")
+
+
+def validate_accepted_task(
+    row: dict[str, Any], gap_key: str, dependencies: list[str],
+    task_rows: dict[str, dict[str, Any]], gaps: dict[str, dict[str, Any]],
+    evidence: dict[str, dict[str, Any]], accepted: set[str],
+) -> tuple[str, str, str] | None:
+    if row.get("status") != "accepted":
+        return None
+    task_id = row["id"]
+    require_closed_gaps(row, gap_key, gaps)
+    target = acceptance_target(row)
+    for dependency in dependencies:
+        require(task_rows[dependency].get("status") == "accepted",
+                f"{task_id}: dependency {dependency} is not accepted")
+        require(acceptance_target(task_rows[dependency]) == target,
+                f"{task_id}: dependency evidence belongs to another candidate")
+    required = reference_list(row.get("required_evidence"),
+                              f"{task_id}: required_evidence", nonempty=True)
+    require(set(required) <= EVIDENCE.EVIDENCE_TYPES, f"{task_id}: unsupported evidence type")
+    ids = reference_list(row.get("evidence_ids"), f"{task_id}: evidence_ids", nonempty=True)
+    require(set(ids) <= set(evidence) and set(ids) <= accepted,
+            f"{task_id}: accepted task requires accepted indexed evidence")
+    present = set()
+    for evidence_id in ids:
+        entry = evidence[evidence_id]
+        # Reuse retained-byte, schema, review and expiry validation. A caller's
+        # accepted-ID set or a copied status string is not an admission token.
+        try:
+            EVIDENCE.validate_entry(entry, root=ROOT)
+            require(EVIDENCE.target_identity(entry) == target,
+                    f"{task_id}: evidence target differs from acceptance target")
+        except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+            raise ValidationError(f"{task_id}: invalid retained evidence: {error}") from error
+        require(task_id in entry.get("task_ids", []), f"{task_id}: evidence is not mapped to this task")
+        present.add(entry["evidence_type"])
+    require(set(required) <= present, f"{task_id}: required evidence types are missing")
+    return target
+
+
+def load_acceptance_scope() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Read the unchanged approved task/gate membership, not a mutable roll-up."""
+    state = load_json("docs/status/EXECUTION_STATUS.json")
+    index = load_json("docs/development/EXECUTION_BACKLOG.json")
+    authority = state.get("base_backlog", {})
+    artifact = index.get("full_backlog_artifact", {})
+    require(authority.get("artifact") == BACKLOG_PATH and artifact.get("path") == BACKLOG_PATH,
+            "acceptance backlog path differs from approved scope")
+    require(authority.get("artifact_sha256") == BACKLOG_SHA256
+            and artifact.get("sha256") == BACKLOG_SHA256, "acceptance backlog digest drift")
+    # Fixed, digest-bound local bytes; neither URLs nor alternate scope paths are
+    # followed. Bound decompression separately from the compressed input.
+    with (ROOT / BACKLOG_PATH).open("rb") as handle:
+        compressed = handle.read(MAX_BACKLOG_BYTES + 1)
+    require(len(compressed) <= MAX_BACKLOG_BYTES, "compressed acceptance backlog too large")
+    require(hashlib.sha256(compressed).hexdigest() == BACKLOG_SHA256,
+            "acceptance backlog bytes changed")
+    with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as handle:
+        raw = handle.read(MAX_BACKLOG_BYTES + 1)
+    require(len(raw) <= MAX_BACKLOG_BYTES, "expanded acceptance backlog too large")
+    backlog = json.loads(raw)
+    require(backlog.get("schema") == "trillionnium.execution-backlog.v2", "acceptance backlog schema")
+    streams = unique_rows(backlog.get("workstreams"), "id", "scope workstreams")
+    stages = unique_rows(backlog.get("stage_gates"), "id", "scope stages")
+    tasks = unique_rows([task for stream in streams.values() for task in stream["tasks"]],
+                        "id", "scope tasks")
+    require(len(tasks) == 120 and len(streams) == 17 and len(stages) == 10,
+            "acceptance scope membership changed")
+    require_dag({key: reference_list(row.get("depends_on"), key) for key, row in tasks.items()},
+                "acceptance task scope")
+    return tasks, streams, stages
+
+
+def load_product_gate_scope() -> dict[str, dict[str, Any]]:
+    """Bind immutable gate requirements separately from mutable gate status."""
+    document = load_json("docs/status/PRODUCT_GATES.json")
+    require(document.get("schema") == "trillionnium.product-gates.v3",
+            "acceptance product gate schema")
+    gates = unique_rows(document.get("gates", []), "id", "acceptance product gates")
+    require(len(gates) == 15, "acceptance product gate count changed")
+    projection: list[dict[str, Any]] = []
+    for gate_id, row in gates.items():
+        require(set(PRODUCT_GATE_SCOPE_KEYS) <= set(row),
+                f"{gate_id}: incomplete immutable gate scope")
+        for key in ("depends_on", "stage_gates", "blocking_gap_ids", "pass_criteria",
+                    "evidence_types", "blocked_claims"):
+            reference_list(row.get(key), f"{gate_id}: {key}", nonempty=key not in {"depends_on"})
+        freshness = row.get("freshness_days")
+        require(freshness is None or (isinstance(freshness, int)
+                and not isinstance(freshness, bool) and freshness > 0),
+                f"{gate_id}: freshness_days")
+        projection.append({key: row[key] for key in PRODUCT_GATE_SCOPE_KEYS})
+    encoded = json.dumps(projection, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False).encode("utf-8")
+    require(hashlib.sha256(encoded).hexdigest() == PRODUCT_GATE_SCOPE_SHA256,
+            "immutable product gate scope digest drift")
+    require_dag({gate_id: row["depends_on"] for gate_id, row in gates.items()},
+                "acceptance product gate scope")
+    return gates
+
+
+def canonical_task_requirements(
+    task_id: str, scope: dict[str, Any], gate_scope: dict[str, dict[str, Any]],
+) -> tuple[list[str], list[str], list[str]]:
+    """Derive exact task requirements from its digest-bound backlog gate scope."""
+    gate_ids = reference_list(scope.get("gate_ids"), f"{task_id}: immutable gate_ids",
+                              nonempty=True)
+    require(set(gate_ids) <= set(gate_scope), f"{task_id}: unknown immutable gate")
+    gaps: set[str] = set()
+    evidence_types: set[str] = set()
+    for gate_id in gate_ids:
+        gate = gate_scope[gate_id]
+        gaps.update(gate["blocking_gap_ids"])
+        evidence_types.update(gate["evidence_types"])
+    require(bool(gaps), f"{task_id}: immutable task has no gate blockers")
+    require(bool(evidence_types) and evidence_types <= EVIDENCE.EVIDENCE_TYPES,
+            f"{task_id}: immutable task has unsupported gate evidence")
+    return gate_ids, sorted(gaps), sorted(evidence_types)
+
+
+def validate_backlog_task_acceptance(
+    row: dict[str, Any], scope: dict[str, Any], dependencies: list[str],
+    task_rows: dict[str, dict[str, Any]], gaps: dict[str, dict[str, Any]],
+    evidence: dict[str, dict[str, Any]], accepted: set[str],
+    gate_scope: dict[str, dict[str, Any]], products: dict[str, Any],
+) -> tuple[str, str, str] | None:
+    """Prevent a mutable task override from shrinking its immutable gate contract."""
+    if row.get("status") != "accepted":
+        return None
+    task_id = row["id"]
+    gate_ids, required_gaps, required_types = canonical_task_requirements(
+        task_id, scope, gate_scope
+    )
+    declared_gates = reference_list(row.get("gate_ids"), f"{task_id}: gate_ids",
+                                    nonempty=True)
+    declared_gaps = reference_list(row.get("blocking_gaps"),
+                                   f"{task_id}: blocking_gaps", nonempty=True)
+    declared_types = reference_list(row.get("required_evidence"),
+                                    f"{task_id}: required_evidence", nonempty=True)
+    require(set(declared_gates) == set(gate_ids),
+            f"{task_id}: mutable override differs from immutable gate_ids")
+    require(set(declared_gaps) == set(required_gaps),
+            f"{task_id}: mutable override differs from canonical blocking gaps")
+    require(set(declared_types) == set(required_types),
+            f"{task_id}: mutable override differs from canonical evidence types")
+    target = validate_accepted_task(
+        row, "blocking_gaps", dependencies, task_rows, gaps, evidence, accepted
+    )
+    require(target is not None, f"{task_id}: accepted target missing")
+    ids = reference_list(row.get("evidence_ids"), f"{task_id}: evidence_ids",
+                         nonempty=True)
+    for gate_id in gate_ids:
+        product = products[gate_id]
+        require(product["status"] == "passed",
+                f"{task_id}: required product gate {gate_id} is not passed")
+        gate_evidence_ids = product["accepted_evidence_ids"]
+        require(bool(gate_evidence_ids),
+                f"{task_id}: required product gate {gate_id} has no accepted evidence")
+        require(all(EVIDENCE.target_identity(evidence[item]) == target
+                    for item in gate_evidence_ids),
+                f"{task_id}: product gate {gate_id} targets another candidate")
+        task_gate_entries = [
+            evidence[item] for item in ids
+            if gate_id in evidence[item].get("gate_ids", [])
+            and task_id in evidence[item].get("task_ids", [])
+        ]
+        present = {entry["evidence_type"] for entry in task_gate_entries}
+        require(set(gate_scope[gate_id]["evidence_types"]) <= present,
+                f"{task_id}: task evidence does not cover product gate {gate_id}")
+    return target
+
+
+def validate_roadmap_task_acceptance(
+    row: dict[str, Any], scope: dict[str, Any], task_rows: dict[str, dict[str, Any]],
+    gaps: dict[str, dict[str, Any]], evidence: dict[str, dict[str, Any]],
+    accepted: set[str],
+) -> tuple[str, str, str] | None:
+    """Prevent a status update from shrinking the current milestone contract."""
+    if row.get("status") != "accepted":
+        return None
+    task_id = row["id"]
+    dependencies = reference_list(scope.get("depends_on", []),
+                                  f"{task_id}: immutable depends_on")
+    declared_dependencies = reference_list(row.get("depends_on", []),
+                                           f"{task_id}: depends_on")
+    canonical_gaps = reference_list(scope.get("gap_ids"),
+                                    f"{task_id}: immutable gap_ids", nonempty=True)
+    declared_gaps = reference_list(row.get("gap_ids"), f"{task_id}: gap_ids",
+                                   nonempty=True)
+    canonical_types = reference_list(scope.get("required_evidence"),
+                                     f"{task_id}: immutable required_evidence", nonempty=True)
+    declared_types = reference_list(row.get("required_evidence"),
+                                    f"{task_id}: required_evidence", nonempty=True)
+    require(declared_dependencies == dependencies,
+            f"{task_id}: mutable roadmap item differs from immutable dependencies")
+    require(set(declared_gaps) == set(canonical_gaps),
+            f"{task_id}: mutable roadmap item differs from canonical gaps")
+    require(set(declared_types) == set(canonical_types),
+            f"{task_id}: mutable roadmap item differs from canonical evidence types")
+    return validate_accepted_task(
+        row, "gap_ids", dependencies, task_rows, gaps, evidence, accepted
+    )
+
+
+def derived_product_gates() -> dict[str, Any]:
+    """Use the existing derivation, including its retained evidence admission."""
+    spec = importlib.util.spec_from_file_location(
+        "trnm_status_derived_gates", Path(__file__).with_name("derive-gates.py")
+    )
+    if spec is None or spec.loader is None:
+        raise ValidationError("product gate derivation unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.ROOT = ROOT
+    try:
+        result = module.derive()
+        module.check_snapshot(result)
+        return result["gates"]
+    except module.DerivationError as error:
+        raise ValidationError(f"product gate derivation failed: {error}") from error
+
+
+def validate_execution_acceptance(
+    gaps: dict[str, dict[str, Any]], evidence: dict[str, dict[str, Any]], accepted: set[str],
+) -> None:
+    """Validate present acceptance claims, not past Git transition history."""
+    scope_tasks, scope_streams, scope_stages = load_acceptance_scope()
+    gate_scope = load_product_gate_scope()
+    products = derived_product_gates()
+    roadmap, roadmap_scope = load_roadmap_acceptance_scope()
+    state = load_json("docs/status/EXECUTION_STATUS.json")
+    overrides = unique_rows(state.get("task_overrides", []), "id", "task overrides")
+    require(set(overrides) <= set(scope_tasks), "task override is outside approved backlog")
+    tasks = {key: {"id": key, "status": "planned"} for key in scope_tasks}
+    tasks.update(overrides)
+    for task_id, row in overrides.items():
+        dependencies = scope_tasks[task_id]["depends_on"]
+        require("depends_on" not in row or row["depends_on"] == dependencies,
+                f"{task_id}: mutable override cannot replace scope dependencies")
+        validate_backlog_task_acceptance(
+            row, scope_tasks[task_id], dependencies, tasks, gaps, evidence, accepted,
+            gate_scope, products,
+        )
+
+    streams = unique_rows(state.get("workstreams"), "id", "workstreams")
+    for stream_id, row in streams.items():
+        if row.get("status") != "accepted":
+            continue
+        require_closed_gaps(row, "blocking_gaps", gaps)
+        target = acceptance_target(row)
+        members = [tasks[task["id"]] for task in scope_streams[stream_id]["tasks"]]
+        require(all(task.get("status") == "accepted" for task in members),
+                f"{stream_id}: workstream has unaccepted tasks")
+        require(all(acceptance_target(task) == target for task in members),
+                f"{stream_id}: workstream mixes candidate identities")
+        for dependency in scope_streams[stream_id].get("depends_on_workstreams", []):
+            require(streams[dependency].get("status") == "accepted"
+                    and acceptance_target(streams[dependency]) == target,
+                    f"{stream_id}: workstream dependency is not accepted for this candidate")
+
+    stages = unique_rows(state.get("stage_gates"), "id", "stage gates")
+    for stage_id, row in stages.items():
+        if row.get("status") != "accepted":
+            continue
+        require_closed_gaps(row, "blocking_gaps", gaps)
+        target = acceptance_target(row)
+        for gate_id in scope_stages[stage_id]["required_gates"]:
+            gate = products[gate_id]
+            require(gate["status"] == "passed", f"{stage_id}: product gate {gate_id} is not passed")
+            ids = gate["accepted_evidence_ids"]
+            require(bool(ids) and all(EVIDENCE.target_identity(evidence[item]) == target for item in ids),
+                    f"{stage_id}: product evidence targets another candidate")
+
+    items = unique_rows(roadmap.get("items"), "id", "roadmap items")
+    require(set(items) == set(roadmap_scope), "roadmap acceptance scope membership changed")
+    for item_id, row in items.items():
+        validate_roadmap_task_acceptance(
+            row, roadmap_scope[item_id], items, gaps, evidence, accepted
+        )
+    require(roadmap.get("status") in TASK_STATES, "milestone status")
+    if roadmap.get("status") == "accepted":
+        require(bool(items) and all(row.get("status") == "accepted" for row in items.values()),
+                "accepted milestone contains unaccepted items")
+        target = acceptance_target(roadmap)
+        require(all(acceptance_target(row) == target for row in items.values()),
+                "accepted milestone mixes candidate identities")
 
 
 def validate_risks(gaps: dict[str, dict[str, Any]]) -> None:
@@ -410,7 +795,8 @@ def main() -> int:
         validate_inventory(gaps, evidence, accepted)
         validate_server_status(gaps)
         validate_current_state(gaps)
-    except ValidationError as exc:
+        validate_execution_acceptance(gaps, evidence, accepted)
+    except (ValidationError, OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
         print(f"status validation failed: {exc}", file=sys.stderr)
         return 1
     print("TrillionniumGame v3 execution/status contract: OK")

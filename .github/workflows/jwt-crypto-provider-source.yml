@@ -2,17 +2,13 @@ name: jwt-crypto-provider-source
 
 on:
   pull_request:
-    paths:
-      - 'crates/trnm-token-crypto-provider/**'
-      - 'contracts/security/jwt-crypto-provider-v1.json'
-      - 'docs/adr/ADR-0002-JWT-CRYPTO-PROVIDER.md'
-      - '.github/workflows/jwt-crypto-provider-source.yml'
   push:
     branches: [main]
     paths:
       - 'crates/trnm-token-crypto-provider/**'
       - 'contracts/security/jwt-crypto-provider-v1.json'
-      - 'docs/adr/ADR-0002-JWT-CRYPTO-PROVIDER.md'
+      - 'docs/SECURITY_AND_PRIVACY.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - '.github/workflows/jwt-crypto-provider-source.yml'
   workflow_dispatch:
 
@@ -46,13 +42,24 @@ jobs:
             "${CANDIDATE_SHA}"
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
-      - name: Validate fail-closed claims
+          git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+      - name: Validate fail-closed provider and lifecycle claims
         run: |
           set -euo pipefail
+          grep -q 'Production and compatibility code uses reviewed ecosystem cryptographic libraries' docs/SECURITY_AND_PRIVACY.md
+          grep -q 'The provider-facing adapter and compatibility format adapter remain separate boundaries' docs/SECURITY_AND_PRIVACY.md
+          grep -q 'Verification epochs are bounded to two simultaneous windows per domain' crates/trnm-token-crypto-provider/README.md
+          grep -q 'Key handles are redacted from Debug output' crates/trnm-token-crypto-provider/README.md
           jq -e '
             .status == "interface-source-candidate" and
+            .lifecycle_limits.epochs_per_domain == 8 and
+            .lifecycle_limits.simultaneous_verification_epochs == 2 and
+            .lifecycle_limits.audit_events == 256 and
             .claims.provider_interface_exists == true and
+            .claims.lifecycle_registry_exists == true and
+            .claims.key_handle_debug_redacted == true and
             .claims.production_provider_exists == false and
+            .claims.durable_lifecycle_exists == false and
             .claims.jwt_adapter_integrated == false and
             .claims.security_review_accepted == false and
             .claims.production_ready == false
@@ -64,7 +71,7 @@ jobs:
           rustup override set 1.85.1
       - name: Format
         run: cargo fmt --manifest-path crates/trnm-token-crypto-provider/Cargo.toml -- --check
-      - name: Test
+      - name: Test all lifecycle and provider targets
         run: cargo test --manifest-path crates/trnm-token-crypto-provider/Cargo.toml --all-targets --locked
       - name: Strict lint
         run: cargo clippy --manifest-path crates/trnm-token-crypto-provider/Cargo.toml --all-targets --locked -- -D warnings

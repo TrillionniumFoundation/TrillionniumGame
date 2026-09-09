@@ -2,66 +2,76 @@
   "schema": "trillionnium.current-state.v1",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "observed_at": "2026-08-29T14:42:00Z",
+  "observed_at": "2026-09-02T06:20:00Z",
   "authority": {
     "repository": "TrillionniumFoundation/TrillionniumGame",
     "repository_id": 1323087470,
     "default_branch": "main",
-    "audited_main_commit": "326e670cb008a990247e31a63c0c4b0e338df62f",
-    "audited_main_tree": "59a8b4d26fa7bdff814bc670903debd885e1a900",
+    "audited_main_commit": "d66c1b5b614a2a7b682c233fe2e7a19939b6976b",
+    "audited_main_tree": "7dad90464552eeeb636a844c4abc72049a584479",
+    "singular_main_target_pull_request": 63,
+    "candidate_branch": "codex/branch-evidence-closure-2026-09-02",
     "candidate_commit": null,
     "candidate_tree": null,
-    "candidate_identity_rule": "CI must populate or verify the exact pull-request head; this file must not guess a self-referential commit."
+    "candidate_identity_rule": "The current candidate commit/tree and prospective merge object are bound by pull-request metadata and exact workflows; this mutable source file must not guess its own final commit."
   },
   "repository_governance": {
-    "main_protected": false,
-    "required_checks_configured": false,
-    "ruleset_verified": false,
+    "main_protected": true,
+    "required_checks_configured": true,
+    "required_aggregate_context": "trillionnium-game-merge-gate",
+    "required_check_enforcement_level": "everyone",
+    "last_qualified_source_head": "44d0a4274d3c665aa58d17fbde9f9dc0ded08281",
+    "last_successful_aggregate_run_id": 33598217991,
+    "last_successful_prospective_merge_run_id": 33598218122,
     "native_pull_request_workflow_trigger_observed": true,
-    "native_workflow_run_conclusion": "startup_failure",
-    "native_workflow_job_collection_nonempty": false,
-    "native_successful_execution_observed": false,
+    "native_workflow_job_collection_nonempty": true,
+    "codeowner_routing_source_candidate": true,
     "independent_review_enforced": false,
-    "status": "blocked-external-admin",
-    "diagnosis_boundary": "Workflow files and pull-request triggers are visible. Runs terminate before any job is created; organization/repository runner, billing, Actions policy, approval or permission state must be corrected and read back by an administrator.",
-    "blocking_gaps": ["GAP-P0-CI-001", "GAP-P0-GOV-001"]
+    "full_review_policy_read_back": false,
+    "administrator_and_bypass_policy_read_back": false,
+    "negative_no_bypass_rehearsal_accepted": false,
+    "status": "repository-controlled enforcement candidate complete; external read-back and independent acceptance open",
+    "blocking_gaps": [
+      "GAP-P0-GOV-001",
+      "GAP-P1-REVIEW-001"
+    ]
   },
   "runtime_topology": {
     "current_proven_runnable_path": "official Nakama v3.40.0 plus first-party Go plugin under runtime/",
     "target_runnable_path": "first-party Rust trnm-server without Go server, Go sidecar or compiled Go plugin loader",
     "rust_server_binary_present": true,
     "rust_server_binary_authority": "crates/trnm-persistence-pg/Cargo.toml::trnm-server",
-    "rust_server_stage": "http-websocket-database-vertical-source-candidate",
+    "rust_server_stage": "http-grpc-websocket-session-database-source-candidate",
     "rust_server_remote_verified": false,
-    "go_plugin_is_target_evidence": false,
-    "status": "Rust binary source exists; proven runtime remains migration source and oracle only"
+    "source_and_prospective_packets_observed": true,
+    "world_command_recovery_matrix_source_candidate": true,
+    "status": "Source and execution candidates exist, but exact final-head specialist review and accepted evidence remain open."
   },
   "implementation": {
     "rust_foundation_crates_present": true,
-    "rust_package_authority_source_candidate": true,
-    "untracked_duplicate_server_package_removed": true,
-    "postgresql_single_node_schema_evidence_present": true,
-    "cockroachdb_single_node_schema_evidence_present": true,
+    "all_rust_packages_documented_and_registered": true,
+    "repository_wide_markdown_authority_enforced": true,
     "authoritative_migration_chain_selected": true,
     "alternate_schema_quarantined_at_source": true,
-    "storage_public_version_source_candidate": true,
+    "postgresql_and_cockroachdb_profile_packets_observed": true,
     "outbox_retry_terminal_source_fix": true,
     "jwt_length_comparison_source_fix": true,
-    "websocket_json_module_compiled_and_routed_at_source": true,
-    "database_retry_elapsed_budget_source_candidate": true,
-    "database_durability_claim": false,
-    "multi_node_claim": false,
+    "world_command_restart_cancellation_takeover_and_poison_tests_present": true,
+    "exact_execution_evidence_index_candidate_present": true,
     "complete_protocol_server": false,
     "complete_realtime_server": false,
     "complete_runtime_host": false,
-    "complete_data_migration": false
+    "complete_data_migration": false,
+    "complete_console_provider_iap_surface": false
   },
   "scope": {
     "baseline": "heroiclabs/nakama@v3.40.0",
     "nakama_common": "heroiclabs/nakama-common@v1.47.0",
     "denominator_registry": "docs/development/PARITY_DENOMINATORS.json",
+    "fourteen_candidate_families_materialized": true,
     "final_leaf_manifests_locked": false,
     "unclassified_leaves_allowed_for_sg1": false,
+    "global_sg1_acceptance": false,
     "sg1_complete": false
   },
   "claims": {
@@ -77,20 +87,31 @@
   },
   "evidence": {
     "index": "docs/evidence/index.json",
-    "target_native_current_head_evidence": false,
-    "startup_failure_run_is_execution_evidence": false,
-    "zero_job_collection_counts": false,
-    "relay_evidence_may_be_used_only_after_target_identity_validation": true,
-    "expired_or_unreviewed_evidence_counts": false
+    "exact_source_and_prospective_execution_observed": true,
+    "exact_execution_record_indexed_as_unreviewed_candidate": true,
+    "accepted_entry_count": 0,
+    "prospective_merge_evidence_accepted": false,
+    "independent_review_accepted": false,
+    "post_merge_main_packet_present": false,
+    "empty_skipped_cancelled_or_stale_execution_counts": false,
+    "relay_evidence_requires_exact_target_validation": true,
+    "shared_retained_admission_source_candidate": {
+      "implementation": "scripts/evidence_admission.py",
+      "test": "tests/control_plane/test_evidence_admission.py",
+      "accepted": false,
+      "native_execution_required": true,
+      "scope": "Shared structural admission and retained-byte checks; not independent or administrative acceptance."
+    }
   },
   "active_priority": [
-    "correct GitHub Actions startup policy and obtain a non-empty exact-head job collection",
-    "activate repository ruleset and independent review",
-    "compile and strictly lint every inventoried Rust package and the unique server binary",
-    "execute the HTTP/WebSocket/database vertical slice on both authoritative database profiles",
-    "add pool, TLS and in-flight cancellation boundaries",
-    "integrate session verification, gRPC and persistent realtime lifecycle",
-    "classify and lock all D0-D8 denominator leaves"
+    "qualify the consolidated unchanged PR #63 final head and prospective merge object",
+    "obtain fresh conflict-free exact-object approval with all conversations resolved",
+    "admit PR #63 only through the ordinary protected path and retain the post-merge main packet",
+    "read back complete branch/ruleset review freshness CODEOWNER conversation and bypass policy",
+    "perform and independently accept a harmless negative no-bypass rehearsal",
+    "obtain specialist security database protocol realtime and SRE acceptance",
+    "classify and independently lock every D0-D8 leaf and obtain separate global SG1 acceptance",
+    "continue the complete API RTAPI Runtime Console provider IAP migration HA endurance canary cutover and retirement implementation"
   ],
   "fail_closed": true
 }

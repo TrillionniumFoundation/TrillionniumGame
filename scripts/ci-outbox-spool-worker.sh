@@ -198,9 +198,9 @@ command_bin=target/debug/trnm-pg-command
 worker_bin=target/debug/trnm-outbox-worker
 
 "$worker_bin" check-config >"$evidence/worker-config.txt"
-grep -q '<redacted>' "$evidence/worker-config.txt"
-if grep -q "$password" "$evidence/worker-config.txt"; then
-  echo 'worker check-config leaked database credentials' >&2
+grep -qx 'trnm-outbox-worker configuration valid' "$evidence/worker-config.txt"
+if grep -Eq "$password|WorkerConfig|database_url|database_profile|spool_directory|node" "$evidence/worker-config.txt"; then
+  echo 'worker check-config exposed configuration-derived data' >&2
   exit 1
 fi
 

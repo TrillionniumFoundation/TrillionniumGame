@@ -47,6 +47,21 @@ pub enum RefreshRotationOutcome {
     ReplayRevoked(SessionFamilyRecord),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionMutationPoint {
+    CredentialResolved,
+    FamilyLocked,
+    BeforeCommit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RefreshTokenSnapshot {
+    generation: u64,
+    state: i16,
+    issued_at_ms: u64,
+    consumed_at_ms: Option<u64>,
+}
+
 impl PgRepository {
     pub fn create_session_family(
         &mut self,
@@ -144,6 +159,23 @@ impl PgRepository {
         &mut self,
         request: &RotateRefreshToken,
     ) -> Result<RefreshRotationOutcome, DomainError> {
+        self.rotate_refresh_token_with_hook(request, |_| {})
+    }
+
+    #[cfg(feature = "session-test-hooks")]
+    pub fn rotate_refresh_token_with_test_hook(
+        &mut self,
+        request: &RotateRefreshToken,
+        hook: impl FnMut(SessionMutationPoint),
+    ) -> Result<RefreshRotationOutcome, DomainError> {
+        self.rotate_refresh_token_with_hook(request, hook)
+    }
+
+    fn rotate_refresh_token_with_hook(
+        &mut self,
+        request: &RotateRefreshToken,
+        mut hook: impl FnMut(SessionMutationPoint),
+    ) -> Result<RefreshRotationOutcome, DomainError> {
         validate_rotation(request)?;
         let rotated_at_ms = to_i64(request.rotated_at_ms)?;
         let mut transaction = self
@@ -153,11 +185,16 @@ impl PgRepository {
             .start()
             .map_err(map_postgres_error)?;
 
-        let token_row = transaction
+        // Credential lookup discovers an immutable family identity only. Every
+        // session-family mutation then locks the family row before any token row,
+        // matching create, explicit revoke and replay revoke. The exact token is
+        // re-read under lock after the family lock, so this removes the prior
+        // token -> family / family -> token deadlock cycle without trusting an
+        // unlocked credential snapshot.
+        let family_identity_row = transaction
             .query_opt(
-                "SELECT family_id, generation, state, issued_at_ms \
-                 FROM trnm_refresh_tokens \
-                 WHERE token_id = $1 AND token_digest = $2 FOR UPDATE",
+                "SELECT family_id FROM trnm_refresh_tokens \
+                 WHERE token_id = $1 AND token_digest = $2",
                 &[
                     &request.presented.id.as_bytes().as_slice(),
                     &request.presented.digest.as_bytes().as_slice(),
@@ -165,13 +202,8 @@ impl PgRepository {
             )
             .map_err(map_postgres_error)?
             .ok_or_else(unauthenticated)?;
-        let family = decode_session_family_id(token_row.get(0))?;
-        let token_generation = from_i64(token_row.get(1), "negative_refresh_generation")?;
-        let token_state: i16 = token_row.get(2);
-        let issued_at_ms = from_i64(token_row.get(3), "negative_refresh_issued_at")?;
-        if request.rotated_at_ms < issued_at_ms {
-            return Err(invalid("refresh_rotation_before_issue"));
-        }
+        let family = decode_session_family_id(family_identity_row.get(0))?;
+        hook(SessionMutationPoint::CredentialResolved);
 
         let family_row = transaction
             .query_opt(
@@ -182,6 +214,74 @@ impl PgRepository {
             )
             .map_err(map_postgres_error)?
             .ok_or_else(|| data_loss("refresh_family_missing"))?;
+        hook(SessionMutationPoint::FamilyLocked);
+
+        let token_row = transaction
+            .query_opt(
+                "SELECT generation, state, issued_at_ms, consumed_at_ms \
+                 FROM trnm_refresh_tokens \
+                 WHERE family_id = $1 AND token_id = $2 AND token_digest = $3 \
+                 FOR UPDATE",
+                &[
+                    &family.as_bytes().as_slice(),
+                    &request.presented.id.as_bytes().as_slice(),
+                    &request.presented.digest.as_bytes().as_slice(),
+                ],
+            )
+            .map_err(map_postgres_error)?
+            .ok_or_else(unauthenticated)?;
+        let presented = RefreshTokenSnapshot {
+            generation: from_i64(token_row.get(0), "negative_refresh_generation")?,
+            state: token_row.get(1),
+            issued_at_ms: from_i64(token_row.get(2), "negative_refresh_issued_at")?,
+            consumed_at_ms: optional_from_i64(token_row.get(3), "negative_refresh_consumed_at")?,
+        };
+        validate_refresh_token_snapshot(presented)?;
+        if request.rotated_at_ms < presented.issued_at_ms {
+            return Err(invalid("refresh_rotation_before_issue"));
+        }
+
+        // The family lock freezes legitimate mutation of both predecessor and
+        // successor rows. Read the exact requested successor without taking a
+        // second caller-selected token lock, which avoids adversarial token-token
+        // cycles while retaining exact durable response-loss matching.
+        let replacement = if presented.state == TOKEN_STATE_CONSUMED {
+            transaction
+                .query_opt(
+                    "SELECT generation, state, issued_at_ms, consumed_at_ms \
+                     FROM trnm_refresh_tokens \
+                     WHERE family_id = $1 AND token_id = $2 AND token_digest = $3",
+                    &[
+                        &family.as_bytes().as_slice(),
+                        &request.replacement.id.as_bytes().as_slice(),
+                        &request.replacement.digest.as_bytes().as_slice(),
+                    ],
+                )
+                .map_err(map_postgres_error)?
+                .map(|row| {
+                    let snapshot = RefreshTokenSnapshot {
+                        generation: from_i64(
+                            row.get(0),
+                            "negative_replacement_refresh_generation",
+                        )?,
+                        state: row.get(1),
+                        issued_at_ms: from_i64(
+                            row.get(2),
+                            "negative_replacement_refresh_issued_at",
+                        )?,
+                        consumed_at_ms: optional_from_i64(
+                            row.get(3),
+                            "negative_replacement_refresh_consumed_at",
+                        )?,
+                    };
+                    validate_refresh_token_snapshot(snapshot)?;
+                    Ok::<RefreshTokenSnapshot, DomainError>(snapshot)
+                })
+                .transpose()?
+        } else {
+            None
+        };
+
         let record = decode_family(family, &family_row)?;
         if record.revoked_reason.is_some() || record.active_token.is_none() {
             return Err(unauthenticated());
@@ -190,9 +290,31 @@ impl PgRepository {
             return Err(invalid("refresh_rotation_before_family_creation"));
         }
 
-        if token_state == TOKEN_STATE_CONSUMED
-            || record.active_token != Some(request.presented.id)
-            || record.generation != token_generation
+        if presented.state == TOKEN_STATE_CONSUMED {
+            if committed_rotation_retry_matches(
+                record,
+                presented,
+                request.replacement.id,
+                replacement,
+                request.rotated_at_ms,
+            ) {
+                hook(SessionMutationPoint::BeforeCommit);
+                transaction.commit().map_err(map_postgres_error)?;
+                return Ok(RefreshRotationOutcome::Rotated(record));
+            }
+            let revoked = revoke_for_replay(
+                &mut transaction,
+                record,
+                request.rotated_at_ms,
+                rotated_at_ms,
+            )?;
+            hook(SessionMutationPoint::BeforeCommit);
+            transaction.commit().map_err(map_postgres_error)?;
+            return Ok(RefreshRotationOutcome::ReplayRevoked(revoked));
+        }
+
+        if record.active_token != Some(request.presented.id)
+            || record.generation != presented.generation
         {
             let revoked = revoke_for_replay(
                 &mut transaction,
@@ -200,11 +322,9 @@ impl PgRepository {
                 request.rotated_at_ms,
                 rotated_at_ms,
             )?;
+            hook(SessionMutationPoint::BeforeCommit);
             transaction.commit().map_err(map_postgres_error)?;
             return Ok(RefreshRotationOutcome::ReplayRevoked(revoked));
-        }
-        if token_state != TOKEN_STATE_ACTIVE {
-            return Err(data_loss("invalid_refresh_token_state"));
         }
 
         let next_generation = record.generation.checked_add(1).ok_or_else(|| {
@@ -270,6 +390,7 @@ impl PgRepository {
                 RetryClass::SafeImmediate,
             ));
         }
+        hook(SessionMutationPoint::BeforeCommit);
         transaction.commit().map_err(map_postgres_error)?;
         Ok(RefreshRotationOutcome::Rotated(SessionFamilyRecord {
             family,
@@ -345,6 +466,54 @@ impl PgRepository {
             ..record
         })
     }
+}
+
+fn committed_rotation_retry_matches(
+    family: SessionFamilyRecord,
+    presented: RefreshTokenSnapshot,
+    replacement_id: RefreshTokenId,
+    replacement: Option<RefreshTokenSnapshot>,
+    retry_at_ms: u64,
+) -> bool {
+    let Some(consumed_at_ms) = presented.consumed_at_ms else {
+        return false;
+    };
+    let Some(next_generation) = presented.generation.checked_add(1) else {
+        return false;
+    };
+    let Some(replacement) = replacement else {
+        return false;
+    };
+
+    presented.state == TOKEN_STATE_CONSUMED
+        && family.revoked_reason.is_none()
+        && family.active_token == Some(replacement_id)
+        && family.created_at_ms <= presented.issued_at_ms
+        && presented.issued_at_ms <= consumed_at_ms
+        && retry_at_ms >= consumed_at_ms
+        && family.generation == next_generation
+        && family.updated_at_ms == consumed_at_ms
+        && replacement.generation == next_generation
+        && replacement.state == TOKEN_STATE_ACTIVE
+        && replacement.issued_at_ms == consumed_at_ms
+        && replacement.consumed_at_ms.is_none()
+}
+
+fn validate_refresh_token_snapshot(snapshot: RefreshTokenSnapshot) -> Result<(), DomainError> {
+    match (snapshot.state, snapshot.consumed_at_ms) {
+        (TOKEN_STATE_ACTIVE, None) => Ok(()),
+        (TOKEN_STATE_CONSUMED, Some(consumed_at_ms)) if consumed_at_ms >= snapshot.issued_at_ms => {
+            Ok(())
+        }
+        (TOKEN_STATE_ACTIVE, _) | (TOKEN_STATE_CONSUMED, _) => {
+            Err(data_loss("invalid_refresh_token_lifecycle"))
+        }
+        _ => Err(data_loss("invalid_refresh_token_state")),
+    }
+}
+
+fn optional_from_i64(value: Option<i64>, reason: &'static str) -> Result<Option<u64>, DomainError> {
+    value.map(|item| from_i64(item, reason)).transpose()
 }
 
 fn revoke_for_replay(
@@ -493,6 +662,36 @@ mod tests {
         }
     }
 
+    fn family_record() -> SessionFamilyRecord {
+        SessionFamilyRecord {
+            family: SessionFamilyId::new([1; 16]),
+            user: UserId::new([2; 16]),
+            generation: 8,
+            active_token: Some(RefreshTokenId::new([5; 16])),
+            revoked_reason: None,
+            created_at_ms: 10,
+            updated_at_ms: 20,
+        }
+    }
+
+    fn consumed_predecessor() -> RefreshTokenSnapshot {
+        RefreshTokenSnapshot {
+            generation: 7,
+            state: TOKEN_STATE_CONSUMED,
+            issued_at_ms: 10,
+            consumed_at_ms: Some(20),
+        }
+    }
+
+    fn active_successor() -> RefreshTokenSnapshot {
+        RefreshTokenSnapshot {
+            generation: 8,
+            state: TOKEN_STATE_ACTIVE,
+            issued_at_ms: 20,
+            consumed_at_ms: None,
+        }
+    }
+
     #[test]
     fn create_and_rotation_validation_fail_closed() {
         let valid = CreateSessionFamily {
@@ -521,6 +720,151 @@ mod tests {
             validate_rotation(&invalid_rotation).unwrap_err().reason(),
             "invalid_refresh_rotation"
         );
+    }
+
+    #[test]
+    fn exact_immediate_successor_is_an_idempotent_response_loss_retry() {
+        assert!(committed_rotation_retry_matches(
+            family_record(),
+            consumed_predecessor(),
+            RefreshTokenId::new([5; 16]),
+            Some(active_successor()),
+            21,
+        ));
+    }
+
+    #[test]
+    fn response_loss_retry_requires_every_durable_fact_to_match() {
+        let family = family_record();
+        let predecessor = consumed_predecessor();
+        let successor = active_successor();
+        let replacement_id = RefreshTokenId::new([5; 16]);
+
+        assert!(!committed_rotation_retry_matches(
+            SessionFamilyRecord {
+                active_token: Some(RefreshTokenId::new([6; 16])),
+                ..family
+            },
+            predecessor,
+            replacement_id,
+            Some(successor),
+            21,
+        ));
+        assert!(!committed_rotation_retry_matches(
+            SessionFamilyRecord {
+                generation: 9,
+                ..family
+            },
+            predecessor,
+            replacement_id,
+            Some(successor),
+            21,
+        ));
+        assert!(!committed_rotation_retry_matches(
+            SessionFamilyRecord {
+                updated_at_ms: 19,
+                ..family
+            },
+            predecessor,
+            replacement_id,
+            Some(successor),
+            21,
+        ));
+        assert!(!committed_rotation_retry_matches(
+            family,
+            predecessor,
+            replacement_id,
+            None,
+            21,
+        ));
+        assert!(!committed_rotation_retry_matches(
+            family,
+            predecessor,
+            replacement_id,
+            Some(RefreshTokenSnapshot {
+                generation: 9,
+                ..successor
+            }),
+            21,
+        ));
+        assert!(!committed_rotation_retry_matches(
+            family,
+            predecessor,
+            replacement_id,
+            Some(RefreshTokenSnapshot {
+                issued_at_ms: 19,
+                ..successor
+            }),
+            21,
+        ));
+        assert!(!committed_rotation_retry_matches(
+            family,
+            predecessor,
+            replacement_id,
+            Some(successor),
+            19,
+        ));
+    }
+
+    #[test]
+    fn consumed_successor_or_generation_ceiling_never_qualifies_as_response_loss() {
+        assert!(!committed_rotation_retry_matches(
+            family_record(),
+            consumed_predecessor(),
+            RefreshTokenId::new([5; 16]),
+            Some(RefreshTokenSnapshot {
+                state: TOKEN_STATE_CONSUMED,
+                consumed_at_ms: Some(30),
+                ..active_successor()
+            }),
+            31,
+        ));
+        assert!(!committed_rotation_retry_matches(
+            SessionFamilyRecord {
+                generation: u64::MAX,
+                ..family_record()
+            },
+            RefreshTokenSnapshot {
+                generation: u64::MAX,
+                ..consumed_predecessor()
+            },
+            RefreshTokenId::new([5; 16]),
+            Some(active_successor()),
+            u64::MAX,
+        ));
+    }
+
+    #[test]
+    fn refresh_token_lifecycle_decode_is_fail_closed() {
+        assert!(validate_refresh_token_snapshot(active_successor()).is_ok());
+        assert!(validate_refresh_token_snapshot(consumed_predecessor()).is_ok());
+        for invalid in [
+            RefreshTokenSnapshot {
+                state: TOKEN_STATE_ACTIVE,
+                consumed_at_ms: Some(20),
+                ..active_successor()
+            },
+            RefreshTokenSnapshot {
+                state: TOKEN_STATE_CONSUMED,
+                consumed_at_ms: None,
+                ..consumed_predecessor()
+            },
+            RefreshTokenSnapshot {
+                state: TOKEN_STATE_CONSUMED,
+                issued_at_ms: 21,
+                consumed_at_ms: Some(20),
+                ..consumed_predecessor()
+            },
+            RefreshTokenSnapshot {
+                state: 7,
+                ..active_successor()
+            },
+        ] {
+            assert_eq!(
+                validate_refresh_token_snapshot(invalid).unwrap_err().code(),
+                StableCode::DataLoss
+            );
+        }
     }
 
     #[test]

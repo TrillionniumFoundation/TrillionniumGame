@@ -1,0 +1,71 @@
+{
+  "schema": "trillionnium.session-rotation-atomicity-status.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "status": "source-candidate",
+  "task_ids": [
+    "TG-V3-002",
+    "TG-V3-006"
+  ],
+  "gap_ids": [
+    "GAP-P0-CRYPTO-001",
+    "GAP-P0-SERVER-001",
+    "GAP-P0-DATA-001"
+  ],
+  "parity_ids": [
+    "TG-PAR-017"
+  ],
+  "source": "crates/trnm-session-core/src/lib.rs",
+  "source_blob": "e4b41563d5d79f084276898954b4a20a9a3cb6f9",
+  "fix": "Check generation increment before consumed-token and active-token mutation; preserve intentional replay-triggered revocation.",
+  "native_preflight": {
+    "base_commit": "be2be89efa3984e82b4e8584e2b8d6e7e315c9ca",
+    "base_tree": "7aaa04dd376c6beade753d610f0649fd9db526bf",
+    "tested_library_only_overlay_tree": "18546f581b795ca50273d91eab12da5c3b2bc8df",
+    "producer_commit": "1fad0a8fcf77dc416018eff8f391975ecef664b1",
+    "run_id": 33958209932,
+    "run_attempt": 1,
+    "job_id": 101285275298,
+    "conclusion": "success",
+    "toolchain": "Rust 1.85.1 aarch64-unknown-linux-gnu",
+    "original_with_regressions": {
+      "passed": 8,
+      "failed": 2,
+      "ignored": 0
+    },
+    "patched_package": {
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0
+    },
+    "format_passed": true,
+    "strict_clippy_passed": true,
+    "python_tests_passed": 477,
+    "source_control_checks_passed": 11,
+    "artifact": {
+      "id": 9967497145,
+      "name": "trnm-session-atomicity-be2be89e",
+      "size_bytes": 23322,
+      "sha256": "5a94c71dcc63bdad01b9d9abf7e46cdc524b13de586ac22479f5134677352535",
+      "download_verified": true,
+      "indexed_members_verified": 12,
+      "total_zip_members": 13,
+      "expires_at": "2026-12-04T09:31:17Z"
+    }
+  },
+  "limitations": [
+    "Native preflight executed a library-only overlay on the fixed base, not this eventual complete product commit or its prospective merge.",
+    "The five accompanying documentation/status changes require their own exact-candidate source checks.",
+    "Private u64 ceiling fixtures demonstrate Result error atomicity, not a demonstrated remote exploit.",
+    "No database persistence, response-loss credential replay, cross-node ownership, bounded token-history retention or socket fanout is implemented by this repair.",
+    "All ordinary required workflows and conflict-free independent security review remain mandatory."
+  ],
+  "claims": {
+    "native_component_preflight_observed": true,
+    "complete_product_head_verified": false,
+    "independently_accepted": false,
+    "gap_closed": false,
+    "compatibility_credit": false,
+    "production_ready": false
+  }
+}

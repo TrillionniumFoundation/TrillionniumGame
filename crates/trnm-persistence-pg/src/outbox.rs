@@ -8,6 +8,10 @@ use super::{
 
 const MAX_CLAIM_BATCH: usize = 64;
 const MAX_OUTBOX_ATTEMPTS: u32 = 32;
+const EXPIRED_ATTEMPT_EXHAUSTED_REASON: Digest32 = Digest32::new([
+    0xc5, 0x7f, 0x69, 0xb9, 0xf6, 0x7d, 0xdf, 0x67, 0xd5, 0xd6, 0xa4, 0x9b, 0x45, 0x27, 0xaf, 0x2e,
+    0x17, 0xad, 0x31, 0x3b, 0xfb, 0xc2, 0xf8, 0x39, 0x7b, 0x5f, 0x91, 0x20, 0x54, 0x1b, 0xe2, 0x5a,
+]);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OutboxLease {
@@ -20,6 +24,12 @@ pub struct OutboxLease {
     pub lease_generation: u64,
     pub owner: NodeId,
     pub lease_expires_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutboxClaimBatch {
+    pub leases: Vec<OutboxLease>,
+    pub reaped_dead_letters: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +53,18 @@ impl PgRepository {
         max_attempts: u32,
         limit: usize,
     ) -> Result<Vec<OutboxLease>, DomainError> {
+        self.claim_outbox_batch(owner, now_ms, lease_duration_ms, max_attempts, limit)
+            .map(|batch| batch.leases)
+    }
+
+    pub fn claim_outbox_batch(
+        &mut self,
+        owner: NodeId,
+        now_ms: u64,
+        lease_duration_ms: u64,
+        max_attempts: u32,
+        limit: usize,
+    ) -> Result<OutboxClaimBatch, DomainError> {
         validate_claim(owner, lease_duration_ms, max_attempts, limit)?;
         let lease_expires_at_ms = now_ms
             .checked_add(lease_duration_ms)
@@ -56,6 +78,14 @@ impl PgRepository {
             .isolation_level(postgres::IsolationLevel::Serializable)
             .start()
             .map_err(map_postgres_error)?;
+
+        // A process can die after taking the final permitted attempt and before
+        // acknowledging or retrying it. Such a row is no longer claimable
+        // because attempt == max_attempts. Reap only expired, exhausted leases
+        // in this same bounded serializable unit before selecting fresh work.
+        let reaped_dead_letters =
+            reap_expired_exhausted(&mut transaction, now_ms_i64, max_attempts_i64, limit)?;
+
         let mut leases = Vec::with_capacity(limit);
         for _ in 0..limit {
             let Some(row) = transaction
@@ -135,7 +165,10 @@ impl PgRepository {
             });
         }
         transaction.commit().map_err(map_postgres_error)?;
-        Ok(leases)
+        Ok(OutboxClaimBatch {
+            leases,
+            reaped_dead_letters,
+        })
     }
 
     pub fn complete_outbox(
@@ -244,6 +277,62 @@ impl PgRepository {
         transaction.commit().map_err(map_postgres_error)?;
         Ok(outcome)
     }
+}
+
+fn reap_expired_exhausted(
+    transaction: &mut Transaction<'_>,
+    now_ms: i64,
+    max_attempts: i64,
+    limit: usize,
+) -> Result<usize, DomainError> {
+    let mut reaped = 0_usize;
+    for _ in 0..limit {
+        let Some(row) = transaction
+            .query_opt(
+                "SELECT intent_id, lease_generation, attempt FROM trnm_outbox \
+                 WHERE state = 1 AND available_at_ms <= $1 AND attempt >= $2 \
+                 ORDER BY available_at_ms, intent_id LIMIT 1 FOR UPDATE",
+                &[&now_ms, &max_attempts],
+            )
+            .map_err(map_postgres_error)?
+        else {
+            break;
+        };
+        let intent_id =
+            decode_id16::<IntentId>(row.get(0), IntentId::new, "invalid_outbox_intent_id_bytes")?;
+        let generation = from_i64(row.get(1), "negative_outbox_lease_generation")?;
+        let attempt: i64 = row.get(2);
+        if generation == 0 || attempt <= 0 || attempt < max_attempts {
+            return Err(data_loss("invalid_expired_outbox_lease"));
+        }
+        u32::try_from(attempt).map_err(|_| data_loss("invalid_outbox_attempt"))?;
+        let generation = to_i64(generation)?;
+        let updated = transaction
+            .execute(
+                "UPDATE trnm_outbox SET state = 3, owner_node = NULL, \
+                 receipt_digest = NULL, dead_reason_digest = $2, updated_at_ms = $1 \
+                 WHERE intent_id = $3 AND state = 1 AND available_at_ms <= $1 \
+                 AND lease_generation = $4 AND attempt = $5 AND attempt >= $6",
+                &[
+                    &now_ms,
+                    &EXPIRED_ATTEMPT_EXHAUSTED_REASON.as_bytes().as_slice(),
+                    &intent_id.as_bytes().as_slice(),
+                    &generation,
+                    &attempt,
+                    &max_attempts,
+                ],
+            )
+            .map_err(map_postgres_error)?;
+        if updated != 1 {
+            return Err(error(
+                StableCode::Aborted,
+                "outbox_reap_compare_and_swap_failed",
+                RetryClass::SafeImmediate,
+            ));
+        }
+        reaped += 1;
+    }
+    Ok(reaped)
 }
 
 fn validate_claim(
@@ -375,6 +464,30 @@ mod tests {
                 .reason(),
             "invalid_outbox_claim"
         );
+    }
+
+    #[test]
+    fn exhausted_expired_lease_reason_is_stable_and_nonzero() {
+        assert!(!EXPIRED_ATTEMPT_EXHAUSTED_REASON.is_zero());
+        assert_eq!(
+            EXPIRED_ATTEMPT_EXHAUSTED_REASON.as_bytes(),
+            &[
+                0xc5, 0x7f, 0x69, 0xb9, 0xf6, 0x7d, 0xdf, 0x67, 0xd5, 0xd6, 0xa4, 0x9b, 0x45, 0x27,
+                0xaf, 0x2e, 0x17, 0xad, 0x31, 0x3b, 0xfb, 0xc2, 0xf8, 0x39, 0x7b, 0x5f, 0x91, 0x20,
+                0x54, 0x1b, 0xe2, 0x5a,
+            ]
+        );
+    }
+
+    #[test]
+    fn claim_batch_preserves_reaper_count_and_leases() {
+        let value = lease();
+        let batch = OutboxClaimBatch {
+            leases: vec![value],
+            reaped_dead_letters: 2,
+        };
+        assert_eq!(batch.leases, vec![value]);
+        assert_eq!(batch.reaped_dead_letters, 2);
     }
 
     #[test]

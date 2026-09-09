@@ -1,0 +1,73 @@
+{
+  "schema": "trillionnium.actions-artifact-upload-status.v1",
+  "status": "source-candidate",
+  "updated_at": "2026-09-05",
+  "gap_ids": [
+    "GAP-P0-EVIDENCE-001",
+    "GAP-P0-CI-001",
+    "GAP-P1-TEST-001"
+  ],
+  "source": "scripts/upload-actions-artifact.py",
+  "regression_suites": [
+    "tests/control_plane/test_actions_artifact_uploader.py",
+    "tests/control_plane/test_actions_artifact_protocol.py",
+    "tests/control_plane/test_actions_artifact_security.py",
+    "tests/control_plane/test_actions_artifact_response_contract.py"
+  ],
+  "protocol": {
+    "repository": "actions/toolkit",
+    "commit": "6fe3c0f3e61b5f34b85f28067d82e7e3ffcb312f",
+    "path": "packages/artifact/src/generated/results/api/v1/artifact.ts",
+    "blob": "dbdd7bbb7ae3a1932bed8e877d82a235873ed08b",
+    "artifact_version": 7,
+    "change": "CreateArtifact uses top-level scalar mime_type; no nested metadata wrapper"
+  },
+  "accepted": false,
+  "gap_closed": false,
+  "production_ready": false,
+  "limitations": [
+    "Strict offline request fixtures do not prove remote upload or retention.",
+    "Real producer, downloaded bytes and independent acceptance remain required.",
+    "No Rust runtime, Cargo, DDL, workflow definition or permission changes.",
+    "Observable file stability is not an immutable filesystem snapshot or a hard stalled-I/O deadline.",
+    "Prior native upload receipts qualify only their exact previous source; this revision needs new execution and independent acceptance.",
+    "No complete uploader, filesystem or network security audit is claimed."
+  ],
+  "custody_and_redirects": {
+    "review_id": 5120205543,
+    "reviewed_source": "bdfa705c751be77aff1f7e35f14c76ed4e032ea4",
+    "status": "source-candidate",
+    "file_custody": "directory-relative no-follow open, inspected inode/fstat match, bounded reads and final identity checks",
+    "redirect_policy": "refuse all automatic redirects; original Twirp Authorization uses unredirected header; signed PUT remains credential-free",
+    "new_test_cases": 30,
+    "required_native_verification": [
+      "exact-source and actual prospective merge",
+      "real artifact upload and downloaded-byte validation",
+      "fresh independent review"
+    ],
+    "independently_accepted": false,
+    "gap_closed": false,
+    "fixture_correction": "Same-origin target selected per actual phase; signed PUT uses Blob, Create/Finalize use Results. Existing cases verify target classification against outgoing request; no additional test-count credit."
+  },
+  "task_ids": [
+    "TG-V3-002"
+  ],
+  "service_response_contract": {
+    "status": "source-candidate",
+    "baseline_commit": "c2944df15702de77e8bbe549158019f84a53a38e",
+    "response_max_bytes": 1048576,
+    "response_json_max_depth": 64,
+    "response_number_max_characters": 128,
+    "artifact_id": "canonical ASCII decimal string or integer; 1 through signed int64 maximum; never bool",
+    "ambiguity_policy": "reject duplicate keys and multiple consumed aliases; keep bounded finite unknown fields",
+    "new_test_cases": 36,
+    "independently_accepted": false,
+    "gap_closed": false,
+    "limitations": [
+      "Synthetic malformed replies reproduce client acceptance, not a confirmed GitHub backend incident.",
+      "Canonical numeric spelling is a narrow uploader profile, not complete ProtoJSON input compatibility.",
+      "Reply rejection after PUT does not establish remote rollback; no automatic cleanup/retry is authorized.",
+      "Transport timeouts and bounded attempts are not a total wall-clock proof."
+    ]
+  }
+}

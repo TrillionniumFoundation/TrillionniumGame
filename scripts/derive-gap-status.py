@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -10,6 +11,16 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+
+_SPEC = importlib.util.spec_from_file_location(
+    "trnm_evidence_admission_" + Path(__file__).stem.replace("-", "_"),
+    Path(__file__).with_name("evidence_admission.py"),
+)
+if _SPEC is None or _SPEC.loader is None:
+    raise RuntimeError("cannot load shared evidence admission contract")
+EVIDENCE = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = EVIDENCE
+_SPEC.loader.exec_module(EVIDENCE)
 REGISTER_PATH = ROOT / "docs/status/GAP_REGISTER.json"
 EVIDENCE_PATH = ROOT / "docs/evidence/index.json"
 
@@ -25,11 +36,9 @@ def require(condition: bool, message: str) -> None:
 
 def load(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise GapDerivationError(f"{path.relative_to(ROOT)}: {error}") from error
-    require(isinstance(value, dict), f"{path.relative_to(ROOT)}: root must be an object")
-    return value
+        return EVIDENCE.load_object(path)
+    except (OSError, ValueError, RecursionError) as error:
+        raise GapDerivationError(f"invalid control JSON: {error}") from error
 
 
 def text(path: str) -> str:
@@ -41,8 +50,8 @@ def text(path: str) -> str:
 def source_candidates() -> dict[str, dict[str, object]]:
     probes: dict[str, tuple[str, tuple[str, ...]]] = {
         "GAP-P0-PLAN-001": (
-            "scripts/check-status-transitions.py",
-            ("allowed_transitions", "EXECUTION_STATUS.json"),
+            "scripts/status_transition_policy.py",
+            ("allowed_transitions", "validate_transition", "compare_roots"),
         ),
         "GAP-P0-EVIDENCE-001": (
             "docs/evidence/index.json",
@@ -62,7 +71,11 @@ def source_candidates() -> dict[str, dict[str, object]]:
         ),
         "GAP-P0-CRYPTO-001": (
             ".github/workflows/trillionnium-game-merge-gate.yml",
-            ("token-jwt-adapter", "security-critical-rust"),
+            (
+                "token-jwt-adapter",
+                "token-crypto-provider",
+                "token-jwt-provider-adapter",
+            ),
         ),
         "GAP-P1-CRYPTO-002": (
             "crates/trnm-token-jwt-adapter/src/sha256.rs",
@@ -96,40 +109,14 @@ def source_candidates() -> dict[str, dict[str, object]]:
 
 
 def evidence_by_id(index: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    entries = index.get("evidence")
-    if entries is None:
-        entries = index.get("entries", [])
-    require(isinstance(entries, list), "evidence index entries must be a list")
-    result: dict[str, dict[str, Any]] = {}
-    for entry in entries:
-        require(isinstance(entry, dict), "evidence entry must be an object")
-        evidence_id = entry.get("evidence_id") or entry.get("id")
-        require(isinstance(evidence_id, str) and evidence_id, "evidence entry lacks ID")
-        require(evidence_id not in result, f"duplicate evidence ID: {evidence_id}")
-        result[evidence_id] = entry
-    return result
+    try:
+        return {row["evidence_id"]: row for row in EVIDENCE.index_rows(index)}
+    except EVIDENCE.AdmissionError as error:
+        raise GapDerivationError(str(error)) from error
 
 
 def accepted_evidence(entry: dict[str, Any]) -> bool:
-    status = entry.get("status")
-    review = entry.get("review")
-    if not isinstance(review, dict):
-        return False
-    if status not in {"passed", "accepted", "valid"}:
-        return False
-    if review.get("decision") != "accepted":
-        return False
-    if entry.get("compatibility_credit") is False and entry.get("evidence_type") != "manifest":
-        return False
-    expires_at = entry.get("expires_at")
-    if isinstance(expires_at, str):
-        try:
-            expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-        except ValueError:
-            return False
-        if expiry <= datetime.now(timezone.utc):
-            return False
-    return True
+    return EVIDENCE.entry_eligible(entry, root=ROOT)
 
 
 def derive() -> dict[str, Any]:
@@ -166,6 +153,10 @@ def derive() -> dict[str, Any]:
         source_candidate = bool(probe and probe["source_candidate"])
 
         if declared == "closed":
+            try:
+                EVIDENCE.validate_gap_evidence(gap, evidence, root=ROOT)
+            except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+                raise GapDerivationError(f"{gap_id}: {error}") from error
             require(evidence_ids, f"{gap_id}: closed gap has no evidence")
             require(len(accepted) == len(evidence_ids), f"{gap_id}: closed gap has unaccepted evidence")
             require(not gap.get("external_dependency"), f"{gap_id}: closed gap retains external dependency")

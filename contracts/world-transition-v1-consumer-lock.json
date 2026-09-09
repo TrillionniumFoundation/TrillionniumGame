@@ -22,8 +22,10 @@
         "vendored_path": "testdata/world-transition-v1/golden-vectors.json"
       },
       "protocol": {
-        "path": "docs/protocol/trnm-world-transition-v1.md",
-        "git_blob_sha1": "10a4111be668e7b749af9e459536fcb39dffa120"
+        "repository_root": "docs",
+        "path": "protocol/trnm-world-transition-v1.md",
+        "git_blob_sha1": "10a4111be668e7b749af9e459536fcb39dffa120",
+        "current_local_authority": "docs/COMPATIBILITY.md"
       },
       "delivery": {
         "path": "docs/development/trnm-world-transition-contract-v1.json",

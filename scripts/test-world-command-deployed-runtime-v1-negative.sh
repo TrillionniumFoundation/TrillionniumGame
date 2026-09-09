@@ -64,8 +64,22 @@ reset_fixture
 python3 - "$work/runtime/world_command_storage.go" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
-text = path.read_text().replace("worldCommandStorageCollection", "matchStorageCollection", 1)
-path.write_text(text)
+text = path.read_text()
+start_marker = "acks, err := nk.StorageWrite(ctx, []*runtime.StorageWrite{"
+end_marker = "\n\tif err != nil {"
+if text.count(start_marker) != 1:
+    raise SystemExit("atomic World/core batch no longer has one canonical StorageWrite call")
+start = text.index(start_marker)
+try:
+    end = text.index(end_marker, start)
+except ValueError as error:
+    raise SystemExit("atomic World/core batch error boundary is missing") from error
+batch = text[start:end]
+needle = "Collection:      worldCommandStorageCollection,"
+if batch.count(needle) != 1:
+    raise SystemExit("atomic World sidecar fixture no longer has one canonical batch entry")
+mutated = batch.replace(needle, "Collection:      matchStorageCollection,", 1)
+path.write_text(text[:start] + mutated + text[end:])
 PY
 expect_rejected 'atomic World sidecar removal'
 
@@ -99,9 +113,30 @@ reset_fixture
 python3 - "$work/runtime/world_command_config.go" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
-text = path.read_text().replace("envWorldChallengeHash", "envWorldInitialStateHash", 1)
+text = path.read_text()
+needle = 'envWorldChallengeHash    = "TRNM_WORLD_CHALLENGE_SNAPSHOT_HASH"'
+replacement = 'envWorldChallengeHash    = "TRNM_WORLD_INITIAL_STATE_HASH"'
+if text.count(needle) != 1:
+    raise SystemExit("challenge commitment environment binding is no longer canonical")
+text = text.replace(needle, replacement, 1)
+text += '\n// Decoy retained deliberately: token presence must not validate the live binding.\n'
+text += 'const decoyWorldChallengeHash = "TRNM_WORLD_CHALLENGE_SNAPSHOT_HASH"\n'
 path.write_text(text)
 PY
-expect_rejected 'challenge snapshot conflated with initial state'
+if ! "$checker" "$work" >/dev/null 2>&1; then
+  printf '%s\n' \
+    'challenge fixture was rejected before the compiled live-binding test; decoy token no longer exercises the intended semantic guard' >&2
+  exit 1
+fi
+if (
+  cd "$work/runtime"
+  go test . \
+    -run '^TestWorldCommandTargetBindingUsesImmutableAuthorizationHashes$' \
+    -count=1 >/dev/null 2>&1
+); then
+  printf '%s\n' \
+    'negative fixture unexpectedly passed: challenge snapshot live binding aliases initial state despite a preserved decoy token' >&2
+  exit 1
+fi
 
 printf '%s\n' 'World command deployed runtime negative fixtures: rejected as expected'

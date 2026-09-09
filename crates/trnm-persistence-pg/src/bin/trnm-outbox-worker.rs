@@ -27,9 +27,12 @@ const DEFAULT_POOL_ACQUIRE_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_STATEMENT_TIMEOUT_MS: u64 = 5_000;
 const MAX_CONSECUTIVE_DATABASE_FAILURES: u32 = 20;
 const TEST_FAIL_AFTER_DELIVERY_EXIT_CODE: i32 = 70;
+const TEST_FAIL_BEFORE_DELIVERY_EXIT_CODE: i32 = 71;
 const DATABASE_RETRY_MAX_ATTEMPTS: u8 = 5;
 const DATABASE_RETRY_INITIAL_BACKOFF_MS: u64 = 5;
 const DATABASE_RETRY_MAX_BACKOFF_MS: u64 = 100;
+const CONFIGURATION_VALID_MESSAGE: &str = "trnm-outbox-worker configuration valid";
+const STARTUP_MESSAGE: &str = "trnm-outbox-worker source candidate started";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
@@ -61,6 +64,7 @@ struct WorkerConfig {
     max_attempts: u32,
     poll_interval: Duration,
     max_backoff_ms: u64,
+    test_fail_before_delivery: bool,
     test_fail_after_delivery: bool,
 }
 
@@ -89,6 +93,7 @@ impl fmt::Debug for WorkerConfig {
             .field("max_attempts", &self.max_attempts)
             .field("poll_interval", &self.poll_interval)
             .field("max_backoff_ms", &self.max_backoff_ms)
+            .field("test_fail_before_delivery", &self.test_fail_before_delivery)
             .field("test_fail_after_delivery", &self.test_fail_after_delivery)
             .finish()
     }
@@ -199,17 +204,27 @@ impl WorkerConfig {
             false,
             "enable_test_failpoints_invalid",
         )?;
+        let test_fail_before_delivery = parse_bool(
+            lookup("TRNM_OUTBOX_TEST_FAIL_BEFORE_DELIVERY").as_deref(),
+            false,
+            "test_fail_before_delivery_invalid",
+        )?;
         let test_fail_after_delivery = parse_bool(
             lookup("TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY").as_deref(),
             false,
             "test_fail_after_delivery_invalid",
         )?;
-        if test_fail_after_delivery && !enable_test_failpoints {
+        if test_fail_before_delivery && test_fail_after_delivery {
+            return Err(WorkerError::Configuration(
+                "test_failpoints_are_mutually_exclusive",
+            ));
+        }
+        if (test_fail_before_delivery || test_fail_after_delivery) && !enable_test_failpoints {
             return Err(WorkerError::Configuration(
                 "test_failpoint_requires_explicit_opt_in",
             ));
         }
-        if test_fail_after_delivery && command != Command::RunOnce {
+        if (test_fail_before_delivery || test_fail_after_delivery) && command != Command::RunOnce {
             return Err(WorkerError::Configuration(
                 "test_failpoint_requires_run_once",
             ));
@@ -311,6 +326,7 @@ impl WorkerConfig {
                 max_attempts,
                 poll_interval: Duration::from_millis(poll_interval_ms),
                 max_backoff_ms,
+                test_fail_before_delivery,
                 test_fail_after_delivery,
             },
         ))
@@ -431,7 +447,7 @@ fn run() -> Result<(), WorkerError> {
     let (command, config) = WorkerConfig::from_environment(&arguments)?;
     match command {
         Command::CheckConfig => {
-            println!("trnm-outbox-worker configuration: {config:?}");
+            println!("{CONFIGURATION_VALID_MESSAGE}");
             Ok(())
         }
         Command::RunOnce => {
@@ -449,12 +465,7 @@ fn serve(config: &WorkerConfig) -> Result<(), WorkerError> {
     let pool = build_pool(config)?;
     let sink = SpoolSink::new(config.spool_directory.clone())?;
     let mut consecutive_database_failures = 0_u32;
-    eprintln!(
-        "trnm-outbox-worker source candidate started profile={} node={} batch_size={}",
-        config.database_profile.metadata_value(),
-        encode_hex(config.node.as_bytes()),
-        config.batch_size,
-    );
+    eprintln!("{STARTUP_MESSAGE}");
     loop {
         if stop_requested(config.stop_file.as_deref())? {
             eprintln!("trnm-outbox-worker source candidate stopped");
@@ -463,7 +474,7 @@ fn serve(config: &WorkerConfig) -> Result<(), WorkerError> {
         match process_once(&pool, &sink, config) {
             Ok(report) => {
                 consecutive_database_failures = 0;
-                if report.claimed == 0 {
+                if report.claimed == 0 && report.dead_lettered == 0 {
                     thread::sleep(config.poll_interval);
                 } else {
                     print_report(report);
@@ -529,7 +540,7 @@ fn process_once_attempt(
 ) -> Result<BatchReport, WorkerError> {
     let now_ms = now_millis()?;
     let mut repository = pool.acquire()?;
-    let leases = repository.claim_outbox(
+    let batch = repository.claim_outbox_batch(
         config.node,
         now_ms,
         config.lease_duration_ms,
@@ -537,10 +548,17 @@ fn process_once_attempt(
         config.batch_size,
     )?;
     let mut report = BatchReport {
-        claimed: leases.len(),
+        claimed: batch.leases.len(),
+        dead_lettered: batch.reaped_dead_letters,
         ..BatchReport::default()
     };
-    for lease in leases {
+    for lease in batch.leases {
+        if config.test_fail_before_delivery {
+            eprintln!(
+                "trnm-outbox-worker test failpoint: exiting after final-attempt claim and before durable spool publication"
+            );
+            process::exit(TEST_FAIL_BEFORE_DELIVERY_EXIT_CODE);
+        }
         match sink.deliver(&lease) {
             Ok(receipt) => {
                 if config.test_fail_after_delivery {
@@ -1047,6 +1065,60 @@ mod tests {
     }
 
     #[test]
+    fn pre_delivery_failpoint_is_explicit_exclusive_and_run_once_only() {
+        let directory = temporary_directory("pre-delivery-failpoint");
+        let mut values = base_config(&directory);
+        values.insert(
+            "TRNM_OUTBOX_TEST_FAIL_BEFORE_DELIVERY".to_owned(),
+            "1".to_owned(),
+        );
+        assert!(matches!(
+            load(&values),
+            Err(WorkerError::Configuration(
+                "test_failpoint_requires_explicit_opt_in"
+            ))
+        ));
+        values.insert(
+            "TRNM_OUTBOX_ENABLE_TEST_FAILPOINTS".to_owned(),
+            "1".to_owned(),
+        );
+        let (_, config) = load(&values).unwrap();
+        assert!(config.test_fail_before_delivery);
+        assert!(!config.test_fail_after_delivery);
+        values.insert(
+            "TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY".to_owned(),
+            "1".to_owned(),
+        );
+        assert!(matches!(
+            load(&values),
+            Err(WorkerError::Configuration(
+                "test_failpoints_are_mutually_exclusive"
+            ))
+        ));
+        values.remove("TRNM_OUTBOX_TEST_FAIL_AFTER_DELIVERY");
+        let result = WorkerConfig::from_lookup(
+            &["trnm-outbox-worker".to_owned(), "serve".to_owned()],
+            |name| values.get(name).cloned(),
+        );
+        assert!(matches!(
+            result,
+            Err(WorkerError::Configuration(
+                "test_failpoint_requires_run_once"
+            ))
+        ));
+    }
+
+    #[test]
+    fn batch_report_exposes_reaper_only_terminal_transitions() {
+        let report = BatchReport {
+            dead_lettered: 3,
+            ..BatchReport::default()
+        };
+        assert_eq!(report.claimed, 0);
+        assert_eq!(report.dead_lettered, 3);
+    }
+
+    #[test]
     fn tls_identity_requires_a_pair_and_debug_redacts_url() {
         let directory = temporary_directory("tls");
         let mut values = base_config(&directory);
@@ -1085,6 +1157,20 @@ mod tests {
             value.kind = kind;
             let record = String::from_utf8(spool_record(&value)).unwrap();
             assert!(record.contains(&format!("\"kind\":\"{name}\"")));
+        }
+    }
+}
+
+#[cfg(test)]
+mod operator_message_tests {
+    use super::{CONFIGURATION_VALID_MESSAGE, STARTUP_MESSAGE};
+
+    #[test]
+    fn outbox_operator_messages_are_static_and_secret_free() {
+        for message in [CONFIGURATION_VALID_MESSAGE, STARTUP_MESSAGE] {
+            for forbidden in ["url", "profile", "node", "batch", "key", "token"] {
+                assert!(!message.contains(forbidden));
+            }
         }
     }
 }

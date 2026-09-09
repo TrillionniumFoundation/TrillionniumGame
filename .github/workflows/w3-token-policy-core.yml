@@ -3,17 +3,6 @@ name: trillionnium-game-token-policy-core
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'crates/trnm-token-core/**'
-      - 'contracts/session/nakama-v340-token-source-lock.json'
-      - 'contracts/session/token-policy-vectors.v1.json'
-      - 'scripts/check-token-core.py'
-      - 'tests/session/test_token_policy_vectors.py'
-      - 'docs/development/TOKEN_POLICY_CORE.md'
-      - 'docs/status/TOKEN_POLICY_STATUS.json'
-      - '.github/workflows/w3-token-policy-core.yml'
   push:
     branches: [main]
     paths:
@@ -24,7 +13,9 @@ on:
       - 'contracts/session/token-policy-vectors.v1.json'
       - 'scripts/check-token-core.py'
       - 'tests/session/test_token_policy_vectors.py'
-      - 'docs/development/TOKEN_POLICY_CORE.md'
+      - 'docs/SECURITY_AND_PRIVACY.md'
+      - 'docs/TESTING_AND_EVIDENCE.md'
+      - 'docs/DOCUMENTATION_AUTHORITY.json'
       - 'docs/status/TOKEN_POLICY_STATUS.json'
       - '.github/workflows/w3-token-policy-core.yml'
 
