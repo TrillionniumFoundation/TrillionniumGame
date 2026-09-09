@@ -19,6 +19,7 @@ env:
   CHAIN_MERGE_SHA: 0549e088e5a1108363e542bf02d6afc2c11ffed2
   CHAIN_MERGE_TREE: c0791ffb57e05fde43f87bfed1a3b4656c09efc0
   CHAIN_ASSESSED_BASELINE_SHA: af691ea5005e1f0262e90c4fc878ba0a70dbe7ea
+  CHAIN_OVERLAY_SOURCE_SHA: a44d67181dc74ad74e64819b913972d2a49abc54
   RUSTUP_TOOLCHAIN: '1.95.0'
   CARGO_INCREMENTAL: '0'
   CARGO_TERM_COLOR: never
@@ -31,7 +32,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - name: Fetch and verify exact Chain tuple in canonical root and linked worktree
+      - name: Fetch and verify exact Chain tuple and plan-pinned objects
         shell: bash
         run: |
           set -euo pipefail
@@ -40,9 +41,15 @@ jobs:
           rm -rf "$root" "$merge"
           git init "$root"
           git -C "$root" remote add origin "https://github.com/${CHAIN_REPOSITORY}.git"
-          git -C "$root" fetch --no-tags origin "$CHAIN_HEAD_SHA"
-          git -C "$root" fetch --no-tags origin "$CHAIN_MERGE_SHA"
-          git -C "$root" fetch --no-tags origin "$CHAIN_ASSESSED_BASELINE_SHA"
+          for object in \
+            "$CHAIN_HEAD_SHA" \
+            "$CHAIN_MERGE_SHA" \
+            "$CHAIN_ASSESSED_BASELINE_SHA" \
+            "$CHAIN_OVERLAY_SOURCE_SHA"
+          do
+            git -C "$root" fetch --no-tags origin "$object"
+            git -C "$root" cat-file -e "$object^{commit}"
+          done
           git -C "$root" checkout --detach "$CHAIN_HEAD_SHA"
           git -C "$root" worktree add --detach "$merge" "$CHAIN_MERGE_SHA"
           test "$(git -C "$root" rev-parse HEAD)" = "$CHAIN_HEAD_SHA"
@@ -51,7 +58,6 @@ jobs:
           test "$(git -C "$merge" rev-parse 'HEAD^{tree}')" = "$CHAIN_MERGE_TREE"
           test "$(git -C "$merge" rev-parse 'HEAD^1')" = "$CHAIN_BASE_SHA"
           test "$(git -C "$merge" rev-parse 'HEAD^2')" = "$CHAIN_HEAD_SHA"
-          git -C "$root" cat-file -e "$CHAIN_ASSESSED_BASELINE_SHA^{commit}"
           test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
           test -z "$(git -C "$merge" status --porcelain=v1 --untracked-files=no)"
 
@@ -128,6 +134,7 @@ jobs:
           test "$(git -C "$merge" rev-parse 'HEAD^{tree}')" = "$CHAIN_MERGE_TREE"
           test "$(git -C "$merge" show -s --format=%P HEAD)" = "$CHAIN_BASE_SHA $CHAIN_HEAD_SHA"
           git -C "$root" cat-file -e "$CHAIN_ASSESSED_BASELINE_SHA^{commit}"
+          git -C "$root" cat-file -e "$CHAIN_OVERLAY_SOURCE_SHA^{commit}"
           printf 'chain_repository=%s\n' "$CHAIN_REPOSITORY"
           printf 'chain_base=%s\n' "$CHAIN_BASE_SHA"
           printf 'chain_head=%s\n' "$CHAIN_HEAD_SHA"
@@ -135,6 +142,7 @@ jobs:
           printf 'chain_merge=%s\n' "$CHAIN_MERGE_SHA"
           printf 'chain_merge_tree=%s\n' "$CHAIN_MERGE_TREE"
           printf 'chain_assessed_baseline=%s\n' "$CHAIN_ASSESSED_BASELINE_SHA"
+          printf 'chain_overlay_source=%s\n' "$CHAIN_OVERLAY_SOURCE_SHA"
           printf 'chain_merge_parents=%s\n' "$(git -C "$merge" show -s --format=%P HEAD)"
           printf 'runner_repository=%s\nrunner_commit=%s\nrunner_run_id=%s\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_RUN_ID"
           printf 'production_authorization=not_granted\n'
