@@ -1,0 +1,938 @@
+name: tmp-rtapi-wave6
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-rtapi-wave6.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-api-gateway-core-20260909
+  FEATURE_BRANCH: feature/plan-v32-rtapi-service-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-rtapi-service:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Wait for exact Wave 5 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 300); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 30
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write bounded RTAPI connection service
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-rtapi-service/src
+          cat > crates/trnm-rtapi-service/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-rtapi-service"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Bounded RTAPI connection admission dispatch and reconnect service"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-rtapi-service/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::collections::{BTreeMap, VecDeque};
+          use std::fmt::Debug;
+
+          pub const MAX_FRAME_BYTES: usize = 1_048_576;
+          pub const MAX_PENDING_REQUESTS: usize = 1024;
+          pub const MAX_OUTBOUND_FRAMES: usize = 4096;
+          pub const MAX_OUTBOUND_BYTES: usize = 16 * 1024 * 1024;
+          pub const MAX_CURSOR_BYTES: usize = 2048;
+          pub const MAX_DEADLINE_MS: u64 = 120_000;
+
+          macro_rules! id16 {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(value: [u8; 16]) -> Result<Self, RtapiError> {
+                          if value.iter().all(|byte| *byte == 0) {
+                              Err(RtapiError::invalid($reason))
+                          } else {
+                              Ok(Self(value))
+                          }
+                      }
+                  }
+              };
+          }
+
+          id16!(ProjectId, "project_id_zero");
+          id16!(UserId, "user_id_zero");
+          id16!(SessionId, "session_id_zero");
+          id16!(ConnectionId, "connection_id_zero");
+          id16!(NamespaceId, "namespace_id_zero");
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct CorrelationId(u64);
+
+          impl CorrelationId {
+              pub fn new(value: u64) -> Result<Self, RtapiError> {
+                  if value == 0 {
+                      Err(RtapiError::invalid("correlation_id_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Opcode(u16);
+
+          impl Opcode {
+              pub fn new(value: u16) -> Result<Self, RtapiError> {
+                  if value == 0 {
+                      Err(RtapiError::invalid("opcode_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum Encoding {
+              Json,
+              Protobuf,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct SessionBinding {
+              pub project: ProjectId,
+              pub user: UserId,
+              pub session: SessionId,
+              pub session_generation: u64,
+              pub connection: ConnectionId,
+              pub connection_generation: u64,
+              pub namespace: NamespaceId,
+          }
+
+          impl SessionBinding {
+              pub fn validate(self) -> Result<Self, RtapiError> {
+                  if self.session_generation == 0 || self.connection_generation == 0 {
+                      Err(RtapiError::invalid("binding_generation_zero"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct ConnectionLimits {
+              pub maximum_frame_bytes: usize,
+              pub maximum_pending_requests: usize,
+              pub maximum_outbound_frames: usize,
+              pub maximum_outbound_bytes: usize,
+              pub request_deadline_ms: u64,
+              pub heartbeat_timeout_ms: u64,
+              pub idle_timeout_ms: u64,
+          }
+
+          impl ConnectionLimits {
+              pub fn validate(self) -> Result<Self, RtapiError> {
+                  if self.maximum_frame_bytes == 0 || self.maximum_frame_bytes > MAX_FRAME_BYTES
+                      || self.maximum_pending_requests == 0 || self.maximum_pending_requests > MAX_PENDING_REQUESTS
+                      || self.maximum_outbound_frames == 0 || self.maximum_outbound_frames > MAX_OUTBOUND_FRAMES
+                      || self.maximum_outbound_bytes == 0 || self.maximum_outbound_bytes > MAX_OUTBOUND_BYTES
+                      || self.request_deadline_ms == 0 || self.request_deadline_ms > MAX_DEADLINE_MS
+                      || self.heartbeat_timeout_ms == 0 || self.idle_timeout_ms == 0
+                  {
+                      Err(RtapiError::invalid("connection_limits_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ClientFrame {
+              pub encoding: Encoding,
+              pub opcode: Opcode,
+              pub correlation: CorrelationId,
+              pub payload: Vec<u8>,
+              pub client_sequence: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct RequestHandle {
+              pub namespace: NamespaceId,
+              pub connection_generation: u64,
+              pub request_generation: u64,
+              pub correlation: CorrelationId,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct DispatchRequest {
+              pub handle: RequestHandle,
+              pub binding: SessionBinding,
+              pub encoding: Encoding,
+              pub opcode: Opcode,
+              pub payload: Vec<u8>,
+              pub client_sequence: u64,
+              pub deadline_at_ms: u64,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct OutboundFrame {
+              pub encoding: Encoding,
+              pub opcode: Opcode,
+              pub correlation: CorrelationId,
+              pub payload: Vec<u8>,
+              pub server_sequence: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          struct PendingRequest {
+              handle: RequestHandle,
+              opcode: Opcode,
+              deadline_at_ms: u64,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ReconnectClaims {
+              pub binding: SessionBinding,
+              pub next_client_sequence: u64,
+              pub next_server_sequence: u64,
+              pub expires_at_ms: u64,
+          }
+
+          pub trait ReconnectVerifier: Debug {
+              fn verify(&self, encoded: &str) -> Result<ReconnectClaims, RtapiError>;
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableRtapiCode {
+              InvalidArgument,
+              Unauthenticated,
+              PermissionDenied,
+              NotFound,
+              AlreadyExists,
+              FailedPrecondition,
+              Aborted,
+              DeadlineExceeded,
+              ResourceExhausted,
+              Unavailable,
+              Internal,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct RtapiError {
+              code: StableRtapiCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl RtapiError {
+              #[must_use]
+              pub const fn new(code: StableRtapiCode, reason: &'static str, retryable: bool) -> Self {
+                  Self { code, reason, retryable }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableRtapiCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableRtapiCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct ConnectionState {
+              binding: SessionBinding,
+              limits: ConnectionLimits,
+              pending: BTreeMap<CorrelationId, PendingRequest>,
+              outbound: VecDeque<OutboundFrame>,
+              outbound_bytes: usize,
+              next_request_generation: u64,
+              next_client_sequence: u64,
+              next_server_sequence: u64,
+              last_activity_ms: u64,
+              last_pong_ms: u64,
+              draining: bool,
+              revoked_through_generation: u64,
+          }
+
+          impl ConnectionState {
+              pub fn new(
+                  binding: SessionBinding,
+                  limits: ConnectionLimits,
+                  now_ms: u64,
+              ) -> Result<Self, RtapiError> {
+                  let binding = binding.validate()?;
+                  let limits = limits.validate()?;
+                  if now_ms == 0 {
+                      return Err(RtapiError::invalid("connection_start_zero"));
+                  }
+                  Ok(Self {
+                      binding,
+                      limits,
+                      pending: BTreeMap::new(),
+                      outbound: VecDeque::new(),
+                      outbound_bytes: 0,
+                      next_request_generation: 1,
+                      next_client_sequence: 1,
+                      next_server_sequence: 1,
+                      last_activity_ms: now_ms,
+                      last_pong_ms: now_ms,
+                      draining: false,
+                      revoked_through_generation: 0,
+                  })
+              }
+
+              pub fn restore<V: ReconnectVerifier>(
+                  expected: SessionBinding,
+                  limits: ConnectionLimits,
+                  encoded: &str,
+                  verifier: &V,
+                  now_ms: u64,
+              ) -> Result<Self, RtapiError> {
+                  if encoded.is_empty() || encoded.len() > MAX_CURSOR_BYTES {
+                      return Err(RtapiError::invalid("reconnect_cursor_size_invalid"));
+                  }
+                  let claims = verifier.verify(encoded)?;
+                  if claims.binding != expected.validate()?
+                      || claims.next_client_sequence == 0
+                      || claims.next_server_sequence == 0
+                      || claims.expires_at_ms <= now_ms
+                  {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::Unauthenticated,
+                          "reconnect_cursor_binding_invalid",
+                          false,
+                      ));
+                  }
+                  let mut state = Self::new(expected, limits, now_ms)?;
+                  state.next_client_sequence = claims.next_client_sequence;
+                  state.next_server_sequence = claims.next_server_sequence;
+                  Ok(state)
+              }
+
+              pub fn admit(
+                  &mut self,
+                  frame: ClientFrame,
+                  now_ms: u64,
+              ) -> Result<DispatchRequest, RtapiError> {
+                  self.require_live(now_ms)?;
+                  if self.draining {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::Unavailable,
+                          "connection_draining",
+                          true,
+                      ));
+                  }
+                  if frame.payload.len() > self.limits.maximum_frame_bytes {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::ResourceExhausted,
+                          "frame_too_large",
+                          false,
+                      ));
+                  }
+                  if frame.client_sequence != self.next_client_sequence {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::Aborted,
+                          "client_sequence_mismatch",
+                          true,
+                      ));
+                  }
+                  if self.pending.contains_key(&frame.correlation) {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::AlreadyExists,
+                          "correlation_already_pending",
+                          false,
+                      ));
+                  }
+                  if self.pending.len() >= self.limits.maximum_pending_requests {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::ResourceExhausted,
+                          "pending_request_capacity_exhausted",
+                          true,
+                      ));
+                  }
+                  let deadline_at_ms = now_ms
+                      .checked_add(self.limits.request_deadline_ms)
+                      .ok_or_else(|| RtapiError::new(
+                          StableRtapiCode::DeadlineExceeded,
+                          "request_deadline_overflow",
+                          false,
+                      ))?;
+                  let handle = RequestHandle {
+                      namespace: self.binding.namespace,
+                      connection_generation: self.binding.connection_generation,
+                      request_generation: self.next_request_generation,
+                      correlation: frame.correlation,
+                  };
+                  let next_request_generation = self
+                      .next_request_generation
+                      .checked_add(1)
+                      .ok_or_else(|| RtapiError::new(
+                          StableRtapiCode::Internal,
+                          "request_generation_overflow",
+                          false,
+                      ))?;
+                  let next_client_sequence = self.next_client_sequence.checked_add(1).ok_or_else(|| {
+                      RtapiError::new(
+                          StableRtapiCode::Internal,
+                          "client_sequence_overflow",
+                          false,
+                      )
+                  })?;
+                  self.pending.insert(
+                      frame.correlation,
+                      PendingRequest {
+                          handle,
+                          opcode: frame.opcode,
+                          deadline_at_ms,
+                      },
+                  );
+                  self.next_request_generation = next_request_generation;
+                  self.next_client_sequence = next_client_sequence;
+                  self.last_activity_ms = now_ms;
+                  Ok(DispatchRequest {
+                      handle,
+                      binding: self.binding,
+                      encoding: frame.encoding,
+                      opcode: frame.opcode,
+                      payload: frame.payload,
+                      client_sequence: frame.client_sequence,
+                      deadline_at_ms,
+                  })
+              }
+
+              pub fn complete(
+                  &mut self,
+                  handle: RequestHandle,
+                  encoding: Encoding,
+                  payload: Vec<u8>,
+                  now_ms: u64,
+              ) -> Result<OutboundFrame, RtapiError> {
+                  self.require_live(now_ms)?;
+                  let pending = self.pending.get(&handle.correlation).ok_or_else(|| RtapiError::new(
+                      StableRtapiCode::NotFound,
+                      "pending_request_not_found",
+                      false,
+                  ))?;
+                  if pending.handle != handle {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::Aborted,
+                          "stale_request_handle",
+                          false,
+                      ));
+                  }
+                  if now_ms >= pending.deadline_at_ms {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::DeadlineExceeded,
+                          "request_completion_after_deadline",
+                          false,
+                      ));
+                  }
+                  if payload.len() > self.limits.maximum_frame_bytes {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::ResourceExhausted,
+                          "response_frame_too_large",
+                          false,
+                      ));
+                  }
+                  if self.outbound.len() >= self.limits.maximum_outbound_frames
+                      || self.outbound_bytes.checked_add(payload.len()).is_none_or(|total| total > self.limits.maximum_outbound_bytes)
+                  {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::ResourceExhausted,
+                          "outbound_backpressure",
+                          true,
+                      ));
+                  }
+                  let next_server_sequence = self.next_server_sequence.checked_add(1).ok_or_else(|| RtapiError::new(
+                      StableRtapiCode::Internal,
+                      "server_sequence_overflow",
+                      false,
+                  ))?;
+                  let frame = OutboundFrame {
+                      encoding,
+                      opcode: pending.opcode,
+                      correlation: handle.correlation,
+                      payload,
+                      server_sequence: self.next_server_sequence,
+                  };
+                  self.outbound_bytes += frame.payload.len();
+                  self.outbound.push_back(frame.clone());
+                  self.pending.remove(&handle.correlation);
+                  self.next_server_sequence = next_server_sequence;
+                  self.last_activity_ms = now_ms;
+                  Ok(frame)
+              }
+
+              pub fn cancel(
+                  &mut self,
+                  handle: RequestHandle,
+              ) -> Result<(), RtapiError> {
+                  let pending = self.pending.get(&handle.correlation).ok_or_else(|| RtapiError::new(
+                      StableRtapiCode::NotFound,
+                      "pending_request_not_found",
+                      false,
+                  ))?;
+                  if pending.handle != handle {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::Aborted,
+                          "stale_request_handle",
+                          false,
+                      ));
+                  }
+                  self.pending.remove(&handle.correlation);
+                  Ok(())
+              }
+
+              pub fn pop_outbound(&mut self) -> Option<OutboundFrame> {
+                  let frame = self.outbound.pop_front()?;
+                  self.outbound_bytes = self.outbound_bytes.saturating_sub(frame.payload.len());
+                  Some(frame)
+              }
+
+              pub fn observe_pong(&mut self, now_ms: u64) -> Result<(), RtapiError> {
+                  self.require_live(now_ms)?;
+                  if now_ms < self.last_pong_ms {
+                      return Err(RtapiError::invalid("pong_time_regression"));
+                  }
+                  self.last_pong_ms = now_ms;
+                  self.last_activity_ms = now_ms;
+                  Ok(())
+              }
+
+              pub fn begin_drain(&mut self) {
+                  self.draining = true;
+              }
+
+              pub fn revoke_through(&mut self, generation: u64) -> Result<bool, RtapiError> {
+                  if generation == 0 {
+                      return Err(RtapiError::invalid("revocation_generation_zero"));
+                  }
+                  self.revoked_through_generation = self.revoked_through_generation.max(generation);
+                  let revoked = self.binding.session_generation <= self.revoked_through_generation;
+                  if revoked {
+                      self.draining = true;
+                  }
+                  Ok(revoked)
+              }
+
+              pub fn expire_pending(&mut self, now_ms: u64) -> Result<Vec<RequestHandle>, RtapiError> {
+                  if now_ms == 0 {
+                      return Err(RtapiError::invalid("now_zero"));
+                  }
+                  let expired = self
+                      .pending
+                      .values()
+                      .filter(|request| request.deadline_at_ms <= now_ms)
+                      .map(|request| request.handle)
+                      .collect::<Vec<_>>();
+                  for handle in &expired {
+                      self.pending.remove(&handle.correlation);
+                  }
+                  Ok(expired)
+              }
+
+              fn require_live(&self, now_ms: u64) -> Result<(), RtapiError> {
+                  if now_ms == 0 || now_ms < self.last_activity_ms {
+                      return Err(RtapiError::invalid("connection_time_invalid"));
+                  }
+                  if self.binding.session_generation <= self.revoked_through_generation {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::Unauthenticated,
+                          "session_generation_revoked",
+                          false,
+                      ));
+                  }
+                  let idle_deadline = self.last_activity_ms.checked_add(self.limits.idle_timeout_ms).ok_or_else(|| RtapiError::new(
+                      StableRtapiCode::Internal,
+                      "idle_deadline_overflow",
+                      false,
+                  ))?;
+                  let heartbeat_deadline = self.last_pong_ms.checked_add(self.limits.heartbeat_timeout_ms).ok_or_else(|| RtapiError::new(
+                      StableRtapiCode::Internal,
+                      "heartbeat_deadline_overflow",
+                      false,
+                  ))?;
+                  if now_ms >= idle_deadline {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::DeadlineExceeded,
+                          "connection_idle_timeout",
+                          false,
+                      ));
+                  }
+                  if now_ms >= heartbeat_deadline {
+                      return Err(RtapiError::new(
+                          StableRtapiCode::DeadlineExceeded,
+                          "heartbeat_timeout",
+                          false,
+                      ));
+                  }
+                  Ok(())
+              }
+
+              #[must_use]
+              pub fn pending_count(&self) -> usize {
+                  self.pending.len()
+              }
+
+              #[must_use]
+              pub fn outbound_count(&self) -> usize {
+                  self.outbound.len()
+              }
+
+              #[must_use]
+              pub const fn next_client_sequence(&self) -> u64 {
+                  self.next_client_sequence
+              }
+
+              #[must_use]
+              pub const fn next_server_sequence(&self) -> u64 {
+                  self.next_server_sequence
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn binding() -> SessionBinding {
+                  SessionBinding {
+                      project: ProjectId::new([1; 16]).unwrap(),
+                      user: UserId::new([2; 16]).unwrap(),
+                      session: SessionId::new([3; 16]).unwrap(),
+                      session_generation: 4,
+                      connection: ConnectionId::new([5; 16]).unwrap(),
+                      connection_generation: 6,
+                      namespace: NamespaceId::new([7; 16]).unwrap(),
+                  }
+              }
+
+              fn limits() -> ConnectionLimits {
+                  ConnectionLimits {
+                      maximum_frame_bytes: 16,
+                      maximum_pending_requests: 2,
+                      maximum_outbound_frames: 1,
+                      maximum_outbound_bytes: 16,
+                      request_deadline_ms: 20,
+                      heartbeat_timeout_ms: 100,
+                      idle_timeout_ms: 100,
+                  }
+              }
+
+              fn frame(cid: u64, sequence: u64, payload: &[u8]) -> ClientFrame {
+                  ClientFrame {
+                      encoding: Encoding::Json,
+                      opcode: Opcode::new(1).unwrap(),
+                      correlation: CorrelationId::new(cid).unwrap(),
+                      payload: payload.to_vec(),
+                      client_sequence: sequence,
+                  }
+              }
+
+              #[derive(Debug)]
+              struct Verifier(ReconnectClaims);
+
+              impl ReconnectVerifier for Verifier {
+                  fn verify(&self, _encoded: &str) -> Result<ReconnectClaims, RtapiError> {
+                      Ok(self.0.clone())
+                  }
+              }
+
+              #[test]
+              fn stale_callback_cannot_mutate_reused_correlation() {
+                  let mut state = ConnectionState::new(binding(), limits(), 10).unwrap();
+                  let first = state.admit(frame(1, 1, b"a"), 11).unwrap();
+                  state.cancel(first.handle).unwrap();
+                  let second = state.admit(frame(1, 2, b"b"), 12).unwrap();
+                  assert_eq!(
+                      state.complete(first.handle, Encoding::Json, b"old".to_vec(), 13).unwrap_err().reason(),
+                      "stale_request_handle"
+                  );
+                  assert_eq!(state.pending_count(), 1);
+                  state.complete(second.handle, Encoding::Json, b"new".to_vec(), 14).unwrap();
+              }
+
+              #[test]
+              fn outbound_backpressure_preserves_pending_request() {
+                  let mut state = ConnectionState::new(binding(), limits(), 10).unwrap();
+                  let first = state.admit(frame(1, 1, b"a"), 11).unwrap();
+                  state.complete(first.handle, Encoding::Json, b"full".to_vec(), 12).unwrap();
+                  let second = state.admit(frame(2, 2, b"b"), 13).unwrap();
+                  assert_eq!(
+                      state.complete(second.handle, Encoding::Json, b"blocked".to_vec(), 14).unwrap_err().reason(),
+                      "outbound_backpressure"
+                  );
+                  assert_eq!(state.pending_count(), 1);
+                  state.pop_outbound().unwrap();
+                  state.complete(second.handle, Encoding::Json, b"ok".to_vec(), 15).unwrap();
+              }
+
+              #[test]
+              fn sequence_and_capacity_rejections_do_not_advance_state() {
+                  let mut state = ConnectionState::new(binding(), limits(), 10).unwrap();
+                  assert_eq!(state.admit(frame(1, 2, b"a"), 11).unwrap_err().reason(), "client_sequence_mismatch");
+                  assert_eq!(state.next_client_sequence(), 1);
+                  state.admit(frame(1, 1, b"a"), 12).unwrap();
+                  state.admit(frame(2, 2, b"b"), 13).unwrap();
+                  assert_eq!(state.admit(frame(3, 3, b"c"), 14).unwrap_err().reason(), "pending_request_capacity_exhausted");
+                  assert_eq!(state.next_client_sequence(), 3);
+              }
+
+              #[test]
+              fn session_generation_revocation_is_monotonic_and_drains() {
+                  let mut state = ConnectionState::new(binding(), limits(), 10).unwrap();
+                  assert!(!state.revoke_through(3).unwrap());
+                  assert!(state.revoke_through(4).unwrap());
+                  assert!(state.draining);
+                  assert_eq!(state.admit(frame(1, 1, b"a"), 11).unwrap_err().reason(), "session_generation_revoked");
+              }
+
+              #[test]
+              fn reconnect_cursor_binds_every_identity_and_sequence() {
+                  let claims = ReconnectClaims {
+                      binding: binding(),
+                      next_client_sequence: 8,
+                      next_server_sequence: 9,
+                      expires_at_ms: 100,
+                  };
+                  let state = ConnectionState::restore(binding(), limits(), "signed", &Verifier(claims.clone()), 10).unwrap();
+                  assert_eq!(state.next_client_sequence(), 8);
+                  assert_eq!(state.next_server_sequence(), 9);
+                  let mut wrong = claims;
+                  wrong.binding.connection_generation += 1;
+                  assert_eq!(
+                      ConnectionState::restore(binding(), limits(), "signed", &Verifier(wrong), 10).unwrap_err().reason(),
+                      "reconnect_cursor_binding_invalid"
+                  );
+              }
+
+              #[test]
+              fn expired_completion_does_not_remove_pending_until_reaped() {
+                  let mut state = ConnectionState::new(binding(), limits(), 10).unwrap();
+                  let request = state.admit(frame(1, 1, b"a"), 11).unwrap();
+                  assert_eq!(
+                      state.complete(request.handle, Encoding::Json, b"late".to_vec(), 31).unwrap_err().reason(),
+                      "request_completion_after_deadline"
+                  );
+                  assert_eq!(state.pending_count(), 1);
+                  assert_eq!(state.expire_pending(31).unwrap(), vec![request.handle]);
+                  assert_eq!(state.pending_count(), 0);
+              }
+          }
+          EOF
+
+          # Rust 1.85 does not yet provide Option::is_none_or on every configured toolchain.
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('crates/trnm-rtapi-service/src/lib.rs')
+          t=p.read_text()
+          t=t.replace(
+              'self.outbound_bytes.checked_add(payload.len()).is_none_or(|total| total > self.limits.maximum_outbound_bytes)',
+              'self.outbound_bytes.checked_add(payload.len()).map_or(true, |total| total > self.limits.maximum_outbound_bytes)'
+          )
+          p.write_text(t)
+          PY
+
+          cat > crates/trnm-rtapi-service/README.md <<'EOF'
+          # trnm-rtapi-service
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-rtapi-service`  
+          Workspace class: `root`  
+          Lifecycle: `product-service`  
+          Owner role: `realtime-distributed-systems`
+
+          ## Status and authority
+
+          This document is the current module contract for bounded RTAPI connection admission, dispatch completion, outbound backpressure and reconnect restoration. It is a source candidate and does not establish full Nakama RTAPI or distributed socket behavior.
+
+          ## Responsibilities
+
+          The service owns exact session/connection/namespace generations, client/server sequence numbers, correlation request generations, bounded pending and outbound state, per-request deadlines, heartbeat/idle checks, drain admission, session-generation revoke and trusted reconnect-claim binding.
+
+          It does not terminate WebSockets, encode official messages, authenticate tokens, persist cursors, route cross-node presence, execute service handlers or close physical sockets.
+
+          ## Architecture and dependencies
+
+          A maintained WebSocket transport parses bounded frames through the realtime-wire adapter and calls this service. Dispatch requests enter typed application handlers. Exact completion enqueues one bounded response. Presence/router adapters own subscriptions and cross-node fanout.
+
+          Reconnect verification is a trust-bearing adapter interface. The core never treats opaque cursor text as authenticated merely because it parses.
+
+          ## Public contracts
+
+          Every request carries nonzero opcode, correlation, exact client sequence and one encoding. Handles bind namespace, connection generation, request generation and correlation. Delayed callbacks cannot complete a later request that reused the same correlation.
+
+          Outbound responses have monotonically increasing server sequences. Drain rejects new dispatch but preserves already admitted work. Revocation is monotonic through a session generation.
+
+          ## Correctness and failure model
+
+          Capacity, frame, sequence, stale-handle, deadline, heartbeat, idle, revocation and cursor failures are deterministic. Backpressure is checked before removing the pending request so a failed enqueue cannot lose a response obligation.
+
+          Expired requests remain explicit until a bounded reap operation removes them. Reconnect claims must bind every identity and next sequence and must be unexpired.
+
+          ## Security and privacy
+
+          Session bindings are authenticated inputs from identity middleware. Cursor verification must authenticate the complete typed claims and key epoch. Payloads, tokens, cursor bytes and identities are excluded from logs and metric labels.
+
+          Session generation is an authorization fence. A stale generation never re-enters after revoke or reconnect.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-rtapi-service --all-targets --locked
+          cargo clippy --package trnm-rtapi-service --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover stale callbacks after correlation reuse, atomic backpressure, sequence/capacity no-mutation, monotonic revoke, cursor identity/sequence binding and explicit deadline reaping.
+
+          ## Operations
+
+          Adapters expose active connections, pending requests, outbound bytes/frames, sequence rejects, stale callbacks, backpressure, timeout, reconnect and revoke counts with bounded labels. Physical close, drain deadlines and cross-node route health are separately supervised.
+
+          ## Compatibility and evidence
+
+          Complete #143 requires every official RTAPI opcode/message/default/error, JSON/protobuf wire bytes, persistent WebSocket lifecycle, heartbeat/close semantics, distributed presence/streams/chat, reconnect cursor bytes, slow-consumer behavior and official SDK/immutable-oracle differential.
+
+          This core cannot prove network delivery, cluster routing, socket revocation or production capacity/endurance.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P0-SERVER-001`, `GAP-P0-SCOPE-001`, `GAP-P0-CI-001`, `GAP-P1-IDENTITY-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires maintained transport integration, full generated RTAPI registry, durable reconnect/revoke state, cross-node routing/fanout, partition/drain/slow-consumer tests, official consumer differential, retained evidence and independent realtime/protocol/security/SRE acceptance.
+          EOF
+
+      - name: Register RTAPI module fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          member='crates/trnm-rtapi-service'
+          p=Path('Cargo.toml'); t=p.read_text();
+          if f'"{member}"' not in t: p.write_text(t.replace(']\nexclude = [',f'  "{member}",\n]\nexclude = [',1))
+          mp=Path('docs/status/MODULE_DOCUMENTATION.json'); m=json.loads(mp.read_text())
+          if not any(r['id']=='trnm-rtapi-service' for r in m['modules']):
+              m['modules'].append({'id':'trnm-rtapi-service','path':member,'manifest':f'{member}/Cargo.toml','documentation':f'{member}/README.md','workspace':'root','lifecycle':'product-service','maturity':'source-candidate','owner_role':'realtime-distributed-systems','authority':'bounded RTAPI connection dispatch backpressure revoke and reconnect service','blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-IDENTITY-001','GAP-P1-REVIEW-001'],'claim_credit':False})
+          m['modules'].sort(key=lambda r:r['id']); m['summary'].update({'module_count':len(m['modules']),'documented_count':len(m['modules']),'root_workspace_count':sum(r['workspace']=='root' for r in m['modules']),'isolated_workspace_count':sum(r['workspace']=='isolated' for r in m['modules']),'undocumented_count':0}); mp.write_text(json.dumps(m,indent=2)+'\n')
+          ap=Path('docs/development/RUST_PACKAGE_AUTHORITY.json'); a=json.loads(ap.read_text());
+          if member not in a['workspace']['members']: a['workspace']['members'].append(member); a['workspace']['members'].sort()
+          for k in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'): a.setdefault('claim_boundary',{})[k]=False
+          ap.write_text(json.dumps(a,indent=2)+'\n')
+          ip=Path('docs/status/IMPLEMENTATION_INVENTORY.json'); inv=json.loads(ip.read_text())
+          if not any(r.get('id')=='COMP-RTAPI-SERVICE' for r in inv['components']):
+              inv['components'].append({'id':'COMP-RTAPI-SERVICE','path':member,'kind':'rust-application-service','workstreams':['W6'],'status':'source-candidate','implemented':['session connection namespace generation binding','bounded request handles and outbound backpressure','reconnect claims deadline drain and revoke state'],'missing':['full RTAPI generated messages and maintained WebSocket transport','durable reconnect and session revoke fanout','distributed streams presence and chat routing','official SDK/oracle differential capacity endurance and independent acceptance'],'blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-IDENTITY-001','GAP-P1-REVIEW-001'],'parity_ids':['TG-PAR-030','TG-PAR-031','TG-PAR-034'],'evidence_ids':[],'claim_credit':False})
+          ip.write_text(json.dumps(inv,indent=2)+'\n')
+          sp=Path('docs/status/CURRENT_STATE.json'); st=json.loads(sp.read_text()); st.setdefault('implementation',{})['rtapi_connection_service_source_candidate']=True
+          for k in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'): st.setdefault('claims',{})[k]=False
+          sp.write_text(json.dumps(st,indent=2)+'\n')
+          PY
+
+      - name: Publish Draft and run exact qualification
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git commit -m 'feat(realtime): add bounded RTAPI connection service'
+          head_sha="$(git rev-parse HEAD)"; head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Source candidate for #143, stacked on API Wave 5.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds session/connection/namespace generation binding, correlation request handles, sequence fencing, atomic backpressure, request deadlines, heartbeat/idle checks, reconnect claim binding, drain and monotonic session revoke.
+
+          Complete RTAPI messages, maintained WebSocket integration, distributed streams/presence/chat, durable reconnect/revoke, SDK/oracle differential and capacity/endurance remain open. No compatibility or production credit.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 6] Add bounded RTAPI connection service' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do cargo test --manifest-path "$manifest" --all-targets --locked; cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings; done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "RTAPI Wave 6 carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and claim ceilings remain binding."
+          gh issue comment 143 --repo "$REPOSITORY" --body "RTAPI source carrier status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`; #143 remains open pending complete generated/runtime evidence."
