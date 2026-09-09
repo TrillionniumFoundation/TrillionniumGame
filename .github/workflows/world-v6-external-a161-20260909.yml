@@ -1,4 +1,4 @@
-name: world-v6-external-a161-20260909
+name: world-v6-external-a315-20260909
 
 on:
   pull_request:
@@ -8,15 +8,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-v6-external-a161-20260909-${{ github.event.pull_request.number || github.ref }}
+  group: world-v6-external-a315-20260909-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_BASE_SHA: 0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
-  WORLD_HEAD_SHA: a16134ce248f5770536239e38b17dcbe0f6af976
+  WORLD_HEAD_SHA: a31556d3979b21b99592030ba57ee89e09fd66f9
   WORLD_MERGE_REF: refs/pull/104/merge
-  WORLD_MERGE_SHA: a50bfd49d6903d6b68d92c9e578115b9fcea0a92
+  WORLD_MERGE_SHA: e5729f12e1e86bda21becf06e0e29877f182b407
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_INCREMENTAL: '0'
@@ -145,6 +145,49 @@ jobs:
               find "$root" -type f -print0 | sort -z | xargs -0 -r sha256sum
             fi
           done
+
+  rustfmt-patch:
+    name: world-v6/rustfmt-patch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Fetch exact World head
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world-format"
+          rm -rf "$root"
+          git init "$root"
+          git -C "$root" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$root" fetch --no-tags --depth=1 origin "$WORLD_HEAD_SHA"
+          git -C "$root" checkout --detach FETCH_HEAD
+          test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+
+      - name: Install exact rustfmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal --component rustfmt
+          rustup override set "$WORLD_RUST_TOOLCHAIN"
+          rustfmt --version
+
+      - name: Generate canonical formatting patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world-format"
+          cargo fmt --manifest-path "$root/trillionnium/Cargo.toml" --all
+          cargo fmt --manifest-path "$root/trillionnium/crates/world-authority/Cargo.toml" --all
+          cargo fmt --manifest-path "$root/trillionnium/contracts/trnm-world-transition-v1/Cargo.toml"
+          cargo fmt --manifest-path "$root/contracts/Cargo.toml" --all
+          git -C "$root" diff --check
+          git -C "$root" diff --name-only
+          git -C "$root" diff --binary > "$RUNNER_TEMP/world-rustfmt.patch"
+          test -s "$RUNNER_TEMP/world-rustfmt.patch"
+          printf 'WORLD_RUSTFMT_PATCH_SHA256=%s\n' "$(sha256sum "$RUNNER_TEMP/world-rustfmt.patch" | cut -d' ' -f1)"
+          printf 'WORLD_RUSTFMT_PATCH_BASE64_BEGIN\n'
+          gzip -9c "$RUNNER_TEMP/world-rustfmt.patch" | base64 -w 120
+          printf '\nWORLD_RUSTFMT_PATCH_BASE64_END\n'
 
   required:
     name: world-v6/external-required
