@@ -1,0 +1,1580 @@
+name: tmp-identity-core-source
+
+on:
+  push:
+    branches:
+      - ops/identity-core-source-20260909
+    paths:
+      - .github/workflows/tmp-identity-core-source.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: identity-core-source
+  cancel-in-progress: false
+
+jobs:
+  build-source-slice:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      FEATURE_BRANCH: feature/plan-v32-identity-core-20260909
+    steps:
+      - name: Resolve accepted or pending Plan v3.2 base
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$(gh pr view 150 --repo "$REPOSITORY" --json state,mergedAt,headRefName,headRefOid,baseRefName)"
+          pr_state="$(jq -r '.state' <<<"$state")"
+          if test "$pr_state" = MERGED; then
+            base_branch=main
+            base_sha="$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          elif test "$pr_state" = OPEN; then
+            base_branch="$(jq -r '.headRefName' <<<"$state")"
+            base_sha="$(jq -r '.headRefOid' <<<"$state")"
+          else
+            echo "PR #150 is neither open nor merged" >&2
+            exit 1
+          fi
+          test "$base_sha" != null
+          test "$base_sha" != ''
+          echo "BASE_BRANCH=$base_branch" >> "$GITHUB_ENV"
+          echo "BASE_SHA=$base_sha" >> "$GITHUB_ENV"
+      - name: Fetch exact base
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$BASE_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$BASE_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$BASE_SHA"
+      - name: Add bounded identity domain crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-identity-core/src
+          cat > crates/trnm-identity-core/Cargo.toml <<'TOML'
+          [package]
+          name = "trnm-identity-core"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          description = "Bounded account and provider identity state machine for TrillionniumGame"
+          publish.workspace = true
+
+          [lints]
+          workspace = true
+          TOML
+          cat > crates/trnm-identity-core/src/lib.rs <<'RS'
+          //! Bounded account and provider-identity state transitions.
+          //!
+          //! This crate is transport- and persistence-independent. Durable adapters must
+          //! enforce one writer and atomically persist account state and command receipts.
+
+          use std::collections::{BTreeMap, BTreeSet};
+
+          pub const MAX_USERNAME_BYTES: usize = 128;
+          pub const MAX_DISPLAY_NAME_BYTES: usize = 256;
+          pub const MAX_PROVIDER_IDENTITY_BYTES: usize = 512;
+          pub const HARD_MAX_ACCOUNTS: usize = 1_000_000;
+          pub const HARD_MAX_IDENTITIES_PER_ACCOUNT: usize = 16;
+          pub const HARD_MAX_RECEIPTS: usize = 4_000_000;
+
+          #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+          pub struct AccountId([u8; 16]);
+
+          impl AccountId {
+              pub fn new(bytes: [u8; 16]) -> Result<Self, IdentityError> {
+                  if bytes == [0; 16] {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::InvalidArgument,
+                          "zero_account_id",
+                      ));
+                  }
+                  Ok(Self(bytes))
+              }
+
+              #[must_use]
+              pub const fn as_bytes(&self) -> &[u8; 16] {
+                  &self.0
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+          pub struct CommandId([u8; 16]);
+
+          impl CommandId {
+              pub fn new(bytes: [u8; 16]) -> Result<Self, IdentityError> {
+                  if bytes == [0; 16] {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::InvalidArgument,
+                          "zero_command_id",
+                      ));
+                  }
+                  Ok(Self(bytes))
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+          pub struct Fingerprint([u8; 32]);
+
+          impl Fingerprint {
+              pub fn new(bytes: [u8; 32]) -> Result<Self, IdentityError> {
+                  if bytes == [0; 32] {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::InvalidArgument,
+                          "zero_command_fingerprint",
+                      ));
+                  }
+                  Ok(Self(bytes))
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+          pub enum IdentityProvider {
+              Custom,
+              Device,
+              Email,
+              Facebook,
+              FacebookInstantGame,
+              Apple,
+              Google,
+              GameCenter,
+              Steam,
+          }
+
+          #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+          pub struct ProviderIdentity {
+              provider: IdentityProvider,
+              external_id: String,
+          }
+
+          impl ProviderIdentity {
+              pub fn new(
+                  provider: IdentityProvider,
+                  external_id: impl Into<String>,
+              ) -> Result<Self, IdentityError> {
+                  let external_id = external_id.into();
+                  if external_id.is_empty()
+                      || external_id.len() > MAX_PROVIDER_IDENTITY_BYTES
+                      || external_id.trim() != external_id
+                      || external_id.chars().any(char::is_control)
+                  {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::InvalidArgument,
+                          "provider_identity_invalid",
+                      ));
+                  }
+                  Ok(Self {
+                      provider,
+                      external_id,
+                  })
+              }
+
+              #[must_use]
+              pub const fn provider(&self) -> IdentityProvider {
+                  self.provider
+              }
+
+              #[must_use]
+              pub fn external_id(&self) -> &str {
+                  &self.external_id
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+          pub struct Username(String);
+
+          impl Username {
+              pub fn new(value: impl Into<String>) -> Result<Self, IdentityError> {
+                  let value = value.into();
+                  if value.is_empty()
+                      || value.len() > MAX_USERNAME_BYTES
+                      || value.trim() != value
+                      || value.chars().any(char::is_control)
+                  {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::InvalidArgument,
+                          "username_invalid",
+                      ));
+                  }
+                  Ok(Self(value))
+              }
+
+              #[must_use]
+              pub fn as_str(&self) -> &str {
+                  &self.0
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct DisplayName(String);
+
+          impl DisplayName {
+              pub fn new(value: impl Into<String>) -> Result<Self, IdentityError> {
+                  let value = value.into();
+                  if value.len() > MAX_DISPLAY_NAME_BYTES
+                      || value.chars().any(char::is_control)
+                  {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::InvalidArgument,
+                          "display_name_invalid",
+                      ));
+                  }
+                  Ok(Self(value))
+              }
+
+              #[must_use]
+              pub fn as_str(&self) -> &str {
+                  &self.0
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum AccountStatus {
+              Active,
+              Disabled,
+              Banned,
+              Deleted,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum IdentityErrorCode {
+              InvalidArgument,
+              Unauthenticated,
+              NotFound,
+              AlreadyExists,
+              FailedPrecondition,
+              PermissionDenied,
+              ResourceExhausted,
+              Conflict,
+              OutOfRange,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct IdentityError {
+              code: IdentityErrorCode,
+              reason: &'static str,
+          }
+
+          impl IdentityError {
+              const fn new(code: IdentityErrorCode, reason: &'static str) -> Self {
+                  Self { code, reason }
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> IdentityErrorCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct IdentityConfig {
+              max_accounts: usize,
+              max_identities_per_account: usize,
+              max_receipts: usize,
+          }
+
+          impl IdentityConfig {
+              pub fn new(
+                  max_accounts: usize,
+                  max_identities_per_account: usize,
+                  max_receipts: usize,
+              ) -> Result<Self, IdentityError> {
+                  if max_accounts == 0 || max_accounts > HARD_MAX_ACCOUNTS {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::InvalidArgument,
+                          "account_capacity_invalid",
+                      ));
+                  }
+                  if max_identities_per_account == 0
+                      || max_identities_per_account > HARD_MAX_IDENTITIES_PER_ACCOUNT
+                  {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::InvalidArgument,
+                          "provider_identity_capacity_invalid",
+                      ));
+                  }
+                  if max_receipts == 0 || max_receipts > HARD_MAX_RECEIPTS {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::InvalidArgument,
+                          "receipt_capacity_invalid",
+                      ));
+                  }
+                  Ok(Self {
+                      max_accounts,
+                      max_identities_per_account,
+                      max_receipts,
+                  })
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum ReceiptOutcome {
+              Created,
+              Authenticated,
+              Linked,
+              Unlinked,
+              Updated,
+              StatusChanged,
+              Deleted,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct CommandReceipt {
+              command: CommandId,
+              fingerprint: Fingerprint,
+              account: AccountId,
+              revision: u64,
+              outcome: ReceiptOutcome,
+          }
+
+          impl CommandReceipt {
+              #[must_use]
+              pub const fn command(&self) -> CommandId {
+                  self.command
+              }
+
+              #[must_use]
+              pub const fn account(&self) -> AccountId {
+                  self.account
+              }
+
+              #[must_use]
+              pub const fn revision(&self) -> u64 {
+                  self.revision
+              }
+
+              #[must_use]
+              pub const fn outcome(&self) -> ReceiptOutcome {
+                  self.outcome
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct AccountRecord {
+              id: AccountId,
+              username: Username,
+              display_name: DisplayName,
+              revision: u64,
+              status: AccountStatus,
+              providers: BTreeSet<ProviderIdentity>,
+          }
+
+          impl AccountRecord {
+              #[must_use]
+              pub const fn id(&self) -> AccountId {
+                  self.id
+              }
+
+              #[must_use]
+              pub fn username(&self) -> &Username {
+                  &self.username
+              }
+
+              #[must_use]
+              pub fn display_name(&self) -> &DisplayName {
+                  &self.display_name
+              }
+
+              #[must_use]
+              pub const fn revision(&self) -> u64 {
+                  self.revision
+              }
+
+              #[must_use]
+              pub const fn status(&self) -> AccountStatus {
+                  self.status
+              }
+
+              pub fn providers(&self) -> impl ExactSizeIterator<Item = &ProviderIdentity> {
+                  self.providers.iter()
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct IdentityRegistry {
+              config: IdentityConfig,
+              accounts: BTreeMap<AccountId, AccountRecord>,
+              provider_owner: BTreeMap<ProviderIdentity, AccountId>,
+              username_owner: BTreeMap<Username, AccountId>,
+              retired_providers: BTreeSet<ProviderIdentity>,
+              retired_usernames: BTreeSet<Username>,
+              receipts: BTreeMap<CommandId, CommandReceipt>,
+          }
+
+          impl IdentityRegistry {
+              #[must_use]
+              pub fn new(config: IdentityConfig) -> Self {
+                  Self {
+                      config,
+                      accounts: BTreeMap::new(),
+                      provider_owner: BTreeMap::new(),
+                      username_owner: BTreeMap::new(),
+                      retired_providers: BTreeSet::new(),
+                      retired_usernames: BTreeSet::new(),
+                      receipts: BTreeMap::new(),
+                  }
+              }
+
+              #[must_use]
+              pub fn account(&self, id: AccountId) -> Option<&AccountRecord> {
+                  self.accounts.get(&id)
+              }
+
+              #[must_use]
+              pub fn owner_of(&self, identity: &ProviderIdentity) -> Option<AccountId> {
+                  self.provider_owner.get(identity).copied()
+              }
+
+              pub fn create_account(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  account: AccountId,
+                  username: Username,
+                  display_name: DisplayName,
+                  provider: ProviderIdentity,
+              ) -> Result<CommandReceipt, IdentityError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  if self.accounts.len() >= self.config.max_accounts {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::ResourceExhausted,
+                          "account_capacity_exhausted",
+                      ));
+                  }
+                  if self.accounts.contains_key(&account) {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::AlreadyExists,
+                          "account_id_exists",
+                      ));
+                  }
+                  if self.provider_owner.contains_key(&provider)
+                      || self.retired_providers.contains(&provider)
+                  {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::AlreadyExists,
+                          "provider_identity_exists_or_retired",
+                      ));
+                  }
+                  if self.username_owner.contains_key(&username)
+                      || self.retired_usernames.contains(&username)
+                  {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::AlreadyExists,
+                          "username_exists_or_retired",
+                      ));
+                  }
+
+                  let mut providers = BTreeSet::new();
+                  providers.insert(provider.clone());
+                  let record = AccountRecord {
+                      id: account,
+                      username: username.clone(),
+                      display_name,
+                      revision: 1,
+                      status: AccountStatus::Active,
+                      providers,
+                  };
+                  let receipt = CommandReceipt {
+                      command,
+                      fingerprint,
+                      account,
+                      revision: 1,
+                      outcome: ReceiptOutcome::Created,
+                  };
+                  let mut candidate = self.clone();
+                  candidate.accounts.insert(account, record);
+                  candidate.provider_owner.insert(provider, account);
+                  candidate.username_owner.insert(username, account);
+                  candidate.receipts.insert(command, receipt);
+                  candidate.validate_invariants()?;
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              pub fn authenticate(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  provider: &ProviderIdentity,
+              ) -> Result<CommandReceipt, IdentityError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  let account = self.provider_owner.get(provider).copied().ok_or_else(|| {
+                      IdentityError::new(IdentityErrorCode::Unauthenticated, "identity_unknown")
+                  })?;
+                  let record = self.accounts.get(&account).ok_or_else(invariant_error)?;
+                  if record.status != AccountStatus::Active {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::PermissionDenied,
+                          "account_not_active",
+                      ));
+                  }
+                  let receipt = CommandReceipt {
+                      command,
+                      fingerprint,
+                      account,
+                      revision: record.revision,
+                      outcome: ReceiptOutcome::Authenticated,
+                  };
+                  let mut candidate = self.clone();
+                  candidate.receipts.insert(command, receipt);
+                  candidate.validate_invariants()?;
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              pub fn link_provider(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  account: AccountId,
+                  expected_revision: u64,
+                  provider: ProviderIdentity,
+              ) -> Result<CommandReceipt, IdentityError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  let current = self.active_account(account, expected_revision)?.clone();
+                  if current.providers.len() >= self.config.max_identities_per_account {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::ResourceExhausted,
+                          "provider_identity_capacity_exhausted",
+                      ));
+                  }
+                  if self.retired_providers.contains(&provider) {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::FailedPrecondition,
+                          "provider_identity_retired",
+                      ));
+                  }
+                  if self.provider_owner.contains_key(&provider) {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::AlreadyExists,
+                          "provider_identity_exists",
+                      ));
+                  }
+                  let next = next_revision(current.revision)?;
+                  let mut candidate = self.clone();
+                  candidate
+                      .accounts
+                      .get_mut(&account)
+                      .ok_or_else(invariant_error)?
+                      .providers
+                      .insert(provider.clone());
+                  candidate
+                      .accounts
+                      .get_mut(&account)
+                      .ok_or_else(invariant_error)?
+                      .revision = next;
+                  candidate.provider_owner.insert(provider, account);
+                  let receipt = CommandReceipt {
+                      command,
+                      fingerprint,
+                      account,
+                      revision: next,
+                      outcome: ReceiptOutcome::Linked,
+                  };
+                  candidate.receipts.insert(command, receipt);
+                  candidate.validate_invariants()?;
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              pub fn unlink_provider(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  account: AccountId,
+                  expected_revision: u64,
+                  provider: &ProviderIdentity,
+              ) -> Result<CommandReceipt, IdentityError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  let current = self.active_account(account, expected_revision)?.clone();
+                  if !current.providers.contains(provider) {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::NotFound,
+                          "provider_identity_not_linked",
+                      ));
+                  }
+                  if current.providers.len() == 1 {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::FailedPrecondition,
+                          "last_provider_identity_cannot_be_unlinked",
+                      ));
+                  }
+                  let next = next_revision(current.revision)?;
+                  let mut candidate = self.clone();
+                  let removed = candidate
+                      .accounts
+                      .get_mut(&account)
+                      .ok_or_else(invariant_error)?
+                      .providers
+                      .remove(provider);
+                  if !removed {
+                      return Err(invariant_error());
+                  }
+                  candidate
+                      .accounts
+                      .get_mut(&account)
+                      .ok_or_else(invariant_error)?
+                      .revision = next;
+                  candidate.provider_owner.remove(provider);
+                  let receipt = CommandReceipt {
+                      command,
+                      fingerprint,
+                      account,
+                      revision: next,
+                      outcome: ReceiptOutcome::Unlinked,
+                  };
+                  candidate.receipts.insert(command, receipt);
+                  candidate.validate_invariants()?;
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              pub fn update_profile(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  account: AccountId,
+                  expected_revision: u64,
+                  username: Option<Username>,
+                  display_name: Option<DisplayName>,
+              ) -> Result<CommandReceipt, IdentityError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  if username.is_none() && display_name.is_none() {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::InvalidArgument,
+                          "profile_update_empty",
+                      ));
+                  }
+                  let current = self.active_account(account, expected_revision)?.clone();
+                  if let Some(next_username) = username.as_ref() {
+                      if next_username != &current.username
+                          && (self.username_owner.contains_key(next_username)
+                              || self.retired_usernames.contains(next_username))
+                      {
+                          return Err(IdentityError::new(
+                              IdentityErrorCode::AlreadyExists,
+                              "username_exists_or_retired",
+                          ));
+                      }
+                  }
+                  let changes_username = username
+                      .as_ref()
+                      .is_some_and(|value| value != &current.username);
+                  let changes_display = display_name
+                      .as_ref()
+                      .is_some_and(|value| value != &current.display_name);
+                  if !changes_username && !changes_display {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::AlreadyExists,
+                          "profile_unchanged",
+                      ));
+                  }
+                  let next = next_revision(current.revision)?;
+                  let mut candidate = self.clone();
+                  if let Some(next_username) = username {
+                      if next_username != current.username {
+                          candidate.username_owner.remove(&current.username);
+                          candidate
+                              .username_owner
+                              .insert(next_username.clone(), account);
+                          candidate
+                              .accounts
+                              .get_mut(&account)
+                              .ok_or_else(invariant_error)?
+                              .username = next_username;
+                      }
+                  }
+                  if let Some(next_display) = display_name {
+                      candidate
+                          .accounts
+                          .get_mut(&account)
+                          .ok_or_else(invariant_error)?
+                          .display_name = next_display;
+                  }
+                  candidate
+                      .accounts
+                      .get_mut(&account)
+                      .ok_or_else(invariant_error)?
+                      .revision = next;
+                  let receipt = CommandReceipt {
+                      command,
+                      fingerprint,
+                      account,
+                      revision: next,
+                      outcome: ReceiptOutcome::Updated,
+                  };
+                  candidate.receipts.insert(command, receipt);
+                  candidate.validate_invariants()?;
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              pub fn set_status(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  account: AccountId,
+                  expected_revision: u64,
+                  target: AccountStatus,
+              ) -> Result<CommandReceipt, IdentityError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  if target == AccountStatus::Deleted {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::InvalidArgument,
+                          "delete_requires_delete_account",
+                      ));
+                  }
+                  let current = self.account_with_revision(account, expected_revision)?.clone();
+                  if current.status == AccountStatus::Deleted {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::FailedPrecondition,
+                          "account_deleted",
+                      ));
+                  }
+                  if current.status == target {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::AlreadyExists,
+                          "account_status_unchanged",
+                      ));
+                  }
+                  let next = next_revision(current.revision)?;
+                  let mut candidate = self.clone();
+                  let record = candidate
+                      .accounts
+                      .get_mut(&account)
+                      .ok_or_else(invariant_error)?;
+                  record.status = target;
+                  record.revision = next;
+                  let receipt = CommandReceipt {
+                      command,
+                      fingerprint,
+                      account,
+                      revision: next,
+                      outcome: ReceiptOutcome::StatusChanged,
+                  };
+                  candidate.receipts.insert(command, receipt);
+                  candidate.validate_invariants()?;
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              pub fn delete_account(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  account: AccountId,
+                  expected_revision: u64,
+              ) -> Result<CommandReceipt, IdentityError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  let current = self.account_with_revision(account, expected_revision)?.clone();
+                  if current.status == AccountStatus::Deleted {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::FailedPrecondition,
+                          "account_deleted",
+                      ));
+                  }
+                  let next = next_revision(current.revision)?;
+                  let mut candidate = self.clone();
+                  candidate.username_owner.remove(&current.username);
+                  candidate.retired_usernames.insert(current.username.clone());
+                  for provider in &current.providers {
+                      candidate.provider_owner.remove(provider);
+                      candidate.retired_providers.insert(provider.clone());
+                  }
+                  let record = candidate
+                      .accounts
+                      .get_mut(&account)
+                      .ok_or_else(invariant_error)?;
+                  record.status = AccountStatus::Deleted;
+                  record.revision = next;
+                  let receipt = CommandReceipt {
+                      command,
+                      fingerprint,
+                      account,
+                      revision: next,
+                      outcome: ReceiptOutcome::Deleted,
+                  };
+                  candidate.receipts.insert(command, receipt);
+                  candidate.validate_invariants()?;
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              pub fn validate_invariants(&self) -> Result<(), IdentityError> {
+                  if self.accounts.len() > self.config.max_accounts
+                      || self.receipts.len() > self.config.max_receipts
+                  {
+                      return Err(invariant_error());
+                  }
+                  let mut active_usernames = 0_usize;
+                  let mut active_providers = 0_usize;
+                  for (id, record) in &self.accounts {
+                      if id != &record.id
+                          || record.providers.is_empty()
+                          || record.providers.len() > self.config.max_identities_per_account
+                      {
+                          return Err(invariant_error());
+                      }
+                      if record.status == AccountStatus::Deleted {
+                          if self.username_owner.contains_key(&record.username)
+                              || !self.retired_usernames.contains(&record.username)
+                          {
+                              return Err(invariant_error());
+                          }
+                          for provider in &record.providers {
+                              if self.provider_owner.contains_key(provider)
+                                  || !self.retired_providers.contains(provider)
+                              {
+                                  return Err(invariant_error());
+                              }
+                          }
+                      } else {
+                          active_usernames = active_usernames
+                              .checked_add(1)
+                              .ok_or_else(invariant_error)?;
+                          if self.username_owner.get(&record.username) != Some(id)
+                              || self.retired_usernames.contains(&record.username)
+                          {
+                              return Err(invariant_error());
+                          }
+                          for provider in &record.providers {
+                              active_providers = active_providers
+                                  .checked_add(1)
+                                  .ok_or_else(invariant_error)?;
+                              if self.provider_owner.get(provider) != Some(id)
+                                  || self.retired_providers.contains(provider)
+                              {
+                                  return Err(invariant_error());
+                              }
+                          }
+                      }
+                  }
+                  if active_usernames != self.username_owner.len()
+                      || active_providers != self.provider_owner.len()
+                  {
+                      return Err(invariant_error());
+                  }
+                  for (command, receipt) in &self.receipts {
+                      if command != &receipt.command || !self.accounts.contains_key(&receipt.account) {
+                          return Err(invariant_error());
+                      }
+                  }
+                  Ok(())
+              }
+
+              fn existing_receipt(
+                  &self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+              ) -> Result<Option<CommandReceipt>, IdentityError> {
+                  let Some(receipt) = self.receipts.get(&command) else {
+                      return Ok(None);
+                  };
+                  if receipt.fingerprint != fingerprint {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::Conflict,
+                          "command_fingerprint_conflict",
+                      ));
+                  }
+                  Ok(Some(*receipt))
+              }
+
+              fn ensure_receipt_capacity(&self) -> Result<(), IdentityError> {
+                  if self.receipts.len() >= self.config.max_receipts {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::ResourceExhausted,
+                          "receipt_capacity_exhausted",
+                      ));
+                  }
+                  Ok(())
+              }
+
+              fn account_with_revision(
+                  &self,
+                  account: AccountId,
+                  expected_revision: u64,
+              ) -> Result<&AccountRecord, IdentityError> {
+                  let record = self.accounts.get(&account).ok_or_else(|| {
+                      IdentityError::new(IdentityErrorCode::NotFound, "account_not_found")
+                  })?;
+                  if record.revision != expected_revision {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::Conflict,
+                          "account_revision_conflict",
+                      ));
+                  }
+                  Ok(record)
+              }
+
+              fn active_account(
+                  &self,
+                  account: AccountId,
+                  expected_revision: u64,
+              ) -> Result<&AccountRecord, IdentityError> {
+                  let record = self.account_with_revision(account, expected_revision)?;
+                  if record.status != AccountStatus::Active {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::PermissionDenied,
+                          "account_not_active",
+                      ));
+                  }
+                  Ok(record)
+              }
+          }
+
+          fn next_revision(current: u64) -> Result<u64, IdentityError> {
+              current.checked_add(1).ok_or_else(|| {
+                  IdentityError::new(IdentityErrorCode::OutOfRange, "account_revision_overflow")
+              })
+          }
+
+          const fn invariant_error() -> IdentityError {
+              IdentityError::new(
+                  IdentityErrorCode::FailedPrecondition,
+                  "identity_invariant_violation",
+              )
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn bytes16(value: u8) -> [u8; 16] {
+                  let mut bytes = [0; 16];
+                  bytes[15] = value;
+                  bytes
+              }
+
+              fn bytes32(value: u8) -> [u8; 32] {
+                  let mut bytes = [0; 32];
+                  bytes[31] = value;
+                  bytes
+              }
+
+              fn account(value: u8) -> AccountId {
+                  AccountId::new(bytes16(value)).unwrap()
+              }
+
+              fn command(value: u8) -> CommandId {
+                  CommandId::new(bytes16(value)).unwrap()
+              }
+
+              fn fingerprint(value: u8) -> Fingerprint {
+                  Fingerprint::new(bytes32(value)).unwrap()
+              }
+
+              fn identity(provider: IdentityProvider, value: &str) -> ProviderIdentity {
+                  ProviderIdentity::new(provider, value).unwrap()
+              }
+
+              fn registry(accounts: usize, identities: usize, receipts: usize) -> IdentityRegistry {
+                  IdentityRegistry::new(IdentityConfig::new(accounts, identities, receipts).unwrap())
+              }
+
+              fn create(registry: &mut IdentityRegistry, seed: u8, provider: ProviderIdentity) {
+                  registry
+                      .create_account(
+                          command(seed),
+                          fingerprint(seed),
+                          account(seed),
+                          Username::new(format!("user-{seed}")).unwrap(),
+                          DisplayName::new(format!("User {seed}")).unwrap(),
+                          provider,
+                      )
+                      .unwrap();
+              }
+
+              #[test]
+              fn identifiers_and_configuration_are_bounded() {
+                  assert_eq!(
+                      AccountId::new([0; 16]).unwrap_err().reason(),
+                      "zero_account_id"
+                  );
+                  assert!(IdentityConfig::new(0, 1, 1).is_err());
+                  assert!(IdentityConfig::new(1, 0, 1).is_err());
+                  assert!(IdentityConfig::new(1, 1, 0).is_err());
+                  assert!(Username::new(" bad ").is_err());
+                  assert!(ProviderIdentity::new(IdentityProvider::Device, "").is_err());
+              }
+
+              #[test]
+              fn create_authenticate_and_exact_command_replay_are_deterministic() {
+                  let provider = identity(IdentityProvider::Device, "device-1");
+                  let mut registry = registry(4, 4, 16);
+                  let receipt = registry
+                      .create_account(
+                          command(1),
+                          fingerprint(1),
+                          account(1),
+                          Username::new("alpha").unwrap(),
+                          DisplayName::new("Alpha").unwrap(),
+                          provider.clone(),
+                      )
+                      .unwrap();
+                  let snapshot = registry.clone();
+                  let duplicate = registry
+                      .create_account(
+                          command(1),
+                          fingerprint(1),
+                          account(2),
+                          Username::new("ignored").unwrap(),
+                          DisplayName::new("ignored").unwrap(),
+                          identity(IdentityProvider::Email, "ignored@example.invalid"),
+                      )
+                      .unwrap();
+                  assert_eq!(receipt, duplicate);
+                  assert_eq!(snapshot, registry);
+                  let auth = registry
+                      .authenticate(command(2), fingerprint(2), &provider)
+                      .unwrap();
+                  assert_eq!(auth.account(), account(1));
+                  assert_eq!(auth.outcome(), ReceiptOutcome::Authenticated);
+                  registry.validate_invariants().unwrap();
+              }
+
+              #[test]
+              fn changed_fingerprint_replay_fails_without_mutation() {
+                  let provider = identity(IdentityProvider::Custom, "custom-1");
+                  let mut registry = registry(4, 4, 16);
+                  create(&mut registry, 1, provider);
+                  let snapshot = registry.clone();
+                  let error = registry
+                      .authenticate(
+                          command(1),
+                          fingerprint(9),
+                          &identity(IdentityProvider::Custom, "custom-1"),
+                      )
+                      .unwrap_err();
+                  assert_eq!(error.code(), IdentityErrorCode::Conflict);
+                  assert_eq!(snapshot, registry);
+              }
+
+              #[test]
+              fn provider_and_username_collisions_are_atomic() {
+                  let provider = identity(IdentityProvider::Google, "google-1");
+                  let mut registry = registry(4, 4, 16);
+                  create(&mut registry, 1, provider.clone());
+                  let snapshot = registry.clone();
+                  let error = registry
+                      .create_account(
+                          command(2),
+                          fingerprint(2),
+                          account(2),
+                          Username::new("user-2").unwrap(),
+                          DisplayName::new("User 2").unwrap(),
+                          provider,
+                      )
+                      .unwrap_err();
+                  assert_eq!(error.code(), IdentityErrorCode::AlreadyExists);
+                  assert_eq!(snapshot, registry);
+                  let error = registry
+                      .create_account(
+                          command(3),
+                          fingerprint(3),
+                          account(3),
+                          Username::new("user-1").unwrap(),
+                          DisplayName::new("User 3").unwrap(),
+                          identity(IdentityProvider::Steam, "steam-3"),
+                      )
+                      .unwrap_err();
+                  assert_eq!(error.code(), IdentityErrorCode::AlreadyExists);
+                  assert_eq!(snapshot, registry);
+              }
+
+              #[test]
+              fn stale_revision_never_mutates_provider_links() {
+                  let mut registry = registry(4, 4, 16);
+                  create(
+                      &mut registry,
+                      1,
+                      identity(IdentityProvider::Device, "device-1"),
+                  );
+                  let snapshot = registry.clone();
+                  let error = registry
+                      .link_provider(
+                          command(2),
+                          fingerprint(2),
+                          account(1),
+                          0,
+                          identity(IdentityProvider::Email, "a@example.invalid"),
+                      )
+                      .unwrap_err();
+                  assert_eq!(error.reason(), "account_revision_conflict");
+                  assert_eq!(snapshot, registry);
+              }
+
+              #[test]
+              fn last_provider_cannot_be_unlinked_and_second_provider_can() {
+                  let first = identity(IdentityProvider::Device, "device-1");
+                  let second = identity(IdentityProvider::Apple, "apple-1");
+                  let mut registry = registry(4, 4, 16);
+                  create(&mut registry, 1, first.clone());
+                  let snapshot = registry.clone();
+                  assert_eq!(
+                      registry
+                          .unlink_provider(command(2), fingerprint(2), account(1), 1, &first)
+                          .unwrap_err()
+                          .reason(),
+                      "last_provider_identity_cannot_be_unlinked"
+                  );
+                  assert_eq!(snapshot, registry);
+                  registry
+                      .link_provider(command(3), fingerprint(3), account(1), 1, second.clone())
+                      .unwrap();
+                  registry
+                      .unlink_provider(command(4), fingerprint(4), account(1), 2, &first)
+                      .unwrap();
+                  assert_eq!(registry.owner_of(&first), None);
+                  assert_eq!(registry.owner_of(&second), Some(account(1)));
+              }
+
+              #[test]
+              fn profile_update_preserves_unique_username_and_revision_fence() {
+                  let mut registry = registry(4, 4, 16);
+                  create(
+                      &mut registry,
+                      1,
+                      identity(IdentityProvider::Device, "device-1"),
+                  );
+                  create(
+                      &mut registry,
+                      2,
+                      identity(IdentityProvider::Device, "device-2"),
+                  );
+                  let snapshot = registry.clone();
+                  assert!(registry
+                      .update_profile(
+                          command(3),
+                          fingerprint(3),
+                          account(1),
+                          1,
+                          Some(Username::new("user-2").unwrap()),
+                          None,
+                      )
+                      .is_err());
+                  assert_eq!(snapshot, registry);
+                  let receipt = registry
+                      .update_profile(
+                          command(4),
+                          fingerprint(4),
+                          account(1),
+                          1,
+                          Some(Username::new("renamed").unwrap()),
+                          Some(DisplayName::new("Renamed").unwrap()),
+                      )
+                      .unwrap();
+                  assert_eq!(receipt.revision(), 2);
+                  assert_eq!(
+                      registry.account(account(1)).unwrap().username().as_str(),
+                      "renamed"
+                  );
+              }
+
+              #[test]
+              fn disabled_and_banned_accounts_cannot_authenticate() {
+                  let provider = identity(IdentityProvider::Facebook, "fb-1");
+                  let mut registry = registry(4, 4, 16);
+                  create(&mut registry, 1, provider.clone());
+                  registry
+                      .set_status(
+                          command(2),
+                          fingerprint(2),
+                          account(1),
+                          1,
+                          AccountStatus::Disabled,
+                      )
+                      .unwrap();
+                  assert_eq!(
+                      registry
+                          .authenticate(command(3), fingerprint(3), &provider)
+                          .unwrap_err()
+                          .code(),
+                      IdentityErrorCode::PermissionDenied
+                  );
+                  registry
+                      .set_status(
+                          command(4),
+                          fingerprint(4),
+                          account(1),
+                          2,
+                          AccountStatus::Active,
+                      )
+                      .unwrap();
+                  assert!(registry
+                      .authenticate(command(5), fingerprint(5), &provider)
+                      .is_ok());
+              }
+
+              #[test]
+              fn deleted_identity_and_username_are_retired() {
+                  let provider = identity(IdentityProvider::Steam, "steam-1");
+                  let mut registry = registry(4, 4, 16);
+                  create(&mut registry, 1, provider.clone());
+                  registry
+                      .delete_account(command(2), fingerprint(2), account(1), 1)
+                      .unwrap();
+                  assert_eq!(registry.owner_of(&provider), None);
+                  assert_eq!(
+                      registry
+                          .authenticate(command(3), fingerprint(3), &provider)
+                          .unwrap_err()
+                          .code(),
+                      IdentityErrorCode::Unauthenticated
+                  );
+                  let snapshot = registry.clone();
+                  assert!(registry
+                      .create_account(
+                          command(4),
+                          fingerprint(4),
+                          account(2),
+                          Username::new("user-1").unwrap(),
+                          DisplayName::new("Replacement").unwrap(),
+                          provider,
+                      )
+                      .is_err());
+                  assert_eq!(snapshot, registry);
+              }
+
+              #[test]
+              fn receipt_capacity_failure_is_atomic() {
+                  let provider = identity(IdentityProvider::GameCenter, "gc-1");
+                  let mut registry = registry(4, 4, 1);
+                  create(&mut registry, 1, provider.clone());
+                  let snapshot = registry.clone();
+                  assert_eq!(
+                      registry
+                          .authenticate(command(2), fingerprint(2), &provider)
+                          .unwrap_err()
+                          .code(),
+                      IdentityErrorCode::ResourceExhausted
+                  );
+                  assert_eq!(snapshot, registry);
+              }
+
+              #[test]
+              fn revision_overflow_fails_before_mutation() {
+                  let provider = identity(IdentityProvider::Email, "a@example.invalid");
+                  let mut registry = registry(4, 4, 16);
+                  create(&mut registry, 1, provider.clone());
+                  registry.accounts.get_mut(&account(1)).unwrap().revision = u64::MAX;
+                  let snapshot = registry.clone();
+                  assert_eq!(
+                      registry
+                          .link_provider(
+                              command(2),
+                              fingerprint(2),
+                              account(1),
+                              u64::MAX,
+                              identity(IdentityProvider::Device, "device-2"),
+                          )
+                          .unwrap_err()
+                          .code(),
+                      IdentityErrorCode::OutOfRange
+                  );
+                  assert_eq!(snapshot, registry);
+              }
+          }
+          RS
+          cat > crates/trnm-identity-core/README.md <<'MD'
+          # trnm-identity-core
+
+          Status: **module documentation; account-and-provider-identity-source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-identity-core`  
+          Workspace class: `root`  
+          Lifecycle: `product-library`  
+          Owner role: `identity`
+
+          ## Status and authority
+
+          This crate is the transport- and persistence-independent account and provider-identity state machine. It is a bounded source candidate for the first part of Plan v3.2 issue #137. It is not a complete Nakama authentication service, provider verifier, public API, database implementation, or production identity authority.
+
+          ## Responsibilities
+
+          It owns typed account, username, display-name, provider-identity, status, revision and command-receipt transitions. The implemented provider classes are custom, device, email, Facebook, Facebook Instant Game, Apple, Google, Game Center and Steam.
+
+          It enforces unique live usernames and provider identities, exact command replay, changed-fingerprint rejection, revision fencing, bounded account/identity/receipt state, link/unlink rules, active/disabled/banned status and terminal deletion tombstones.
+
+          Non-goals include JWT or provider-token verification, password hashing, database access, HTTP/gRPC mapping, session issuance, provider callback I/O, account export, wallet/metadata and migration.
+
+          ## Architecture and dependencies
+
+          The crate has no external dependencies and performs no I/O. Public adapters validate provider assertions and construct typed commands; a durable repository atomically stores the resulting account state, reverse indexes and command receipt.
+
+          The in-memory registry clones its bounded candidate state and commits only after all invariants pass. This is an explicit correctness model, not the target storage implementation or a high-scale performance claim.
+
+          ## Public contracts
+
+          Account, command and fingerprint identities reject all-zero values. Usernames, display names and provider identities have byte and control-character bounds. Provider identity and username uniqueness are global inside one registry authority.
+
+          Every mutating operation names an exact expected account revision. A duplicate command ID with the same fingerprint replays its exact receipt; a changed fingerprint is a conflict and changes no state.
+
+          Deletion is terminal inside the registry: the record remains, and former usernames and provider identities are retired rather than silently rebound.
+
+          ## Correctness and failure model
+
+          Failed validation, capacity, collision, stale revision, inactive status, last-provider removal and counter overflow leave the complete registry unchanged. Revision increments are checked before mutation.
+
+          Account/provider/username reverse indexes are verified after each accepted transition. Every non-deleted account has at least one provider identity. A deleted account has no active reverse-index entries and all former identities appear in retirement sets.
+
+          A mutable Rust value is not a distributed ownership proof. Production adapters must provide a single writer, serializable atomicity, durable receipt replay, crash recovery and migration fencing.
+
+          ## Security and privacy
+
+          Provider external identifiers are untrusted identifiers, not provider credentials or proof of authentication. Provider token validation, audience/application binding, nonce/replay checks, deadlines and secret handling must occur in reviewed adapters before this core is called.
+
+          Raw provider tokens, passwords, credentials and personal payloads are not represented by the API. External identifiers and usernames must not become unbounded metric labels or be logged without an approved redaction class.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-identity-core --all-targets --locked
+          cargo clippy --package trnm-identity-core --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover bounds, exact replay, changed fingerprints, provider and username collisions, stale revisions, last-provider protection, profile changes, account status, terminal deletion, receipt exhaustion and revision overflow.
+
+          These tests are source-level evidence only. Exact-head CI, public-wire differentials, live database faults and independent review remain separate.
+
+          ## Operations
+
+          This crate starts no process or task. Adapters must expose bounded low-cardinality counts for accepted/rejected operations, revision conflicts, collisions, status changes, retirement and receipt replay.
+
+          The production service must define readiness dependencies, provider health, database timeout/cancellation, audit retention, recovery and abuse/rate limits.
+
+          ## Compatibility and evidence
+
+          No Nakama compatibility credit is claimed. Required closure includes denominator-leaf mapping, exact HTTP/gRPC and official-SDK differentials, provider sandbox/hostile fixtures, PostgreSQL transaction and response-loss evidence, session integration and independent identity/security review.
+
+          Provider-specific normalization, case handling, account merge/collision behavior, username generation, create/no-create behavior and public errors remain profile and oracle decisions.
+
+          ## Known gaps and exit criteria
+
+          Blocking work remains under `GAP-P0-SERVER-001`, `GAP-P0-DATA-001`, `GAP-P0-CRYPTO-001`, `GAP-P0-SCOPE-001`, `GAP-P1-REVIEW-001` and issue #137.
+
+          Exit requires typed service and durable repository adapters, every relevant denominator leaf mapped to implementation and tests, official consumer/oracle differential, exact-object retained evidence and conflict-free independent acceptance. This crate alone does not close issue #137 or any product gate.
+          MD
+      - name: Register package and source inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+
+          root = Path('.')
+          cargo = root / 'Cargo.toml'
+          text = cargo.read_text(encoding='utf-8')
+          member = '  "crates/trnm-identity-core",\n'
+          if member not in text:
+              anchor = '  "crates/trnm-session-core",\n'
+              if anchor not in text:
+                  raise SystemExit('root workspace session anchor is missing')
+              cargo.write_text(text.replace(anchor, anchor + member, 1), encoding='utf-8')
+
+          def save(path: str, value: object) -> None:
+              (root / path).write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          module_path = 'docs/status/MODULE_DOCUMENTATION.json'
+          registry = json.loads((root / module_path).read_text(encoding='utf-8'))
+          if not any(row['id'] == 'trnm-identity-core' for row in registry['modules']):
+              row = {
+                  'id': 'trnm-identity-core',
+                  'path': 'crates/trnm-identity-core',
+                  'manifest': 'crates/trnm-identity-core/Cargo.toml',
+                  'documentation': 'crates/trnm-identity-core/README.md',
+                  'workspace': 'root',
+                  'lifecycle': 'product-library',
+                  'maturity': 'account-and-provider-identity-source-candidate',
+                  'owner_role': 'identity',
+                  'authority': 'bounded account and provider-identity domain state machine',
+                  'blocking_gaps': [
+                      'GAP-P0-SERVER-001',
+                      'GAP-P0-DATA-001',
+                      'GAP-P0-CRYPTO-001',
+                      'GAP-P0-SCOPE-001',
+                      'GAP-P1-REVIEW-001',
+                  ],
+                  'claim_credit': False,
+              }
+              insert_at = next(
+                  (index for index, value in enumerate(registry['modules']) if value['id'] == 'trnm-storage-core'),
+                  len(registry['modules']),
+              )
+              registry['modules'].insert(insert_at, row)
+          rows = registry['modules']
+          registry['summary']['module_count'] = len(rows)
+          registry['summary']['documented_count'] = len(rows)
+          registry['summary']['root_workspace_count'] = sum(row['workspace'] == 'root' for row in rows)
+          registry['summary']['isolated_workspace_count'] = sum(row['workspace'] == 'isolated' for row in rows)
+          registry['summary']['undocumented_count'] = 0
+          save(module_path, registry)
+
+          authority_path = 'docs/development/RUST_PACKAGE_AUTHORITY.json'
+          authority = json.loads((root / authority_path).read_text(encoding='utf-8'))
+          members = authority['workspace']['members']
+          if 'crates/trnm-identity-core' not in members:
+              members.insert(members.index('crates/trnm-storage-core'), 'crates/trnm-identity-core')
+          authority['last_reviewed_at'] = '2026-09-09'
+          save(authority_path, authority)
+
+          inventory_path = 'docs/status/IMPLEMENTATION_INVENTORY.json'
+          inventory = json.loads((root / inventory_path).read_text(encoding='utf-8'))
+          if not any(row['id'] == 'COMP-IDENTITY-CORE' for row in inventory['components']):
+              row = {
+                  'id': 'COMP-IDENTITY-CORE',
+                  'path': 'crates/trnm-identity-core',
+                  'kind': 'rust-library',
+                  'workstreams': ['W3'],
+                  'status': 'account-and-provider-identity-source-candidate',
+                  'implemented': [
+                      'typed account and provider identities for nine provider classes',
+                      'unique username and provider reverse-index invariants',
+                      'exact command receipt replay and changed-fingerprint rejection',
+                      'account revision fencing and checked overflow',
+                      'link unlink and last-provider protection',
+                      'active disabled banned and terminal deleted states',
+                      'bounded account identity and receipt capacity',
+                      'retired username and provider identity tombstones',
+                  ],
+                  'missing': [
+                      'public HTTP and gRPC account/authentication adapters',
+                      'real provider token and callback verification',
+                      'durable PostgreSQL repository and migration',
+                      'session issuance refresh and socket revocation integration',
+                      'official SDK and immutable-oracle differential',
+                      'provider sandbox hostile corpus and independent review',
+                  ],
+                  'blocking_gaps': [
+                      'GAP-P0-SERVER-001',
+                      'GAP-P0-DATA-001',
+                      'GAP-P0-CRYPTO-001',
+                      'GAP-P0-SCOPE-001',
+                      'GAP-P1-REVIEW-001',
+                  ],
+                  'parity_ids': ['TG-PAR-017'],
+                  'evidence_ids': [],
+                  'claim_credit': False,
+              }
+              insert_at = next(
+                  (index for index, value in enumerate(inventory['components']) if value['id'] == 'COMP-STORAGE'),
+                  len(inventory['components']),
+              )
+              inventory['components'].insert(insert_at, row)
+          save(inventory_path, inventory)
+
+          state_path = 'docs/status/CURRENT_STATE.json'
+          state = json.loads((root / state_path).read_text(encoding='utf-8'))
+          state['implementation']['identity_core_source_candidate'] = True
+          save(state_path, state)
+          PY
+      - name: Format, build, test and strictly lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo fmt --all -- --check
+          cargo test --package trnm-identity-core --all-targets
+          cargo test --package trnm-identity-core --all-targets --locked
+          cargo clippy --package trnm-identity-core --all-targets --locked -- -D warnings
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-plan.py
+          git diff --check
+      - name: Commit source slice and create draft pull request
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock \
+            crates/trnm-identity-core \
+            docs/status/MODULE_DOCUMENTATION.json \
+            docs/development/RUST_PACKAGE_AUTHORITY.json \
+            docs/status/IMPLEMENTATION_INVENTORY.json \
+            docs/status/CURRENT_STATE.json
+          git diff --cached --check
+          git commit -m 'identity: add bounded account and provider core'
+          head_sha="$(git rev-parse HEAD)"
+          head_tree="$(git rev-parse HEAD^{tree})"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git push --force-with-lease="refs/heads/${FEATURE_BRANCH}:" origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          existing="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          cat > /tmp/body.md <<EOF
+          Parent issue: #137
+
+          ## Scope
+
+          Adds the bounded transport-independent account and provider-identity domain source slice for custom, device, email, Facebook, Facebook Instant Game, Apple, Google, Game Center and Steam identities.
+
+          ```text
+          base_branch  ${BASE_BRANCH}
+          base_commit  ${BASE_SHA}
+          head_commit  ${head_sha}
+          head_tree    ${head_tree}
+          ```
+
+          Implemented: unique live username/provider indexes, exact command receipt replay, changed-fingerprint rejection, revision fencing, checked overflow, link/unlink with last-provider protection, active/disabled/banned/deleted states, finite capacities and terminal identity retirement.
+
+          Not implemented here: public HTTP/gRPC endpoints, provider token verification, PostgreSQL persistence/migration, session issuance, official SDK/oracle differential, sandbox/provider fault evidence, or independent acceptance.
+
+          ```text
+          domain_source_candidate=true
+          issue_137_source_complete=false
+          compatibility_credit=false
+          accepted_evidence=false
+          production_ready=false
+          all_gaps_closed=false
+          ```
+          EOF
+          if test -z "$existing"; then
+            url="$(gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" \
+              --title '[Plan v3.2][#137] Add bounded account and provider identity core' \
+              --body-file /tmp/body.md)"
+            number="${url##*/}"
+          else
+            number="$existing"
+            gh pr edit "$number" --repo "$REPOSITORY" --base "$BASE_BRANCH" --body-file /tmp/body.md
+          fi
+          gh issue comment 137 --repo "$REPOSITORY" --body \
+            "Source slice opened as PR #${number} at exact head \`${head_sha}\`. It is intentionally partial: provider verification, durable repository/API integration, differential evidence and independent acceptance remain open."
