@@ -1,0 +1,219 @@
+name: tmp-fix-runtime-wave7
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-fix-runtime-wave7.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-runtime-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Wait for exact Runtime branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha=''
+          for _ in $(seq 1 360); do
+            head_sha="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$head_sha" && break
+            sleep 30
+          done
+          test -n "$head_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$head_sha"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$FEATURE_BRANCH" "$head_sha"
+
+      - name: Apply checked usage and all-or-nothing expiry repair
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/trnm-runtime-core/src/lib.rs')
+          text = path.read_text(encoding='utf-8')
+
+          charge_start = text.index('pub fn charge(')
+          broken_start = text.find('let next = Usage {', charge_start)
+          if broken_start < 0:
+              raise SystemExit('Runtime charge block not found')
+          next_if = text.find('if next.fuel > active.budget.fuel', broken_start)
+          if next_if < 0:
+              raise SystemExit('Runtime charge limit block not found')
+          line_start = text.rfind('\n', 0, broken_start) + 1
+          if 'fuel: Some(fuel)' in text[broken_start:next_if]:
+              replacement = '''                  let next = Usage {
+                      fuel: active
+                          .usage
+                          .fuel
+                          .checked_add(delta.fuel)
+                          .ok_or_else(|| RuntimeError::new(
+                              StableRuntimeCode::ResourceExhausted,
+                              "usage_counter_overflow",
+                              false,
+                          ))?,
+                      memory_bytes: active
+                          .usage
+                          .memory_bytes
+                          .checked_add(delta.memory_bytes)
+                          .ok_or_else(|| RuntimeError::new(
+                              StableRuntimeCode::ResourceExhausted,
+                              "usage_counter_overflow",
+                              false,
+                          ))?,
+                      stack_bytes: active
+                          .usage
+                          .stack_bytes
+                          .checked_add(delta.stack_bytes)
+                          .ok_or_else(|| RuntimeError::new(
+                              StableRuntimeCode::ResourceExhausted,
+                              "usage_counter_overflow",
+                              false,
+                          ))?,
+                      output_bytes: active
+                          .usage
+                          .output_bytes
+                          .checked_add(delta.output_bytes)
+                          .ok_or_else(|| RuntimeError::new(
+                              StableRuntimeCode::ResourceExhausted,
+                              "usage_counter_overflow",
+                              false,
+                          ))?,
+                      log_bytes: active
+                          .usage
+                          .log_bytes
+                          .checked_add(delta.log_bytes)
+                          .ok_or_else(|| RuntimeError::new(
+                              StableRuntimeCode::ResourceExhausted,
+                              "usage_counter_overflow",
+                              false,
+                          ))?,
+                  };
+                  '''
+              text = text[:line_start] + replacement + text[next_if:]
+
+          expire_start = text.index('pub fn expire(')
+          active_exact_start = text.index('fn active_exact(', expire_start)
+          expire_line_start = text.rfind('\n', 0, expire_start) + 1
+          active_exact_line_start = text.rfind('\n', 0, active_exact_start) + 1
+          expire_block = '''              pub fn expire(
+                  &mut self,
+                  now_ms: u64,
+              ) -> Result<Vec<InvocationReceipt>, RuntimeError> {
+                  if now_ms == 0 {
+                      return Err(RuntimeError::invalid("now_zero"));
+                  }
+                  let handles = self
+                      .active
+                      .values()
+                      .filter(|active| active.deadline_at_ms <= now_ms)
+                      .map(|active| active.handle)
+                      .collect::<Vec<_>>();
+                  if self
+                      .receipts
+                      .len()
+                      .checked_add(handles.len())
+                      .map_or(true, |total| total > self.max_receipts)
+                  {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::ResourceExhausted,
+                          "runtime_receipt_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  let mut receipts = Vec::with_capacity(handles.len());
+                  for handle in handles {
+                      receipts.push(candidate.finish(
+                          handle,
+                          InvocationOutcome::DeadlineExceeded,
+                          now_ms,
+                      )?);
+                  }
+                  *self = candidate;
+                  Ok(receipts)
+              }
+
+          '''
+          old_expire = text[expire_line_start:active_exact_line_start]
+          if 'let mut candidate = self.clone();' not in old_expire:
+              text = text[:expire_line_start] + expire_block + text[active_exact_line_start:]
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          if git diff --quiet; then echo 'changed=false' >> "$GITHUB_OUTPUT"; else echo 'changed=true' >> "$GITHUB_OUTPUT"; fi
+
+      - name: Add atomic-expiry regression
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/trnm-runtime-core/src/lib.rs')
+          text = path.read_text(encoding='utf-8')
+          marker = '''              #[test]
+              fn expiration_produces_explicit_terminal_receipt() {'''
+          if marker not in text:
+              raise SystemExit('expiration regression anchor missing')
+          if 'fn expiration_capacity_failure_preserves_all_active_invocations()' not in text:
+              addition = '''              #[test]
+              fn expiration_capacity_failure_preserves_all_active_invocations() {
+                  let mut registry = RuntimeRegistry::new(8, 8, 1).unwrap();
+                  registry.register_module(ModuleManifest {
+                      maximum_concurrency: 2,
+                      ..manifest()
+                  }).unwrap();
+                  let first = registry.start(request(1)).unwrap();
+                  let second = registry.start(request(2)).unwrap();
+                  let error = registry.expire(110).unwrap_err();
+                  assert_eq!(error.reason(), "runtime_receipt_capacity_exhausted");
+                  assert_eq!(registry.active_count(module_id()), 2);
+                  assert!(registry.receipt(first.id).is_none());
+                  assert!(registry.receipt(second.id).is_none());
+              }
+
+          '''
+              text = text.replace(marker, addition + marker, 1)
+              path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Qualify and publish Runtime repair
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo test --package trnm-runtime-core --all-targets --locked
+          cargo clippy --package trnm-runtime-core --all-targets --locked -- -D warnings
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-runtime-core/src/lib.rs
+          git commit -m 'fix(runtime): check usage counters and expire atomically'
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Repaired checked resource accounting and made multi-invocation expiry all-or-nothing under receipt capacity. Focused tests and strict Clippy passed in carrier run `${GITHUB_RUN_ID}`; exact-head repository checks must requalify the new commit."
