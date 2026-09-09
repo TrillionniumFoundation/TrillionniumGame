@@ -73,7 +73,7 @@ jobs:
           if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
               raise SystemExit("deflate stream did not close exactly")
           digest = hashlib.sha256(patch).hexdigest()
-          expected = "3df7ed05aefceddd4d19d80e6e0315c449f2d61434aca15d72c00ab72f8c8604"
+          expected = "25c3872d8a07b7dd0057d046254f31fe5d985781e8315fcdeed664546ec173cf"
           if digest != expected:
               raise SystemExit(f"recovered patch digest mismatch: {digest}")
           Path(os.environ["PATCH_PATH"]).write_bytes(patch)
@@ -88,6 +88,25 @@ jobs:
 
           git apply --check "$patch"
           git apply "$patch"
+          cat > "$RUNNER_TEMP/allowed-files" <<'EOF'
+          docs/review/INDEPENDENT_REVIEW_MATRIX.json
+          docs/roadmap/ARCHITECTURE_CLOSURE.json
+          docs/roadmap/NEXT_MILESTONE.json
+          docs/status/GAP_REGISTER.json
+          scripts/check-independent-review-matrix.py
+          scripts/check-plan-v3-extension.py
+          scripts/check-status-transitions.py
+          scripts/control_baselines/gap-register.v1.json
+          scripts/gap_register_scope_policy.py
+          scripts/status_transition_policy.py
+          tests/control_plane/test_gap_register_scope_lock.py
+          tests/control_plane/test_independent_review_matrix.py
+          EOF
+          sed -i 's/^          //' "$RUNNER_TEMP/allowed-files"
+          LC_ALL=C sort -o "$RUNNER_TEMP/allowed-files" "$RUNNER_TEMP/allowed-files"
+          git diff --name-only | LC_ALL=C sort > "$RUNNER_TEMP/actual-patch-files"
+          diff -u "$RUNNER_TEMP/allowed-files" "$RUNNER_TEMP/actual-patch-files"
+
           rm -f \
             .github/workflows/tmp-apply-v32-candidate-authority.yml \
             "$part0" \
