@@ -1,0 +1,88 @@
+name: tmp-social-core-qualified-source-v4
+
+on:
+  push:
+    branches:
+      - feature/plan-v32-social-core-20260909
+    paths:
+      - .github/workflows/tmp-social-core-qualified-source-v4.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: tmp-social-core-qualified-source-v4
+  cancel-in-progress: false
+
+jobs:
+  rebuild-qualify-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      FEATURE_BRANCH: feature/plan-v32-social-core-20260909
+      EXPECTED_BASE_SHA: 541016f34f2dbaf7c2be10cd45afdd04223c49f2
+      V3_REF: b2a62b190ecc1251ea444e1e7c327512de07a88a
+    steps:
+      - name: Extract and repair reusable v3 steps
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${REPOSITORY}/contents/.github/workflows/tmp-social-core-qualified-source-v3.yml?ref=${V3_REF}" \
+            --jq .content | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/social-v3.yml"
+          ruby -ryaml -e '
+            document = YAML.safe_load(File.read(ARGV[0]), aliases: true)
+            steps = document.fetch("jobs").fetch("rebuild-qualify-and-publish").fetch("steps")
+            names = [
+              "Fetch reusable qualified-source scripts",
+              "Reset to exact parent and reconstruct candidate",
+              "Prove accepted candidate state is committed atomically",
+              "Validate social package and complete repository",
+              "Publish clean source commit"
+            ]
+            names.each_with_index do |name, index|
+              step = steps.find { |entry| entry["name"] == name }
+              abort("missing v3 step: #{name}") unless step && step["run"]
+              File.write(ARGV[index + 1], step.fetch("run"))
+            end
+          ' "$RUNNER_TEMP/social-v3.yml" \
+            "$RUNNER_TEMP/fetch-reusable.sh" \
+            "$RUNNER_TEMP/reset-reconstruct.sh" \
+            "$RUNNER_TEMP/prove-atomic.sh" \
+            "$RUNNER_TEMP/validate-all.sh" \
+            "$RUNNER_TEMP/publish-clean.sh"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("/home/runner/work/_temp/reset-reconstruct.sh")
+          text = path.read_text(encoding="utf-8")
+          old = 'carrier_sha="$GITHUB_SHA"\nrm -rf "$GITHUB_WORKSPACE"'
+          new = 'carrier_sha="$GITHUB_SHA"\ncd "$RUNNER_TEMP"\nrm -rf "$GITHUB_WORKSPACE"'
+          if text.count(old) != 1:
+              raise SystemExit("v3 workspace-reset anchor drifted")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+      - name: Prepare reusable scripts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash "$RUNNER_TEMP/fetch-reusable.sh"
+      - name: Reset and reconstruct from exact parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash "$RUNNER_TEMP/reset-reconstruct.sh"
+      - name: Prove atomic state commit
+        shell: bash
+        run: bash "$RUNNER_TEMP/prove-atomic.sh"
+      - name: Validate package workspace and control plane
+        shell: bash
+        run: bash "$RUNNER_TEMP/validate-all.sh"
+      - name: Publish clean source branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash "$RUNNER_TEMP/publish-clean.sh"
