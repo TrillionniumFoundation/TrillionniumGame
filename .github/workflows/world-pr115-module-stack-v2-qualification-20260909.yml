@@ -109,35 +109,6 @@ jobs:
           test "$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
           printf 'WORLD_PR115_IMMUTABLE_OBJECTS=PASS\n'
 
-      - name: Create immutable World source archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          git -C "$RUNNER_TEMP/world-head" archive --format=tar --prefix=Trillionnium-World/ HEAD \
-            | gzip -n > world-pr115-source.tar.gz
-          sha256sum world-pr115-source.tar.gz > world-pr115-source-SHA256SUMS
-          printf '%s\n' \
-            "repository=$WORLD_REPOSITORY" \
-            "pull_request=$WORLD_PR_NUMBER" \
-            "base=$WORLD_BASE_SHA" \
-            "head=$WORLD_HEAD_SHA" \
-            "tree=$WORLD_HEAD_TREE" \
-            "merge=$WORLD_MERGE_SHA" \
-            "merge_tree=$WORLD_MERGE_TREE" \
-            'production_authorization=not_granted' \
-            > world-pr115-source-identity.txt
-
-      - name: Upload immutable World source archive
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: world-pr115-source-bcbce064
-          path: |
-            world-pr115-source.tar.gz
-            world-pr115-source-SHA256SUMS
-            world-pr115-source-identity.txt
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Install pinned Rust and native dependencies
         shell: bash
         run: |
