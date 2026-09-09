@@ -29,33 +29,11 @@ env:
 
 jobs:
   qualify:
-    name: world-v6/${{ matrix.scope }}-head-and-merge
+    name: world-v6/external-required
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      matrix:
-        scope:
-          - truth
-          - source
-          - postgres
-          - package
-    services:
-      postgres:
-        image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
     steps:
-      - name: Fetch and verify exact World objects
+      - name: Fetch and verify exact World head and prospective merge
         shell: bash
         run: |
           set -euo pipefail
@@ -76,11 +54,13 @@ jobs:
           test "$(git -C "$merge_dir" rev-parse HEAD^2)" = "$WORLD_HEAD_SHA"
           test -z "$(git -C "$head_dir" status --porcelain=v1 --untracked-files=no)"
           test -z "$(git -C "$merge_dir" status --porcelain=v1 --untracked-files=no)"
-          git -C "$head_dir" show -s --format='head_commit=%H%nhead_tree=%T'
-          git -C "$merge_dir" show -s --format='merge_commit=%H%nmerge_tree=%T%nmerge_parents=%P'
+          printf 'head_commit=%s\n' "$(git -C "$head_dir" rev-parse HEAD)"
+          printf 'head_tree=%s\n' "$(git -C "$head_dir" rev-parse HEAD^{tree})"
+          printf 'merge_commit=%s\n' "$(git -C "$merge_dir" rev-parse HEAD)"
+          printf 'merge_tree=%s\n' "$(git -C "$merge_dir" rev-parse HEAD^{tree})"
+          printf 'merge_parents=%s\n' "$(git -C "$merge_dir" show -s --format=%P HEAD)"
 
-      - name: Install pinned World toolchain and native dependencies
-        if: ${{ matrix.scope != 'truth' }}
+      - name: Install pinned toolchain and native dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -92,143 +72,145 @@ jobs:
             libxkbcommon-dev libwayland-dev pkg-config postgresql-client
           rustc --version --verbose
           cargo --version --verbose
+          rustfmt --version
           psql --version
+          docker version
 
-      - name: Prepare isolated PostgreSQL databases
-        if: ${{ matrix.scope == 'postgres' }}
+      - name: Start isolated PostgreSQL and create tuple databases
         shell: bash
         run: |
           set -euo pipefail
-          createdb world_head
-          createdb world_merge
+          docker rm -f trnm-world-postgres >/dev/null 2>&1 || true
+          docker run -d --rm --name trnm-world-postgres \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=postgres \
+            -p 5432:5432 \
+            "$TRNM_WORLD_POSTGRES_CLIENT_IMAGE"
+          for attempt in $(seq 1 60); do
+            if docker exec trnm-world-postgres pg_isready -U postgres -d postgres; then break; fi
+            test "$attempt" -lt 60
+            sleep 1
+          done
+          docker exec trnm-world-postgres createdb -U postgres world_head
+          docker exec trnm-world-postgres createdb -U postgres world_merge
           psql -d postgres -Atqc "select datname from pg_database where datname in ('world_head','world_merge') order by datname"
 
-      - name: Qualify exact World head
+      - name: Qualify head truth
+        id: truth_head
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/world-head"
-          if test "${{ matrix.scope }}" = postgres; then
-            export PGDATABASE=world_head
-            export TRNM_SETTLEMENT_TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/world_head
-          fi
-          bash scripts/run-trnm-world-v6-qualification-v2.sh "${{ matrix.scope }}"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh truth
 
-      - name: Qualify actual World prospective merge
+      - name: Qualify merge truth
+        id: truth_merge
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/world-merge"
-          if test "${{ matrix.scope }}" = postgres; then
-            export PGDATABASE=world_merge
-            export TRNM_SETTLEMENT_TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/world_merge
-          fi
-          bash scripts/run-trnm-world-v6-qualification-v2.sh "${{ matrix.scope }}"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh truth
 
-      - name: Emit immutable execution identity
+      - name: Qualify head source
+        id: source_head
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world-head"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh source
+
+      - name: Qualify merge source
+        id: source_merge
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world-merge"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh source
+
+      - name: Qualify head PostgreSQL
+        id: postgres_head
+        continue-on-error: true
+        shell: bash
+        env:
+          PGDATABASE: world_head
+          TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/world_head
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world-head"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh postgres
+
+      - name: Qualify merge PostgreSQL
+        id: postgres_merge
+        continue-on-error: true
+        shell: bash
+        env:
+          PGDATABASE: world_merge
+          TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/world_merge
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world-merge"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh postgres
+
+      - name: Qualify head package
+        id: package_head
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world-head"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh package
+
+      - name: Qualify merge package
+        id: package_merge
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world-merge"
+          bash scripts/run-trnm-world-v6-qualification-v2.sh package
+
+      - name: Enforce every exact-tuple scope and emit immutable identity
         if: always()
         shell: bash
+        env:
+          TRUTH_HEAD: ${{ steps.truth_head.outcome }}
+          TRUTH_MERGE: ${{ steps.truth_merge.outcome }}
+          SOURCE_HEAD: ${{ steps.source_head.outcome }}
+          SOURCE_MERGE: ${{ steps.source_merge.outcome }}
+          POSTGRES_HEAD: ${{ steps.postgres_head.outcome }}
+          POSTGRES_MERGE: ${{ steps.postgres_merge.outcome }}
+          PACKAGE_HEAD: ${{ steps.package_head.outcome }}
+          PACKAGE_MERGE: ${{ steps.package_merge.outcome }}
         run: |
           set -euo pipefail
           printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
           printf 'world_base_sha=%s\n' "$WORLD_BASE_SHA"
           printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
           printf 'world_merge_sha=%s\n' "$WORLD_MERGE_SHA"
-          printf 'scope=%s\n' "${{ matrix.scope }}"
           printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
           printf 'runner_commit=%s\n' "$GITHUB_SHA"
           printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
+          printf 'truth_head=%s\ntruth_merge=%s\n' "$TRUTH_HEAD" "$TRUTH_MERGE"
+          printf 'source_head=%s\nsource_merge=%s\n' "$SOURCE_HEAD" "$SOURCE_MERGE"
+          printf 'postgres_head=%s\npostgres_merge=%s\n' "$POSTGRES_HEAD" "$POSTGRES_MERGE"
+          printf 'package_head=%s\npackage_merge=%s\n' "$PACKAGE_HEAD" "$PACKAGE_MERGE"
           printf 'production_authorization=not_granted\n'
-          for tuple in head merge; do
-            root="$RUNNER_TEMP/world-$tuple/run/world-v6-v2/${{ matrix.scope }}"
-            if test -d "$root"; then
-              find "$root" -type f -print0 | sort -z | xargs -0 -r sha256sum
-            fi
-          done
-
-  rustfmt-patch:
-    name: world-v6/rustfmt-patch
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Fetch exact World head
-        shell: bash
-        run: |
-          set -euo pipefail
-          root="$RUNNER_TEMP/world-format"
-          rm -rf "$root"
-          git init "$root"
-          git -C "$root" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
-          git -C "$root" fetch --no-tags --depth=1 origin "$WORLD_HEAD_SHA"
-          git -C "$root" checkout --detach FETCH_HEAD
-          test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
-
-      - name: Install exact rustfmt
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal --component rustfmt
-          rustup override set "$WORLD_RUST_TOOLCHAIN"
-          rustfmt --version
-
-      - name: Generate canonical formatting patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          root="$RUNNER_TEMP/world-format"
-          cargo fmt --manifest-path "$root/trillionnium/Cargo.toml" --all
-          cargo fmt --manifest-path "$root/trillionnium/crates/world-authority/Cargo.toml" --all
-          cargo fmt --manifest-path "$root/trillionnium/contracts/trnm-world-transition-v1/Cargo.toml"
-          cargo fmt --manifest-path "$root/contracts/Cargo.toml" --all
-          git -C "$root" diff --check
-          git -C "$root" diff --name-only > "$GITHUB_WORKSPACE/world-rustfmt-files.txt"
-          git -C "$root" diff --binary > "$GITHUB_WORKSPACE/world-rustfmt.patch"
-          test -s "$GITHUB_WORKSPACE/world-rustfmt.patch"
-          {
-            printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
-            printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
-            printf 'rustfmt=%s\n' "$(rustfmt --version)"
-            printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
-            printf 'runner_commit=%s\n' "$GITHUB_SHA"
-            printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
-            printf 'production_authorization=not_granted\n'
-          } > "$GITHUB_WORKSPACE/world-rustfmt-identity.txt"
-          sha256sum \
-            "$GITHUB_WORKSPACE/world-rustfmt.patch" \
-            "$GITHUB_WORKSPACE/world-rustfmt-files.txt" \
-            "$GITHUB_WORKSPACE/world-rustfmt-identity.txt" \
-            > "$GITHUB_WORKSPACE/SHA256SUMS"
-          cat "$GITHUB_WORKSPACE/world-rustfmt-files.txt"
-
-      - name: Upload canonical rustfmt patch
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: world-rustfmt-bd1603-${{ env.WORLD_HEAD_SHA }}-${{ github.run_attempt }}
-          path: |
-            world-rustfmt.patch
-            world-rustfmt-files.txt
-            world-rustfmt-identity.txt
-            SHA256SUMS
-          if-no-files-found: error
-          retention-days: 30
-
-  required:
-    name: world-v6/external-required
-    if: always()
-    needs:
-      - qualify
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Require all matrix scopes
-        env:
-          RESULT: ${{ needs.qualify.result }}
-        run: |
-          set -euo pipefail
-          test "$RESULT" = success
+          test "$TRUTH_HEAD" = success
+          test "$TRUTH_MERGE" = success
+          test "$SOURCE_HEAD" = success
+          test "$SOURCE_MERGE" = success
+          test "$POSTGRES_HEAD" = success
+          test "$POSTGRES_MERGE" = success
+          test "$PACKAGE_HEAD" = success
+          test "$PACKAGE_MERGE" = success
           printf 'WORLD_V6_EXTERNAL_REQUIRED=PASS\n'
-          printf 'world_head=%s\n' "$WORLD_HEAD_SHA"
-          printf 'world_merge=%s\n' "$WORLD_MERGE_SHA"
-          printf 'production_authorization=not_granted\n'
 
-# Maintainer-identity retrigger for the immutable World bd1603/98a6 tuple.
+      - name: Stop PostgreSQL
+        if: always()
+        shell: bash
+        run: docker rm -f trnm-world-postgres >/dev/null 2>&1 || true
