@@ -1,4 +1,4 @@
-name: world-v6-external-bd1603-20260909
+name: world-v6-external-c51a3c-20260909
 
 on:
   pull_request:
@@ -8,15 +8,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-v6-external-bd1603-20260909-${{ github.event.pull_request.number || github.ref }}
+  group: world-v6-external-c51a3c-20260909-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_BASE_SHA: 0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
-  WORLD_HEAD_SHA: bd1603ea6087f71ee1fe2d7940c729931105c25f
+  WORLD_HEAD_SHA: c51a3c27d93ec5de1ddbde4f7bc5f7fee072a1e6
+  WORLD_HEAD_TREE: 07f55944205f033c27e826e3985572ff880e41d0
   WORLD_MERGE_REF: refs/pull/104/merge
-  WORLD_MERGE_SHA: 98a6c53d98cac94dcf746704c8d6508ad0cb10fc
+  WORLD_MERGE_SHA: c3a68548b3d64e39add10bc1e6b8cabddd2eeafa
+  WORLD_MERGE_TREE: 07f55944205f033c27e826e3985572ff880e41d0
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_INCREMENTAL: '0'
@@ -51,7 +53,9 @@ jobs:
           git -C "$merge_dir" fetch --no-tags --depth=2 origin "$WORLD_MERGE_REF"
           git -C "$merge_dir" checkout --detach FETCH_HEAD
           test "$(git -C "$head_dir" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+          test "$(git -C "$head_dir" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
           test "$(git -C "$merge_dir" rev-parse HEAD)" = "$WORLD_MERGE_SHA"
+          test "$(git -C "$merge_dir" rev-parse 'HEAD^{tree}')" = "$WORLD_MERGE_TREE"
           test "$(git -C "$merge_dir" rev-parse 'HEAD^1')" = "$WORLD_BASE_SHA"
           test "$(git -C "$merge_dir" rev-parse 'HEAD^2')" = "$WORLD_HEAD_SHA"
           test -z "$(git -C "$head_dir" status --porcelain=v1 --untracked-files=no)"
@@ -194,7 +198,9 @@ jobs:
           printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
           printf 'world_base_sha=%s\n' "$WORLD_BASE_SHA"
           printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
+          printf 'world_head_tree=%s\n' "$WORLD_HEAD_TREE"
           printf 'world_merge_sha=%s\n' "$WORLD_MERGE_SHA"
+          printf 'world_merge_tree=%s\n' "$WORLD_MERGE_TREE"
           printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
           printf 'runner_commit=%s\n' "$GITHUB_SHA"
           printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
@@ -217,11 +223,11 @@ jobs:
           head_dir="$RUNNER_TEMP/world-head"
           merge_dir="$RUNNER_TEMP/world-merge"
           test "$(git -C "$head_dir" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+          test "$(git -C "$head_dir" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
           test "$(git -C "$merge_dir" rev-parse HEAD)" = "$WORLD_MERGE_SHA"
+          test "$(git -C "$merge_dir" rev-parse 'HEAD^{tree}')" = "$WORLD_MERGE_TREE"
           test "$(git -C "$merge_dir" rev-parse 'HEAD^1')" = "$WORLD_BASE_SHA"
           test "$(git -C "$merge_dir" rev-parse 'HEAD^2')" = "$WORLD_HEAD_SHA"
-          printf 'world_head_tree=%s\n' "$(git -C "$head_dir" rev-parse 'HEAD^{tree}')"
-          printf 'world_merge_tree=%s\n' "$(git -C "$merge_dir" rev-parse 'HEAD^{tree}')"
           printf 'world_merge_parents=%s\n' "$(git -C "$merge_dir" show -s --format=%P HEAD)"
           printf 'WORLD_V6_EXTERNAL_REQUIRED=PASS\n'
 
