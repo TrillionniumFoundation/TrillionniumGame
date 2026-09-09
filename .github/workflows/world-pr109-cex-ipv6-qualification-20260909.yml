@@ -14,10 +14,10 @@ concurrency:
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_BASE_SHA: 956462f95675d3d4db89af03bc4b7cc8c9a3c975
-  WORLD_HEAD_SHA: 291436f450a1f281349a2281b7911faa8ff95c77
-  WORLD_HEAD_TREE: fd6f81ce251e4cd6ba5ad725dcde8580f6ba6c11
-  WORLD_MERGE_SHA: 20419da4c699494aa64965a38659b3514be75cd5
-  WORLD_MERGE_TREE: fd6f81ce251e4cd6ba5ad725dcde8580f6ba6c11
+  WORLD_HEAD_SHA: 9089947b38065c714e2b3864dc02ec6cea21310d
+  WORLD_HEAD_TREE: a08921a73e43eda9e0f705e6e8d6c8f0472f1536
+  WORLD_MERGE_SHA: d79b1767ff23c31d1a48dda9ff802bb5ea617571
+  WORLD_MERGE_TREE: a08921a73e43eda9e0f705e6e8d6c8f0472f1536
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_INCREMENTAL: '0'
@@ -44,7 +44,6 @@ jobs:
             git -C "$dir" fetch --no-tags --depth=2 origin "$sha"
             git -C "$dir" checkout --detach FETCH_HEAD
           done
-
           test "$(git -C "$RUNNER_TEMP/world-head" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
           test "$(git -C "$RUNNER_TEMP/world-head" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
           test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse HEAD)" = "$WORLD_MERGE_SHA"
@@ -57,12 +56,7 @@ jobs:
           set -euo pipefail
           rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
           rustup override set "$WORLD_RUST_TOOLCHAIN"
-          # The World qualification needs only Ubuntu packages. Third-party browser
-          # repositories on the hosted image are outside the evidence boundary and
-          # can transiently fail during mirror publication.
-          sudo rm -f \
-            /etc/apt/sources.list.d/google-chrome.list \
-            /etc/apt/sources.list.d/google-chrome.list.save
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.list.save
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev libudev-dev libx11-dev libxi-dev \
@@ -79,52 +73,21 @@ jobs:
           merge_log="$RUNNER_TEMP/world-pr109-merge-source.log"
           head_status=0
           merge_status=0
-
-          (
-            set -euo pipefail
-            cd "$RUNNER_TEMP/world-head"
-            bash scripts/run-trnm-world-v6-qualification-v2.sh source
-          ) >"$head_log" 2>&1 || head_status=$?
-
-          (
-            set -euo pipefail
-            cd "$RUNNER_TEMP/world-merge"
-            bash scripts/run-trnm-world-v6-qualification-v2.sh source
-          ) >"$merge_log" 2>&1 || merge_status=$?
-
+          (set -euo pipefail; cd "$RUNNER_TEMP/world-head"; bash scripts/run-trnm-world-v6-qualification-v2.sh source) >"$head_log" 2>&1 || head_status=$?
+          (set -euo pipefail; cd "$RUNNER_TEMP/world-merge"; bash scripts/run-trnm-world-v6-qualification-v2.sh source) >"$merge_log" 2>&1 || merge_status=$?
           actual_head="$(git -C "$RUNNER_TEMP/world-head" rev-parse HEAD)"
           actual_head_tree="$(git -C "$RUNNER_TEMP/world-head" rev-parse 'HEAD^{tree}')"
           actual_merge="$(git -C "$RUNNER_TEMP/world-merge" rev-parse HEAD)"
           actual_merge_tree="$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')"
           actual_parents="$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)"
-
           {
             printf '## World PR 109 source qualification\n\n```text\n'
-            printf 'world_base=%s\n' "$WORLD_BASE_SHA"
-            printf 'world_head=%s\n' "$actual_head"
-            printf 'world_head_tree=%s\n' "$actual_head_tree"
-            printf 'world_merge=%s\n' "$actual_merge"
-            printf 'world_merge_tree=%s\n' "$actual_merge_tree"
-            printf 'world_merge_parents=%s\n' "$actual_parents"
-            printf 'source_head_exit=%s\n' "$head_status"
-            printf 'source_merge_exit=%s\n' "$merge_status"
-            printf 'production_authorization=not_granted\n'
-            printf '```\n'
+            printf 'world_base=%s\nworld_head=%s\nworld_head_tree=%s\n' "$WORLD_BASE_SHA" "$actual_head" "$actual_head_tree"
+            printf 'world_merge=%s\nworld_merge_tree=%s\nworld_merge_parents=%s\n' "$actual_merge" "$actual_merge_tree" "$actual_parents"
+            printf 'source_head_exit=%s\nsource_merge_exit=%s\nproduction_authorization=not_granted\n```\n' "$head_status" "$merge_status"
           } >> "$GITHUB_STEP_SUMMARY"
-
-          if test "$head_status" -ne 0; then
-            printf '%s\n' '--- exact head source failure tail ---'
-            tail -n 240 "$head_log"
-          else
-            printf 'WORLD_PR109_HEAD_SOURCE=PASS\n'
-          fi
-          if test "$merge_status" -ne 0; then
-            printf '%s\n' '--- prospective merge source failure tail ---'
-            tail -n 240 "$merge_log"
-          else
-            printf 'WORLD_PR109_MERGE_SOURCE=PASS\n'
-          fi
-
+          if test "$head_status" -ne 0; then printf '%s\n' '--- exact head source failure tail ---'; tail -n 300 "$head_log"; else printf 'WORLD_PR109_HEAD_SOURCE=PASS\n'; fi
+          if test "$merge_status" -ne 0; then printf '%s\n' '--- prospective merge source failure tail ---'; tail -n 300 "$merge_log"; else printf 'WORLD_PR109_MERGE_SOURCE=PASS\n'; fi
           test "$actual_head" = "$WORLD_HEAD_SHA"
           test "$actual_head_tree" = "$WORLD_HEAD_TREE"
           test "$actual_merge" = "$WORLD_MERGE_SHA"
