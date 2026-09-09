@@ -230,3 +230,5 @@ jobs:
           printf 'world_head=%s\n' "$WORLD_HEAD_SHA"
           printf 'world_merge=%s\n' "$WORLD_MERGE_SHA"
           printf 'production_authorization=not_granted\n'
+
+# Maintainer-identity retrigger for the immutable World bd1603/98a6 tuple.
