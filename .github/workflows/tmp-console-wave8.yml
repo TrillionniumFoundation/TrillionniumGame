@@ -1,0 +1,1419 @@
+name: tmp-console-wave8
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-console-wave8.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-runtime-core-20260909
+  FEATURE_BRANCH: feature/plan-v32-console-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-console-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    steps:
+      - name: Wait for exact Wave 7 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 480); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 30
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write bounded Console governance core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-console-core/src
+          cat > crates/trnm-console-core/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-console-core"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Bounded Console RBAC MFA audit and dangerous-action governance state"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-console-core/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::collections::{BTreeMap, BTreeSet};
+
+          pub const MAX_ROLES: usize = 1024;
+          pub const MAX_OPERATORS: usize = 65_536;
+          pub const MAX_SESSIONS: usize = 65_536;
+          pub const MAX_ACTIONS: usize = 65_536;
+          pub const MAX_AUDIT_EVENTS: usize = 1_000_000;
+          pub const MAX_RECEIPTS: usize = 1_000_000;
+          pub const MAX_PERMISSIONS_PER_ROLE: usize = 128;
+          pub const MAX_ROLES_PER_OPERATOR: usize = 32;
+          pub const MAX_APPROVALS: usize = 8;
+
+          macro_rules! id16 {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(value: [u8; 16]) -> Result<Self, ConsoleError> {
+                          if value.iter().all(|byte| *byte == 0) {
+                              Err(ConsoleError::invalid($reason))
+                          } else {
+                              Ok(Self(value))
+                          }
+                      }
+                  }
+              };
+          }
+
+          id16!(ProjectId, "project_id_zero");
+          id16!(OperatorId, "operator_id_zero");
+          id16!(RoleId, "role_id_zero");
+          id16!(SessionId, "session_id_zero");
+          id16!(ActionId, "action_id_zero");
+          id16!(CommandId, "command_id_zero");
+          id16!(AuditId, "audit_id_zero");
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Fingerprint([u8; 32]);
+
+          impl Fingerprint {
+              pub fn new(value: [u8; 32]) -> Result<Self, ConsoleError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      Err(ConsoleError::invalid("fingerprint_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct CommandIdentity {
+              pub command: CommandId,
+              pub fingerprint: Fingerprint,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum Permission {
+              AccountRead,
+              AccountWrite,
+              StorageRead,
+              StorageWrite,
+              MatchRead,
+              MatchControl,
+              RuntimeRead,
+              RuntimeWrite,
+              ProviderRead,
+              ProviderWrite,
+              EconomyRead,
+              EconomyWrite,
+              ConfigurationRead,
+              ConfigurationWrite,
+              KeyRotate,
+              DataExport,
+              DataDelete,
+              ServiceDrain,
+              ReleasePromote,
+              AuditRead,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct Role {
+              pub id: RoleId,
+              pub project: ProjectId,
+              pub permissions: BTreeSet<Permission>,
+              pub revision: u64,
+          }
+
+          impl Role {
+              pub fn validate(self) -> Result<Self, ConsoleError> {
+                  if self.permissions.is_empty()
+                      || self.permissions.len() > MAX_PERMISSIONS_PER_ROLE
+                      || self.revision == 0
+                  {
+                      Err(ConsoleError::invalid("role_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct Operator {
+              pub id: OperatorId,
+              pub project: ProjectId,
+              pub roles: BTreeSet<RoleId>,
+              pub disabled: bool,
+              pub revision: u64,
+          }
+
+          impl Operator {
+              pub fn validate(self) -> Result<Self, ConsoleError> {
+                  if self.roles.is_empty()
+                      || self.roles.len() > MAX_ROLES_PER_OPERATOR
+                      || self.revision == 0
+                  {
+                      Err(ConsoleError::invalid("operator_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct ConsoleSession {
+              pub id: SessionId,
+              pub project: ProjectId,
+              pub operator: OperatorId,
+              pub generation: u64,
+              pub issued_at_ms: u64,
+              pub expires_at_ms: u64,
+              pub mfa_verified: bool,
+              pub revoked: bool,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum DangerousActionKind {
+              RotateKey,
+              DeleteUserData,
+              ExportUserData,
+              DrainService,
+              PromoteRelease,
+              RollbackRelease,
+              ChangeProviderConfiguration,
+              ChangeDatabaseAuthority,
+          }
+
+          impl DangerousActionKind {
+              #[must_use]
+              pub const fn permission(self) -> Permission {
+                  match self {
+                      Self::RotateKey => Permission::KeyRotate,
+                      Self::DeleteUserData => Permission::DataDelete,
+                      Self::ExportUserData => Permission::DataExport,
+                      Self::DrainService => Permission::ServiceDrain,
+                      Self::PromoteRelease | Self::RollbackRelease => Permission::ReleasePromote,
+                      Self::ChangeProviderConfiguration => Permission::ProviderWrite,
+                      Self::ChangeDatabaseAuthority => Permission::ConfigurationWrite,
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct ApprovalPolicy {
+              pub required_approvals: usize,
+              pub requester_may_approve: bool,
+              pub executor_may_approve: bool,
+              pub expires_after_ms: u64,
+          }
+
+          impl ApprovalPolicy {
+              pub fn validate(self) -> Result<Self, ConsoleError> {
+                  if self.required_approvals == 0
+                      || self.required_approvals > MAX_APPROVALS
+                      || self.expires_after_ms == 0
+                  {
+                      Err(ConsoleError::invalid("approval_policy_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub enum ActionState {
+              Pending,
+              Ready,
+              Executed { executor: OperatorId, executed_at_ms: u64 },
+              Rejected { rejected_by: OperatorId, rejected_at_ms: u64 },
+              Expired { expired_at_ms: u64 },
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct DangerousAction {
+              pub id: ActionId,
+              pub project: ProjectId,
+              pub kind: DangerousActionKind,
+              pub payload_digest: Fingerprint,
+              pub requester: OperatorId,
+              pub approvals: BTreeSet<OperatorId>,
+              pub policy: ApprovalPolicy,
+              pub requested_at_ms: u64,
+              pub expires_at_ms: u64,
+              pub state: ActionState,
+              pub revision: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum AuditKind {
+              RoleRegistered,
+              OperatorRegistered,
+              SessionOpened,
+              SessionRevoked,
+              ActionRequested,
+              ActionApproved,
+              ActionRejected,
+              ActionExecuted,
+              ActionExpired,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct AuditEvent {
+              pub id: AuditId,
+              pub sequence: u64,
+              pub project: ProjectId,
+              pub actor: Option<OperatorId>,
+              pub kind: AuditKind,
+              pub subject: [u8; 16],
+              pub occurred_at_ms: u64,
+              pub detail_digest: Fingerprint,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub enum MutationResult {
+              Role(Role),
+              Operator(Operator),
+              Session(ConsoleSession),
+              Action(DangerousAction),
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct MutationReceipt {
+              pub command: CommandId,
+              pub result: MutationResult,
+              pub audit_sequence: u64,
+              pub duplicate: bool,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          struct StoredReceipt {
+              fingerprint: Fingerprint,
+              receipt: MutationReceipt,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableConsoleCode {
+              InvalidArgument,
+              Unauthenticated,
+              PermissionDenied,
+              NotFound,
+              AlreadyExists,
+              FailedPrecondition,
+              Aborted,
+              OutOfRange,
+              ResourceExhausted,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ConsoleError {
+              code: StableConsoleCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl ConsoleError {
+              #[must_use]
+              pub const fn new(code: StableConsoleCode, reason: &'static str, retryable: bool) -> Self {
+                  Self { code, reason, retryable }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableConsoleCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableConsoleCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct ConsoleRegistry {
+              roles: BTreeMap<RoleId, Role>,
+              operators: BTreeMap<OperatorId, Operator>,
+              sessions: BTreeMap<SessionId, ConsoleSession>,
+              actions: BTreeMap<ActionId, DangerousAction>,
+              receipts: BTreeMap<CommandId, StoredReceipt>,
+              audit: Vec<AuditEvent>,
+              next_audit_sequence: u64,
+              limits: Limits,
+          }
+
+          #[derive(Clone, Copy, Debug)]
+          pub struct Limits {
+              pub roles: usize,
+              pub operators: usize,
+              pub sessions: usize,
+              pub actions: usize,
+              pub receipts: usize,
+              pub audit_events: usize,
+          }
+
+          impl Limits {
+              pub fn validate(self) -> Result<Self, ConsoleError> {
+                  if self.roles == 0 || self.roles > MAX_ROLES
+                      || self.operators == 0 || self.operators > MAX_OPERATORS
+                      || self.sessions == 0 || self.sessions > MAX_SESSIONS
+                      || self.actions == 0 || self.actions > MAX_ACTIONS
+                      || self.receipts == 0 || self.receipts > MAX_RECEIPTS
+                      || self.audit_events == 0 || self.audit_events > MAX_AUDIT_EVENTS
+                  {
+                      Err(ConsoleError::invalid("console_limits_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          impl ConsoleRegistry {
+              pub fn new(limits: Limits) -> Result<Self, ConsoleError> {
+                  Ok(Self {
+                      roles: BTreeMap::new(),
+                      operators: BTreeMap::new(),
+                      sessions: BTreeMap::new(),
+                      actions: BTreeMap::new(),
+                      receipts: BTreeMap::new(),
+                      audit: Vec::new(),
+                      next_audit_sequence: 1,
+                      limits: limits.validate()?,
+                  })
+              }
+
+              pub fn register_role(
+                  &mut self,
+                  identity: CommandIdentity,
+                  role: Role,
+                  audit_id: AuditId,
+                  occurred_at_ms: u64,
+              ) -> Result<MutationReceipt, ConsoleError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let role = role.validate()?;
+                  if self.roles.contains_key(&role.id) {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::AlreadyExists,
+                          "role_exists",
+                          false,
+                      ));
+                  }
+                  if self.roles.len() >= self.limits.roles {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::ResourceExhausted,
+                          "role_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let detail = identity.fingerprint;
+                  self.commit(
+                      identity,
+                      MutationResult::Role(role.clone()),
+                      AuditInput {
+                          id: audit_id,
+                          project: role.project,
+                          actor: None,
+                          kind: AuditKind::RoleRegistered,
+                          subject: role.id.0,
+                          occurred_at_ms,
+                          detail,
+                      },
+                      |candidate| {
+                          candidate.roles.insert(role.id, role);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn register_operator(
+                  &mut self,
+                  identity: CommandIdentity,
+                  operator: Operator,
+                  audit_id: AuditId,
+                  occurred_at_ms: u64,
+              ) -> Result<MutationReceipt, ConsoleError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let operator = operator.validate()?;
+                  if self.operators.contains_key(&operator.id) {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::AlreadyExists,
+                          "operator_exists",
+                          false,
+                      ));
+                  }
+                  if self.operators.len() >= self.limits.operators {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::ResourceExhausted,
+                          "operator_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  for role in &operator.roles {
+                      let registered = self.roles.get(role).ok_or_else(|| ConsoleError::new(
+                          StableConsoleCode::FailedPrecondition,
+                          "operator_role_missing",
+                          false,
+                      ))?;
+                      if registered.project != operator.project {
+                          return Err(ConsoleError::new(
+                              StableConsoleCode::PermissionDenied,
+                              "operator_role_project_mismatch",
+                              false,
+                          ));
+                      }
+                  }
+                  let detail = identity.fingerprint;
+                  self.commit(
+                      identity,
+                      MutationResult::Operator(operator.clone()),
+                      AuditInput {
+                          id: audit_id,
+                          project: operator.project,
+                          actor: None,
+                          kind: AuditKind::OperatorRegistered,
+                          subject: operator.id.0,
+                          occurred_at_ms,
+                          detail,
+                      },
+                      |candidate| {
+                          candidate.operators.insert(operator.id, operator);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn open_session(
+                  &mut self,
+                  identity: CommandIdentity,
+                  session: ConsoleSession,
+                  audit_id: AuditId,
+              ) -> Result<MutationReceipt, ConsoleError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  if session.generation == 0
+                      || session.issued_at_ms == 0
+                      || session.expires_at_ms <= session.issued_at_ms
+                      || session.revoked
+                      || !session.mfa_verified
+                  {
+                      return Err(ConsoleError::invalid("console_session_invalid"));
+                  }
+                  if self.sessions.contains_key(&session.id) {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::AlreadyExists,
+                          "session_exists",
+                          false,
+                      ));
+                  }
+                  if self.sessions.len() >= self.limits.sessions {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::ResourceExhausted,
+                          "session_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let operator = self.active_operator(session.project, session.operator)?;
+                  if operator.disabled {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::Unauthenticated,
+                          "operator_disabled",
+                          false,
+                      ));
+                  }
+                  let detail = identity.fingerprint;
+                  self.commit(
+                      identity,
+                      MutationResult::Session(session),
+                      AuditInput {
+                          id: audit_id,
+                          project: session.project,
+                          actor: Some(session.operator),
+                          kind: AuditKind::SessionOpened,
+                          subject: session.id.0,
+                          occurred_at_ms: session.issued_at_ms,
+                          detail,
+                      },
+                      |candidate| {
+                          candidate.sessions.insert(session.id, session);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn request_action(
+                  &mut self,
+                  identity: CommandIdentity,
+                  session: SessionId,
+                  action_id: ActionId,
+                  kind: DangerousActionKind,
+                  payload_digest: Fingerprint,
+                  policy: ApprovalPolicy,
+                  now_ms: u64,
+                  audit_id: AuditId,
+              ) -> Result<MutationReceipt, ConsoleError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let principal = self.authorize(session, kind.permission(), now_ms)?;
+                  let policy = policy.validate()?;
+                  if self.actions.contains_key(&action_id) {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::AlreadyExists,
+                          "action_exists",
+                          false,
+                      ));
+                  }
+                  if self.actions.len() >= self.limits.actions {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::ResourceExhausted,
+                          "action_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let expires_at_ms = now_ms.checked_add(policy.expires_after_ms).ok_or_else(|| ConsoleError::new(
+                      StableConsoleCode::OutOfRange,
+                      "action_expiry_overflow",
+                      false,
+                  ))?;
+                  let action = DangerousAction {
+                      id: action_id,
+                      project: principal.project,
+                      kind,
+                      payload_digest,
+                      requester: principal.operator,
+                      approvals: BTreeSet::new(),
+                      policy,
+                      requested_at_ms: now_ms,
+                      expires_at_ms,
+                      state: ActionState::Pending,
+                      revision: 1,
+                  };
+                  self.commit(
+                      identity,
+                      MutationResult::Action(action.clone()),
+                      AuditInput {
+                          id: audit_id,
+                          project: action.project,
+                          actor: Some(action.requester),
+                          kind: AuditKind::ActionRequested,
+                          subject: action.id.0,
+                          occurred_at_ms: now_ms,
+                          detail: action.payload_digest,
+                      },
+                      |candidate| {
+                          candidate.actions.insert(action.id, action);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn approve_action(
+                  &mut self,
+                  identity: CommandIdentity,
+                  session: SessionId,
+                  action_id: ActionId,
+                  expected_revision: u64,
+                  now_ms: u64,
+                  audit_id: AuditId,
+              ) -> Result<MutationReceipt, ConsoleError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let action = self.action_for_update(action_id, expected_revision, now_ms)?.clone();
+                  let principal = self.authorize(session, action.kind.permission(), now_ms)?;
+                  if principal.project != action.project {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::PermissionDenied,
+                          "action_project_mismatch",
+                          false,
+                      ));
+                  }
+                  if !action.policy.requester_may_approve && principal.operator == action.requester {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::PermissionDenied,
+                          "requester_approval_forbidden",
+                          false,
+                      ));
+                  }
+                  if action.approvals.contains(&principal.operator) {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::AlreadyExists,
+                          "approval_exists",
+                          false,
+                      ));
+                  }
+                  let mut updated = action;
+                  updated.approvals.insert(principal.operator);
+                  updated.revision = next_revision(updated.revision)?;
+                  if updated.approvals.len() >= updated.policy.required_approvals {
+                      updated.state = ActionState::Ready;
+                  }
+                  self.commit(
+                      identity,
+                      MutationResult::Action(updated.clone()),
+                      AuditInput {
+                          id: audit_id,
+                          project: updated.project,
+                          actor: Some(principal.operator),
+                          kind: AuditKind::ActionApproved,
+                          subject: updated.id.0,
+                          occurred_at_ms: now_ms,
+                          detail: identity.fingerprint,
+                      },
+                      |candidate| {
+                          candidate.actions.insert(updated.id, updated);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn execute_action(
+                  &mut self,
+                  identity: CommandIdentity,
+                  session: SessionId,
+                  action_id: ActionId,
+                  expected_revision: u64,
+                  now_ms: u64,
+                  audit_id: AuditId,
+              ) -> Result<MutationReceipt, ConsoleError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let action = self.action_for_update(action_id, expected_revision, now_ms)?.clone();
+                  if action.state != ActionState::Ready {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::FailedPrecondition,
+                          "action_not_ready",
+                          false,
+                      ));
+                  }
+                  let principal = self.authorize(session, action.kind.permission(), now_ms)?;
+                  if principal.project != action.project {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::PermissionDenied,
+                          "action_project_mismatch",
+                          false,
+                      ));
+                  }
+                  if !action.policy.executor_may_approve && action.approvals.contains(&principal.operator) {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::PermissionDenied,
+                          "approver_execution_forbidden",
+                          false,
+                      ));
+                  }
+                  let mut updated = action;
+                  updated.state = ActionState::Executed {
+                      executor: principal.operator,
+                      executed_at_ms: now_ms,
+                  };
+                  updated.revision = next_revision(updated.revision)?;
+                  self.commit(
+                      identity,
+                      MutationResult::Action(updated.clone()),
+                      AuditInput {
+                          id: audit_id,
+                          project: updated.project,
+                          actor: Some(principal.operator),
+                          kind: AuditKind::ActionExecuted,
+                          subject: updated.id.0,
+                          occurred_at_ms: now_ms,
+                          detail: updated.payload_digest,
+                      },
+                      |candidate| {
+                          candidate.actions.insert(updated.id, updated);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn revoke_session(
+                  &mut self,
+                  identity: CommandIdentity,
+                  session: SessionId,
+                  expected_generation: u64,
+                  now_ms: u64,
+                  audit_id: AuditId,
+              ) -> Result<MutationReceipt, ConsoleError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let current = self.sessions.get(&session).copied().ok_or_else(|| ConsoleError::new(
+                      StableConsoleCode::NotFound,
+                      "session_not_found",
+                      false,
+                  ))?;
+                  if current.generation != expected_generation {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::Aborted,
+                          "session_generation_mismatch",
+                          true,
+                      ));
+                  }
+                  if current.revoked {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::FailedPrecondition,
+                          "session_already_revoked",
+                          false,
+                      ));
+                  }
+                  let mut updated = current;
+                  updated.revoked = true;
+                  updated.generation = updated.generation.checked_add(1).ok_or_else(|| ConsoleError::new(
+                      StableConsoleCode::OutOfRange,
+                      "session_generation_overflow",
+                      false,
+                  ))?;
+                  self.commit(
+                      identity,
+                      MutationResult::Session(updated),
+                      AuditInput {
+                          id: audit_id,
+                          project: updated.project,
+                          actor: Some(updated.operator),
+                          kind: AuditKind::SessionRevoked,
+                          subject: updated.id.0,
+                          occurred_at_ms: now_ms,
+                          detail: identity.fingerprint,
+                      },
+                      |candidate| {
+                          candidate.sessions.insert(updated.id, updated);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn expire_actions(
+                  &mut self,
+                  now_ms: u64,
+                  audit_ids: &[AuditId],
+                  detail: Fingerprint,
+              ) -> Result<Vec<DangerousAction>, ConsoleError> {
+                  if now_ms == 0 {
+                      return Err(ConsoleError::invalid("now_zero"));
+                  }
+                  let ids = self
+                      .actions
+                      .values()
+                      .filter(|action| {
+                          action.expires_at_ms <= now_ms
+                              && matches!(action.state, ActionState::Pending | ActionState::Ready)
+                      })
+                      .map(|action| action.id)
+                      .collect::<Vec<_>>();
+                  if ids.len() != audit_ids.len() {
+                      return Err(ConsoleError::invalid("action_expiry_audit_count_mismatch"));
+                  }
+                  if self.audit.len().checked_add(ids.len()).map_or(true, |total| total > self.limits.audit_events) {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::ResourceExhausted,
+                          "audit_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  let mut expired = Vec::with_capacity(ids.len());
+                  for (id, audit_id) in ids.into_iter().zip(audit_ids.iter().copied()) {
+                      let action = candidate.actions.get_mut(&id).expect("selected action exists");
+                      action.state = ActionState::Expired { expired_at_ms: now_ms };
+                      action.revision = next_revision(action.revision)?;
+                      expired.push(action.clone());
+                      candidate.append_audit(AuditInput {
+                          id: audit_id,
+                          project: action.project,
+                          actor: None,
+                          kind: AuditKind::ActionExpired,
+                          subject: action.id.0,
+                          occurred_at_ms: now_ms,
+                          detail,
+                      })?;
+                  }
+                  *self = candidate;
+                  Ok(expired)
+              }
+
+              pub fn authorize(
+                  &self,
+                  session: SessionId,
+                  permission: Permission,
+                  now_ms: u64,
+              ) -> Result<Principal, ConsoleError> {
+                  let session = self.sessions.get(&session).copied().ok_or_else(|| ConsoleError::new(
+                      StableConsoleCode::Unauthenticated,
+                      "console_session_invalid",
+                      false,
+                  ))?;
+                  if session.revoked
+                      || !session.mfa_verified
+                      || now_ms < session.issued_at_ms
+                      || now_ms >= session.expires_at_ms
+                  {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::Unauthenticated,
+                          "console_session_invalid",
+                          false,
+                      ));
+                  }
+                  let operator = self.active_operator(session.project, session.operator)?;
+                  if operator.disabled {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::Unauthenticated,
+                          "operator_disabled",
+                          false,
+                      ));
+                  }
+                  let allowed = operator.roles.iter().any(|role| {
+                      self.roles
+                          .get(role)
+                          .is_some_and(|role| role.project == session.project && role.permissions.contains(&permission))
+                  });
+                  if !allowed {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::PermissionDenied,
+                          "permission_denied",
+                          false,
+                      ));
+                  }
+                  Ok(Principal {
+                      project: session.project,
+                      operator: session.operator,
+                      session: session.id,
+                      session_generation: session.generation,
+                  })
+              }
+
+              fn active_operator(
+                  &self,
+                  project: ProjectId,
+                  operator: OperatorId,
+              ) -> Result<&Operator, ConsoleError> {
+                  let operator = self.operators.get(&operator).ok_or_else(|| ConsoleError::new(
+                      StableConsoleCode::Unauthenticated,
+                      "operator_not_found",
+                      false,
+                  ))?;
+                  if operator.project != project {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::PermissionDenied,
+                          "operator_project_mismatch",
+                          false,
+                      ));
+                  }
+                  Ok(operator)
+              }
+
+              fn action_for_update(
+                  &self,
+                  id: ActionId,
+                  expected_revision: u64,
+                  now_ms: u64,
+              ) -> Result<&DangerousAction, ConsoleError> {
+                  let action = self.actions.get(&id).ok_or_else(|| ConsoleError::new(
+                      StableConsoleCode::NotFound,
+                      "action_not_found",
+                      false,
+                  ))?;
+                  if action.revision != expected_revision {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::Aborted,
+                          "action_revision_mismatch",
+                          true,
+                      ));
+                  }
+                  if action.expires_at_ms <= now_ms {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::FailedPrecondition,
+                          "action_expired",
+                          false,
+                      ));
+                  }
+                  if !matches!(action.state, ActionState::Pending | ActionState::Ready) {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::FailedPrecondition,
+                          "action_terminal",
+                          false,
+                      ));
+                  }
+                  Ok(action)
+              }
+
+              fn replay(
+                  &self,
+                  identity: CommandIdentity,
+              ) -> Result<Option<MutationReceipt>, ConsoleError> {
+                  let Some(stored) = self.receipts.get(&identity.command) else {
+                      return Ok(None);
+                  };
+                  if stored.fingerprint != identity.fingerprint {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::AlreadyExists,
+                          "command_fingerprint_conflict",
+                          false,
+                      ));
+                  }
+                  let mut receipt = stored.receipt.clone();
+                  receipt.duplicate = true;
+                  Ok(Some(receipt))
+              }
+
+              fn commit<F>(
+                  &mut self,
+                  identity: CommandIdentity,
+                  result: MutationResult,
+                  audit: AuditInput,
+                  apply: F,
+              ) -> Result<MutationReceipt, ConsoleError>
+              where
+                  F: FnOnce(&mut Self) -> Result<(), ConsoleError>,
+              {
+                  if self.receipts.len() >= self.limits.receipts {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::ResourceExhausted,
+                          "receipt_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  if self.audit.len() >= self.limits.audit_events {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::ResourceExhausted,
+                          "audit_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  apply(&mut candidate)?;
+                  let sequence = candidate.append_audit(audit)?;
+                  let receipt = MutationReceipt {
+                      command: identity.command,
+                      result,
+                      audit_sequence: sequence,
+                      duplicate: false,
+                  };
+                  candidate.receipts.insert(
+                      identity.command,
+                      StoredReceipt {
+                          fingerprint: identity.fingerprint,
+                          receipt: receipt.clone(),
+                      },
+                  );
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              fn append_audit(&mut self, input: AuditInput) -> Result<u64, ConsoleError> {
+                  if input.occurred_at_ms == 0 {
+                      return Err(ConsoleError::invalid("audit_time_zero"));
+                  }
+                  if self.audit.iter().any(|event| event.id == input.id) {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::AlreadyExists,
+                          "audit_id_exists",
+                          false,
+                      ));
+                  }
+                  if self.audit.len() >= self.limits.audit_events {
+                      return Err(ConsoleError::new(
+                          StableConsoleCode::ResourceExhausted,
+                          "audit_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let sequence = self.next_audit_sequence;
+                  self.next_audit_sequence = sequence.checked_add(1).ok_or_else(|| ConsoleError::new(
+                      StableConsoleCode::OutOfRange,
+                      "audit_sequence_overflow",
+                      false,
+                  ))?;
+                  self.audit.push(AuditEvent {
+                      id: input.id,
+                      sequence,
+                      project: input.project,
+                      actor: input.actor,
+                      kind: input.kind,
+                      subject: input.subject,
+                      occurred_at_ms: input.occurred_at_ms,
+                      detail_digest: input.detail,
+                  });
+                  Ok(sequence)
+              }
+
+              #[must_use]
+              pub fn action(&self, id: ActionId) -> Option<&DangerousAction> {
+                  self.actions.get(&id)
+              }
+
+              #[must_use]
+              pub fn session(&self, id: SessionId) -> Option<&ConsoleSession> {
+                  self.sessions.get(&id)
+              }
+
+              #[must_use]
+              pub fn audit(&self) -> &[AuditEvent] {
+                  &self.audit
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct Principal {
+              pub project: ProjectId,
+              pub operator: OperatorId,
+              pub session: SessionId,
+              pub session_generation: u64,
+          }
+
+          #[derive(Clone, Copy, Debug)]
+          struct AuditInput {
+              id: AuditId,
+              project: ProjectId,
+              actor: Option<OperatorId>,
+              kind: AuditKind,
+              subject: [u8; 16],
+              occurred_at_ms: u64,
+              detail: Fingerprint,
+          }
+
+          fn next_revision(current: u64) -> Result<u64, ConsoleError> {
+              current.checked_add(1).ok_or_else(|| ConsoleError::new(
+                  StableConsoleCode::OutOfRange,
+                  "revision_overflow",
+                  false,
+              ))
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn ident<T>(byte: u8, constructor: fn([u8; 16]) -> Result<T, ConsoleError>) -> T {
+                  constructor([byte; 16]).unwrap()
+              }
+
+              fn cmd(byte: u8) -> CommandIdentity {
+                  CommandIdentity {
+                      command: ident(byte, CommandId::new),
+                      fingerprint: Fingerprint::new([byte; 32]).unwrap(),
+                  }
+              }
+
+              fn limits(audit_events: usize) -> Limits {
+                  Limits {
+                      roles: 16,
+                      operators: 16,
+                      sessions: 16,
+                      actions: 16,
+                      receipts: 64,
+                      audit_events,
+                  }
+              }
+
+              fn provision(audit_events: usize) -> (ConsoleRegistry, ProjectId, OperatorId, OperatorId, OperatorId, SessionId, SessionId, SessionId) {
+                  let mut registry = ConsoleRegistry::new(limits(audit_events)).unwrap();
+                  let project = ident(1, ProjectId::new);
+                  let role = Role {
+                      id: ident(2, RoleId::new),
+                      project,
+                      permissions: BTreeSet::from([Permission::KeyRotate, Permission::AuditRead]),
+                      revision: 1,
+                  };
+                  registry.register_role(cmd(1), role.clone(), ident(1, AuditId::new), 1).unwrap();
+                  let operators = [ident(3, OperatorId::new), ident(4, OperatorId::new), ident(5, OperatorId::new)];
+                  for (index, operator) in operators.iter().copied().enumerate() {
+                      registry.register_operator(
+                          cmd(u8::try_from(index + 2).unwrap()),
+                          Operator { id: operator, project, roles: BTreeSet::from([role.id]), disabled: false, revision: 1 },
+                          ident(u8::try_from(index + 2).unwrap(), AuditId::new),
+                          u64::try_from(index + 2).unwrap(),
+                      ).unwrap();
+                  }
+                  let sessions = [ident(6, SessionId::new), ident(7, SessionId::new), ident(8, SessionId::new)];
+                  for (index, (session, operator)) in sessions.iter().copied().zip(operators).enumerate() {
+                      registry.open_session(
+                          cmd(u8::try_from(index + 5).unwrap()),
+                          ConsoleSession { id: session, project, operator, generation: 1, issued_at_ms: 10, expires_at_ms: 1000, mfa_verified: true, revoked: false },
+                          ident(u8::try_from(index + 5).unwrap(), AuditId::new),
+                      ).unwrap();
+                  }
+                  (registry, project, operators[0], operators[1], operators[2], sessions[0], sessions[1], sessions[2])
+              }
+
+              #[test]
+              fn mfa_and_rbac_are_required_before_action_creation() {
+                  let (mut registry, project, requester, _, _, session, _, _) = provision(64);
+                  let mut invalid = *registry.session(session).unwrap();
+                  invalid.id = ident(9, SessionId::new);
+                  invalid.mfa_verified = false;
+                  assert_eq!(registry.open_session(cmd(20), invalid, ident(20, AuditId::new)).unwrap_err().reason(), "console_session_invalid");
+                  assert_eq!(registry.authorize(session, Permission::DataDelete, 20).unwrap_err().code(), StableConsoleCode::PermissionDenied);
+                  assert_eq!(registry.authorize(session, Permission::KeyRotate, 20).unwrap().operator, requester);
+                  assert_eq!(registry.authorize(session, Permission::KeyRotate, 20).unwrap().project, project);
+              }
+
+              #[test]
+              fn dangerous_action_requires_distinct_approvers_and_executor() {
+                  let (mut registry, _, requester, approver, executor, requester_session, approver_session, executor_session) = provision(64);
+                  let action = ident(10, ActionId::new);
+                  let policy = ApprovalPolicy { required_approvals: 1, requester_may_approve: false, executor_may_approve: false, expires_after_ms: 100 };
+                  registry.request_action(cmd(20), requester_session, action, DangerousActionKind::RotateKey, Fingerprint::new([10;32]).unwrap(), policy, 20, ident(20, AuditId::new)).unwrap();
+                  assert_eq!(registry.approve_action(cmd(21), requester_session, action, 1, 21, ident(21, AuditId::new)).unwrap_err().reason(), "requester_approval_forbidden");
+                  registry.approve_action(cmd(22), approver_session, action, 1, 22, ident(22, AuditId::new)).unwrap();
+                  assert_eq!(registry.execute_action(cmd(23), approver_session, action, 2, 23, ident(23, AuditId::new)).unwrap_err().reason(), "approver_execution_forbidden");
+                  let receipt = registry.execute_action(cmd(24), executor_session, action, 2, 24, ident(24, AuditId::new)).unwrap();
+                  assert!(matches!(receipt.result, MutationResult::Action(DangerousAction { state: ActionState::Executed { executor: actual, .. }, .. }) if actual == executor));
+                  assert_ne!(requester, approver);
+              }
+
+              #[test]
+              fn exact_command_replay_does_not_duplicate_audit() {
+                  let (mut registry, _, _, _, _, session, _, _) = provision(64);
+                  let action = ident(10, ActionId::new);
+                  let identity = cmd(20);
+                  let policy = ApprovalPolicy { required_approvals: 1, requester_may_approve: false, executor_may_approve: false, expires_after_ms: 100 };
+                  let first = registry.request_action(identity, session, action, DangerousActionKind::RotateKey, Fingerprint::new([10;32]).unwrap(), policy, 20, ident(20, AuditId::new)).unwrap();
+                  let audit_count = registry.audit().len();
+                  let replay = registry.request_action(identity, session, action, DangerousActionKind::RotateKey, Fingerprint::new([10;32]).unwrap(), policy, 20, ident(20, AuditId::new)).unwrap();
+                  assert!(replay.duplicate);
+                  assert_eq!(replay.audit_sequence, first.audit_sequence);
+                  assert_eq!(registry.audit().len(), audit_count);
+                  let changed = CommandIdentity { fingerprint: Fingerprint::new([99;32]).unwrap(), ..identity };
+                  assert_eq!(registry.request_action(changed, session, ident(11, ActionId::new), DangerousActionKind::RotateKey, Fingerprint::new([11;32]).unwrap(), policy, 21, ident(21, AuditId::new)).unwrap_err().reason(), "command_fingerprint_conflict");
+              }
+
+              #[test]
+              fn session_generation_revoke_is_fenced() {
+                  let (mut registry, _, _, _, _, session, _, _) = provision(64);
+                  assert_eq!(registry.revoke_session(cmd(20), session, 2, 20, ident(20, AuditId::new)).unwrap_err().reason(), "session_generation_mismatch");
+                  assert!(!registry.session(session).unwrap().revoked);
+                  registry.revoke_session(cmd(21), session, 1, 21, ident(21, AuditId::new)).unwrap();
+                  assert!(registry.session(session).unwrap().revoked);
+                  assert_eq!(registry.authorize(session, Permission::KeyRotate, 22).unwrap_err().code(), StableConsoleCode::Unauthenticated);
+              }
+
+              #[test]
+              fn audit_capacity_failure_preserves_action_state() {
+                  let (mut registry, _, _, _, _, session, _, _) = provision(8);
+                  assert_eq!(registry.audit().len(), 7);
+                  let action = ident(10, ActionId::new);
+                  let policy = ApprovalPolicy { required_approvals: 1, requester_may_approve: false, executor_may_approve: false, expires_after_ms: 100 };
+                  registry.request_action(cmd(20), session, action, DangerousActionKind::RotateKey, Fingerprint::new([10;32]).unwrap(), policy, 20, ident(20, AuditId::new)).unwrap();
+                  assert_eq!(registry.audit().len(), 8);
+                  let error = registry.approve_action(cmd(21), ident(7, SessionId::new), action, 1, 21, ident(21, AuditId::new)).unwrap_err();
+                  assert_eq!(error.reason(), "audit_capacity_exhausted");
+                  assert!(registry.action(action).unwrap().approvals.is_empty());
+              }
+
+              #[test]
+              fn multi_action_expiry_is_all_or_nothing_under_audit_capacity() {
+                  let (mut registry, _, _, _, _, session, _, _) = provision(10);
+                  let policy = ApprovalPolicy { required_approvals: 1, requester_may_approve: false, executor_may_approve: false, expires_after_ms: 5 };
+                  for (index, action) in [ident(10, ActionId::new), ident(11, ActionId::new)].into_iter().enumerate() {
+                      registry.request_action(cmd(u8::try_from(20+index).unwrap()), session, action, DangerousActionKind::RotateKey, Fingerprint::new([u8::try_from(10+index).unwrap();32]).unwrap(), policy, 20, ident(u8::try_from(20+index).unwrap(), AuditId::new)).unwrap();
+                  }
+                  assert_eq!(registry.audit().len(), 9);
+                  let error = registry.expire_actions(25, &[ident(30, AuditId::new), ident(31, AuditId::new)], Fingerprint::new([30;32]).unwrap()).unwrap_err();
+                  assert_eq!(error.reason(), "audit_capacity_exhausted");
+                  assert!(matches!(registry.action(ident(10, ActionId::new)).unwrap().state, ActionState::Pending));
+                  assert!(matches!(registry.action(ident(11, ActionId::new)).unwrap().state, ActionState::Pending));
+              }
+          }
+          EOF
+
+          cat > crates/trnm-console-core/README.md <<'EOF'
+          # trnm-console-core
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-console-core`  
+          Workspace class: `root`  
+          Lifecycle: `product-library`  
+          Owner role: `console-admin`
+
+          ## Status and authority
+
+          This document is the module contract for Console RBAC, MFA-bound sessions, dangerous-action approval and contiguous audit state. It is a source candidate and does not establish complete Console API/UI, operator identity or production administration approval.
+
+          ## Responsibilities
+
+          The crate owns bounded roles, operators, sessions, permissions, session generations, dangerous-action policy, distinct approvals/execution, exact command receipts and contiguous audit events.
+
+          It does not authenticate passwords or WebAuthn, expose HTTP/UI, persist state, execute dangerous effects, store secrets or replace organization identity management.
+
+          ## Architecture and dependencies
+
+          Operator authentication produces an MFA-bound session. Console API adapters invoke typed services backed by a durable repository implementing these transitions. Dangerous effects execute only after the source transaction commits and the approved action is handed to an outbox/reconciliation adapter.
+
+          Audit append is part of the same logical mutation; a mutation cannot succeed if the audit record cannot be reserved and written.
+
+          ## Public contracts
+
+          Roles and operators are project-scoped. Every session binds operator, project, generation, issue/expiry and MFA. Every action binds kind, payload digest, requester, expiry, revision and approval policy.
+
+          Approval and execution permissions are derived from current roles. Policies may forbid requester approval and approver execution. Exact command replay returns the original audit sequence without appending another event.
+
+          ## Correctness and failure model
+
+          Stale action/session revisions fail before mutation. Audit or receipt capacity failure preserves business state. Multi-action expiry uses a candidate copy so either every selected state and audit event commits or none does.
+
+          Disabled, revoked, non-MFA or expired sessions cannot authorize. Unknown permissions fail closed. Action execution requires Ready state and the exact current revision.
+
+          ## Security and privacy
+
+          Dangerous actions use least privilege, MFA and configurable separation of duties. Payloads are represented by digests; raw data, credentials, tokens and private operator details are excluded from logs and metric labels.
+
+          A production audit store requires tamper evidence, retention, access control, export and independent review. This in-memory sequence is not a production audit ledger.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-console-core --all-targets --locked
+          cargo clippy --package trnm-console-core --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover MFA/RBAC, separation of duties, exact replay without duplicate audit, session generation fencing, audit-capacity atomicity and all-or-nothing bulk expiry.
+
+          ## Operations
+
+          Adapters expose session/authz result, action lifecycle, approval count, stale revision, audit sequence/capacity and dangerous-effect reconciliation signals with bounded labels. Operator IDs and payloads are not labels.
+
+          ## Compatibility and evidence
+
+          Complete #145 requires the full Nakama Console API/UI denominator, operator login/session behavior, RBAC actions, MFA, audit formats, large-data workflows, accessibility and official browser/API differential.
+
+          This core does not prove identity-provider integration, audit durability, UI correctness, dangerous-effect safety or production governance.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P0-SERVER-001`, `GAP-P0-DATA-001`, `GAP-P0-SCOPE-001`, `GAP-P0-CI-001`, `GAP-P0-CRYPTO-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires durable repositories and audit, production operator identity/MFA, generated Console API/UI, dangerous-effect outbox, permission-negative matrices, accessibility/load tests, retained exact-head evidence and independent application-security/operations review.
+          EOF
+
+      - name: Register Console module fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          member='crates/trnm-console-core'
+          p=Path('Cargo.toml'); t=p.read_text();
+          if f'"{member}"' not in t: p.write_text(t.replace(']\nexclude = [',f'  "{member}",\n]\nexclude = [',1))
+          mp=Path('docs/status/MODULE_DOCUMENTATION.json'); m=json.loads(mp.read_text())
+          if not any(r['id']=='trnm-console-core' for r in m['modules']):
+              m['modules'].append({'id':'trnm-console-core','path':member,'manifest':f'{member}/Cargo.toml','documentation':f'{member}/README.md','workspace':'root','lifecycle':'product-library','maturity':'source-candidate','owner_role':'console-admin','authority':'Console RBAC MFA dangerous-action approval and audit state','blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-DATA-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P0-CRYPTO-001','GAP-P1-REVIEW-001'],'claim_credit':False})
+          m['modules'].sort(key=lambda r:r['id']); m['summary'].update({'module_count':len(m['modules']),'documented_count':len(m['modules']),'root_workspace_count':sum(r['workspace']=='root' for r in m['modules']),'isolated_workspace_count':sum(r['workspace']=='isolated' for r in m['modules']),'undocumented_count':0}); mp.write_text(json.dumps(m,indent=2)+'\n')
+          ap=Path('docs/development/RUST_PACKAGE_AUTHORITY.json'); a=json.loads(ap.read_text());
+          if member not in a['workspace']['members']: a['workspace']['members'].append(member); a['workspace']['members'].sort()
+          for k in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'): a.setdefault('claim_boundary',{})[k]=False
+          ap.write_text(json.dumps(a,indent=2)+'\n')
+          ip=Path('docs/status/IMPLEMENTATION_INVENTORY.json'); inv=json.loads(ip.read_text())
+          if not any(r.get('id')=='COMP-CONSOLE-CORE' for r in inv['components']):
+              inv['components'].append({'id':'COMP-CONSOLE-CORE','path':member,'kind':'rust-library','workstreams':['W13'],'status':'source-candidate','implemented':['project-scoped roles operators and MFA sessions','dangerous-action separation of duties and exact receipts','contiguous audit sequence with capacity atomicity'],'missing':['production operator identity MFA and durable audit','complete Console API and Rust/WASM UI','dangerous-effect outbox and permission matrix','browser/API differential accessibility load and independent acceptance'],'blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-DATA-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P0-CRYPTO-001','GAP-P1-REVIEW-001'],'parity_ids':[],'evidence_ids':[],'claim_credit':False})
+          ip.write_text(json.dumps(inv,indent=2)+'\n')
+          sp=Path('docs/status/CURRENT_STATE.json'); st=json.loads(sp.read_text()); st.setdefault('implementation',{})['console_rbac_audit_source_candidate']=True; st['implementation']['complete_console_provider_iap_surface']=False
+          for k in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'): st.setdefault('claims',{})[k]=False
+          sp.write_text(json.dumps(st,indent=2)+'\n')
+          PY
+
+      - name: Publish Draft and qualify exact source
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git commit -m 'feat(console): add RBAC MFA approval and audit core'
+          head_sha="$(git rev-parse HEAD)"; head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Source candidate for #145, stacked on Runtime Wave 7.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds project-scoped RBAC, MFA-bound sessions, session generation fencing, dangerous-action separation of duties, exact command receipts and contiguous audit state with no-mutation capacity failures.
+
+          Production identity/MFA, durable tamper-evident audit, full Console API/UI, dangerous-effect delivery, accessibility/load and independent security/operations acceptance remain open. No compatibility or production credit.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 8] Add Console RBAC MFA and audit core' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do cargo test --manifest-path "$manifest" --all-targets --locked; cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings; done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "Console Wave 8 carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and all claim ceilings remain binding."
+          gh issue comment 145 --repo "$REPOSITORY" --body "Console core carrier status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`; #145 remains open pending complete API/UI, durable audit and evidence."
