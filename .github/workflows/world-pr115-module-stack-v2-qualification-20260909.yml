@@ -14,10 +14,10 @@ concurrency:
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_BASE_SHA: 956462f95675d3d4db89af03bc4b7cc8c9a3c975
-  WORLD_HEAD_SHA: 3fc4c623dc8f0f157d20ffac7ba360023222070c
-  WORLD_HEAD_TREE: 2a476387244ce5aae278fb2267b6c24e960c3b3f
-  WORLD_MERGE_SHA: cc7e51e0e10b2b42a2416bd9b412fb13490c49b9
-  WORLD_MERGE_TREE: 2a476387244ce5aae278fb2267b6c24e960c3b3f
+  WORLD_HEAD_SHA: 3ca6b630fba1bad2dfe4d1d9fb184d9adcbf7eda
+  WORLD_HEAD_TREE: be9eb7563c64bd267e44e7f029c046c66344dff2
+  WORLD_MERGE_SHA: d4ed80b32a5f9bbe73401ef6ae93171629d3ca4a
+  WORLD_MERGE_TREE: be9eb7563c64bd267e44e7f029c046c66344dff2
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_INCREMENTAL: '0'
@@ -58,7 +58,6 @@ jobs:
             python3 - "$dir" <<'PY'
           from pathlib import Path
           import sys
-
           root = Path(sys.argv[1])
           lib = root / "trillionnium/crates/trnm-campaign-core/src/lib.rs"
           text = lib.read_text(encoding="utf-8")
@@ -95,9 +94,7 @@ jobs:
           set -euo pipefail
           rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
           rustup override set "$WORLD_RUST_TOOLCHAIN"
-          sudo rm -f \
-            /etc/apt/sources.list.d/google-chrome.list \
-            /etc/apt/sources.list.d/google-chrome.list.save
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.list.save
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev libudev-dev libx11-dev libxi-dev \
@@ -116,7 +113,6 @@ jobs:
           merge_status=0
           (set -euo pipefail; cd "$RUNNER_TEMP/world-head"; bash scripts/run-trnm-world-v6-qualification-v2.sh source) >"$head_log" 2>&1 || head_status=$?
           (set -euo pipefail; cd "$RUNNER_TEMP/world-merge"; bash scripts/run-trnm-world-v6-qualification-v2.sh source) >"$merge_log" 2>&1 || merge_status=$?
-
           actual_head="$(git -C "$RUNNER_TEMP/world-head" rev-parse HEAD)"
           actual_head_tree="$(git -C "$RUNNER_TEMP/world-head" rev-parse 'HEAD^{tree}')"
           actual_merge="$(git -C "$RUNNER_TEMP/world-merge" rev-parse HEAD)"
@@ -128,10 +124,8 @@ jobs:
             printf 'world_merge=%s\nworld_merge_tree=%s\nworld_merge_parents=%s\n' "$actual_merge" "$actual_merge_tree" "$actual_parents"
             printf 'source_head_exit=%s\nsource_merge_exit=%s\nproduction_authorization=not_granted\n```\n' "$head_status" "$merge_status"
           } >> "$GITHUB_STEP_SUMMARY"
-
           if test "$head_status" -ne 0; then printf '%s\n' '--- exact head source failure tail ---'; tail -n 300 "$head_log"; else printf 'WORLD_PR116_HEAD_SOURCE=PASS\n'; fi
           if test "$merge_status" -ne 0; then printf '%s\n' '--- prospective merge source failure tail ---'; tail -n 300 "$merge_log"; else printf 'WORLD_PR116_MERGE_SOURCE=PASS\n'; fi
-
           test "$actual_head" = "$WORLD_HEAD_SHA"
           test "$actual_head_tree" = "$WORLD_HEAD_TREE"
           test "$actual_merge" = "$WORLD_MERGE_SHA"
