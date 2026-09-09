@@ -1,0 +1,993 @@
+name: tmp-conformance-wave12
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-conformance-wave12.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-kms-adapter-20260909
+  FEATURE_BRANCH: feature/plan-v32-conformance-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-conformance-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Wait for exact Wave 11 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 960); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 30
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write denominator oracle and SDK conformance core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-conformance-core/src
+          cat > crates/trnm-conformance-core/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-conformance-core"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Exact denominator oracle normalizer and official-consumer conformance state"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-conformance-core/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::collections::{BTreeMap, BTreeSet};
+
+          pub const REQUIRED_REPEAT_RUNS: u8 = 10;
+          pub const MAX_LEAVES: usize = 100_000;
+          pub const MAX_CASES: usize = 100_000;
+          pub const MAX_CONSUMERS: usize = 4096;
+          pub const MAX_NORMALIZERS: usize = 1024;
+          pub const MAX_OBSERVATIONS: usize = 2_000_000;
+          pub const MAX_FIELD_PATH_BYTES: usize = 512;
+          pub const MAX_NAME_BYTES: usize = 256;
+
+          macro_rules! id16 {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(value: [u8; 16]) -> Result<Self, ConformanceError> {
+                          if value.iter().all(|byte| *byte == 0) {
+                              Err(ConformanceError::invalid($reason))
+                          } else {
+                              Ok(Self(value))
+                          }
+                      }
+                  }
+              };
+          }
+
+          id16!(LeafId, "leaf_id_zero");
+          id16!(CaseId, "case_id_zero");
+          id16!(ConsumerId, "consumer_id_zero");
+          id16!(ObservationId, "observation_id_zero");
+          id16!(NormalizerId, "normalizer_id_zero");
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Digest32([u8; 32]);
+
+          impl Digest32 {
+              pub fn new(value: [u8; 32]) -> Result<Self, ConformanceError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      Err(ConformanceError::invalid("digest_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum DenominatorFamily {
+              Source,
+              Api,
+              Rtapi,
+              Console,
+              Runtime,
+              Config,
+              Cli,
+              Database,
+              Data,
+              Metrics,
+              Operations,
+              Sdk,
+              Providers,
+              Iap,
+          }
+
+          #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Profile(String);
+
+          impl Profile {
+              pub fn new(value: impl Into<String>) -> Result<Self, ConformanceError> {
+                  let value = value.into();
+                  validate_name(&value, "profile_invalid")?;
+                  Ok(Self(value))
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct SourceIdentity {
+              pub repository_digest: Digest32,
+              pub commit: Digest32,
+              pub tree: Digest32,
+              pub artifact_digest: Digest32,
+              pub toolchain_digest: Digest32,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct DenominatorLeaf {
+              pub id: LeafId,
+              pub family: DenominatorFamily,
+              pub profile: Profile,
+              pub upstream: SourceIdentity,
+              pub signature_digest: Digest32,
+              pub mandatory: bool,
+              pub implementation_digest: Option<Digest32>,
+              pub test_case: CaseId,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum TransportProfile {
+              HttpJson,
+              Grpc,
+              WebSocketJson,
+              WebSocketProtobuf,
+              Runtime,
+              Database,
+              Cli,
+              ConsoleBrowser,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ConformanceCase {
+              pub id: CaseId,
+              pub profile: Profile,
+              pub transport: TransportProfile,
+              pub input_digest: Digest32,
+              pub fixture_digest: Digest32,
+              pub environment_digest: Digest32,
+              pub leaf_ids: BTreeSet<LeafId>,
+              pub required_consumers: BTreeSet<ConsumerId>,
+          }
+
+          impl ConformanceCase {
+              pub fn validate(self) -> Result<Self, ConformanceError> {
+                  if self.leaf_ids.is_empty() || self.required_consumers.is_empty() {
+                      Err(ConformanceError::invalid("conformance_case_empty_scope"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct ConsumerVersion(String);
+
+          impl ConsumerVersion {
+              pub fn new(value: impl Into<String>) -> Result<Self, ConformanceError> {
+                  let value = value.into();
+                  validate_name(&value, "consumer_version_invalid")?;
+                  Ok(Self(value))
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum ConsumerLanguage {
+              Go,
+              Java,
+              JavaScript,
+              DotNet,
+              Unity,
+              Unreal,
+              Godot,
+              Swift,
+              Cpp,
+              Rust,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct OfficialConsumer {
+              pub id: ConsumerId,
+              pub language: ConsumerLanguage,
+              pub version: ConsumerVersion,
+              pub artifact_digest: Digest32,
+              pub supported_transports: BTreeSet<TransportProfile>,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum ContractClass {
+              NonContractualTiming,
+              NonContractualTraceId,
+              NonContractualEphemeralPort,
+              Identity,
+              Authorization,
+              Money,
+              RevisionGenerationSequence,
+              Version,
+              Cursor,
+              PublicError,
+              DurableEffect,
+              Payload,
+          }
+
+          impl ContractClass {
+              #[must_use]
+              pub const fn normalizable(self) -> bool {
+                  matches!(
+                      self,
+                      Self::NonContractualTiming
+                          | Self::NonContractualTraceId
+                          | Self::NonContractualEphemeralPort
+                  )
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct NormalizerRule {
+              pub id: NormalizerId,
+              pub field_path: String,
+              pub class: ContractClass,
+              pub implementation_digest: Digest32,
+          }
+
+          impl NormalizerRule {
+              pub fn validate(self) -> Result<Self, ConformanceError> {
+                  if self.field_path.is_empty()
+                      || self.field_path.len() > MAX_FIELD_PATH_BYTES
+                      || self.field_path.bytes().any(|byte| byte.is_ascii_control())
+                  {
+                      return Err(ConformanceError::invalid("normalizer_field_path_invalid"));
+                  }
+                  if !self.class.normalizable() {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::PermissionDenied,
+                          "contractual_field_normalization_forbidden",
+                          false,
+                      ));
+                  }
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum SubjectSide {
+              ImmutableOracle,
+              InstrumentedOracle,
+              Candidate,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct AssertionCounts {
+              pub collected: u64,
+              pub executed: u64,
+              pub passed: u64,
+              pub failed: u64,
+              pub skipped: u64,
+          }
+
+          impl AssertionCounts {
+              pub fn validate(self) -> Result<Self, ConformanceError> {
+                  if self.collected == 0
+                      || self.executed == 0
+                      || self.executed > self.collected
+                      || self.passed.checked_add(self.failed).is_none_or(|value| value > self.executed)
+                      || self.skipped > self.collected
+                      || self.failed > 0
+                      || self.skipped > 0
+                      || self.passed != self.executed
+                  {
+                      Err(ConformanceError::new(
+                          StableConformanceCode::FailedPrecondition,
+                          "assertion_counts_not_fully_passing",
+                          false,
+                      ))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct Observation {
+              pub id: ObservationId,
+              pub case: CaseId,
+              pub consumer: ConsumerId,
+              pub side: SubjectSide,
+              pub attempt: u8,
+              pub subject: SourceIdentity,
+              pub raw_wire_digest: Digest32,
+              pub normalized_wire_digest: Digest32,
+              pub durable_state_digest: Digest32,
+              pub effect_digest: Digest32,
+              pub public_error_digest: Digest32,
+              pub applied_normalizers: BTreeSet<NormalizerId>,
+              pub assertions: AssertionCounts,
+              pub artifact_digest: Digest32,
+          }
+
+          impl Observation {
+              pub fn validate(self) -> Result<Self, ConformanceError> {
+                  if self.attempt == 0 || self.attempt > REQUIRED_REPEAT_RUNS {
+                      return Err(ConformanceError::invalid("observation_attempt_invalid"));
+                  }
+                  self.assertions.validate()?;
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum CaseStatus {
+              Incomplete,
+              Diverged,
+              ReproducibleEquivalent,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct CaseResult {
+              pub case: CaseId,
+              pub consumer: ConsumerId,
+              pub status: CaseStatus,
+              pub completed_attempts: u8,
+              pub normalized_digest: Option<Digest32>,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableConformanceCode {
+              InvalidArgument,
+              PermissionDenied,
+              NotFound,
+              AlreadyExists,
+              FailedPrecondition,
+              Aborted,
+              ResourceExhausted,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ConformanceError {
+              code: StableConformanceCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl ConformanceError {
+              #[must_use]
+              pub const fn new(
+                  code: StableConformanceCode,
+                  reason: &'static str,
+                  retryable: bool,
+              ) -> Self {
+                  Self { code, reason, retryable }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableConformanceCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableConformanceCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct Limits {
+              pub leaves: usize,
+              pub cases: usize,
+              pub consumers: usize,
+              pub normalizers: usize,
+              pub observations: usize,
+          }
+
+          impl Limits {
+              pub fn validate(self) -> Result<Self, ConformanceError> {
+                  if self.leaves == 0 || self.leaves > MAX_LEAVES
+                      || self.cases == 0 || self.cases > MAX_CASES
+                      || self.consumers == 0 || self.consumers > MAX_CONSUMERS
+                      || self.normalizers == 0 || self.normalizers > MAX_NORMALIZERS
+                      || self.observations == 0 || self.observations > MAX_OBSERVATIONS
+                  {
+                      Err(ConformanceError::invalid("conformance_limits_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct ConformanceRegistry {
+              leaves: BTreeMap<LeafId, DenominatorLeaf>,
+              cases: BTreeMap<CaseId, ConformanceCase>,
+              consumers: BTreeMap<ConsumerId, OfficialConsumer>,
+              normalizers: BTreeMap<NormalizerId, NormalizerRule>,
+              observations: BTreeMap<(CaseId, ConsumerId, SubjectSide, u8), Observation>,
+              observation_ids: BTreeSet<ObservationId>,
+              limits: Limits,
+          }
+
+          impl ConformanceRegistry {
+              pub fn new(limits: Limits) -> Result<Self, ConformanceError> {
+                  Ok(Self {
+                      leaves: BTreeMap::new(),
+                      cases: BTreeMap::new(),
+                      consumers: BTreeMap::new(),
+                      normalizers: BTreeMap::new(),
+                      observations: BTreeMap::new(),
+                      observation_ids: BTreeSet::new(),
+                      limits: limits.validate()?,
+                  })
+              }
+
+              pub fn register_leaf(&mut self, leaf: DenominatorLeaf) -> Result<(), ConformanceError> {
+                  if self.leaves.contains_key(&leaf.id) {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::AlreadyExists,
+                          "leaf_exists",
+                          false,
+                      ));
+                  }
+                  if self.leaves.len() >= self.limits.leaves {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::ResourceExhausted,
+                          "leaf_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  self.leaves.insert(leaf.id, leaf);
+                  Ok(())
+              }
+
+              pub fn register_consumer(&mut self, consumer: OfficialConsumer) -> Result<(), ConformanceError> {
+                  if consumer.supported_transports.is_empty() {
+                      return Err(ConformanceError::invalid("consumer_transport_empty"));
+                  }
+                  if self.consumers.contains_key(&consumer.id) {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::AlreadyExists,
+                          "consumer_exists",
+                          false,
+                      ));
+                  }
+                  if self.consumers.len() >= self.limits.consumers {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::ResourceExhausted,
+                          "consumer_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  self.consumers.insert(consumer.id, consumer);
+                  Ok(())
+              }
+
+              pub fn register_normalizer(&mut self, rule: NormalizerRule) -> Result<(), ConformanceError> {
+                  let rule = rule.validate()?;
+                  if self.normalizers.contains_key(&rule.id) {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::AlreadyExists,
+                          "normalizer_exists",
+                          false,
+                      ));
+                  }
+                  if self.normalizers.len() >= self.limits.normalizers {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::ResourceExhausted,
+                          "normalizer_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  self.normalizers.insert(rule.id, rule);
+                  Ok(())
+              }
+
+              pub fn register_case(&mut self, case: ConformanceCase) -> Result<(), ConformanceError> {
+                  let case = case.validate()?;
+                  if self.cases.contains_key(&case.id) {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::AlreadyExists,
+                          "case_exists",
+                          false,
+                      ));
+                  }
+                  if self.cases.len() >= self.limits.cases {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::ResourceExhausted,
+                          "case_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  for leaf_id in &case.leaf_ids {
+                      let leaf = self.leaves.get(leaf_id).ok_or_else(|| ConformanceError::new(
+                          StableConformanceCode::FailedPrecondition,
+                          "case_leaf_missing",
+                          false,
+                      ))?;
+                      if leaf.test_case != case.id || leaf.profile != case.profile {
+                          return Err(ConformanceError::new(
+                              StableConformanceCode::Aborted,
+                              "case_leaf_binding_mismatch",
+                              false,
+                          ));
+                      }
+                  }
+                  for consumer_id in &case.required_consumers {
+                      let consumer = self.consumers.get(consumer_id).ok_or_else(|| ConformanceError::new(
+                          StableConformanceCode::FailedPrecondition,
+                          "case_consumer_missing",
+                          false,
+                      ))?;
+                      if !consumer.supported_transports.contains(&case.transport) {
+                          return Err(ConformanceError::new(
+                              StableConformanceCode::FailedPrecondition,
+                              "consumer_transport_mismatch",
+                              false,
+                          ));
+                      }
+                  }
+                  self.cases.insert(case.id, case);
+                  Ok(())
+              }
+
+              pub fn record_observation(&mut self, observation: Observation) -> Result<(), ConformanceError> {
+                  let observation = observation.validate()?;
+                  if self.observation_ids.contains(&observation.id) {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::AlreadyExists,
+                          "observation_id_exists",
+                          false,
+                      ));
+                  }
+                  if self.observations.len() >= self.limits.observations {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::ResourceExhausted,
+                          "observation_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let case = self.cases.get(&observation.case).ok_or_else(|| ConformanceError::new(
+                      StableConformanceCode::NotFound,
+                      "observation_case_missing",
+                      false,
+                  ))?;
+                  if !case.required_consumers.contains(&observation.consumer) {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::PermissionDenied,
+                          "observation_consumer_not_required",
+                          false,
+                      ));
+                  }
+                  for normalizer in &observation.applied_normalizers {
+                      if !self.normalizers.contains_key(normalizer) {
+                          return Err(ConformanceError::new(
+                              StableConformanceCode::FailedPrecondition,
+                              "observation_normalizer_missing",
+                              false,
+                          ));
+                      }
+                  }
+                  let key = (observation.case, observation.consumer, observation.side, observation.attempt);
+                  if self.observations.contains_key(&key) {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::AlreadyExists,
+                          "observation_attempt_exists",
+                          false,
+                      ));
+                  }
+                  self.observation_ids.insert(observation.id);
+                  self.observations.insert(key, observation);
+                  Ok(())
+              }
+
+              pub fn case_result(
+                  &self,
+                  case: CaseId,
+                  consumer: ConsumerId,
+              ) -> Result<CaseResult, ConformanceError> {
+                  let registered = self.cases.get(&case).ok_or_else(|| ConformanceError::new(
+                      StableConformanceCode::NotFound,
+                      "case_not_found",
+                      false,
+                  ))?;
+                  if !registered.required_consumers.contains(&consumer) {
+                      return Err(ConformanceError::new(
+                          StableConformanceCode::PermissionDenied,
+                          "consumer_not_required_for_case",
+                          false,
+                      ));
+                  }
+                  let mut completed = 0_u8;
+                  let mut digest = None;
+                  for attempt in 1..=REQUIRED_REPEAT_RUNS {
+                      let oracle = self.observations.get(&(case, consumer, SubjectSide::ImmutableOracle, attempt));
+                      let candidate = self.observations.get(&(case, consumer, SubjectSide::Candidate, attempt));
+                      let (Some(oracle), Some(candidate)) = (oracle, candidate) else {
+                          continue;
+                      };
+                      completed += 1;
+                      let equal = oracle.normalized_wire_digest == candidate.normalized_wire_digest
+                          && oracle.durable_state_digest == candidate.durable_state_digest
+                          && oracle.effect_digest == candidate.effect_digest
+                          && oracle.public_error_digest == candidate.public_error_digest;
+                      if !equal {
+                          return Ok(CaseResult {
+                              case,
+                              consumer,
+                              status: CaseStatus::Diverged,
+                              completed_attempts: completed,
+                              normalized_digest: None,
+                          });
+                      }
+                      if digest.is_some_and(|value| value != candidate.normalized_wire_digest) {
+                          return Ok(CaseResult {
+                              case,
+                              consumer,
+                              status: CaseStatus::Diverged,
+                              completed_attempts: completed,
+                              normalized_digest: None,
+                          });
+                      }
+                      digest = Some(candidate.normalized_wire_digest);
+                  }
+                  let status = if completed == REQUIRED_REPEAT_RUNS {
+                      CaseStatus::ReproducibleEquivalent
+                  } else {
+                      CaseStatus::Incomplete
+                  };
+                  Ok(CaseResult {
+                      case,
+                      consumer,
+                      status,
+                      completed_attempts: completed,
+                      normalized_digest: digest,
+                  })
+              }
+
+              pub fn mandatory_coverage_complete(&self, profile: &Profile) -> bool {
+                  let mandatory = self
+                      .leaves
+                      .values()
+                      .filter(|leaf| leaf.mandatory && &leaf.profile == profile)
+                      .collect::<Vec<_>>();
+                  !mandatory.is_empty()
+                      && mandatory.iter().all(|leaf| {
+                          leaf.implementation_digest.is_some()
+                              && self.cases.get(&leaf.test_case).is_some_and(|case| {
+                                  case.required_consumers.iter().all(|consumer| {
+                                      self.case_result(case.id, *consumer).is_ok_and(|result| {
+                                          result.status == CaseStatus::ReproducibleEquivalent
+                                      })
+                                  })
+                              })
+                      })
+              }
+          }
+
+          fn validate_name(value: &str, reason: &'static str) -> Result<(), ConformanceError> {
+              if value.is_empty()
+                  || value.len() > MAX_NAME_BYTES
+                  || !value
+                      .bytes()
+                      .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'/'))
+              {
+                  Err(ConformanceError::invalid(reason))
+              } else {
+                  Ok(())
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn id<T>(byte: u8, constructor: fn([u8;16]) -> Result<T,ConformanceError>) -> T {
+                  constructor([byte;16]).unwrap()
+              }
+
+              fn digest(byte: u8) -> Digest32 {
+                  Digest32::new([byte;32]).unwrap()
+              }
+
+              fn source(byte: u8) -> SourceIdentity {
+                  SourceIdentity { repository_digest:digest(byte), commit:digest(byte+1), tree:digest(byte+2), artifact_digest:digest(byte+3), toolchain_digest:digest(byte+4) }
+              }
+
+              fn counts() -> AssertionCounts {
+                  AssertionCounts { collected:1, executed:1, passed:1, failed:0, skipped:0 }
+              }
+
+              fn registry() -> (ConformanceRegistry, Profile, LeafId, CaseId, ConsumerId) {
+                  let mut registry = ConformanceRegistry::new(Limits { leaves:16, cases:16, consumers:16, normalizers:16, observations:512 }).unwrap();
+                  let profile = Profile::new("postgres-json").unwrap();
+                  let leaf = id(1,LeafId::new);
+                  let case = id(2,CaseId::new);
+                  let consumer = id(3,ConsumerId::new);
+                  registry.register_leaf(DenominatorLeaf { id:leaf, family:DenominatorFamily::Api, profile:profile.clone(), upstream:source(10), signature_digest:digest(20), mandatory:true, implementation_digest:Some(digest(21)), test_case:case }).unwrap();
+                  registry.register_consumer(OfficialConsumer { id:consumer, language:ConsumerLanguage::Go, version:ConsumerVersion::new("v1.0.0").unwrap(), artifact_digest:digest(30), supported_transports:BTreeSet::from([TransportProfile::HttpJson]) }).unwrap();
+                  registry.register_case(ConformanceCase { id:case, profile:profile.clone(), transport:TransportProfile::HttpJson, input_digest:digest(40), fixture_digest:digest(41), environment_digest:digest(42), leaf_ids:BTreeSet::from([leaf]), required_consumers:BTreeSet::from([consumer]) }).unwrap();
+                  (registry,profile,leaf,case,consumer)
+              }
+
+              fn observation(byte: u8, case: CaseId, consumer: ConsumerId, side: SubjectSide, attempt: u8, normalized: u8) -> Observation {
+                  Observation { id:id(byte,ObservationId::new), case, consumer, side, attempt, subject:source(50), raw_wire_digest:digest(byte), normalized_wire_digest:digest(normalized), durable_state_digest:digest(60), effect_digest:digest(61), public_error_digest:digest(62), applied_normalizers:BTreeSet::new(), assertions:counts(), artifact_digest:digest(63) }
+              }
+
+              #[test]
+              fn contractual_fields_cannot_be_normalized() {
+                  for class in [ContractClass::Identity, ContractClass::Authorization, ContractClass::Money, ContractClass::RevisionGenerationSequence, ContractClass::Version, ContractClass::Cursor, ContractClass::PublicError, ContractClass::DurableEffect, ContractClass::Payload] {
+                      let rule = NormalizerRule { id:id(1,NormalizerId::new), field_path:"$.field".to_owned(), class, implementation_digest:digest(1) };
+                      assert_eq!(rule.validate().unwrap_err().reason(), "contractual_field_normalization_forbidden");
+                  }
+              }
+
+              #[test]
+              fn skipped_or_empty_assertions_never_enter_registry() {
+                  let (mut registry,_,_,case,consumer)=registry();
+                  let mut empty=observation(1,case,consumer,SubjectSide::Candidate,1,1);
+                  empty.assertions=AssertionCounts { collected:0,executed:0,passed:0,failed:0,skipped:0 };
+                  assert_eq!(registry.record_observation(empty).unwrap_err().reason(), "assertion_counts_not_fully_passing");
+              }
+
+              #[test]
+              fn ten_exact_pairs_are_required_for_reproducible_equivalence() {
+                  let (mut registry,profile,_,case,consumer)=registry();
+                  for attempt in 1..REQUIRED_REPEAT_RUNS {
+                      registry.record_observation(observation(attempt,case,consumer,SubjectSide::ImmutableOracle,attempt,70)).unwrap();
+                      registry.record_observation(observation(attempt+20,case,consumer,SubjectSide::Candidate,attempt,70)).unwrap();
+                  }
+                  assert_eq!(registry.case_result(case,consumer).unwrap().status,CaseStatus::Incomplete);
+                  assert!(!registry.mandatory_coverage_complete(&profile));
+                  let attempt=REQUIRED_REPEAT_RUNS;
+                  registry.record_observation(observation(attempt,case,consumer,SubjectSide::ImmutableOracle,attempt,70)).unwrap();
+                  registry.record_observation(observation(attempt+20,case,consumer,SubjectSide::Candidate,attempt,70)).unwrap();
+                  assert_eq!(registry.case_result(case,consumer).unwrap().status,CaseStatus::ReproducibleEquivalent);
+                  assert!(registry.mandatory_coverage_complete(&profile));
+              }
+
+              #[test]
+              fn durable_or_effect_difference_blocks_equivalence_even_when_wire_matches() {
+                  let (mut registry,_,_,case,consumer)=registry();
+                  let oracle=observation(1,case,consumer,SubjectSide::ImmutableOracle,1,70);
+                  let mut candidate=observation(2,case,consumer,SubjectSide::Candidate,1,70);
+                  candidate.effect_digest=digest(99);
+                  registry.record_observation(oracle).unwrap();
+                  registry.record_observation(candidate).unwrap();
+                  assert_eq!(registry.case_result(case,consumer).unwrap().status,CaseStatus::Diverged);
+              }
+
+              #[test]
+              fn repeated_candidate_hash_drift_is_divergence() {
+                  let (mut registry,_,_,case,consumer)=registry();
+                  for attempt in 1..=2 {
+                      registry.record_observation(observation(attempt,case,consumer,SubjectSide::ImmutableOracle,attempt,70)).unwrap();
+                      registry.record_observation(observation(attempt+20,case,consumer,SubjectSide::Candidate,attempt,69+attempt)).unwrap();
+                  }
+                  assert_eq!(registry.case_result(case,consumer).unwrap().status,CaseStatus::Diverged);
+              }
+
+              #[test]
+              fn unknown_normalizer_and_wrong_consumer_fail_before_insert() {
+                  let (mut registry,_,_,case,consumer)=registry();
+                  let mut unknown=observation(1,case,consumer,SubjectSide::Candidate,1,70);
+                  unknown.applied_normalizers.insert(id(9,NormalizerId::new));
+                  assert_eq!(registry.record_observation(unknown).unwrap_err().reason(), "observation_normalizer_missing");
+                  let wrong=id(10,ConsumerId::new);
+                  let observation=observation(2,case,wrong,SubjectSide::Candidate,1,70);
+                  assert_eq!(registry.record_observation(observation).unwrap_err().reason(), "observation_consumer_not_required");
+              }
+          }
+          EOF
+
+          # Keep Option helpers compatible with Rust 1.85.
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('crates/trnm-conformance-core/src/lib.rs')
+          t=p.read_text()
+          t=t.replace('.is_none_or(|value| value > self.executed)', '.map_or(true, |value| value > self.executed)')
+          t=t.replace('self.case_result(case.id, *consumer).is_ok_and(|result| {', 'self.case_result(case.id, *consumer).map_or(false, |result| {')
+          p.write_text(t)
+          PY
+
+          cat > crates/trnm-conformance-core/README.md <<'EOF'
+          # trnm-conformance-core
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-conformance-core`  
+          Workspace class: `root`  
+          Lifecycle: `compatibility-control`  
+          Owner role: `compatibility-qa`
+
+          ## Status and authority
+
+          This document is the module contract for denominator leaves, official consumers, oracle/candidate observations, normalizers and reproducible conformance decisions. It is a source candidate and does not establish any C1–C5 or SG1–SG2 acceptance.
+
+          ## Responsibilities
+
+          The crate owns exact source identities, mandatory leaf mapping, case/profile/consumer bindings, normalizer policy, nonempty assertion accounting, ten-attempt oracle/candidate observation pairs, wire/durable/effect/error comparison and profile coverage derivation.
+
+          It does not execute an SDK, start Nakama, normalize bytes, inspect databases, authenticate artifact provenance or supply an independent review decision.
+
+          ## Architecture and dependencies
+
+          Extractors register immutable denominator leaves. Official SDK runners produce case inputs. Isolated immutable/instrumented oracle and candidate workers emit schema-bound observations and content-addressed artifacts. Reviewed normalizers run before registry admission.
+
+          The registry accepts observations only when source, case, consumer, attempt, normalizer and assertion contracts are explicit. Evidence admission and human acceptance remain separate.
+
+          ## Public contracts
+
+          Every mandatory leaf binds family, profile, upstream identity, signature, implementation and one test case. Every case names required official consumers and one transport. Every observation binds side, attempt, source, wire, durable state, effect, public error, assertions and artifact digest.
+
+          Identity, authorization, money, revision/generation/sequence, version, cursor, public error, durable effect and payload fields are not normalizable. Reproducible equivalence requires ten complete paired attempts with the same normalized digest and exact durable/effect/error equality.
+
+          ## Correctness and failure model
+
+          Missing leaf/consumer/normalizer, duplicate observation attempt, zero assertion, skip, failure, source mismatch, durable/effect/error difference or repeated hash drift prevents equivalence. Partial attempts remain Incomplete; a single divergence is terminal for the current packet.
+
+          Coverage is conjunctive across every mandatory leaf and every required official consumer. Counts and documentation cannot substitute for observations.
+
+          ## Security and privacy
+
+          Fixtures use synthetic or approved anonymized data. Tokens, credentials, raw PII and provider secrets are excluded from observations and artifacts. A normalizer cannot hide an authorization, value or durable-effect defect.
+
+          Artifact/reviewer/source provenance must be authenticated by the evidence layer; digests in this structure are not self-authenticating.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-conformance-core --all-targets --locked
+          cargo clippy --package trnm-conformance-core --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover forbidden normalization, assertion accounting, ten-run requirement, durable/effect divergence, hash drift and unknown normalizer/consumer rejection.
+
+          ## Operations
+
+          Runners expose case/consumer/profile, attempt status, assertion counts, artifact digest, divergence class and reproducibility without raw request/response or identity labels. Oracle and candidate writable stores remain isolated.
+
+          ## Compatibility and evidence
+
+          Complete #125 requires real immutable and instrumented oracle builds, approved normalizers, every denominator leaf, official SDK matrices, isolated fixtures, ten-run artifacts, database/runtime comparisons and independent SG1/SG2 decisions.
+
+          This core alone cannot lock denominators, prove oracle authenticity, grant compatibility credit or accept evidence.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P0-SCOPE-001`, `GAP-P0-EVIDENCE-001`, `GAP-P0-CI-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires real extractor/runner integration, full case and SDK coverage, retained exact-source observations, approved normalizers and conflict-free compatibility review.
+          EOF
+
+      - name: Register conformance module fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          member='crates/trnm-conformance-core'
+          p=Path('Cargo.toml'); t=p.read_text();
+          if f'"{member}"' not in t: p.write_text(t.replace(']\nexclude = [',f'  "{member}",\n]\nexclude = [',1))
+          mp=Path('docs/status/MODULE_DOCUMENTATION.json'); m=json.loads(mp.read_text())
+          if not any(r['id']=='trnm-conformance-core' for r in m['modules']):
+              m['modules'].append({'id':'trnm-conformance-core','path':member,'manifest':f'{member}/Cargo.toml','documentation':f'{member}/README.md','workspace':'root','lifecycle':'compatibility-control','maturity':'source-candidate','owner_role':'compatibility-qa','authority':'denominator official-consumer oracle normalizer and reproducible conformance state','blocking_gaps':['GAP-P0-SCOPE-001','GAP-P0-EVIDENCE-001','GAP-P0-CI-001','GAP-P1-REVIEW-001'],'claim_credit':False})
+          m['modules'].sort(key=lambda r:r['id']); m['summary'].update({'module_count':len(m['modules']),'documented_count':len(m['modules']),'root_workspace_count':sum(r['workspace']=='root' for r in m['modules']),'isolated_workspace_count':sum(r['workspace']=='isolated' for r in m['modules']),'undocumented_count':0}); mp.write_text(json.dumps(m,indent=2)+'\n')
+          ap=Path('docs/development/RUST_PACKAGE_AUTHORITY.json'); a=json.loads(ap.read_text());
+          if member not in a['workspace']['members']: a['workspace']['members'].append(member); a['workspace']['members'].sort()
+          for k in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'): a.setdefault('claim_boundary',{})[k]=False
+          ap.write_text(json.dumps(a,indent=2)+'\n')
+          ip=Path('docs/status/IMPLEMENTATION_INVENTORY.json'); inv=json.loads(ip.read_text())
+          if not any(r.get('id')=='COMP-CONFORMANCE-CORE' for r in inv['components']):
+              inv['components'].append({'id':'COMP-CONFORMANCE-CORE','path':member,'kind':'rust-compatibility-control','workstreams':['W0','W14'],'status':'source-candidate','implemented':['exact denominator case profile and consumer binding','forbidden normalizer classes and assertion admission','ten-run wire durable effect error equivalence derivation'],'missing':['real oracle and official SDK execution','complete mandatory leaf coverage and approved normalizers','retained observation artifacts and provenance','independent SG1 SG2 acceptance'],'blocking_gaps':['GAP-P0-SCOPE-001','GAP-P0-EVIDENCE-001','GAP-P0-CI-001','GAP-P1-REVIEW-001'],'parity_ids':[],'evidence_ids':[],'claim_credit':False})
+          ip.write_text(json.dumps(inv,indent=2)+'\n')
+          sp=Path('docs/status/CURRENT_STATE.json'); st=json.loads(sp.read_text()); st.setdefault('implementation',{})['conformance_registry_source_candidate']=True
+          for k in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'): st.setdefault('claims',{})[k]=False
+          sp.write_text(json.dumps(st,indent=2)+'\n')
+          PY
+
+      - name: Publish Draft and qualify exact source
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git commit -m 'feat(compatibility): add denominator oracle SDK conformance core'
+          head_sha="$(git rev-parse HEAD)"; head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Repository-controlled source candidate for #125, stacked on KMS Wave 11.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds exact denominator/case/profile/official-consumer bindings, forbidden normalizer classes, nonempty assertion admission and ten-pair wire/durable/effect/error equivalence derivation.
+
+          Real oracle/SDK execution, complete leaves, approved normalizers, retained artifacts and independent SG1/SG2 acceptance remain open. No compatibility or evidence credit.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 12] Add denominator oracle and SDK conformance core' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do cargo test --manifest-path "$manifest" --all-targets --locked; cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings; done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "Conformance Wave 12 carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and all claim ceilings remain binding."
+          gh issue comment 125 --repo "$REPOSITORY" --body "Conformance core carrier status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`; #125 remains open pending real oracle/SDK execution and accepted decisions."
