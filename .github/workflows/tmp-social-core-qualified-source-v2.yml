@@ -1,0 +1,342 @@
+name: tmp-social-core-qualified-source-v2
+
+on:
+  push:
+    branches:
+      - feature/plan-v32-social-core-20260909
+    paths:
+      - .github/workflows/tmp-social-core-qualified-source-v2.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: tmp-social-core-qualified-source-v2
+  cancel-in-progress: false
+
+jobs:
+  rebuild-qualify-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      FEATURE_BRANCH: feature/plan-v32-social-core-20260909
+      BASE_BRANCH: integration/plan-v32-main-rebind-2026-09-09
+      EXPECTED_BASE_SHA: 541016f34f2dbaf7c2be10cd45afdd04223c49f2
+      GENERATOR_REF: ops/social-core-source-20260909
+    steps:
+      - name: Verify trigger and reset worktree to exact product base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "$REPOSITORY"
+          test "$GITHUB_REF_NAME" = "$FEATURE_BRANCH"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=8 origin "$GITHUB_SHA" "$EXPECTED_BASE_SHA"
+          git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$EXPECTED_BASE_SHA" "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$EXPECTED_BASE_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXPECTED_BASE_SHA"
+      - name: Extract registered social generator
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${REPOSITORY}/contents/.github/workflows/tmp-social-core-source.yml?ref=${GENERATOR_REF}" \
+            --jq .content | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/social-generator.yml"
+          ruby -ryaml -e '
+            document = YAML.safe_load(File.read(ARGV[0]), aliases: true)
+            steps = document.fetch("jobs").fetch("build-source-slice").fetch("steps")
+            {"Add bounded social domain crate" => ARGV[1], "Register package and component source" => ARGV[2]}.each do |name, path|
+              step = steps.find { |entry| entry["name"] == name }
+              abort("missing generator step: #{name}") unless step && step["run"]
+              File.write(path, step.fetch("run"))
+            end
+          ' "$RUNNER_TEMP/social-generator.yml" "$RUNNER_TEMP/add-social.sh" "$RUNNER_TEMP/register-social.sh"
+      - name: Generate social source and repair atomic commit semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          export BASE_SHA="$EXPECTED_BASE_SHA"
+          bash "$RUNNER_TEMP/add-social.sh"
+          bash "$RUNNER_TEMP/register-social.sh"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lib = Path("crates/trnm-social-core/src/lib.rs")
+          text = lib.read_text(encoding="utf-8")
+          if not text.startswith("#![forbid(unsafe_code)]\n\n"):
+              if not text.startswith("//! "):
+                  raise SystemExit("social crate preamble drifted")
+              text = "#![forbid(unsafe_code)]\n\n" + text
+
+          text = text.replace(
+              ") -> impl ExactSizeIterator<Item = &ChatMessage> {",
+              ") -> impl Iterator<Item = &ChatMessage> {",
+          )
+          text = text.replace(
+              ") -> impl ExactSizeIterator<Item = &Notification> {",
+              ") -> impl Iterator<Item = &Notification> {",
+          )
+          text = text.replace(
+              "registry.group_messages(group(1)).len()",
+              "registry.group_messages(group(1)).count()",
+          )
+
+          replacements = 0
+          cursor = 0
+          needle = "candidate.commit("
+          while True:
+              start = text.find(needle, cursor)
+              if start < 0:
+                  break
+              open_paren = text.find("(", start)
+              depth = 0
+              end = None
+              in_string = False
+              escaped = False
+              for index in range(open_paren, len(text)):
+                  char = text[index]
+                  if in_string:
+                      if escaped:
+                          escaped = False
+                      elif char == "\\":
+                          escaped = True
+                      elif char == '"':
+                          in_string = False
+                      continue
+                  if char == '"':
+                      in_string = True
+                  elif char == "(":
+                      depth += 1
+                  elif char == ")":
+                      depth -= 1
+                      if depth == 0:
+                          end = index + 1
+                          break
+              if end is None:
+                  raise SystemExit("unbalanced candidate.commit call")
+              line_start = text.rfind("\n", 0, start) + 1
+              indent = text[line_start:start]
+              call = text[start:end]
+              replacement = (
+                  "{\n"
+                  + indent + "    let receipt = " + call + "?;\n"
+                  + indent + "    *self = candidate;\n"
+                  + indent + "    Ok(receipt)\n"
+                  + indent + "}"
+              )
+              text = text[:start] + replacement + text[end:]
+              cursor = start + len(replacement)
+              replacements += 1
+          if replacements < 10:
+              raise SystemExit(f"expected many candidate commit sites, repaired {replacements}")
+          if "candidate.commit(" in text:
+              raise SystemExit("unrepaired candidate commit remains")
+          lib.write_text(text, encoding="utf-8")
+
+          readme = Path("crates/trnm-social-core/README.md")
+          readme.write_text(
+              "\n".join(line.rstrip() for line in readme.read_text(encoding="utf-8").splitlines()) + "\n",
+              encoding="utf-8",
+          )
+
+          documentation_test = Path("tests/control_plane/test_documentation_authority.py")
+          documentation_text = documentation_test.read_text(encoding="utf-8")
+          old_count = 'self.assertEqual(result["module_document_count"], 21)'
+          if documentation_text.count(old_count) != 1:
+              raise SystemExit("documentation module-count anchor drifted")
+          documentation_test.write_text(
+              documentation_text.replace(
+                  old_count,
+                  'self.assertEqual(result["module_document_count"], 22)',
+                  1,
+              ),
+              encoding="utf-8",
+          )
+
+          foundation = Path("scripts/check-rust-foundation.py")
+          foundation_text = foundation.read_text(encoding="utf-8")
+          expected_anchor = (
+              'EXPECTED_MEMBERS = {\n'
+              '    "crates/trnm-contracts",\n'
+              '    "crates/trnm-authority-core",\n'
+          )
+          pure_anchor = (
+              'PURE_CORE_MEMBERS = {\n'
+              '    "crates/trnm-contracts",\n'
+              '    "crates/trnm-authority-core",\n'
+          )
+          dependency_anchor = " 'crates/trnm-contracts': {},\n"
+          for name, anchor in (
+              ("expected members", expected_anchor),
+              ("pure core", pure_anchor),
+              ("dependency map", dependency_anchor),
+          ):
+              if foundation_text.count(anchor) != 1:
+                  raise SystemExit(f"foundation {name} anchor drifted")
+          foundation_text = foundation_text.replace(
+              expected_anchor,
+              expected_anchor + '    "crates/trnm-social-core",\n',
+              1,
+          )
+          foundation_text = foundation_text.replace(
+              pure_anchor,
+              pure_anchor + '    "crates/trnm-social-core",\n',
+              1,
+          )
+          foundation_text = foundation_text.replace(
+              dependency_anchor,
+              dependency_anchor + " 'crates/trnm-social-core': {},\n",
+              1,
+          )
+          foundation.write_text(foundation_text, encoding="utf-8")
+
+          convergence = Path("scripts/check-workspace-convergence.py")
+          convergence_text = convergence.read_text(encoding="utf-8")
+          convergence_anchor = (
+              'LONG_LIVED = [\n'
+              '    "trnm-contracts",\n'
+              '    "trnm-authority-core",\n'
+          )
+          if convergence_text.count(convergence_anchor) != 1:
+              raise SystemExit("workspace-convergence member anchor drifted")
+          convergence.write_text(
+              convergence_text.replace(
+                  convergence_anchor,
+                  convergence_anchor + '    "trnm-social-core",\n',
+                  1,
+              ),
+              encoding="utf-8",
+          )
+          PY
+          rm -f .github/workflows/tmp-social-core-qualified-source-v2.yml
+          git add -A
+          git diff --cached --check
+      - name: Validate atomicity source contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path("crates/trnm-social-core/src/lib.rs").read_text(encoding="utf-8")
+          if "candidate.commit(" in text:
+              raise SystemExit("candidate tail call still discards accepted state")
+          accepted = text.count("*self = candidate;")
+          if accepted < 10:
+              raise SystemExit(f"candidate replacement count is too small: {accepted}")
+          if "impl ExactSizeIterator<Item = &ChatMessage>" in text:
+              raise SystemExit("chat iterator still overclaims ExactSizeIterator")
+          if "impl ExactSizeIterator<Item = &Notification>" in text:
+              raise SystemExit("notification iterator still overclaims ExactSizeIterator")
+          if not text.startswith("#![forbid(unsafe_code)]"):
+              raise SystemExit("social crate does not forbid unsafe code")
+          PY
+      - name: Validate social package and repository contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo fmt --all
+          git add -A
+          git diff --cached --check
+          cargo test --package trnm-social-core --all-targets
+          cargo test --package trnm-social-core --all-targets --locked
+          cargo clippy --package trnm-social-core --all-targets --locked -- -D warnings
+          python3 -m json.tool crates/trnm-social-core/testdata/domain-surface-v1.json >/dev/null
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-rust-foundation.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+      - name: Validate complete workspace and control plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests/control_plane -p 'test_*.py' -v
+      - name: Publish one clean source commit and open stacked draft PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test ! -e .github/workflows/tmp-social-core-qualified-source-v2.yml
+          test ! -e .preflight
+          git add -A
+          git diff --cached --check
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'social: add atomic bounded graph group chat and notification core'
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_BASE_SHA"
+          head_sha="$(git rev-parse HEAD)"
+          head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'https://x-access-token:%s@github.com\n' "$GH_TOKEN" > "$RUNNER_TEMP/git-credentials"
+          chmod 600 "$RUNNER_TEMP/git-credentials"
+          git config credential.helper "store --file=$RUNNER_TEMP/git-credentials"
+          git push --force-with-lease="refs/heads/${FEATURE_BRANCH}:${GITHUB_SHA}" \
+            origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          rm -f "$RUNNER_TEMP/git-credentials"
+          existing="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          cat > "$RUNNER_TEMP/pr-body.md" <<EOF
+          Parent blocker: #138
+
+          ## Exact source identity
+
+          - stacked base: \`${BASE_BRANCH}@${EXPECTED_BASE_SHA}\`
+          - source head: \`${head_sha}\`
+          - source tree: \`${head_tree}\`
+          - qualification run: \`${GITHUB_RUN_ID}\`
+
+          ## Implemented bounded source slice
+
+          - typed users, friendships, pending requests, directional blocks and exact receipts;
+          - group roles, membership, promotion and explicit ownership transfer;
+          - ordered bounded direct/group messages and recipient-scoped notifications;
+          - global revision, checked sequence overflow and finite capacities;
+          - accepted cloned candidates are committed back only after invariant validation;
+          - iterator contracts no longer overclaim ExactSizeIterator;
+          - package, module documentation, implementation inventory, foundation and workspace-convergence registration;
+          - crate-level unsafe-code prohibition.
+
+          ## Qualification
+
+          Rust 1.85.1 package tests, locked tests and strict Clippy passed. The complete root workspace, documentation authority, package inventory, foundation checker, workspace-convergence checker, plan validator and complete control-plane corpus also passed before publication.
+
+          ## Explicit remaining scope
+
+          Public HTTP/gRPC APIs, durable repositories, pagination/search/cursors, websocket fanout, hooks/defaults, official client/oracle differentials, live load/fault/security evidence and independent acceptance remain open.
+
+          \`\`\`text
+          domain_source_candidate=true
+          issue_138_source_complete=false
+          official_consumer_differential=false
+          accepted_evidence=false
+          production_ready=false
+          complete_nakama_compatibility=false
+          all_gaps_closed=false
+          \`\`\`
+          EOF
+          if test -z "$existing"; then
+            url="$(gh pr create --repo "$REPOSITORY" --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" \
+              --draft --title '[Plan v3.2][Surface 2/11] Add atomic bounded social graph, groups, chat and notifications' \
+              --body-file "$RUNNER_TEMP/pr-body.md")"
+            number="${url##*/}"
+          else
+            number="$existing"
+            gh pr edit "$number" --repo "$REPOSITORY" --base "$BASE_BRANCH" --body-file "$RUNNER_TEMP/pr-body.md"
+          fi
+          gh issue comment 138 --repo "$REPOSITORY" --body \
+            "Atomic social-domain candidate published in PR #${number} at exact head \`${head_sha}\` after full workspace/control-plane qualification. Public APIs, durable persistence, distributed fanout, differentials and independent acceptance remain open."
+          printf 'source_head=%s\nsource_tree=%s\nchild_pr=%s\n' "$head_sha" "$head_tree" "$number" >> "$GITHUB_STEP_SUMMARY"
