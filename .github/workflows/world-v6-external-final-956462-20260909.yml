@@ -22,6 +22,7 @@ env:
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_INCREMENTAL: '0'
   RUST_TEST_THREADS: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
   PGHOST: 127.0.0.1
   PGPORT: '5432'
   PGUSER: postgres
@@ -179,6 +180,9 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/world-head"
+          find . -type d -name '__pycache__' -prune -print0 | xargs -0 -r rm -rf
+          find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
           bash scripts/run-trnm-world-v6-qualification-v2.sh package 2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/package-head.log"
 
       - name: Qualify merge package
@@ -188,6 +192,9 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/world-merge"
+          find . -type d -name '__pycache__' -prune -print0 | xargs -0 -r rm -rf
+          find . -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
           bash scripts/run-trnm-world-v6-qualification-v2.sh package 2>&1 | tee "$RUNNER_TEMP/world-v6-evidence/logs/package-merge.log"
 
       - name: Enforce all exact-tuple outcomes and emit immutable summary
