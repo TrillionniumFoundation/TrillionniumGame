@@ -1,0 +1,145 @@
+name: tmp-consolidate-product-stack-v3
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-consolidate-product-stack-v3.yml
+
+permissions:
+  checks: read
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: integration/plan-v32-main-rebind-2026-09-09
+  SOURCE_BRANCH: feature/plan-v32-product-assurance-v2-20260909
+  INTEGRATION_BRANCH: integration/plan-v32-product-surface-v3-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Wait for final assured exact head
+        id: subjects
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha=''
+          stable=0
+          for _ in $(seq 1 1080); do
+            current="$(gh api "repos/${REPOSITORY}/branches/${SOURCE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            if test -z "$current"; then sleep 20; continue; fi
+            if test "$current" != "$source_sha"; then source_sha="$current"; stable=0; fi
+            payload="$(gh api "repos/${REPOSITORY}/commits/${source_sha}/check-runs?per_page=100" 2>/dev/null || echo '{"check_runs":[]}')"
+            canonical="$(jq -c 'reduce .check_runs[] as $run ({}; if .[$run.name] == null or ((.[$run.name].started_at // "") < ($run.started_at // "")) then .[$run.name] = $run else . end) | [.[]]' <<<"$payload")"
+            total="$(jq 'length' <<<"$canonical")"
+            pending="$(jq '[.[]|select(.status!="completed")]|length' <<<"$canonical")"
+            failed="$(jq '[.[]|select(.status=="completed" and (.conclusion!="success" and .conclusion!="neutral" and .conclusion!="skipped"))]|length' <<<"$canonical")"
+            aggregate="$(jq '[.[]|select(.name=="trillionnium-game-merge-gate" and .status=="completed" and .conclusion=="success")]|length' <<<"$canonical")"
+            if test "$total" -gt 0 && test "$pending" -eq 0 && test "$failed" -eq 0 && test "$aggregate" -gt 0; then stable=$((stable+1)); else stable=0; fi
+            if test "$failed" -gt 0 && test "$pending" -eq 0; then
+              gh issue comment 129 --repo "$REPOSITORY" --body "Final assurance branch \`${source_sha}\` has terminal check failures. No v3 integration branch was published."
+              exit 1
+            fi
+            if test "$stable" -ge 2; then
+              base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha')"
+              printf 'source_sha=%s\nbase_sha=%s\n' "$source_sha" "$base_sha" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo 'Final assurance branch never reached stable aggregate success.' >&2
+          exit 1
+
+      - name: Compose one assured product line
+        id: compose
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags origin '${{ steps.subjects.outputs.base_sha }}' '${{ steps.subjects.outputs.source_sha }}'
+          git -C "$GITHUB_WORKSPACE" checkout -B "$INTEGRATION_BRANCH" '${{ steps.subjects.outputs.base_sha }}'
+          git -C "$GITHUB_WORKSPACE" config user.name 'github-actions[bot]'
+          git -C "$GITHUB_WORKSPACE" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor '${{ steps.subjects.outputs.base_sha }}' '${{ steps.subjects.outputs.source_sha }}'; then
+            git -C "$GITHUB_WORKSPACE" merge --ff-only '${{ steps.subjects.outputs.source_sha }}'
+          else
+            git -C "$GITHUB_WORKSPACE" merge --no-ff --no-edit '${{ steps.subjects.outputs.source_sha }}'
+          fi
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git add Cargo.toml Cargo.lock crates docs scripts tests .github/CODEOWNERS
+          if ! git diff --cached --quiet; then git commit -m 'chore(integration): normalize final assured product stack'; fi
+          printf 'head_sha=%s\nhead_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+
+      - name: Full local qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
+            cargo test --manifest-path "$manifest" --all-targets --locked
+            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
+          done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-plan-v32-product-hardening.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish singular assured integration PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          remote="$(git ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
+          if test -n "$remote"; then
+            git push --force-with-lease="refs/heads/${INTEGRATION_BRANCH}:${remote}" origin "HEAD:refs/heads/${INTEGRATION_BRANCH}"
+          else
+            git push origin "HEAD:refs/heads/${INTEGRATION_BRANCH}"
+          fi
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Singular second-layer-assured Plan v3.2 product and operations source candidate stacked on PR #150.
+
+          \`\`\`text
+          base branch         ${BASE_BRANCH}
+          base commit         ${{ steps.subjects.outputs.base_sha }}
+          source branch       ${SOURCE_BRANCH}
+          source commit       ${{ steps.subjects.outputs.source_sha }}
+          integration branch  ${INTEGRATION_BRANCH}
+          integration commit  ${{ steps.compose.outputs.head_sha }}
+          integration tree    ${{ steps.compose.outputs.head_tree }}
+          \`\`\`
+
+          The source contains the complete product ancestor chain plus terminal KMS capacity reservation, immutable/instrumented oracle equivalence, bounded recovery point, conservative rate accounting, full cutover subject identity, staged retirement evidence and retired-state immutability.
+
+          This remains repository-controlled source. Independent review, accepted denominator/oracle evidence, real KMS/HSM, live HA/PITR/endurance, production readiness, cutover authorization and Nakama retirement remain separate false facts.
+          EOF
+          existing="$(gh pr list --repo "$REPOSITORY" --head "$INTEGRATION_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if test -z "$existing"; then
+            gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$INTEGRATION_BRANCH" --title '[Plan v3.2] Consolidate second-layer-assured product source' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+            existing="$(gh pr list --repo "$REPOSITORY" --head "$INTEGRATION_BRANCH" --state open --json number --jq '.[0].number')"
+          else
+            gh pr edit "$existing" --repo "$REPOSITORY" --body-file "$RUNNER_TEMP/pr.md"
+          fi
+          gh pr comment "$existing" --repo "$REPOSITORY" --body "Exact assurance source: \`${{ steps.subjects.outputs.source_sha }}\`; integration: \`${{ steps.compose.outputs.head_sha }}\`. Full local qualification passed in run \`${GITHUB_RUN_ID}\`; exact-head and prospective-merge GitHub checks remain mandatory."
+          gh issue comment 129 --repo "$REPOSITORY" --body "Published second-layer-assured product integration PR #${existing} at \`${{ steps.compose.outputs.head_sha }}\`. It remains Draft; all external evidence and production claims remain false."
