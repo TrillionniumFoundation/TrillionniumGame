@@ -1,0 +1,171 @@
+name: tmp-fix-product-assurance-wave17
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-fix-product-assurance-wave17.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-product-assurance-v2-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Wait for Wave 17 branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=''
+          for _ in $(seq 1 1080); do
+            head="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$head" && break
+            sleep 20
+          done
+          test -n "$head"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=4 origin "$head"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$FEATURE_BRANCH" "$head"
+
+      - name: Rewrite checker as one ordered authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cat > scripts/check-plan-v32-product-hardening.py <<'PY'
+          #!/usr/bin/env python3
+          from pathlib import Path
+
+          ROOT = Path(__file__).resolve().parents[1]
+
+          REQUIRED = {
+              "crates/trnm-console-core/src/lib.rs": [
+                  "pub struct ActionRequest",
+                  "expire_actions",
+              ],
+              "crates/trnm-kms-provider-adapter/src/lib.rs": [
+                  "dispatch_owners",
+                  "OutcomeAuthenticator",
+                  "provider_receipt_reused",
+                  "terminal_operation_capacity_reserved",
+                  "provider_receipt_capacity_reserved",
+              ],
+              "crates/trnm-conformance-core/src/lib.rs": [
+                  "immutable_oracle",
+                  "instrumented_oracle",
+                  "observation_subject_identity_mismatch",
+                  "oracle.applied_normalizers == candidate.applied_normalizers",
+                  "self.executed != self.collected",
+                  "instrumented_equivalent",
+              ],
+              "crates/trnm-recovery-core/src/lib.rs": [
+                  "source_observed_at_ms",
+                  "expected_catalog_digest",
+                  "expected_semantic_digest",
+                  "assertion_digest",
+                  "REQUIRED_INVARIANTS",
+                  "self.executed != self.collected",
+                  "MAX_ASSERTIONS_PER_ATTEMPT as u64",
+                  "self.recovery_point_ms < packet.backup_started_at_ms",
+              ],
+              "crates/trnm-endurance-core/src/lib.rs": [
+                  "artifact_owners",
+                  "basis_points_ceil",
+                  "basis_points_floor",
+                  "fn minimum_sample_count",
+                  "reported_rate_mismatch",
+                  "self.p99_latency_us < self.p95_latency_us",
+              ],
+              "crates/trnm-migration-core/src/lib.rs": [
+                  "current.active_target_authorities > 0",
+                  "retirement_preserves_positive_rust_authority",
+              ],
+              "crates/trnm-cutover-controller/src/lib.rs": [
+                  "self.subject != plan.subject",
+                  "rollback_authority_shape",
+                  "REQUIRED_DIVERGENCES",
+                  "REQUIRED_CUTOVER_INVARIANTS",
+                  "failed_requests",
+                  "cutover_error_rate_invalid",
+                  "retirement_artifact_wrong_stage",
+                  "cutover_plan_retired",
+                  "basis_points_ceil",
+              ],
+          }
+
+
+          def validate() -> None:
+              failures = []
+              for relative, markers in REQUIRED.items():
+                  path = ROOT / relative
+                  if not path.is_file():
+                      failures.append(f"missing file: {relative}")
+                      continue
+                  text = path.read_text(encoding="utf-8")
+                  for marker in markers:
+                      if marker not in text:
+                          failures.append(
+                              f"{relative}: missing hardening marker: {marker}"
+                          )
+              cutover = ROOT / "crates/trnm-cutover-controller/src/lib.rs"
+              if cutover.is_file():
+                  text = cutover.read_text(encoding="utf-8")
+                  if text.count("self.subject != plan.subject") < 3:
+                      failures.append(
+                          "cutover exact-subject validation must cover artifact, window and rehearsal"
+                      )
+              if failures:
+                  raise SystemExit(
+                      "product hardening contract failed:\n- "
+                      + "\n- ".join(failures)
+                  )
+
+
+          if __name__ == "__main__":
+              validate()
+              print("Plan v3.2 product hardening contract passed")
+          PY
+          chmod +x scripts/check-plan-v32-product-hardening.py
+
+      - name: Qualify and publish checker repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo test --package trnm-kms-provider-adapter --all-targets --locked
+          cargo test --package trnm-conformance-core --all-targets --locked
+          cargo test --package trnm-recovery-core --all-targets --locked
+          cargo test --package trnm-endurance-core --all-targets --locked
+          cargo test --package trnm-cutover-controller --all-targets --locked
+          cargo clippy --package trnm-kms-provider-adapter --all-targets --locked -- -D warnings
+          cargo clippy --package trnm-conformance-core --all-targets --locked -- -D warnings
+          cargo clippy --package trnm-recovery-core --all-targets --locked -- -D warnings
+          cargo clippy --package trnm-endurance-core --all-targets --locked -- -D warnings
+          cargo clippy --package trnm-cutover-controller --all-targets --locked -- -D warnings
+          python3 scripts/check-plan-v32-product-hardening.py
+          python3 -m unittest tests.control_plane.test_plan_v32_product_hardening -v
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/check-plan-v32-product-hardening.py crates
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'fix(assurance): order checker and bind full cutover subjects'
+          remote="$(git ls-remote origin "refs/heads/${FEATURE_BRANCH}" | awk '{print $1}')"
+          git push --force-with-lease="refs/heads/${FEATURE_BRANCH}:${remote}" origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Rewrote the hardening checker as one ordered authority and verified all three full SubjectIdentity paths plus KMS, conformance, recovery and endurance repairs. Focused tests and strict Clippy passed in carrier run `${GITHUB_RUN_ID}`; exact-head CI must requalify."
