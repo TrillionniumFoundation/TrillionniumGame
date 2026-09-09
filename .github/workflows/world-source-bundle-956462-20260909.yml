@@ -7,10 +7,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: world-source-bundle-956462-20260909-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_BASE_SHA: 0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
@@ -20,64 +16,54 @@ env:
 
 jobs:
   source-bundle:
-    name: diagnostic/world-exact-source-bundle
+    name: world-exact-source-bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Fetch exact immutable World objects
+      - name: Fetch, verify, and archive exact World source
         shell: bash
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/world-source"
-          evidence="$RUNNER_TEMP/world-source-evidence"
-          rm -rf "$root" "$evidence"
-          mkdir -p "$root" "$evidence"
-          git init "$root"
-          git -C "$root" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
-          git -C "$root" fetch --no-tags origin "$WORLD_BASE_SHA" "$WORLD_HEAD_SHA" "$WORLD_MERGE_SHA"
-          git -C "$root" checkout --detach "$WORLD_HEAD_SHA"
-          test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
-          test "$(git -C "$root" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
-          test "$(git -C "$root" rev-parse "$WORLD_MERGE_SHA^1")" = "$WORLD_BASE_SHA"
-          test "$(git -C "$root" rev-parse "$WORLD_MERGE_SHA^2")" = "$WORLD_HEAD_SHA"
-          test "$(git -C "$root" rev-parse "$WORLD_MERGE_SHA^{tree}")" = "$WORLD_HEAD_TREE"
-          test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
-
-      - name: Emit tracked source and identity
-        shell: bash
-        run: |
-          set -euo pipefail
-          root="$RUNNER_TEMP/world-source"
-          evidence="$RUNNER_TEMP/world-source-evidence"
-          git -C "$root" archive --format=tar.gz --prefix=Trillionnium-World/ \
-            --output="$evidence/tracked-source.tar.gz" "$WORLD_HEAD_SHA"
-          git -C "$root" bundle create "$evidence/tracked-history.bundle" \
+          rm -rf world-source world-source-evidence
+          mkdir -p world-source-evidence
+          git init world-source
+          git -C world-source remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C world-source fetch --no-tags origin \
             "$WORLD_BASE_SHA" "$WORLD_HEAD_SHA" "$WORLD_MERGE_SHA"
+          git -C world-source checkout --detach "$WORLD_HEAD_SHA"
+          test "$(git -C world-source rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+          test "$(git -C world-source rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
+          test "$(git -C world-source rev-parse "$WORLD_MERGE_SHA^1")" = "$WORLD_BASE_SHA"
+          test "$(git -C world-source rev-parse "$WORLD_MERGE_SHA^2")" = "$WORLD_HEAD_SHA"
+          test "$(git -C world-source rev-parse "$WORLD_MERGE_SHA^{tree}")" = "$WORLD_HEAD_TREE"
+          test -z "$(git -C world-source status --porcelain=v1 --untracked-files=no)"
+          git -C world-source archive --format=tar.gz --prefix=Trillionnium-World/ \
+            --output=../world-source-evidence/tracked-source.tar.gz "$WORLD_HEAD_SHA"
           {
             printf 'repository=%s\n' "$WORLD_REPOSITORY"
             printf 'base=%s\n' "$WORLD_BASE_SHA"
             printf 'head=%s\n' "$WORLD_HEAD_SHA"
             printf 'head_tree=%s\n' "$WORLD_HEAD_TREE"
             printf 'merge=%s\n' "$WORLD_MERGE_SHA"
-            printf 'merge_parents=%s\n' "$(git -C "$root" show -s --format=%P "$WORLD_MERGE_SHA")"
+            printf 'merge_parents=%s\n' "$(git -C world-source show -s --format=%P "$WORLD_MERGE_SHA")"
             printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
             printf 'runner_commit=%s\n' "$GITHUB_SHA"
             printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
             printf 'scope=diagnostic_exact_source_not_qualification\n'
             printf 'production_authorization=not_granted\n'
-          } > "$evidence/identity.txt"
+          } > world-source-evidence/identity.txt
           (
-            cd "$evidence"
-            sha256sum tracked-source.tar.gz tracked-history.bundle identity.txt > SHA256SUMS
+            cd world-source-evidence
+            sha256sum tracked-source.tar.gz identity.txt > SHA256SUMS
           )
-          cat "$evidence/identity.txt"
-          cat "$evidence/SHA256SUMS"
+          cat world-source-evidence/identity.txt
+          cat world-source-evidence/SHA256SUMS
 
-      - name: Upload exact-source diagnostic artifact
+      - name: Upload exact World tracked source
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: world-exact-source-956462f95675d3d4db89af03bc4b7cc8c9a3c975
-          path: ${{ runner.temp }}/world-source-evidence
+          path: world-source-evidence
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
