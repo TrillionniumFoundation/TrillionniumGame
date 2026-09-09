@@ -1,0 +1,80 @@
+name: world-include-inventory-956462-20260909
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_HEAD_SHA: 956462f95675d3d4db89af03bc4b7cc8c9a3c975
+  WORLD_HEAD_TREE: f428550e5cffcf0acb6c6461824290e828a875c7
+
+jobs:
+  inventory:
+    name: world/include-inventory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch and verify exact World source
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world"
+          git init "$root"
+          git -C "$root" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$root" fetch --no-tags --depth=1 origin "$WORLD_HEAD_SHA"
+          git -C "$root" checkout --detach FETCH_HEAD
+          test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+          test "$(git -C "$root" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
+
+      - name: Emit exhaustive tracked include inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world"
+          cd "$root"
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+          import subprocess
+
+          root = Path.cwd()
+          tracked = subprocess.check_output(
+              ["git", "ls-files", "-z"], cwd=root
+          ).split(b"\0")
+          pattern = re.compile(r"\binclude!\s*\(")
+          rows = []
+          for raw in tracked:
+              if not raw:
+                  continue
+              rel = raw.decode("utf-8", errors="strict")
+              path = root / rel
+              if path.suffix not in {".rs", ".toml", ".md", ".py", ".sh", ".yml", ".yaml"}:
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8", errors="strict")
+              except (OSError, UnicodeDecodeError):
+                  continue
+              for line_no, line in enumerate(text.splitlines(), 1):
+                  if pattern.search(line):
+                      rows.append({"path": rel, "line": line_no, "text": line.strip()})
+          rows.sort(key=lambda item: (item["path"], item["line"], item["text"]))
+          print("TRNM_WORLD_INCLUDE_INVENTORY_BEGIN")
+          print(json.dumps({"schema":"trnm_world_include_inventory_v1","world_head":
+              "956462f95675d3d4db89af03bc4b7cc8c9a3c975","entries":rows},
+              sort_keys=True, separators=(",", ":")))
+          print("TRNM_WORLD_INCLUDE_INVENTORY_END")
+          print(f"TRNM_WORLD_INCLUDE_COUNT={len(rows)}")
+          with open(Path(__import__('os').environ['GITHUB_STEP_SUMMARY']), 'a', encoding='utf-8') as out:
+              out.write("## World tracked `include!` inventory\n\n")
+              out.write(f"- head: `956462f95675d3d4db89af03bc4b7cc8c9a3c975`\n")
+              out.write(f"- count: `{len(rows)}`\n\n")
+              out.write("```text\n")
+              for row in rows:
+                  out.write(f"{row['path']}:{row['line']}:{row['text']}\n")
+              out.write("```\n")
+          PY
