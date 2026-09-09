@@ -1,0 +1,3 @@
+ledger_request=2026-09-09T03:30:30Z
+scope=17 stacked source candidates plus current P0/P1 gap register, reviews, governance, denominator and cutover state
+policy=no inferred acceptance; exact live API readback only
