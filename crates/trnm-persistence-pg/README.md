@@ -153,3 +153,7 @@ The adapter owns typed SQL access to all ten authoritative tables. Authority lea
 Storage reads and mutation batches use `trnm-storage-core` public version, integrity, OCC and ACL types. Batch keys are locked in deterministic order and every write/delete commits in one serializable transaction. The public Nakama-compatible content version is recomputed from exact value bytes while the schema stores the separate internal integrity digest.
 
 These paths are source candidates. PostgreSQL/CockroachDB live execution, exact-head evidence admission, profile-specific failover/restore and independent database/storage review remain required before production credit.
+
+## Canonical storage integrity boundary
+
+Storage write callers provide exact value bytes, public OCC intent and ACLs; they do not provide an internal integrity digest. Both the in-memory domain boundary and this adapter derive SHA-256 over the exact value bytes. The adapter persists that digest separately from the Nakama-compatible public MD5 content version and recomputes SHA-256 on every database read, returning `DataLoss / storage_integrity_digest_mismatch` before an object can be authorized or returned when stored bytes disagree. This is corruption detection, not source authentication or a MAC, and does not replace database access control, encryption, backup validation or immutable-oracle differential evidence.

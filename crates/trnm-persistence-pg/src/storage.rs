@@ -125,17 +125,15 @@ fn apply_write(
     validate_version(previous.as_ref(), operation.expected)?;
 
     let version = ContentVersion::from_value(&operation.value);
+    let integrity_digest = IntegrityDigest::from_value(&operation.value);
     if let Some(existing) = previous.as_ref() {
-        if existing.version == version
-            && (existing.value != operation.value
-                || existing.integrity_digest != operation.integrity_digest)
-        {
+        if existing.version == version && existing.value != operation.value {
             return Err(data_loss(
                 "storage_public_version_collision_or_integrity_mismatch",
             ));
         }
     }
-    let integrity = operation.integrity_digest.get();
+    let integrity = integrity_digest.get();
     let read_permission = operation.read_permission as i16;
     let write_permission = operation.write_permission as i16;
     let affected = if previous.is_some() {
@@ -184,7 +182,7 @@ fn apply_write(
         key: operation.key.clone(),
         value: operation.value.clone(),
         version,
-        integrity_digest: operation.integrity_digest,
+        integrity_digest,
         read_permission: operation.read_permission,
         write_permission: operation.write_permission,
     };
@@ -316,6 +314,7 @@ fn decode_storage_object(key: StorageObjectKey, row: &Row) -> Result<StorageObje
         "invalid_storage_integrity_digest",
     )?)
     .map_err(|_| data_loss("invalid_storage_integrity_digest"))?;
+    verify_storage_integrity(&value, integrity_digest)?;
     let read_permission = match row.get::<_, i16>(2) {
         0 => ReadPermission::None,
         1 => ReadPermission::Owner,
@@ -335,6 +334,14 @@ fn decode_storage_object(key: StorageObjectKey, row: &Row) -> Result<StorageObje
         read_permission,
         write_permission,
     })
+}
+
+fn verify_storage_integrity(value: &[u8], stored: IntegrityDigest) -> Result<(), DomainError> {
+    if stored.matches_value(value) {
+        Ok(())
+    } else {
+        Err(data_loss("storage_integrity_digest_mismatch"))
+    }
 }
 
 #[cfg(test)]
@@ -390,7 +397,6 @@ mod tests {
         BatchOperation::Write(WriteOperation {
             key: key(value),
             value: vec![value],
-            integrity_digest: IntegrityDigest::new(Digest32::new([value; 32])).unwrap(),
             expected: VersionCheck::Any,
             read_permission: ReadPermission::Owner,
             write_permission: WritePermission::Owner,
@@ -424,7 +430,7 @@ mod tests {
             key: key(1),
             value: b"v1".to_vec(),
             version: ContentVersion::from_value(b"v1"),
-            integrity_digest: IntegrityDigest::new(Digest32::new([1; 32])).unwrap(),
+            integrity_digest: IntegrityDigest::from_value(b"v1"),
             read_permission: ReadPermission::Owner,
             write_permission: WritePermission::Owner,
         };
@@ -444,6 +450,19 @@ mod tests {
             .unwrap_err()
             .reason(),
             "storage_version_mismatch"
+        );
+    }
+
+    #[test]
+    fn readback_integrity_rejects_caller_chosen_or_corrupt_digest() {
+        let canonical = IntegrityDigest::from_value(b"value");
+        verify_storage_integrity(b"value", canonical).unwrap();
+        let attacker_chosen = IntegrityDigest::new(Digest32::new([0x44; 32])).unwrap();
+        assert_eq!(
+            verify_storage_integrity(b"value", attacker_chosen)
+                .unwrap_err()
+                .reason(),
+            "storage_integrity_digest_mismatch"
         );
     }
 

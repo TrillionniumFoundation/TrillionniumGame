@@ -1632,6 +1632,7 @@ dependencies = [
 name = "trnm-storage-core"
 version = "0.1.0"
 dependencies = [
+ "sha2",
  "trnm-contracts",
 ]
 
@@ -1653,6 +1654,7 @@ dependencies = [
  "hmac",
  "sha2",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1860,3 +1862,9 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "zeroize"
+version = "1.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"

@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use sha2::{Digest as _, Sha256};
 use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode, UserId};
 
 const MAX_COLLECTION_BYTES: usize = 128;
@@ -159,9 +160,10 @@ impl fmt::Display for ContentVersion {
     }
 }
 
-/// Internal content-integrity identity. It is intentionally a different type
-/// from the public MD5 version. The service adapter is responsible for
-/// supplying a reviewed digest (normally SHA-256) of the same exact value.
+/// Internal SHA-256 content-integrity identity. It is intentionally a
+/// different type from the public Nakama-compatible MD5 version. Callers do
+/// not choose this value: the storage boundary derives it from the exact value
+/// bytes and persistence verifies it again on every read.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct IntegrityDigest(Digest32);
 
@@ -175,6 +177,17 @@ impl IntegrityDigest {
             ));
         }
         Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn from_value(value: &[u8]) -> Self {
+        let digest: [u8; 32] = Sha256::digest(value).into();
+        Self(Digest32::new(digest))
+    }
+
+    #[must_use]
+    pub fn matches_value(self, value: &[u8]) -> bool {
+        self == Self::from_value(value)
     }
 
     #[must_use]
@@ -251,7 +264,6 @@ pub enum VersionCheck {
 pub struct WriteOperation {
     pub key: StorageObjectKey,
     pub value: Vec<u8>,
-    pub integrity_digest: IntegrityDigest,
     pub expected: VersionCheck,
     pub read_permission: ReadPermission,
     pub write_permission: WritePermission,
@@ -312,6 +324,7 @@ impl StorageState {
                 RetryClass::Never,
             ));
         }
+        verify_object_integrity(object)?;
         Ok(object.clone())
     }
 
@@ -342,15 +355,14 @@ fn apply_write(
 ) -> Result<MutationReceipt, DomainError> {
     validate_value(&operation.value)?;
     let version = ContentVersion::from_value(&operation.value);
+    let integrity_digest = IntegrityDigest::from_value(&operation.value);
     let previous = objects.get(&operation.key).cloned();
     validate_write_actor(actor, &operation.key, previous.as_ref())?;
     validate_version_check(previous.as_ref(), operation.expected)?;
 
     if let Some(object) = previous.as_ref() {
-        if object.version == version
-            && (object.value != operation.value
-                || object.integrity_digest != operation.integrity_digest)
-        {
+        verify_object_integrity(object)?;
+        if object.version == version && object.value != operation.value {
             return Err(error(
                 StableCode::DataLoss,
                 "storage_public_version_collision_or_integrity_mismatch",
@@ -363,7 +375,7 @@ fn apply_write(
         key: operation.key.clone(),
         value: operation.value.clone(),
         version,
-        integrity_digest: operation.integrity_digest,
+        integrity_digest,
         read_permission: operation.read_permission,
         write_permission: operation.write_permission,
     };
@@ -501,6 +513,18 @@ fn can_read(actor: Actor, object: &StorageObject) -> bool {
     }
 }
 
+fn verify_object_integrity(object: &StorageObject) -> Result<(), DomainError> {
+    if object.integrity_digest.matches_value(&object.value) {
+        Ok(())
+    } else {
+        Err(error(
+            StableCode::DataLoss,
+            "storage_integrity_digest_mismatch",
+            RetryClass::Never,
+        ))
+    }
+}
+
 fn md5_digest(input: &[u8]) -> [u8; 16] {
     let bit_length = (input.len() as u64).wrapping_mul(8);
     let mut message = input.to_vec();
@@ -584,10 +608,7 @@ mod tests {
     }
 
     fn integrity(value: &[u8]) -> IntegrityDigest {
-        let seed = value.iter().fold(1_u8, |state, byte| {
-            state.wrapping_mul(31).wrapping_add(*byte)
-        });
-        IntegrityDigest::new(Digest32::new([seed; 32])).unwrap()
+        IntegrityDigest::from_value(value)
     }
 
     fn key(owner: u8, name: &str) -> StorageObjectKey {
@@ -605,7 +626,6 @@ mod tests {
         BatchOperation::Write(WriteOperation {
             key: key(owner, name),
             value: value.to_vec(),
-            integrity_digest: integrity(value),
             expected,
             read_permission: read,
             write_permission: write,
@@ -626,6 +646,21 @@ mod tests {
             ContentVersion::from_value(b"abc").as_str(),
             "900150983cd24fb0d6963f7d28e17f72"
         );
+    }
+
+    #[test]
+    fn integrity_digest_is_canonical_sha256_over_exact_value_bytes() {
+        let digest = IntegrityDigest::from_value(b"abc").get();
+        assert_eq!(
+            digest.as_bytes(),
+            &[
+                0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+                0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+                0xf2, 0x00, 0x15, 0xad,
+            ]
+        );
+        assert!(IntegrityDigest::from_value(b"abc").matches_value(b"abc"));
+        assert!(!IntegrityDigest::from_value(b"abc").matches_value(b"abd"));
     }
 
     #[test]
@@ -833,7 +868,6 @@ mod tests {
                 &[BatchOperation::Write(WriteOperation {
                     key: server_key.clone(),
                     value: b"v1".to_vec(),
-                    integrity_digest: integrity(b"v1"),
                     expected: VersionCheck::MustNotExist,
                     read_permission: ReadPermission::Public,
                     write_permission: WritePermission::None,
@@ -843,7 +877,6 @@ mod tests {
         let attempted = BatchOperation::Write(WriteOperation {
             key: server_key,
             value: b"v2".to_vec(),
-            integrity_digest: integrity(b"v2"),
             expected: VersionCheck::Exact(ContentVersion::from_value(b"v1")),
             read_permission: ReadPermission::Public,
             write_permission: WritePermission::None,

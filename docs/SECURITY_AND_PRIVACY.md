@@ -126,7 +126,7 @@ A panic, trap, timeout or resource exhaustion maps to a stable bounded failure a
 
 - Secret-bearing types redact `Debug`, logs and errors.
 - Raw tokens, authorization headers, refresh credentials, signing keys and provider secrets are never logged or retained in evidence.
-- Buffers are minimized and zeroized through an approved mechanism where meaningful; ordinary zero-fill is not overclaimed.
+- Buffers are minimized and zeroized through an approved mechanism where meaningful. The development software-HS256 provider uses pinned `zeroize` rather than ordinary `Vec::fill`; this prevents compiler-elided clearing claims but does not imply register clearing, memory locking, core-dump protection or production KMS/HSM custody.
 - Core dumps, swap, crash reports, traces and heap profiles are reviewed or disabled/protected in production.
 - Child-process environments are not a production secret distribution channel.
 - Error responses never expose database URLs, SQL, key paths, token state or private reasons.
