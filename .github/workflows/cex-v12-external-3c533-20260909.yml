@@ -1,0 +1,180 @@
+name: cex-v12-external-3c533-20260909
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cex-v12-external-3c533-20260909-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CEX_REPOSITORY: TrillionniumFoundation/CEX
+  CEX_BASE_SHA: db75c74094748a1139fd64b0360e122d8ec797a0
+  CEX_HEAD_SHA: 3c5332046f0b49e4d87c45496158cdfb8732d309
+  CEX_MERGE_REF: refs/pull/53/merge
+  CEX_MERGE_SHA: db3d81eb442cb7c051f978e66a4e8cefb6356108
+  CEX_RUST_TOOLCHAIN: '1.98.1'
+  RUSTUP_TOOLCHAIN: '1.98.1'
+  CARGO_INCREMENTAL: '0'
+  RUST_BACKTRACE: '1'
+  RUST_TEST_THREADS: '1'
+
+jobs:
+  qualify:
+    name: cex-v12/external-required
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Fetch and verify exact CEX head and prospective merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_dir="$RUNNER_TEMP/cex-head"
+          merge_dir="$RUNNER_TEMP/cex-merge"
+          rm -rf "$head_dir" "$merge_dir"
+          git init "$head_dir"
+          git -C "$head_dir" remote add origin "https://github.com/${CEX_REPOSITORY}.git"
+          git -C "$head_dir" fetch --no-tags --depth=1 origin "$CEX_HEAD_SHA"
+          git -C "$head_dir" checkout --detach FETCH_HEAD
+          git init "$merge_dir"
+          git -C "$merge_dir" remote add origin "https://github.com/${CEX_REPOSITORY}.git"
+          git -C "$merge_dir" fetch --no-tags --depth=2 origin "$CEX_MERGE_REF"
+          git -C "$merge_dir" checkout --detach FETCH_HEAD
+          test "$(git -C "$head_dir" rev-parse HEAD)" = "$CEX_HEAD_SHA"
+          test "$(git -C "$merge_dir" rev-parse HEAD)" = "$CEX_MERGE_SHA"
+          test "$(git -C "$merge_dir" rev-parse HEAD^1)" = "$CEX_BASE_SHA"
+          test "$(git -C "$merge_dir" rev-parse HEAD^2)" = "$CEX_HEAD_SHA"
+          test -z "$(git -C "$head_dir" status --porcelain=v1 --untracked-files=no)"
+          test -z "$(git -C "$merge_dir" status --porcelain=v1 --untracked-files=no)"
+          printf 'head_tree=%s\n' "$(git -C "$head_dir" rev-parse HEAD^{tree})"
+          printf 'merge_tree=%s\n' "$(git -C "$merge_dir" rev-parse HEAD^{tree})"
+          printf 'merge_parents=%s\n' "$(git -C "$merge_dir" show -s --format=%P HEAD)"
+
+      - name: Install pinned Rust and native build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$CEX_RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+          rustup override set "$CEX_RUST_TOOLCHAIN"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates clang cmake libpq-dev libssl-dev \
+            perl pkg-config protobuf-compiler
+          rustc --version --verbose
+          cargo --version --verbose
+          rustfmt --version
+
+      - name: Install pinned Rust supply-chain tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-audit --version 0.22.2
+          cargo install --locked cargo-deny --version 0.20.2
+          cargo audit --version
+          cargo deny --version
+
+      - name: Qualify exact CEX head source
+        id: source_head
+        continue-on-error: true
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cex-target-head
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/cex-head"
+          python3 scripts/check-sequence54-integration.py
+          python3 scripts/check-sequence54-rustsec-admission.py
+          python3 scripts/check-rust-toolchain-convergence.py
+          python3 scripts/check-development-docs.py
+          python3 scripts/check-module-documentation.py
+          bash services/paper-raid-bff/scripts/check-boundaries.sh
+          cargo metadata --locked --format-version 1 >/tmp/cex-head-metadata.json
+          test -s /tmp/cex-head-metadata.json
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+
+      - name: Qualify actual CEX prospective merge source
+        id: source_merge
+        continue-on-error: true
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cex-target-merge
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/cex-merge"
+          python3 scripts/check-sequence54-integration.py
+          python3 scripts/check-sequence54-rustsec-admission.py
+          python3 scripts/check-rust-toolchain-convergence.py
+          python3 scripts/check-development-docs.py
+          python3 scripts/check-module-documentation.py
+          bash services/paper-raid-bff/scripts/check-boundaries.sh
+          cargo metadata --locked --format-version 1 >/tmp/cex-merge-metadata.json
+          test -s /tmp/cex-merge-metadata.json
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+
+      - name: Qualify exact CEX head supply chain
+        id: supply_head
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/cex-head"
+          python3 scripts/check-rust-advisory-exceptions.py >/tmp/cex-head-advisory.json
+          test -s /tmp/cex-head-advisory.json
+          cargo audit --deny warnings \
+            --ignore RUSTSEC-2023-0071 \
+            --ignore RUSTSEC-2026-0214 \
+            --ignore RUSTSEC-2024-0436
+          cargo deny check advisories licenses sources
+          cargo deny check --allow wildcard bans
+
+      - name: Qualify actual CEX prospective merge supply chain
+        id: supply_merge
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/cex-merge"
+          python3 scripts/check-rust-advisory-exceptions.py >/tmp/cex-merge-advisory.json
+          test -s /tmp/cex-merge-advisory.json
+          cargo audit --deny warnings \
+            --ignore RUSTSEC-2023-0071 \
+            --ignore RUSTSEC-2026-0214 \
+            --ignore RUSTSEC-2024-0436
+          cargo deny check advisories licenses sources
+          cargo deny check --allow wildcard bans
+
+      - name: Enforce exact tuple outcomes and emit identity
+        if: always()
+        shell: bash
+        env:
+          SOURCE_HEAD: ${{ steps.source_head.outcome }}
+          SOURCE_MERGE: ${{ steps.source_merge.outcome }}
+          SUPPLY_HEAD: ${{ steps.supply_head.outcome }}
+          SUPPLY_MERGE: ${{ steps.supply_merge.outcome }}
+        run: |
+          set -euo pipefail
+          printf 'cex_repository=%s\n' "$CEX_REPOSITORY"
+          printf 'cex_base_sha=%s\n' "$CEX_BASE_SHA"
+          printf 'cex_head_sha=%s\n' "$CEX_HEAD_SHA"
+          printf 'cex_merge_sha=%s\n' "$CEX_MERGE_SHA"
+          printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
+          printf 'runner_commit=%s\n' "$GITHUB_SHA"
+          printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
+          printf 'source_head=%s\nsource_merge=%s\n' "$SOURCE_HEAD" "$SOURCE_MERGE"
+          printf 'supply_head=%s\nsupply_merge=%s\n' "$SUPPLY_HEAD" "$SUPPLY_MERGE"
+          printf 'production_authorization=not_granted\n'
+          test "$SOURCE_HEAD" = success
+          test "$SOURCE_MERGE" = success
+          test "$SUPPLY_HEAD" = success
+          test "$SUPPLY_MERGE" = success
+          printf 'CEX_V12_EXTERNAL_REQUIRED=PASS\n'
