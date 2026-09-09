@@ -1,0 +1,1150 @@
+name: tmp-multiplayer-wave4
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-multiplayer-wave4.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-competition-core-20260909
+  FEATURE_BRANCH: feature/plan-v32-multiplayer-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-multiplayer-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Wait for exact Wave 3 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 180); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 30
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write deterministic multiplayer authority core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-multiplayer-core/src
+          cat > crates/trnm-multiplayer-core/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-multiplayer-core"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Bounded deterministic party matchmaker and multiplayer authority state"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-multiplayer-core/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::collections::{BTreeMap, BTreeSet};
+
+          pub const MAX_PARTIES: usize = 65_536;
+          pub const MAX_PARTY_MEMBERS: usize = 128;
+          pub const MAX_TICKETS: usize = 100_000;
+          pub const MAX_TICKET_USERS: usize = 128;
+          pub const MAX_QUERY_BYTES: usize = 4096;
+          pub const MAX_MATCHES: usize = 65_536;
+          pub const MAX_MATCH_MEMBERS: usize = 1024;
+          pub const MAX_RELAY_BYTES: usize = 65_536;
+          pub const MAX_AUTHORITY_LEASE_MS: u64 = 300_000;
+
+          macro_rules! identity {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(value: [u8; 16]) -> Result<Self, MultiplayerError> {
+                          if value.iter().all(|byte| *byte == 0) {
+                              Err(MultiplayerError::invalid($reason))
+                          } else {
+                              Ok(Self(value))
+                          }
+                      }
+
+                      #[must_use]
+                      pub const fn as_bytes(&self) -> &[u8; 16] {
+                          &self.0
+                      }
+                  }
+              };
+          }
+
+          identity!(ProjectId, "project_id_zero");
+          identity!(UserId, "user_id_zero");
+          identity!(PartyId, "party_id_zero");
+          identity!(TicketId, "ticket_id_zero");
+          identity!(MatchId, "match_id_zero");
+          identity!(CommandId, "command_id_zero");
+          identity!(NodeId, "node_id_zero");
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Fingerprint([u8; 32]);
+
+          impl Fingerprint {
+              pub fn new(value: [u8; 32]) -> Result<Self, MultiplayerError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      Err(MultiplayerError::invalid("fingerprint_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct CommandIdentity {
+              pub command: CommandId,
+              pub fingerprint: Fingerprint,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum PartyRole {
+              Leader,
+              Member,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct Party {
+              pub id: PartyId,
+              pub project: ProjectId,
+              pub members: BTreeMap<UserId, PartyRole>,
+              pub max_members: usize,
+              pub revision: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum TicketState {
+              Active,
+              Cancelled,
+              Matched(MatchId),
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct MatchmakerTicket {
+              pub id: TicketId,
+              pub project: ProjectId,
+              pub party: Option<PartyId>,
+              pub users: Vec<UserId>,
+              pub query: String,
+              pub minimum_count: usize,
+              pub maximum_count: usize,
+              pub create_time_ms: u64,
+              pub state: TicketState,
+              pub revision: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum MatchKind {
+              Relayed,
+              Authoritative,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct AuthorityLease {
+              pub owner: NodeId,
+              pub generation: u64,
+              pub expires_at_ms: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum MatchLifecycle {
+              Open,
+              Closing,
+              Closed,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct MatchState {
+              pub id: MatchId,
+              pub project: ProjectId,
+              pub kind: MatchKind,
+              pub members: BTreeSet<UserId>,
+              pub authority: Option<AuthorityLease>,
+              pub next_relay_sequence: u64,
+              pub lifecycle: MatchLifecycle,
+              pub revision: u64,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub enum MutationResult {
+              Party(Party),
+              Ticket(MatchmakerTicket),
+              Match(MatchState),
+              RelaySequence(u64),
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct MutationReceipt {
+              pub command: CommandId,
+              pub result: MutationResult,
+              pub duplicate: bool,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          struct StoredReceipt {
+              fingerprint: Fingerprint,
+              receipt: MutationReceipt,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableMultiplayerCode {
+              InvalidArgument,
+              NotFound,
+              AlreadyExists,
+              PermissionDenied,
+              FailedPrecondition,
+              Aborted,
+              OutOfRange,
+              ResourceExhausted,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct MultiplayerError {
+              code: StableMultiplayerCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl MultiplayerError {
+              #[must_use]
+              pub const fn new(
+                  code: StableMultiplayerCode,
+                  reason: &'static str,
+                  retryable: bool,
+              ) -> Self {
+                  Self { code, reason, retryable }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableMultiplayerCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableMultiplayerCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct MultiplayerRegistry {
+              parties: BTreeMap<PartyId, Party>,
+              tickets: BTreeMap<TicketId, MatchmakerTicket>,
+              matches: BTreeMap<MatchId, MatchState>,
+              receipts: BTreeMap<CommandId, StoredReceipt>,
+              max_parties: usize,
+              max_tickets: usize,
+              max_matches: usize,
+              max_receipts: usize,
+          }
+
+          impl MultiplayerRegistry {
+              pub fn new(
+                  max_parties: usize,
+                  max_tickets: usize,
+                  max_matches: usize,
+                  max_receipts: usize,
+              ) -> Result<Self, MultiplayerError> {
+                  if max_parties == 0 || max_parties > MAX_PARTIES
+                      || max_tickets == 0 || max_tickets > MAX_TICKETS
+                      || max_matches == 0 || max_matches > MAX_MATCHES
+                      || max_receipts == 0
+                  {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::ResourceExhausted,
+                          "registry_limits_invalid",
+                          false,
+                      ));
+                  }
+                  Ok(Self {
+                      parties: BTreeMap::new(),
+                      tickets: BTreeMap::new(),
+                      matches: BTreeMap::new(),
+                      receipts: BTreeMap::new(),
+                      max_parties,
+                      max_tickets,
+                      max_matches,
+                      max_receipts,
+                  })
+              }
+
+              pub fn create_party(
+                  &mut self,
+                  identity: CommandIdentity,
+                  id: PartyId,
+                  project: ProjectId,
+                  leader: UserId,
+                  max_members: usize,
+              ) -> Result<MutationReceipt, MultiplayerError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  if max_members == 0 || max_members > MAX_PARTY_MEMBERS {
+                      return Err(MultiplayerError::invalid("party_member_limit_invalid"));
+                  }
+                  if self.parties.contains_key(&id) {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::AlreadyExists,
+                          "party_exists",
+                          false,
+                      ));
+                  }
+                  if self.parties.len() >= self.max_parties {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::ResourceExhausted,
+                          "party_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let party = Party {
+                      id,
+                      project,
+                      members: BTreeMap::from([(leader, PartyRole::Leader)]),
+                      max_members,
+                      revision: 1,
+                  };
+                  self.commit_receipt(
+                      identity,
+                      MutationResult::Party(party.clone()),
+                      |candidate| {
+                          candidate.parties.insert(id, party);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn join_party(
+                  &mut self,
+                  identity: CommandIdentity,
+                  party: PartyId,
+                  expected_revision: u64,
+                  user: UserId,
+              ) -> Result<MutationReceipt, MultiplayerError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let current = self.party_for_update(party, expected_revision)?.clone();
+                  if current.members.contains_key(&user) {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::AlreadyExists,
+                          "party_member_exists",
+                          false,
+                      ));
+                  }
+                  if current.members.len() >= current.max_members {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::ResourceExhausted,
+                          "party_full",
+                          false,
+                      ));
+                  }
+                  let mut updated = current;
+                  updated.members.insert(user, PartyRole::Member);
+                  updated.revision = next_revision(updated.revision)?;
+                  self.commit_receipt(
+                      identity,
+                      MutationResult::Party(updated.clone()),
+                      |candidate| {
+                          candidate.parties.insert(party, updated);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn leave_party(
+                  &mut self,
+                  identity: CommandIdentity,
+                  party: PartyId,
+                  expected_revision: u64,
+                  user: UserId,
+                  successor: Option<UserId>,
+              ) -> Result<MutationReceipt, MultiplayerError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  let current = self.party_for_update(party, expected_revision)?.clone();
+                  let role = current.members.get(&user).copied().ok_or_else(|| {
+                      MultiplayerError::new(
+                          StableMultiplayerCode::NotFound,
+                          "party_member_not_found",
+                          false,
+                      )
+                  })?;
+                  let mut updated = current;
+                  if role == PartyRole::Leader && updated.members.len() > 1 {
+                      let successor = successor.ok_or_else(|| MultiplayerError::new(
+                          StableMultiplayerCode::FailedPrecondition,
+                          "leader_successor_required",
+                          false,
+                      ))?;
+                      if successor == user || updated.members.get(&successor) != Some(&PartyRole::Member) {
+                          return Err(MultiplayerError::invalid("leader_successor_invalid"));
+                      }
+                      updated.members.insert(successor, PartyRole::Leader);
+                  }
+                  updated.members.remove(&user);
+                  updated.revision = next_revision(updated.revision)?;
+                  self.commit_receipt(
+                      identity,
+                      MutationResult::Party(updated.clone()),
+                      |candidate| {
+                          if updated.members.is_empty() {
+                              candidate.parties.remove(&party);
+                          } else {
+                              candidate.parties.insert(party, updated);
+                          }
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn submit_ticket(
+                  &mut self,
+                  identity: CommandIdentity,
+                  ticket: MatchmakerTicket,
+              ) -> Result<MutationReceipt, MultiplayerError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  validate_ticket(&ticket)?;
+                  if self.tickets.contains_key(&ticket.id) {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::AlreadyExists,
+                          "ticket_exists",
+                          false,
+                      ));
+                  }
+                  if self.tickets.len() >= self.max_tickets {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::ResourceExhausted,
+                          "ticket_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  if let Some(party) = ticket.party {
+                      let current = self.parties.get(&party).ok_or_else(|| MultiplayerError::new(
+                          StableMultiplayerCode::NotFound,
+                          "ticket_party_not_found",
+                          false,
+                      ))?;
+                      let members = current.members.keys().copied().collect::<BTreeSet<_>>();
+                      let ticket_users = ticket.users.iter().copied().collect::<BTreeSet<_>>();
+                      if members != ticket_users || current.project != ticket.project {
+                          return Err(MultiplayerError::new(
+                              StableMultiplayerCode::FailedPrecondition,
+                              "ticket_party_membership_mismatch",
+                              false,
+                          ));
+                      }
+                  }
+                  let id = ticket.id;
+                  self.commit_receipt(
+                      identity,
+                      MutationResult::Ticket(ticket.clone()),
+                      |candidate| {
+                          candidate.tickets.insert(id, ticket);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn form_match(
+                  &mut self,
+                  identity: CommandIdentity,
+                  match_id: MatchId,
+                  ticket_ids: &[TicketId],
+                  kind: MatchKind,
+              ) -> Result<MutationReceipt, MultiplayerError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  if ticket_ids.is_empty() || ticket_ids.len() > MAX_TICKET_USERS {
+                      return Err(MultiplayerError::invalid("match_ticket_count_invalid"));
+                  }
+                  if self.matches.contains_key(&match_id) {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::AlreadyExists,
+                          "match_exists",
+                          false,
+                      ));
+                  }
+                  if self.matches.len() >= self.max_matches {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::ResourceExhausted,
+                          "match_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let mut unique_tickets = BTreeSet::new();
+                  let mut members = BTreeSet::new();
+                  let mut project = None;
+                  for id in ticket_ids {
+                      if !unique_tickets.insert(*id) {
+                          return Err(MultiplayerError::invalid("duplicate_ticket"));
+                      }
+                      let ticket = self.tickets.get(id).ok_or_else(|| MultiplayerError::new(
+                          StableMultiplayerCode::NotFound,
+                          "ticket_not_found",
+                          false,
+                      ))?;
+                      if ticket.state != TicketState::Active {
+                          return Err(MultiplayerError::new(
+                              StableMultiplayerCode::FailedPrecondition,
+                              "ticket_not_active",
+                              false,
+                          ));
+                      }
+                      if project.is_some_and(|value| value != ticket.project) {
+                          return Err(MultiplayerError::new(
+                              StableMultiplayerCode::FailedPrecondition,
+                              "ticket_project_mismatch",
+                              false,
+                          ));
+                      }
+                      project = Some(ticket.project);
+                      for user in &ticket.users {
+                          if !members.insert(*user) {
+                              return Err(MultiplayerError::new(
+                                  StableMultiplayerCode::FailedPrecondition,
+                                  "duplicate_match_user",
+                                  false,
+                              ));
+                          }
+                      }
+                  }
+                  if members.is_empty() || members.len() > MAX_MATCH_MEMBERS {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::ResourceExhausted,
+                          "match_member_count_invalid",
+                          false,
+                      ));
+                  }
+                  for id in ticket_ids {
+                      let ticket = self.tickets.get(id).expect("ticket validated above");
+                      if members.len() < ticket.minimum_count || members.len() > ticket.maximum_count {
+                          return Err(MultiplayerError::new(
+                              StableMultiplayerCode::FailedPrecondition,
+                              "match_count_outside_ticket_bounds",
+                              false,
+                          ));
+                      }
+                  }
+                  let state = MatchState {
+                      id: match_id,
+                      project: project.expect("nonempty ticket list"),
+                      kind,
+                      members,
+                      authority: None,
+                      next_relay_sequence: 1,
+                      lifecycle: MatchLifecycle::Open,
+                      revision: 1,
+                  };
+                  let ids = ticket_ids.to_vec();
+                  self.commit_receipt(
+                      identity,
+                      MutationResult::Match(state.clone()),
+                      |candidate| {
+                          for id in ids {
+                              let ticket = candidate.tickets.get_mut(&id).expect("ticket validated above");
+                              ticket.state = TicketState::Matched(match_id);
+                              ticket.revision = next_revision(ticket.revision)?;
+                          }
+                          candidate.matches.insert(match_id, state);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn acquire_authority(
+                  &mut self,
+                  identity: CommandIdentity,
+                  match_id: MatchId,
+                  owner: NodeId,
+                  now_ms: u64,
+                  lease_ms: u64,
+              ) -> Result<MutationReceipt, MultiplayerError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  if now_ms == 0 || lease_ms == 0 || lease_ms > MAX_AUTHORITY_LEASE_MS {
+                      return Err(MultiplayerError::invalid("authority_lease_invalid"));
+                  }
+                  let expires_at_ms = now_ms.checked_add(lease_ms).ok_or_else(|| MultiplayerError::new(
+                      StableMultiplayerCode::OutOfRange,
+                      "authority_expiry_overflow",
+                      false,
+                  ))?;
+                  let current = self.matches.get(&match_id).ok_or_else(|| MultiplayerError::new(
+                      StableMultiplayerCode::NotFound,
+                      "match_not_found",
+                      false,
+                  ))?;
+                  if current.kind != MatchKind::Authoritative || current.lifecycle != MatchLifecycle::Open {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::FailedPrecondition,
+                          "match_not_authority_eligible",
+                          false,
+                      ));
+                  }
+                  let generation = match current.authority {
+                      None => 1,
+                      Some(lease) if lease.owner == owner && lease.expires_at_ms > now_ms => lease.generation,
+                      Some(lease) if lease.expires_at_ms <= now_ms => lease.generation.checked_add(1).ok_or_else(|| MultiplayerError::new(
+                          StableMultiplayerCode::OutOfRange,
+                          "authority_generation_overflow",
+                          false,
+                      ))?,
+                      Some(_) => return Err(MultiplayerError::new(
+                          StableMultiplayerCode::Aborted,
+                          "authority_owned_elsewhere",
+                          true,
+                      )),
+                  };
+                  let mut updated = current.clone();
+                  updated.authority = Some(AuthorityLease { owner, generation, expires_at_ms });
+                  updated.revision = next_revision(updated.revision)?;
+                  self.commit_receipt(
+                      identity,
+                      MutationResult::Match(updated.clone()),
+                      |candidate| {
+                          candidate.matches.insert(match_id, updated);
+                          Ok(())
+                      },
+                  )
+              }
+
+              pub fn append_relay(
+                  &mut self,
+                  identity: CommandIdentity,
+                  match_id: MatchId,
+                  sender: UserId,
+                  expected_sequence: u64,
+                  payload_size: usize,
+              ) -> Result<MutationReceipt, MultiplayerError> {
+                  if let Some(receipt) = self.replay(identity)? {
+                      return Ok(receipt);
+                  }
+                  if payload_size == 0 || payload_size > MAX_RELAY_BYTES {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::ResourceExhausted,
+                          "relay_payload_size_invalid",
+                          false,
+                      ));
+                  }
+                  let current = self.matches.get(&match_id).ok_or_else(|| MultiplayerError::new(
+                      StableMultiplayerCode::NotFound,
+                      "match_not_found",
+                      false,
+                  ))?;
+                  if current.kind != MatchKind::Relayed || current.lifecycle != MatchLifecycle::Open {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::FailedPrecondition,
+                          "match_not_relay_eligible",
+                          false,
+                      ));
+                  }
+                  if !current.members.contains(&sender) {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::PermissionDenied,
+                          "sender_not_match_member",
+                          false,
+                      ));
+                  }
+                  if current.next_relay_sequence != expected_sequence {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::Aborted,
+                          "relay_sequence_mismatch",
+                          true,
+                      ));
+                  }
+                  let next = expected_sequence.checked_add(1).ok_or_else(|| MultiplayerError::new(
+                      StableMultiplayerCode::OutOfRange,
+                      "relay_sequence_overflow",
+                      false,
+                  ))?;
+                  self.commit_receipt(
+                      identity,
+                      MutationResult::RelaySequence(expected_sequence),
+                      |candidate| {
+                          let state = candidate.matches.get_mut(&match_id).expect("match validated above");
+                          state.next_relay_sequence = next;
+                          state.revision = next_revision(state.revision)?;
+                          Ok(())
+                      },
+                  )
+              }
+
+              fn party_for_update(
+                  &self,
+                  id: PartyId,
+                  expected_revision: u64,
+              ) -> Result<&Party, MultiplayerError> {
+                  let party = self.parties.get(&id).ok_or_else(|| MultiplayerError::new(
+                      StableMultiplayerCode::NotFound,
+                      "party_not_found",
+                      false,
+                  ))?;
+                  if party.revision != expected_revision {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::Aborted,
+                          "party_revision_mismatch",
+                          true,
+                      ));
+                  }
+                  Ok(party)
+              }
+
+              fn replay(
+                  &self,
+                  identity: CommandIdentity,
+              ) -> Result<Option<MutationReceipt>, MultiplayerError> {
+                  let Some(stored) = self.receipts.get(&identity.command) else {
+                      return Ok(None);
+                  };
+                  if stored.fingerprint != identity.fingerprint {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::AlreadyExists,
+                          "command_fingerprint_conflict",
+                          false,
+                      ));
+                  }
+                  let mut receipt = stored.receipt.clone();
+                  receipt.duplicate = true;
+                  Ok(Some(receipt))
+              }
+
+              fn commit_receipt<F>(
+                  &mut self,
+                  identity: CommandIdentity,
+                  result: MutationResult,
+                  apply: F,
+              ) -> Result<MutationReceipt, MultiplayerError>
+              where
+                  F: FnOnce(&mut Self) -> Result<(), MultiplayerError>,
+              {
+                  if self.receipts.len() >= self.max_receipts {
+                      return Err(MultiplayerError::new(
+                          StableMultiplayerCode::ResourceExhausted,
+                          "receipt_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let receipt = MutationReceipt {
+                      command: identity.command,
+                      result,
+                      duplicate: false,
+                  };
+                  let mut candidate = self.clone();
+                  apply(&mut candidate)?;
+                  candidate.receipts.insert(
+                      identity.command,
+                      StoredReceipt {
+                          fingerprint: identity.fingerprint,
+                          receipt: receipt.clone(),
+                      },
+                  );
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              #[must_use]
+              pub fn party(&self, id: PartyId) -> Option<&Party> {
+                  self.parties.get(&id)
+              }
+
+              #[must_use]
+              pub fn ticket(&self, id: TicketId) -> Option<&MatchmakerTicket> {
+                  self.tickets.get(&id)
+              }
+
+              #[must_use]
+              pub fn match_state(&self, id: MatchId) -> Option<&MatchState> {
+                  self.matches.get(&id)
+              }
+          }
+
+          fn validate_ticket(ticket: &MatchmakerTicket) -> Result<(), MultiplayerError> {
+              if ticket.users.is_empty()
+                  || ticket.users.len() > MAX_TICKET_USERS
+                  || ticket.minimum_count == 0
+                  || ticket.minimum_count > ticket.maximum_count
+                  || ticket.maximum_count > MAX_MATCH_MEMBERS
+                  || ticket.query.is_empty()
+                  || ticket.query.len() > MAX_QUERY_BYTES
+                  || ticket.query.bytes().any(|byte| byte.is_ascii_control())
+                  || ticket.create_time_ms == 0
+                  || ticket.revision == 0
+                  || ticket.state != TicketState::Active
+              {
+                  return Err(MultiplayerError::invalid("ticket_invalid"));
+              }
+              let unique = ticket.users.iter().copied().collect::<BTreeSet<_>>();
+              if unique.len() != ticket.users.len() {
+                  return Err(MultiplayerError::invalid("ticket_duplicate_user"));
+              }
+              Ok(())
+          }
+
+          fn next_revision(current: u64) -> Result<u64, MultiplayerError> {
+              current.checked_add(1).ok_or_else(|| MultiplayerError::new(
+                  StableMultiplayerCode::OutOfRange,
+                  "revision_overflow",
+                  false,
+              ))
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn id<T>(byte: u8, constructor: fn([u8; 16]) -> Result<T, MultiplayerError>) -> T {
+                  constructor([byte; 16]).unwrap()
+              }
+
+              fn cmd(byte: u8) -> CommandIdentity {
+                  CommandIdentity {
+                      command: id(byte, CommandId::new),
+                      fingerprint: Fingerprint::new([byte; 32]).unwrap(),
+                  }
+              }
+
+              fn registry() -> MultiplayerRegistry {
+                  MultiplayerRegistry::new(16, 16, 16, 128).unwrap()
+              }
+
+              #[test]
+              fn party_leader_transfer_is_atomic_and_revision_fenced() {
+                  let mut registry = registry();
+                  let party = id(1, PartyId::new);
+                  let project = id(2, ProjectId::new);
+                  let leader = id(3, UserId::new);
+                  let member = id(4, UserId::new);
+                  registry.create_party(cmd(1), party, project, leader, 4).unwrap();
+                  registry.join_party(cmd(2), party, 1, member).unwrap();
+                  let error = registry.leave_party(cmd(3), party, 1, leader, Some(member)).unwrap_err();
+                  assert_eq!(error.reason(), "party_revision_mismatch");
+                  assert_eq!(registry.party(party).unwrap().members.get(&leader), Some(&PartyRole::Leader));
+                  registry.leave_party(cmd(4), party, 2, leader, Some(member)).unwrap();
+                  assert_eq!(registry.party(party).unwrap().members.get(&member), Some(&PartyRole::Leader));
+              }
+
+              #[test]
+              fn exact_receipt_replay_and_changed_fingerprint_conflict() {
+                  let mut registry = registry();
+                  let identity = cmd(1);
+                  registry
+                      .create_party(identity, id(1, PartyId::new), id(2, ProjectId::new), id(3, UserId::new), 4)
+                      .unwrap();
+                  assert!(registry
+                      .create_party(identity, id(1, PartyId::new), id(2, ProjectId::new), id(3, UserId::new), 4)
+                      .unwrap()
+                      .duplicate);
+                  let changed = CommandIdentity {
+                      fingerprint: Fingerprint::new([9; 32]).unwrap(),
+                      ..identity
+                  };
+                  assert_eq!(
+                      registry
+                          .create_party(changed, id(8, PartyId::new), id(2, ProjectId::new), id(3, UserId::new), 4)
+                          .unwrap_err()
+                          .reason(),
+                      "command_fingerprint_conflict"
+                  );
+              }
+
+              #[test]
+              fn match_formation_is_all_or_nothing_and_unique() {
+                  let mut registry = registry();
+                  let project = id(1, ProjectId::new);
+                  let t1 = MatchmakerTicket {
+                      id: id(2, TicketId::new), project, party: None,
+                      users: vec![id(3, UserId::new)], query: "+mode:duo".to_owned(),
+                      minimum_count: 2, maximum_count: 2, create_time_ms: 1,
+                      state: TicketState::Active, revision: 1,
+                  };
+                  let t2 = MatchmakerTicket {
+                      id: id(4, TicketId::new), project, party: None,
+                      users: vec![id(5, UserId::new)], query: "+mode:duo".to_owned(),
+                      minimum_count: 2, maximum_count: 2, create_time_ms: 2,
+                      state: TicketState::Active, revision: 1,
+                  };
+                  registry.submit_ticket(cmd(1), t1.clone()).unwrap();
+                  registry.submit_ticket(cmd(2), t2.clone()).unwrap();
+                  let match_id = id(6, MatchId::new);
+                  registry.form_match(cmd(3), match_id, &[t1.id, t2.id], MatchKind::Relayed).unwrap();
+                  assert_eq!(registry.match_state(match_id).unwrap().members.len(), 2);
+                  assert_eq!(registry.ticket(t1.id).unwrap().state, TicketState::Matched(match_id));
+                  assert_eq!(registry.ticket(t2.id).unwrap().state, TicketState::Matched(match_id));
+              }
+
+              #[test]
+              fn duplicate_match_user_rejects_without_consuming_tickets() {
+                  let mut registry = registry();
+                  let project = id(1, ProjectId::new);
+                  let user = id(3, UserId::new);
+                  for (command, ticket) in [(1, 2), (2, 4)] {
+                      registry.submit_ticket(cmd(command), MatchmakerTicket {
+                          id: id(ticket, TicketId::new), project, party: None,
+                          users: vec![user], query: "+mode:test".to_owned(),
+                          minimum_count: 1, maximum_count: 2, create_time_ms: u64::from(command),
+                          state: TicketState::Active, revision: 1,
+                      }).unwrap();
+                  }
+                  let error = registry
+                      .form_match(cmd(3), id(6, MatchId::new), &[id(2, TicketId::new), id(4, TicketId::new)], MatchKind::Relayed)
+                      .unwrap_err();
+                  assert_eq!(error.reason(), "duplicate_match_user");
+                  assert_eq!(registry.ticket(id(2, TicketId::new)).unwrap().state, TicketState::Active);
+                  assert!(registry.match_state(id(6, MatchId::new)).is_none());
+              }
+
+              #[test]
+              fn authority_takeover_fences_stale_owner_generation() {
+                  let mut registry = registry();
+                  let project = id(1, ProjectId::new);
+                  let ticket = MatchmakerTicket {
+                      id: id(2, TicketId::new), project, party: None,
+                      users: vec![id(3, UserId::new)], query: "+mode:auth".to_owned(),
+                      minimum_count: 1, maximum_count: 1, create_time_ms: 1,
+                      state: TicketState::Active, revision: 1,
+                  };
+                  registry.submit_ticket(cmd(1), ticket.clone()).unwrap();
+                  let match_id = id(4, MatchId::new);
+                  registry.form_match(cmd(2), match_id, &[ticket.id], MatchKind::Authoritative).unwrap();
+                  registry.acquire_authority(cmd(3), match_id, id(5, NodeId::new), 10, 10).unwrap();
+                  registry.acquire_authority(cmd(4), match_id, id(6, NodeId::new), 20, 10).unwrap();
+                  let lease = registry.match_state(match_id).unwrap().authority.unwrap();
+                  assert_eq!(lease.owner, id(6, NodeId::new));
+                  assert_eq!(lease.generation, 2);
+              }
+
+              #[test]
+              fn relay_sequence_and_sender_membership_are_fenced() {
+                  let mut registry = registry();
+                  let project = id(1, ProjectId::new);
+                  let member = id(3, UserId::new);
+                  let ticket = MatchmakerTicket {
+                      id: id(2, TicketId::new), project, party: None,
+                      users: vec![member], query: "+mode:relay".to_owned(),
+                      minimum_count: 1, maximum_count: 1, create_time_ms: 1,
+                      state: TicketState::Active, revision: 1,
+                  };
+                  registry.submit_ticket(cmd(1), ticket.clone()).unwrap();
+                  let match_id = id(4, MatchId::new);
+                  registry.form_match(cmd(2), match_id, &[ticket.id], MatchKind::Relayed).unwrap();
+                  registry.append_relay(cmd(3), match_id, member, 1, 10).unwrap();
+                  assert_eq!(registry.match_state(match_id).unwrap().next_relay_sequence, 2);
+                  assert_eq!(
+                      registry.append_relay(cmd(4), match_id, member, 1, 10).unwrap_err().reason(),
+                      "relay_sequence_mismatch"
+                  );
+                  assert_eq!(
+                      registry.append_relay(cmd(5), match_id, id(9, UserId::new), 2, 10).unwrap_err().code(),
+                      StableMultiplayerCode::PermissionDenied
+                  );
+              }
+          }
+          EOF
+
+          cat > crates/trnm-multiplayer-core/README.md <<'EOF'
+          # trnm-multiplayer-core
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-multiplayer-core`  
+          Workspace class: `root`  
+          Lifecycle: `product-library`  
+          Owner role: `multiplayer-runtime`
+
+          ## Status and authority
+
+          This document is the current engineering contract for bounded party, matchmaker, relayed-match and authoritative-match state. It is a source candidate only and does not establish complete Nakama multiplayer compatibility or distributed production correctness.
+
+          ## Responsibilities
+
+          The crate owns party membership and leader transfer, revision fencing, matchmaker ticket bounds, deterministic all-or-nothing match formation, exact command receipts, relayed sequence fencing and authoritative owner lease generations.
+
+          It does not own network sockets, distributed placement, durable SQL, Runtime callbacks, snapshots, actual payload fanout, reconnect orchestration or cluster membership.
+
+          ## Architecture and dependencies
+
+          Protocol/RTAPI adapters call typed application services. Those services authorize users and invoke durable repositories implementing these state transitions. Realtime actors own connections; runtime workers own match ticks; placement owns node selection.
+
+          No transport, database or external I/O occurs in this pure state machine.
+
+          ## Public contracts
+
+          Parties have one leader and a bounded member set. Leaving leaders must nominate a valid existing member when the party remains nonempty. Tickets bind project, optional exact party, unique users, bounded query text and minimum/maximum match counts.
+
+          Matches are relayed or authoritative. Relayed data requires exact next sequence and membership. Authoritative leases bind node, generation and expiry; only expired ownership may be taken over by a different node.
+
+          ## Correctness and failure model
+
+          Mutations use clone-validate-commit semantics and exact command/fingerprint receipts. Any validation, capacity, duplicate-user, stale revision, stale sequence or owner conflict leaves all maps and receipts unchanged.
+
+          Overflow and resource exhaustion fail closed. Durable adapters must reproduce the same atomic transitions under concurrent transactions and response loss.
+
+          ## Security and privacy
+
+          Project, party, match and session context are authenticated adapter inputs. Membership and route state must not be inferred across projects. Query strings, user identities and relay payloads are excluded from metric labels and public internal errors.
+
+          Authority generations are authorization fences, not caller-selected counters.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-multiplayer-core --all-targets --locked
+          cargo clippy --package trnm-multiplayer-core --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover revision-fenced leader transfer, exact replay and changed-fingerprint rejection, atomic match formation, duplicate-user rollback, expired authority takeover, relayed sequence and membership fences.
+
+          ## Operations
+
+          Adapters expose bounded party/ticket/match counts, matchmaker latency, capacity rejection, authority generation/takeover, stale-owner rejection, relay sequence mismatch, reconnect and drain signals without user or payload labels.
+
+          ## Compatibility and evidence
+
+          Complete #141 requires generated API and RTAPI surfaces, matchmaker query/scoring behavior, parties, match tokens, relayed routing, authoritative lifecycle callbacks, placement/snapshots, multi-node takeover, partition/reconnect tests and official SDK/oracle differential.
+
+          Source and unit tests cannot establish distributed delivery, durability, Runtime semantics, capacity, endurance or production readiness.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P0-SERVER-001`, `GAP-P0-DATA-001`, `GAP-P0-SCOPE-001`, `GAP-P0-CI-001`, `GAP-P1-IDENTITY-001`, `GAP-P1-PG-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires durable profile repositories, public protocol adapters, supervised realtime/placement/runtime integration, response-loss and partition fault matrices, official consumer differential, retained exact-head evidence and independent protocol/realtime/database/runtime/SRE review.
+          EOF
+
+      - name: Register multiplayer module fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          member='crates/trnm-multiplayer-core'
+          cargo=Path('Cargo.toml'); text=cargo.read_text(encoding='utf-8')
+          if f'"{member}"' not in text:
+              cargo.write_text(text.replace(']\nexclude = [',f'  "{member}",\n]\nexclude = [',1),encoding='utf-8')
+          mp=Path('docs/status/MODULE_DOCUMENTATION.json'); m=json.loads(mp.read_text())
+          if not any(r['id']=='trnm-multiplayer-core' for r in m['modules']):
+              m['modules'].append({'id':'trnm-multiplayer-core','path':member,'manifest':f'{member}/Cargo.toml','documentation':f'{member}/README.md','workspace':'root','lifecycle':'product-library','maturity':'source-candidate','owner_role':'multiplayer-runtime','authority':'party matchmaker relayed and authoritative multiplayer state','blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-DATA-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-IDENTITY-001','GAP-P1-PG-001','GAP-P1-REVIEW-001'],'claim_credit':False})
+          m['modules'].sort(key=lambda r:r['id']); s=m['summary']; s.update({'module_count':len(m['modules']),'documented_count':len(m['modules']),'root_workspace_count':sum(r['workspace']=='root' for r in m['modules']),'isolated_workspace_count':sum(r['workspace']=='isolated' for r in m['modules']),'undocumented_count':0}); mp.write_text(json.dumps(m,indent=2)+'\n')
+          ap=Path('docs/development/RUST_PACKAGE_AUTHORITY.json'); a=json.loads(ap.read_text());
+          if member not in a['workspace']['members']: a['workspace']['members'].append(member); a['workspace']['members'].sort()
+          for k in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'): a.setdefault('claim_boundary',{})[k]=False
+          ap.write_text(json.dumps(a,indent=2)+'\n')
+          ip=Path('docs/status/IMPLEMENTATION_INVENTORY.json'); inv=json.loads(ip.read_text())
+          if not any(r.get('id')=='COMP-MULTIPLAYER-CORE' for r in inv['components']):
+              inv['components'].append({'id':'COMP-MULTIPLAYER-CORE','path':member,'kind':'rust-library','workstreams':['W8','W9','W10'],'status':'source-candidate','implemented':['bounded party membership and leader transfer','matchmaker ticket and atomic match formation','relayed sequence and authoritative lease fencing'],'missing':['complete public API and RTAPI','durable repositories placement and runtime callbacks','multi-node partition reconnect capacity and endurance evidence','official SDK/oracle differential and independent acceptance'],'blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-DATA-001','GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-IDENTITY-001','GAP-P1-PG-001','GAP-P1-REVIEW-001'],'parity_ids':['TG-PAR-039','TG-PAR-046','TG-PAR-047','TG-PAR-048'],'evidence_ids':[],'claim_credit':False})
+          ip.write_text(json.dumps(inv,indent=2)+'\n')
+          sp=Path('docs/status/CURRENT_STATE.json'); st=json.loads(sp.read_text()); st.setdefault('implementation',{})['multiplayer_authority_source_candidate']=True
+          for k in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'): st.setdefault('claims',{})[k]=False
+          sp.write_text(json.dumps(st,indent=2)+'\n')
+          PY
+
+      - name: Publish Draft and qualify exact source
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git commit -m 'feat(multiplayer): add party matchmaker and match authority core'
+          head_sha="$(git rev-parse HEAD)"; head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Source candidate for #141, stacked on competition Wave 3.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Implements bounded party membership, leader transfer, matchmaker tickets, atomic match formation, exact receipts, relayed sequence fencing and authoritative owner generation leases.
+
+          Complete public API/RTAPI, durable repositories, distributed placement/runtime, reconnect/partition/capacity/endurance and official SDK/oracle differential remain open. No compatibility, evidence or production credit.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 4] Add party matchmaker and multiplayer authority core' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
+            cargo test --manifest-path "$manifest" --all-targets --locked
+            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
+          done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "Multiplayer Wave 4 carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and all claim ceilings remain binding."
+          gh issue comment 141 --repo "$REPOSITORY" --body "Multiplayer source carrier status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`; #141 remains open pending complete implementation and evidence."
