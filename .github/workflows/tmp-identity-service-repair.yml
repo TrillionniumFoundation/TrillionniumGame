@@ -1,0 +1,195 @@
+name: tmp-identity-service-repair
+
+on:
+  push:
+    branches:
+      - ops/identity-service-repair-20260909
+    paths:
+      - .github/workflows/tmp-identity-service-repair.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: identity-service-repair
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      FEATURE_BRANCH: feature/plan-v32-identity-core-20260909
+      SOURCE_BRANCH: ops/identity-service-source-20260909
+    steps:
+      - name: Resolve exact identity feature head
+        shell: bash
+        run: |
+          set -euo pipefail
+          feature_sha="$(gh api "repos/${REPOSITORY}/git/ref/heads/${FEATURE_BRANCH}" --jq '.object.sha')"
+          test -n "$feature_sha"
+          echo "FEATURE_SHA=$feature_sha" >> "$GITHUB_ENV"
+          pr_number="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          echo "PR_NUMBER=$pr_number" >> "$GITHUB_ENV"
+      - name: Fetch feature head and source generator
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$FEATURE_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$FEATURE_SHA"
+          test -f "$GITHUB_WORKSPACE/crates/trnm-identity-core/src/lib.rs"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$SOURCE_BRANCH:refs/remotes/origin/identity-service-source"
+          git -C "$GITHUB_WORKSPACE" show refs/remotes/origin/identity-service-source:.github/workflows/tmp-identity-service-source.yml > /tmp/identity-service-source.yml
+      - name: Materialize or repair service source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from __future__ import annotations
+          import subprocess
+          from pathlib import Path
+
+          root = Path('.')
+          lines = Path('/tmp/identity-service-source.yml').read_text(encoding='utf-8').splitlines()
+
+          def extract(marker: str, terminator: str, start_at: int = 0) -> str:
+              start = next(i for i in range(start_at, len(lines)) if marker in lines[i]) + 1
+              end = next(i for i in range(start, len(lines)) if lines[i].strip() == terminator)
+              return '\n'.join(
+                  line[10:] if line.startswith('          ') else line
+                  for line in lines[start:end]
+              ) + '\n'
+
+          files = {
+              'crates/trnm-identity-service/Cargo.toml': ("cat > crates/trnm-identity-service/Cargo.toml <<'TOML'", 'TOML'),
+              'crates/trnm-identity-service/src/lib.rs': ("cat > crates/trnm-identity-service/src/lib.rs <<'RS'", 'RS'),
+              'crates/trnm-identity-service/README.md': ("cat > crates/trnm-identity-service/README.md <<'MD'", 'MD'),
+              'crates/trnm-identity-service/testdata/provider-verification-boundary-v1.json': ("cat > crates/trnm-identity-service/testdata/provider-verification-boundary-v1.json <<'JSON'", 'JSON'),
+          }
+          for relative, (marker, terminator) in files.items():
+              target = root / relative
+              if not target.exists():
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  target.write_text(extract(marker, terminator), encoding='utf-8')
+
+          step = next(i for i, line in enumerate(lines) if '- name: Register service package' in line)
+          registration = extract("python3 - <<'PY'", 'PY', step)
+          Path('/tmp/register-identity-service.py').write_text(registration, encoding='utf-8')
+          subprocess.run(['python3', '/tmp/register-identity-service.py'], check=True)
+
+          source = root / 'crates/trnm-identity-service/src/lib.rs'
+          text = source.read_text(encoding='utf-8')
+          text = text.replace(
+              'for byte in &mut self.bytes {\n                  *byte = 0;\n              }',
+              'self.bytes.fill(0);',
+          )
+          text = text.replace(
+              'if budget == 0 || budget > MAX_PROVIDER_VERIFICATION_BUDGET_MS {',
+              'if !(1..=MAX_PROVIDER_VERIFICATION_BUDGET_MS).contains(&budget) {',
+          )
+          text = text.replace(
+              'if verification.identity.provider() != provider {',
+              'if verification.identity().provider() != provider {',
+          )
+          text = text.replace(
+              'if verification.audience != *audience {',
+              'if verification.audience() != audience {',
+          )
+          text = text.replace(
+              'if verification.issued_at_ms > now_ms || verification.expires_at_ms <= now_ms {',
+              'if verification.issued_at_ms() > now_ms || verification.expires_at_ms() <= now_ms {',
+          )
+          text = text.replace(
+              'Ok(verification.identity)',
+              'Ok(verification.identity().clone())',
+          )
+          source.write_text(text, encoding='utf-8')
+          PY
+      - name: Format, build, test and strictly lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo fmt --all
+          cargo test --package trnm-identity-core --all-targets
+          cargo test --package trnm-identity-service --all-targets
+          cargo test --package trnm-identity-core --all-targets --locked
+          cargo test --package trnm-identity-service --all-targets --locked
+          cargo clippy --package trnm-identity-core --all-targets --locked -- -D warnings
+          cargo clippy --package trnm-identity-service --all-targets --locked -- -D warnings
+          python3 -m json.tool crates/trnm-identity-core/testdata/provider-classes-v1.json >/dev/null
+          python3 -m json.tool crates/trnm-identity-service/testdata/provider-verification-boundary-v1.json >/dev/null
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-plan.py
+          git diff --check
+      - name: Commit qualified service and update child PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock \
+            crates/trnm-identity-service \
+            docs/status/MODULE_DOCUMENTATION.json \
+            docs/development/RUST_PACKAGE_AUTHORITY.json \
+            docs/status/IMPLEMENTATION_INVENTORY.json \
+            docs/status/CURRENT_STATE.json
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'identity service already matches qualified source'
+          else
+            git commit -m 'identity: add qualified provider verification service boundary'
+          fi
+          head_sha="$(git rev-parse HEAD)"
+          head_tree="$(git rev-parse HEAD^{tree})"
+          remote_sha="$(gh api "repos/${REPOSITORY}/git/ref/heads/${FEATURE_BRANCH}" --jq '.object.sha')"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git push --force-with-lease="refs/heads/${FEATURE_BRANCH}:${remote_sha}" origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr_number="${PR_NUMBER:-}"
+          if test -z "$pr_number"; then
+            pr_number="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          fi
+          test -n "$pr_number"
+          base_branch="$(gh pr view "$pr_number" --repo "$REPOSITORY" --json baseRefName --jq '.baseRefName')"
+          cat > /tmp/body.md <<EOF
+          Parent issue: #137
+
+          The child now contains:
+
+          - `trnm-identity-core`: bounded account/provider identity state, uniqueness, revision and exact receipt semantics;
+          - `trnm-identity-service`: redacted provider assertion input, typed provider/audience/time verification and an atomic authenticate-or-create repository contract.
+
+          ```text
+          base_branch=${base_branch}
+          head_commit=${head_sha}
+          head_tree=${head_tree}
+          ```
+
+          Provider verification completes before mutation. A durable repository must implement lookup/create as one fenced transaction. Session issuance remains outside this slice because it requires its own idempotent response-loss contract.
+
+          Real provider integrations, password/account-export semantics, public HTTP/gRPC, durable PostgreSQL identity data, session/revoke/socket integration, official consumer/oracle differential, retained promotable evidence and independent acceptance remain open.
+
+          ```text
+          core_source_candidate=true
+          service_source_candidate=true
+          issue_137_source_complete=false
+          compatibility_credit=false
+          accepted_evidence=false
+          production_ready=false
+          all_gaps_closed=false
+          ```
+          EOF
+          gh pr edit "$pr_number" --repo "$REPOSITORY" --body-file /tmp/body.md
+          gh issue comment 137 --repo "$REPOSITORY" --body \
+            "PR #${pr_number} advanced to qualified identity-service head \`${head_sha}\` after format, unlocked/locked tests, strict Clippy and repository validators. Provider/API/data/session/differential/review work remains open."
