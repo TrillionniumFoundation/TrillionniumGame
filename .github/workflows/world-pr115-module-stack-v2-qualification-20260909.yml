@@ -15,10 +15,10 @@ env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_PR_NUMBER: '115'
   WORLD_BASE_SHA: 956462f95675d3d4db89af03bc4b7cc8c9a3c975
-  WORLD_HEAD_SHA: 0f9943d931c15ebf934366e51a978659c739c106
-  WORLD_HEAD_TREE: 2aaf56f8793d99a887e0916b3b4fb1eec1d6d932
-  WORLD_MERGE_SHA: c84a9620eb47b13cecbc5e283f9c0f6c404684ed
-  WORLD_MERGE_TREE: 2aaf56f8793d99a887e0916b3b4fb1eec1d6d932
+  WORLD_HEAD_SHA: 3f0721c7921f2c683fc4872b1f62429ca1b1688c
+  WORLD_HEAD_TREE: 2dc7f89d4770983133978f02d9726e0d59b670f1
+  WORLD_MERGE_SHA: b3cfe7d07a2eaaefe97e6613ef390510bb28b1e0
+  WORLD_MERGE_TREE: 2dc7f89d4770983133978f02d9726e0d59b670f1
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_INCREMENTAL: '0'
@@ -83,7 +83,7 @@ jobs:
           test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')" = "$WORLD_MERGE_TREE"
           test "$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
           test "$(git -C "$RUNNER_TEMP/world-head" show -s --format=%P HEAD)" = \
-            '4a416369cff292fb9bbce3dbd87e6c7a55d3513b 0ad3a80e5b7374fdf3984524330f570223880ce7'
+            '0f9943d931c15ebf934366e51a978659c739c106'
 
       - name: Verify explicit module ownership and P0 contracts
         shell: bash
@@ -129,7 +129,12 @@ jobs:
           for marker in (
               "closed_scope_binding",
               "shadowed_binding",
+              "reassigned_binding",
               "mixed_receivers",
+              "qualified_decoy_argument",
+              "qualified_decoy_initializer",
+              "exact_captured_backend_constructor",
+              "literal_masker_is_total_and_preserves_lifetime_syntax",
               "captured_backend_binding_before",
               "mask_rust_comments_and_literals",
           ):
