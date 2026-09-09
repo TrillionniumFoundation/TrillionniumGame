@@ -1,0 +1,174 @@
+name: tmp-fix-migration-wave10-v3
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-fix-migration-wave10-v3.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-migration-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Wait for exact migration branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha=''
+          for _ in $(seq 1 1080); do
+            head_sha="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$head_sha" && break
+            sleep 20
+          done
+          test -n "$head_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=6 origin "$head_sha"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$FEATURE_BRANCH" "$head_sha"
+
+      - name: Apply format-independent target-authority repair
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/trnm-migration-core/src/lib.rs')
+          text = path.read_text(encoding='utf-8')
+
+          canary_start = text.index(
+              '(MigrationStage::RustCanaryNewEntities, MigrationStage::RustPrimaryNewEntities)'
+          )
+          canary_end = text.index(
+              '(MigrationStage::RustPrimaryNewEntities, MigrationStage::NakamaReadOnly)',
+              canary_start,
+          )
+          canary = text[canary_start:canary_end]
+          if 'current.active_target_authorities > 0' not in canary:
+              source_condition = 'current.active_source_authorities == 0'
+              position = canary.rfind(source_condition)
+              if position < 0:
+                  raise SystemExit('canary source-authority condition missing')
+              position += len(source_condition)
+              canary = (
+                  canary[:position]
+                  + '\n                        && current.active_target_authorities > 0'
+                  + canary[position:]
+              )
+              text = text[:canary_start] + canary + text[canary_end:]
+
+          retirement_start = text.index(
+              '(MigrationStage::NakamaReadOnly, MigrationStage::NakamaRetired)'
+          )
+          retirement_end = text.index('            _ => false,', retirement_start)
+          retirement = text[retirement_start:retirement_end]
+          retirement = retirement.replace(
+              'current.active_target_authorities == 0',
+              'current.active_target_authorities > 0',
+          )
+          if 'current.active_target_authorities > 0' not in retirement:
+              raise SystemExit('retirement target-authority condition missing')
+          text = text[:retirement_start] + retirement + text[retirement_end:]
+
+          tests_start = text.index('#[cfg(test)]\nmod tests {')
+          anchor = '    fn irreversible_stage_cannot_roll_back() {'
+          if 'fn retirement_preserves_positive_rust_authority()' not in text:
+              insert = text.index('    #[test]\n' + anchor, tests_start)
+              test = '''    #[test]
+    fn retirement_preserves_positive_rust_authority() {
+        let mut registry = registered();
+        let cohort = id(1, CohortId::new);
+        let domain = registry.domains.get_mut(&DomainKind::Match).unwrap();
+        domain.stage = MigrationStage::NakamaReadOnly;
+        domain.final_backup_complete = true;
+        domain.active_source_authorities = 0;
+        domain.active_target_authorities = 1;
+        domain.cohorts.insert(
+            cohort,
+            CohortOwnership {
+                cohort,
+                writer: Writer::Rust,
+                generation: 1,
+                revision: 1,
+            },
+        );
+        for (index, kind) in [
+            DecisionKind::Compatibility,
+            DecisionKind::DataIntegrity,
+            DecisionKind::Security,
+            DecisionKind::Operations,
+            DecisionKind::Product,
+            DecisionKind::Retirement,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            domain.decisions.insert(
+                kind,
+                AcceptedDecision {
+                    id: id(u8::try_from(index + 10).unwrap(), DecisionId::new),
+                    kind,
+                    evidence_digest: digest(u8::try_from(index + 20).unwrap()),
+                    reviewer_digest: digest(u8::try_from(index + 30).unwrap()),
+                    decided_at_ms: 100 + u64::try_from(index).unwrap(),
+                    independent: true,
+                    self_review: false,
+                },
+            );
+        }
+        domain.revision = 2;
+        registry
+            .transition(
+                command(2),
+                DomainKind::Match,
+                2,
+                MigrationStage::NakamaRetired,
+            )
+            .unwrap();
+        let domain = registry.domain(DomainKind::Match).unwrap();
+        assert_eq!(domain.stage, MigrationStage::NakamaRetired);
+        assert_eq!(domain.active_source_authorities, 0);
+        assert_eq!(domain.active_target_authorities, 1);
+    }
+
+'''
+              text = text[:insert] + test + text[insert:]
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          if git diff --quiet; then echo 'changed=false' >> "$GITHUB_OUTPUT"; else echo 'changed=true' >> "$GITHUB_OUTPUT"; fi
+
+      - name: Qualify and publish structural migration repair
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo test --package trnm-migration-core --all-targets --locked
+          cargo clippy --package trnm-migration-core --all-targets --locked -- -D warnings
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-migration-core/src/lib.rs
+          git commit -m 'fix(migration): require live Rust authority for primary and retirement'
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Applied a format-independent authority repair: Rust-primary promotion and Nakama retirement now require positive target authority while source authority remains zero. Focused tests and strict Clippy passed in carrier run `${GITHUB_RUN_ID}`; exact-head checks must requalify."
