@@ -1,0 +1,45 @@
+name: plan-v32-controller-status-snapshot-v2-20260909
+
+on:
+  push:
+    branches:
+      - codex/plan-v32-controller-v2-2026-09-09
+    paths:
+      - .github/workflows/plan-v32-controller-status-snapshot-v2-20260909.yml
+      - tools/snapshot_plan_v32_controller_runs_v2.sh
+      - docs/internal/plan-v32-controller-status-v2.request
+
+permissions:
+  actions: read
+  contents: write
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: plan-v32-controller-status-snapshot-v2-20260909
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Fetch exact controller branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/controller"
+          git init "$GITHUB_WORKSPACE/controller"
+          git -C "$GITHUB_WORKSPACE/controller" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/controller" fetch --no-tags origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/controller" checkout -B codex/plan-v32-controller-v2-2026-09-09 FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/controller" rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Snapshot every expanded controller run and failed job log
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROOT: ${{ github.workspace }}/controller
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/controller/tools/snapshot_plan_v32_controller_runs_v2.sh"
