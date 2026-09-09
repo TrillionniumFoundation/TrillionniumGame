@@ -1,0 +1,126 @@
+name: tmp-pr139-storage-public-api-preflight
+
+on:
+  push:
+    branches:
+      - ops/pr139-storage-public-api-preflight-20260909
+    paths:
+      - .github/workflows/tmp-pr139-storage-public-api-preflight.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-pr139-storage-public-api-preflight
+  cancel-in-progress: false
+
+jobs:
+  reconstruct-qualify-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      PREFLIGHT_BRANCH: ops/pr139-storage-public-api-preflight-20260909
+      FEATURE_BRANCH: feature/plan-v32-storage-public-api-20260909
+      EXPECTED_BASE_SHA: 541016f34f2dbaf7c2be10cd45afdd04223c49f2
+      EXPECTED_BASE_TREE: 1c171f4731be313978c80555b5ad0f3af88be593
+      EXPECTED_GZIP_SHA256: 2e977c0aca47a086515f50295f3f41ea46337a8840b1fab28c670d81566f24e5
+      EXPECTED_PATCH_SHA256: b30af8591c3c9eac75829d19517a0660edf49ebeaf3a9c82333e331f0c8e5188
+    steps:
+      - name: Fetch exact carrier and verify immutable parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "$REPOSITORY"
+          test "$GITHUB_REF_NAME" = "$PREFLIGHT_BRANCH"
+          carrier_sha="$GITHUB_SHA"
+          cd "$RUNNER_TEMP"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=8 origin "$carrier_sha" "$EXPECTED_BASE_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$carrier_sha"
+          git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$EXPECTED_BASE_SHA" "$carrier_sha"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse "$EXPECTED_BASE_SHA^{tree}")" = "$EXPECTED_BASE_TREE"
+      - name: Reconstruct and verify exact storage patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cat .preflight/pr139-storage.patch.gz.b64.* | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/pr139-storage.patch.gz"
+          printf '%s  %s\n' "$EXPECTED_GZIP_SHA256" "$RUNNER_TEMP/pr139-storage.patch.gz" | sha256sum --check --strict
+          gzip -dc "$RUNNER_TEMP/pr139-storage.patch.gz" > "$RUNNER_TEMP/pr139-storage.patch"
+          printf '%s  %s\n' "$EXPECTED_PATCH_SHA256" "$RUNNER_TEMP/pr139-storage.patch" | sha256sum --check --strict
+          git checkout --detach "$EXPECTED_BASE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_BASE_TREE"
+          git apply --check "$RUNNER_TEMP/pr139-storage.patch"
+          git apply "$RUNNER_TEMP/pr139-storage.patch"
+          rm -rf .preflight .github/workflows/tmp-pr139-storage-public-api-preflight.yml
+          test ! -e .preflight
+          test ! -e .github/workflows/tmp-pr139-storage-public-api-preflight.yml
+          git add -A
+          git diff --cached --check
+      - name: Format and validate source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo fmt --all
+          git add -A
+          git diff --cached --check
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/cargo-metadata.json"
+          test -s "$RUNNER_TEMP/cargo-metadata.json"
+          python3 -m compileall -q scripts tools tests
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-rust-foundation.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/check-trnm-server.py
+          python3 -m unittest tests.control_plane.test_storage_public_api_contract -v
+      - name: Test focused storage trust boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo test --package trnm-storage-core --all-targets --locked
+          cargo clippy --package trnm-storage-core --all-targets --locked -- -D warnings
+          cargo test --package trnm-persistence-pg --all-targets --locked
+          cargo clippy --package trnm-persistence-pg --all-targets --locked -- -D warnings
+          cargo test --package trnm-server --all-targets --locked
+          cargo clippy --package trnm-server --all-targets --locked -- -D warnings
+      - name: Test complete workspace and control plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          python3 -m unittest discover -s tests/control_plane -p 'test_*.py' -v
+      - name: Publish single clean storage source commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test ! -e .preflight
+          test ! -e .github/workflows/tmp-pr139-storage-public-api-preflight.yml
+          git add -A
+          git diff --cached --check
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'storage: add authenticated bounded API and ordered PostgreSQL listing'
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_BASE_SHA"
+          head_sha="$(git rev-parse HEAD)"
+          head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'https://x-access-token:%s@github.com\n' "$GH_TOKEN" > "$RUNNER_TEMP/git-credentials"
+          chmod 600 "$RUNNER_TEMP/git-credentials"
+          git config credential.helper "store --file=$RUNNER_TEMP/git-credentials"
+          git push --force-with-lease="refs/heads/${FEATURE_BRANCH}:${EXPECTED_BASE_SHA}" \
+            origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          rm -f "$RUNNER_TEMP/git-credentials"
+          printf 'source_head=%s\nsource_tree=%s\npatch_sha256=%s\n' \
+            "$head_sha" "$head_tree" "$EXPECTED_PATCH_SHA256" >> "$GITHUB_STEP_SUMMARY"
