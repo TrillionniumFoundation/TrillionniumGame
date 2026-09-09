@@ -1,0 +1,54 @@
+name: world-source-bundle-3ca6-20260909
+
+on:
+  push:
+    branches:
+      - ops/world-source-bundle-3ca6-20260909
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-source-bundle-3ca6-20260909
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    name: world-source-bundle/read-only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Fetch exact World source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init world
+          git -C world remote add origin https://github.com/TrillionniumFoundation/Trillionnium-World.git
+          git -C world fetch --no-tags --depth=1 origin 3ca6b630fba1bad2dfe4d1d9fb184d9adcbf7eda
+          git -C world checkout --detach FETCH_HEAD
+          test "$(git -C world rev-parse HEAD)" = "3ca6b630fba1bad2dfe4d1d9fb184d9adcbf7eda"
+          test "$(git -C world rev-parse HEAD^{tree})" = "be9eb7563c64bd267e44e7f029c046c66344dff2"
+
+      - name: Create deterministic source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C world archive --format=tar --prefix=world/ HEAD | gzip -n > world-source-3ca6.tar.gz
+          sha256sum world-source-3ca6.tar.gz > SHA256SUMS
+          printf '%s\n' \
+            'repository=TrillionniumFoundation/Trillionnium-World' \
+            'commit=3ca6b630fba1bad2dfe4d1d9fb184d9adcbf7eda' \
+            'tree=be9eb7563c64bd267e44e7f029c046c66344dff2' \
+            'mode=read-only-source-bundle' > identity.txt
+
+      - name: Upload immutable source bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-source-3ca6
+          path: |
+            world-source-3ca6.tar.gz
+            SHA256SUMS
+            identity.txt
+          if-no-files-found: error
+          retention-days: 1
