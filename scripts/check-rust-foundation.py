@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_MEMBERS = {
     "crates/trnm-contracts",
     "crates/trnm-authority-core",
+    "crates/trnm-identity-core",
     "crates/trnm-session-core",
     "crates/trnm-storage-core",
     "crates/trnm-persistence-core",
@@ -33,6 +34,7 @@ EXPECTED_MEMBERS = {
 PURE_CORE_MEMBERS = {
     "crates/trnm-contracts",
     "crates/trnm-authority-core",
+    "crates/trnm-identity-core",
     "crates/trnm-session-core",
     "crates/trnm-storage-core",
     "crates/trnm-persistence-core",
@@ -45,6 +47,7 @@ PURE_CORE_MEMBERS = {
 EXPECTED_DEPENDENCIES: dict[str, dict[str, Any]] = {'crates/trnm-authority-core': {'trnm-contracts': {'path': '../trnm-contracts'}},
  'crates/trnm-canonical-core': {'trnm-contracts': {'path': '../trnm-contracts'}},
  'crates/trnm-contracts': {},
+ 'crates/trnm-identity-core': {},
  'crates/trnm-persistence-core': {'trnm-contracts': {'path': '../trnm-contracts'}},
  'crates/trnm-persistence-pg': {'native-tls': '=0.2.18',
                                 'openssl': '=0.10.81',

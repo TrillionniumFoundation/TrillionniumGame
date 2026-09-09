@@ -67,7 +67,8 @@
     "single_default_server_authority_source_candidate": true,
     "long_lived_rust_workspace_converged": true,
     "authority_and_storage_database_adapters_source_candidate": true,
-    "active_token_crypto_provider_composed": true
+    "active_token_crypto_provider_composed": true,
+    "identity_core_source_candidate": true
   },
   "scope": {
     "baseline": "heroiclabs/nakama@v3.40.0",
