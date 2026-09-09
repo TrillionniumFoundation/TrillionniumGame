@@ -1,0 +1,88 @@
+name: tmp-monitor-product-stack
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-monitor-product-stack.yml
+
+permissions:
+  checks: read
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  monitor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - branch: feature/plan-v32-storage-service-20260909
+            issue: 139
+            label: storage-wave2
+          - branch: feature/plan-v32-competition-core-20260909
+            issue: 140
+            label: competition-wave3
+          - branch: feature/plan-v32-multiplayer-core-20260909
+            issue: 141
+            label: multiplayer-wave4
+    steps:
+      - name: Wait for exact branch and PR
+        id: subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=''
+          for _ in $(seq 1 300); do
+            head="$(gh api "repos/${REPOSITORY}/branches/${{ matrix.branch }}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$head" && break
+            sleep 30
+          done
+          test -n "$head"
+          pr=''
+          for _ in $(seq 1 20); do
+            pr="$(gh pr list --repo "$REPOSITORY" --head '${{ matrix.branch }}' --state open --json number --jq '.[0].number // empty')"
+            test -n "$pr" && break
+            sleep 15
+          done
+          test -n "$pr"
+          printf 'head=%s\npr=%s\n' "$head" "$pr" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for stable exact-head aggregate
+        shell: bash
+        run: |
+          set -euo pipefail
+          head='${{ steps.subject.outputs.head }}'
+          pr='${{ steps.subject.outputs.pr }}'
+          for _ in $(seq 1 240); do
+            test "$(gh api "repos/${REPOSITORY}/branches/${{ matrix.branch }}" --jq '.commit.sha')" = "$head"
+            payload="$(gh api "repos/${REPOSITORY}/commits/${head}/check-runs?per_page=100")"
+            total="$(jq '.total_count' <<<"$payload")"
+            pending="$(jq '[.check_runs[]|select(.status!="completed")]|length' <<<"$payload")"
+            failed="$(jq '[.check_runs[]|select(.status=="completed" and (.conclusion!="success" and .conclusion!="neutral" and .conclusion!="skipped"))]|length' <<<"$payload")"
+            aggregate="$(jq '[.check_runs[]|select(.name=="trillionnium-game-merge-gate" and .status=="completed" and .conclusion=="success")]|length' <<<"$payload")"
+            if test "$failed" -gt 0; then
+              jq -r '.check_runs[]|select(.status=="completed" and (.conclusion!="success" and .conclusion!="neutral" and .conclusion!="skipped"))|"- `\(.name)`: \(.conclusion) — \(.html_url)"' <<<"$payload" >/tmp/failures.md
+              { printf 'Exact-head checks failed for `%s`.\n\n' "$head"; cat /tmp/failures.md; printf '\nSource repair is required; the PR remains Draft.\n'; } >/tmp/comment.md
+              gh pr comment "$pr" --repo "$REPOSITORY" --body-file /tmp/comment.md
+              exit 1
+            fi
+            if test "$total" -gt 0 && test "$pending" -eq 0 && test "$aggregate" -gt 0; then
+              gh pr ready "$pr" --repo "$REPOSITORY"
+              gh pr edit "$pr" --repo "$REPOSITORY" --add-reviewer Tomasrgbsf --add-reviewer Franksudoman
+              gh pr comment "$pr" --repo "$REPOSITORY" --body "Exact-head checks are terminal-success with the stable aggregate for \`${head}\`. Ready for independent review only; product completeness and every higher claim remain false."
+              gh issue comment '${{ matrix.issue }}' --repo "$REPOSITORY" --body "${{ matrix.label }} exact-head source \`${head}\` reached aggregate CI success and is ready for independent review. The issue remains open."
+              exit 0
+            fi
+            sleep 30
+          done
+          gh pr comment "$pr" --repo "$REPOSITORY" --body "Timed out waiting for a stable exact-head aggregate. The PR remains Draft; no gate credit is granted."
+          exit 1
