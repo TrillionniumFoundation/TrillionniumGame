@@ -1,0 +1,2035 @@
+name: tmp-social-core-source
+
+on:
+  push:
+    branches:
+      - ops/social-core-source-20260909
+    paths:
+      - .github/workflows/tmp-social-core-source.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: social-core-source
+  cancel-in-progress: false
+
+jobs:
+  build-source-slice:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      FEATURE_BRANCH: feature/plan-v32-social-core-20260909
+    steps:
+      - name: Resolve accepted or pending Plan v3.2 base
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload="$(gh pr view 150 --repo "$REPOSITORY" --json state,mergedAt,headRefName,headRefOid,baseRefName)"
+          merged_at="$(jq -r '.mergedAt // empty' <<<"$payload")"
+          state="$(jq -r '.state' <<<"$payload")"
+          if test -n "$merged_at"; then
+            base_branch=main
+            base_sha="$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          elif test "$state" = OPEN; then
+            base_branch="$(jq -r '.headRefName' <<<"$payload")"
+            base_sha="$(jq -r '.headRefOid' <<<"$payload")"
+          else
+            echo 'Plan v3.2 parent is neither open nor merged' >&2
+            exit 1
+          fi
+          echo "BASE_BRANCH=$base_branch" >> "$GITHUB_ENV"
+          echo "BASE_SHA=$base_sha" >> "$GITHUB_ENV"
+      - name: Fetch exact base
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$BASE_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$BASE_SHA"
+      - name: Add bounded social domain crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-social-core/src crates/trnm-social-core/testdata
+          cat > crates/trnm-social-core/Cargo.toml <<'TOML'
+          [package]
+          name = "trnm-social-core"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          description = "Bounded social graph, group, chat and notification state machine"
+          publish.workspace = true
+
+          [lints]
+          workspace = true
+          TOML
+          cat > crates/trnm-social-core/src/lib.rs <<'RS'
+          //! Bounded social graph, group, chat and notification state transitions.
+          //!
+          //! The crate performs no I/O. Durable adapters must provide one-writer
+          //! ownership, transactional persistence, restart recovery and public-wire mapping.
+
+          use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+          pub const HARD_MAX_USERS: usize = 1_000_000;
+          pub const HARD_MAX_FRIENDS_PER_USER: usize = 4_096;
+          pub const HARD_MAX_PENDING_PER_USER: usize = 1_024;
+          pub const HARD_MAX_GROUPS: usize = 1_000_000;
+          pub const HARD_MAX_GROUP_MEMBERS: usize = 10_000;
+          pub const HARD_MAX_MESSAGES_PER_STREAM: usize = 100_000;
+          pub const HARD_MAX_NOTIFICATIONS_PER_USER: usize = 100_000;
+          pub const HARD_MAX_RECEIPTS: usize = 4_000_000;
+          pub const MAX_GROUP_NAME_BYTES: usize = 256;
+          pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+          pub const MAX_NOTIFICATION_SUBJECT_BYTES: usize = 512;
+          pub const MAX_NOTIFICATION_BODY_BYTES: usize = 64 * 1024;
+
+          macro_rules! bounded_id {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(bytes: [u8; 16]) -> Result<Self, SocialError> {
+                          if bytes == [0; 16] {
+                              return Err(SocialError::new(
+                                  SocialErrorCode::InvalidArgument,
+                                  $reason,
+                              ));
+                          }
+                          Ok(Self(bytes))
+                      }
+
+                      #[must_use]
+                      pub const fn as_bytes(&self) -> &[u8; 16] {
+                          &self.0
+                      }
+                  }
+              };
+          }
+
+          bounded_id!(UserId, "zero_user_id");
+          bounded_id!(GroupId, "zero_group_id");
+          bounded_id!(MessageId, "zero_message_id");
+          bounded_id!(NotificationId, "zero_notification_id");
+          bounded_id!(CommandId, "zero_command_id");
+
+          #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+          pub struct Fingerprint([u8; 32]);
+
+          impl Fingerprint {
+              pub fn new(bytes: [u8; 32]) -> Result<Self, SocialError> {
+                  if bytes == [0; 32] {
+                      return Err(SocialError::new(
+                          SocialErrorCode::InvalidArgument,
+                          "zero_command_fingerprint",
+                      ));
+                  }
+                  Ok(Self(bytes))
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+          pub struct GroupName(String);
+
+          impl GroupName {
+              pub fn new(value: impl Into<String>) -> Result<Self, SocialError> {
+                  let value = value.into();
+                  if value.is_empty()
+                      || value.len() > MAX_GROUP_NAME_BYTES
+                      || value.trim() != value
+                      || value.chars().any(char::is_control)
+                  {
+                      return Err(SocialError::new(
+                          SocialErrorCode::InvalidArgument,
+                          "group_name_invalid",
+                      ));
+                  }
+                  Ok(Self(value))
+              }
+
+              #[must_use]
+              pub fn as_str(&self) -> &str {
+                  &self.0
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum GroupRole {
+              Member,
+              Admin,
+              Owner,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum SocialErrorCode {
+              InvalidArgument,
+              NotFound,
+              AlreadyExists,
+              FailedPrecondition,
+              PermissionDenied,
+              ResourceExhausted,
+              Conflict,
+              OutOfRange,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct SocialError {
+              code: SocialErrorCode,
+              reason: &'static str,
+          }
+
+          impl SocialError {
+              const fn new(code: SocialErrorCode, reason: &'static str) -> Self {
+                  Self { code, reason }
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> SocialErrorCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct SocialConfig {
+              max_users: usize,
+              max_friends_per_user: usize,
+              max_pending_per_user: usize,
+              max_groups: usize,
+              max_group_members: usize,
+              max_messages_per_stream: usize,
+              max_notifications_per_user: usize,
+              max_receipts: usize,
+          }
+
+          impl SocialConfig {
+              #[allow(clippy::too_many_arguments)]
+              pub fn new(
+                  max_users: usize,
+                  max_friends_per_user: usize,
+                  max_pending_per_user: usize,
+                  max_groups: usize,
+                  max_group_members: usize,
+                  max_messages_per_stream: usize,
+                  max_notifications_per_user: usize,
+                  max_receipts: usize,
+              ) -> Result<Self, SocialError> {
+                  let values = [
+                      (max_users, HARD_MAX_USERS, "user_capacity_invalid"),
+                      (
+                          max_friends_per_user,
+                          HARD_MAX_FRIENDS_PER_USER,
+                          "friend_capacity_invalid",
+                      ),
+                      (
+                          max_pending_per_user,
+                          HARD_MAX_PENDING_PER_USER,
+                          "pending_capacity_invalid",
+                      ),
+                      (max_groups, HARD_MAX_GROUPS, "group_capacity_invalid"),
+                      (
+                          max_group_members,
+                          HARD_MAX_GROUP_MEMBERS,
+                          "group_member_capacity_invalid",
+                      ),
+                      (
+                          max_messages_per_stream,
+                          HARD_MAX_MESSAGES_PER_STREAM,
+                          "message_capacity_invalid",
+                      ),
+                      (
+                          max_notifications_per_user,
+                          HARD_MAX_NOTIFICATIONS_PER_USER,
+                          "notification_capacity_invalid",
+                      ),
+                      (max_receipts, HARD_MAX_RECEIPTS, "receipt_capacity_invalid"),
+                  ];
+                  for (value, hard_max, reason) in values {
+                      if value == 0 || value > hard_max {
+                          return Err(SocialError::new(SocialErrorCode::InvalidArgument, reason));
+                      }
+                  }
+                  Ok(Self {
+                      max_users,
+                      max_friends_per_user,
+                      max_pending_per_user,
+                      max_groups,
+                      max_group_members,
+                      max_messages_per_stream,
+                      max_notifications_per_user,
+                      max_receipts,
+                  })
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum SocialAction {
+              UserRegistered,
+              FriendRequested,
+              FriendAccepted,
+              FriendRemoved,
+              UserBlocked,
+              UserUnblocked,
+              GroupCreated,
+              GroupMemberAdded,
+              GroupMemberRemoved,
+              GroupMemberPromoted,
+              GroupOwnershipTransferred,
+              DirectMessagePosted,
+              GroupMessagePosted,
+              NotificationCreated,
+              NotificationRead,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct SocialReceipt {
+              command: CommandId,
+              fingerprint: Fingerprint,
+              actor: UserId,
+              revision: u64,
+              action: SocialAction,
+          }
+
+          impl SocialReceipt {
+              #[must_use]
+              pub const fn command(&self) -> CommandId {
+                  self.command
+              }
+
+              #[must_use]
+              pub const fn actor(&self) -> UserId {
+                  self.actor
+              }
+
+              #[must_use]
+              pub const fn revision(&self) -> u64 {
+                  self.revision
+              }
+
+              #[must_use]
+              pub const fn action(&self) -> SocialAction {
+                  self.action
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct GroupRecord {
+              id: GroupId,
+              name: GroupName,
+              members: BTreeMap<UserId, GroupRole>,
+          }
+
+          impl GroupRecord {
+              #[must_use]
+              pub const fn id(&self) -> GroupId {
+                  self.id
+              }
+
+              #[must_use]
+              pub fn name(&self) -> &GroupName {
+                  &self.name
+              }
+
+              #[must_use]
+              pub fn role(&self, user: UserId) -> Option<GroupRole> {
+                  self.members.get(&user).copied()
+              }
+
+              pub fn members(&self) -> impl ExactSizeIterator<Item = (&UserId, &GroupRole)> {
+                  self.members.iter()
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ChatMessage {
+              id: MessageId,
+              sender: UserId,
+              sequence: u64,
+              body: Vec<u8>,
+          }
+
+          impl ChatMessage {
+              #[must_use]
+              pub const fn id(&self) -> MessageId {
+                  self.id
+              }
+
+              #[must_use]
+              pub const fn sender(&self) -> UserId {
+                  self.sender
+              }
+
+              #[must_use]
+              pub const fn sequence(&self) -> u64 {
+                  self.sequence
+              }
+
+              #[must_use]
+              pub fn body(&self) -> &[u8] {
+                  &self.body
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct Notification {
+              id: NotificationId,
+              subject: String,
+              body: Vec<u8>,
+              read: bool,
+          }
+
+          impl Notification {
+              #[must_use]
+              pub const fn id(&self) -> NotificationId {
+                  self.id
+              }
+
+              #[must_use]
+              pub fn subject(&self) -> &str {
+                  &self.subject
+              }
+
+              #[must_use]
+              pub fn body(&self) -> &[u8] {
+                  &self.body
+              }
+
+              #[must_use]
+              pub const fn is_read(&self) -> bool {
+                  self.read
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          enum ChatStream {
+              Direct(UserId, UserId),
+              Group(GroupId),
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct SocialRegistry {
+              config: SocialConfig,
+              revision: u64,
+              users: BTreeSet<UserId>,
+              pending: BTreeSet<(UserId, UserId)>,
+              friends: BTreeSet<(UserId, UserId)>,
+              blocks: BTreeSet<(UserId, UserId)>,
+              groups: BTreeMap<GroupId, GroupRecord>,
+              streams: BTreeMap<ChatStream, VecDeque<ChatMessage>>,
+              message_ids: BTreeSet<MessageId>,
+              notifications: BTreeMap<UserId, BTreeMap<NotificationId, Notification>>,
+              notification_ids: BTreeSet<NotificationId>,
+              receipts: BTreeMap<CommandId, SocialReceipt>,
+          }
+
+          impl SocialRegistry {
+              #[must_use]
+              pub fn new(config: SocialConfig) -> Self {
+                  Self {
+                      config,
+                      revision: 0,
+                      users: BTreeSet::new(),
+                      pending: BTreeSet::new(),
+                      friends: BTreeSet::new(),
+                      blocks: BTreeSet::new(),
+                      groups: BTreeMap::new(),
+                      streams: BTreeMap::new(),
+                      message_ids: BTreeSet::new(),
+                      notifications: BTreeMap::new(),
+                      notification_ids: BTreeSet::new(),
+                      receipts: BTreeMap::new(),
+                  }
+              }
+
+              #[must_use]
+              pub const fn revision(&self) -> u64 {
+                  self.revision
+              }
+
+              #[must_use]
+              pub fn has_user(&self, user: UserId) -> bool {
+                  self.users.contains(&user)
+              }
+
+              #[must_use]
+              pub fn are_friends(&self, first: UserId, second: UserId) -> bool {
+                  self.friends.contains(&ordered_pair(first, second))
+              }
+
+              #[must_use]
+              pub fn is_blocked(&self, blocker: UserId, blocked: UserId) -> bool {
+                  self.blocks.contains(&(blocker, blocked))
+              }
+
+              #[must_use]
+              pub fn group(&self, group: GroupId) -> Option<&GroupRecord> {
+                  self.groups.get(&group)
+              }
+
+              pub fn register_user(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  user: UserId,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  if self.users.len() >= self.config.max_users {
+                      return Err(SocialError::new(
+                          SocialErrorCode::ResourceExhausted,
+                          "user_capacity_exhausted",
+                      ));
+                  }
+                  if self.users.contains(&user) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::AlreadyExists,
+                          "user_exists",
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate.users.insert(user);
+                  candidate.commit(command, fingerprint, user, SocialAction::UserRegistered)
+              }
+
+              pub fn request_friend(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  peer: UserId,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  self.ensure_distinct_users(actor, peer)?;
+                  self.ensure_not_blocked(actor, peer)?;
+                  if self.are_friends(actor, peer) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::AlreadyExists,
+                          "friendship_exists",
+                      ));
+                  }
+                  if self.pending.contains(&(actor, peer)) || self.pending.contains(&(peer, actor)) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::AlreadyExists,
+                          "friend_request_exists",
+                      ));
+                  }
+                  if self.pending_count(actor) >= self.config.max_pending_per_user
+                      || self.pending_count(peer) >= self.config.max_pending_per_user
+                  {
+                      return Err(SocialError::new(
+                          SocialErrorCode::ResourceExhausted,
+                          "pending_friend_capacity_exhausted",
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate.pending.insert((actor, peer));
+                  candidate.commit(command, fingerprint, actor, SocialAction::FriendRequested)
+              }
+
+              pub fn accept_friend(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  requester: UserId,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  self.ensure_distinct_users(actor, requester)?;
+                  self.ensure_not_blocked(actor, requester)?;
+                  if !self.pending.contains(&(requester, actor)) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::NotFound,
+                          "friend_request_not_found",
+                      ));
+                  }
+                  if self.friend_count(actor) >= self.config.max_friends_per_user
+                      || self.friend_count(requester) >= self.config.max_friends_per_user
+                  {
+                      return Err(SocialError::new(
+                          SocialErrorCode::ResourceExhausted,
+                          "friend_capacity_exhausted",
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate.pending.remove(&(requester, actor));
+                  candidate.friends.insert(ordered_pair(actor, requester));
+                  candidate.commit(command, fingerprint, actor, SocialAction::FriendAccepted)
+              }
+
+              pub fn remove_friend(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  peer: UserId,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  self.ensure_distinct_users(actor, peer)?;
+                  let pair = ordered_pair(actor, peer);
+                  if !self.friends.contains(&pair) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::NotFound,
+                          "friendship_not_found",
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate.friends.remove(&pair);
+                  candidate.commit(command, fingerprint, actor, SocialAction::FriendRemoved)
+              }
+
+              pub fn block_user(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  peer: UserId,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  self.ensure_distinct_users(actor, peer)?;
+                  if self.blocks.contains(&(actor, peer)) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::AlreadyExists,
+                          "block_exists",
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate.pending.remove(&(actor, peer));
+                  candidate.pending.remove(&(peer, actor));
+                  candidate.friends.remove(&ordered_pair(actor, peer));
+                  candidate.blocks.insert((actor, peer));
+                  candidate.commit(command, fingerprint, actor, SocialAction::UserBlocked)
+              }
+
+              pub fn unblock_user(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  peer: UserId,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  self.ensure_distinct_users(actor, peer)?;
+                  if !self.blocks.contains(&(actor, peer)) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::NotFound,
+                          "block_not_found",
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate.blocks.remove(&(actor, peer));
+                  candidate.commit(command, fingerprint, actor, SocialAction::UserUnblocked)
+              }
+
+              pub fn create_group(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  group: GroupId,
+                  name: GroupName,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  self.ensure_user(actor)?;
+                  if self.groups.len() >= self.config.max_groups {
+                      return Err(SocialError::new(
+                          SocialErrorCode::ResourceExhausted,
+                          "group_capacity_exhausted",
+                      ));
+                  }
+                  if self.groups.contains_key(&group) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::AlreadyExists,
+                          "group_exists",
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate.groups.insert(
+                      group,
+                      GroupRecord {
+                          id: group,
+                          name,
+                          members: BTreeMap::from([(actor, GroupRole::Owner)]),
+                      },
+                  );
+                  candidate.commit(command, fingerprint, actor, SocialAction::GroupCreated)
+              }
+
+              pub fn add_group_member(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  group: GroupId,
+                  user: UserId,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  self.ensure_user(user)?;
+                  let current = self.groups.get(&group).ok_or_else(|| {
+                      SocialError::new(SocialErrorCode::NotFound, "group_not_found")
+                  })?;
+                  let actor_role = current.role(actor).ok_or_else(|| {
+                      SocialError::new(SocialErrorCode::PermissionDenied, "group_actor_not_member")
+                  })?;
+                  if actor_role < GroupRole::Admin {
+                      return Err(SocialError::new(
+                          SocialErrorCode::PermissionDenied,
+                          "group_actor_cannot_add_member",
+                      ));
+                  }
+                  if current.members.contains_key(&user) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::AlreadyExists,
+                          "group_member_exists",
+                      ));
+                  }
+                  if current.members.len() >= self.config.max_group_members {
+                      return Err(SocialError::new(
+                          SocialErrorCode::ResourceExhausted,
+                          "group_member_capacity_exhausted",
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate
+                      .groups
+                      .get_mut(&group)
+                      .ok_or_else(invariant_error)?
+                      .members
+                      .insert(user, GroupRole::Member);
+                  candidate.commit(command, fingerprint, actor, SocialAction::GroupMemberAdded)
+              }
+
+              pub fn promote_group_member(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  group: GroupId,
+                  user: UserId,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  let current = self.groups.get(&group).ok_or_else(|| {
+                      SocialError::new(SocialErrorCode::NotFound, "group_not_found")
+                  })?;
+                  if current.role(actor) != Some(GroupRole::Owner) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::PermissionDenied,
+                          "group_owner_required",
+                      ));
+                  }
+                  if current.role(user) != Some(GroupRole::Member) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::FailedPrecondition,
+                          "group_member_not_promotable",
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate
+                      .groups
+                      .get_mut(&group)
+                      .ok_or_else(invariant_error)?
+                      .members
+                      .insert(user, GroupRole::Admin);
+                  candidate.commit(command, fingerprint, actor, SocialAction::GroupMemberPromoted)
+              }
+
+              pub fn transfer_group_ownership(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  group: GroupId,
+                  successor: UserId,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  let current = self.groups.get(&group).ok_or_else(|| {
+                      SocialError::new(SocialErrorCode::NotFound, "group_not_found")
+                  })?;
+                  if current.role(actor) != Some(GroupRole::Owner) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::PermissionDenied,
+                          "group_owner_required",
+                      ));
+                  }
+                  if successor == actor || current.role(successor).is_none() {
+                      return Err(SocialError::new(
+                          SocialErrorCode::InvalidArgument,
+                          "group_successor_invalid",
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  let members = &mut candidate
+                      .groups
+                      .get_mut(&group)
+                      .ok_or_else(invariant_error)?
+                      .members;
+                  members.insert(actor, GroupRole::Admin);
+                  members.insert(successor, GroupRole::Owner);
+                  candidate.commit(
+                      command,
+                      fingerprint,
+                      actor,
+                      SocialAction::GroupOwnershipTransferred,
+                  )
+              }
+
+              pub fn remove_group_member(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  group: GroupId,
+                  user: UserId,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  let current = self.groups.get(&group).ok_or_else(|| {
+                      SocialError::new(SocialErrorCode::NotFound, "group_not_found")
+                  })?;
+                  let actor_role = current.role(actor).ok_or_else(|| {
+                      SocialError::new(SocialErrorCode::PermissionDenied, "group_actor_not_member")
+                  })?;
+                  let target_role = current.role(user).ok_or_else(|| {
+                      SocialError::new(SocialErrorCode::NotFound, "group_member_not_found")
+                  })?;
+                  if target_role == GroupRole::Owner {
+                      return Err(SocialError::new(
+                          SocialErrorCode::FailedPrecondition,
+                          "group_owner_cannot_be_removed",
+                      ));
+                  }
+                  if actor != user && actor_role <= target_role {
+                      return Err(SocialError::new(
+                          SocialErrorCode::PermissionDenied,
+                          "group_actor_cannot_remove_member",
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate
+                      .groups
+                      .get_mut(&group)
+                      .ok_or_else(invariant_error)?
+                      .members
+                      .remove(&user);
+                  candidate.commit(command, fingerprint, actor, SocialAction::GroupMemberRemoved)
+              }
+
+              pub fn post_direct_message(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  sender: UserId,
+                  peer: UserId,
+                  message: MessageId,
+                  body: Vec<u8>,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  self.ensure_distinct_users(sender, peer)?;
+                  self.ensure_not_blocked(sender, peer)?;
+                  if !self.are_friends(sender, peer) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::PermissionDenied,
+                          "direct_message_friendship_required",
+                      ));
+                  }
+                  validate_message_body(&body)?;
+                  self.ensure_message_id_available(message)?;
+                  let stream = ChatStream::Direct(
+                      ordered_pair(sender, peer).0,
+                      ordered_pair(sender, peer).1,
+                  );
+                  self.ensure_stream_capacity(stream)?;
+                  let mut candidate = self.clone();
+                  candidate.append_message(stream, message, sender, body)?;
+                  candidate.commit(
+                      command,
+                      fingerprint,
+                      sender,
+                      SocialAction::DirectMessagePosted,
+                  )
+              }
+
+              pub fn post_group_message(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  sender: UserId,
+                  group: GroupId,
+                  message: MessageId,
+                  body: Vec<u8>,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  let current = self.groups.get(&group).ok_or_else(|| {
+                      SocialError::new(SocialErrorCode::NotFound, "group_not_found")
+                  })?;
+                  if current.role(sender).is_none() {
+                      return Err(SocialError::new(
+                          SocialErrorCode::PermissionDenied,
+                          "group_message_membership_required",
+                      ));
+                  }
+                  validate_message_body(&body)?;
+                  self.ensure_message_id_available(message)?;
+                  let stream = ChatStream::Group(group);
+                  self.ensure_stream_capacity(stream)?;
+                  let mut candidate = self.clone();
+                  candidate.append_message(stream, message, sender, body)?;
+                  candidate.commit(
+                      command,
+                      fingerprint,
+                      sender,
+                      SocialAction::GroupMessagePosted,
+                  )
+              }
+
+              pub fn create_notification(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  recipient: UserId,
+                  notification: NotificationId,
+                  subject: String,
+                  body: Vec<u8>,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  self.ensure_user(actor)?;
+                  self.ensure_user(recipient)?;
+                  if subject.is_empty()
+                      || subject.len() > MAX_NOTIFICATION_SUBJECT_BYTES
+                      || subject.chars().any(char::is_control)
+                      || body.len() > MAX_NOTIFICATION_BODY_BYTES
+                  {
+                      return Err(SocialError::new(
+                          SocialErrorCode::InvalidArgument,
+                          "notification_payload_invalid",
+                      ));
+                  }
+                  if self.notification_ids.contains(&notification) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::AlreadyExists,
+                          "notification_id_exists",
+                      ));
+                  }
+                  if self.notification_count(recipient) >= self.config.max_notifications_per_user {
+                      return Err(SocialError::new(
+                          SocialErrorCode::ResourceExhausted,
+                          "notification_capacity_exhausted",
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate.notification_ids.insert(notification);
+                  candidate
+                      .notifications
+                      .entry(recipient)
+                      .or_default()
+                      .insert(
+                          notification,
+                          Notification {
+                              id: notification,
+                              subject,
+                              body,
+                              read: false,
+                          },
+                      );
+                  candidate.commit(
+                      command,
+                      fingerprint,
+                      actor,
+                      SocialAction::NotificationCreated,
+                  )
+              }
+
+              pub fn mark_notification_read(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  notification: NotificationId,
+              ) -> Result<SocialReceipt, SocialError> {
+                  if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                      return Ok(receipt);
+                  }
+                  self.ensure_receipt_capacity()?;
+                  self.ensure_user(actor)?;
+                  let current = self
+                      .notifications
+                      .get(&actor)
+                      .and_then(|values| values.get(&notification))
+                      .ok_or_else(|| {
+                          SocialError::new(
+                              SocialErrorCode::NotFound,
+                              "notification_not_found",
+                          )
+                      })?;
+                  if current.read {
+                      return Err(SocialError::new(
+                          SocialErrorCode::AlreadyExists,
+                          "notification_already_read",
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate
+                      .notifications
+                      .get_mut(&actor)
+                      .and_then(|values| values.get_mut(&notification))
+                      .ok_or_else(invariant_error)?
+                      .read = true;
+                  candidate.commit(
+                      command,
+                      fingerprint,
+                      actor,
+                      SocialAction::NotificationRead,
+                  )
+              }
+
+              pub fn direct_messages(
+                  &self,
+                  first: UserId,
+                  second: UserId,
+              ) -> impl ExactSizeIterator<Item = &ChatMessage> {
+                  let pair = ordered_pair(first, second);
+                  self.streams
+                      .get(&ChatStream::Direct(pair.0, pair.1))
+                      .into_iter()
+                      .flat_map(VecDeque::iter)
+              }
+
+              pub fn group_messages(
+                  &self,
+                  group: GroupId,
+              ) -> impl ExactSizeIterator<Item = &ChatMessage> {
+                  self.streams
+                      .get(&ChatStream::Group(group))
+                      .into_iter()
+                      .flat_map(VecDeque::iter)
+              }
+
+              pub fn notifications(
+                  &self,
+                  user: UserId,
+              ) -> impl ExactSizeIterator<Item = &Notification> {
+                  self.notifications
+                      .get(&user)
+                      .into_iter()
+                      .flat_map(|values| values.values())
+              }
+
+              pub fn validate_invariants(&self) -> Result<(), SocialError> {
+                  if self.users.len() > self.config.max_users
+                      || self.groups.len() > self.config.max_groups
+                      || self.receipts.len() > self.config.max_receipts
+                  {
+                      return Err(invariant_error());
+                  }
+                  for &(from, to) in &self.pending {
+                      if from == to
+                          || !self.users.contains(&from)
+                          || !self.users.contains(&to)
+                          || self.friends.contains(&ordered_pair(from, to))
+                          || self.blocks.contains(&(from, to))
+                          || self.blocks.contains(&(to, from))
+                      {
+                          return Err(invariant_error());
+                      }
+                  }
+                  for &(first, second) in &self.friends {
+                      if first >= second
+                          || !self.users.contains(&first)
+                          || !self.users.contains(&second)
+                          || self.blocks.contains(&(first, second))
+                          || self.blocks.contains(&(second, first))
+                      {
+                          return Err(invariant_error());
+                      }
+                  }
+                  for &(blocker, blocked) in &self.blocks {
+                      if blocker == blocked
+                          || !self.users.contains(&blocker)
+                          || !self.users.contains(&blocked)
+                          || self.friends.contains(&ordered_pair(blocker, blocked))
+                          || self.pending.contains(&(blocker, blocked))
+                          || self.pending.contains(&(blocked, blocker))
+                      {
+                          return Err(invariant_error());
+                      }
+                  }
+                  for user in &self.users {
+                      if self.friend_count(*user) > self.config.max_friends_per_user
+                          || self.pending_count(*user) > self.config.max_pending_per_user
+                          || self.notification_count(*user)
+                              > self.config.max_notifications_per_user
+                      {
+                          return Err(invariant_error());
+                      }
+                  }
+                  for (id, group) in &self.groups {
+                      if id != &group.id
+                          || group.members.is_empty()
+                          || group.members.len() > self.config.max_group_members
+                          || group
+                              .members
+                              .keys()
+                              .any(|user| !self.users.contains(user))
+                          || group
+                              .members
+                              .values()
+                              .filter(|role| **role == GroupRole::Owner)
+                              .count()
+                              != 1
+                      {
+                          return Err(invariant_error());
+                      }
+                  }
+                  let mut observed_messages = BTreeSet::new();
+                  for (stream, messages) in &self.streams {
+                      if messages.len() > self.config.max_messages_per_stream {
+                          return Err(invariant_error());
+                      }
+                      match stream {
+                          ChatStream::Direct(first, second) => {
+                              if first >= second
+                                  || !self.users.contains(first)
+                                  || !self.users.contains(second)
+                              {
+                                  return Err(invariant_error());
+                              }
+                          }
+                          ChatStream::Group(group) => {
+                              if !self.groups.contains_key(group) {
+                                  return Err(invariant_error());
+                              }
+                          }
+                      }
+                      for (index, message) in messages.iter().enumerate() {
+                          let expected = u64::try_from(index)
+                              .ok()
+                              .and_then(|value| value.checked_add(1))
+                              .ok_or_else(invariant_error)?;
+                          if message.sequence != expected
+                              || !self.users.contains(&message.sender)
+                              || !observed_messages.insert(message.id)
+                          {
+                              return Err(invariant_error());
+                          }
+                      }
+                  }
+                  if observed_messages != self.message_ids {
+                      return Err(invariant_error());
+                  }
+                  let mut observed_notifications = BTreeSet::new();
+                  for (recipient, values) in &self.notifications {
+                      if !self.users.contains(recipient)
+                          || values.len() > self.config.max_notifications_per_user
+                      {
+                          return Err(invariant_error());
+                      }
+                      for (id, notification) in values {
+                          if id != &notification.id || !observed_notifications.insert(*id) {
+                              return Err(invariant_error());
+                          }
+                      }
+                  }
+                  if observed_notifications != self.notification_ids {
+                      return Err(invariant_error());
+                  }
+                  for (command, receipt) in &self.receipts {
+                      if command != &receipt.command || !self.users.contains(&receipt.actor) {
+                          return Err(invariant_error());
+                      }
+                  }
+                  Ok(())
+              }
+
+              fn existing_receipt(
+                  &self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+              ) -> Result<Option<SocialReceipt>, SocialError> {
+                  let Some(receipt) = self.receipts.get(&command) else {
+                      return Ok(None);
+                  };
+                  if receipt.fingerprint != fingerprint {
+                      return Err(SocialError::new(
+                          SocialErrorCode::Conflict,
+                          "command_fingerprint_conflict",
+                      ));
+                  }
+                  Ok(Some(*receipt))
+              }
+
+              fn ensure_receipt_capacity(&self) -> Result<(), SocialError> {
+                  if self.receipts.len() >= self.config.max_receipts {
+                      return Err(SocialError::new(
+                          SocialErrorCode::ResourceExhausted,
+                          "receipt_capacity_exhausted",
+                      ));
+                  }
+                  Ok(())
+              }
+
+              fn ensure_user(&self, user: UserId) -> Result<(), SocialError> {
+                  if !self.users.contains(&user) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::NotFound,
+                          "user_not_found",
+                      ));
+                  }
+                  Ok(())
+              }
+
+              fn ensure_distinct_users(
+                  &self,
+                  actor: UserId,
+                  peer: UserId,
+              ) -> Result<(), SocialError> {
+                  if actor == peer {
+                      return Err(SocialError::new(
+                          SocialErrorCode::InvalidArgument,
+                          "self_relationship_invalid",
+                      ));
+                  }
+                  self.ensure_user(actor)?;
+                  self.ensure_user(peer)
+              }
+
+              fn ensure_not_blocked(
+                  &self,
+                  first: UserId,
+                  second: UserId,
+              ) -> Result<(), SocialError> {
+                  if self.blocks.contains(&(first, second))
+                      || self.blocks.contains(&(second, first))
+                  {
+                      return Err(SocialError::new(
+                          SocialErrorCode::PermissionDenied,
+                          "relationship_blocked",
+                      ));
+                  }
+                  Ok(())
+              }
+
+              fn friend_count(&self, user: UserId) -> usize {
+                  self.friends
+                      .iter()
+                      .filter(|(first, second)| *first == user || *second == user)
+                      .count()
+              }
+
+              fn pending_count(&self, user: UserId) -> usize {
+                  self.pending
+                      .iter()
+                      .filter(|(from, to)| *from == user || *to == user)
+                      .count()
+              }
+
+              fn notification_count(&self, user: UserId) -> usize {
+                  self.notifications.get(&user).map_or(0, BTreeMap::len)
+              }
+
+              fn ensure_message_id_available(&self, message: MessageId) -> Result<(), SocialError> {
+                  if self.message_ids.contains(&message) {
+                      return Err(SocialError::new(
+                          SocialErrorCode::AlreadyExists,
+                          "message_id_exists",
+                      ));
+                  }
+                  Ok(())
+              }
+
+              fn ensure_stream_capacity(&self, stream: ChatStream) -> Result<(), SocialError> {
+                  if self.streams.get(&stream).map_or(0, VecDeque::len)
+                      >= self.config.max_messages_per_stream
+                  {
+                      return Err(SocialError::new(
+                          SocialErrorCode::ResourceExhausted,
+                          "message_stream_capacity_exhausted",
+                      ));
+                  }
+                  Ok(())
+              }
+
+              fn append_message(
+                  &mut self,
+                  stream: ChatStream,
+                  message: MessageId,
+                  sender: UserId,
+                  body: Vec<u8>,
+              ) -> Result<(), SocialError> {
+                  let messages = self.streams.entry(stream).or_default();
+                  let sequence = u64::try_from(messages.len())
+                      .ok()
+                      .and_then(|value| value.checked_add(1))
+                      .ok_or_else(|| {
+                          SocialError::new(
+                              SocialErrorCode::OutOfRange,
+                              "message_sequence_overflow",
+                          )
+                      })?;
+                  messages.push_back(ChatMessage {
+                      id: message,
+                      sender,
+                      sequence,
+                      body,
+                  });
+                  self.message_ids.insert(message);
+                  Ok(())
+              }
+
+              fn commit(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  action: SocialAction,
+              ) -> Result<SocialReceipt, SocialError> {
+                  let revision = self.revision.checked_add(1).ok_or_else(|| {
+                      SocialError::new(SocialErrorCode::OutOfRange, "social_revision_overflow")
+                  })?;
+                  let receipt = SocialReceipt {
+                      command,
+                      fingerprint,
+                      actor,
+                      revision,
+                      action,
+                  };
+                  self.revision = revision;
+                  self.receipts.insert(command, receipt);
+                  self.validate_invariants()?;
+                  Ok(receipt)
+              }
+          }
+
+          fn validate_message_body(body: &[u8]) -> Result<(), SocialError> {
+              if body.is_empty() || body.len() > MAX_MESSAGE_BYTES {
+                  return Err(SocialError::new(
+                      SocialErrorCode::InvalidArgument,
+                      "message_body_invalid",
+                  ));
+              }
+              Ok(())
+          }
+
+          fn ordered_pair(first: UserId, second: UserId) -> (UserId, UserId) {
+              if first < second {
+                  (first, second)
+              } else {
+                  (second, first)
+              }
+          }
+
+          const fn invariant_error() -> SocialError {
+              SocialError::new(
+                  SocialErrorCode::FailedPrecondition,
+                  "social_invariant_violation",
+              )
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn id(value: u8) -> [u8; 16] {
+                  let mut bytes = [0; 16];
+                  bytes[15] = value;
+                  bytes
+              }
+
+              fn digest(value: u8) -> [u8; 32] {
+                  let mut bytes = [0; 32];
+                  bytes[31] = value;
+                  bytes
+              }
+
+              fn user(value: u8) -> UserId {
+                  UserId::new(id(value)).unwrap()
+              }
+
+              fn command(value: u8) -> CommandId {
+                  CommandId::new(id(value)).unwrap()
+              }
+
+              fn fingerprint(value: u8) -> Fingerprint {
+                  Fingerprint::new(digest(value)).unwrap()
+              }
+
+              fn group(value: u8) -> GroupId {
+                  GroupId::new(id(value)).unwrap()
+              }
+
+              fn message(value: u8) -> MessageId {
+                  MessageId::new(id(value)).unwrap()
+              }
+
+              fn notification(value: u8) -> NotificationId {
+                  NotificationId::new(id(value)).unwrap()
+              }
+
+              fn registry() -> SocialRegistry {
+                  SocialRegistry::new(
+                      SocialConfig::new(16, 4, 4, 4, 4, 4, 4, 64).unwrap(),
+                  )
+              }
+
+              fn register(registry: &mut SocialRegistry, value: u8) {
+                  registry
+                      .register_user(command(value), fingerprint(value), user(value))
+                      .unwrap();
+              }
+
+              #[test]
+              fn identifiers_and_limits_fail_closed() {
+                  assert_eq!(UserId::new([0; 16]).unwrap_err().reason(), "zero_user_id");
+                  assert!(SocialConfig::new(0, 1, 1, 1, 1, 1, 1, 1).is_err());
+                  assert!(GroupName::new(" bad ").is_err());
+              }
+
+              #[test]
+              fn exact_receipt_replays_and_changed_fingerprint_does_not_mutate() {
+                  let mut registry = registry();
+                  let first = registry
+                      .register_user(command(1), fingerprint(1), user(1))
+                      .unwrap();
+                  let snapshot = registry.clone();
+                  let duplicate = registry
+                      .register_user(command(1), fingerprint(1), user(2))
+                      .unwrap();
+                  assert_eq!(first, duplicate);
+                  assert_eq!(snapshot, registry);
+                  assert_eq!(
+                      registry
+                          .register_user(command(1), fingerprint(9), user(2))
+                          .unwrap_err()
+                          .code(),
+                      SocialErrorCode::Conflict
+                  );
+                  assert_eq!(snapshot, registry);
+              }
+
+              #[test]
+              fn friend_request_accept_and_block_are_atomic() {
+                  let mut registry = registry();
+                  register(&mut registry, 1);
+                  register(&mut registry, 2);
+                  registry
+                      .request_friend(command(3), fingerprint(3), user(1), user(2))
+                      .unwrap();
+                  registry
+                      .accept_friend(command(4), fingerprint(4), user(2), user(1))
+                      .unwrap();
+                  assert!(registry.are_friends(user(1), user(2)));
+                  registry
+                      .block_user(command(5), fingerprint(5), user(1), user(2))
+                      .unwrap();
+                  assert!(!registry.are_friends(user(1), user(2)));
+                  assert!(registry.is_blocked(user(1), user(2)));
+                  let snapshot = registry.clone();
+                  assert!(registry
+                      .request_friend(command(6), fingerprint(6), user(2), user(1))
+                      .is_err());
+                  assert_eq!(snapshot, registry);
+              }
+
+              #[test]
+              fn group_roles_and_owner_transfer_are_fenced() {
+                  let mut registry = registry();
+                  register(&mut registry, 1);
+                  register(&mut registry, 2);
+                  register(&mut registry, 3);
+                  registry
+                      .create_group(
+                          command(4),
+                          fingerprint(4),
+                          user(1),
+                          group(1),
+                          GroupName::new("Guild").unwrap(),
+                      )
+                      .unwrap();
+                  registry
+                      .add_group_member(command(5), fingerprint(5), user(1), group(1), user(2))
+                      .unwrap();
+                  registry
+                      .promote_group_member(
+                          command(6),
+                          fingerprint(6),
+                          user(1),
+                          group(1),
+                          user(2),
+                      )
+                      .unwrap();
+                  registry
+                      .add_group_member(command(7), fingerprint(7), user(2), group(1), user(3))
+                      .unwrap();
+                  registry
+                      .transfer_group_ownership(
+                          command(8),
+                          fingerprint(8),
+                          user(1),
+                          group(1),
+                          user(2),
+                      )
+                      .unwrap();
+                  assert_eq!(registry.group(group(1)).unwrap().role(user(2)), Some(GroupRole::Owner));
+                  assert_eq!(registry.group(group(1)).unwrap().role(user(1)), Some(GroupRole::Admin));
+                  let snapshot = registry.clone();
+                  assert!(registry
+                      .remove_group_member(command(9), fingerprint(9), user(1), group(1), user(2))
+                      .is_err());
+                  assert_eq!(snapshot, registry);
+              }
+
+              #[test]
+              fn direct_chat_requires_friendship_and_preserves_sequence() {
+                  let mut registry = registry();
+                  register(&mut registry, 1);
+                  register(&mut registry, 2);
+                  let snapshot = registry.clone();
+                  assert!(registry
+                      .post_direct_message(
+                          command(3),
+                          fingerprint(3),
+                          user(1),
+                          user(2),
+                          message(1),
+                          b"blocked".to_vec(),
+                      )
+                      .is_err());
+                  assert_eq!(snapshot, registry);
+                  registry
+                      .request_friend(command(4), fingerprint(4), user(1), user(2))
+                      .unwrap();
+                  registry
+                      .accept_friend(command(5), fingerprint(5), user(2), user(1))
+                      .unwrap();
+                  registry
+                      .post_direct_message(
+                          command(6),
+                          fingerprint(6),
+                          user(1),
+                          user(2),
+                          message(1),
+                          b"one".to_vec(),
+                      )
+                      .unwrap();
+                  registry
+                      .post_direct_message(
+                          command(7),
+                          fingerprint(7),
+                          user(2),
+                          user(1),
+                          message(2),
+                          b"two".to_vec(),
+                      )
+                      .unwrap();
+                  let sequences: Vec<_> = registry
+                      .direct_messages(user(1), user(2))
+                      .map(ChatMessage::sequence)
+                      .collect();
+                  assert_eq!(sequences, vec![1, 2]);
+              }
+
+              #[test]
+              fn group_chat_requires_current_membership() {
+                  let mut registry = registry();
+                  register(&mut registry, 1);
+                  register(&mut registry, 2);
+                  registry
+                      .create_group(
+                          command(3),
+                          fingerprint(3),
+                          user(1),
+                          group(1),
+                          GroupName::new("Guild").unwrap(),
+                      )
+                      .unwrap();
+                  assert!(registry
+                      .post_group_message(
+                          command(4),
+                          fingerprint(4),
+                          user(2),
+                          group(1),
+                          message(1),
+                          b"denied".to_vec(),
+                      )
+                      .is_err());
+                  registry
+                      .add_group_member(command(5), fingerprint(5), user(1), group(1), user(2))
+                      .unwrap();
+                  registry
+                      .post_group_message(
+                          command(6),
+                          fingerprint(6),
+                          user(2),
+                          group(1),
+                          message(1),
+                          b"accepted".to_vec(),
+                      )
+                      .unwrap();
+                  assert_eq!(registry.group_messages(group(1)).len(), 1);
+              }
+
+              #[test]
+              fn notifications_are_owner_scoped_and_read_once() {
+                  let mut registry = registry();
+                  register(&mut registry, 1);
+                  register(&mut registry, 2);
+                  registry
+                      .create_notification(
+                          command(3),
+                          fingerprint(3),
+                          user(1),
+                          user(2),
+                          notification(1),
+                          "Invite".to_owned(),
+                          b"payload".to_vec(),
+                      )
+                      .unwrap();
+                  assert!(!registry.notifications(user(2)).next().unwrap().is_read());
+                  registry
+                      .mark_notification_read(
+                          command(4),
+                          fingerprint(4),
+                          user(2),
+                          notification(1),
+                      )
+                      .unwrap();
+                  assert!(registry.notifications(user(2)).next().unwrap().is_read());
+                  let snapshot = registry.clone();
+                  assert!(registry
+                      .mark_notification_read(
+                          command(5),
+                          fingerprint(5),
+                          user(1),
+                          notification(1),
+                      )
+                      .is_err());
+                  assert_eq!(snapshot, registry);
+              }
+
+              #[test]
+              fn stream_and_notification_capacity_fail_without_mutation() {
+                  let mut registry = SocialRegistry::new(
+                      SocialConfig::new(4, 2, 2, 2, 2, 1, 1, 32).unwrap(),
+                  );
+                  register(&mut registry, 1);
+                  register(&mut registry, 2);
+                  registry
+                      .request_friend(command(3), fingerprint(3), user(1), user(2))
+                      .unwrap();
+                  registry
+                      .accept_friend(command(4), fingerprint(4), user(2), user(1))
+                      .unwrap();
+                  registry
+                      .post_direct_message(
+                          command(5),
+                          fingerprint(5),
+                          user(1),
+                          user(2),
+                          message(1),
+                          b"one".to_vec(),
+                      )
+                      .unwrap();
+                  let snapshot = registry.clone();
+                  assert!(registry
+                      .post_direct_message(
+                          command(6),
+                          fingerprint(6),
+                          user(1),
+                          user(2),
+                          message(2),
+                          b"two".to_vec(),
+                      )
+                      .is_err());
+                  assert_eq!(snapshot, registry);
+                  registry
+                      .create_notification(
+                          command(7),
+                          fingerprint(7),
+                          user(1),
+                          user(2),
+                          notification(1),
+                          "one".to_owned(),
+                          Vec::new(),
+                      )
+                      .unwrap();
+                  let snapshot = registry.clone();
+                  assert!(registry
+                      .create_notification(
+                          command(8),
+                          fingerprint(8),
+                          user(1),
+                          user(2),
+                          notification(2),
+                          "two".to_owned(),
+                          Vec::new(),
+                      )
+                      .is_err());
+                  assert_eq!(snapshot, registry);
+              }
+
+              #[test]
+              fn receipt_capacity_is_hard_and_duplicate_still_replays() {
+                  let mut registry = SocialRegistry::new(
+                      SocialConfig::new(2, 1, 1, 1, 1, 1, 1, 1).unwrap(),
+                  );
+                  let receipt = registry
+                      .register_user(command(1), fingerprint(1), user(1))
+                      .unwrap();
+                  let snapshot = registry.clone();
+                  assert_eq!(
+                      registry
+                          .register_user(command(1), fingerprint(1), user(2))
+                          .unwrap(),
+                      receipt
+                  );
+                  assert_eq!(snapshot, registry);
+                  assert_eq!(
+                      registry
+                          .register_user(command(2), fingerprint(2), user(2))
+                          .unwrap_err()
+                          .code(),
+                      SocialErrorCode::ResourceExhausted
+                  );
+                  assert_eq!(snapshot, registry);
+              }
+          }
+          RS
+          cat > crates/trnm-social-core/README.md <<'MD'
+          # trnm-social-core
+
+          Status: **module documentation; social-graph-group-chat-notification-source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-social-core`  
+          Workspace class: `root`  
+          Lifecycle: `product-library`  
+          Owner role: `social-realtime`
+
+          ## Status and authority
+
+          This crate is the bounded, transport- and persistence-independent social-domain state machine for part of Plan v3.2 issue #138. It is a source candidate only. It is not a complete Nakama users, friends, groups, chat or notifications service and does not establish wire, durability, distributed delivery or production compatibility.
+
+          ## Responsibilities
+
+          It owns typed users, friend requests, accepted friendship, directional blocks, group roles and ownership, ordered direct/group messages, notifications, exact command receipts and bounded registries.
+
+          Friend acceptance is explicit. Blocking atomically removes pending requests and friendship. Each group has exactly one owner. Direct messages require friendship and no block at admission; group messages require current membership. Notifications are recipient scoped.
+
+          Non-goals include profiles/account authority, persistence, search, cursor pagination, transport framing, websocket fanout, offline delivery, moderation, provider integration and public API compatibility.
+
+          ## Architecture and dependencies
+
+          The crate has no external dependency or I/O. Adapters authenticate actors and convert validated requests into typed commands. A profile-specific repository must atomically persist the social transition and exact command receipt before acknowledgement.
+
+          Every accepted mutation is prepared on a bounded cloned candidate and committed only after invariant validation. This is a deterministic reference model, not the target high-scale storage representation.
+
+          ## Public contracts
+
+          All identifiers reject zero. Group names, messages and notification payloads are bounded. The registry has hard maxima for users, friends, pending requests, groups, members, messages, notifications and receipts.
+
+          Command IDs are idempotency keys: the same fingerprint replays the exact receipt; a different fingerprint is a conflict. Accepted operations advance one checked global revision.
+
+          Public wire status, metadata, list ordering, pagination cursor and Nakama-specific defaults remain adapter and oracle contracts; this core does not invent them.
+
+          ## Correctness and failure model
+
+          Invalid identity, duplicate, missing relation, capacity exhaustion, block, permission failure, ownership violation and counter overflow change no state. A block transition removes both pending directions and any accepted friendship atomically.
+
+          Invariants require canonical friend pairs, no blocked friendship or pending request, registered participants, exactly one owner per group, bounded contiguous message sequence, globally unique message/notification IDs and receipt-to-actor consistency.
+
+          Historical messages remain after friendship or membership changes; authorization is evaluated at append time. Deletion, retention and legal disposition require a durable adapter policy.
+
+          ## Security and privacy
+
+          All users, payloads and identifiers are untrusted. Authentication, project/tenant isolation, abuse/rate limiting, content moderation, encryption and audit are external mandatory boundaries.
+
+          Message and notification bodies must not enter metric labels. Logs and traces use stable low-cardinality operation/status values and an approved redaction policy. This crate contains no credentials or secret-bearing type.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-social-core --all-targets --locked
+          cargo clippy --package trnm-social-core --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover exact replay, fingerprint conflict, request/accept/block, role and ownership rules, direct and group message admission, notification ownership/read state and hard capacity failures.
+
+          These tests prove only source-level deterministic behavior. Live database, network, fault, load and differential evidence remain separate.
+
+          ## Operations
+
+          The crate starts no task. Adapters own presence, websocket fanout, durable queues, retry, backpressure, pagination, retention and readiness.
+
+          Required low-cardinality signals include relation outcomes, group membership changes, authorization rejection, stream saturation, notification backlog and receipt replay. User IDs and content are not labels.
+
+          ## Compatibility and evidence
+
+          Compatibility requires exact leaf mapping and immutable-oracle/official-client comparison for users, friends, groups, chat and notifications, including list ordering, cursor behavior, hook order, errors and durable effects.
+
+          PostgreSQL/CockroachDB results are separate. Distributed delivery, reconnect, offline history and moderation require their own fault and security evidence.
+
+          ## Known gaps and exit criteria
+
+          Issue #138 remains open. User/profile APIs, durable repository, list/search/cursors, membership requests, group limits/defaults, websocket stream fanout, chat persistence, notification delivery/deletion, hooks, official consumer differential and independent review are not implemented here.
+
+          Exit requires every applicable denominator leaf, typed service/repository adapter, exact-head retained evidence, database/fault/wire tests and conflict-free social/realtime/security acceptance. This crate alone closes no product gate.
+          MD
+          cat > crates/trnm-social-core/testdata/domain-surface-v1.json <<'JSON'
+          {
+            "schema": "trnm.social-domain-surface.v1",
+            "issue": 138,
+            "capabilities": [
+              "user_registration",
+              "friend_request",
+              "friend_accept",
+              "friend_remove",
+              "directional_block",
+              "group_roles",
+              "group_owner_transfer",
+              "direct_message_sequence",
+              "group_message_sequence",
+              "notification_read_state"
+            ],
+            "claim_boundary": {
+              "domain_source_candidate": true,
+              "wire_compatible": false,
+              "durability_proven": false,
+              "distributed_delivery_proven": false,
+              "production_ready": false
+            }
+          }
+          JSON
+      - name: Register package and component source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+
+          root = Path('.')
+          cargo = root / 'Cargo.toml'
+          text = cargo.read_text(encoding='utf-8')
+          member = '  "crates/trnm-social-core",\n'
+          if member not in text:
+              anchor = '  "crates/trnm-storage-core",\n'
+              if anchor not in text:
+                  raise SystemExit('root storage member anchor missing')
+              cargo.write_text(text.replace(anchor, anchor + member, 1), encoding='utf-8')
+
+          def save(path: str, value: object) -> None:
+              (root / path).write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          module_path = 'docs/status/MODULE_DOCUMENTATION.json'
+          modules = json.loads((root / module_path).read_text(encoding='utf-8'))
+          if not any(row['id'] == 'trnm-social-core' for row in modules['modules']):
+              row = {
+                  'id': 'trnm-social-core',
+                  'path': 'crates/trnm-social-core',
+                  'manifest': 'crates/trnm-social-core/Cargo.toml',
+                  'documentation': 'crates/trnm-social-core/README.md',
+                  'workspace': 'root',
+                  'lifecycle': 'product-library',
+                  'maturity': 'social-graph-group-chat-notification-source-candidate',
+                  'owner_role': 'social-realtime',
+                  'authority': 'bounded social graph group chat and notification domain state machine',
+                  'blocking_gaps': [
+                      'GAP-P0-SERVER-001',
+                      'GAP-P0-DATA-001',
+                      'GAP-P0-SCOPE-001',
+                      'GAP-P1-REVIEW-001'
+                  ],
+                  'claim_credit': False
+              }
+              insert_at = next(
+                  (i for i, value in enumerate(modules['modules']) if value['id'] == 'trnm-storage-core'),
+                  len(modules['modules'])
+              )
+              modules['modules'].insert(insert_at, row)
+          rows = modules['modules']
+          modules['summary']['module_count'] = len(rows)
+          modules['summary']['documented_count'] = len(rows)
+          modules['summary']['root_workspace_count'] = sum(row['workspace'] == 'root' for row in rows)
+          modules['summary']['isolated_workspace_count'] = sum(row['workspace'] == 'isolated' for row in rows)
+          modules['summary']['undocumented_count'] = 0
+          save(module_path, modules)
+
+          authority_path = 'docs/development/RUST_PACKAGE_AUTHORITY.json'
+          authority = json.loads((root / authority_path).read_text(encoding='utf-8'))
+          if 'crates/trnm-social-core' not in authority['workspace']['members']:
+              anchor = authority['workspace']['members'].index('crates/trnm-storage-core')
+              authority['workspace']['members'].insert(anchor + 1, 'crates/trnm-social-core')
+          authority['last_reviewed_at'] = '2026-09-09'
+          save(authority_path, authority)
+
+          inventory_path = 'docs/status/IMPLEMENTATION_INVENTORY.json'
+          inventory = json.loads((root / inventory_path).read_text(encoding='utf-8'))
+          if not any(row['id'] == 'COMP-SOCIAL-CORE' for row in inventory['components']):
+              row = {
+                  'id': 'COMP-SOCIAL-CORE',
+                  'path': 'crates/trnm-social-core',
+                  'kind': 'rust-library',
+                  'workstreams': ['W5', 'W6'],
+                  'status': 'social-graph-group-chat-notification-source-candidate',
+                  'implemented': [
+                      'bounded user registration reference model',
+                      'friend request accept remove and directional block transitions',
+                      'group owner admin member and ownership-transfer invariants',
+                      'bounded ordered direct and group message streams',
+                      'recipient-scoped notification create and read state',
+                      'exact command receipt replay and fingerprint conflict rejection',
+                      'global revision and capacity fencing'
+                  ],
+                  'missing': [
+                      'complete users friends groups chat and notification public APIs',
+                      'durable repository and pagination/search/cursor semantics',
+                      'websocket stream fanout and offline delivery',
+                      'Nakama hook/default/error compatibility',
+                      'official SDK and immutable-oracle differential',
+                      'fault load security and independent review evidence'
+                  ],
+                  'blocking_gaps': [
+                      'GAP-P0-SERVER-001',
+                      'GAP-P0-DATA-001',
+                      'GAP-P0-SCOPE-001',
+                      'GAP-P1-REVIEW-001'
+                  ],
+                  'parity_ids': ['TG-PAR-026', 'TG-PAR-027', 'TG-PAR-028', 'TG-PAR-029', 'TG-PAR-030'],
+                  'evidence_ids': [],
+                  'claim_credit': False
+              }
+              insert_at = next(
+                  (i for i, value in enumerate(inventory['components']) if value['id'] == 'COMP-STORAGE'),
+                  len(inventory['components'])
+              )
+              inventory['components'].insert(insert_at, row)
+          save(inventory_path, inventory)
+
+          state_path = 'docs/status/CURRENT_STATE.json'
+          state = json.loads((root / state_path).read_text(encoding='utf-8'))
+          state['implementation']['social_core_source_candidate'] = True
+          save(state_path, state)
+          PY
+      - name: Format, test, lint and validate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo fmt --all -- --check
+          cargo test --package trnm-social-core --all-targets
+          cargo test --package trnm-social-core --all-targets --locked
+          cargo clippy --package trnm-social-core --all-targets --locked -- -D warnings
+          python3 -m json.tool crates/trnm-social-core/testdata/domain-surface-v1.json >/dev/null
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-plan.py
+          git diff --check
+      - name: Commit and open a draft child pull request
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock \
+            crates/trnm-social-core \
+            docs/status/MODULE_DOCUMENTATION.json \
+            docs/development/RUST_PACKAGE_AUTHORITY.json \
+            docs/status/IMPLEMENTATION_INVENTORY.json \
+            docs/status/CURRENT_STATE.json
+          git diff --cached --check
+          git commit -m 'social: add bounded graph group chat and notification core'
+          head_sha="$(git rev-parse HEAD)"
+          head_tree="$(git rev-parse HEAD^{tree})"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git push --force-with-lease="refs/heads/${FEATURE_BRANCH}:" origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > /tmp/body.md <<EOF
+          Parent issue: #138
+
+          Adds the bounded no-I/O social-domain source candidate: users, friend request/accept/remove, directional block, group roles and owner transfer, ordered direct/group messages, notifications, exact command receipts, revision and capacity fencing.
+
+          ```text
+          base_branch=${BASE_BRANCH}
+          base_commit=${BASE_SHA}
+          head_commit=${head_sha}
+          head_tree=${head_tree}
+          ```
+
+          This is not a complete Nakama social surface. Public APIs, durable repositories, pagination/search/cursors, websocket fanout, hooks/defaults, official client/oracle differentials, load/fault/security evidence and independent acceptance remain open.
+
+          ```text
+          domain_source_candidate=true
+          issue_138_source_complete=false
+          compatibility_credit=false
+          accepted_evidence=false
+          production_ready=false
+          all_gaps_closed=false
+          ```
+          EOF
+          existing="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if test -z "$existing"; then
+            url="$(gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" \
+              --title '[Plan v3.2][#138] Add bounded social graph, group, chat and notification core' \
+              --body-file /tmp/body.md)"
+            number="${url##*/}"
+          else
+            number="$existing"
+            gh pr edit "$number" --repo "$REPOSITORY" --base "$BASE_BRANCH" --body-file /tmp/body.md
+          fi
+          gh issue comment 138 --repo "$REPOSITORY" --body \
+            "Bounded social-domain source candidate opened as PR #${number} at exact head \`${head_sha}\`. Public API, durable data, distributed delivery, differential evidence and independent acceptance remain open."
