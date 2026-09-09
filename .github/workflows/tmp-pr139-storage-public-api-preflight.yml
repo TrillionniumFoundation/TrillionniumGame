@@ -26,6 +26,8 @@ jobs:
       EXPECTED_BASE_TREE: 1c171f4731be313978c80555b5ad0f3af88be593
       EXPECTED_GZIP_SHA256: 2e977c0aca47a086515f50295f3f41ea46337a8840b1fab28c670d81566f24e5
       EXPECTED_PATCH_SHA256: b30af8591c3c9eac75829d19517a0660edf49ebeaf3a9c82333e331f0c8e5188
+      CARGO_NET_RETRY: '10'
+      CARGO_HTTP_MULTIPLEXING: 'false'
     steps:
       - name: Fetch exact carrier and verify immutable parent
         shell: bash
@@ -60,6 +62,21 @@ jobs:
           test ! -e .github/workflows/tmp-pr139-storage-public-api-preflight.yml
           git add -A
           git diff --cached --check
+      - name: Fetch locked Rust dependencies with bounded backoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          for attempt in 1 2 3 4 5; do
+            if cargo fetch --locked; then
+              exit 0
+            fi
+            if test "$attempt" -eq 5; then
+              echo "cargo fetch remained unavailable after five bounded attempts" >&2
+              exit 1
+            fi
+            sleep "$((attempt * 3))"
+          done
       - name: Format and validate source contracts
         shell: bash
         run: |
