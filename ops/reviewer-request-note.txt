@@ -1,0 +1,1 @@
+PR #150 and all stacked product-wave candidates require fresh exact-head review by non-author, non-pusher domain-qualified principals. This note does not grant approval or evidence credit.
