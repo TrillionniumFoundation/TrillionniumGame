@@ -22,9 +22,9 @@ jobs:
       BASE_SHA: d306a9385e154babc0173bfb214b5726a0f2942c
       BASE_TREE: 7c06b974eb67201d0cd452a00db5e6143344bf62
       TARGET_BRANCH: integration/plan-v32-product-wave1-2026-09-09
-      EXPECTED_B64_SHA256: 060211d2ef1316bbdacbf048af40e7619f5e69b776c13dd484b7cab3f8a2e441
-      EXPECTED_GZIP_SHA256: 4dee07bbbbadffb3751afa8b7aea28255480c27399d05109ad6b0d9b85532921
-      EXPECTED_PATCH_SHA256: 751921853a216320b3fa3a9f20131f853a94cdf106d5aae785acccf72bc0ed1f
+      EXPECTED_B64_SHA256: e6ff6b8bf9fa95851fdd8117ae3b5f77dd88465be2d3db9c16fe8eec73d400c7
+      EXPECTED_GZIP_SHA256: 58631852e78e08f09731e23d0c2c364dbf571b258f50a8ceea12fdc6ac41717c
+      EXPECTED_PATCH_SHA256: ea601f00504a6b841fdd2beb30116fb761317842e8813ef1c45396e752b1b2cc
     steps:
       - name: Fetch carrier without external actions
         shell: bash
@@ -62,12 +62,15 @@ jobs:
             carrier/product-wave1.b64.05 \
             carrier/product-wave1.b64.06 \
             > "$carrier"
+          sha256sum "$carrier"
           test "$(sha256sum "$carrier" | awk '{print $1}')" = "$EXPECTED_B64_SHA256"
           base64 --decode "$carrier" > "$gzip_file"
+          sha256sum "$gzip_file"
           test "$(sha256sum "$gzip_file" | awk '{print $1}')" = "$EXPECTED_GZIP_SHA256"
           gzip --decompress --stdout "$gzip_file" > "$patch_file"
+          sha256sum "$patch_file"
           test "$(sha256sum "$patch_file" | awk '{print $1}')" = "$EXPECTED_PATCH_SHA256"
-          test "$(stat -c %s "$patch_file")" -eq 217980
+          test "$(stat -c %s "$patch_file")" -eq 217864
           printf 'PATCH_FILE=%s\n' "$patch_file" >> "$GITHUB_ENV"
 
       - name: Materialize exact base and apply patch
