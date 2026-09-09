@@ -1,0 +1,83 @@
+name: tmp-supersede-old-product-integrators
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-supersede-old-product-integrators.yml
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  CONTROL_BRANCH: ops/product-wave1-carrier-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  supersede:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Cancel obsolete controller runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          obsolete=(
+            tmp-consolidate-product-stack.yml
+            tmp-monitor-product-integration.yml
+            tmp-consolidate-product-stack-v2.yml
+            tmp-monitor-product-integration-v2.yml
+          )
+          for workflow in "${obsolete[@]}"; do
+            gh run list --repo "$REPOSITORY" --workflow "$workflow" --limit 100 \
+              --json databaseId,status \
+              --jq '.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "requested") | .databaseId' \
+              | while read -r run_id; do
+                  test -z "$run_id" || gh run cancel "$run_id" --repo "$REPOSITORY" || true
+                done
+          done
+
+      - name: Close superseded integration pull requests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for branch in \
+            integration/plan-v32-product-surface-20260909 \
+            integration/plan-v32-product-surface-v2-20260909
+          do
+            gh pr list --repo "$REPOSITORY" --head "$branch" --state open \
+              --json number --jq '.[].number' \
+              | while read -r pr; do
+                  gh pr comment "$pr" --repo "$REPOSITORY" --body \
+                    "Superseded by the Wave 17 / v3 second-layer-assured integration line. This PR is closed without merge; its refs and history remain available as diagnostic evidence."
+                  gh pr close "$pr" --repo "$REPOSITORY"
+                done
+          done
+
+      - name: Remove obsolete active workflow definitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          head="$(gh api "repos/${REPOSITORY}/branches/${CONTROL_BRANCH}" --jq '.commit.sha')"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$head"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$CONTROL_BRANCH" FETCH_HEAD
+          cd "$GITHUB_WORKSPACE"
+          rm -f \
+            .github/workflows/tmp-consolidate-product-stack.yml \
+            .github/workflows/tmp-monitor-product-integration.yml \
+            .github/workflows/tmp-consolidate-product-stack-v2.yml \
+            .github/workflows/tmp-monitor-product-integration-v2.yml
+          if git diff --quiet; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -u .github/workflows
+          git commit -m 'chore(ops): remove superseded product integrators'
+          remote="$(git ls-remote origin "refs/heads/${CONTROL_BRANCH}" | awk '{print $1}')"
+          git push --force-with-lease="refs/heads/${CONTROL_BRANCH}:${remote}" origin "HEAD:refs/heads/${CONTROL_BRANCH}"
