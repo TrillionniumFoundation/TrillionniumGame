@@ -1,4 +1,4 @@
-name: world-v6-external-final-4de7cc-20260910
+name: world-v6-external-final-e853aa-20260910
 
 on:
   pull_request:
@@ -8,16 +8,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-v6-external-final-4de7cc-20260910-${{ github.event.pull_request.number || github.ref }}
+  group: world-v6-external-final-e853aa-20260910-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_BASE_SHA: 0f6117a56263bcb5bf89e34b8bcda557a7da2e6d
-  WORLD_HEAD_SHA: 4de7cc027116fc1345727a73b604c2f6cf991ca9
-  WORLD_HEAD_TREE: 669360375ff589a2d864dedcc68b6407cc47b07d
-  WORLD_MERGE_SHA: fe8ef11d86dfc0d2d58deef3d4dc4d6266344a08
-  WORLD_MERGE_TREE: 669360375ff589a2d864dedcc68b6407cc47b07d
+  WORLD_HEAD_SHA: e853aa066ff45b1eaf05d9ec121fd1b7d9482795
+  WORLD_HEAD_TREE: df464c3d38c6a2a6046844006e24a04b63a3d0f7
+  WORLD_MERGE_SHA: 2ad1684432092c309c47c4fca167e6954fe57335
+  WORLD_MERGE_TREE: df464c3d38c6a2a6046844006e24a04b63a3d0f7
   WORLD_RUST_TOOLCHAIN: '1.98.1'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_INCREMENTAL: '0'
@@ -84,8 +84,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install "$WORLD_RUST_TOOLCHAIN" \
-            --profile minimal --component rustfmt --component clippy
+          rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
           rustup override set "$WORLD_RUST_TOOLCHAIN"
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -135,8 +134,7 @@ jobs:
             local status="$evidence_dir/status/${label}.txt"
 
             if [[ "$scope" == "package" ]]; then
-              find "$repository" -type d -name '__pycache__' -prune -print0 |
-                xargs -0 -r rm -rf
+              find "$repository" -type d -name '__pycache__' -prune -print0 | xargs -0 -r rm -rf
               find "$repository" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
             fi
 
@@ -176,9 +174,7 @@ jobs:
 
           {
             cat "$evidence_dir/tuple.txt"
-            for label in \
-              truth-head truth-merge source-head source-merge \
-              postgres-head postgres-merge package-head package-merge; do
+            for label in truth-head truth-merge source-head source-merge postgres-head postgres-merge package-head package-merge; do
               printf '%s=%s\n' "$label" "$(cat "$evidence_dir/status/${label}.txt")"
             done
             printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
