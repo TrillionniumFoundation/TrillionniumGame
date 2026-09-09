@@ -1,0 +1,137 @@
+name: world-pr115-module-stack-v2-qualification-20260909
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-pr115-module-stack-v2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_BASE_SHA: 956462f95675d3d4db89af03bc4b7cc8c9a3c975
+  WORLD_HEAD_SHA: 4a416369cff292fb9bbce3dbd87e6c7a55d3513b
+  WORLD_HEAD_TREE: a33b9f00e7dfc4b9e3304d202b4276eb3f74f579
+  WORLD_MERGE_SHA: f00738b52fec1db07715faa741eac91fc0032490
+  WORLD_MERGE_TREE: a33b9f00e7dfc4b9e3304d202b4276eb3f74f579
+  WORLD_RUST_TOOLCHAIN: '1.98.1'
+  RUSTUP_TOOLCHAIN: '1.98.1'
+  CARGO_INCREMENTAL: '0'
+  RUST_TEST_THREADS: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  qualify:
+    name: world-pr115/source-head-and-merge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Fetch and verify immutable World PR 115 tuple
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tuple in "head:$WORLD_HEAD_SHA" "merge:$WORLD_MERGE_SHA"; do
+            name="${tuple%%:*}"
+            sha="${tuple#*:}"
+            dir="$RUNNER_TEMP/world-$name"
+            rm -rf "$dir"
+            git init "$dir"
+            git -C "$dir" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+            git -C "$dir" fetch --no-tags --depth=2 origin "$sha"
+            git -C "$dir" checkout --detach FETCH_HEAD
+          done
+          test "$(git -C "$RUNNER_TEMP/world-head" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+          test "$(git -C "$RUNNER_TEMP/world-head" rev-parse 'HEAD^{tree}')" = "$WORLD_HEAD_TREE"
+          test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse HEAD)" = "$WORLD_MERGE_SHA"
+          test "$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')" = "$WORLD_MERGE_TREE"
+          test "$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
+
+      - name: Verify explicit module ownership contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in "$RUNNER_TEMP/world-head" "$RUNNER_TEMP/world-merge"; do
+            python3 - "$dir" <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+          lib = root / "trillionnium/crates/trnm-campaign-core/src/lib.rs"
+          text = lib.read_text(encoding="utf-8")
+          removed = (
+              'include!("lib_parts/campaign_storage/part_01.rs");',
+              'include!("lib_parts/save_slots/part_01.rs");',
+              'include!("lib_parts/player_settings/part_01.rs");',
+              'include!("lib_parts/rts_mapping/part_01.rs");',
+              'include!("lib_parts/tests/part_01.rs");',
+          )
+          required = (
+              '#[path = "lib_parts/campaign_storage/part_01.rs"]\nmod campaign_storage;',
+              '#[path = "lib_parts/save_slots/part_01.rs"]\nmod save_slots;',
+              '#[path = "lib_parts/player_settings/part_01.rs"]\nmod player_settings;',
+              '#[path = "lib_parts/rts_mapping/part_01.rs"]\nmod rts_mapping;',
+              '#[path = "lib_parts/tests/part_01.rs"]\nmod tests;',
+          )
+          for marker in removed:
+              assert marker not in text, marker
+          for marker in required:
+              assert marker in text, marker
+          assert 'pub use rts_mapping::{map_rpg_to_rts_stats, typed_equipment_modifier};' in text
+          assert 'pub(crate) use rts_mapping::{' in text
+          assert 'include!(concat!(' in (root / "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs").read_text(encoding="utf-8")
+          print("TRNM_WORLD_PR115_MODULE_CONTRACT=PASS")
+          PY
+          done
+
+      - name: Install pinned Rust and native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$WORLD_RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+          rustup override set "$WORLD_RUST_TOOLCHAIN"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libudev-dev libx11-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev pkg-config
+          rustc --version --verbose
+          cargo --version --verbose
+          rustfmt --version
+
+      - name: Qualify exact head and prospective merge source
+        shell: bash
+        run: |
+          set -uo pipefail
+          head_log="$RUNNER_TEMP/world-pr115-head-source.log"
+          merge_log="$RUNNER_TEMP/world-pr115-merge-source.log"
+          head_status=0
+          merge_status=0
+          (set -euo pipefail; cd "$RUNNER_TEMP/world-head"; bash scripts/run-trnm-world-v6-qualification-v2.sh source) >"$head_log" 2>&1 || head_status=$?
+          (set -euo pipefail; cd "$RUNNER_TEMP/world-merge"; bash scripts/run-trnm-world-v6-qualification-v2.sh source) >"$merge_log" 2>&1 || merge_status=$?
+
+          actual_head="$(git -C "$RUNNER_TEMP/world-head" rev-parse HEAD)"
+          actual_head_tree="$(git -C "$RUNNER_TEMP/world-head" rev-parse 'HEAD^{tree}')"
+          actual_merge="$(git -C "$RUNNER_TEMP/world-merge" rev-parse HEAD)"
+          actual_merge_tree="$(git -C "$RUNNER_TEMP/world-merge" rev-parse 'HEAD^{tree}')"
+          actual_parents="$(git -C "$RUNNER_TEMP/world-merge" show -s --format=%P HEAD)"
+          {
+            printf '## World PR 115 source qualification\n\n```text\n'
+            printf 'world_base=%s\nworld_head=%s\nworld_head_tree=%s\n' "$WORLD_BASE_SHA" "$actual_head" "$actual_head_tree"
+            printf 'world_merge=%s\nworld_merge_tree=%s\nworld_merge_parents=%s\n' "$actual_merge" "$actual_merge_tree" "$actual_parents"
+            printf 'source_head_exit=%s\nsource_merge_exit=%s\nproduction_authorization=not_granted\n```\n' "$head_status" "$merge_status"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if test "$head_status" -ne 0; then printf '%s\n' '--- exact head source failure tail ---'; tail -n 300 "$head_log"; else printf 'WORLD_PR115_HEAD_SOURCE=PASS\n'; fi
+          if test "$merge_status" -ne 0; then printf '%s\n' '--- prospective merge source failure tail ---'; tail -n 300 "$merge_log"; else printf 'WORLD_PR115_MERGE_SOURCE=PASS\n'; fi
+
+          test "$actual_head" = "$WORLD_HEAD_SHA"
+          test "$actual_head_tree" = "$WORLD_HEAD_TREE"
+          test "$actual_merge" = "$WORLD_MERGE_SHA"
+          test "$actual_merge_tree" = "$WORLD_MERGE_TREE"
+          test "$actual_parents" = "$WORLD_BASE_SHA $WORLD_HEAD_SHA"
+          test "$head_status" -eq 0
+          test "$merge_status" -eq 0
+          printf 'WORLD_PR115_SOURCE_QUALIFICATION=PASS\n'
