@@ -1,0 +1,174 @@
+name: tmp-fix-kms-wave11
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-fix-kms-wave11.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-kms-adapter-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Wait for exact KMS adapter branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha=''
+          for _ in $(seq 1 840); do
+            head_sha="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$head_sha" && break
+            sleep 30
+          done
+          test -n "$head_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$head_sha"
+          git -C "$GITHUB_WORKSPACE" checkout -B "$FEATURE_BRANCH" "$head_sha"
+
+      - name: Add permanent dispatch owner index
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/trnm-kms-provider-adapter/src/lib.rs')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              '        formatter.write_str("KeyHandle(<redacted>)")',
+              '        let _bounded_length = self.0.len();\n        formatter.write_str("KeyHandle(<redacted>)")',
+              1,
+          )
+          old_fields = '''    operations: BTreeMap<OperationId, OperationRecord>,
+    receipt_owners: BTreeMap<ProviderReceiptId, OperationId>,
+    active_count: usize,
+'''
+          new_fields = '''    operations: BTreeMap<OperationId, OperationRecord>,
+    dispatch_owners: BTreeMap<DispatchId, OperationId>,
+    receipt_owners: BTreeMap<ProviderReceiptId, OperationId>,
+    active_count: usize,
+'''
+          if old_fields in text:
+              text = text.replace(old_fields, new_fields, 1)
+          elif new_fields not in text:
+              raise SystemExit('journal field anchor missing')
+          old_init = '''            operations: BTreeMap::new(),
+            receipt_owners: BTreeMap::new(),
+            active_count: 0,
+'''
+          new_init = '''            operations: BTreeMap::new(),
+            dispatch_owners: BTreeMap::new(),
+            receipt_owners: BTreeMap::new(),
+            active_count: 0,
+'''
+          if old_init in text:
+              text = text.replace(old_init, new_init, 1)
+          elif new_init not in text:
+              raise SystemExit('journal initializer anchor missing')
+          method_start = text.index('    pub fn dispatch(')
+          next_method = text.index('    pub fn mark_indeterminate(', method_start)
+          if 'self.dispatch_owners.contains_key(&dispatch.id)' not in text[method_start:next_method]:
+              replacement = '''    pub fn dispatch(
+        &mut self,
+        operation: OperationId,
+        expected_revision: u64,
+        dispatch: DispatchIdentity,
+    ) -> Result<OperationRecord, KmsError> {
+        let current = self.for_update(operation, expected_revision)?.clone();
+        if current.state != OperationState::Prepared {
+            return Err(KmsError::new(
+                StableKmsCode::FailedPrecondition,
+                "operation_not_prepared",
+                false,
+            ));
+        }
+        let dispatch = dispatch.validate(&current.request)?;
+        if self.dispatch_owners.contains_key(&dispatch.id) {
+            return Err(KmsError::new(
+                StableKmsCode::AlreadyExists,
+                "dispatch_id_exists",
+                false,
+            ));
+        }
+        let mut updated = current;
+        updated.state = OperationState::Dispatched(dispatch);
+        updated.revision = next_revision(updated.revision)?;
+        let mut candidate = self.clone();
+        candidate.dispatch_owners.insert(dispatch.id, operation);
+        candidate.operations.insert(operation, updated.clone());
+        *self = candidate;
+        Ok(updated)
+    }
+
+'''
+              text = text[:method_start] + replacement + text[next_method:]
+          anchor = '''    #[test]
+    fn deadline_blocks_new_dispatch_but_does_not_fabricate_rejection() {'''
+          if 'fn dispatch_identity_remains_reserved_after_terminal_state()' not in text:
+              addition = '''    #[test]
+    fn dispatch_identity_remains_reserved_after_terminal_state() {
+        let mut journal = journal();
+        let first = request(1);
+        let shared_dispatch = dispatch(1);
+        journal.prepare(first.clone()).unwrap();
+        journal.dispatch(first.operation, 1, shared_dispatch).unwrap();
+        journal.reject(first.operation, 2, 7, 30).unwrap();
+
+        let second = request(2);
+        journal.prepare(second.clone()).unwrap();
+        assert_eq!(
+            journal
+                .dispatch(second.operation, 1, shared_dispatch)
+                .unwrap_err()
+                .reason(),
+            "dispatch_id_exists"
+        );
+        assert!(matches!(
+            journal.record(second.operation).unwrap().state,
+            OperationState::Prepared
+        ));
+    }
+
+'''
+              if anchor not in text:
+                  raise SystemExit('dispatch reservation test anchor missing')
+              text = text.replace(anchor, addition + anchor, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+          if git diff --quiet; then echo 'changed=false' >> "$GITHUB_OUTPUT"; else echo 'changed=true' >> "$GITHUB_OUTPUT"; fi
+
+      - name: Qualify and publish KMS repair
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo fmt --all
+          cargo test --package trnm-kms-provider-adapter --all-targets --locked
+          cargo clippy --package trnm-kms-provider-adapter --all-targets --locked -- -D warnings
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-kms-provider-adapter/src/lib.rs
+          git commit -m 'fix(security): retain dispatch identity ownership across terminal states'
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "Added a permanent dispatch-owner index so no confirmed or rejected operation can release a dispatch identity for reuse. Focused tests and strict Clippy passed in carrier run `${GITHUB_RUN_ID}`; exact-head checks must requalify the new source."
