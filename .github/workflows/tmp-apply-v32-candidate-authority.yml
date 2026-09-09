@@ -43,21 +43,25 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           test "$(wc -c < .tmp/v32-candidate-authority/patch.gz.b64.part-00)" -eq 12000
-          test "$(wc -c < .tmp/v32-candidate-authority/patch.gz.b64.part-01)" -eq 10684
+          test "$(wc -c < .tmp/v32-candidate-authority/patch.gz.b64.part-01)" -eq 6224
           cat \
             .tmp/v32-candidate-authority/patch.gz.b64.part-00 \
             .tmp/v32-candidate-authority/patch.gz.b64.part-01 \
             > "$RUNNER_TEMP/candidate-authority.patch.gz.b64"
+          wc -c "$RUNNER_TEMP/candidate-authority.patch.gz.b64"
+          sha256sum "$RUNNER_TEMP/candidate-authority.patch.gz.b64"
           printf '%s  %s\n' \
             277f81d42f6e255d22aec294d1395c644a9ccf7ce5f3d463d7daa5aedd129f87 \
             "$RUNNER_TEMP/candidate-authority.patch.gz.b64" | sha256sum -c -
           base64 --decode "$RUNNER_TEMP/candidate-authority.patch.gz.b64" \
             > "$RUNNER_TEMP/candidate-authority.patch.gz"
+          sha256sum "$RUNNER_TEMP/candidate-authority.patch.gz"
           printf '%s  %s\n' \
             73d138947def36bda8ddc96db5e8a375b1beae97f2fb568144de808d4af1a238 \
             "$RUNNER_TEMP/candidate-authority.patch.gz" | sha256sum -c -
           gzip -dc "$RUNNER_TEMP/candidate-authority.patch.gz" \
             > "$RUNNER_TEMP/candidate-authority.patch"
+          sha256sum "$RUNNER_TEMP/candidate-authority.patch"
           printf '%s  %s\n' \
             3df7ed05aefceddd4d19d80e6e0315c449f2d61434aca15d72c00ab72f8c8604 \
             "$RUNNER_TEMP/candidate-authority.patch" | sha256sum -c -
