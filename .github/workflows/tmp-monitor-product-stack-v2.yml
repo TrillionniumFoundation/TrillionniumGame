@@ -1,0 +1,94 @@
+name: tmp-monitor-product-stack-v2
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-monitor-product-stack-v2.yml
+
+permissions:
+  checks: read
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  monitor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - branch: feature/plan-v32-api-gateway-core-20260909
+            issue: 142
+            label: api-wave5
+          - branch: feature/plan-v32-rtapi-service-20260909
+            issue: 143
+            label: rtapi-wave6
+          - branch: feature/plan-v32-runtime-core-20260909
+            issue: 144
+            label: runtime-wave7
+    steps:
+      - name: Wait for exact branch and PR
+        id: subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=''
+          for _ in $(seq 1 480); do
+            head="$(gh api "repos/${REPOSITORY}/branches/${{ matrix.branch }}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$head" && break
+            sleep 30
+          done
+          test -n "$head"
+          pr=''
+          for _ in $(seq 1 20); do
+            pr="$(gh pr list --repo "$REPOSITORY" --head '${{ matrix.branch }}' --state open --json number --jq '.[0].number // empty')"
+            test -n "$pr" && break
+            sleep 15
+          done
+          test -n "$pr"
+          printf 'head=%s\npr=%s\n' "$head" "$pr" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for stable exact-head aggregate
+        shell: bash
+        run: |
+          set -euo pipefail
+          head='${{ steps.subject.outputs.head }}'
+          pr='${{ steps.subject.outputs.pr }}'
+          for _ in $(seq 1 360); do
+            current="$(gh api "repos/${REPOSITORY}/branches/${{ matrix.branch }}" --jq '.commit.sha')"
+            if test "$current" != "$head"; then
+              head="$current"
+              printf 'Observed a newer source head `%s`; restarting stability window.\n' "$head"
+              sleep 30
+              continue
+            fi
+            payload="$(gh api "repos/${REPOSITORY}/commits/${head}/check-runs?per_page=100")"
+            total="$(jq '.total_count' <<<"$payload")"
+            pending="$(jq '[.check_runs[]|select(.status!="completed")]|length' <<<"$payload")"
+            failed="$(jq '[.check_runs[]|select(.status=="completed" and (.conclusion!="success" and .conclusion!="neutral" and .conclusion!="skipped"))]|length' <<<"$payload")"
+            aggregate="$(jq '[.check_runs[]|select(.name=="trillionnium-game-merge-gate" and .status=="completed" and .conclusion=="success")]|length' <<<"$payload")"
+            if test "$failed" -gt 0 && test "$pending" -eq 0; then
+              jq -r '.check_runs[]|select(.status=="completed" and (.conclusion!="success" and .conclusion!="neutral" and .conclusion!="skipped"))|"- `\(.name)`: \(.conclusion) — \(.html_url)"' <<<"$payload" >/tmp/failures.md
+              { printf 'Stable exact-head checks failed for `%s`.\n\n' "$head"; cat /tmp/failures.md; printf '\nThe PR remains Draft; source repair is required.\n'; } >/tmp/comment.md
+              gh pr comment "$pr" --repo "$REPOSITORY" --body-file /tmp/comment.md
+              exit 1
+            fi
+            if test "$total" -gt 0 && test "$pending" -eq 0 && test "$failed" -eq 0 && test "$aggregate" -gt 0; then
+              gh pr ready "$pr" --repo "$REPOSITORY"
+              gh pr edit "$pr" --repo "$REPOSITORY" --add-reviewer Tomasrgbsf --add-reviewer Franksudoman
+              gh pr comment "$pr" --repo "$REPOSITORY" --body "Exact-head checks are terminal-success with the stable aggregate for \`${head}\`. Ready for independent review only; feature completeness and all higher claims remain false."
+              gh issue comment '${{ matrix.issue }}' --repo "$REPOSITORY" --body "${{ matrix.label }} exact-head source \`${head}\` reached aggregate CI success and is ready for independent review. The issue remains open."
+              exit 0
+            fi
+            sleep 30
+          done
+          gh pr comment "$pr" --repo "$REPOSITORY" --body "No stable terminal aggregate was observed before monitor timeout. The PR remains Draft and receives no gate credit."
+          exit 1
