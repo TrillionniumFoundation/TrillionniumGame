@@ -1,0 +1,1193 @@
+name: tmp-storage-service-wave2
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-storage-service-wave2.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  checks: read
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-product-wave1-20260909-v3
+  FEATURE_BRANCH: feature/plan-v32-storage-service-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-storage-service:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Wait for and fetch exact Wave 1 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 60); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 30
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write protocol-neutral storage application service
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-storage-service/src
+          cat > crates/trnm-storage-service/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-storage-service"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Bounded protocol-neutral Trillionnium storage application service"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-storage-service/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::fmt::Debug;
+
+          pub const MAX_COLLECTION_BYTES: usize = 128;
+          pub const MAX_KEY_BYTES: usize = 512;
+          pub const MAX_VALUE_BYTES: usize = 1_048_576;
+          pub const MAX_CURSOR_BYTES: usize = 1024;
+          pub const MAX_LIST_LIMIT: u32 = 100;
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct ProjectId([u8; 16]);
+
+          impl ProjectId {
+              pub fn new(value: [u8; 16]) -> Result<Self, StorageServiceError> {
+                  nonzero_identity(value, "project_id_zero")?;
+                  Ok(Self(value))
+              }
+
+              #[must_use]
+              pub const fn as_bytes(&self) -> &[u8; 16] {
+                  &self.0
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct UserId([u8; 16]);
+
+          impl UserId {
+              pub fn new(value: [u8; 16]) -> Result<Self, StorageServiceError> {
+                  nonzero_identity(value, "user_id_zero")?;
+                  Ok(Self(value))
+              }
+
+              #[must_use]
+              pub const fn as_bytes(&self) -> &[u8; 16] {
+                  &self.0
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct CommandId([u8; 16]);
+
+          impl CommandId {
+              pub fn new(value: [u8; 16]) -> Result<Self, StorageServiceError> {
+                  nonzero_identity(value, "command_id_zero")?;
+                  Ok(Self(value))
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Fingerprint([u8; 32]);
+
+          impl Fingerprint {
+              pub fn new(value: [u8; 32]) -> Result<Self, StorageServiceError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      return Err(StorageServiceError::invalid("fingerprint_zero"));
+                  }
+                  Ok(Self(value))
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Collection(String);
+
+          impl Collection {
+              pub fn new(value: impl Into<String>) -> Result<Self, StorageServiceError> {
+                  let value = value.into();
+                  validate_name(&value, MAX_COLLECTION_BYTES, "collection_invalid")?;
+                  Ok(Self(value))
+              }
+
+              #[must_use]
+              pub fn as_str(&self) -> &str {
+                  &self.0
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct ObjectKeyName(String);
+
+          impl ObjectKeyName {
+              pub fn new(value: impl Into<String>) -> Result<Self, StorageServiceError> {
+                  let value = value.into();
+                  validate_name(&value, MAX_KEY_BYTES, "key_invalid")?;
+                  Ok(Self(value))
+              }
+
+              #[must_use]
+              pub fn as_str(&self) -> &str {
+                  &self.0
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct PublicVersion(String);
+
+          impl PublicVersion {
+              pub fn parse(value: impl Into<String>) -> Result<Self, StorageServiceError> {
+                  let value = value.into();
+                  if value.len() != 32
+                      || !value
+                          .as_bytes()
+                          .iter()
+                          .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+                  {
+                      return Err(StorageServiceError::invalid("public_version_invalid"));
+                  }
+                  Ok(Self(value))
+              }
+
+              #[must_use]
+              pub fn as_str(&self) -> &str {
+                  &self.0
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum Actor {
+              Server { project: ProjectId },
+              User { project: ProjectId, user: UserId },
+          }
+
+          impl Actor {
+              #[must_use]
+              pub const fn project(self) -> ProjectId {
+                  match self {
+                      Self::Server { project } | Self::User { project, .. } => project,
+                  }
+              }
+
+              #[must_use]
+              pub const fn user(self) -> Option<UserId> {
+                  match self {
+                      Self::Server { .. } => None,
+                      Self::User { user, .. } => Some(user),
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum ReadPermission {
+              OwnerOnly,
+              Public,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum WritePermission {
+              OwnerOnly,
+              ServerOnly,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ObjectIdentity {
+              pub project: ProjectId,
+              pub collection: Collection,
+              pub key: ObjectKeyName,
+              pub owner: Option<UserId>,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct StoredObject {
+              pub identity: ObjectIdentity,
+              pub value: Vec<u8>,
+              pub version: PublicVersion,
+              pub read: ReadPermission,
+              pub write: WritePermission,
+              pub create_time_ms: u64,
+              pub update_time_ms: u64,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub enum WriteCondition {
+              Blind,
+              CreateOnly,
+              Exact(PublicVersion),
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct CommandIdentity {
+              pub command: CommandId,
+              pub fingerprint: Fingerprint,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ReadRequest {
+              pub identity: ObjectIdentity,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct WriteRequest {
+              pub identity: ObjectIdentity,
+              pub value: Vec<u8>,
+              pub read: ReadPermission,
+              pub write: WritePermission,
+              pub condition: WriteCondition,
+              pub command: CommandIdentity,
+              pub occurred_at_ms: u64,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct DeleteRequest {
+              pub identity: ObjectIdentity,
+              pub condition: WriteCondition,
+              pub command: CommandIdentity,
+              pub occurred_at_ms: u64,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub enum OwnerFilter {
+              Exact(UserId),
+              Server,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ListRequest {
+              pub project: ProjectId,
+              pub collection: Collection,
+              pub owner: OwnerFilter,
+              pub limit: u32,
+              pub cursor: Option<String>,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct CursorScope {
+              pub project: ProjectId,
+              pub collection: Collection,
+              pub owner: OwnerFilter,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct DecodedCursor {
+              pub scope: CursorScope,
+              pub position: Vec<u8>,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct StoragePage {
+              pub objects: Vec<StoredObject>,
+              pub next_cursor: Option<String>,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct MutationReceipt {
+              pub command: CommandId,
+              pub identity: ObjectIdentity,
+              pub version: Option<PublicVersion>,
+              pub duplicate: bool,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableStorageCode {
+              InvalidArgument,
+              NotFound,
+              PermissionDenied,
+              AlreadyExists,
+              FailedPrecondition,
+              Aborted,
+              ResourceExhausted,
+              Unavailable,
+              Internal,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct StorageServiceError {
+              code: StableStorageCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl StorageServiceError {
+              #[must_use]
+              pub const fn new(
+                  code: StableStorageCode,
+                  reason: &'static str,
+                  retryable: bool,
+              ) -> Self {
+                  Self {
+                      code,
+                      reason,
+                      retryable,
+                  }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableStorageCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableStorageCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          pub trait CursorCodec: Debug {
+              fn decode(&self, encoded: &str) -> Result<DecodedCursor, StorageServiceError>;
+              fn validate_encoded(&self, encoded: &str) -> Result<(), StorageServiceError>;
+          }
+
+          pub trait StoragePort: Debug {
+              fn read(
+                  &mut self,
+                  request: &ReadRequest,
+              ) -> Result<Option<StoredObject>, StorageServiceError>;
+
+              fn write(
+                  &mut self,
+                  request: &WriteRequest,
+              ) -> Result<MutationReceipt, StorageServiceError>;
+
+              fn delete(
+                  &mut self,
+                  request: &DeleteRequest,
+              ) -> Result<MutationReceipt, StorageServiceError>;
+
+              fn list(
+                  &mut self,
+                  request: &ListRequest,
+                  decoded_cursor: Option<&DecodedCursor>,
+              ) -> Result<StoragePage, StorageServiceError>;
+          }
+
+          #[derive(Debug)]
+          pub struct StorageService<P, C> {
+              port: P,
+              cursors: C,
+          }
+
+          impl<P, C> StorageService<P, C>
+          where
+              P: StoragePort,
+              C: CursorCodec,
+          {
+              #[must_use]
+              pub const fn new(port: P, cursors: C) -> Self {
+                  Self { port, cursors }
+              }
+
+              pub fn read(
+                  &mut self,
+                  actor: Actor,
+                  request: &ReadRequest,
+              ) -> Result<Option<StoredObject>, StorageServiceError> {
+                  require_project(actor, request.identity.project)?;
+                  let Some(object) = self.port.read(request)? else {
+                      return Ok(None);
+                  };
+                  validate_object_shape(&object)?;
+                  if object.identity != request.identity {
+                      return Err(StorageServiceError::new(
+                          StableStorageCode::Internal,
+                          "repository_identity_mismatch",
+                          false,
+                      ));
+                  }
+                  if can_read(actor, &object) {
+                      Ok(Some(object))
+                  } else {
+                      // Do not reveal that a private object exists.
+                      Ok(None)
+                  }
+              }
+
+              pub fn write(
+                  &mut self,
+                  actor: Actor,
+                  request: &WriteRequest,
+              ) -> Result<MutationReceipt, StorageServiceError> {
+                  validate_mutation(actor, &request.identity, request.value.len())?;
+                  validate_write_permission(actor, &request.identity, request.write)?;
+                  validate_condition(&request.condition)?;
+                  validate_time(request.occurred_at_ms)?;
+                  let receipt = self.port.write(request)?;
+                  validate_receipt(request.command.command, &request.identity, &receipt)?;
+                  Ok(receipt)
+              }
+
+              pub fn delete(
+                  &mut self,
+                  actor: Actor,
+                  request: &DeleteRequest,
+              ) -> Result<MutationReceipt, StorageServiceError> {
+                  validate_mutation(actor, &request.identity, 0)?;
+                  validate_condition(&request.condition)?;
+                  validate_time(request.occurred_at_ms)?;
+                  let receipt = self.port.delete(request)?;
+                  validate_receipt(request.command.command, &request.identity, &receipt)?;
+                  if receipt.version.is_some() {
+                      return Err(StorageServiceError::new(
+                          StableStorageCode::Internal,
+                          "delete_receipt_has_version",
+                          false,
+                      ));
+                  }
+                  Ok(receipt)
+              }
+
+              pub fn list(
+                  &mut self,
+                  actor: Actor,
+                  request: &ListRequest,
+              ) -> Result<StoragePage, StorageServiceError> {
+                  require_project(actor, request.project)?;
+                  if request.limit == 0 || request.limit > MAX_LIST_LIMIT {
+                      return Err(StorageServiceError::invalid("list_limit_invalid"));
+                  }
+                  authorize_owner_filter(actor, &request.owner)?;
+                  let expected_scope = CursorScope {
+                      project: request.project,
+                      collection: request.collection.clone(),
+                      owner: request.owner.clone(),
+                  };
+                  let decoded = match request.cursor.as_deref() {
+                      None => None,
+                      Some(encoded) => {
+                          if encoded.is_empty() || encoded.len() > MAX_CURSOR_BYTES {
+                              return Err(StorageServiceError::invalid("cursor_size_invalid"));
+                          }
+                          self.cursors.validate_encoded(encoded)?;
+                          let value = self.cursors.decode(encoded)?;
+                          if value.scope != expected_scope {
+                              return Err(StorageServiceError::invalid("cursor_scope_mismatch"));
+                          }
+                          Some(value)
+                      }
+                  };
+                  let page = self.port.list(request, decoded.as_ref())?;
+                  if page.objects.len() > request.limit as usize {
+                      return Err(StorageServiceError::new(
+                          StableStorageCode::Internal,
+                          "repository_page_overflow",
+                          false,
+                      ));
+                  }
+                  for object in &page.objects {
+                      validate_object_shape(object)?;
+                      if object.identity.project != request.project
+                          || object.identity.collection != request.collection
+                          || !owner_matches(&request.owner, object.identity.owner)
+                          || !can_read(actor, object)
+                      {
+                          return Err(StorageServiceError::new(
+                              StableStorageCode::Internal,
+                              "repository_scope_or_acl_violation",
+                              false,
+                          ));
+                      }
+                  }
+                  if let Some(cursor) = page.next_cursor.as_deref() {
+                      if cursor.is_empty() || cursor.len() > MAX_CURSOR_BYTES {
+                          return Err(StorageServiceError::new(
+                              StableStorageCode::Internal,
+                              "repository_cursor_invalid",
+                              false,
+                          ));
+                      }
+                      self.cursors.validate_encoded(cursor)?;
+                  }
+                  Ok(page)
+              }
+
+              #[must_use]
+              pub fn into_parts(self) -> (P, C) {
+                  (self.port, self.cursors)
+              }
+          }
+
+          fn nonzero_identity<const N: usize>(
+              value: [u8; N],
+              reason: &'static str,
+          ) -> Result<(), StorageServiceError> {
+              if value.iter().all(|byte| *byte == 0) {
+                  Err(StorageServiceError::invalid(reason))
+              } else {
+                  Ok(())
+              }
+          }
+
+          fn validate_name(
+              value: &str,
+              maximum: usize,
+              reason: &'static str,
+          ) -> Result<(), StorageServiceError> {
+              if value.is_empty()
+                  || value.len() > maximum
+                  || value.bytes().any(|byte| byte.is_ascii_control())
+              {
+                  Err(StorageServiceError::invalid(reason))
+              } else {
+                  Ok(())
+              }
+          }
+
+          fn validate_time(value: u64) -> Result<(), StorageServiceError> {
+              if value == 0 {
+                  Err(StorageServiceError::invalid("occurred_at_zero"))
+              } else {
+                  Ok(())
+              }
+          }
+
+          fn validate_condition(condition: &WriteCondition) -> Result<(), StorageServiceError> {
+              match condition {
+                  WriteCondition::Blind | WriteCondition::CreateOnly => Ok(()),
+                  WriteCondition::Exact(version) => PublicVersion::parse(version.as_str()).map(drop),
+              }
+          }
+
+          fn require_project(
+              actor: Actor,
+              project: ProjectId,
+          ) -> Result<(), StorageServiceError> {
+              if actor.project() == project {
+                  Ok(())
+              } else {
+                  Err(StorageServiceError::new(
+                      StableStorageCode::PermissionDenied,
+                      "project_scope_mismatch",
+                      false,
+                  ))
+              }
+          }
+
+          fn validate_mutation(
+              actor: Actor,
+              identity: &ObjectIdentity,
+              value_size: usize,
+          ) -> Result<(), StorageServiceError> {
+              require_project(actor, identity.project)?;
+              if value_size > MAX_VALUE_BYTES {
+                  return Err(StorageServiceError::new(
+                      StableStorageCode::ResourceExhausted,
+                      "value_too_large",
+                      false,
+                  ));
+              }
+              match (actor, identity.owner) {
+                  (Actor::Server { .. }, _) => Ok(()),
+                  (Actor::User { user, .. }, Some(owner)) if user == owner => Ok(()),
+                  _ => Err(StorageServiceError::new(
+                      StableStorageCode::PermissionDenied,
+                      "object_owner_mismatch",
+                      false,
+                  )),
+              }
+          }
+
+          fn validate_write_permission(
+              actor: Actor,
+              identity: &ObjectIdentity,
+              permission: WritePermission,
+          ) -> Result<(), StorageServiceError> {
+              match (permission, actor, identity.owner) {
+                  (WritePermission::ServerOnly, Actor::Server { .. }, _) => Ok(()),
+                  (WritePermission::OwnerOnly, Actor::Server { .. }, _) => Ok(()),
+                  (WritePermission::OwnerOnly, Actor::User { user, .. }, Some(owner))
+                      if user == owner =>
+                  {
+                      Ok(())
+                  }
+                  _ => Err(StorageServiceError::new(
+                      StableStorageCode::PermissionDenied,
+                      "write_permission_denied",
+                      false,
+                  )),
+              }
+          }
+
+          fn can_read(actor: Actor, object: &StoredObject) -> bool {
+              if actor.project() != object.identity.project {
+                  return false;
+              }
+              match actor {
+                  Actor::Server { .. } => true,
+                  Actor::User { user, .. } => {
+                      object.read == ReadPermission::Public || object.identity.owner == Some(user)
+                  }
+              }
+          }
+
+          fn authorize_owner_filter(
+              actor: Actor,
+              owner: &OwnerFilter,
+          ) -> Result<(), StorageServiceError> {
+              match (actor, owner) {
+                  (Actor::Server { .. }, _) => Ok(()),
+                  (Actor::User { user, .. }, OwnerFilter::Exact(owner)) if user == *owner => Ok(()),
+                  _ => Err(StorageServiceError::new(
+                      StableStorageCode::PermissionDenied,
+                      "list_owner_scope_denied",
+                      false,
+                  )),
+              }
+          }
+
+          fn owner_matches(filter: &OwnerFilter, owner: Option<UserId>) -> bool {
+              match (filter, owner) {
+                  (OwnerFilter::Exact(expected), Some(actual)) => *expected == actual,
+                  (OwnerFilter::Server, None) => true,
+                  _ => false,
+              }
+          }
+
+          fn validate_object_shape(object: &StoredObject) -> Result<(), StorageServiceError> {
+              if object.value.len() > MAX_VALUE_BYTES || object.create_time_ms == 0 || object.update_time_ms == 0 {
+                  return Err(StorageServiceError::new(
+                      StableStorageCode::Internal,
+                      "repository_object_invalid",
+                      false,
+                  ));
+              }
+              PublicVersion::parse(object.version.as_str()).map(drop)
+          }
+
+          fn validate_receipt(
+              expected_command: CommandId,
+              expected_identity: &ObjectIdentity,
+              receipt: &MutationReceipt,
+          ) -> Result<(), StorageServiceError> {
+              if receipt.command != expected_command || receipt.identity != *expected_identity {
+                  Err(StorageServiceError::new(
+                      StableStorageCode::Internal,
+                      "repository_receipt_mismatch",
+                      false,
+                  ))
+              } else {
+                  Ok(())
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              #[derive(Debug, Default)]
+              struct FakeCursor;
+
+              impl CursorCodec for FakeCursor {
+                  fn decode(&self, encoded: &str) -> Result<DecodedCursor, StorageServiceError> {
+                      let parts: Vec<&str> = encoded.split(':').collect();
+                      if parts.len() != 4 {
+                          return Err(StorageServiceError::invalid("cursor_invalid"));
+                      }
+                      let project = ProjectId::new([parts[0].parse::<u8>().map_err(|_| StorageServiceError::invalid("cursor_invalid"))?; 16])?;
+                      let collection = Collection::new(parts[1])?;
+                      let owner = if parts[2] == "server" {
+                          OwnerFilter::Server
+                      } else {
+                          OwnerFilter::Exact(UserId::new([parts[2].parse::<u8>().map_err(|_| StorageServiceError::invalid("cursor_invalid"))?; 16])?)
+                      };
+                      Ok(DecodedCursor {
+                          scope: CursorScope { project, collection, owner },
+                          position: parts[3].as_bytes().to_vec(),
+                      })
+                  }
+
+                  fn validate_encoded(&self, encoded: &str) -> Result<(), StorageServiceError> {
+                      if encoded.bytes().any(|byte| byte.is_ascii_control()) {
+                          Err(StorageServiceError::invalid("cursor_invalid"))
+                      } else {
+                          Ok(())
+                      }
+                  }
+              }
+
+              #[derive(Debug, Default)]
+              struct FakePort {
+                  object: Option<StoredObject>,
+                  writes: usize,
+                  deletes: usize,
+                  lists: usize,
+                  bad_receipt: bool,
+                  oversized_page: bool,
+              }
+
+              impl StoragePort for FakePort {
+                  fn read(&mut self, _request: &ReadRequest) -> Result<Option<StoredObject>, StorageServiceError> {
+                      Ok(self.object.clone())
+                  }
+
+                  fn write(&mut self, request: &WriteRequest) -> Result<MutationReceipt, StorageServiceError> {
+                      self.writes += 1;
+                      Ok(MutationReceipt {
+                          command: if self.bad_receipt { CommandId::new([9; 16]).unwrap() } else { request.command.command },
+                          identity: request.identity.clone(),
+                          version: Some(PublicVersion::parse("0123456789abcdef0123456789abcdef").unwrap()),
+                          duplicate: false,
+                      })
+                  }
+
+                  fn delete(&mut self, request: &DeleteRequest) -> Result<MutationReceipt, StorageServiceError> {
+                      self.deletes += 1;
+                      Ok(MutationReceipt {
+                          command: request.command.command,
+                          identity: request.identity.clone(),
+                          version: None,
+                          duplicate: false,
+                      })
+                  }
+
+                  fn list(&mut self, request: &ListRequest, _decoded_cursor: Option<&DecodedCursor>) -> Result<StoragePage, StorageServiceError> {
+                      self.lists += 1;
+                      let mut objects = self.object.clone().into_iter().collect::<Vec<_>>();
+                      if self.oversized_page {
+                          objects.resize(request.limit as usize + 1, objects[0].clone());
+                      }
+                      Ok(StoragePage { objects, next_cursor: None })
+                  }
+              }
+
+              fn ids() -> (ProjectId, UserId) {
+                  (ProjectId::new([1; 16]).unwrap(), UserId::new([2; 16]).unwrap())
+              }
+
+              fn identity() -> ObjectIdentity {
+                  let (project, user) = ids();
+                  ObjectIdentity {
+                      project,
+                      collection: Collection::new("profile").unwrap(),
+                      key: ObjectKeyName::new("main").unwrap(),
+                      owner: Some(user),
+                  }
+              }
+
+              fn object(read: ReadPermission) -> StoredObject {
+                  StoredObject {
+                      identity: identity(),
+                      value: br#"{"level":1}"#.to_vec(),
+                      version: PublicVersion::parse("0123456789abcdef0123456789abcdef").unwrap(),
+                      read,
+                      write: WritePermission::OwnerOnly,
+                      create_time_ms: 1,
+                      update_time_ms: 1,
+                  }
+              }
+
+              fn command() -> CommandIdentity {
+                  CommandIdentity {
+                      command: CommandId::new([3; 16]).unwrap(),
+                      fingerprint: Fingerprint::new([4; 32]).unwrap(),
+                  }
+              }
+
+              #[test]
+              fn public_version_requires_exact_lowercase_hex() {
+                  assert!(PublicVersion::parse("0123456789abcdef0123456789abcdef").is_ok());
+                  for invalid in [
+                      "",
+                      "0123456789abcdef0123456789abcde",
+                      "0123456789abcdef0123456789abcdef0",
+                      "0123456789ABCDEF0123456789ABCDEF",
+                      "g123456789abcdef0123456789abcdef",
+                  ] {
+                      assert_eq!(
+                          PublicVersion::parse(invalid).unwrap_err().reason(),
+                          "public_version_invalid"
+                      );
+                  }
+              }
+
+              #[test]
+              fn private_read_is_non_enumerating_for_other_user() {
+                  let (project, _) = ids();
+                  let mut service = StorageService::new(
+                      FakePort { object: Some(object(ReadPermission::OwnerOnly)), ..FakePort::default() },
+                      FakeCursor,
+                  );
+                  let result = service
+                      .read(
+                          Actor::User { project, user: UserId::new([8; 16]).unwrap() },
+                          &ReadRequest { identity: identity() },
+                      )
+                      .unwrap();
+                  assert!(result.is_none());
+              }
+
+              #[test]
+              fn oversized_write_is_rejected_before_repository_mutation() {
+                  let (project, user) = ids();
+                  let mut service = StorageService::new(FakePort::default(), FakeCursor);
+                  let request = WriteRequest {
+                      identity: identity(),
+                      value: vec![0; MAX_VALUE_BYTES + 1],
+                      read: ReadPermission::OwnerOnly,
+                      write: WritePermission::OwnerOnly,
+                      condition: WriteCondition::Blind,
+                      command: command(),
+                      occurred_at_ms: 1,
+                  };
+                  let error = service.write(Actor::User { project, user }, &request).unwrap_err();
+                  assert_eq!(error.code(), StableStorageCode::ResourceExhausted);
+                  assert_eq!(service.into_parts().0.writes, 0);
+              }
+
+              #[test]
+              fn mismatched_receipt_fails_closed() {
+                  let (project, user) = ids();
+                  let mut service = StorageService::new(
+                      FakePort { bad_receipt: true, ..FakePort::default() },
+                      FakeCursor,
+                  );
+                  let request = WriteRequest {
+                      identity: identity(),
+                      value: b"{}".to_vec(),
+                      read: ReadPermission::Public,
+                      write: WritePermission::OwnerOnly,
+                      condition: WriteCondition::CreateOnly,
+                      command: command(),
+                      occurred_at_ms: 1,
+                  };
+                  let error = service.write(Actor::User { project, user }, &request).unwrap_err();
+                  assert_eq!(error.reason(), "repository_receipt_mismatch");
+              }
+
+              #[test]
+              fn cursor_is_bound_to_project_collection_and_owner() {
+                  let (project, user) = ids();
+                  let mut service = StorageService::new(FakePort::default(), FakeCursor);
+                  let request = ListRequest {
+                      project,
+                      collection: Collection::new("profile").unwrap(),
+                      owner: OwnerFilter::Exact(user),
+                      limit: 10,
+                      cursor: Some("1:other:2:next".to_owned()),
+                  };
+                  let error = service.list(Actor::User { project, user }, &request).unwrap_err();
+                  assert_eq!(error.reason(), "cursor_scope_mismatch");
+                  assert_eq!(service.into_parts().0.lists, 0);
+              }
+
+              #[test]
+              fn repository_cannot_overreturn_or_escape_acl_scope() {
+                  let (project, user) = ids();
+                  let mut service = StorageService::new(
+                      FakePort { object: Some(object(ReadPermission::OwnerOnly)), oversized_page: true, ..FakePort::default() },
+                      FakeCursor,
+                  );
+                  let request = ListRequest {
+                      project,
+                      collection: Collection::new("profile").unwrap(),
+                      owner: OwnerFilter::Exact(user),
+                      limit: 1,
+                      cursor: None,
+                  };
+                  let error = service.list(Actor::User { project, user }, &request).unwrap_err();
+                  assert_eq!(error.reason(), "repository_page_overflow");
+              }
+
+              #[test]
+              fn user_cannot_mutate_another_owner_or_server_only_object() {
+                  let (project, user) = ids();
+                  let mut other = identity();
+                  other.owner = Some(UserId::new([7; 16]).unwrap());
+                  let mut service = StorageService::new(FakePort::default(), FakeCursor);
+                  let request = WriteRequest {
+                      identity: other,
+                      value: b"{}".to_vec(),
+                      read: ReadPermission::OwnerOnly,
+                      write: WritePermission::ServerOnly,
+                      condition: WriteCondition::Blind,
+                      command: command(),
+                      occurred_at_ms: 1,
+                  };
+                  let error = service.write(Actor::User { project, user }, &request).unwrap_err();
+                  assert_eq!(error.code(), StableStorageCode::PermissionDenied);
+                  assert_eq!(service.into_parts().0.writes, 0);
+              }
+          }
+          EOF
+
+          cat > crates/trnm-storage-service/README.md <<'EOF'
+          # trnm-storage-service
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-storage-service`  
+          Workspace class: `root`  
+          Lifecycle: `product-service`  
+          Owner role: `storage`
+
+          ## Status and authority
+
+          This document is the current module engineering contract for the protocol-neutral storage application service. It is a source candidate only. It does not establish Nakama wire compatibility, database durability, accepted evidence, production readiness, or cutover authority.
+
+          ## Responsibilities
+
+          The service owns bounded request validation, exact project and owner scoping, public-version shape validation, command identity, write conditions, list limits, cursor scope binding, ACL result validation, and repository receipt validation.
+
+          It does not compute the Nakama MD5 content version, execute SQL, parse HTTP or protobuf, sign cursors, authenticate sessions, or own database transactions.
+
+          ## Architecture and dependencies
+
+          Public HTTP, generated gRPC and RTAPI adapters translate into these typed requests. A storage repository adapter enforces the same ACL/OCC predicates atomically and returns exact durable receipts. A separately reviewed cursor codec authenticates and decodes cursor scope.
+
+          The service is transport-independent and contains no network, filesystem, database, global mutable state, or detached task.
+
+          ## Public contracts
+
+          Object identity binds project, collection, key and optional owner. Public versions are exactly 32 lowercase hexadecimal characters. Write conditions distinguish blind, create-only and exact expected-version operations. Every mutation carries a nonzero command ID and fingerprint.
+
+          Lists have a positive hard-bounded limit, owner scope, collection scope and optional authenticated cursor. A cursor from another project, collection or owner is rejected before repository execution.
+
+          ## Correctness and failure model
+
+          Validation failures occur before repository mutation. Private reads return not-found-equivalent absence to avoid object enumeration. A repository result with the wrong identity, scope, ACL, page size, command receipt or delete version fails closed as an internal invariant violation.
+
+          Repository implementations remain responsible for atomic batch semantics, exact receipt replay, changed-fingerprint conflicts, serializable retry, response-loss reconciliation and public-version computation from exact value bytes.
+
+          ## Security and privacy
+
+          Project and owner boundaries are checked before access. Raw object values, cursors, user IDs and command receipts must not appear in metric labels or unredacted logs. Cursor authenticity is a trust-bearing adapter responsibility; structural parsing alone is insufficient.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-storage-service --all-targets --locked
+          cargo clippy --package trnm-storage-service --all-targets --locked -- -D warnings
+          ```
+
+          Unit tests cover public-version boundaries, non-enumerating private reads, pre-repository size rejection, receipt mismatch, cursor scope mismatch, repository over-return and cross-owner/server-only mutation denial.
+
+          ## Operations
+
+          The service owns no process. Adapters expose low-cardinality read/write/delete/list result, latency, limit rejection, ACL rejection, OCC conflict, cursor rejection and receipt mismatch signals. Payloads and identities are excluded from labels.
+
+          ## Compatibility and evidence
+
+          Complete Nakama storage compatibility still requires generated HTTP/gRPC mapping, JSON validation, database integration, batch behavior, cursor bytes, ACL effects and official SDK plus immutable-oracle differential evidence on an exact candidate.
+
+          PostgreSQL and CockroachDB require separate live conclusions. Source or unit success does not provide either profile with durability credit.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P1-STORAGE-001`, `GAP-P0-SERVER-001`, `GAP-P0-DATA-001`, `GAP-P0-SCOPE-001`, `GAP-P0-CI-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires complete public adapters, an authenticated cursor implementation, profile-specific transactional repositories, response-loss/fault tests, official consumer differential, retained exact-head evidence and conflict-free storage/protocol/database/security review.
+          EOF
+
+      - name: Register module without raising claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          member = 'crates/trnm-storage-service'
+          cargo = Path('Cargo.toml')
+          text = cargo.read_text(encoding='utf-8')
+          if f'"{member}"' not in text:
+              anchor = ']\nexclude = ['
+              if anchor not in text:
+                  raise SystemExit('workspace anchor missing')
+              text = text.replace(anchor, f'  "{member}",\n{anchor}', 1)
+              cargo.write_text(text, encoding='utf-8')
+
+          module_path = Path('docs/status/MODULE_DOCUMENTATION.json')
+          module = json.loads(module_path.read_text(encoding='utf-8'))
+          rows = module['modules']
+          if not any(row['id'] == 'trnm-storage-service' for row in rows):
+              rows.append({
+                  'id': 'trnm-storage-service',
+                  'path': member,
+                  'manifest': f'{member}/Cargo.toml',
+                  'documentation': f'{member}/README.md',
+                  'workspace': 'root',
+                  'lifecycle': 'product-service',
+                  'maturity': 'source-candidate',
+                  'owner_role': 'storage',
+                  'authority': 'protocol-neutral storage application service and ACL/cursor/receipt validation boundary',
+                  'blocking_gaps': [
+                      'GAP-P1-STORAGE-001','GAP-P0-SERVER-001','GAP-P0-DATA-001',
+                      'GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-REVIEW-001'
+                  ],
+                  'claim_credit': False,
+              })
+          rows.sort(key=lambda row: row['id'])
+          summary = module['summary']
+          summary['module_count'] = len(rows)
+          summary['documented_count'] = len(rows)
+          summary['root_workspace_count'] = sum(row['workspace'] == 'root' for row in rows)
+          summary['isolated_workspace_count'] = sum(row['workspace'] == 'isolated' for row in rows)
+          summary['undocumented_count'] = 0
+          module_path.write_text(json.dumps(module, indent=2) + '\n', encoding='utf-8')
+
+          authority_path = Path('docs/development/RUST_PACKAGE_AUTHORITY.json')
+          authority = json.loads(authority_path.read_text(encoding='utf-8'))
+          members = authority['workspace']['members']
+          if member not in members:
+              members.append(member)
+              members.sort()
+          for key in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'):
+              authority.setdefault('claim_boundary', {})[key] = False
+          authority_path.write_text(json.dumps(authority, indent=2) + '\n', encoding='utf-8')
+
+          inventory_path = Path('docs/status/IMPLEMENTATION_INVENTORY.json')
+          inventory = json.loads(inventory_path.read_text(encoding='utf-8'))
+          if not any(row.get('id') == 'COMP-STORAGE-SERVICE' for row in inventory['components']):
+              inventory['components'].append({
+                  'id': 'COMP-STORAGE-SERVICE',
+                  'path': member,
+                  'kind': 'rust-application-service',
+                  'workstreams': ['W4'],
+                  'status': 'source-candidate',
+                  'implemented': [
+                      'bounded typed read write delete and list requests',
+                      'project owner ACL and cursor scope validation',
+                      'public version shape and repository receipt validation',
+                  ],
+                  'missing': [
+                      'generated HTTP and gRPC adapters',
+                      'authenticated cursor codec',
+                      'PostgreSQL and CockroachDB repository integration',
+                      'official SDK and immutable-oracle differential',
+                      'accepted exact-head evidence and independent review',
+                  ],
+                  'blocking_gaps': [
+                      'GAP-P1-STORAGE-001','GAP-P0-SERVER-001','GAP-P0-DATA-001',
+                      'GAP-P0-SCOPE-001','GAP-P0-CI-001','GAP-P1-REVIEW-001'
+                  ],
+                  'parity_ids': ['TG-PAR-021','TG-PAR-022','TG-PAR-023','TG-PAR-024','TG-PAR-025'],
+                  'evidence_ids': [],
+                  'claim_credit': False,
+              })
+          inventory_path.write_text(json.dumps(inventory, indent=2) + '\n', encoding='utf-8')
+
+          state_path = Path('docs/status/CURRENT_STATE.json')
+          state = json.loads(state_path.read_text(encoding='utf-8'))
+          state.setdefault('implementation', {})['storage_public_service_source_candidate'] = True
+          for key in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'):
+              state.setdefault('claims', {})[key] = False
+          state_path.write_text(json.dumps(state, indent=2) + '\n', encoding='utf-8')
+          PY
+
+      - name: Normalize and publish Draft candidate
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git diff --cached --check
+          git commit -m 'feat(storage): add bounded application service boundary'
+          head_sha="$(git rev-parse HEAD)"
+          head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Protocol-neutral storage service increment for #139, stacked on the Wave 1 identity/social source candidate.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds bounded typed read/write/delete/list requests, exact project/owner scope, public-version shape validation, explicit OCC conditions, cursor scope binding, non-enumerating private reads, repository receipt verification and hostile unit tests.
+
+          This is not complete #139. Generated HTTP/gRPC, authenticated cursor bytes, transactional database adapters, batch/list oracle behavior and official SDK differential remain open. No compatibility, evidence, production, cutover or retirement credit.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft \
+            --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" \
+            --title '[Plan v3.2][Wave 2] Add bounded storage application service' \
+            --body-file "$RUNNER_TEMP/pr.md" \
+            --reviewer Tomasrgbsf --reviewer Franksudoman
+
+      - name: Qualify exact published source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test "$(git rev-parse HEAD)" = '${{ steps.publish.outputs.head_sha }}'
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
+            cargo test --manifest-path "$manifest" --all-targets --locked
+            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
+          done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish qualification result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          if test -n "$pr"; then
+            gh pr comment "$pr" --repo "$REPOSITORY" --body \
+              "Storage Wave 2 carrier result: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, exact source \`${{ steps.publish.outputs.head_sha }}\`. The PR remains Draft pending repository-native exact-head checks and independent review."
+          fi
+          gh issue comment 139 --repo "$REPOSITORY" --body \
+            "Storage application-service candidate carrier completed with status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`. This does not close #139 or grant compatibility/production credit."
