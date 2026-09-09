@@ -1,0 +1,172 @@
+name: tmp-product-wave1-publish
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-product-wave1-publish.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-product-wave1-publish
+  cancel-in-progress: false
+
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      BASE_SHA: d306a9385e154babc0173bfb214b5726a0f2942c
+      BASE_TREE: 7c06b974eb67201d0cd452a00db5e6143344bf62
+      TARGET_BRANCH: integration/plan-v32-product-wave1-2026-09-09
+      EXPECTED_B64_SHA256: 060211d2ef1316bbdacbf048af40e7619f5e69b776c13dd484b7cab3f8a2e441
+      EXPECTED_GZIP_SHA256: 4dee07bbbbadffb3751afa8b7aea28255480c27399d05109ad6b0d9b85532921
+      EXPECTED_PATCH_SHA256: 751921853a216320b3fa3a9f20131f853a94cdf106d5aae785acccf72bc0ed1f
+    steps:
+      - name: Fetch carrier without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/TrillionniumGame'
+          test "$GITHUB_REF_NAME" = 'ops/product-wave1-carrier-20260909'
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Reconstruct and authenticate source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          carrier="$RUNNER_TEMP/product-wave1.b64"
+          gzip_file="$RUNNER_TEMP/product-wave1.patch.gz"
+          patch_file="$RUNNER_TEMP/product-wave1.patch"
+          cat \
+            carrier/product-wave1.b64.00 \
+            carrier/product-wave1.fix01.0 \
+            carrier/product-wave1.fix01.1 \
+            carrier/product-wave1.fix01.2 \
+            carrier/product-wave1.b64.02 \
+            carrier/product-wave1.fix03.0 \
+            carrier/product-wave1.fix03.1 \
+            carrier/product-wave1.fix03.2 \
+            carrier/product-wave1.fix03.3 \
+            carrier/product-wave1.fix03.4 \
+            carrier/product-wave1.fix03.5 \
+            carrier/product-wave1.b64.04 \
+            carrier/product-wave1.b64.05 \
+            carrier/product-wave1.b64.06 \
+            > "$carrier"
+          test "$(sha256sum "$carrier" | awk '{print $1}')" = "$EXPECTED_B64_SHA256"
+          base64 --decode "$carrier" > "$gzip_file"
+          test "$(sha256sum "$gzip_file" | awk '{print $1}')" = "$EXPECTED_GZIP_SHA256"
+          gzip --decompress --stdout "$gzip_file" > "$patch_file"
+          test "$(sha256sum "$patch_file" | awk '{print $1}')" = "$EXPECTED_PATCH_SHA256"
+          test "$(stat -c %s "$patch_file")" -eq 217980
+          printf 'PATCH_FILE=%s\n' "$patch_file" >> "$GITHUB_ENV"
+
+      - name: Materialize exact base and apply patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="$RUNNER_TEMP/candidate"
+          rm -rf "$candidate"
+          git init "$candidate"
+          git -C "$candidate" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$candidate" fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git -C "$candidate" checkout --detach FETCH_HEAD
+          test "$(git -C "$candidate" rev-parse HEAD)" = "$BASE_SHA"
+          test "$(git -C "$candidate" rev-parse HEAD^{tree})" = "$BASE_TREE"
+          git -C "$candidate" apply --check "$PATCH_FILE"
+          git -C "$candidate" apply --index "$PATCH_FILE"
+          test ! -e "$candidate/carrier"
+          test ! -e "$candidate/.github/workflows/tmp-product-wave1-publish.yml"
+          printf 'CANDIDATE=%s\n' "$candidate" >> "$GITHUB_ENV"
+
+      - name: Install pinned Rust components
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
+          rustup override set 1.85.1 --path "$CANDIDATE"
+          rustc --version
+          cargo --version
+
+      - name: Format candidate deterministically
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path "$CANDIDATE/Cargo.toml" --all
+          git -C "$CANDIDATE" add --all
+          test -n "$(git -C "$CANDIDATE" diff --cached --name-only)"
+
+      - name: Validate repository control plane
+        shell: bash
+        working-directory: ${{ env.CANDIDATE }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check-plan.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/check-rust-foundation.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Validate root Rust workspace
+        shell: bash
+        working-directory: ${{ env.CANDIDATE }}
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Validate isolated JWT gates
+        shell: bash
+        working-directory: ${{ env.CANDIDATE }}
+        run: |
+          set -euo pipefail
+          for manifest in \
+            crates/trnm-token-jwt-adapter-gate/Cargo.toml \
+            crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml
+          do
+            cargo fmt --manifest-path "$manifest" -- --check
+            cargo test --manifest-path "$manifest" --all-targets --locked
+            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
+          done
+
+      - name: Commit and publish exact validated candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git -C "$CANDIDATE" status --short
+          test -n "$(git -C "$CANDIDATE" diff --cached --name-only)"
+          git -C "$CANDIDATE" config user.name 'github-actions[bot]'
+          git -C "$CANDIDATE" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C "$CANDIDATE" commit -m 'feat(product): add bounded identity social and storage Wave 1'
+          target="refs/heads/${TARGET_BRANCH}"
+          if git -C "$CANDIDATE" ls-remote --exit-code origin "$target" >/dev/null 2>&1; then
+            echo "target branch already exists: $TARGET_BRANCH" >&2
+            exit 1
+          fi
+          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -C "$CANDIDATE" \
+            -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic}" \
+            push origin "HEAD:${target}"
+          published="$(git -C "$CANDIDATE" rev-parse HEAD)"
+          remote="$(git -C "$CANDIDATE" ls-remote origin "$target" | awk '{print $1}')"
+          test "$remote" = "$published"
+          printf 'published_commit=%s\npublished_tree=%s\ntarget_branch=%s\n' \
+            "$published" \
+            "$(git -C "$CANDIDATE" rev-parse HEAD^{tree})" \
+            "$TARGET_BRANCH" \
+            >> "$GITHUB_STEP_SUMMARY"
