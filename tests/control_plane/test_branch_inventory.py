@@ -27,10 +27,35 @@ class BranchInventoryContractTests(unittest.TestCase):
     def test_current_active_registry_is_valid_and_bounded(self) -> None:
         generator = load_module(GENERATOR_PATH, "branch_inventory_generator_current")
         active, digest = generator.load_active_branches(ACTIVE_PATH)
+        registry = json.loads(ACTIVE_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(
+            set(active),
+            {row["name"] for row in registry["active_branches"]},
+        )
         self.assertIn("main", active)
-        self.assertLessEqual(len(active), 8)
+        self.assertEqual(
+            active["main"]["role"],
+            "protected-integration-authority",
+        )
+        self.assertIsNone(active["main"]["pull_request"])
+        candidates = [row for name, row in active.items() if name != "main"]
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertRegex(
+            candidate["name"],
+            r"^(?:integration|codex)/[a-z0-9][a-z0-9./-]*$",
+        )
+        self.assertRegex(
+            candidate["role"],
+            r"^singular-plan-v[0-9.]+-integration-candidate$",
+        )
+        self.assertIsInstance(candidate["pull_request"], int)
+        self.assertGreater(candidate["pull_request"], 0)
+        self.assertLessEqual(
+            len(active),
+            registry["policy"]["maximum_active_branch_count"],
+        )
         self.assertRegex(digest, r"^[a-f0-9]{64}$")
-        self.assertIn("codex/branch-evidence-closure-2026-09-02", active)
 
     def test_active_nonancestor_is_never_delete_candidate(self) -> None:
         generator = load_module(GENERATOR_PATH, "branch_inventory_generator_active")
