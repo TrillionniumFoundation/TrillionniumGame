@@ -92,6 +92,184 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash "$RUNNER_TEMP/v4-reset.sh"
+      - name: Replace notification argument fanout with typed input
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/trnm-social-core/src/lib.rs")
+          text = path.read_text(encoding="utf-8")
+
+          notification_marker = '''          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct Notification {
+          '''
+          input_type = '''          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct NotificationInput {
+              recipient: UserId,
+              notification: NotificationId,
+              subject: String,
+              body: Vec<u8>,
+          }
+
+          impl NotificationInput {
+              #[must_use]
+              pub fn new(
+                  recipient: UserId,
+                  notification: NotificationId,
+                  subject: String,
+                  body: Vec<u8>,
+              ) -> Self {
+                  Self {
+                      recipient,
+                      notification,
+                      subject,
+                      body,
+                  }
+              }
+          }
+
+          '''
+          if text.count(notification_marker) != 1:
+              raise SystemExit("notification type insertion marker drifted")
+          text = text.replace(notification_marker, input_type + notification_marker, 1)
+
+          old_signature = '''              pub fn create_notification(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  recipient: UserId,
+                  notification: NotificationId,
+                  subject: String,
+                  body: Vec<u8>,
+              ) -> Result<SocialReceipt, SocialError> {
+          '''
+          new_signature = '''              pub fn create_notification(
+                  &mut self,
+                  command: CommandId,
+                  fingerprint: Fingerprint,
+                  actor: UserId,
+                  input: NotificationInput,
+              ) -> Result<SocialReceipt, SocialError> {
+                  let NotificationInput {
+                      recipient,
+                      notification,
+                      subject,
+                      body,
+                  } = input;
+          '''
+          if text.count(old_signature) != 1:
+              raise SystemExit("create_notification signature drifted")
+          text = text.replace(old_signature, new_signature, 1)
+
+          def split_arguments(payload: str) -> list[str]:
+              arguments: list[str] = []
+              start = 0
+              paren = bracket = brace = angle = 0
+              in_string = False
+              escaped = False
+              for index, char in enumerate(payload):
+                  if in_string:
+                      if escaped:
+                          escaped = False
+                      elif char == "\\":
+                          escaped = True
+                      elif char == '"':
+                          in_string = False
+                      continue
+                  if char == '"':
+                      in_string = True
+                  elif char == '(':
+                      paren += 1
+                  elif char == ')':
+                      paren -= 1
+                  elif char == '[':
+                      bracket += 1
+                  elif char == ']':
+                      bracket -= 1
+                  elif char == '{':
+                      brace += 1
+                  elif char == '}':
+                      brace -= 1
+                  elif char == '<':
+                      angle += 1
+                  elif char == '>' and angle:
+                      angle -= 1
+                  elif char == ',' and not (paren or bracket or brace or angle):
+                      arguments.append(payload[start:index].strip())
+                      start = index + 1
+              tail = payload[start:].strip()
+              if tail:
+                  arguments.append(tail)
+              return arguments
+
+          needle = ".create_notification("
+          cursor = 0
+          rewritten = 0
+          while True:
+              start = text.find(needle, cursor)
+              if start < 0:
+                  break
+              open_paren = start + len(needle) - 1
+              depth = 0
+              in_string = False
+              escaped = False
+              end = None
+              for index in range(open_paren, len(text)):
+                  char = text[index]
+                  if in_string:
+                      if escaped:
+                          escaped = False
+                      elif char == "\\":
+                          escaped = True
+                      elif char == '"':
+                          in_string = False
+                      continue
+                  if char == '"':
+                      in_string = True
+                  elif char == '(':
+                      depth += 1
+                  elif char == ')':
+                      depth -= 1
+                      if depth == 0:
+                          end = index
+                          break
+              if end is None:
+                  raise SystemExit("unbalanced create_notification call")
+              payload = text[open_paren + 1:end]
+              args = split_arguments(payload)
+              if len(args) != 7:
+                  raise SystemExit(f"expected seven notification call arguments, got {len(args)}")
+              line_start = text.rfind("\n", 0, start) + 1
+              indent = text[line_start:start]
+              replacement = (
+                  ".create_notification(\n"
+                  + indent + "    " + args[0] + ",\n"
+                  + indent + "    " + args[1] + ",\n"
+                  + indent + "    " + args[2] + ",\n"
+                  + indent + "    NotificationInput::new(\n"
+                  + indent + "        " + args[3] + ",\n"
+                  + indent + "        " + args[4] + ",\n"
+                  + indent + "        " + args[5] + ",\n"
+                  + indent + "        " + args[6] + ",\n"
+                  + indent + "    ),\n"
+                  + indent + ")"
+              )
+              text = text[:start] + replacement + text[end + 1:]
+              cursor = start + len(replacement)
+              rewritten += 1
+          if rewritten != 3:
+              raise SystemExit(f"expected three notification test calls, rewrote {rewritten}")
+          if "recipient: UserId,\n                  notification:" in text:
+              raise SystemExit("old notification argument fanout remains")
+          path.write_text(text, encoding="utf-8")
+          PY
+          cargo fmt --all
+          git add -A
+          git diff --cached --check
       - name: Prove atomic source semantics
         shell: bash
         run: bash "$RUNNER_TEMP/v4-prove.sh"
