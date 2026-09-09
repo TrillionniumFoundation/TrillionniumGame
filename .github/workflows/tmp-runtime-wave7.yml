@@ -1,0 +1,1025 @@
+name: tmp-runtime-wave7
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-runtime-wave7.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BASE_BRANCH: feature/plan-v32-rtapi-service-20260909
+  FEATURE_BRANCH: feature/plan-v32-runtime-core-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-runtime-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Wait for exact Wave 6 base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha=''
+          for _ in $(seq 1 360); do
+            base_sha="$(gh api "repos/${REPOSITORY}/branches/${BASE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$base_sha" && break
+            sleep 30
+          done
+          test -n "$base_sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=2 origin "$base_sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$base_sha"
+          printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write capability-limited runtime core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p crates/trnm-runtime-core/src
+          cat > crates/trnm-runtime-core/Cargo.toml <<'EOF'
+          [package]
+          name = "trnm-runtime-core"
+          version.workspace = true
+          edition.workspace = true
+          rust-version.workspace = true
+          license.workspace = true
+          publish.workspace = true
+          description = "Capability and resource bounded runtime module invocation core"
+
+          [lib]
+          path = "src/lib.rs"
+
+          [lints]
+          workspace = true
+          EOF
+
+          cat > crates/trnm-runtime-core/src/lib.rs <<'EOF'
+          #![forbid(unsafe_code)]
+
+          use std::collections::{BTreeMap, BTreeSet};
+
+          pub const MAX_MODULES: usize = 4096;
+          pub const MAX_HOOKS_PER_MODULE: usize = 256;
+          pub const MAX_CAPABILITIES_PER_MODULE: usize = 64;
+          pub const MAX_ACTIVE_INVOCATIONS: usize = 65_536;
+          pub const MAX_FUEL: u64 = 10_000_000_000;
+          pub const MAX_MEMORY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+          pub const MAX_STACK_BYTES: u64 = 64 * 1024 * 1024;
+          pub const MAX_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
+          pub const MAX_LOG_BYTES: u64 = 16 * 1024 * 1024;
+          pub const MAX_DEADLINE_MS: u64 = 300_000;
+
+          macro_rules! id16 {
+              ($name:ident, $reason:literal) => {
+                  #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+                  pub struct $name([u8; 16]);
+
+                  impl $name {
+                      pub fn new(value: [u8; 16]) -> Result<Self, RuntimeError> {
+                          if value.iter().all(|byte| *byte == 0) {
+                              Err(RuntimeError::invalid($reason))
+                          } else {
+                              Ok(Self(value))
+                          }
+                      }
+                  }
+              };
+          }
+
+          id16!(ProjectId, "project_id_zero");
+          id16!(UserId, "user_id_zero");
+          id16!(SessionId, "session_id_zero");
+          id16!(ModuleId, "module_id_zero");
+          id16!(InvocationId, "invocation_id_zero");
+          id16!(RegistrationId, "registration_id_zero");
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub struct Digest32([u8; 32]);
+
+          impl Digest32 {
+              pub fn new(value: [u8; 32]) -> Result<Self, RuntimeError> {
+                  if value.iter().all(|byte| *byte == 0) {
+                      Err(RuntimeError::invalid("digest_zero"))
+                  } else {
+                      Ok(Self(value))
+                  }
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum RuntimeLanguage {
+              Lua,
+              JavaScript,
+              TypeScript,
+              Wasm,
+              RustNative,
+          }
+
+          #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum Hook {
+              Rpc(String),
+              Before(String),
+              After(String),
+              MatchInit,
+              MatchJoinAttempt,
+              MatchJoin,
+              MatchLeave,
+              MatchLoop,
+              MatchSignal,
+              MatchTerminate,
+              TournamentReset,
+              LeaderboardReset,
+              ScheduledJob(String),
+          }
+
+          impl Hook {
+              pub fn validate(self) -> Result<Self, RuntimeError> {
+                  match &self {
+                      Hook::Rpc(name)
+                      | Hook::Before(name)
+                      | Hook::After(name)
+                      | Hook::ScheduledJob(name) => validate_name(name)?,
+                      _ => {}
+                  }
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+          pub enum Capability {
+              StorageRead,
+              StorageWrite,
+              WalletRead,
+              WalletWrite,
+              SocialRead,
+              SocialWrite,
+              LeaderboardRead,
+              LeaderboardWrite,
+              MatchCreate,
+              MatchSignal,
+              NotificationSend,
+              HttpOutbound,
+              DeterministicClock,
+              DeterministicRandom,
+              MetricsEmit,
+              Log,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct ResourceBudget {
+              pub fuel: u64,
+              pub memory_bytes: u64,
+              pub stack_bytes: u64,
+              pub output_bytes: u64,
+              pub log_bytes: u64,
+              pub deadline_ms: u64,
+          }
+
+          impl ResourceBudget {
+              pub fn validate(self) -> Result<Self, RuntimeError> {
+                  if self.fuel == 0 || self.fuel > MAX_FUEL
+                      || self.memory_bytes == 0 || self.memory_bytes > MAX_MEMORY_BYTES
+                      || self.stack_bytes == 0 || self.stack_bytes > MAX_STACK_BYTES
+                      || self.output_bytes == 0 || self.output_bytes > MAX_OUTPUT_BYTES
+                      || self.log_bytes == 0 || self.log_bytes > MAX_LOG_BYTES
+                      || self.deadline_ms == 0 || self.deadline_ms > MAX_DEADLINE_MS
+                  {
+                      Err(RuntimeError::invalid("resource_budget_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+
+              fn fits_within(self, maximum: Self) -> bool {
+                  self.fuel <= maximum.fuel
+                      && self.memory_bytes <= maximum.memory_bytes
+                      && self.stack_bytes <= maximum.stack_bytes
+                      && self.output_bytes <= maximum.output_bytes
+                      && self.log_bytes <= maximum.log_bytes
+                      && self.deadline_ms <= maximum.deadline_ms
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct ModuleManifest {
+              pub id: ModuleId,
+              pub registration: RegistrationId,
+              pub language: RuntimeLanguage,
+              pub source_digest: Digest32,
+              pub hooks: BTreeSet<Hook>,
+              pub capabilities: BTreeSet<Capability>,
+              pub maximum_budget: ResourceBudget,
+              pub maximum_concurrency: usize,
+              pub revision: u64,
+          }
+
+          impl ModuleManifest {
+              pub fn validate(mut self) -> Result<Self, RuntimeError> {
+                  self.maximum_budget = self.maximum_budget.validate()?;
+                  if self.hooks.is_empty() || self.hooks.len() > MAX_HOOKS_PER_MODULE {
+                      return Err(RuntimeError::invalid("module_hooks_invalid"));
+                  }
+                  if self.capabilities.len() > MAX_CAPABILITIES_PER_MODULE
+                      || self.maximum_concurrency == 0
+                      || self.maximum_concurrency > MAX_ACTIVE_INVOCATIONS
+                      || self.revision == 0
+                  {
+                      return Err(RuntimeError::invalid("module_limits_invalid"));
+                  }
+                  self.hooks = self
+                      .hooks
+                      .into_iter()
+                      .map(Hook::validate)
+                      .collect::<Result<_, _>>()?;
+                  Ok(self)
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct InvocationContext {
+              pub project: ProjectId,
+              pub user: Option<UserId>,
+              pub session: Option<SessionId>,
+              pub session_generation: Option<u64>,
+              pub request_headers_digest: Digest32,
+              pub environment_digest: Digest32,
+              pub now_ms: u64,
+              pub deterministic_seed: [u8; 32],
+          }
+
+          impl InvocationContext {
+              pub fn validate(self) -> Result<Self, RuntimeError> {
+                  if self.now_ms == 0
+                      || self.deterministic_seed.iter().all(|byte| *byte == 0)
+                      || self.session.is_some() != self.session_generation.is_some()
+                      || self.session_generation.is_some_and(|generation| generation == 0)
+                  {
+                      Err(RuntimeError::invalid("invocation_context_invalid"))
+                  } else {
+                      Ok(self)
+                  }
+              }
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct InvocationRequest {
+              pub id: InvocationId,
+              pub module: ModuleId,
+              pub expected_module_revision: u64,
+              pub hook: Hook,
+              pub context: InvocationContext,
+              pub requested_capabilities: BTreeSet<Capability>,
+              pub budget: ResourceBudget,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct InvocationHandle {
+              pub id: InvocationId,
+              pub module: ModuleId,
+              pub module_revision: u64,
+              pub generation: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub struct Usage {
+              pub fuel: u64,
+              pub memory_bytes: u64,
+              pub stack_bytes: u64,
+              pub output_bytes: u64,
+              pub log_bytes: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum InvocationOutcome {
+              Completed { result_digest: Digest32 },
+              Trapped { stable_code: u32 },
+              Cancelled,
+              DeadlineExceeded,
+              ResourceExhausted,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          struct ActiveInvocation {
+              handle: InvocationHandle,
+              hook: Hook,
+              context: InvocationContext,
+              capabilities: BTreeSet<Capability>,
+              budget: ResourceBudget,
+              usage: Usage,
+              deadline_at_ms: u64,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct InvocationReceipt {
+              pub handle: InvocationHandle,
+              pub outcome: InvocationOutcome,
+              pub usage: Usage,
+              pub completed_at_ms: u64,
+          }
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum StableRuntimeCode {
+              InvalidArgument,
+              NotFound,
+              AlreadyExists,
+              PermissionDenied,
+              FailedPrecondition,
+              Aborted,
+              DeadlineExceeded,
+              ResourceExhausted,
+              Internal,
+          }
+
+          #[derive(Clone, Debug, Eq, PartialEq)]
+          pub struct RuntimeError {
+              code: StableRuntimeCode,
+              reason: &'static str,
+              retryable: bool,
+          }
+
+          impl RuntimeError {
+              #[must_use]
+              pub const fn new(code: StableRuntimeCode, reason: &'static str, retryable: bool) -> Self {
+                  Self { code, reason, retryable }
+              }
+
+              #[must_use]
+              pub const fn invalid(reason: &'static str) -> Self {
+                  Self::new(StableRuntimeCode::InvalidArgument, reason, false)
+              }
+
+              #[must_use]
+              pub const fn code(&self) -> StableRuntimeCode {
+                  self.code
+              }
+
+              #[must_use]
+              pub const fn reason(&self) -> &'static str {
+                  self.reason
+              }
+
+              #[must_use]
+              pub const fn retryable(&self) -> bool {
+                  self.retryable
+              }
+          }
+
+          #[derive(Clone, Debug)]
+          pub struct RuntimeRegistry {
+              modules: BTreeMap<ModuleId, ModuleManifest>,
+              registrations: BTreeMap<RegistrationId, (Digest32, ModuleId)>,
+              active: BTreeMap<InvocationId, ActiveInvocation>,
+              active_by_module: BTreeMap<ModuleId, usize>,
+              receipts: BTreeMap<InvocationId, InvocationReceipt>,
+              generations: BTreeMap<InvocationId, u64>,
+              max_modules: usize,
+              max_active: usize,
+              max_receipts: usize,
+          }
+
+          impl RuntimeRegistry {
+              pub fn new(
+                  max_modules: usize,
+                  max_active: usize,
+                  max_receipts: usize,
+              ) -> Result<Self, RuntimeError> {
+                  if max_modules == 0 || max_modules > MAX_MODULES
+                      || max_active == 0 || max_active > MAX_ACTIVE_INVOCATIONS
+                      || max_receipts == 0
+                  {
+                      return Err(RuntimeError::invalid("runtime_limits_invalid"));
+                  }
+                  Ok(Self {
+                      modules: BTreeMap::new(),
+                      registrations: BTreeMap::new(),
+                      active: BTreeMap::new(),
+                      active_by_module: BTreeMap::new(),
+                      receipts: BTreeMap::new(),
+                      generations: BTreeMap::new(),
+                      max_modules,
+                      max_active,
+                      max_receipts,
+                  })
+              }
+
+              pub fn register_module(
+                  &mut self,
+                  manifest: ModuleManifest,
+              ) -> Result<ModuleManifest, RuntimeError> {
+                  let manifest = manifest.validate()?;
+                  if let Some((digest, module)) = self.registrations.get(&manifest.registration) {
+                      if *digest == manifest.source_digest && *module == manifest.id {
+                          return self.modules.get(module).cloned().ok_or_else(|| RuntimeError::new(
+                              StableRuntimeCode::Internal,
+                              "registration_index_corrupt",
+                              false,
+                          ));
+                      }
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::AlreadyExists,
+                          "registration_conflict",
+                          false,
+                      ));
+                  }
+                  if self.modules.contains_key(&manifest.id) {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::AlreadyExists,
+                          "module_exists",
+                          false,
+                      ));
+                  }
+                  if self.modules.len() >= self.max_modules {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::ResourceExhausted,
+                          "module_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate
+                      .registrations
+                      .insert(manifest.registration, (manifest.source_digest, manifest.id));
+                  candidate.modules.insert(manifest.id, manifest.clone());
+                  *self = candidate;
+                  Ok(manifest)
+              }
+
+              pub fn start(
+                  &mut self,
+                  request: InvocationRequest,
+              ) -> Result<InvocationHandle, RuntimeError> {
+                  if self.active.contains_key(&request.id) || self.receipts.contains_key(&request.id) {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::AlreadyExists,
+                          "invocation_exists",
+                          false,
+                      ));
+                  }
+                  if self.active.len() >= self.max_active {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::ResourceExhausted,
+                          "active_invocation_capacity_exhausted",
+                          true,
+                      ));
+                  }
+                  let module = self.modules.get(&request.module).ok_or_else(|| RuntimeError::new(
+                      StableRuntimeCode::NotFound,
+                      "module_not_found",
+                      false,
+                  ))?;
+                  if module.revision != request.expected_module_revision {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::Aborted,
+                          "module_revision_mismatch",
+                          true,
+                      ));
+                  }
+                  let hook = request.hook.validate()?;
+                  if !module.hooks.contains(&hook) {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::NotFound,
+                          "hook_not_registered",
+                          false,
+                      ));
+                  }
+                  if !request.requested_capabilities.is_subset(&module.capabilities) {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::PermissionDenied,
+                          "capability_not_granted",
+                          false,
+                      ));
+                  }
+                  let budget = request.budget.validate()?;
+                  if !budget.fits_within(module.maximum_budget) {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::ResourceExhausted,
+                          "requested_budget_exceeds_module",
+                          false,
+                      ));
+                  }
+                  let active_count = self.active_by_module.get(&module.id).copied().unwrap_or(0);
+                  if active_count >= module.maximum_concurrency {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::ResourceExhausted,
+                          "module_concurrency_exhausted",
+                          true,
+                      ));
+                  }
+                  let context = request.context.validate()?;
+                  let deadline_at_ms = context.now_ms.checked_add(budget.deadline_ms).ok_or_else(|| RuntimeError::new(
+                      StableRuntimeCode::DeadlineExceeded,
+                      "invocation_deadline_overflow",
+                      false,
+                  ))?;
+                  let generation = self.generations.get(&request.id).copied().unwrap_or(0).checked_add(1).ok_or_else(|| RuntimeError::new(
+                      StableRuntimeCode::Internal,
+                      "invocation_generation_overflow",
+                      false,
+                  ))?;
+                  let handle = InvocationHandle {
+                      id: request.id,
+                      module: module.id,
+                      module_revision: module.revision,
+                      generation,
+                  };
+                  self.active.insert(request.id, ActiveInvocation {
+                      handle,
+                      hook,
+                      context,
+                      capabilities: request.requested_capabilities,
+                      budget,
+                      usage: Usage { fuel: 0, memory_bytes: 0, stack_bytes: 0, output_bytes: 0, log_bytes: 0 },
+                      deadline_at_ms,
+                  });
+                  self.active_by_module.insert(module.id, active_count + 1);
+                  self.generations.insert(request.id, generation);
+                  Ok(handle)
+              }
+
+              pub fn charge(
+                  &mut self,
+                  handle: InvocationHandle,
+                  delta: Usage,
+                  now_ms: u64,
+              ) -> Result<Usage, RuntimeError> {
+                  let active = self.active_exact(handle)?;
+                  if now_ms == 0 || now_ms < active.context.now_ms || now_ms >= active.deadline_at_ms {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::DeadlineExceeded,
+                          "invocation_deadline_exceeded",
+                          false,
+                      ));
+                  }
+                  let next = Usage {
+                      fuel: active.usage.fuel.checked_add(delta.fuel),
+                      memory_bytes: active.usage.memory_bytes.checked_add(delta.memory_bytes),
+                      stack_bytes: active.usage.stack_bytes.checked_add(delta.stack_bytes),
+                      output_bytes: active.usage.output_bytes.checked_add(delta.output_bytes),
+                      log_bytes: active.usage.log_bytes.checked_add(delta.log_bytes),
+                  };
+                  let next = match next {
+                      Usage {
+                          fuel: Some(fuel),
+                          memory_bytes: Some(memory_bytes),
+                          stack_bytes: Some(stack_bytes),
+                          output_bytes: Some(output_bytes),
+                          log_bytes: Some(log_bytes),
+                      } => Usage { fuel, memory_bytes, stack_bytes, output_bytes, log_bytes },
+                      _ => return Err(RuntimeError::new(
+                          StableRuntimeCode::ResourceExhausted,
+                          "usage_counter_overflow",
+                          false,
+                      )),
+                  };
+                  if next.fuel > active.budget.fuel
+                      || next.memory_bytes > active.budget.memory_bytes
+                      || next.stack_bytes > active.budget.stack_bytes
+                      || next.output_bytes > active.budget.output_bytes
+                      || next.log_bytes > active.budget.log_bytes
+                  {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::ResourceExhausted,
+                          "invocation_budget_exhausted",
+                          false,
+                      ));
+                  }
+                  self.active.get_mut(&handle.id).expect("active checked above").usage = next;
+                  Ok(next)
+              }
+
+              pub fn authorize_host_call(
+                  &self,
+                  handle: InvocationHandle,
+                  capability: Capability,
+                  now_ms: u64,
+              ) -> Result<(), RuntimeError> {
+                  let active = self.active_exact(handle)?;
+                  if now_ms == 0 || now_ms >= active.deadline_at_ms {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::DeadlineExceeded,
+                          "host_call_after_deadline",
+                          false,
+                      ));
+                  }
+                  if !active.capabilities.contains(&capability) {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::PermissionDenied,
+                          "host_call_capability_denied",
+                          false,
+                      ));
+                  }
+                  Ok(())
+              }
+
+              pub fn finish(
+                  &mut self,
+                  handle: InvocationHandle,
+                  outcome: InvocationOutcome,
+                  now_ms: u64,
+              ) -> Result<InvocationReceipt, RuntimeError> {
+                  if self.receipts.len() >= self.max_receipts {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::ResourceExhausted,
+                          "runtime_receipt_capacity_exhausted",
+                          false,
+                      ));
+                  }
+                  let active = self.active_exact(handle)?.clone();
+                  if now_ms == 0 || now_ms < active.context.now_ms {
+                      return Err(RuntimeError::invalid("completion_time_invalid"));
+                  }
+                  if now_ms >= active.deadline_at_ms
+                      && !matches!(outcome, InvocationOutcome::DeadlineExceeded | InvocationOutcome::Cancelled)
+                  {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::DeadlineExceeded,
+                          "completion_after_deadline_requires_timeout_outcome",
+                          false,
+                      ));
+                  }
+                  let receipt = InvocationReceipt {
+                      handle,
+                      outcome,
+                      usage: active.usage,
+                      completed_at_ms: now_ms,
+                  };
+                  let count = self.active_by_module.get(&handle.module).copied().unwrap_or(0);
+                  if count == 0 {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::Internal,
+                          "module_active_count_underflow",
+                          false,
+                      ));
+                  }
+                  let mut candidate = self.clone();
+                  candidate.active.remove(&handle.id);
+                  candidate.active_by_module.insert(handle.module, count - 1);
+                  candidate.receipts.insert(handle.id, receipt.clone());
+                  *self = candidate;
+                  Ok(receipt)
+              }
+
+              pub fn expire(&mut self, now_ms: u64) -> Result<Vec<InvocationReceipt>, RuntimeError> {
+                  if now_ms == 0 {
+                      return Err(RuntimeError::invalid("now_zero"));
+                  }
+                  let handles = self
+                      .active
+                      .values()
+                      .filter(|active| active.deadline_at_ms <= now_ms)
+                      .map(|active| active.handle)
+                      .collect::<Vec<_>>();
+                  let mut receipts = Vec::with_capacity(handles.len());
+                  for handle in handles {
+                      receipts.push(self.finish(handle, InvocationOutcome::DeadlineExceeded, now_ms)?);
+                  }
+                  Ok(receipts)
+              }
+
+              fn active_exact(&self, handle: InvocationHandle) -> Result<&ActiveInvocation, RuntimeError> {
+                  let active = self.active.get(&handle.id).ok_or_else(|| RuntimeError::new(
+                      StableRuntimeCode::NotFound,
+                      "active_invocation_not_found",
+                      false,
+                  ))?;
+                  if active.handle != handle {
+                      return Err(RuntimeError::new(
+                          StableRuntimeCode::Aborted,
+                          "stale_invocation_handle",
+                          false,
+                      ));
+                  }
+                  Ok(active)
+              }
+
+              #[must_use]
+              pub fn active_count(&self, module: ModuleId) -> usize {
+                  self.active_by_module.get(&module).copied().unwrap_or(0)
+              }
+
+              #[must_use]
+              pub fn receipt(&self, id: InvocationId) -> Option<&InvocationReceipt> {
+                  self.receipts.get(&id)
+              }
+          }
+
+          fn validate_name(value: &str) -> Result<(), RuntimeError> {
+              if value.is_empty()
+                  || value.len() > 256
+                  || !value
+                      .bytes()
+                      .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'/'))
+              {
+                  Err(RuntimeError::invalid("hook_name_invalid"))
+              } else {
+                  Ok(())
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn module_id() -> ModuleId {
+                  ModuleId::new([1; 16]).unwrap()
+              }
+
+              fn budget() -> ResourceBudget {
+                  ResourceBudget {
+                      fuel: 100,
+                      memory_bytes: 100,
+                      stack_bytes: 100,
+                      output_bytes: 100,
+                      log_bytes: 100,
+                      deadline_ms: 100,
+                  }
+              }
+
+              fn manifest() -> ModuleManifest {
+                  ModuleManifest {
+                      id: module_id(),
+                      registration: RegistrationId::new([2; 16]).unwrap(),
+                      language: RuntimeLanguage::Wasm,
+                      source_digest: Digest32::new([3; 32]).unwrap(),
+                      hooks: BTreeSet::from([Hook::Rpc("echo".to_owned())]),
+                      capabilities: BTreeSet::from([Capability::StorageRead, Capability::Log]),
+                      maximum_budget: budget(),
+                      maximum_concurrency: 1,
+                      revision: 1,
+                  }
+              }
+
+              fn context() -> InvocationContext {
+                  InvocationContext {
+                      project: ProjectId::new([4; 16]).unwrap(),
+                      user: Some(UserId::new([5; 16]).unwrap()),
+                      session: Some(SessionId::new([6; 16]).unwrap()),
+                      session_generation: Some(1),
+                      request_headers_digest: Digest32::new([7; 32]).unwrap(),
+                      environment_digest: Digest32::new([8; 32]).unwrap(),
+                      now_ms: 10,
+                      deterministic_seed: [9; 32],
+                  }
+              }
+
+              fn request(byte: u8) -> InvocationRequest {
+                  InvocationRequest {
+                      id: InvocationId::new([byte; 16]).unwrap(),
+                      module: module_id(),
+                      expected_module_revision: 1,
+                      hook: Hook::Rpc("echo".to_owned()),
+                      context: context(),
+                      requested_capabilities: BTreeSet::from([Capability::StorageRead]),
+                      budget: budget(),
+                  }
+              }
+
+              fn registry() -> RuntimeRegistry {
+                  let mut registry = RuntimeRegistry::new(8, 8, 32).unwrap();
+                  registry.register_module(manifest()).unwrap();
+                  registry
+              }
+
+              #[test]
+              fn registration_is_idempotent_only_for_exact_identity() {
+                  let mut registry = RuntimeRegistry::new(8, 8, 32).unwrap();
+                  let registered = registry.register_module(manifest()).unwrap();
+                  assert_eq!(registry.register_module(manifest()).unwrap(), registered);
+                  let mut changed = manifest();
+                  changed.source_digest = Digest32::new([10; 32]).unwrap();
+                  assert_eq!(registry.register_module(changed).unwrap_err().reason(), "registration_conflict");
+              }
+
+              #[test]
+              fn undeclared_hook_and_capability_fail_before_admission() {
+                  let mut registry = registry();
+                  let mut wrong_hook = request(1);
+                  wrong_hook.hook = Hook::Rpc("missing".to_owned());
+                  assert_eq!(registry.start(wrong_hook).unwrap_err().reason(), "hook_not_registered");
+                  let mut capability = request(2);
+                  capability.requested_capabilities.insert(Capability::HttpOutbound);
+                  assert_eq!(registry.start(capability).unwrap_err().reason(), "capability_not_granted");
+                  assert_eq!(registry.active_count(module_id()), 0);
+              }
+
+              #[test]
+              fn module_concurrency_is_hard_bounded() {
+                  let mut registry = registry();
+                  let first = registry.start(request(1)).unwrap();
+                  assert_eq!(registry.start(request(2)).unwrap_err().reason(), "module_concurrency_exhausted");
+                  registry.finish(first, InvocationOutcome::Cancelled, 11).unwrap();
+                  assert!(registry.start(request(2)).is_ok());
+              }
+
+              #[test]
+              fn resource_exhaustion_preserves_last_valid_usage() {
+                  let mut registry = registry();
+                  let handle = registry.start(request(1)).unwrap();
+                  let first = registry.charge(handle, Usage { fuel: 90, memory_bytes: 0, stack_bytes: 0, output_bytes: 0, log_bytes: 0 }, 11).unwrap();
+                  assert_eq!(first.fuel, 90);
+                  assert_eq!(registry.charge(handle, Usage { fuel: 11, memory_bytes: 0, stack_bytes: 0, output_bytes: 0, log_bytes: 0 }, 12).unwrap_err().reason(), "invocation_budget_exhausted");
+                  let receipt = registry.finish(handle, InvocationOutcome::ResourceExhausted, 13).unwrap();
+                  assert_eq!(receipt.usage.fuel, 90);
+              }
+
+              #[test]
+              fn stale_handle_cannot_finish_reused_invocation_identity() {
+                  let mut registry = registry();
+                  let first = registry.start(request(1)).unwrap();
+                  registry.finish(first, InvocationOutcome::Cancelled, 11).unwrap();
+                  assert_eq!(registry.start(request(1)).unwrap_err().reason(), "invocation_exists");
+                  let forged = InvocationHandle { generation: first.generation + 1, ..first };
+                  assert_eq!(registry.finish(forged, InvocationOutcome::Cancelled, 12).unwrap_err().reason(), "active_invocation_not_found");
+              }
+
+              #[test]
+              fn host_calls_require_declared_capability_and_live_deadline() {
+                  let mut registry = registry();
+                  let handle = registry.start(request(1)).unwrap();
+                  registry.authorize_host_call(handle, Capability::StorageRead, 11).unwrap();
+                  assert_eq!(registry.authorize_host_call(handle, Capability::StorageWrite, 11).unwrap_err().reason(), "host_call_capability_denied");
+                  assert_eq!(registry.authorize_host_call(handle, Capability::StorageRead, 110).unwrap_err().reason(), "host_call_after_deadline");
+              }
+
+              #[test]
+              fn expiration_produces_explicit_terminal_receipt() {
+                  let mut registry = registry();
+                  let handle = registry.start(request(1)).unwrap();
+                  let receipts = registry.expire(110).unwrap();
+                  assert_eq!(receipts.len(), 1);
+                  assert_eq!(receipts[0].handle, handle);
+                  assert_eq!(receipts[0].outcome, InvocationOutcome::DeadlineExceeded);
+                  assert!(registry.receipt(handle.id).is_some());
+                  assert_eq!(registry.active_count(module_id()), 0);
+              }
+          }
+          EOF
+
+          cat > crates/trnm-runtime-core/README.md <<'EOF'
+          # trnm-runtime-core
+
+          Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
+          Path: `crates/trnm-runtime-core`  
+          Workspace class: `root`  
+          Lifecycle: `product-library`  
+          Owner role: `runtime-vm`
+
+          ## Status and authority
+
+          This document is the module contract for capability-limited, resource-bounded Runtime invocation state. It is a source candidate and does not establish Lua, JavaScript/TypeScript, WASM or Rust Runtime compatibility, engine isolation or production approval.
+
+          ## Responsibilities
+
+          The crate owns versioned module manifests, hook registration, capability grants, per-module concurrency, invocation generations, fuel/memory/stack/output/log/deadline budgets, exact host-call authorization and explicit terminal receipts.
+
+          It does not load source, execute bytecode, embed an engine, perform host I/O, persist modules, schedule jobs or provide an operating-system sandbox.
+
+          ## Architecture and dependencies
+
+          Language-specific engines implement a narrow executor over this core. Host calls go through typed capability adapters into application services. Deterministic clock/random values enter through immutable invocation context rather than ambient process state.
+
+          Engine processes or isolates are supervised separately and cannot access server internals, unrestricted network, filesystem, process APIs or raw secrets.
+
+          ## Public contracts
+
+          Each manifest binds module, registration identity, language, source digest, hook set, capability set, maximum budget, maximum concurrency and revision. Exact registration replay is idempotent; changed source under the same registration fails.
+
+          Invocation handles bind invocation, module, module revision and generation. Every resource counter is monotonic and checked before mutation. Terminal receipts record outcome, final usage and completion time.
+
+          ## Correctness and failure model
+
+          Missing modules/hooks, stale revision, undeclared capability, invalid context, over-budget request, concurrency exhaustion, deadline and counter overflow fail before admission or usage mutation. A stale handle cannot charge, call or finish another invocation.
+
+          Expiration creates an explicit deadline receipt; it is not silently dropped. Engine panic/trap must map to a bounded terminal outcome without corrupting registry state.
+
+          ## Security and privacy
+
+          Capability sets are allowlists. Host I/O is denied unless both the manifest and invocation request include the capability. Raw tokens, secrets, payloads, deterministic seed and user/session identity are not logged or used as metric labels.
+
+          Native engines, JITs, FFI and unsafe dependencies require a separate isolation threat model, fuzzing and independent security review.
+
+          ## Build and test
+
+          ```bash
+          cargo fmt --all -- --check
+          cargo test --package trnm-runtime-core --all-targets --locked
+          cargo clippy --package trnm-runtime-core --all-targets --locked -- -D warnings
+          ```
+
+          Tests cover exact registration, undeclared hooks/capabilities, concurrency, resource no-mutation, stale handles, live host-call authorization and explicit deadline receipts.
+
+          ## Operations
+
+          Adapters expose module/revision/language, active count, start/result class, fuel/memory/output/log exhaustion, trap, cancellation and deadline metrics with bounded labels. Module payloads, identities and secrets are excluded.
+
+          ## Compatibility and evidence
+
+          Complete #144 requires every DEN-RUNTIME initializer, hook, context and API; Lua and JavaScript/TypeScript semantic corpora; WASM and Rust profiles; actual engine isolation; reload/order behavior; official client-to-RPC tests; performance and security evidence.
+
+          This pure core does not prove engine semantics, sandbox escape resistance, wall-clock preemption, durable state or Runtime compatibility.
+
+          ## Known gaps and exit criteria
+
+          Blocking gaps include `GAP-P0-SERVER-001`, `GAP-P0-SCOPE-001`, `GAP-P0-CRYPTO-001`, `GAP-P0-CI-001`, and `GAP-P1-REVIEW-001`.
+
+          Exit requires language-engine adapters, complete generated host capability API, process/isolate supervision, deterministic corpus differential, resource/fuzz/escape testing, retained exact-head evidence and independent runtime/security/performance review.
+          EOF
+
+      - name: Register Runtime module fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          member='crates/trnm-runtime-core'
+          p=Path('Cargo.toml'); t=p.read_text();
+          if f'"{member}"' not in t: p.write_text(t.replace(']\nexclude = [',f'  "{member}",\n]\nexclude = [',1))
+          mp=Path('docs/status/MODULE_DOCUMENTATION.json'); m=json.loads(mp.read_text())
+          if not any(r['id']=='trnm-runtime-core' for r in m['modules']):
+              m['modules'].append({'id':'trnm-runtime-core','path':member,'manifest':f'{member}/Cargo.toml','documentation':f'{member}/README.md','workspace':'root','lifecycle':'product-library','maturity':'source-candidate','owner_role':'runtime-vm','authority':'capability and resource bounded Runtime module invocation state','blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-SCOPE-001','GAP-P0-CRYPTO-001','GAP-P0-CI-001','GAP-P1-REVIEW-001'],'claim_credit':False})
+          m['modules'].sort(key=lambda r:r['id']); m['summary'].update({'module_count':len(m['modules']),'documented_count':len(m['modules']),'root_workspace_count':sum(r['workspace']=='root' for r in m['modules']),'isolated_workspace_count':sum(r['workspace']=='isolated' for r in m['modules']),'undocumented_count':0}); mp.write_text(json.dumps(m,indent=2)+'\n')
+          ap=Path('docs/development/RUST_PACKAGE_AUTHORITY.json'); a=json.loads(ap.read_text());
+          if member not in a['workspace']['members']: a['workspace']['members'].append(member); a['workspace']['members'].sort()
+          for k in ('package_inventory_source_checked','exact_head_compiled','server_runtime_verified','compatibility_credit','production_ready'): a.setdefault('claim_boundary',{})[k]=False
+          ap.write_text(json.dumps(a,indent=2)+'\n')
+          ip=Path('docs/status/IMPLEMENTATION_INVENTORY.json'); inv=json.loads(ip.read_text())
+          if not any(r.get('id')=='COMP-RUNTIME-CORE' for r in inv['components']):
+              inv['components'].append({'id':'COMP-RUNTIME-CORE','path':member,'kind':'rust-library','workstreams':['W11'],'status':'source-candidate','implemented':['module hook capability and revision manifest','bounded invocation generation concurrency and resource accounting','explicit completion trap cancel deadline receipts'],'missing':['Lua JavaScript TypeScript WASM and Rust engine adapters','complete Runtime host capability API and persistence','sandbox escape fuzz and semantic differential','performance and independent acceptance'],'blocking_gaps':['GAP-P0-SERVER-001','GAP-P0-SCOPE-001','GAP-P0-CRYPTO-001','GAP-P0-CI-001','GAP-P1-REVIEW-001'],'parity_ids':['TG-PAR-055'],'evidence_ids':[],'claim_credit':False})
+          ip.write_text(json.dumps(inv,indent=2)+'\n')
+          sp=Path('docs/status/CURRENT_STATE.json'); st=json.loads(sp.read_text()); st.setdefault('implementation',{})['runtime_capability_core_source_candidate']=True; st['implementation']['complete_runtime_host']=False
+          for k in ('wire_compatible','behavior_compatible','data_migration_compatible','operationally_replaceable','supported_full_replacement','production_ready','public_online','nakama_retired'): st.setdefault('claims',{})[k]=False
+          sp.write_text(json.dumps(st,indent=2)+'\n')
+          PY
+
+      - name: Publish Draft and qualify exact source
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$FEATURE_BRANCH"
+          git add Cargo.toml Cargo.lock crates docs tests scripts .github/CODEOWNERS
+          git commit -m 'feat(runtime): add capability and resource bounded invocation core'
+          head_sha="$(git rev-parse HEAD)"; head_tree="$(git rev-parse HEAD^{tree})"
+          printf 'head_sha=%s\nhead_tree=%s\n' "$head_sha" "$head_tree" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          cat > "$RUNNER_TEMP/pr.md" <<EOF
+          ## Scope
+
+          Source candidate for #144, stacked on RTAPI Wave 6.
+
+          \`\`\`text
+          base branch   ${BASE_BRANCH}
+          base commit   ${{ steps.base.outputs.base_sha }}
+          head branch   ${FEATURE_BRANCH}
+          head commit   ${head_sha}
+          head tree     ${head_tree}
+          \`\`\`
+
+          Adds versioned module manifests, hook/capability admission, per-module concurrency, generation-fenced invocation handles, fuel/memory/stack/output/log/deadline accounting and explicit terminal receipts.
+
+          Language engines, complete Runtime API, OS isolation, semantic corpora, fuzz/security/performance evidence and independent acceptance remain open. No Runtime compatibility or production credit.
+          EOF
+          gh pr create --repo "$REPOSITORY" --draft --base "$BASE_BRANCH" --head "$FEATURE_BRANCH" --title '[Plan v3.2][Wave 7] Add capability-limited Runtime core' --body-file "$RUNNER_TEMP/pr.md" --reviewer Tomasrgbsf --reviewer Franksudoman
+
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in crates/trnm-token-jwt-adapter-gate/Cargo.toml crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do cargo test --manifest-path "$manifest" --all-targets --locked; cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings; done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --exit-code
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$REPOSITORY" --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+          test -z "$pr" || gh pr comment "$pr" --repo "$REPOSITORY" --body "Runtime Wave 7 carrier: \`${{ job.status }}\`, run \`${GITHUB_RUN_ID}\`, source \`${{ steps.publish.outputs.head_sha }}\`. Draft and all claim ceilings remain binding."
+          gh issue comment 144 --repo "$REPOSITORY" --body "Runtime core carrier status \`${{ job.status }}\` in run \`${GITHUB_RUN_ID}\`; #144 remains open pending engines, complete surface and evidence."
