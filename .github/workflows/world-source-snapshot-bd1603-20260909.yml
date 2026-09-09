@@ -1,0 +1,68 @@
+name: world-source-snapshot-bd1603-20260909
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-source-snapshot-bd1603-20260909-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_HEAD_SHA: bd1603ea6087f71ee1fe2d7940c729931105c25f
+  WORLD_HEAD_TREE: 50f2b8d7a6fb75ad77210d3082a2362e4b210438
+
+jobs:
+  snapshot:
+    name: world-source/snapshot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Fetch and verify exact World source
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world"
+          rm -rf "$root"
+          git init "$root"
+          git -C "$root" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$root" fetch --no-tags --depth=1 origin "$WORLD_HEAD_SHA"
+          git -C "$root" checkout --detach FETCH_HEAD
+          test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_HEAD_SHA"
+          test "$(git -C "$root" rev-parse HEAD^{tree})" = "$WORLD_HEAD_TREE"
+          test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=all)"
+
+      - name: Build content-addressed source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world"
+          mkdir -p "$GITHUB_WORKSPACE/snapshot"
+          git -C "$root" archive --format=tar --prefix=trillionnium-world-bd1603/ "$WORLD_HEAD_SHA" \
+            | gzip -n -9 > "$GITHUB_WORKSPACE/snapshot/trillionnium-world-bd1603.tar.gz"
+          {
+            printf 'repository=%s\n' "$WORLD_REPOSITORY"
+            printf 'commit=%s\n' "$WORLD_HEAD_SHA"
+            printf 'tree=%s\n' "$WORLD_HEAD_TREE"
+            printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'runner_commit=%s\n' "$GITHUB_SHA"
+            printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'production_authorization=not_granted\n'
+          } > "$GITHUB_WORKSPACE/snapshot/identity.txt"
+          sha256sum "$GITHUB_WORKSPACE/snapshot/trillionnium-world-bd1603.tar.gz" \
+            "$GITHUB_WORKSPACE/snapshot/identity.txt" \
+            > "$GITHUB_WORKSPACE/snapshot/SHA256SUMS"
+          cat "$GITHUB_WORKSPACE/snapshot/identity.txt"
+          cat "$GITHUB_WORKSPACE/snapshot/SHA256SUMS"
+
+      - name: Upload exact source snapshot
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trillionnium-world-source-bd1603-${{ env.WORLD_HEAD_SHA }}
+          path: snapshot/**
+          if-no-files-found: error
+          retention-days: 7
