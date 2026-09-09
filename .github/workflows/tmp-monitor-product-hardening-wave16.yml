@@ -1,0 +1,100 @@
+name: tmp-monitor-product-hardening-wave16
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-monitor-product-hardening-wave16.yml
+
+permissions:
+  checks: read
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  BRANCH: feature/plan-v32-product-hardening-20260909
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  monitor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Wait for hardening branch and PR
+        id: subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=''
+          pr=''
+          for _ in $(seq 1 1080); do
+            head="$(gh api "repos/${REPOSITORY}/branches/${BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            if test -n "$head"; then
+              pr="$(gh pr list --repo "$REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+              test -n "$pr" && break
+            fi
+            sleep 20
+          done
+          test -n "$head"
+          test -n "$pr"
+          printf 'head=%s\npr=%s\n' "$head" "$pr" >> "$GITHUB_OUTPUT"
+
+      - name: Require stable exact-head aggregate
+        shell: bash
+        run: |
+          set -euo pipefail
+          head='${{ steps.subject.outputs.head }}'
+          pr='${{ steps.subject.outputs.pr }}'
+          stable=0
+          for _ in $(seq 1 900); do
+            current="$(gh api "repos/${REPOSITORY}/branches/${BRANCH}" --jq '.commit.sha')"
+            if test "$current" != "$head"; then
+              head="$current"
+              stable=0
+              sleep 20
+              continue
+            fi
+            payload="$(gh api "repos/${REPOSITORY}/commits/${head}/check-runs?per_page=100")"
+            canonical="$(jq -c '
+              reduce .check_runs[] as $run ({};
+                if .[$run.name] == null
+                   or ((.[$run.name].started_at // "") < ($run.started_at // ""))
+                then .[$run.name] = $run else . end)
+              | [.[]]
+            ' <<<"$payload")"
+            total="$(jq 'length' <<<"$canonical")"
+            pending="$(jq '[.[]|select(.status!="completed")]|length' <<<"$canonical")"
+            failed="$(jq '[.[]|select(.status=="completed" and (.conclusion!="success" and .conclusion!="neutral" and .conclusion!="skipped"))]|length' <<<"$canonical")"
+            aggregate="$(jq '[.[]|select(.name=="trillionnium-game-merge-gate" and .status=="completed" and .conclusion=="success")]|length' <<<"$canonical")"
+            if test "$total" -gt 0 && test "$pending" -eq 0 && test "$failed" -eq 0 && test "$aggregate" -gt 0; then
+              stable=$((stable+1))
+            else
+              stable=0
+            fi
+            if test "$failed" -gt 0 && test "$pending" -eq 0; then
+              jq -r '.[]|select(.status=="completed" and (.conclusion!="success" and .conclusion!="neutral" and .conclusion!="skipped"))|"- `\(.name)`: \(.conclusion) — \(.html_url)"' <<<"$canonical" > "$RUNNER_TEMP/failures.md"
+              {
+                printf 'Final hardening head `%s` has terminal failures:\n\n' "$head"
+                cat "$RUNNER_TEMP/failures.md"
+                printf '\nThe PR remains Draft and cannot feed product integration.\n'
+              } > "$RUNNER_TEMP/comment.md"
+              gh pr comment "$pr" --repo "$REPOSITORY" --body-file "$RUNNER_TEMP/comment.md"
+              exit 1
+            fi
+            if test "$stable" -ge 2; then
+              gh pr ready "$pr" --repo "$REPOSITORY"
+              gh pr edit "$pr" --repo "$REPOSITORY" --add-reviewer Tomasrgbsf --add-reviewer Franksudoman
+              gh pr comment "$pr" --repo "$REPOSITORY" --body \
+                "Final product-hardening head \`${head}\` has stable terminal-success aggregate CI and is ready for conflict-free source review only. Real evidence and production claims remain false."
+              gh issue comment 129 --repo "$REPOSITORY" --body \
+                "Final product-hardening head \`${head}\` reached stable aggregate CI and is ready for independent source review. The parent issue remains open."
+              exit 0
+            fi
+            sleep 20
+          done
+          gh pr comment "$pr" --repo "$REPOSITORY" --body \
+            "No stable terminal aggregate was observed before timeout. The final hardening PR remains Draft and unqualified."
+          exit 1
