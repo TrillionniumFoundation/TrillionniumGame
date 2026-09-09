@@ -1,0 +1,47 @@
+name: github-governance-readback-controller-20260909
+
+on:
+  push:
+    branches:
+      - codex/plan-v32-controller-v2-2026-09-09
+    paths:
+      - .github/workflows/github-governance-readback-controller-20260909.yml
+      - tools/compose_github_governance_readback.py
+      - tools/run_github_governance_controller.sh
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: github-governance-readback-controller-20260909
+  cancel-in-progress: true
+
+jobs:
+  apply-capture-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 130
+    env:
+      BASE_BRANCH: codex/denominator-review-packets-closure-2026-09-09
+      TARGET_BRANCH: codex/github-governance-readback-closure-2026-09-09
+    steps:
+      - name: Fetch exact controller source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/controller"
+          git init "$GITHUB_WORKSPACE/controller"
+          git -C "$GITHUB_WORKSPACE/controller" remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE/controller" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$GITHUB_WORKSPACE/controller" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE/controller" rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Attempt authorized hardening and retain fail-closed readback
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/controller/tools/run_github_governance_controller.sh"
