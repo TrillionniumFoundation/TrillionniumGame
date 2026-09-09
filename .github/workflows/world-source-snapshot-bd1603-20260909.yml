@@ -36,33 +36,35 @@ jobs:
           test "$(git -C "$root" rev-parse HEAD^{tree})" = "$WORLD_HEAD_TREE"
           test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=all)"
 
-      - name: Build content-addressed source archive
+      - name: Emit bounded content-addressed development snapshot
         shell: bash
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/world"
-          mkdir -p "$GITHUB_WORKSPACE/snapshot"
-          git -C "$root" archive --format=tar --prefix=trillionnium-world-bd1603/ "$WORLD_HEAD_SHA" \
-            | gzip -n -9 > "$GITHUB_WORKSPACE/snapshot/trillionnium-world-bd1603.tar.gz"
-          {
-            printf 'repository=%s\n' "$WORLD_REPOSITORY"
-            printf 'commit=%s\n' "$WORLD_HEAD_SHA"
-            printf 'tree=%s\n' "$WORLD_HEAD_TREE"
-            printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
-            printf 'runner_commit=%s\n' "$GITHUB_SHA"
-            printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
-            printf 'production_authorization=not_granted\n'
-          } > "$GITHUB_WORKSPACE/snapshot/identity.txt"
-          sha256sum "$GITHUB_WORKSPACE/snapshot/trillionnium-world-bd1603.tar.gz" \
-            "$GITHUB_WORKSPACE/snapshot/identity.txt" \
-            > "$GITHUB_WORKSPACE/snapshot/SHA256SUMS"
-          cat "$GITHUB_WORKSPACE/snapshot/identity.txt"
-          cat "$GITHUB_WORKSPACE/snapshot/SHA256SUMS"
-
-      - name: Upload exact source snapshot
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: trillionnium-world-source-bd1603-${{ env.WORLD_HEAD_SHA }}
-          path: snapshot/**
-          if-no-files-found: error
-          retention-days: 7
+          archive="$RUNNER_TEMP/world-authority-bd1603.tar.gz"
+          git -C "$root" archive --format=tar "$WORLD_HEAD_SHA" \
+            trillionnium/crates/world-authority \
+            deploy/postgres/trnm-world-authority-cutover-v1.sql \
+            docs/modules/world-authority \
+            docs/protocol/trnm-world-http-api-v1.md \
+            docs/protocol/trnm-world-websocket-v1.md \
+            docs/protocol/trnm-world-error-catalog-v1.md \
+            docs/security/trnm-world-service-identity-secrets-v1.md \
+            docs/database/trnm-world-postgres-contract-v1.md \
+            | gzip -n -9 > "$archive"
+          size="$(wc -c < "$archive")"
+          test "$size" -gt 0
+          test "$size" -le 1048576
+          digest="$(sha256sum "$archive" | awk '{print $1}')"
+          printf 'WORLD_SNAPSHOT_REPOSITORY=%s\n' "$WORLD_REPOSITORY"
+          printf 'WORLD_SNAPSHOT_COMMIT=%s\n' "$WORLD_HEAD_SHA"
+          printf 'WORLD_SNAPSHOT_TREE=%s\n' "$WORLD_HEAD_TREE"
+          printf 'WORLD_SNAPSHOT_BYTES=%s\n' "$size"
+          printf 'WORLD_SNAPSHOT_SHA256=%s\n' "$digest"
+          printf 'WORLD_SNAPSHOT_RUNNER_REPOSITORY=%s\n' "$GITHUB_REPOSITORY"
+          printf 'WORLD_SNAPSHOT_RUNNER_COMMIT=%s\n' "$GITHUB_SHA"
+          printf 'WORLD_SNAPSHOT_RUN_ID=%s\n' "$GITHUB_RUN_ID"
+          printf 'WORLD_SNAPSHOT_PRODUCTION_AUTHORIZATION=not_granted\n'
+          printf 'WORLD_SNAPSHOT_BASE64_BEGIN\n'
+          base64 -w 76 "$archive"
+          printf 'WORLD_SNAPSHOT_BASE64_END\n'
