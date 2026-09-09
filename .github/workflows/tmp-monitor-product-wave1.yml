@@ -1,0 +1,96 @@
+name: tmp-monitor-product-wave1
+
+on:
+  push:
+    branches:
+      - ops/product-wave1-carrier-20260909
+    paths:
+      - .github/workflows/tmp-monitor-product-wave1.yml
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  REPOSITORY: TrillionniumFoundation/TrillionniumGame
+  FEATURE_BRANCH: feature/plan-v32-product-wave1-20260909-v3
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  observe-and-route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Wait for published product branch and Draft PR
+        id: subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch_sha=''
+          for _ in $(seq 1 60); do
+            branch_sha="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha' 2>/dev/null || true)"
+            test -n "$branch_sha" && break
+            sleep 30
+          done
+          test -n "$branch_sha"
+          pr_number=''
+          for _ in $(seq 1 20); do
+            pr_number="$(gh pr list --repo "$REPOSITORY" --state open --head "$FEATURE_BRANCH" --json number --jq '.[0].number // empty')"
+            test -n "$pr_number" && break
+            sleep 15
+          done
+          test -n "$pr_number"
+          printf 'head_sha=%s\npr_number=%s\n' "$branch_sha" "$pr_number" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for exact-head aggregate qualification
+        id: checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha='${{ steps.subject.outputs.head_sha }}'
+          pr_number='${{ steps.subject.outputs.pr_number }}'
+          terminal='false'
+          for _ in $(seq 1 120); do
+            current="$(gh api "repos/${REPOSITORY}/branches/${FEATURE_BRANCH}" --jq '.commit.sha')"
+            test "$current" = "$head_sha"
+            payload="$(gh api -H 'Accept: application/vnd.github+json' "repos/${REPOSITORY}/commits/${head_sha}/check-runs?per_page=100")"
+            total="$(jq '.total_count' <<<"$payload")"
+            pending="$(jq '[.check_runs[] | select(.status != "completed")] | length' <<<"$payload")"
+            failed="$(jq '[.check_runs[] | select(.status == "completed" and (.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped"))] | length' <<<"$payload")"
+            aggregate="$(jq '[.check_runs[] | select(.name == "trillionnium-game-merge-gate" and .status == "completed" and .conclusion == "success")] | length' <<<"$payload")"
+            if test "$failed" -gt 0; then
+              jq -r '.check_runs[] | select(.status == "completed" and (.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")) | "- `\(.name)`: \(.conclusion) — \(.html_url)"' <<<"$payload" > /tmp/failed-checks.md
+              {
+                printf 'Exact-head qualification failed for `%s`.\n\n' "$head_sha"
+                cat /tmp/failed-checks.md
+                printf '\nThe PR remains Draft. Deterministic failures require source repair; no status inflation or administrator bypass.\n'
+              } > /tmp/check-comment.md
+              gh pr comment "$pr_number" --repo "$REPOSITORY" --body-file /tmp/check-comment.md
+              exit 1
+            fi
+            if test "$total" -gt 0 && test "$pending" -eq 0 && test "$aggregate" -gt 0; then
+              terminal='true'
+              printf 'total=%s\npending=%s\nfailed=%s\naggregate=%s\n' "$total" "$pending" "$failed" "$aggregate" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            sleep 30
+          done
+          test "$terminal" = 'true'
+
+      - name: Promote only to independent-review readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr_number='${{ steps.subject.outputs.pr_number }}'
+          head_sha='${{ steps.subject.outputs.head_sha }}'
+          gh pr ready "$pr_number" --repo "$REPOSITORY"
+          gh pr edit "$pr_number" --repo "$REPOSITORY" --add-reviewer Tomasrgbsf --add-reviewer Franksudoman
+          gh pr comment "$pr_number" --repo "$REPOSITORY" --body \
+            "Exact-head check collection is terminal with no failed checks and the stable aggregate succeeded for \`${head_sha}\`. The candidate is now ready for independent review only. Complete #137/#138, durable adapters, official-consumer differential, accepted evidence, production and all-gap closure remain false."
+          gh issue comment 137 --repo "$REPOSITORY" --body \
+            "Wave 1 exact-head source candidate \`${head_sha}\` reached aggregate CI success and is ready for independent review. This does not close #137."
+          gh issue comment 138 --repo "$REPOSITORY" --body \
+            "Wave 1 exact-head source candidate \`${head_sha}\` reached aggregate CI success and is ready for independent review. This does not close #138."
