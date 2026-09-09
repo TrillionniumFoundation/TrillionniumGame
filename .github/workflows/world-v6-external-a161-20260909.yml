@@ -35,7 +35,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scope: [truth, source, postgres, package]
+        scope:
+          - truth
+          - source
+          - postgres
+          - package
     services:
       postgres:
         image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
@@ -76,7 +80,7 @@ jobs:
           git -C "$merge_dir" show -s --format='merge_commit=%H%nmerge_tree=%T%nmerge_parents=%P'
 
       - name: Install pinned World toolchain and native dependencies
-        if: matrix.scope != 'truth'
+        if: ${{ matrix.scope != 'truth' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -91,7 +95,7 @@ jobs:
           psql --version
 
       - name: Prepare isolated PostgreSQL databases
-        if: matrix.scope == 'postgres'
+        if: ${{ matrix.scope == 'postgres' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -100,8 +104,6 @@ jobs:
           psql -d postgres -Atqc "select datname from pg_database where datname in ('world_head','world_merge') order by datname"
 
       - name: Qualify exact World head
-        id: head
-        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -113,8 +115,6 @@ jobs:
           bash scripts/run-trnm-world-v6-qualification-v2.sh "${{ matrix.scope }}"
 
       - name: Qualify actual World prospective merge
-        id: merge
-        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -125,56 +125,32 @@ jobs:
           fi
           bash scripts/run-trnm-world-v6-qualification-v2.sh "${{ matrix.scope }}"
 
-      - name: Assemble immutable diagnostic evidence
+      - name: Emit immutable execution identity
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          out="$GITHUB_WORKSPACE/evidence/${{ matrix.scope }}"
-          mkdir -p "$out/head" "$out/merge"
+          printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
+          printf 'world_base_sha=%s\n' "$WORLD_BASE_SHA"
+          printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
+          printf 'world_merge_sha=%s\n' "$WORLD_MERGE_SHA"
+          printf 'scope=%s\n' "${{ matrix.scope }}"
+          printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
+          printf 'runner_commit=%s\n' "$GITHUB_SHA"
+          printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
+          printf 'production_authorization=not_granted\n'
           for tuple in head merge; do
-            source="$RUNNER_TEMP/world-$tuple/run/world-v6-v2/${{ matrix.scope }}"
-            if test -d "$source"; then cp -R "$source/." "$out/$tuple/"; fi
+            root="$RUNNER_TEMP/world-$tuple/run/world-v6-v2/${{ matrix.scope }}"
+            if test -d "$root"; then
+              find "$root" -type f -print0 | sort -z | xargs -0 -r sha256sum
+            fi
           done
-          {
-            printf 'world_repository=%s\n' "$WORLD_REPOSITORY"
-            printf 'world_base_sha=%s\n' "$WORLD_BASE_SHA"
-            printf 'world_head_sha=%s\n' "$WORLD_HEAD_SHA"
-            printf 'world_merge_sha=%s\n' "$WORLD_MERGE_SHA"
-            printf 'scope=%s\n' "${{ matrix.scope }}"
-            printf 'head_outcome=%s\n' "${{ steps.head.outcome }}"
-            printf 'merge_outcome=%s\n' "${{ steps.merge.outcome }}"
-            printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
-            printf 'runner_commit=%s\n' "$GITHUB_SHA"
-            printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
-            printf 'production_authorization=not_granted\n'
-          } > "$out/attestation.txt"
-          find "$out" -type f -print0 | sort -z | xargs -0 sha256sum > "$out/SHA256SUMS"
-
-      - name: Upload diagnostic evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: world-v6-${{ matrix.scope }}-${{ env.WORLD_HEAD_SHA }}-${{ env.WORLD_MERGE_SHA }}-${{ github.run_attempt }}
-          path: evidence/${{ matrix.scope }}/**
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Enforce head and merge success
-        if: always()
-        shell: bash
-        env:
-          HEAD_OUTCOME: ${{ steps.head.outcome }}
-          MERGE_OUTCOME: ${{ steps.merge.outcome }}
-        run: |
-          set -euo pipefail
-          test "$HEAD_OUTCOME" = success
-          test "$MERGE_OUTCOME" = success
 
   required:
     name: world-v6/external-required
     if: always()
-    needs: [qualify]
+    needs:
+      - qualify
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
