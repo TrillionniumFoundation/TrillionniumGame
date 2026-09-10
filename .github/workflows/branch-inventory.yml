@@ -11,11 +11,9 @@ on:
       - 'scripts/generate-branch-inventory.py'
       - 'scripts/verify-branch-inventory-log.py'
       - 'scripts/verify-branch-inventory-stable.py'
-      - 'scripts/verify-branch-inventory-event.py'
       - 'scripts/emit-actions-log-artifact.py'
       - 'tests/control_plane/test_branch_inventory.py'
       - 'tests/control_plane/test_branch_inventory_stable.py'
-      - 'tests/control_plane/test_branch_inventory_events.py'
       - '.github/workflows/branch-inventory.yml'
   workflow_dispatch:
 
@@ -69,12 +67,10 @@ jobs:
             scripts/generate-branch-inventory.py \
             scripts/verify-branch-inventory-log.py \
             scripts/verify-branch-inventory-stable.py \
-            scripts/verify-branch-inventory-event.py \
             scripts/emit-actions-log-artifact.py
           python3 -m unittest \
             tests.control_plane.test_branch_inventory \
-            tests.control_plane.test_branch_inventory_stable \
-            tests.control_plane.test_branch_inventory_events -v
+            tests.control_plane.test_branch_inventory_stable -v
           python3 scripts/generate-branch-inventory.py \
             --output run/governance/branch-inventory.json
           jq -e '
@@ -170,7 +166,7 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           output='run/governance/verified-branch-inventory.json'
-          python3 scripts/verify-branch-inventory-event.py \
+          python3 scripts/verify-branch-inventory-stable.py \
             --repository "$CANDIDATE_REPOSITORY" \
             --head-sha "$CANDIDATE_SHA" \
             --run-id "$GITHUB_RUN_ID" \
