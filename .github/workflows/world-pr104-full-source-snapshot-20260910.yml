@@ -1,4 +1,4 @@
-name: world-pr104-full-source-snapshot-v3
+name: world-pr104-full-source-snapshot-v4
 
 on:
   pull_request:
@@ -8,25 +8,28 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr104-full-source-snapshot-v3
+  group: world-pr104-full-source-snapshot-v4
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_SOURCE_SHA: '33339b28a6f53668672d1797109da6c7bf57db49'
+  ARTIFACT_ACTION_SHA: '9f60c03eb542ac208c11ed2c4dc484ddbc1c28eb'
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
   snapshot:
-    name: world-pr104/full-source-snapshot-v3
+    name: world-pr104/full-source-snapshot-v4
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Fetch immutable World source
+      - name: Fetch immutable World source and verified local artifact action
         shell: bash
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
+          action_source="$RUNNER_TEMP/artifact-action"
+
           git init "$world"
           git -C "$world" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
           git -C "$world" fetch --no-tags --depth=1 origin "$WORLD_SOURCE_SHA"
@@ -34,6 +37,17 @@ jobs:
           test "$(git -C "$world" rev-parse HEAD)" = "$WORLD_SOURCE_SHA"
           test "$(git -C "$world" rev-parse 'HEAD^{tree}')" = "$(git -C "$world" write-tree)"
           test -z "$(git -C "$world" status --porcelain=v1)"
+
+          git init "$action_source"
+          git -C "$action_source" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$action_source" fetch --no-tags --depth=1 origin "$ARTIFACT_ACTION_SHA"
+          git -C "$action_source" checkout --detach FETCH_HEAD
+          test "$(git -C "$action_source" rev-parse HEAD)" = "$ARTIFACT_ACTION_SHA"
+          test -s "$action_source/.github/actions/immutable-upload-artifact/action.yml"
+          test -s "$action_source/.github/actions/immutable-upload-artifact/main.js"
+          mkdir -p "$GITHUB_WORKSPACE/.github/actions"
+          cp -R "$action_source/.github/actions/immutable-upload-artifact" \
+            "$GITHUB_WORKSPACE/.github/actions/immutable-upload-artifact"
 
       - name: Build deterministic complete source snapshot
         shell: bash
@@ -86,7 +100,7 @@ jobs:
 
       - name: Retain complete source snapshot
         id: retained-world-source
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: ./.github/actions/immutable-upload-artifact
         with:
           name: world-pr104-source-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
