@@ -1,4 +1,4 @@
-name: world-pr104-read-only-source-packet
+name: world-pr104-campaign-test-module-tranche
 
 on:
   pull_request:
@@ -6,69 +6,210 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: world-pr104-campaign-test-module-tranche
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_SOURCE_SHA: '5e83f616c1de0fa54640df1e1ef7b15e3266204b'
+  RUSTUP_TOOLCHAIN: '1.98.1'
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+  RUST_BACKTRACE: '1'
+  RUST_TEST_THREADS: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+
 jobs:
-  packet:
-    name: world-pr104/read-only-source-packet
+  qualify:
+    name: world-pr104/campaign-test-module-tranche
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 90
     steps:
-      - name: Export exact World PR 104 migration inputs to the immutable log
+      - name: Fetch immutable World source
         shell: bash
         run: |
           set -euo pipefail
-          api='https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/pulls/104'
-          pull="$RUNNER_TEMP/world-pr104.json"
-          root="$RUNNER_TEMP/world-pr104"
-          curl --fail --silent --show-error --location \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "$api" > "$pull"
-          base="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["base"]["sha"])' "$pull")"
-          head="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["head"]["sha"])' "$pull")"
-          merge="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["merge_commit_sha"])' "$pull")"
-          state="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$pull")"
-          draft="$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["draft"]).lower())' "$pull")"
-          test "$state" = open
-          test "$draft" = true
-          test -n "$base"
-          test -n "$head"
-          test -n "$merge"
-          rm -rf "$root"
+          root="$RUNNER_TEMP/world"
           git init "$root"
-          git -C "$root" remote add origin 'https://github.com/TrillionniumFoundation/Trillionnium-World.git'
-          git -C "$root" fetch --no-tags --depth=1 origin "$head"
+          git -C "$root" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$root" fetch --no-tags --depth=2 origin "$WORLD_SOURCE_SHA"
           git -C "$root" checkout --detach FETCH_HEAD
-          test "$(git -C "$root" rev-parse HEAD)" = "$head"
-          tree="$(git -C "$root" rev-parse 'HEAD^{tree}')"
-          printf 'WORLD_PR104_PACKET_IDENTITY base=%s head=%s tree=%s merge=%s\n' "$base" "$head" "$tree" "$merge"
-          files=(
-            'trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs'
-            'trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_03.rs'
-            'trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json'
-            'trillionnium/crates/trnm-game-server/src/lib_parts/tests/part_01.rs'
-            'trillionnium/crates/trnm-game-server/src/lib_parts/tests/game_server_tests_04.rs'
-            'trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json'
-            'trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/part_01.rs'
-            'trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/rts_tests_03.rs'
-            'trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json'
-            'scripts/contracts/trnm-world-include-migrations-v1.json'
+          test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_SOURCE_SHA"
+          printf 'WORLD_CAMPAIGN_TRANCHE_SOURCE=%s\n' "$WORLD_SOURCE_SHA"
+
+      - name: Install pinned Rust and native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.98.1
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.list.save
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libudev-dev libx11-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev pkg-config
+          rustc --version --verbose
+          cargo --version --verbose
+          rustfmt --version
+
+      - name: Convert campaign test bodies to explicit modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/world" <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          tests = root / "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests"
+          wrapper = tests / "part_01.rs"
+          expected = '''use super::*;
+          use tempfile::tempdir;
+
+          include!(concat!(
+              env!("CARGO_MANIFEST_DIR"),
+              "/src/lib_parts/tests/campaign_tests_01.rs"
+          ));
+          include!(concat!(
+              env!("CARGO_MANIFEST_DIR"),
+              "/src/lib_parts/tests/campaign_tests_02.rs"
+          ));
+          include!(concat!(
+              env!("CARGO_MANIFEST_DIR"),
+              "/src/lib_parts/tests/campaign_tests_03.rs"
+          ));
+          '''
+          assert wrapper.read_text(encoding="utf-8") == expected, "campaign test wrapper drift"
+          wrapper.write_text(
+              '''use super::*;
+          use tempfile::tempdir;
+
+          #[path = "campaign_tests_01.rs"]
+          mod campaign_tests_01;
+          #[allow(unused_imports)]
+          use campaign_tests_01::*;
+
+          #[path = "campaign_tests_02.rs"]
+          mod campaign_tests_02;
+          #[allow(unused_imports)]
+          use campaign_tests_02::*;
+
+          #[path = "campaign_tests_03.rs"]
+          mod campaign_tests_03;
+          #[allow(unused_imports)]
+          use campaign_tests_03::*;
+          ''',
+              encoding="utf-8",
           )
-          for relative in "${files[@]}"; do
-            file="$root/$relative"
-            test -f "$file"
-            bytes="$(wc -c < "$file")"
-            digest="$(sha256sum "$file" | cut -d' ' -f1)"
-            printf 'WORLD_PACKET_FILE_BEGIN path=%s bytes=%s sha256=%s\n' "$relative" "$bytes" "$digest"
-            base64 -w0 "$file"
-            printf '\nWORLD_PACKET_FILE_END path=%s\n' "$relative"
-          done
-          curl --fail --silent --show-error --location \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "$api" > "$RUNNER_TEMP/world-pr104-finish.json"
-          finish_head="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["head"]["sha"])' "$RUNNER_TEMP/world-pr104-finish.json")"
-          finish_merge="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["merge_commit_sha"])' "$RUNNER_TEMP/world-pr104-finish.json")"
-          test "$finish_head" = "$head"
-          test "$finish_merge" = "$merge"
-          printf 'WORLD_PR104_READ_ONLY_SOURCE_PACKET=PASS\n'
-          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+
+          declaration = re.compile(
+              r"^(    )(?:(pub(?:\([^)]*\))?\s+))?((?:async\s+)?fn|struct|enum|const|static|type|trait)\s+",
+              re.MULTILINE,
+          )
+          for index in range(1, 4):
+              path = tests / f"campaign_tests_{index:02d}.rs"
+              source = path.read_text(encoding="utf-8")
+              assert not source.startswith("use super::*;"), path
+              source = declaration.sub(lambda match: f"{match.group(1)}pub(super) {match.group(3)} ", source)
+              path.write_text("use super::*;\n\n" + source, encoding="utf-8")
+
+          # rustfmt may alter wrapper/body bytes; manifest is refreshed after formatting.
+          manifest_path = root / "trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json"
+          ledger_path = root / "scripts/contracts/trnm-world-include-migrations-v1.json"
+          ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+          existing = {(item["path"], item["expression"]) for item in ledger["completed"]}
+          for index in range(1, 4):
+              expression = f'concat!(env!("CARGO_MANIFEST_DIR"),"/src/lib_parts/tests/campaign_tests_{index:02d}.rs")'
+              key = ("trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs", expression)
+              assert key not in existing
+              ledger["completed"].append({
+                  "path": key[0],
+                  "expression": expression,
+                  "replacement_module": f"campaign_tests_{index:02d}",
+                  "required_fragments": [
+                      f'#[path = "campaign_tests_{index:02d}.rs"]',
+                      f"mod campaign_tests_{index:02d};",
+                  ],
+                  "completed_commit": "5e83f616c1de0fa54640df1e1ef7b15e3266204b",
+              })
+          ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
+          print("WORLD_CAMPAIGN_TEST_MODULE_TRANSFORM=PASS")
+          PY
+          cd "$RUNNER_TEMP/world/trillionnium"
+          cargo fmt --all
+          python3 - "$RUNNER_TEMP/world" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          manifest_path = root / "trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          base = manifest_path.parent.parent
+          changed = {
+              "lib_parts/tests/part_01.rs",
+              "lib_parts/tests/campaign_tests_01.rs",
+              "lib_parts/tests/campaign_tests_02.rs",
+              "lib_parts/tests/campaign_tests_03.rs",
+          }
+          seen = set()
+          for field in ("parts", "nested_test_parts"):
+              for record in manifest[field]:
+                  if record["path"] in changed:
+                      payload = (base / record["path"]).read_bytes()
+                      record["bytes"] = len(payload)
+                      record["sha256"] = hashlib.sha256(payload).hexdigest()
+                      seen.add(record["path"])
+          assert seen == changed, (seen, changed)
+          manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          print("WORLD_CAMPAIGN_TEST_MANIFEST_REFRESH=PASS")
+          PY
+
+      - name: Qualify transformed source
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world"
+          cd "$root"
+          cargo fmt --manifest-path trillionnium/Cargo.toml --all --check
+          cargo test --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core --all-targets
+          cargo clippy --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core --all-targets -- -D warnings
+          python3 scripts/check-trnm-world-include-boundaries.py
+          bash scripts/run-trnm-world-v6-qualification-v2.sh source
+          printf 'WORLD_CAMPAIGN_TEST_MODULE_QUALIFICATION=PASS\n'
+
+      - name: Emit content-addressed candidate blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/world" <<'PY'
+          import base64
+          import hashlib
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          paths = [
+              "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs",
+              "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_01.rs",
+              "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_02.rs",
+              "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_03.rs",
+              "trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json",
+          ]
+          chunk_size = 2400
+          for relative in paths:
+              payload = (root / relative).read_bytes()
+              encoded = base64.b64encode(payload).decode("ascii")
+              chunks = [encoded[offset:offset + chunk_size] for offset in range(0, len(encoded), chunk_size)]
+              print(f"TRNM_BLOB_BEGIN path={relative} bytes={len(payload)} sha256={hashlib.sha256(payload).hexdigest()} chunks={len(chunks)}")
+              for index, chunk in enumerate(chunks):
+                  print(f"TRNM_BLOB_CHUNK path={relative} index={index} data={chunk}")
+              print(f"TRNM_BLOB_END path={relative}")
+          print("PRODUCTION_AUTHORIZATION=not_granted")
+          PY
