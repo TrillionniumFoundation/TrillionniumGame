@@ -1,0 +1,309 @@
+name: world-pr104-rts-test-module-tranche-v1
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-pr104-rts-test-module-tranche-v1
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_SOURCE_SHA: '7d6ae95ed17f7dcc267ce3f9bfef508c89cde4bd'
+  GAME_UPLOADER_SHA: '425ee015d53800f3e2c2936f97ded9cdbacf7f14'
+  RUSTUP_TOOLCHAIN: '1.98.1'
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+  RUST_BACKTRACE: '1'
+  RUST_TEST_THREADS: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  qualify:
+    name: world-pr104/rts-test-module-tranche-v1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Fetch immutable World source and pinned artifact uploader
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world"
+          uploader="$RUNNER_TEMP/game-uploader"
+          git init "$root"
+          git -C "$root" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$root" fetch --no-tags --depth=2 origin "$WORLD_SOURCE_SHA"
+          git -C "$root" checkout --detach FETCH_HEAD
+          test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_SOURCE_SHA"
+          git init "$uploader"
+          git -C "$uploader" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$uploader" fetch --no-tags --depth=1 origin "$GAME_UPLOADER_SHA"
+          git -C "$uploader" checkout --detach FETCH_HEAD
+          test "$(git -C "$uploader" rev-parse HEAD)" = "$GAME_UPLOADER_SHA"
+          test -s "$uploader/scripts/upload-actions-artifact.py"
+
+      - name: Install pinned Rust and native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.98.1
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.list.save
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libudev-dev libx11-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev pkg-config
+          test "$(rustc --version | awk '{print $2}')" = '1.98.1'
+
+      - name: Apply active-closure P0 repair and RTS test-module migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/world" "$WORLD_SOURCE_SHA" <<'PY'
+          from __future__ import annotations
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          source_sha = sys.argv[2]
+
+          closure = root / "scripts/archive/check-trnm-world-active-closure-v6-20260908-base.py"
+          text = closure.read_text(encoding="utf-8")
+          old = 'parser.add_argument("root", nargs="?", type=Path, default=Path(__file__).resolve().parents[1])'
+          new = 'parser.add_argument("root", nargs="?", type=Path, default=Path(__file__).resolve().parents[2])'
+          assert text.count(old) == 1, "active-closure root anchor drift"
+          closure.write_text(text.replace(old, new), encoding="utf-8")
+
+          p0 = root / "trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
+          text = p0.read_text(encoding="utf-8")
+          old = ".rfind(|character| matches!(character, ';' | '{' | '}'))"
+          new = ".rfind([';', '{', '}'])"
+          assert text.count(old) == 1, "P0 lint repair anchor drift"
+          p0.write_text(text.replace(old, new), encoding="utf-8")
+
+          tests = root / "trillionnium/crates/trnm-rts-sim/src/lib_parts/tests"
+          wrapper = tests / "part_01.rs"
+          expected = '''use super::*;
+          use std::{fs, path::PathBuf};
+          use tempfile::tempdir;
+          use trnm_campaign_core::{
+              BattleMapNodeV1, BattleMapSeedV1, CampaignMission, CampaignRoom, CampaignSaveV1,
+              MissionDefinition, QuestState,
+          };
+          use trnm_rts_protocol::{RtsOrderSource, RtsTile};
+
+          include!(concat!(
+              env!("CARGO_MANIFEST_DIR"),
+              "/src/lib_parts/tests/rts_tests_01.rs"
+          ));
+          include!(concat!(
+              env!("CARGO_MANIFEST_DIR"),
+              "/src/lib_parts/tests/rts_tests_02.rs"
+          ));
+          include!(concat!(
+              env!("CARGO_MANIFEST_DIR"),
+              "/src/lib_parts/tests/rts_tests_03.rs"
+          ));
+          '''
+          assert wrapper.read_text(encoding="utf-8") == expected, "RTS test wrapper drift"
+          wrapper.write_text(
+              '''use super::*;
+          use std::{fs, path::PathBuf};
+          use tempfile::tempdir;
+          use trnm_campaign_core::{
+              BattleMapNodeV1, BattleMapSeedV1, CampaignMission, CampaignRoom, CampaignSaveV1,
+              MissionDefinition, QuestState,
+          };
+          use trnm_rts_protocol::{RtsOrderSource, RtsTile};
+
+          #[path = "rts_tests_01.rs"]
+          mod rts_tests_01;
+          #[allow(unused_imports)]
+          use rts_tests_01::*;
+
+          #[path = "rts_tests_02.rs"]
+          mod rts_tests_02;
+          #[allow(unused_imports)]
+          use rts_tests_02::*;
+
+          #[path = "rts_tests_03.rs"]
+          mod rts_tests_03;
+          #[allow(unused_imports)]
+          use rts_tests_03::*;
+          ''',
+              encoding="utf-8",
+          )
+
+          declaration = re.compile(
+              r"^(    )(?:(pub(?:\([^)]*\))?\s+))?((?:async\s+)?fn|struct|enum|const|static|type|trait)\s+",
+              re.MULTILINE,
+          )
+          for index in range(1, 4):
+              path = tests / f"rts_tests_{index:02d}.rs"
+              source = path.read_text(encoding="utf-8")
+              assert not source.startswith("use super::*;"), path
+              source = declaration.sub(
+                  lambda match: f"{match.group(1)}pub(super) {match.group(3)} ",
+                  source,
+              )
+              path.write_text("use super::*;\n\n" + source, encoding="utf-8")
+
+          ledger_path = root / "scripts/contracts/trnm-world-include-migrations-v1.json"
+          ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+          existing = {(item["path"], item["expression"]) for item in ledger["completed"]}
+          for index in range(1, 4):
+              expression = f'concat!(env!("CARGO_MANIFEST_DIR"),"/src/lib_parts/tests/rts_tests_{index:02d}.rs")'
+              key = (
+                  "trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/part_01.rs",
+                  expression,
+              )
+              assert key not in existing
+              ledger["completed"].append({
+                  "path": key[0],
+                  "expression": expression,
+                  "replacement_module": f"rts_tests_{index:02d}",
+                  "required_fragments": [
+                      f'#[path = "rts_tests_{index:02d}.rs"]',
+                      f"mod rts_tests_{index:02d};",
+                  ],
+                  "completed_commit": source_sha,
+              })
+          ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
+          PY
+
+          cd "$RUNNER_TEMP/world/trillionnium"
+          cargo fmt --all
+
+          python3 - "$RUNNER_TEMP/world" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          manifest_path = root / "trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          base = manifest_path.parent.parent
+          changed = {
+              "lib_parts/tests/part_01.rs",
+              "lib_parts/tests/rts_tests_01.rs",
+              "lib_parts/tests/rts_tests_02.rs",
+              "lib_parts/tests/rts_tests_03.rs",
+          }
+          seen = set()
+          for field in ("parts", "nested_test_parts"):
+              for record in manifest[field]:
+                  if record["path"] in changed:
+                      payload = (base / record["path"]).read_bytes()
+                      record["bytes"] = len(payload)
+                      record["sha256"] = hashlib.sha256(payload).hexdigest()
+                      seen.add(record["path"])
+          assert seen == changed, (seen, changed)
+          manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          PY
+
+          cd "$RUNNER_TEMP/world"
+          git config user.name "World read-only qualification"
+          git config user.email "world-read-only-qualification@invalid"
+          git add \
+            scripts/archive/check-trnm-world-active-closure-v6-20260908-base.py \
+            scripts/contracts/trnm-world-include-migrations-v1.json \
+            trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs \
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/part_01.rs \
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/rts_tests_01.rs \
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/rts_tests_02.rs \
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/rts_tests_03.rs \
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json
+          GIT_AUTHOR_DATE='2026-09-10T00:00:00Z' \
+          GIT_COMMITTER_DATE='2026-09-10T00:00:00Z' \
+            git commit -m "test(world): qualify RTS test modules and active closure root"
+          test -z "$(git status --porcelain=v1)"
+
+      - name: Qualify transformed exact source and truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world"
+          cd "$root"
+          cargo fmt --manifest-path trillionnium/Cargo.toml --all --check
+          cargo test --manifest-path trillionnium/Cargo.toml -p trnm-rts-sim --all-targets --locked
+          cargo clippy --manifest-path trillionnium/Cargo.toml -p trnm-rts-sim --all-targets --locked -- -D warnings
+          python3 scripts/check-trnm-world-include-boundaries.py
+          bash scripts/run-trnm-world-v6-qualification-v2.sh truth
+          bash scripts/run-trnm-world-v6-qualification-v2.sh source
+          test -z "$(git status --porcelain=v1)"
+          printf 'WORLD_RTS_TEST_MODULE_QUALIFICATION=PASS\n'
+
+      - name: Build deterministic transformed-source artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world"
+          packet="$root/run/world-rts-test-module-v1"
+          archive="$RUNNER_TEMP/world-rts-test-module-v1.tar.gz"
+          mkdir -p "$packet"
+          paths=(
+            scripts/archive/check-trnm-world-active-closure-v6-20260908-base.py
+            scripts/contracts/trnm-world-include-migrations-v1.json
+            trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/part_01.rs
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/rts_tests_01.rs
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/rts_tests_02.rs
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/rts_tests_03.rs
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json
+          )
+          git -C "$root" diff --binary "$WORLD_SOURCE_SHA..HEAD" -- "${paths[@]}" > "$packet/candidate.patch"
+          test -s "$packet/candidate.patch"
+          {
+            printf 'repository=%s\n' "$WORLD_REPOSITORY"
+            printf 'source=%s\n' "$WORLD_SOURCE_SHA"
+            printf 'candidate_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
+            printf 'candidate_tree=%s\n' "$(git -C "$root" rev-parse 'HEAD^{tree}')"
+            printf 'rustc=%s\n' "$(rustc --version)"
+            printf 'production_authorization=not_granted\n'
+          } > "$packet/identity.txt"
+          (
+            cd "$root"
+            sha256sum "${paths[@]}" run/world-rts-test-module-v1/candidate.patch \
+              run/world-rts-test-module-v1/identity.txt > run/world-rts-test-module-v1/SHA256SUMS
+          )
+          tar --sort=name --format=ustar --mtime='UTC 2026-09-10' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf "$archive" -C "$root" \
+            "${paths[@]}" \
+            run/world-rts-test-module-v1/candidate.patch \
+            run/world-rts-test-module-v1/identity.txt \
+            run/world-rts-test-module-v1/SHA256SUMS
+          test -s "$archive"
+          sha256sum "$archive"
+
+      - name: Retain transformed-source artifact
+        id: retained-world-rts-tranche
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/game-uploader/scripts/upload-actions-artifact.py" \
+            "world-rts-test-module-v1-${WORLD_SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "$RUNNER_TEMP/world-rts-test-module-v1.tar.gz" \
+            --mime-type application/gzip
+
+      - name: Emit retained artifact identity
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.retained-world-rts-tranche.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.retained-world-rts-tranche.outputs.sha256 }}
+          ARTIFACT_SIZE: ${{ steps.retained-world-rts-tranche.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_ID"
+          test -n "$ARTIFACT_SHA256"
+          test -n "$ARTIFACT_SIZE"
+          printf 'WORLD_RTS_TRANCHE_ARTIFACT_ID=%s\n' "$ARTIFACT_ID"
+          printf 'WORLD_RTS_TRANCHE_ARTIFACT_SHA256=%s\n' "$ARTIFACT_SHA256"
+          printf 'WORLD_RTS_TRANCHE_ARTIFACT_SIZE=%s\n' "$ARTIFACT_SIZE"
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
