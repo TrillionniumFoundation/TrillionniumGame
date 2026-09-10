@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const UPSTREAM_REPOSITORY = 'https://github.com/actions/upload-artifact.git';
 const UPSTREAM_COMMIT = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a';
+const UPSTREAM_ENTRYPOINT = 'dist/upload/index.js';
 
 function fail(message) {
   process.stderr.write(`immutable-upload-artifact: ${message}\n`);
@@ -53,10 +54,17 @@ if (observed !== UPSTREAM_COMMIT) {
   fail(`upstream identity mismatch: expected ${UPSTREAM_COMMIT}, observed ${observed}`);
 }
 
-const entrypoint = path.join(checkout, 'dist', 'index.js');
+const entrypoint = path.join(checkout, ...UPSTREAM_ENTRYPOINT.split('/'));
 const actionContract = path.join(checkout, 'action.yml');
-if (!fs.statSync(entrypoint).isFile() || !fs.statSync(actionContract).isFile()) {
-  fail('verified upstream commit lacks the expected action entrypoint or contract');
+if (!fs.existsSync(entrypoint) || !fs.statSync(entrypoint).isFile()) {
+  fail(`verified upstream commit lacks ${UPSTREAM_ENTRYPOINT}`);
+}
+if (!fs.existsSync(actionContract) || !fs.statSync(actionContract).isFile()) {
+  fail('verified upstream commit lacks action.yml');
+}
+const contract = fs.readFileSync(actionContract, 'utf8');
+if (!contract.includes(`main: '${UPSTREAM_ENTRYPOINT}'`)) {
+  fail('verified upstream action contract does not bind the expected entrypoint');
 }
 
 const environment = {
