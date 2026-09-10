@@ -1,7 +1,7 @@
 repository=TrillionniumFoundation/Trillionnium-World
 pull_request=115
-head=21f1ee16bfe85d7ad4e4ee3d362781326139aac6
-prospective_merge=d31308d0453a5e6ad6efe7f1a73d70eab0fb7422
-reason=validate the exact transition protocol package alias and hostile fixture after component-catalog failure
+head=e4a7ea15230872c85d3dc420ea6d0b853a90977b
+prospective_merge=40575af5db46c8005563a653239132ed2fa892ca
+reason=bind legacy-platform-workspace catalogue identity to the existing executable product-boundary gate
 workflow_tuple_binding=dynamic_at_job_start
 production_authorization=not_granted
