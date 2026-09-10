@@ -1,0 +1,382 @@
+name: tmp-identity-auth-replay-fix
+
+on:
+  push:
+    branches:
+      - ops/identity-auth-replay-fix-20260910
+    paths:
+      - .github/workflows/tmp-identity-auth-replay-fix.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: identity-auth-replay-fix-20260910
+  cancel-in-progress: false
+
+jobs:
+  patch-test-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      TARGET_BRANCH: feature/plan-v32-identity-core-20260909
+      EXPECTED_HEAD: 9f8b0083c78c6336f5f66b943d761a1976fc2d78
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch exact target head without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$EXPECTED_HEAD"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$EXPECTED_HEAD"
+
+      - name: Patch authentication replay authority and regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path("crates/trnm-identity-core/src/lib.rs")
+          source = source_path.read_text(encoding="utf-8")
+          old = '''    pub fn authenticate(
+              &mut self,
+              command: CommandId,
+              fingerprint: Fingerprint,
+              provider: &ProviderIdentity,
+          ) -> Result<CommandReceipt, IdentityError> {
+              if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                  return Ok(receipt);
+              }
+              self.ensure_receipt_capacity()?;
+              let account = self.provider_owner.get(provider).copied().ok_or_else(|| {
+                  IdentityError::new(IdentityErrorCode::Unauthenticated, "identity_unknown")
+              })?;
+              let record = self.accounts.get(&account).ok_or_else(invariant_error)?;
+              if record.status != AccountStatus::Active {
+                  return Err(IdentityError::new(
+                      IdentityErrorCode::PermissionDenied,
+                      "account_not_active",
+                  ));
+              }
+              let receipt = CommandReceipt {
+                  command,
+                  fingerprint,
+                  account,
+                  revision: record.revision,
+                  outcome: ReceiptOutcome::Authenticated,
+              };
+              let mut candidate = self.clone();
+              candidate.receipts.insert(command, receipt);
+              candidate.validate_invariants()?;
+              *self = candidate;
+              Ok(receipt)
+          }
+          '''
+          new = '''    pub fn authenticate(
+              &mut self,
+              command: CommandId,
+              fingerprint: Fingerprint,
+              provider: &ProviderIdentity,
+          ) -> Result<CommandReceipt, IdentityError> {
+              if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+                  if receipt.outcome != ReceiptOutcome::Authenticated {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::Conflict,
+                          "command_operation_conflict",
+                      ));
+                  }
+                  let account = self.provider_owner.get(provider).copied().ok_or_else(|| {
+                      IdentityError::new(IdentityErrorCode::Unauthenticated, "identity_unknown")
+                  })?;
+                  if account != receipt.account {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::Unauthenticated,
+                          "identity_binding_changed",
+                      ));
+                  }
+                  let record = self.accounts.get(&account).ok_or_else(invariant_error)?;
+                  if record.status != AccountStatus::Active {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::PermissionDenied,
+                          "account_not_active",
+                      ));
+                  }
+                  if record.revision != receipt.revision {
+                      return Err(IdentityError::new(
+                          IdentityErrorCode::Conflict,
+                          "authentication_state_changed",
+                      ));
+                  }
+                  return Ok(receipt);
+              }
+              self.ensure_receipt_capacity()?;
+              let account = self.provider_owner.get(provider).copied().ok_or_else(|| {
+                  IdentityError::new(IdentityErrorCode::Unauthenticated, "identity_unknown")
+              })?;
+              let record = self.accounts.get(&account).ok_or_else(invariant_error)?;
+              if record.status != AccountStatus::Active {
+                  return Err(IdentityError::new(
+                      IdentityErrorCode::PermissionDenied,
+                      "account_not_active",
+                  ));
+              }
+              let receipt = CommandReceipt {
+                  command,
+                  fingerprint,
+                  account,
+                  revision: record.revision,
+                  outcome: ReceiptOutcome::Authenticated,
+              };
+              let mut candidate = self.clone();
+              candidate.receipts.insert(command, receipt);
+              candidate.validate_invariants()?;
+              *self = candidate;
+              Ok(receipt)
+          }
+          '''
+          if source.count(old) != 1:
+              raise SystemExit("authenticate source contract changed; refusing ambiguous patch")
+          source = source.replace(old, new, 1)
+
+          marker = '''    #[test]
+              fn revision_overflow_fails_before_mutation() {
+          '''
+          tests = '''    #[test]
+              fn authentication_exact_replay_requires_unchanged_active_authority() {
+                  let provider = identity(IdentityProvider::Device, "device-auth-replay");
+                  let mut registry = registry(4, 4, 32);
+                  create(&mut registry, 1, provider.clone());
+                  let receipt = registry
+                      .authenticate(command(2), fingerprint(2), &provider)
+                      .unwrap();
+                  let snapshot = registry.clone();
+                  let replay = registry
+                      .authenticate(command(2), fingerprint(2), &provider)
+                      .unwrap();
+                  assert_eq!(receipt, replay);
+                  assert_eq!(snapshot, registry);
+
+                  registry
+                      .update_profile(
+                          command(3),
+                          fingerprint(3),
+                          account(1),
+                          1,
+                          None,
+                          Some(DisplayName::new("Changed").unwrap()),
+                      )
+                      .unwrap();
+                  let changed = registry.clone();
+                  let error = registry
+                      .authenticate(command(2), fingerprint(2), &provider)
+                      .unwrap_err();
+                  assert_eq!(error.code(), IdentityErrorCode::Conflict);
+                  assert_eq!(error.reason(), "authentication_state_changed");
+                  assert_eq!(changed, registry);
+              }
+
+              #[test]
+              fn authentication_replay_after_disabled_or_banned_is_denied_atomically() {
+                  for (index, target) in [AccountStatus::Disabled, AccountStatus::Banned]
+                      .into_iter()
+                      .enumerate()
+                  {
+                      let provider = identity(
+                          IdentityProvider::Facebook,
+                          &format!("provider-status-{index}"),
+                      );
+                      let mut registry = registry(4, 4, 32);
+                      create(&mut registry, 1, provider.clone());
+                      registry
+                          .authenticate(command(2), fingerprint(2), &provider)
+                          .unwrap();
+                      registry
+                          .set_status(command(3), fingerprint(3), account(1), 1, target)
+                          .unwrap();
+                      let snapshot = registry.clone();
+                      let error = registry
+                          .authenticate(command(2), fingerprint(2), &provider)
+                          .unwrap_err();
+                      assert_eq!(error.code(), IdentityErrorCode::PermissionDenied);
+                      assert_eq!(error.reason(), "account_not_active");
+                      assert_eq!(snapshot, registry);
+                  }
+              }
+
+              #[test]
+              fn authentication_replay_after_reactivation_remains_stale() {
+                  let provider = identity(IdentityProvider::Google, "provider-reactivated");
+                  let mut registry = registry(4, 4, 32);
+                  create(&mut registry, 1, provider.clone());
+                  registry
+                      .authenticate(command(2), fingerprint(2), &provider)
+                      .unwrap();
+                  registry
+                      .set_status(
+                          command(3),
+                          fingerprint(3),
+                          account(1),
+                          1,
+                          AccountStatus::Disabled,
+                      )
+                      .unwrap();
+                  registry
+                      .set_status(
+                          command(4),
+                          fingerprint(4),
+                          account(1),
+                          2,
+                          AccountStatus::Active,
+                      )
+                      .unwrap();
+                  let snapshot = registry.clone();
+                  let error = registry
+                      .authenticate(command(2), fingerprint(2), &provider)
+                      .unwrap_err();
+                  assert_eq!(error.code(), IdentityErrorCode::Conflict);
+                  assert_eq!(error.reason(), "authentication_state_changed");
+                  assert_eq!(snapshot, registry);
+              }
+
+              #[test]
+              fn authentication_replay_after_deletion_is_denied_atomically() {
+                  let provider = identity(IdentityProvider::Steam, "provider-deleted");
+                  let mut registry = registry(4, 4, 32);
+                  create(&mut registry, 1, provider.clone());
+                  registry
+                      .authenticate(command(2), fingerprint(2), &provider)
+                      .unwrap();
+                  registry
+                      .delete_account(command(3), fingerprint(3), account(1), 1)
+                      .unwrap();
+                  let snapshot = registry.clone();
+                  let error = registry
+                      .authenticate(command(2), fingerprint(2), &provider)
+                      .unwrap_err();
+                  assert_eq!(error.code(), IdentityErrorCode::Unauthenticated);
+                  assert_eq!(error.reason(), "identity_unknown");
+                  assert_eq!(snapshot, registry);
+              }
+
+              #[test]
+              fn authentication_replay_after_unlink_or_rebind_is_denied_atomically() {
+                  let provider = identity(IdentityProvider::Device, "provider-movable");
+                  let fallback = identity(IdentityProvider::Email, "fallback@example.invalid");
+                  let mut registry = registry(8, 4, 64);
+                  create(&mut registry, 1, provider.clone());
+                  registry
+                      .link_provider(command(2), fingerprint(2), account(1), 1, fallback)
+                      .unwrap();
+                  registry
+                      .authenticate(command(3), fingerprint(3), &provider)
+                      .unwrap();
+                  registry
+                      .unlink_provider(command(4), fingerprint(4), account(1), 2, &provider)
+                      .unwrap();
+                  let unlinked = registry.clone();
+                  let error = registry
+                      .authenticate(command(3), fingerprint(3), &provider)
+                      .unwrap_err();
+                  assert_eq!(error.code(), IdentityErrorCode::Unauthenticated);
+                  assert_eq!(error.reason(), "identity_unknown");
+                  assert_eq!(unlinked, registry);
+
+                  registry
+                      .create_account(
+                          command(5),
+                          fingerprint(5),
+                          account(2),
+                          Username::new("rebind-target").unwrap(),
+                          DisplayName::new("Rebind Target").unwrap(),
+                          identity(IdentityProvider::Apple, "apple-rebind-target"),
+                      )
+                      .unwrap();
+                  registry
+                      .link_provider(command(6), fingerprint(6), account(2), 1, provider.clone())
+                      .unwrap();
+                  let rebound = registry.clone();
+                  let error = registry
+                      .authenticate(command(3), fingerprint(3), &provider)
+                      .unwrap_err();
+                  assert_eq!(error.code(), IdentityErrorCode::Unauthenticated);
+                  assert_eq!(error.reason(), "identity_binding_changed");
+                  assert_eq!(rebound, registry);
+              }
+
+              #[test]
+              fn authentication_replay_rejects_receipt_from_another_operation() {
+                  let provider = identity(IdentityProvider::Custom, "provider-operation");
+                  let mut registry = registry(4, 4, 16);
+                  create(&mut registry, 1, provider.clone());
+                  let snapshot = registry.clone();
+                  let error = registry
+                      .authenticate(command(1), fingerprint(1), &provider)
+                      .unwrap_err();
+                  assert_eq!(error.code(), IdentityErrorCode::Conflict);
+                  assert_eq!(error.reason(), "command_operation_conflict");
+                  assert_eq!(snapshot, registry);
+              }
+
+          '''
+          if source.count(marker) != 1:
+              raise SystemExit("test insertion marker changed; refusing ambiguous patch")
+          source = source.replace(marker, tests + marker, 1)
+          source_path.write_text(source, encoding="utf-8")
+
+          readme_path = Path("crates/trnm-identity-core/README.md")
+          readme = readme_path.read_text(encoding="utf-8")
+          old_contract = "Every mutating operation names an exact expected account revision. A duplicate command ID with the same fingerprint replays its exact receipt; a changed fingerprint is a conflict and changes no state."
+          new_contract = "Every mutating operation names an exact expected account revision. Receipt replay is operation-scoped: a command receipt created by another operation is a conflict even when its fingerprint matches. Authentication replay is returned as current authority only while the provider still resolves to the receipt account, that account remains Active, and its revision is exactly the revision recorded by the authentication receipt. Any profile, provider or status mutation makes the old authentication receipt stale; deletion, unlink and rebind fail closed. A changed fingerprint is always a conflict and all denied replays leave state unchanged. Trusted adapters must derive the fingerprint from the canonical complete operation and provider input rather than accepting an arbitrary caller-selected value."
+          if readme.count(old_contract) != 1:
+              raise SystemExit("README public contract changed; refusing ambiguous patch")
+          readme = readme.replace(old_contract, new_contract, 1)
+          old_failure = "Failed validation, capacity, collision, stale revision, inactive status, last-provider removal and counter overflow leave the complete registry unchanged. Revision increments are checked before mutation."
+          new_failure = "Failed validation, capacity, collision, stale revision, inactive status, last-provider removal and counter overflow leave the complete registry unchanged. Revision increments are checked before mutation. Authentication receipt replay evaluates fingerprint and operation type first, then current provider ownership, account activity and exact revision; a historical receipt never bypasses a later disable, ban, deletion, unlink, rebind, reactivation or other account mutation."
+          if readme.count(old_failure) != 1:
+              raise SystemExit("README failure contract changed; refusing ambiguous patch")
+          readme = readme.replace(old_failure, new_failure, 1)
+          old_tests = "Tests cover bounds, exact replay, changed fingerprints, provider and username collisions, stale revisions, last-provider protection, profile changes, account status, terminal deletion, receipt exhaustion and revision overflow."
+          new_tests = "Tests cover bounds, operation-scoped exact replay, changed fingerprints, provider and username collisions, stale revisions, last-provider protection, profile changes, account status, terminal deletion, receipt exhaustion and revision overflow. Authentication-specific regressions cover unchanged active replay plus disable, ban, reactivation, deletion, unlink, rebind, revision drift and cross-operation command reuse, with complete no-mutation assertions for every rejection."
+          if readme.count(old_tests) != 1:
+              raise SystemExit("README test contract changed; refusing ambiguous patch")
+          readme_path.write_text(readme.replace(old_tests, new_tests, 1), encoding="utf-8")
+          PY
+
+      - name: Format and execute focused and repository contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --package trnm-identity-core --all-targets --locked
+          cargo clippy --package trnm-identity-core --all-targets --locked -- -D warnings
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-plan.py
+          git diff --check
+
+      - name: Commit and fast-forward exact target branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          remote_head="$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | cut -f1)"
+          test "$remote_head" = "$EXPECTED_HEAD"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/trnm-identity-core/src/lib.rs crates/trnm-identity-core/README.md
+          git diff --cached --check
+          git commit -m 'fix(identity): revalidate current authority on auth replay'
+          new_head="$(git rev-parse HEAD)"
+          new_tree="$(git rev-parse HEAD^{tree})"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          printf 'published_head=%s\npublished_tree=%s\n' "$new_head" "$new_tree" >> "$GITHUB_STEP_SUMMARY"
