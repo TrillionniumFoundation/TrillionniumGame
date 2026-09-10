@@ -1,0 +1,148 @@
+name: cross-repo-gap-closure-20260910
+
+on:
+  push:
+    branches:
+      - ops/cross-repo-gap-closure-20260910
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-repo-gap-closure-20260910
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    name: freeze/current-candidate-heads
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      world_sha: ${{ steps.freeze.outputs.world_sha }}
+      cex_sha: ${{ steps.freeze.outputs.cex_sha }}
+    steps:
+      - id: freeze
+        name: Resolve exact public candidate heads
+        shell: bash
+        run: |
+          set -euo pipefail
+          world_sha="$(git ls-remote https://github.com/TrillionniumFoundation/Trillionnium-World.git refs/heads/refactor/campaign-module-stack-v2-20260909 | cut -f1)"
+          cex_sha="$(git ls-remote https://github.com/TrillionniumFoundation/CEX.git refs/heads/integration/cex-v12-sequence54-20260908 | cut -f1)"
+          test "${#world_sha}" = 40
+          test "${#cex_sha}" = 40
+          printf 'world_sha=%s\n' "$world_sha" >> "$GITHUB_OUTPUT"
+          printf 'cex_sha=%s\n' "$cex_sha" >> "$GITHUB_OUTPUT"
+          printf 'WORLD_SHA=%s\nCEX_SHA=%s\n' "$world_sha" "$cex_sha"
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+
+  world_source:
+    name: world/exact-source-boundaries
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      WORLD_SHA: ${{ needs.freeze.outputs.world_sha }}
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      CARGO_INCREMENTAL: '0'
+      RUST_BACKTRACE: '1'
+      RUST_TEST_THREADS: '1'
+    steps:
+      - name: Fetch exact World SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world"
+          git init "$root"
+          git -C "$root" remote add origin https://github.com/TrillionniumFoundation/Trillionnium-World.git
+          git -C "$root" fetch --no-tags --depth=1 origin "$WORLD_SHA"
+          git -C "$root" checkout --detach FETCH_HEAD
+          test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_SHA"
+          test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
+      - name: Verify World format, P0, RTS, catalog, and include boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt
+          cd "$RUNNER_TEMP/world"
+          cargo fmt --manifest-path trillionnium/Cargo.toml --all -- --check
+          cargo test --manifest-path trillionnium/Cargo.toml \
+            -p trnm-rts-sim -p trnm-game-server --all-targets --locked
+          python3 scripts/check-trnm-world-component-catalog.py
+          python3 scripts/test-trnm-world-component-catalog.py
+          python3 scripts/_test_trnm_world_include_boundary_engine.py
+          python3 scripts/test-trnm-world-include-boundaries.py
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+          printf 'WORLD_EXACT_SOURCE_BOUNDARIES=PASS\n'
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+
+  cex_source:
+    name: cex/exact-source-boundaries
+    needs: freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      CEX_SHA: ${{ needs.freeze.outputs.cex_sha }}
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      CARGO_INCREMENTAL: '0'
+      RUST_BACKTRACE: '1'
+      RUST_TEST_THREADS: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Fetch exact CEX SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/cex"
+          git init "$root"
+          git -C "$root" remote add origin https://github.com/TrillionniumFoundation/CEX.git
+          git -C "$root" fetch --no-tags --depth=1 origin "$CEX_SHA"
+          git -C "$root" checkout --detach FETCH_HEAD
+          test "$(git -C "$root" rev-parse HEAD)" = "$CEX_SHA"
+          test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
+      - name: Verify CEX format, core services, and security boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt
+          cd "$RUNNER_TEMP/cex"
+          cargo fmt --all -- --check
+          cargo test --locked \
+            -p trnm-economy-service \
+            -p consumer-entry-api \
+            --all-targets
+          python3 scripts/test-consumer-route-contract.py
+          python3 scripts/test-consumer-projection-boundary.py
+          python3 scripts/check-consumer-projection-boundary.py
+          python3 scripts/test-trnm-build-evidence.py
+          python3 scripts/check-sequence54-rustsec-admission.py
+          PYTHONPATH=scripts python3 - <<'PY'
+          import rust_advisory_packages_v5 as module
+          result = module._external_workflow_self_tests()
+          assert result and all(result.values()), result
+          print("CEX_EXTERNAL_WORKFLOW_SELF_TESTS=PASS", result)
+          PY
+          rm -rf scripts/__pycache__
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+          printf 'CEX_EXACT_SOURCE_BOUNDARIES=PASS\n'
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+
+  refreeze:
+    name: refreeze/reject-candidate-movement
+    needs: [freeze, world_source, cex_source]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Re-read both candidate refs
+        shell: bash
+        env:
+          WORLD_SHA: ${{ needs.freeze.outputs.world_sha }}
+          CEX_SHA: ${{ needs.freeze.outputs.cex_sha }}
+        run: |
+          set -euo pipefail
+          current_world="$(git ls-remote https://github.com/TrillionniumFoundation/Trillionnium-World.git refs/heads/refactor/campaign-module-stack-v2-20260909 | cut -f1)"
+          current_cex="$(git ls-remote https://github.com/TrillionniumFoundation/CEX.git refs/heads/integration/cex-v12-sequence54-20260908 | cut -f1)"
+          test "$current_world" = "$WORLD_SHA"
+          test "$current_cex" = "$CEX_SHA"
+          printf 'WORLD_CEX_EXACT_TUPLE_STABLE=PASS\n'
+          printf 'WORLD_SHA=%s\nCEX_SHA=%s\n' "$WORLD_SHA" "$CEX_SHA"
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
