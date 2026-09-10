@@ -1,4 +1,4 @@
-name: world-pr104-campaign-test-module-tranche-v3
+name: world-pr104-campaign-test-module-tranche-v4
 
 on:
   pull_request:
@@ -8,13 +8,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr104-campaign-test-module-tranche-v3
+  group: world-pr104-campaign-test-module-tranche-v4
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
-  WORLD_SOURCE_SHA: '7d6ae95ed17f7dcc267ce3f9bfef508c89cde4bd'
-  GAME_UPLOADER_SHA: '17952b49f7cd9699d153d9a16518cba56166367c'
+  WORLD_SOURCE_SHA: '33339b28a6f53668672d1797109da6c7bf57db49'
+  GAME_HELPER_SHA: '065e41cafd2cde1a5255fc9eda5ce99ff87fb91a'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: '0'
@@ -24,32 +24,29 @@ env:
 
 jobs:
   qualify:
-    name: world-pr104/campaign-test-module-tranche-v3
+    name: world-pr104/campaign-test-module-tranche-v4
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - name: Fetch immutable World source and pinned artifact uploader
+      - name: Fetch immutable World source and pinned helper
         shell: bash
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/world"
-          uploader="$RUNNER_TEMP/game-uploader"
+          world="$RUNNER_TEMP/world"
+          helper="$RUNNER_TEMP/game-helper"
+          git init "$world"
+          git -C "$world" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$world" fetch --no-tags --depth=2 origin "$WORLD_SOURCE_SHA"
+          git -C "$world" checkout --detach FETCH_HEAD
+          test "$(git -C "$world" rev-parse HEAD)" = "$WORLD_SOURCE_SHA"
 
-          git init "$root"
-          git -C "$root" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
-          git -C "$root" fetch --no-tags --depth=2 origin "$WORLD_SOURCE_SHA"
-          git -C "$root" checkout --detach FETCH_HEAD
-          test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_SOURCE_SHA"
-
-          git init "$uploader"
-          git -C "$uploader" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "$uploader" fetch --no-tags --depth=1 origin "$GAME_UPLOADER_SHA"
-          git -C "$uploader" checkout --detach FETCH_HEAD
-          test "$(git -C "$uploader" rev-parse HEAD)" = "$GAME_UPLOADER_SHA"
-          test -s "$uploader/scripts/upload-actions-artifact.py"
-
-          printf 'WORLD_CAMPAIGN_TRANCHE_SOURCE=%s\n' "$WORLD_SOURCE_SHA"
-          printf 'GAME_ARTIFACT_UPLOADER_SOURCE=%s\n' "$GAME_UPLOADER_SHA"
+          git init "$helper"
+          git -C "$helper" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$helper" fetch --no-tags --depth=1 origin "$GAME_HELPER_SHA"
+          git -C "$helper" checkout --detach FETCH_HEAD
+          test "$(git -C "$helper" rev-parse HEAD)" = "$GAME_HELPER_SHA"
+          test -s "$helper/scripts/world-pr104-campaign-test-module-transform.py"
+          test -s "$helper/scripts/upload-actions-artifact.py"
 
       - name: Install pinned Rust and native dependencies
         shell: bash
@@ -65,119 +62,16 @@ jobs:
           test "$(rustc --version | awk '{print $2}')" = '1.98.1'
           rustc --version --verbose
           cargo --version --verbose
-          rustfmt --version
 
-      - name: Apply active-closure P0 repair and campaign test-module migration
+      - name: Transform Campaign nested tests and reconcile manifests
         shell: bash
         run: |
           set -euo pipefail
-          python3 - "$RUNNER_TEMP/world" "$WORLD_SOURCE_SHA" <<'PY'
-          from __future__ import annotations
-          import json
-          import re
-          import sys
-          from pathlib import Path
-
-          root = Path(sys.argv[1])
-          source_sha = sys.argv[2]
-
-          closure = root / "scripts/archive/check-trnm-world-active-closure-v6-20260908-base.py"
-          closure_source = closure.read_text(encoding="utf-8")
-          old_closure = 'parser.add_argument("root", nargs="?", type=Path, default=Path(__file__).resolve().parents[1])'
-          new_closure = 'parser.add_argument("root", nargs="?", type=Path, default=Path(__file__).resolve().parents[2])'
-          assert closure_source.count(old_closure) == 1, "active-closure root anchor drift"
-          closure.write_text(closure_source.replace(old_closure, new_closure), encoding="utf-8")
-
-          p0 = root / "trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
-          p0_source = p0.read_text(encoding="utf-8")
-          old_lint = ".rfind(|character| matches!(character, ';' | '{' | '}'))"
-          new_lint = ".rfind([';', '{', '}'])"
-          assert p0_source.count(old_lint) == 1, "P0 lint repair anchor drift"
-          p0.write_text(p0_source.replace(old_lint, new_lint), encoding="utf-8")
-
-          tests = root / "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests"
-          wrapper = tests / "part_01.rs"
-          expected = '''use super::*;
-          use tempfile::tempdir;
-
-          include!(concat!(
-              env!("CARGO_MANIFEST_DIR"),
-              "/src/lib_parts/tests/campaign_tests_01.rs"
-          ));
-          include!(concat!(
-              env!("CARGO_MANIFEST_DIR"),
-              "/src/lib_parts/tests/campaign_tests_02.rs"
-          ));
-          include!(concat!(
-              env!("CARGO_MANIFEST_DIR"),
-              "/src/lib_parts/tests/campaign_tests_03.rs"
-          ));
-          '''
-          assert wrapper.read_text(encoding="utf-8") == expected, "campaign test wrapper drift"
-          wrapper.write_text(
-              '''use super::*;
-          use tempfile::tempdir;
-
-          #[path = "campaign_tests_01.rs"]
-          mod campaign_tests_01;
-          #[allow(unused_imports)]
-          use campaign_tests_01::*;
-
-          #[path = "campaign_tests_02.rs"]
-          mod campaign_tests_02;
-          #[allow(unused_imports)]
-          use campaign_tests_02::*;
-
-          #[path = "campaign_tests_03.rs"]
-          mod campaign_tests_03;
-          #[allow(unused_imports)]
-          use campaign_tests_03::*;
-          ''',
-              encoding="utf-8",
-          )
-
-          declaration = re.compile(
-              r"^(    )(?:(pub(?:\([^)]*\))?\s+))?((?:async\s+)?fn|struct|enum|const|static|type|trait)\s+",
-              re.MULTILINE,
-          )
-          for index in range(1, 4):
-              path = tests / f"campaign_tests_{index:02d}.rs"
-              source = path.read_text(encoding="utf-8")
-              assert not source.startswith("use super::*;"), path
-              source = declaration.sub(
-                  lambda match: f"{match.group(1)}pub(super) {match.group(3)} ",
-                  source,
-              )
-              path.write_text("use super::*;\n\n" + source, encoding="utf-8")
-
-          ledger_path = root / "scripts/contracts/trnm-world-include-migrations-v1.json"
-          ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-          existing = {(item["path"], item["expression"]) for item in ledger["completed"]}
-          for index in range(1, 4):
-              expression = f'concat!(env!("CARGO_MANIFEST_DIR"),"/src/lib_parts/tests/campaign_tests_{index:02d}.rs")'
-              key = (
-                  "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs",
-                  expression,
-              )
-              assert key not in existing
-              ledger["completed"].append({
-                  "path": key[0],
-                  "expression": expression,
-                  "replacement_module": f"campaign_tests_{index:02d}",
-                  "required_fragments": [
-                      f'#[path = "campaign_tests_{index:02d}.rs"]',
-                      f"mod campaign_tests_{index:02d};",
-                  ],
-                  "completed_commit": source_sha,
-              })
-          ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
-          print("WORLD_CAMPAIGN_TEST_MODULE_TRANSFORM=PASS")
-          PY
-
-          cd "$RUNNER_TEMP/world/trillionnium"
-          cargo fmt --all
-
-          python3 - "$RUNNER_TEMP/world" <<'PY'
+          world="$RUNNER_TEMP/world"
+          python3 "$RUNNER_TEMP/game-helper/scripts/world-pr104-campaign-test-module-transform.py" \
+            "$world" --source-sha "$WORLD_SOURCE_SHA"
+          cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all
+          python3 - "$world" <<'PY'
           import hashlib
           import json
           import sys
@@ -201,16 +95,14 @@ jobs:
                       record["bytes"] = len(payload)
                       record["sha256"] = hashlib.sha256(payload).hexdigest()
                       seen.add(record["path"])
-          assert seen == changed, (seen, changed)
+          if seen != changed:
+              raise SystemExit(f"manifest coverage drift: {seen} != {changed}")
           manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-          print("WORLD_CAMPAIGN_TEST_MANIFEST_REFRESH=PASS")
           PY
 
-          cd "$RUNNER_TEMP/world"
-          git config user.name "World read-only qualification"
-          git config user.email "world-read-only-qualification@invalid"
-          git add \
-            scripts/archive/check-trnm-world-active-closure-v6-20260908-base.py \
+          git -C "$world" config user.name "World read-only qualification"
+          git -C "$world" config user.email "world-read-only-qualification@invalid"
+          git -C "$world" add \
             scripts/contracts/trnm-world-include-migrations-v1.json \
             trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs \
             trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs \
@@ -220,17 +112,17 @@ jobs:
             trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json
           GIT_AUTHOR_DATE='2026-09-10T00:00:00Z' \
           GIT_COMMITTER_DATE='2026-09-10T00:00:00Z' \
-            git commit -m "test(world): qualify campaign test modules and active closure root"
-          test -z "$(git status --porcelain=v1)"
-          printf 'WORLD_TRANSFORMED_HEAD=%s\n' "$(git rev-parse HEAD)"
-          printf 'WORLD_TRANSFORMED_TREE=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+            git -C "$world" commit -m "test(world): migrate Campaign test bodies to modules"
+          test -z "$(git -C "$world" status --porcelain=v1)"
+          printf 'WORLD_TRANSFORMED_HEAD=%s\n' "$(git -C "$world" rev-parse HEAD)"
+          printf 'WORLD_TRANSFORMED_TREE=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
 
       - name: Qualify transformed exact source and truth
         shell: bash
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/world"
-          cd "$root"
+          world="$RUNNER_TEMP/world"
+          cd "$world"
           cargo fmt --manifest-path trillionnium/Cargo.toml --all --check
           cargo test --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core --all-targets --locked
           cargo clippy --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core --all-targets --locked -- -D warnings
@@ -244,13 +136,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/world"
-          packet="$root/run/world-campaign-test-module-v3"
-          archive="$RUNNER_TEMP/world-campaign-test-module-v3.tar.gz"
+          world="$RUNNER_TEMP/world"
+          packet="$world/run/world-campaign-test-module-v4"
+          archive="$RUNNER_TEMP/world-campaign-test-module-v4.tar.gz"
           mkdir -p "$packet"
-
           paths=(
-            scripts/archive/check-trnm-world-active-closure-v6-20260908-base.py
             scripts/contracts/trnm-world-include-migrations-v1.json
             trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs
             trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs
@@ -259,31 +149,30 @@ jobs:
             trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_03.rs
             trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json
           )
-
-          git -C "$root" diff --binary "$WORLD_SOURCE_SHA..HEAD" -- "${paths[@]}" > "$packet/candidate.patch"
+          git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" -- "${paths[@]}" > "$packet/candidate.patch"
           test -s "$packet/candidate.patch"
           {
             printf 'repository=%s\n' "$WORLD_REPOSITORY"
             printf 'source=%s\n' "$WORLD_SOURCE_SHA"
-            printf 'candidate_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
-            printf 'candidate_tree=%s\n' "$(git -C "$root" rev-parse 'HEAD^{tree}')"
+            printf 'candidate_commit=%s\n' "$(git -C "$world" rev-parse HEAD)"
+            printf 'candidate_tree=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
             printf 'rustc=%s\n' "$(rustc --version)"
             printf 'production_authorization=not_granted\n'
           } > "$packet/identity.txt"
           (
-            cd "$root"
-            sha256sum "${paths[@]}" run/world-campaign-test-module-v3/candidate.patch \
-              run/world-campaign-test-module-v3/identity.txt \
-              > run/world-campaign-test-module-v3/SHA256SUMS
+            cd "$world"
+            sha256sum "${paths[@]}" \
+              run/world-campaign-test-module-v4/candidate.patch \
+              run/world-campaign-test-module-v4/identity.txt \
+              > run/world-campaign-test-module-v4/SHA256SUMS
           )
-
-          tar --sort=name --format=ustar --mtime='UTC 2026-09-10' \
+          tar --sort=name --format=gnu --mtime='UTC 2026-09-10' \
             --owner=0 --group=0 --numeric-owner \
-            -czf "$archive" -C "$root" \
+            -czf "$archive" -C "$world" \
             "${paths[@]}" \
-            run/world-campaign-test-module-v3/candidate.patch \
-            run/world-campaign-test-module-v3/identity.txt \
-            run/world-campaign-test-module-v3/SHA256SUMS
+            run/world-campaign-test-module-v4/candidate.patch \
+            run/world-campaign-test-module-v4/identity.txt \
+            run/world-campaign-test-module-v4/SHA256SUMS
           test -s "$archive"
           sha256sum "$archive"
 
@@ -292,9 +181,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 "$RUNNER_TEMP/game-uploader/scripts/upload-actions-artifact.py" \
-            "world-campaign-test-module-v3-${WORLD_SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            "$RUNNER_TEMP/world-campaign-test-module-v3.tar.gz" \
+          python3 "$RUNNER_TEMP/game-helper/scripts/upload-actions-artifact.py" \
+            "world-campaign-test-module-v4-${WORLD_SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "$RUNNER_TEMP/world-campaign-test-module-v4.tar.gz" \
             --mime-type application/gzip
 
       - name: Emit retained artifact identity
