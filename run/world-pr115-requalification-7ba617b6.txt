@@ -1,7 +1,7 @@
 repository=TrillionniumFoundation/Trillionnium-World
 pull_request=115
-head=7ba617b6644a173f0c0efb8d5fa462c1cc943bce
-prospective_merge=23b3da674641cc7ba24da7f43ea5e7012ba11177
-reason=remove forbidden obsolete V5 plan reference after exact truth failure
+head=21f1ee16bfe85d7ad4e4ee3d362781326139aac6
+prospective_merge=d31308d0453a5e6ad6efe7f1a73d70eab0fb7422
+reason=validate the exact transition protocol package alias and hostile fixture after component-catalog failure
 workflow_tuple_binding=dynamic_at_job_start
 production_authorization=not_granted
