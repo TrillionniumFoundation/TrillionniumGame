@@ -373,7 +373,9 @@ impl IdentityRegistry {
         display_name: DisplayName,
         provider: ProviderIdentity,
     ) -> Result<CommandReceipt, IdentityError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) =
+            self.existing_receipt(command, fingerprint, ReceiptOutcome::Created)?
+        {
             return Ok(receipt);
         }
         self.ensure_receipt_capacity()?;
@@ -437,7 +439,9 @@ impl IdentityRegistry {
         fingerprint: Fingerprint,
         provider: &ProviderIdentity,
     ) -> Result<CommandReceipt, IdentityError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) =
+            self.existing_receipt(command, fingerprint, ReceiptOutcome::Authenticated)?
+        {
             if receipt.outcome != ReceiptOutcome::Authenticated {
                 return Err(IdentityError::new(
                     IdentityErrorCode::Conflict,
@@ -500,7 +504,9 @@ impl IdentityRegistry {
         expected_revision: u64,
         provider: ProviderIdentity,
     ) -> Result<CommandReceipt, IdentityError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) =
+            self.existing_receipt(command, fingerprint, ReceiptOutcome::Linked)?
+        {
             return Ok(receipt);
         }
         self.ensure_receipt_capacity()?;
@@ -558,7 +564,9 @@ impl IdentityRegistry {
         expected_revision: u64,
         provider: &ProviderIdentity,
     ) -> Result<CommandReceipt, IdentityError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) =
+            self.existing_receipt(command, fingerprint, ReceiptOutcome::Unlinked)?
+        {
             return Ok(receipt);
         }
         self.ensure_receipt_capacity()?;
@@ -614,7 +622,9 @@ impl IdentityRegistry {
         username: Option<Username>,
         display_name: Option<DisplayName>,
     ) -> Result<CommandReceipt, IdentityError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) =
+            self.existing_receipt(command, fingerprint, ReceiptOutcome::Updated)?
+        {
             return Ok(receipt);
         }
         self.ensure_receipt_capacity()?;
@@ -696,7 +706,9 @@ impl IdentityRegistry {
         expected_revision: u64,
         target: AccountStatus,
     ) -> Result<CommandReceipt, IdentityError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) =
+            self.existing_receipt(command, fingerprint, ReceiptOutcome::StatusChanged)?
+        {
             return Ok(receipt);
         }
         self.ensure_receipt_capacity()?;
@@ -749,7 +761,9 @@ impl IdentityRegistry {
         account: AccountId,
         expected_revision: u64,
     ) -> Result<CommandReceipt, IdentityError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) =
+            self.existing_receipt(command, fingerprint, ReceiptOutcome::Deleted)?
+        {
             return Ok(receipt);
         }
         self.ensure_receipt_capacity()?;
@@ -855,6 +869,7 @@ impl IdentityRegistry {
         &self,
         command: CommandId,
         fingerprint: Fingerprint,
+        expected_outcome: ReceiptOutcome,
     ) -> Result<Option<CommandReceipt>, IdentityError> {
         let Some(receipt) = self.receipts.get(&command) else {
             return Ok(None);
@@ -865,9 +880,14 @@ impl IdentityRegistry {
                 "command_fingerprint_conflict",
             ));
         }
+        if receipt.outcome != expected_outcome {
+            return Err(IdentityError::new(
+                IdentityErrorCode::Conflict,
+                "command_operation_conflict",
+            ));
+        }
         Ok(Some(*receipt))
     }
-
     fn ensure_receipt_capacity(&self) -> Result<(), IdentityError> {
         if self.receipts.len() >= self.config.max_receipts {
             return Err(IdentityError::new(
