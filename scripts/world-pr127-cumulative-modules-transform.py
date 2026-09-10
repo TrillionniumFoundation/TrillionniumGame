@@ -79,6 +79,73 @@ def restore_game_server_root_imports(root: Path) -> None:
     )
 
 
+def stabilize_game_server_compatibility_boundary(root: Path) -> None:
+    """Keep old root scope without weakening lint for unrelated imports.
+
+    The extracted modules initially re-export the full historically shared root
+    namespace so compile/test behavior remains stable. Some names are consumed
+    only by particular targets or fault fixtures. The local allowance therefore
+    applies only to generated ownership compatibility imports, never globally.
+    """
+
+    crate = root / "trillionnium/crates/trnm-game-server/src"
+    library = crate / "lib.rs"
+    text = library.read_text(encoding="utf-8", errors="strict")
+
+    marker_replacements = {
+        "// Ownership module: authority_foundation.": (
+            "// Ownership section: authority_foundation. Migrated to an explicit Rust module."
+        ),
+        "// Ownership module: campaign_persistence.": (
+            "// Ownership section: campaign_persistence. Migrated to an explicit Rust module."
+        ),
+    }
+    for before, after in marker_replacements.items():
+        if text.count(before) != 1:
+            raise RuntimeError(f"ownership marker drift: {before}")
+        text = text.replace(before, after)
+
+    ownership_modules = (
+        "authority_foundation",
+        "configuration_and_migrations",
+        "terminal_recovery",
+        "operations_boundary",
+        "fleet_fencing",
+        "identity",
+        "application",
+        "http_routing",
+        "readiness",
+        "product_api",
+        "actor_runtime",
+        "campaign_persistence",
+    )
+    pattern = re.compile(
+        r"(?m)^(use (?:" + "|".join(map(re.escape, ownership_modules)) + r")::)"
+    )
+    text, count = pattern.subn(r"#[allow(unused_imports)]\n\1", text)
+    if count < 8:
+        raise RuntimeError(
+            f"unexpectedly small Game Server compatibility-import inventory: {count}"
+        )
+    library.write_text(text, encoding="utf-8")
+
+    generated_module_files = (
+        crate / "lib_parts/terminal_recovery/mod.rs",
+        crate / "lib_parts/product_api/mod.rs",
+        crate / "lib_parts/actor_runtime/mod.rs",
+    )
+    for path in generated_module_files:
+        module_text = path.read_text(encoding="utf-8", errors="strict")
+        module_text, module_count = re.subn(
+            r"(?m)^(pub\(crate\) use part_[0-9]+::)",
+            r"#[allow(unused_imports)]\n\1",
+            module_text,
+        )
+        if module_count == 0:
+            raise RuntimeError(f"missing compatibility re-export in {path}")
+        path.write_text(module_text, encoding="utf-8")
+
+
 def repair_websocket_close(root: Path) -> None:
     path = root / "trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs"
     text = path.read_text(encoding="utf-8", errors="strict")
@@ -137,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     restore_game_server_root_imports(root)
+    stabilize_game_server_compatibility_boundary(root)
     repair_websocket_close(root)
     run(
         "cargo",
