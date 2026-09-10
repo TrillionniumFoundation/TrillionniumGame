@@ -43,14 +43,8 @@ def write_fixture(
         members = '["crates/trnm-fixture"]'
         excluded = "[]"
     else:
-        members = '["crates/trnm-root-placeholder"]'
+        members = "[]"
         excluded = '["crates/trnm-fixture"]'
-        placeholder = root / "crates" / "trnm-root-placeholder"
-        placeholder.mkdir(parents=True)
-        (placeholder / "Cargo.toml").write_text(
-            "[package]\nname = \"trnm-root-placeholder\"\nversion = \"0.1.0\"\n",
-            encoding="utf-8",
-        )
     (root / "Cargo.toml").write_text(
         f"[workspace]\nmembers = {members}\nexclude = {excluded}\n",
         encoding="utf-8",
