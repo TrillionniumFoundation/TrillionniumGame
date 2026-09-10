@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind the one cross-module Serde default callback hidden in attribute text."""
+"""Ensure the cross-module Serde default callback remains explicitly bound."""
 from __future__ import annotations
 
 import argparse
@@ -26,12 +26,20 @@ def main() -> int:
         "default_campaign_credits, legacy_campaign_schema_revision"
         "};"
     )
-    if source.count(old) != 1:
+    if source.count(old) == 1 and source.count(new) == 0:
+        lib.write_text(source.replace(old, new), encoding="utf-8")
+        disposition = "inserted"
+    elif source.count(old) == 0 and source.count(new) == 1:
+        disposition = "already-bound"
+    else:
         raise RuntimeError(
-            f"campaign semantic import anchor drift: observed={source.count(old)}"
+            "campaign semantic import drift: "
+            f"old={source.count(old)} new={source.count(new)}"
         )
-    lib.write_text(source.replace(old, new), encoding="utf-8")
-    print("WORLD_CAMPAIGN_RUNTIME_SEMANTIC_IMPORT_REPAIR=PASS serde_callbacks=1")
+    print(
+        "WORLD_CAMPAIGN_RUNTIME_SEMANTIC_IMPORT_REPAIR=PASS "
+        f"serde_callbacks=1 disposition={disposition}"
+    )
     return 0
 
 
