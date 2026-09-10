@@ -16,7 +16,10 @@ const MAX_LIST_LIMIT: usize = 100;
 const MAX_VALUE_BYTES: usize = 1024 * 1024;
 const MAX_COLLECTION_BYTES: usize = 128;
 
-// The in-process storage-list cursor is the tuple
-// `(actor, optional owner scope, last key)`. Public wire adapters must encode
-// and authenticate all three elements before accepting a continuation from an
-// untrusted client; a bare `StorageObjectKey` is not a valid cursor.
+/// In-process storage-list continuation bound to authorization and query scope.
+///
+/// The tuple carries `(actor, optional owner scope, last key)`. Public wire
+/// adapters must encode and authenticate every element before accepting a
+/// continuation from an untrusted client; a bare `StorageObjectKey` is not a
+/// valid cursor.
+pub type StorageListCursor = (Actor, Option<UserId>, StorageObjectKey);

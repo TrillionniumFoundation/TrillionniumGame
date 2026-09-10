@@ -2,7 +2,7 @@ fn validate_list_request(
     actor: Actor,
     collection: &str,
     owner: Option<UserId>,
-    after: Option<&(Actor, Option<UserId>, StorageObjectKey)>,
+    after: Option<&StorageListCursor>,
     limit: usize,
 ) -> Result<(), DomainError> {
     if collection.is_empty()
@@ -43,10 +43,7 @@ fn finish_storage_page(
     actor: Actor,
     owner: Option<UserId>,
     limit: usize,
-) -> (
-    Vec<StorageObject>,
-    Option<(Actor, Option<UserId>, StorageObjectKey)>,
-) {
+) -> (Vec<StorageObject>, Option<StorageListCursor>) {
     let has_more = objects.len() > limit;
     if has_more {
         objects.truncate(limit);

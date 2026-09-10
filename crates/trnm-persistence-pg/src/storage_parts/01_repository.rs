@@ -36,9 +36,9 @@ impl PgRepository {
         actor: Actor,
         collection: &str,
         owner: Option<UserId>,
-        after: Option<&(Actor, Option<UserId>, StorageObjectKey)>,
+        after: Option<&StorageListCursor>,
         limit: usize,
-    ) -> Result<(Vec<StorageObject>, Option<(Actor, Option<UserId>, StorageObjectKey)>), DomainError> {
+    ) -> Result<(Vec<StorageObject>, Option<StorageListCursor>), DomainError> {
         validate_list_request(actor, collection, owner, after, limit)?;
         let fetch_limit = limit
             .checked_add(1)
