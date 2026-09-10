@@ -43,7 +43,7 @@ class BranchInventoryContractTests(unittest.TestCase):
         candidate = candidates[0]
         self.assertRegex(
             candidate["name"],
-            r"^(?:integration|codex)/[a-z0-9][a-z0-9./-]*$",
+            r"^(?:integration|codex|feature)/[a-z0-9][a-z0-9./-]*$",
         )
         self.assertRegex(
             candidate["role"],

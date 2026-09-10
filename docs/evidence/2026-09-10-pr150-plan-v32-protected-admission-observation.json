@@ -1,0 +1,64 @@
+{
+  "schema": "trillionnium.diagnostic-evidence.v1",
+  "project_id": "trillionnium-game",
+  "evidence_id": "TG-EV-PR150-PLAN-V32-PROTECTED-ADMISSION-20260910",
+  "status": "diagnostic-observation-unaccepted",
+  "observed_at": "2026-09-10T04:30:00Z",
+  "source_candidate": {
+    "repository": "TrillionniumFoundation/TrillionniumGame",
+    "pull_request": 150,
+    "base_commit": "17952b49f7cd9699d153d9a16518cba56166367c",
+    "head_commit": "541016f34f2dbaf7c2be10cd45afdd04223c49f2",
+    "head_tree": "1c171f4731be313978c80555b5ad0f3af88be593",
+    "prospective_merge_commit": "88bbc03207be041b41b43ca1384c7965e87e079e",
+    "prospective_merge_tree": "1c171f4731be313978c80555b5ad0f3af88be593"
+  },
+  "execution": {
+    "required_workflow_family_count": 57,
+    "aggregate_run_id": 34345167796,
+    "prospective_merge_run_id": 34345167891,
+    "candidate_identity_run_id": 34345167727,
+    "world_fault_lab_run_id": 34345167810,
+    "terminal_success_observed": true,
+    "nonempty_execution_observed": true
+  },
+  "retained_artifact_digests": {
+    "merge_gate_final": "273c84ba21599647d84cff29af2f011c5586a967e410c1a36493bece54930575",
+    "merge_gate_internal_receipt": "a58fb5b6026da3342b5c2a4a47582048bf6e141771015b6d0d7f526562e92343",
+    "required_workflow_collection": "68459847468805cfbce10337755a5377b678f817eb4661f4518a2ea0623edbf0",
+    "required_workflow_internal_collection": "7b217fd3120df7812fa8a3338fa20669a0250ff6ab9daba94a75f4c9325e4f55",
+    "candidate_identity": "6926d00ff95bb81a4cc79f7c3cba58581e6c176b2733855160d37d000025553d",
+    "candidate_identity_internal_manifest": "ffab88bb8fc7198102fc79c6afce4bd3706b5638b192457e1ce718d25eaba092",
+    "prospective_final": "c1e0b544438dbdbf73aa5d71b9adbfc1932984ba14e7d1c7a263d889f6daede5",
+    "prospective_internal_identity": "2eb50d8f6b308dc44050557ef517bc5390314099646f22a5853057f4272e1816",
+    "prospective_internal_gate_receipt": "cbf6fd24dec73306ee61d4f9e7512f7058ce71c5474ae3abbd4645fcba9abfc1"
+  },
+  "protected_admission": {
+    "merged": true,
+    "merged_at": "2026-09-10T04:15:50Z",
+    "main_commit": "0a89ca431be4b82101d6424c6d06c8b4cfca2aa3",
+    "main_tree": "1c171f4731be313978c80555b5ad0f3af88be593",
+    "merge_method": "squash",
+    "administrator_bypass_used": false,
+    "force_update_used": false
+  },
+  "claim_boundary": {
+    "schema_valid_for_acceptance": false,
+    "retained_bytes_admitted": false,
+    "independent_evidence_acceptance": false,
+    "post_merge_main_packet_present": false,
+    "gap_closed": false,
+    "compatibility_credit": false,
+    "production_ready": false,
+    "public_online": false,
+    "cutover_authorized": false,
+    "nakama_retired": false
+  },
+  "limitations": [
+    "This file records exact GitHub source, workflow and protected-admission observations only.",
+    "The referenced artifact bytes are not retained beside this manifest and therefore do not satisfy retained-evidence admission.",
+    "A pull-request approval does not by itself provide conflict-free specialist acceptance for every mapped gap.",
+    "No post-merge main workflow packet has been retained and admitted.",
+    "This diagnostic grants no gap, gate, compatibility, durability, production, public-online, cutover or retirement credit."
+  ]
+}

@@ -2,27 +2,29 @@
   "schema": "trillionnium.current-state.v1",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "observed_at": "2026-09-09T04:31:21Z",
+  "observed_at": "2026-09-10T04:30:00Z",
   "authority": {
     "repository": "TrillionniumFoundation/TrillionniumGame",
     "repository_id": 1323087470,
     "default_branch": "main",
-    "audited_main_commit": "17952b49f7cd9699d153d9a16518cba56166367c",
-    "audited_main_tree": "01d528735ac10653eb811500e0febb2f4a6eef14",
-    "candidate_branch": "integration/plan-v32-main-rebind-2026-09-09",
-    "candidate_commit": null,
-    "candidate_tree": null,
-    "candidate_identity_rule": "The floating integration branch is source authority only after an exact pull-request head/tree and prospective merge are observed; this mutable file must not guess its own final commit.",
-    "last_admitted_pull_request": 63
+    "audited_main_commit": "0a89ca431be4b82101d6424c6d06c8b4cfca2aa3",
+    "audited_main_tree": "1c171f4731be313978c80555b5ad0f3af88be593",
+    "candidate_branch": "feature/plan-v32-identity-core-20260909",
+    "candidate_pull_request": 163,
+    "candidate_commit": "e78eca8dd34056a1e9c1a60e52d35e19dda4cdc1",
+    "candidate_tree": "20ed71fd2c8a77bf2be73ca7a5cabd7d7ac9d58e",
+    "candidate_identity_rule": "The active Plan v3.2 surface is bound to pull request 163, its exact head/tree and the GitHub prospective merge object; any head, base or tree movement invalidates prior qualification and requires a fresh packet.",
+    "last_admitted_pull_request": 150
   },
   "repository_governance": {
     "main_protected": true,
     "required_checks_configured": true,
     "required_aggregate_context": "trillionnium-game-merge-gate",
     "required_check_enforcement_level": "everyone",
-    "last_qualified_source_head": "9e807d108ae40eed75a2a745729106a20771ea5f",
-    "last_successful_aggregate_run_id": 34300987074,
-    "last_successful_prospective_merge_run_id": 34300987004,
+    "last_qualified_source_head": "541016f34f2dbaf7c2be10cd45afdd04223c49f2",
+    "last_qualified_source_tree": "1c171f4731be313978c80555b5ad0f3af88be593",
+    "last_successful_aggregate_run_id": 34345167796,
+    "last_successful_prospective_merge_run_id": 34345167891,
     "native_pull_request_workflow_trigger_observed": true,
     "native_workflow_job_collection_nonempty": true,
     "codeowner_routing_source_candidate": true,
@@ -30,12 +32,11 @@
     "full_review_policy_read_back": false,
     "administrator_and_bypass_policy_read_back": false,
     "negative_no_bypass_rehearsal_accepted": false,
-    "status": "Plan v3.1 source baseline admitted to protected main; v3.2 rebind requires fresh exact-head qualification and external governance acceptance remains open",
+    "status": "Plan v3.2 source convergence was admitted to protected main by pull request 150; retained post-merge main evidence, complete administrative read-back and conflict-free specialist acceptance remain open.",
     "blocking_gaps": [
       "GAP-P0-GOV-001",
       "GAP-P1-REVIEW-001"
-    ],
-    "last_qualified_source_tree": "02bfa3a6caaf7a1cd0dcca2179e9e5141e2fa4a0"
+    ]
   },
   "runtime_topology": {
     "current_proven_runnable_path": "official Nakama v3.40.0 plus first-party Go plugin under runtime/",
@@ -44,9 +45,9 @@
     "rust_server_binary_authority": "crates/trnm-server/Cargo.toml::trnm-server",
     "rust_server_stage": "canonical-http-grpc-websocket-session-database-source-candidate",
     "rust_server_remote_verified": false,
-    "source_and_prospective_packets_observed": false,
+    "source_and_prospective_packets_observed": true,
     "world_command_recovery_matrix_source_candidate": true,
-    "status": "Canonical source composition exists on the floating v3.2 integration line; current rebind execution, specialist review and accepted evidence remain open."
+    "status": "Canonical source composition is admitted on main; accepted compatibility, durability, specialist-review and production evidence remain open."
   },
   "implementation": {
     "rust_foundation_crates_present": true,
@@ -92,8 +93,8 @@
   },
   "evidence": {
     "index": "docs/evidence/index.json",
-    "exact_source_and_prospective_execution_observed": false,
-    "exact_execution_record_indexed_as_unreviewed_candidate": false,
+    "exact_source_and_prospective_execution_observed": true,
+    "exact_execution_record_indexed_as_unreviewed_candidate": true,
     "accepted_entry_count": 0,
     "prospective_merge_evidence_accepted": false,
     "independent_review_accepted": false,
@@ -109,8 +110,9 @@
     }
   },
   "active_priority": [
-    "qualify the floating Plan v3.2 rebind on one exact head and actual prospective merge object",
-    "admit the v3.2 source convergence through the ordinary protected main path without promoting product claims",
+    "merge the post-merge truth and active-branch reconciliation through the ordinary protected path",
+    "rebind and qualify Plan v3.2 Surface 1 on one exact head and actual prospective merge object",
+    "rebind and qualify the stacked Surface 2 only after Surface 1 is admitted",
     "retain and independently accept the post-merge main packet",
     "read back complete branch/ruleset review freshness CODEOWNER conversation and bypass policy",
     "provision conflict-free security database protocol realtime compatibility and SRE reviewers",
