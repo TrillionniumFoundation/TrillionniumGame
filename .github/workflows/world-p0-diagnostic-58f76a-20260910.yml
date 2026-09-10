@@ -1,0 +1,84 @@
+name: world-p0-diagnostic-58f76a-20260910
+
+on:
+  push:
+    branches:
+      - ops/world-p0-diagnostic-58f76a-20260910
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-p0-diagnostic-58f76a-20260910
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    name: world-p0/exact-source-diagnostic
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+      WORLD_COMMIT: 58f76a6100bade6e148a56bd429eff34f8a255cd
+      RUSTUP_TOOLCHAIN: 1.98.1
+      CARGO_INCREMENTAL: '0'
+      RUST_BACKTRACE: '1'
+      RUST_TEST_THREADS: '1'
+    steps:
+      - name: Fetch exact World source
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world"
+          rm -rf "$root"
+          git init "$root"
+          git -C "$root" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$root" fetch --no-tags --depth=1 origin "$WORLD_COMMIT"
+          git -C "$root" checkout --detach FETCH_HEAD
+          test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_COMMIT"
+          test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
+
+      - name: Add diagnostic output in the temporary clone
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/world"
+          file="$root/trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
+          python3 - "$file" <<'PY'
+          from pathlib import Path
+          import sys
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          old = '''        let (reconciliations, captured, file_violations) =
+            transaction_reconciliation_counts(&source);
+        reconcile_count += reconciliations;
+        captured_transaction_reconcile_count += captured;
+'''
+          new = '''        let (reconciliations, captured, file_violations) =
+            transaction_reconciliation_counts(&source);
+        if reconciliations > 0 {
+            eprintln!(
+                "P0_DIAG path={} reconciliations={} captured={} violations={:?}",
+                path.display(), reconciliations, captured, file_violations
+            );
+        }
+        reconcile_count += reconciliations;
+        captured_transaction_reconcile_count += captured;
+'''
+          assert text.count(old) == 1
+          path.write_text(text.replace(old, new), encoding="utf-8", newline="\n")
+          PY
+          git -C "$root" diff --check
+
+      - name: Execute only the captured-receipt boundary test
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal
+          cd "$RUNNER_TEMP/world"
+          cargo test \
+            --manifest-path trillionnium/Cargo.toml \
+            -p trnm-game-server \
+            --test p0_boundary_contract \
+            settlement_external_io_is_not_owned_by_a_database_transaction_function \
+            --locked -- --exact --nocapture
