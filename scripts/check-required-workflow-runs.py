@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compose an exact child-workflow overlay, then run the hardened admission gate."""
+"""Compose exact workflow-definition overlays, then run hardened admission."""
 from __future__ import annotations
 
 import hashlib
@@ -44,6 +44,8 @@ run_identity = _hardened.run_identity
 
 OVERLAY_SCHEMA = "trnm_required_workflow_overlay_v1"
 OVERLAY_FILENAME = "REQUIRED_WORKFLOWS_OVERLAY_V1.json"
+AGGREGATE_OVERLAY_SCHEMA = "trnm_required_aggregate_overlay_v1"
+AGGREGATE_OVERLAY_FILENAME = "REQUIRED_AGGREGATE_OVERLAY_V1.json"
 
 
 def blob_sha(value: bytes | bytearray | Path) -> str:
@@ -92,15 +94,7 @@ def _successful_execution_steps_are_terminal(job: dict[str, Any]) -> bool:
 def normalize_github_job_statuses(
     jobs: list[dict[str, Any]], parent: Run
 ) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
-    """Normalize only GitHub's stale status with independently terminal evidence.
-
-    GitHub may return a workflow run as completed/success while an exact-attempt
-    job still reports status=in_progress, conclusion=success, even though every
-    execution step, including the runner completion step, is completed/success.
-    This function preserves fail-closed behavior: normalization is allowed only
-    when the parent run is terminal-success, the job conclusion is success, and
-    every non-framework, non-skipped step is completed/success.
-    """
+    """Normalize only GitHub's stale status with independently terminal evidence."""
 
     if parent.status != "completed" or parent.conclusion != "success":
         return jobs, ()
@@ -143,9 +137,6 @@ class GitHubApi(_HardenedGitHubApi):
         self, repo: str, run_id: int, attempt: int
     ) -> list[dict[str, Any]]:
         jobs = super().jobs_attempt(repo, run_id, attempt)
-        # Some pure tests intentionally construct an uninitialized API double
-        # that overrides only paged(). Preserve the exact-attempt URL contract
-        # without attempting a network parent lookup from that test double.
         if not hasattr(self, "headers"):
             return jobs
         parent = self.current_run(repo, run_id)
@@ -160,17 +151,24 @@ class GitHubApi(_HardenedGitHubApi):
         return normalized
 
 
-# The hardened core resolves this global at execution time.
 _hardened.GitHubApi = GitHubApi
 
 
-def canonical_overlay_digest(value: dict[str, Any]) -> str:
+def _canonical_digest(value: dict[str, Any]) -> str:
     payload = dict(value)
     payload.pop("overlay_sha256", None)
     encoded = json.dumps(
         payload, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def canonical_overlay_digest(value: dict[str, Any]) -> str:
+    return _canonical_digest(value)
+
+
+def canonical_aggregate_overlay_digest(value: dict[str, Any]) -> str:
+    return _canonical_digest(value)
 
 
 def _parse_requirement_list(
@@ -183,41 +181,98 @@ def _parse_requirement_list(
     return tuple(Requirement.parse(item) for item in value)
 
 
-def load_composed_manifest(path: Path) -> Manifest:
-    base = Manifest.load(path)
-    overlay_path = path.with_name(OVERLAY_FILENAME)
-    if not overlay_path.exists():
-        return base
-
+def _read_overlay(path: Path, label: str) -> dict[str, Any]:
     try:
-        raw = json.loads(overlay_path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise ValueError(f"cannot read workflow overlay: {error}") from error
+        raise ValueError(f"cannot read {label}: {error}") from error
     if not isinstance(raw, dict):
-        raise ValueError("workflow overlay root must be an object")
-    if raw.get("schema") != OVERLAY_SCHEMA:
-        raise ValueError("unsupported workflow overlay schema")
+        raise ValueError(f"{label} root must be an object")
+    return raw
+
+
+def _validate_common_overlay(
+    *,
+    raw: dict[str, Any],
+    path: Path,
+    base: Manifest,
+    schema: str,
+    label: str,
+) -> None:
+    if raw.get("schema") != schema:
+        raise ValueError(f"unsupported {label} schema")
     expected_relative = path.as_posix()
     declared_relative = str(raw.get("base_manifest_path", ""))
     if declared_relative != expected_relative:
         raise ValueError(
-            "workflow overlay base_manifest_path mismatch: "
+            f"{label} base_manifest_path mismatch: "
             f"declared={declared_relative!r} expected={expected_relative!r}"
         )
     expected_base_sha = str(raw.get("base_manifest_blob_sha1", ""))
     observed_base_sha = blob_sha(path)
     if expected_base_sha != observed_base_sha:
         raise ValueError(
-            "workflow overlay base manifest drift: "
+            f"{label} base manifest drift: "
             f"observed={observed_base_sha} expected={expected_base_sha}"
         )
     if raw.get("repository") != base.repository:
-        raise ValueError("workflow overlay repository mismatch")
+        raise ValueError(f"{label} repository mismatch")
     if raw.get("event") != base.event:
-        raise ValueError("workflow overlay event mismatch")
+        raise ValueError(f"{label} event mismatch")
     digest = str(raw.get("overlay_sha256", ""))
-    if digest != canonical_overlay_digest(raw):
-        raise ValueError("workflow overlay SHA-256 does not match content")
+    if digest != _canonical_digest(raw):
+        raise ValueError(f"{label} SHA-256 does not match content")
+
+
+def _load_aggregate_overlay(path: Path, base: Manifest) -> Requirement:
+    overlay_path = path.with_name(AGGREGATE_OVERLAY_FILENAME)
+    if not overlay_path.exists():
+        return base.aggregate
+
+    raw = _read_overlay(overlay_path, "aggregate workflow overlay")
+    _validate_common_overlay(
+        raw=raw,
+        path=path,
+        base=base,
+        schema=AGGREGATE_OVERLAY_SCHEMA,
+        label="aggregate workflow overlay",
+    )
+    expected_previous = str(raw.get("base_aggregate_blob_sha1", ""))
+    if expected_previous != base.aggregate.git_blob_sha1:
+        raise ValueError(
+            "aggregate workflow overlay base aggregate drift: "
+            f"observed={base.aggregate.git_blob_sha1} "
+            f"expected={expected_previous}"
+        )
+    value = raw.get("aggregate_workflow")
+    if not isinstance(value, dict):
+        raise ValueError("aggregate workflow overlay replacement must be an object")
+    replacement = Requirement.parse(value)
+    if (
+        replacement.workflow_id != base.aggregate.workflow_id
+        or replacement.path != base.aggregate.path
+        or replacement.name != base.aggregate.name
+    ):
+        raise ValueError(
+            "aggregate workflow overlay may update definition policy "
+            "but not workflow identity"
+        )
+    return replacement
+
+
+def _compose_external_workflows(path: Path, base: Manifest) -> tuple[Requirement, ...]:
+    overlay_path = path.with_name(OVERLAY_FILENAME)
+    if not overlay_path.exists():
+        return base.workflows
+
+    raw = _read_overlay(overlay_path, "workflow overlay")
+    _validate_common_overlay(
+        raw=raw,
+        path=path,
+        base=base,
+        schema=OVERLAY_SCHEMA,
+        label="workflow overlay",
+    )
 
     replacements = _parse_requirement_list(
         raw.get("replace_workflows", []), "replace_workflows"
@@ -280,13 +335,20 @@ def load_composed_manifest(path: Path) -> Manifest:
             "workflow overlay composed count mismatch: "
             f"declared={declared_count} actual={len(workflows)}"
         )
-    return Manifest(
+    return workflows
+
+
+def load_composed_manifest(path: Path) -> Manifest:
+    base = Manifest.load(path)
+    result = Manifest(
         repository=base.repository,
         event=base.event,
-        aggregate=base.aggregate,
+        aggregate=_load_aggregate_overlay(path, base),
         reject_unlisted=base.reject_unlisted,
-        workflows=workflows,
+        workflows=_compose_external_workflows(path, base),
     )
+    result.validate()
+    return result
 
 
 class _OverlayManifestLoader:

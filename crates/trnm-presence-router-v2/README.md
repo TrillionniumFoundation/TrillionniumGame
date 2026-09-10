@@ -129,7 +129,7 @@ The focused corpus covers:
 - authenticated reconnect replay and cross-identity cursor rejection;
 - bounded unknown outcomes, archive reservation, receipt-budget saturation and epoch recovery.
 
-The isolated workspace must also execute in the stable aggregate gate. Empty discovery, skipped mandatory tests, warnings, stale-head results, and local-only execution receive no evidence credit.
+This root-workspace package is explicitly registered in package authority and must execute in the stable aggregate merge gate. Empty discovery, skipped mandatory tests, warnings, stale-head results, and local-only execution receive no evidence credit.
 
 ## Operations
 

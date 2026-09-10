@@ -12,6 +12,12 @@ an earlier attempt of the same workflow run. The retained producer artifact is
 therefore bound to its own attempt, while the verifier remains bound to the
 current attempt. A producer from a later attempt, another run, another head, or
 a non-successful/non-exact producer job remains rejected.
+
+The workflow also runs after protected-main pushes and by explicit manual
+main-branch dispatch. Event admission is enforced here so the workflow definition
+can remain identity-pinned: pull-request behavior is unchanged; push and manual
+runs are accepted only for `main`; a push attached to a pull request and every
+other event fail closed.
 """
 from __future__ import annotations
 
@@ -24,6 +30,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 BASE_PATH = ROOT / "scripts/verify-branch-inventory-log.py"
 MAX_CONCURRENT_ADDITIONS = 128
+NON_PR_EVENTS = {"push", "workflow_dispatch"}
 
 
 def load_base() -> Any:
@@ -44,7 +51,55 @@ ORIGINAL_VALIDATE_INVENTORY = BASE.validate_inventory
 ORIGINAL_VERIFY = BASE.verify
 ORIGINAL_PARSE = BASE.EMITTER.parse
 ORIGINAL_VALIDATE_PRODUCER_JOB = BASE.validate_producer_job
+ORIGINAL_VALIDATE_RUN = BASE.validate_run
 _VERIFY_CONTEXT: dict[str, Any] | None = None
+
+
+def validate_event_scoped_run(
+    run: dict[str, Any],
+    *,
+    repository: str,
+    head_sha: str,
+    run_id: str,
+    run_attempt: str,
+) -> None:
+    """Preserve exact run checks while admitting only declared main events."""
+
+    event = run.get("event")
+    if event == "pull_request":
+        ORIGINAL_VALIDATE_RUN(
+            run,
+            repository=repository,
+            head_sha=head_sha,
+            run_id=run_id,
+            run_attempt=run_attempt,
+        )
+        return
+
+    BASE.require(
+        event in NON_PR_EVENTS,
+        "workflow event must be pull_request, push, or workflow_dispatch",
+    )
+    BASE.require(
+        run.get("head_branch") == "main",
+        f"{event} branch inventory must target main",
+    )
+    pull_requests = run.get("pull_requests")
+    if event == "push":
+        BASE.require(
+            isinstance(pull_requests, list) and not pull_requests,
+            "push branch inventory must not be attached to a pull request",
+        )
+
+    normalized = dict(run)
+    normalized["event"] = "pull_request"
+    ORIGINAL_VALIDATE_RUN(
+        normalized,
+        repository=repository,
+        head_sha=head_sha,
+        run_id=run_id,
+        run_attempt=run_attempt,
+    )
 
 
 def retained_producer_attempt(
@@ -295,9 +350,18 @@ def validate_inventory(
 
 
 def main() -> int:
+    previous_validate_run = BASE.validate_run
+    previous_validate_inventory = BASE.validate_inventory
+    previous_verify = BASE.verify
+    BASE.validate_run = validate_event_scoped_run
     BASE.validate_inventory = validate_inventory
     BASE.verify = verify
-    return BASE.main()
+    try:
+        return BASE.main()
+    finally:
+        BASE.validate_run = previous_validate_run
+        BASE.validate_inventory = previous_validate_inventory
+        BASE.verify = previous_verify
 
 
 if __name__ == "__main__":
