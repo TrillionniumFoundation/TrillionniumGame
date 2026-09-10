@@ -33,8 +33,11 @@ class StorageIntegrityContractTests(unittest.TestCase):
             for path in sorted((storage_root / "storage_parts").glob("*.rs"))
         )
         self.assertIn(
-            "after: Option<&(Actor, Option<UserId>, StorageObjectKey)>", source
+            "type StorageListCursor = (Actor, Option<UserId>, StorageObjectKey);",
+            source,
         )
+        self.assertIn("after: Option<&StorageListCursor>", source)
+        self.assertIn("type StorageListPage = (Vec<StorageObject>, Option<StorageListCursor>);", source)
         self.assertIn("cursor.0 != actor", source)
         self.assertIn("cursor.1 != owner", source)
         self.assertIn("cursor.2.collection() != collection", source)
