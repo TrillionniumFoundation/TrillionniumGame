@@ -86,8 +86,8 @@ fn profile_limits_fail_before_mutating_state() {
                     account(1),
                     notification(1),
                     NotificationKind::Custom(1),
-                    NotificationText::new("subject").expect("subject"),
-                    NotificationText::new("content").expect("content"),
+                    NotificationText::new("too-long-subject").expect("subject"),
+                    NotificationText::new("too-long-content").expect("content"),
                 ),
             )
             .expect_err("text limit")
