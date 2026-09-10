@@ -86,8 +86,11 @@ jobs:
             "$TARGET_ROOT/contracts/operations/database-endurance-plan.v1.json"
           grep -q '"global_sg1_accepted": false' \
             "$TARGET_ROOT/docs/review/denominator-family-packets/index.json"
-          grep -q '"Nakama retired": false' \
-            "$TARGET_ROOT/docs/status/CUTOVER_STATE.json"
+          jq -e '
+            .claims.public_online == false and
+            .claims.cutover_authorized == false and
+            .claims.nakama_retired == false
+          ' "$TARGET_ROOT/docs/status/CUTOVER_STATE.json" >/dev/null
 
       - name: Install exact Rust toolchain
         shell: bash
