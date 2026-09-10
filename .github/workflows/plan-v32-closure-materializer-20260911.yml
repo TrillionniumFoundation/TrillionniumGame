@@ -1,0 +1,147 @@
+name: plan-v32-closure-materializer-20260911
+
+on:
+  push:
+    branches:
+      - ops/game-exact-source-snapshot-20260910
+    paths:
+      - .github/workflows/plan-v32-closure-materializer-20260911.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: plan-v32-closure-materializer-20260911
+  cancel-in-progress: false
+
+env:
+  TARGET_BASE_SHA: '79ad65ad9fb98cd804c1f64cd3fb2b9d58bd898d'
+  TARGET_BASE_TREE: '0b8d43bcb92e16b2e2b5cca26293fe7616337303'
+  CONTROLLER_SHA: 'c78f20a02a475c2ddc1a376fd24b79930d3c7e29'
+  CONTROLLER_TREE: '57bf49f0e6cc9996eb6444c96565d6be8987d38d'
+  TARGET_BRANCH: 'feature/plan-v32-ops-security-closure-20260911'
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Fetch exact driver, target base and immutable controller
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          driver="$RUNNER_TEMP/driver"
+          target="$RUNNER_TEMP/target"
+          controller="$RUNNER_TEMP/controller"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          if git ls-remote --exit-code --heads "$remote" "refs/heads/${TARGET_BRANCH}" >/dev/null 2>&1; then
+            echo "target branch already exists: ${TARGET_BRANCH}" >&2
+            exit 1
+          fi
+
+          git init "$driver"
+          git -C "$driver" remote add origin "$remote"
+          git -C "$driver" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$driver" checkout --detach FETCH_HEAD
+          test "$(git -C "$driver" rev-parse HEAD)" = "$GITHUB_SHA"
+          test -s "$driver/tools/materialize_plan_v32_closure.py"
+
+          git init "$target"
+          git -C "$target" remote add origin "$remote"
+          git -C "$target" fetch --no-tags --depth=1 origin "$TARGET_BASE_SHA"
+          git -C "$target" checkout -B "$TARGET_BRANCH" FETCH_HEAD
+          test "$(git -C "$target" rev-parse HEAD)" = "$TARGET_BASE_SHA"
+          test "$(git -C "$target" rev-parse HEAD^{tree})" = "$TARGET_BASE_TREE"
+
+          git init "$controller"
+          git -C "$controller" remote add origin "$remote"
+          git -C "$controller" fetch --no-tags --depth=1 origin "$CONTROLLER_SHA"
+          git -C "$controller" checkout --detach FETCH_HEAD
+          test "$(git -C "$controller" rev-parse HEAD)" = "$CONTROLLER_SHA"
+          test "$(git -C "$controller" rev-parse HEAD^{tree})" = "$CONTROLLER_TREE"
+
+          printf 'DRIVER_ROOT=%s\nTARGET_ROOT=%s\nCONTROLLER_ROOT=%s\n' \
+            "$driver" "$target" "$controller" >> "$GITHUB_ENV"
+
+      - name: Materialize bounded closure candidates and hostile contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$DRIVER_ROOT/tools/materialize_plan_v32_closure.py" \
+            --root "$TARGET_ROOT" \
+            --controller "$CONTROLLER_ROOT"
+          git -C "$TARGET_ROOT" diff --check
+          test -n "$(git -C "$TARGET_ROOT" status --porcelain)"
+          if git -C "$TARGET_ROOT" status --porcelain | grep -E '(^| )\.github/workflows/'; then
+            echo 'materializer may not alter target workflow definitions' >&2
+            exit 1
+          fi
+          grep -q '"production_ready": false' \
+            "$TARGET_ROOT/contracts/security/remote-mac-provider.v1.json"
+          grep -q '"accepted_evidence": false' \
+            "$TARGET_ROOT/contracts/operations/database-endurance-plan.v1.json"
+          grep -q '"global_sg1_accepted": false' \
+            "$TARGET_ROOT/docs/review/denominator-family-packets/index.json"
+          grep -q '"Nakama retired": false' \
+            "$TARGET_ROOT/docs/status/CUTOVER_STATE.json"
+
+      - name: Install exact Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1 --path "$TARGET_ROOT"
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Verify complete target source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$TARGET_ROOT"
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          timeout 45m python3 -m unittest discover -s tests/control_plane -p 'test_*.py' -v
+          python3 scripts/check-plan.py
+          python3 scripts/derive-gates.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/check-schema-authority.py
+
+      - name: Commit and publish the exact candidate without rewriting history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$TARGET_ROOT"
+          git config user.name 'Plan v3.2 closure materializer'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git add --all
+          test -n "$(git diff --cached --name-only)"
+          if git diff --cached --name-only | grep -E '^\.github/workflows/'; then
+            echo 'target commit unexpectedly contains workflow definitions' >&2
+            exit 1
+          fi
+          git commit -m 'plan-v3.2: materialize security durability and operations candidates' \
+            -m 'Add fail-closed remote MAC provider and Unix transport boundaries, exhaustive durability model, reproducible denominator review packets, PostgreSQL and CockroachDB fault/recovery harnesses, capacity/endurance segmentation, and cutover state machine. Preserve every acceptance, compatibility, production, public-online, cutover and retirement claim as false pending exact execution and independent review.'
+          target_sha=$(git rev-parse HEAD)
+          target_tree=$(git rev-parse HEAD^{tree})
+          test "$target_sha" != "$TARGET_BASE_SHA"
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          {
+            printf 'TARGET_BRANCH=%s\n' "$TARGET_BRANCH"
+            printf 'TARGET_COMMIT=%s\n' "$target_sha"
+            printf 'TARGET_TREE=%s\n' "$target_tree"
+            printf 'BASE_COMMIT=%s\n' "$TARGET_BASE_SHA"
+            printf 'BASE_TREE=%s\n' "$TARGET_BASE_TREE"
+            printf 'CONTROLLER_COMMIT=%s\n' "$CONTROLLER_SHA"
+            printf 'HISTORY_REWRITTEN=false\n'
+            printf 'ACCEPTED_EVIDENCE=false\n'
+            printf 'PRODUCTION_READY=false\n'
+          } | tee "$RUNNER_TEMP/materialized-candidate.txt"
+          cat "$RUNNER_TEMP/materialized-candidate.txt" >> "$GITHUB_STEP_SUMMARY"
