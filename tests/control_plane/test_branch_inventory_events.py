@@ -27,7 +27,12 @@ class BranchInventoryEventContractTests(unittest.TestCase):
         self.module = load_module()
 
     @staticmethod
-    def run(event: str, *, branch: str, pull_requests: list[object] | None = None):
+    def make_run(
+        event: str,
+        *,
+        branch: str,
+        pull_requests: list[object] | None = None,
+    ) -> dict[str, object]:
         return {
             "id": 123,
             "repository": {"full_name": REPOSITORY},
@@ -53,7 +58,7 @@ class BranchInventoryEventContractTests(unittest.TestCase):
 
     def test_pull_request_retains_original_contract(self) -> None:
         self.validate(
-            self.run(
+            self.make_run(
                 "pull_request",
                 branch="feature/plan-v32-identity-core-20260909",
                 pull_requests=[{"number": 163}],
@@ -61,10 +66,10 @@ class BranchInventoryEventContractTests(unittest.TestCase):
         )
 
     def test_protected_main_push_is_accepted(self) -> None:
-        self.validate(self.run("push", branch="main"))
+        self.validate(self.make_run("push", branch="main"))
 
     def test_main_workflow_dispatch_is_accepted(self) -> None:
-        self.validate(self.run("workflow_dispatch", branch="main"))
+        self.validate(self.make_run("workflow_dispatch", branch="main"))
 
     def test_non_main_push_or_dispatch_is_rejected(self) -> None:
         for event in ("push", "workflow_dispatch"):
@@ -73,7 +78,7 @@ class BranchInventoryEventContractTests(unittest.TestCase):
                     self.module.BASE.VerificationError,
                     "must target main",
                 ):
-                    self.validate(self.run(event, branch="feature/not-main"))
+                    self.validate(self.make_run(event, branch="feature/not-main"))
 
     def test_push_attached_to_pull_request_is_rejected(self) -> None:
         with self.assertRaisesRegex(
@@ -81,7 +86,11 @@ class BranchInventoryEventContractTests(unittest.TestCase):
             "must not be attached",
         ):
             self.validate(
-                self.run("push", branch="main", pull_requests=[{"number": 163}])
+                self.make_run(
+                    "push",
+                    branch="main",
+                    pull_requests=[{"number": 163}],
+                )
             )
 
     def test_unregistered_event_is_rejected(self) -> None:
@@ -89,7 +98,7 @@ class BranchInventoryEventContractTests(unittest.TestCase):
             self.module.BASE.VerificationError,
             "workflow event must be",
         ):
-            self.validate(self.run("schedule", branch="main"))
+            self.validate(self.make_run("schedule", branch="main"))
 
 
 if __name__ == "__main__":
