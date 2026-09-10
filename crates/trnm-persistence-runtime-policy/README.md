@@ -50,7 +50,7 @@ cargo test --manifest-path crates/trnm-persistence-runtime-policy/Cargo.toml --a
 cargo clippy --manifest-path crates/trnm-persistence-runtime-policy/Cargo.toml --all-targets --locked -- -D warnings
 ```
 
-This isolated workspace is explicitly registered in package authority and must execute in the stable aggregate merge gate. Empty discovery, skipped mandatory tests, warnings, older-head results, and local-only execution do not earn remote verification or claim credit.
+This root-workspace package is explicitly registered in package authority and must execute in the stable aggregate merge gate. Empty discovery, skipped mandatory tests, warnings, older-head results, and local-only execution do not earn remote verification or claim credit.
 
 Focused vectors and live/fault/differential suites are required when this module's behavior crosses protocol, database, security, realtime, or operational boundaries.
 
