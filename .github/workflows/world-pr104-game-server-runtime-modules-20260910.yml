@@ -1,4 +1,4 @@
-name: world-pr127-game-server-runtime-modules-v7
+name: world-pr127-game-server-runtime-modules-v8
 
 on:
   pull_request:
@@ -8,12 +8,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr127-game-server-runtime-modules-v7
+  group: world-pr127-game-server-runtime-modules-v8
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
-  WORLD_SOURCE_SHA: 'cc608ce65a4a51b7972fcfd01110a2f95d7571cb'
+  WORLD_SOURCE_SHA: 'f40fe74c23ae4a7118e202f4210b2c5774a20a52'
   COMMON_HELPER_SHA: 'b02fef9a86b77c8babd19a7dd469081095ea2e90'
   STACK_HELPER_SHA: '3aa075564891e4f7abba57c682dafc9f6b06c7b2'
   RUSTUP_TOOLCHAIN: '1.98.1'
@@ -25,7 +25,7 @@ env:
 
 jobs:
   qualify:
-    name: world-pr127/game-server-runtime-modules-v7
+    name: world-pr127/game-server-runtime-modules-v8
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
@@ -92,7 +92,7 @@ jobs:
           GIT_COMMITTER_DATE='2026-09-11T00:00:00Z' \
             git -C "$world" commit -m \
               'refactor(world): extract cumulative root modules'
-          packet="$RUNNER_TEMP/world-root-modules-v7"
+          packet="$RUNNER_TEMP/world-root-modules-v8"
           mkdir -p "$packet"
           git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" \
             > "$packet/candidate.patch"
@@ -109,14 +109,14 @@ jobs:
           (cd "$packet" && sha256sum candidate.patch identity.txt > SHA256SUMS)
           tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
             --owner=0 --group=0 --numeric-owner \
-            -czf "$RUNNER_TEMP/world-root-modules-v7.tar.gz" \
-            -C "$RUNNER_TEMP" world-root-modules-v7
+            -czf "$RUNNER_TEMP/world-root-modules-v8.tar.gz" \
+            -C "$RUNNER_TEMP" world-root-modules-v8
 
       - name: Retain exact unqualified candidate
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-root-modules-v7-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-root-modules-v7.tar.gz
+          name: world-root-modules-v8-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-root-modules-v8.tar.gz
           mime_type: application/gzip
 
       - name: Run format tests and strict Clippy
@@ -124,7 +124,7 @@ jobs:
         run: |
           set -uo pipefail
           world="$RUNNER_TEMP/world"
-          diagnostics="$RUNNER_TEMP/world-root-modules-v7-diagnostics"
+          diagnostics="$RUNNER_TEMP/world-root-modules-v8-diagnostics"
           mkdir -p "$diagnostics"
           set +e
           cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" \
@@ -158,7 +158,7 @@ jobs:
           bash scripts/run-trnm-world-v6-qualification-v2.sh truth
           bash scripts/run-trnm-world-v6-qualification-v2.sh source
           test -z "$(git status --porcelain=v1 --untracked-files=no)"
-          printf 'WORLD_ROOT_MODULES_V7=PASS\n'
+          printf 'WORLD_ROOT_MODULES_V8=PASS\n'
           printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
 
       - name: Package qualification diagnostics
@@ -166,7 +166,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          diagnostics="$RUNNER_TEMP/world-root-modules-v7-diagnostics"
+          diagnostics="$RUNNER_TEMP/world-root-modules-v8-diagnostics"
           mkdir -p "$diagnostics"
           test -s "$diagnostics/status.txt" || \
             printf 'state=failed_before_test_status\n' > "$diagnostics/status.txt"
@@ -180,13 +180,13 @@ jobs:
             -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
           tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
             --owner=0 --group=0 --numeric-owner \
-            -czf "$RUNNER_TEMP/world-root-modules-v7-diagnostics.tar.gz" \
-            -C "$RUNNER_TEMP" world-root-modules-v7-diagnostics
+            -czf "$RUNNER_TEMP/world-root-modules-v8-diagnostics.tar.gz" \
+            -C "$RUNNER_TEMP" world-root-modules-v8-diagnostics
 
       - name: Upload qualification diagnostics
         if: always()
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-root-modules-v7-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-root-modules-v7-diagnostics.tar.gz
+          name: world-root-modules-v8-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-root-modules-v8-diagnostics.tar.gz
           mime_type: application/gzip
