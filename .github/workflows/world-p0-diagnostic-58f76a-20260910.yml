@@ -13,62 +13,45 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  diagnose:
+  p0_diagnostic:
     name: world-p0/exact-source-diagnostic
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
       WORLD_COMMIT: 58f76a6100bade6e148a56bd429eff34f8a255cd
-      RUSTUP_TOOLCHAIN: 1.98.1
+      RUSTUP_TOOLCHAIN: '1.98.1'
       CARGO_INCREMENTAL: '0'
       RUST_BACKTRACE: '1'
       RUST_TEST_THREADS: '1'
     steps:
-      - name: Fetch exact World source
+      - name: Fetch exact World source and diagnostic helper
         shell: bash
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/world"
-          rm -rf "$root"
-          git init "$root"
-          git -C "$root" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
-          git -C "$root" fetch --no-tags --depth=1 origin "$WORLD_COMMIT"
-          git -C "$root" checkout --detach FETCH_HEAD
-          test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_COMMIT"
-          test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
+          world="$RUNNER_TEMP/world"
+          helper="$RUNNER_TEMP/helper"
+          rm -rf "$world" "$helper"
+          git init "$world"
+          git -C "$world" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$world" fetch --no-tags --depth=1 origin "$WORLD_COMMIT"
+          git -C "$world" checkout --detach FETCH_HEAD
+          test "$(git -C "$world" rev-parse HEAD)" = "$WORLD_COMMIT"
+          git init "$helper"
+          git -C "$helper" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$helper" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$helper" checkout --detach FETCH_HEAD
+          test "$(git -C "$helper" rev-parse HEAD)" = "$GITHUB_SHA"
+          test -s "$helper/scripts/instrument-world-p0.py"
+          test -z "$(git -C "$world" status --porcelain=v1 --untracked-files=no)"
 
-      - name: Add diagnostic output in the temporary clone
+      - name: Instrument exact test in the temporary clone
         shell: bash
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/world"
-          file="$root/trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
-          python3 - "$file" <<'PY'
-          from pathlib import Path
-          import sys
-          path = Path(sys.argv[1])
-          text = path.read_text(encoding="utf-8")
-          old = '''        let (reconciliations, captured, file_violations) =
-            transaction_reconciliation_counts(&source);
-        reconcile_count += reconciliations;
-        captured_transaction_reconcile_count += captured;
-'''
-          new = '''        let (reconciliations, captured, file_violations) =
-            transaction_reconciliation_counts(&source);
-        if reconciliations > 0 {
-            eprintln!(
-                "P0_DIAG path={} reconciliations={} captured={} violations={:?}",
-                path.display(), reconciliations, captured, file_violations
-            );
-        }
-        reconcile_count += reconciliations;
-        captured_transaction_reconcile_count += captured;
-'''
-          assert text.count(old) == 1
-          path.write_text(text.replace(old, new), encoding="utf-8", newline="\n")
-          PY
-          git -C "$root" diff --check
+          python3 "$RUNNER_TEMP/helper/scripts/instrument-world-p0.py" \
+            "$RUNNER_TEMP/world/trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
+          git -C "$RUNNER_TEMP/world" diff --check
 
       - name: Execute only the captured-receipt boundary test
         shell: bash
