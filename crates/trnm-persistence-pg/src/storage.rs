@@ -8,8 +8,7 @@ use trnm_storage_core::{
 };
 
 use super::{
-    data_loss, decode_digest, decode_id16, error, invalid, map_postgres_error, to_i64,
-    PgRepository,
+    data_loss, decode_digest, decode_id16, error, invalid, map_postgres_error, to_i64, PgRepository,
 };
 
 const MAX_BATCH_OPERATIONS: usize = 100;
@@ -423,10 +422,7 @@ fn decode_storage_object(key: StorageObjectKey, row: &Row) -> Result<StorageObje
     decode_storage_object_at(key, row, 0)
 }
 
-fn decode_listed_storage_object(
-    collection: &str,
-    row: &Row,
-) -> Result<StorageObject, DomainError> {
+fn decode_listed_storage_object(collection: &str, row: &Row) -> Result<StorageObject, DomainError> {
     let object_key: String = row.get(0);
     let user_bytes: Vec<u8> = row.get(1);
     let key = decode_storage_key(collection.to_owned(), object_key, user_bytes)?;
@@ -575,41 +571,23 @@ mod tests {
             "invalid_storage_list_limit"
         );
         assert_eq!(
-            validate_list_request(
-                Actor::Server,
-                "profile",
-                None,
-                None,
-                MAX_LIST_LIMIT + 1,
-            )
-            .unwrap_err()
-            .reason(),
+            validate_list_request(Actor::Server, "profile", None, None, MAX_LIST_LIMIT + 1,)
+                .unwrap_err()
+                .reason(),
             "invalid_storage_list_limit"
         );
         assert_eq!(
-            validate_list_request(
-                Actor::User(UserId::new([0; 16])),
-                "profile",
-                None,
-                None,
-                1,
-            )
-            .unwrap_err()
-            .reason(),
+            validate_list_request(Actor::User(UserId::new([0; 16])), "profile", None, None, 1,)
+                .unwrap_err()
+                .reason(),
             "invalid_storage_actor"
         );
         let other_collection =
             StorageObjectKey::new("other", "object", UserId::new([1; 16])).unwrap();
         assert_eq!(
-            validate_list_request(
-                Actor::Server,
-                "profile",
-                None,
-                Some(&other_collection),
-                1,
-            )
-            .unwrap_err()
-            .reason(),
+            validate_list_request(Actor::Server, "profile", None, Some(&other_collection), 1,)
+                .unwrap_err()
+                .reason(),
             "storage_cursor_scope_mismatch"
         );
         assert_eq!(
