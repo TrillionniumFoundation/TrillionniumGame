@@ -82,7 +82,7 @@ jobs:
           test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
 
       - name: Upload exact generated contract
-        uses: actions/upload-artifact@043fb460e6257d1ca154e89a5e86196c74e480f8
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: cex-semantic-fc8643d
           path: export/**
