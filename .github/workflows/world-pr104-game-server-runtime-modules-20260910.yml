@@ -1,4 +1,4 @@
-name: world-pr127-game-server-runtime-modules-v6
+name: world-pr127-game-server-runtime-modules-v7
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr127-game-server-runtime-modules-v6
+  group: world-pr127-game-server-runtime-modules-v7
   cancel-in-progress: true
 
 env:
@@ -25,17 +25,11 @@ env:
 
 jobs:
   qualify:
-    name: world-pr127/game-server-runtime-modules-v6
+    name: world-pr127/game-server-runtime-modules-v7
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
-      - name: Checkout exact diagnostic source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Fetch exact World source and immutable helpers
+      - name: Fetch exact sources and install local evidence action
         shell: bash
         run: |
           set -euo pipefail
@@ -55,8 +49,17 @@ jobs:
             "https://github.com/${GITHUB_REPOSITORY}.git" "$COMMON_HELPER_SHA"
           clone_exact "$RUNNER_TEMP/stack" \
             "https://github.com/${GITHUB_REPOSITORY}.git" "$STACK_HELPER_SHA"
+          clone_exact "$RUNNER_TEMP/driver" \
+            "https://github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_SHA"
+          test -s "$RUNNER_TEMP/driver/scripts/world-pr127-cumulative-modules-transform.py"
+          rm -rf "$GITHUB_WORKSPACE/.github/actions/upload-evidence"
+          mkdir -p "$GITHUB_WORKSPACE/.github/actions" "$GITHUB_WORKSPACE/scripts"
+          cp -R "$RUNNER_TEMP/common/.github/actions/upload-evidence" \
+            "$GITHUB_WORKSPACE/.github/actions/"
+          cp "$RUNNER_TEMP/common/scripts/upload-actions-artifact.py" \
+            "$GITHUB_WORKSPACE/scripts/"
 
-      - name: Install pinned Rust toolchain and native dependencies
+      - name: Install Rust 1.98.1 and native dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -71,12 +74,12 @@ jobs:
             libxkbcommon-dev libwayland-dev pkg-config
           test "$(rustc --version | awk '{print $2}')" = "$RUSTUP_TOOLCHAIN"
 
-      - name: Apply cumulative module transformation
+      - name: Transform and materialize exact candidate
         shell: bash
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          python3 scripts/world-pr127-cumulative-modules-transform.py \
+          python3 "$RUNNER_TEMP/driver/scripts/world-pr127-cumulative-modules-transform.py" \
             "$world" \
             --common-helper "$RUNNER_TEMP/common" \
             --stack-helper "$RUNNER_TEMP/stack" \
@@ -89,11 +92,11 @@ jobs:
           GIT_COMMITTER_DATE='2026-09-11T00:00:00Z' \
             git -C "$world" commit -m \
               'refactor(world): extract cumulative root modules'
-
-          mkdir -p "$RUNNER_TEMP/candidate"
+          packet="$RUNNER_TEMP/world-root-modules-v7"
+          mkdir -p "$packet"
           git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" \
-            > "$RUNNER_TEMP/candidate/candidate.patch"
-          test -s "$RUNNER_TEMP/candidate/candidate.patch"
+            > "$packet/candidate.patch"
+          test -s "$packet/candidate.patch"
           {
             printf 'world_source=%s\n' "$WORLD_SOURCE_SHA"
             printf 'candidate_commit=%s\n' "$(git -C "$world" rev-parse HEAD)"
@@ -102,26 +105,26 @@ jobs:
             printf 'remaining_active_seams=2\n'
             printf 'qualification=pending\n'
             printf 'production_authorization=not_granted\n'
-          } > "$RUNNER_TEMP/candidate/identity.txt"
-          (
-            cd "$RUNNER_TEMP/candidate"
-            sha256sum candidate.patch identity.txt > SHA256SUMS
-          )
+          } > "$packet/identity.txt"
+          (cd "$packet" && sha256sum candidate.patch identity.txt > SHA256SUMS)
+          tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf "$RUNNER_TEMP/world-root-modules-v7.tar.gz" \
+            -C "$RUNNER_TEMP" world-root-modules-v7
 
-      - name: Upload exact unqualified candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: Retain exact unqualified candidate
+        uses: ./.github/actions/upload-evidence
         with:
-          name: world-root-modules-v6-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/candidate/**
-          if-no-files-found: error
-          retention-days: 90
+          name: world-root-modules-v7-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-root-modules-v7.tar.gz
+          mime_type: application/gzip
 
       - name: Run format tests and strict Clippy
         shell: bash
         run: |
           set -uo pipefail
           world="$RUNNER_TEMP/world"
-          diagnostics="$RUNNER_TEMP/diagnostics"
+          diagnostics="$RUNNER_TEMP/world-root-modules-v7-diagnostics"
           mkdir -p "$diagnostics"
           set +e
           cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" \
@@ -155,37 +158,35 @@ jobs:
           bash scripts/run-trnm-world-v6-qualification-v2.sh truth
           bash scripts/run-trnm-world-v6-qualification-v2.sh source
           test -z "$(git status --porcelain=v1 --untracked-files=no)"
-          printf 'WORLD_ROOT_MODULES_V6=PASS\n'
+          printf 'WORLD_ROOT_MODULES_V7=PASS\n'
           printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
 
-      - name: Finalize diagnostic manifest
+      - name: Package qualification diagnostics
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          diagnostics="$RUNNER_TEMP/diagnostics"
+          diagnostics="$RUNNER_TEMP/world-root-modules-v7-diagnostics"
           mkdir -p "$diagnostics"
-          if test ! -s "$diagnostics/status.txt"; then
-            printf 'state=failed_before_test_status\n' \
-              > "$diagnostics/status.txt"
-          fi
+          test -s "$diagnostics/status.txt" || \
+            printf 'state=failed_before_test_status\n' > "$diagnostics/status.txt"
           {
             printf 'world_source=%s\n' "$WORLD_SOURCE_SHA"
             printf 'run_id=%s\n' "$GITHUB_RUN_ID"
             printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
             printf 'production_authorization=not_granted\n'
           } > "$diagnostics/run.txt"
-          (
-            cd "$diagnostics"
-            find . -type f ! -name SHA256SUMS -print0 \
-              | sort -z | xargs -0 -r sha256sum > SHA256SUMS
-          )
+          (cd "$diagnostics" && find . -type f ! -name SHA256SUMS \
+            -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
+          tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf "$RUNNER_TEMP/world-root-modules-v7-diagnostics.tar.gz" \
+            -C "$RUNNER_TEMP" world-root-modules-v7-diagnostics
 
       - name: Upload qualification diagnostics
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: ./.github/actions/upload-evidence
         with:
-          name: world-root-modules-v6-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/diagnostics/**
-          if-no-files-found: error
-          retention-days: 90
+          name: world-root-modules-v7-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-root-modules-v7-diagnostics.tar.gz
+          mime_type: application/gzip
