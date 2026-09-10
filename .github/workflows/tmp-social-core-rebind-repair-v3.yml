@@ -1,0 +1,40 @@
+name: tmp-social-core-rebind-repair-v3
+
+on:
+  push:
+    branches:
+      - ops/social-core-rebind-repair-20260910
+    paths:
+      - .github/workflows/tmp-social-core-rebind-repair-v3.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: social-core-rebind-repair-v3-20260910
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      SOCIAL_BRANCH: feature/plan-v32-social-core-20260910
+      SOCIAL_HEAD: 336d3c2084732c7f7af52f157cfbac397928f1a7
+      IDENTITY_BRANCH: feature/plan-v32-identity-core-20260909
+      IDENTITY_HEAD: 4ef337a1a279252f9d81f8a9dbbb85d280ff03f9
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch exact corrected helper without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          helper_repo="$RUNNER_TEMP/ops-helper"
+          rm -rf "$helper_repo"
+          git init "$helper_repo"
+          git -C "$helper_repo" remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C "$helper_repo" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$helper_repo" checkout --detach FETCH_HEAD
+          test "$(git -C "$helper_repo" rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 "$helper_repo/tools/tmp_social_core_rebind_repair_v2.py"
