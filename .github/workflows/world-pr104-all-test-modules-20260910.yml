@@ -1,4 +1,4 @@
-name: world-pr104-all-active-nested-test-modules-v6
+name: world-pr104-all-active-nested-test-modules-v7
 
 on:
   pull_request:
@@ -8,13 +8,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr104-all-active-nested-test-modules-v6
+  group: world-pr104-all-active-nested-test-modules-v7
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_SOURCE_SHA: '33339b28a6f53668672d1797109da6c7bf57db49'
-  GAME_HELPER_SHA: '6fd063f1d3b83d64e766b74ae0bed171b030d4bd'
+  GAME_HELPER_SHA: 'b02fef9a86b77c8babd19a7dd469081095ea2e90'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: '0'
@@ -24,7 +24,7 @@ env:
 
 jobs:
   qualify:
-    name: world-pr104/all-active-nested-test-modules-v6
+    name: world-pr104/all-active-nested-test-modules-v7
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -34,7 +34,6 @@ jobs:
           set -euo pipefail
           world="$RUNNER_TEMP/world"
           helper="$RUNNER_TEMP/game-helper"
-
           git init "$world"
           git -C "$world" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
           git -C "$world" fetch --no-tags --depth=2 origin "$WORLD_SOURCE_SHA"
@@ -79,10 +78,8 @@ jobs:
           set -euo pipefail
           world="$RUNNER_TEMP/world"
           helper="$RUNNER_TEMP/game-helper"
-
           python3 "$helper/scripts/world-pr104-all-test-modules-qualified-transform.py" \
             "$world" --source-sha "$WORLD_SOURCE_SHA"
-          cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all
 
           git -C "$world" config user.name "World read-only qualification"
           git -C "$world" config user.email "world-read-only-qualification@invalid"
@@ -125,10 +122,9 @@ jobs:
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          packet="$world/run/world-all-active-nested-test-modules-v6"
-          archive="$RUNNER_TEMP/world-all-active-nested-test-modules-v6.tar.gz"
+          packet="$world/run/world-all-active-nested-test-modules-v7"
+          archive="$RUNNER_TEMP/world-all-active-nested-test-modules-v7.tar.gz"
           mkdir -p "$packet"
-
           git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" > "$packet/candidate.patch"
           test -s "$packet/candidate.patch"
           {
@@ -141,21 +137,22 @@ jobs:
             printf 'active_migration_remaining=36\n'
             printf 'workflows_catalogued=14\n'
             printf 'static_contexts=41\n'
+            printf 'manifest_bytes=post-rustfmt\n'
             printf 'production_authorization=not_granted\n'
           } > "$packet/identity.txt"
           (
             cd "$world"
             sha256sum \
-              run/world-all-active-nested-test-modules-v6/candidate.patch \
-              run/world-all-active-nested-test-modules-v6/identity.txt \
-              > run/world-all-active-nested-test-modules-v6/SHA256SUMS
+              run/world-all-active-nested-test-modules-v7/candidate.patch \
+              run/world-all-active-nested-test-modules-v7/identity.txt \
+              > run/world-all-active-nested-test-modules-v7/SHA256SUMS
           )
           tar --sort=name --format=gnu --mtime='UTC 2026-09-10' \
             --owner=0 --group=0 --numeric-owner \
             -czf "$archive" -C "$world" \
-            run/world-all-active-nested-test-modules-v6/candidate.patch \
-            run/world-all-active-nested-test-modules-v6/identity.txt \
-            run/world-all-active-nested-test-modules-v6/SHA256SUMS
+            run/world-all-active-nested-test-modules-v7/candidate.patch \
+            run/world-all-active-nested-test-modules-v7/identity.txt \
+            run/world-all-active-nested-test-modules-v7/SHA256SUMS
           test -s "$archive"
           sha256sum "$archive"
 
@@ -163,8 +160,8 @@ jobs:
         id: retained-world-test-modules
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-all-active-nested-test-modules-v6-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-all-active-nested-test-modules-v6.tar.gz
+          name: world-all-active-nested-test-modules-v7-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-all-active-nested-test-modules-v7.tar.gz
           mime_type: application/gzip
 
       - name: Emit retained artifact identity
