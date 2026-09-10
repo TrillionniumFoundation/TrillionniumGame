@@ -1,4 +1,4 @@
-name: world-pr104-campaign-runtime-modules-v3
+name: world-pr104-campaign-runtime-modules-v4
 
 on:
   pull_request:
@@ -8,14 +8,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr104-campaign-runtime-modules-v3
+  group: world-pr104-campaign-runtime-modules-v4
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_SOURCE_SHA: '33339b28a6f53668672d1797109da6c7bf57db49'
   COMMON_HELPER_SHA: 'b02fef9a86b77c8babd19a7dd469081095ea2e90'
-  CAMPAIGN_HELPER_SHA: '8d0b2d4a4161811cfd752bd3c892767696ca962d'
+  CAMPAIGN_HELPER_SHA: '80e6d3616134360a0f0907838de0813bb5411cbe'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: '0'
@@ -25,7 +25,7 @@ env:
 
 jobs:
   qualify:
-    name: world-pr104/campaign-runtime-modules-v3
+    name: world-pr104/campaign-runtime-modules-v4
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -59,7 +59,6 @@ jobs:
           git -C "$campaign" checkout --detach FETCH_HEAD
           test "$(git -C "$campaign" rev-parse HEAD)" = "$CAMPAIGN_HELPER_SHA"
           test -s "$campaign/scripts/world-pr104-campaign-runtime-modules-transform.py"
-          test -s "$campaign/scripts/world-pr104-campaign-runtime-semantic-import-repair.py"
 
           rm -rf "$GITHUB_WORKSPACE/.github/actions/upload-evidence"
           mkdir -p "$GITHUB_WORKSPACE/.github/actions" "$GITHUB_WORKSPACE/scripts"
@@ -80,6 +79,8 @@ jobs:
           test "$(rustc --version | awk '{print $2}')" = '1.98.1'
           rustc --version --verbose
           cargo --version --verbose
+          rustfmt --version
+          clippy-driver --version
 
       - name: Apply common and campaign module transforms
         shell: bash
@@ -93,9 +94,6 @@ jobs:
             "$world" --source-sha "$WORLD_SOURCE_SHA"
           python3 "$campaign/scripts/world-pr104-campaign-runtime-modules-transform.py" \
             "$world" --completed-commit "$WORLD_SOURCE_SHA"
-          python3 "$campaign/scripts/world-pr104-campaign-runtime-semantic-import-repair.py" \
-            "$world"
-          cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all
 
           git -C "$world" config user.name "World read-only qualification"
           git -C "$world" config user.email "world-read-only-qualification@invalid"
@@ -137,8 +135,8 @@ jobs:
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          packet="$world/run/world-campaign-runtime-modules-v3"
-          archive="$RUNNER_TEMP/world-campaign-runtime-modules-v3.tar.gz"
+          packet="$world/run/world-campaign-runtime-modules-v4"
+          archive="$RUNNER_TEMP/world-campaign-runtime-modules-v4.tar.gz"
           mkdir -p "$packet"
           git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" > "$packet/candidate.patch"
           test -s "$packet/candidate.patch"
@@ -155,16 +153,16 @@ jobs:
           (
             cd "$world"
             sha256sum \
-              run/world-campaign-runtime-modules-v3/candidate.patch \
-              run/world-campaign-runtime-modules-v3/identity.txt \
-              > run/world-campaign-runtime-modules-v3/SHA256SUMS
+              run/world-campaign-runtime-modules-v4/candidate.patch \
+              run/world-campaign-runtime-modules-v4/identity.txt \
+              > run/world-campaign-runtime-modules-v4/SHA256SUMS
           )
           tar --sort=name --format=gnu --mtime='UTC 2026-09-10' \
             --owner=0 --group=0 --numeric-owner \
             -czf "$archive" -C "$world" \
-            run/world-campaign-runtime-modules-v3/candidate.patch \
-            run/world-campaign-runtime-modules-v3/identity.txt \
-            run/world-campaign-runtime-modules-v3/SHA256SUMS
+            run/world-campaign-runtime-modules-v4/candidate.patch \
+            run/world-campaign-runtime-modules-v4/identity.txt \
+            run/world-campaign-runtime-modules-v4/SHA256SUMS
           test -s "$archive"
           sha256sum "$archive"
 
@@ -172,8 +170,8 @@ jobs:
         id: candidate-artifact
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-campaign-runtime-modules-v3-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-campaign-runtime-modules-v3.tar.gz
+          name: world-campaign-runtime-modules-v4-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-campaign-runtime-modules-v4.tar.gz
           mime_type: application/gzip
 
       - name: Emit artifact identity
