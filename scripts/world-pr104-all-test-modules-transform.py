@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Prepare a bounded migration of all remaining active nested test include! seams.
+"""Prepare a bounded migration of all remaining active nested-test include! seams.
 
-The transformation is intentionally mechanical and fail-closed. It changes only
-three existing test wrappers, their ten test-body files, the include migration
-ledger, one Clippy-equivalent expression, and the three direct-source manifests.
-The caller must run rustfmt, all-target tests, strict Clippy and the World truth /
-source qualification suites before the result can be proposed upstream.
+The transformation is mechanical and fail-closed. It changes three existing test
+wrappers, their ten test-body files, the include migration ledger, one
+Clippy-equivalent expression and the three direct-source manifests. The caller
+must still run rustfmt, all-target tests, strict Clippy and the World truth/source
+qualification suites before proposing the result upstream.
 """
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ class Family:
     wrapper: str
     children: tuple[str, ...]
     manifest: str
-    prelude: str
 
 
 FAMILIES = (
@@ -32,23 +31,12 @@ FAMILIES = (
         wrapper="trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs",
         children=("campaign_tests_01.rs", "campaign_tests_02.rs", "campaign_tests_03.rs"),
         manifest="trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json",
-        prelude="use super::*;\nuse tempfile::tempdir;\n",
     ),
     Family(
         name="rts",
         wrapper="trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/part_01.rs",
         children=("rts_tests_01.rs", "rts_tests_02.rs", "rts_tests_03.rs"),
         manifest="trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json",
-        prelude=(
-            "use super::*;\n"
-            "use std::{fs, path::PathBuf};\n"
-            "use tempfile::tempdir;\n"
-            "use trnm_campaign_core::{\n"
-            "    BattleMapNodeV1, BattleMapSeedV1, CampaignMission, CampaignRoom, CampaignSaveV1,\n"
-            "    MissionDefinition, QuestState,\n"
-            "};\n"
-            "use trnm_rts_protocol::{RtsOrderSource, RtsTile};\n"
-        ),
     ),
     Family(
         name="game_server",
@@ -60,13 +48,12 @@ FAMILIES = (
             "game_server_tests_04.rs",
         ),
         manifest="trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json",
-        prelude="use super::*;\n",
     ),
 )
 
-# The source bodies are indented by exactly one level because they were formerly
-# textually included in `mod tests`. Nested declarations are indented further and
-# must not be widened. Test-only visibility cannot affect the public crate API.
+# These source bodies are indented by one level because they were textually
+# included in `mod tests`. Nested declarations are indented further and are not
+# widened. Test-only `pub(super)` cannot alter the public crate API.
 TOP_LEVEL_DECLARATION = re.compile(
     r"^(    )(?:(pub(?:\([^)]*\))?\s+))?"
     r"((?:async\s+)?fn|struct|enum|const|static|type|trait|mod)\s+",
@@ -83,47 +70,55 @@ def strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+def reject_constant(value: str) -> None:
+    raise RuntimeError(f"non-finite JSON constant: {value}")
+
+
 def load_json(path: Path) -> object:
     return json.loads(
         path.read_text(encoding="utf-8", errors="strict"),
         object_pairs_hook=strict_object,
-        parse_constant=lambda value: (_ for _ in ()).throw(
-            RuntimeError(f"non-finite JSON constant: {value}")
-        ),
+        parse_constant=reject_constant,
     )
 
 
-def include_expression(crate_relative: str, child: str) -> str:
-    return f'concat!(env!("CARGO_MANIFEST_DIR"),"/{crate_relative}/{child}")'
+def include_expression(child: str) -> str:
+    return f'concat!(env!("CARGO_MANIFEST_DIR"),"/src/lib_parts/tests/{child}")'
 
 
-def expected_wrapper(family: Family) -> str:
-    wrapper = Path(family.wrapper)
-    crate_root = wrapper.parts[: wrapper.parts.index("src") + 1]
-    body_relative = "/".join((*crate_root[-1:], *wrapper.parent.relative_to(Path(*crate_root)).parts))
-    # body_relative is `src/lib_parts/tests` for all currently selected families.
-    blocks = []
-    for child in family.children:
-        blocks.append(
-            "include!(concat!(\n"
-            "    env!(\"CARGO_MANIFEST_DIR\"),\n"
-            f"    \"/{body_relative}/{child}\"\n"
-            "));"
-        )
-    return family.prelude + "\n" + "\n".join(blocks)
+def include_block(child: str) -> str:
+    return (
+        "include!(concat!(\n"
+        "    env!(\"CARGO_MANIFEST_DIR\"),\n"
+        f"    \"/src/lib_parts/tests/{child}\"\n"
+        "));"
+    )
 
 
-def replacement_wrapper(family: Family) -> str:
-    blocks = []
-    for child in family.children:
-        module = child.removesuffix(".rs")
-        blocks.append(
-            f'#[path = "{child}"]\n'
-            f"mod {module};\n"
-            "#[allow(unused_imports)]\n"
-            f"use {module}::*;"
-        )
-    return family.prelude + "\n" + "\n\n".join(blocks)
+def module_block(child: str) -> str:
+    module = child.removesuffix(".rs")
+    return (
+        f'#[path = "{child}"]\n'
+        f"mod {module};\n"
+        "#[allow(unused_imports)]\n"
+        f"use {module}::*;"
+    )
+
+
+def transform_wrapper(path: Path, family: Family) -> None:
+    source = path.read_text(encoding="utf-8", errors="strict").rstrip()
+    expected_tail = "\n".join(include_block(child) for child in family.children)
+    if source.count("include!(") != len(family.children):
+        raise RuntimeError(f"{family.name} wrapper include count drift")
+    if not source.endswith(expected_tail):
+        raise RuntimeError(f"{family.name} wrapper include tail drift")
+    prefix = source[: -len(expected_tail)].rstrip()
+    if not prefix.startswith("use super::*;"):
+        raise RuntimeError(f"{family.name} wrapper prelude drift")
+    replacement = prefix + "\n\n" + "\n\n".join(
+        module_block(child) for child in family.children
+    )
+    path.write_text(replacement + "\n", encoding="utf-8")
 
 
 def transform_child(path: Path) -> None:
@@ -145,10 +140,11 @@ def update_manifest(root: Path, family: Family) -> None:
     if not isinstance(manifest, dict):
         raise RuntimeError(f"manifest root is not an object: {family.manifest}")
     source_root = manifest_path.parent.parent
-    wrapper_relative = str(Path(family.wrapper).relative_to(source_root))
+    wrapper_absolute = root / family.wrapper
+    wrapper_relative = wrapper_absolute.relative_to(source_root).as_posix()
     changed = {wrapper_relative}
     changed.update(
-        str(Path(family.wrapper).parent.joinpath(child).relative_to(source_root))
+        wrapper_absolute.parent.joinpath(child).relative_to(source_root).as_posix()
         for child in family.children
     )
     seen: set[str] = set()
@@ -160,11 +156,11 @@ def update_manifest(root: Path, family: Family) -> None:
             if not isinstance(record, dict):
                 raise RuntimeError(f"{family.manifest}: malformed {field} entry")
             relative = record.get("path")
-            if relative in changed:
-                payload = (source_root / str(relative)).read_bytes()
+            if isinstance(relative, str) and relative in changed:
+                payload = (source_root / relative).read_bytes()
                 record["bytes"] = len(payload)
                 record["sha256"] = hashlib.sha256(payload).hexdigest()
-                seen.add(str(relative))
+                seen.add(relative)
     if seen != changed:
         raise RuntimeError(
             f"{family.manifest}: coverage drift; seen={sorted(seen)} expected={sorted(changed)}"
@@ -203,21 +199,10 @@ def main() -> int:
     migrated = 0
     for family in FAMILIES:
         wrapper = root / family.wrapper
-        current = wrapper.read_text(encoding="utf-8", errors="strict").rstrip()
-        expected = expected_wrapper(family).rstrip()
-        if current != expected:
-            raise RuntimeError(f"{family.name} test wrapper drift")
-        wrapper.write_text(replacement_wrapper(family).rstrip() + "\n", encoding="utf-8")
-
-        crate_relative = str(Path(family.wrapper).parent.relative_to(
-            Path(family.wrapper).parents[len(Path(family.wrapper).parts) - Path(family.wrapper).parts.index("src") - 2]
-        ))
-        # Avoid depending on the calculation above for the normative expression.
-        crate_relative = "src/lib_parts/tests"
+        transform_wrapper(wrapper, family)
         for child in family.children:
-            child_path = wrapper.parent / child
-            transform_child(child_path)
-            expression = include_expression(crate_relative, child)
+            transform_child(wrapper.parent / child)
+            expression = include_expression(child)
             key = (family.wrapper, expression)
             if key in existing:
                 raise RuntimeError(f"ledger entry already exists: {key}")
