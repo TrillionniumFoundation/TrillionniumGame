@@ -87,8 +87,8 @@ jobs:
 
           tar --sort=name --format=ustar --mtime='UTC 2026-09-10' \
             --owner=0 --group=0 --numeric-owner \
-            --null --files-from="$packet/files.zlist" \
-            -czf "$archive" -C "$world"
+            -czf "$archive" -C "$world" \
+            --null --files-from="$packet/files.zlist"
           test -s "$archive"
           test "$(stat -c '%s' "$archive")" -le 67108864
           sha256sum "$archive"
