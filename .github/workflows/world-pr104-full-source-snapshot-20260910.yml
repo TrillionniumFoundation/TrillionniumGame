@@ -1,0 +1,122 @@
+name: world-pr104-full-source-snapshot-v1
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-pr104-full-source-snapshot-v1
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_SOURCE_SHA: '7d6ae95ed17f7dcc267ce3f9bfef508c89cde4bd'
+  GAME_UPLOADER_SHA: '425ee015d53800f3e2c2936f97ded9cdbacf7f14'
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  snapshot:
+    name: world-pr104/full-source-snapshot-v1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch immutable World source and pinned artifact uploader
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          uploader="$RUNNER_TEMP/game-uploader"
+          git init "$world"
+          git -C "$world" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$world" fetch --no-tags --depth=1 origin "$WORLD_SOURCE_SHA"
+          git -C "$world" checkout --detach FETCH_HEAD
+          test "$(git -C "$world" rev-parse HEAD)" = "$WORLD_SOURCE_SHA"
+          test "$(git -C "$world" rev-parse 'HEAD^{tree}')" = "$(git -C "$world" write-tree)"
+          test -z "$(git -C "$world" status --porcelain=v1)"
+
+          git init "$uploader"
+          git -C "$uploader" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$uploader" fetch --no-tags --depth=1 origin "$GAME_UPLOADER_SHA"
+          git -C "$uploader" checkout --detach FETCH_HEAD
+          test "$(git -C "$uploader" rev-parse HEAD)" = "$GAME_UPLOADER_SHA"
+          test -s "$uploader/scripts/upload-actions-artifact.py"
+
+      - name: Build deterministic complete source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          packet="$RUNNER_TEMP/world-pr104-source"
+          archive="$RUNNER_TEMP/world-pr104-source-${WORLD_SOURCE_SHA}.tar.gz"
+          mkdir -p "$packet"
+          {
+            printf 'repository=%s\n' "$WORLD_REPOSITORY"
+            printf 'pull_request=104\n'
+            printf 'commit=%s\n' "$WORLD_SOURCE_SHA"
+            printf 'tree=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
+            printf 'captured_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            printf 'production_authorization=not_granted\n'
+          } > "$packet/identity.txt"
+
+          git -C "$world" ls-files -z \
+            | python3 -c 'import sys; data=sys.stdin.buffer.read().split(b"\0"); sys.stdout.buffer.write(b"\0".join(p for p in data if p and not p.startswith((b"target/", b"run/"))) + b"\0")' \
+            > "$packet/files.zlist"
+          test -s "$packet/files.zlist"
+          python3 - "$world" "$packet/files.zlist" "$packet/SHA256SUMS" <<'PY'
+          import hashlib
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          listed = Path(sys.argv[2]).read_bytes().split(b"\0")
+          output = Path(sys.argv[3])
+          lines = []
+          for raw in listed:
+              if not raw:
+                  continue
+              relative = raw.decode("utf-8", errors="strict")
+              path = root / relative
+              if not path.is_file() or path.is_symlink():
+                  raise SystemExit(f"unsafe tracked path: {relative}")
+              lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {relative}\n")
+          output.write_text("".join(lines), encoding="utf-8")
+          PY
+
+          tar --sort=name --format=ustar --mtime='UTC 2026-09-10' \
+            --owner=0 --group=0 --numeric-owner \
+            --null --files-from="$packet/files.zlist" \
+            -czf "$archive" -C "$world"
+          test -s "$archive"
+          test "$(stat -c '%s' "$archive")" -le 67108864
+          sha256sum "$archive"
+          printf '%s\n' "$archive" > "$RUNNER_TEMP/world-source-archive-path"
+
+      - name: Retain complete source snapshot
+        id: retained-world-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(cat "$RUNNER_TEMP/world-source-archive-path")"
+          python3 "$RUNNER_TEMP/game-uploader/scripts/upload-actions-artifact.py" \
+            "world-pr104-source-${WORLD_SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "$archive" \
+            --mime-type application/gzip
+
+      - name: Emit retained artifact identity
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.retained-world-source.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.retained-world-source.outputs.sha256 }}
+          ARTIFACT_SIZE: ${{ steps.retained-world-source.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_ID"
+          test -n "$ARTIFACT_SHA256"
+          test -n "$ARTIFACT_SIZE"
+          printf 'WORLD_SOURCE_ARTIFACT_ID=%s\n' "$ARTIFACT_ID"
+          printf 'WORLD_SOURCE_ARTIFACT_SHA256=%s\n' "$ARTIFACT_SHA256"
+          printf 'WORLD_SOURCE_ARTIFACT_SIZE=%s\n' "$ARTIFACT_SIZE"
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
