@@ -1,0 +1,126 @@
+name: cross-repo-gap-closure-v2-20260910
+
+on:
+  push:
+    branches:
+      - ops/cross-repo-gap-closure-20260910
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-repo-gap-closure-v2-20260910
+  cancel-in-progress: false
+
+jobs:
+  freeze_verified:
+    name: freeze/require-current-verified-heads
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      world_sha: ${{ steps.freeze.outputs.world_sha }}
+      cex_sha: ${{ steps.freeze.outputs.cex_sha }}
+    steps:
+      - id: freeze
+        name: Require verified refs to equal target refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          world_remote=https://github.com/TrillionniumFoundation/Trillionnium-World.git
+          cex_remote=https://github.com/TrillionniumFoundation/CEX.git
+          world_sha="$(git ls-remote "$world_remote" refs/heads/refactor/campaign-module-stack-v2-20260909 | cut -f1)"
+          world_verified="$(git ls-remote "$world_remote" refs/heads/verified/world-current-full-20260910 | cut -f1)"
+          cex_sha="$(git ls-remote "$cex_remote" refs/heads/integration/cex-v12-sequence54-20260908 | cut -f1)"
+          cex_verified="$(git ls-remote "$cex_remote" refs/heads/verified/cex-current-full-20260910 | cut -f1)"
+          test "${#world_sha}" = 40
+          test "${#cex_sha}" = 40
+          test "$world_verified" = "$world_sha"
+          test "$cex_verified" = "$cex_sha"
+          printf 'world_sha=%s\n' "$world_sha" >> "$GITHUB_OUTPUT"
+          printf 'cex_sha=%s\n' "$cex_sha" >> "$GITHUB_OUTPUT"
+          printf 'WORLD_VERIFIED_SHA=%s\nCEX_VERIFIED_SHA=%s\n' "$world_sha" "$cex_sha"
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+
+  execute_lock:
+    name: lock/world-cex-settlement-contract
+    needs: freeze_verified
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: integration_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d integration_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      WORLD_SHA: ${{ needs.freeze_verified.outputs.world_sha }}
+      CEX_SHA: ${{ needs.freeze_verified.outputs.cex_sha }}
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      CARGO_INCREMENTAL: '0'
+      RUST_BACKTRACE: '1'
+      RUST_TEST_THREADS: '1'
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/integration_test
+      TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/integration_test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Fetch exact verified World and CEX objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tuple in \
+            "world|https://github.com/TrillionniumFoundation/Trillionnium-World.git|$WORLD_SHA" \
+            "cex|https://github.com/TrillionniumFoundation/CEX.git|$CEX_SHA"; do
+            IFS='|' read -r name remote sha <<< "$tuple"
+            root="$RUNNER_TEMP/$name"
+            git init "$root"
+            git -C "$root" remote add origin "$remote"
+            git -C "$root" fetch --no-tags --depth=1 origin "$sha"
+            git -C "$root" checkout --detach FETCH_HEAD
+            test "$(git -C "$root" rev-parse HEAD)" = "$sha"
+            test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
+          done
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+      - name: Execute settlement owners and boundary regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path "$RUNNER_TEMP/world/trillionnium/Cargo.toml" \
+            -p trnm-game-server --all-targets --locked
+          cargo test --manifest-path "$RUNNER_TEMP/cex/Cargo.toml" \
+            -p trnm-economy-service --all-targets --locked
+          cd "$RUNNER_TEMP/cex"
+          python3 scripts/test-trnm-build-evidence.py
+          python3 scripts/check-consumer-projection-boundary.py
+          PYTHONPATH=scripts python3 - <<'PY'
+          import rust_advisory_packages_v5 as module
+          result = module._external_workflow_self_tests()
+          assert result and all(result.values()), result
+          print("WORLD_CEX_EXTERNAL_EXECUTION_CLASSIFICATION=PASS", result)
+          PY
+          rm -rf scripts/__pycache__
+          printf 'WORLD_CEX_SETTLEMENT_LOCK=PASS\n'
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+      - name: Final refreeze of targets and verified refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          world_remote=https://github.com/TrillionniumFoundation/Trillionnium-World.git
+          cex_remote=https://github.com/TrillionniumFoundation/CEX.git
+          test "$(git ls-remote "$world_remote" refs/heads/refactor/campaign-module-stack-v2-20260909 | cut -f1)" = "$WORLD_SHA"
+          test "$(git ls-remote "$world_remote" refs/heads/verified/world-current-full-20260910 | cut -f1)" = "$WORLD_SHA"
+          test "$(git ls-remote "$cex_remote" refs/heads/integration/cex-v12-sequence54-20260908 | cut -f1)" = "$CEX_SHA"
+          test "$(git ls-remote "$cex_remote" refs/heads/verified/cex-current-full-20260910 | cut -f1)" = "$CEX_SHA"
+          test -z "$(git -C "$RUNNER_TEMP/world" status --porcelain=v1 --untracked-files=no)"
+          test -z "$(git -C "$RUNNER_TEMP/cex" status --porcelain=v1 --untracked-files=no)"
+          printf 'WORLD_CEX_VERIFIED_TUPLE_STABLE=PASS\n'
