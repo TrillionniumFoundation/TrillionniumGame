@@ -1,4 +1,4 @@
-name: world-pr104-all-active-nested-test-modules-v3
+name: world-pr104-all-active-nested-test-modules-v4
 
 on:
   pull_request:
@@ -8,13 +8,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr104-all-active-nested-test-modules-v3
+  group: world-pr104-all-active-nested-test-modules-v4
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_SOURCE_SHA: '33339b28a6f53668672d1797109da6c7bf57db49'
-  GAME_HELPER_SHA: '35157804a0ff0859906ea8d72ec213871cae05ea'
+  GAME_HELPER_SHA: '9858c317330005878d7b7e3db47645755b2e9e36'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: '0'
@@ -24,7 +24,7 @@ env:
 
 jobs:
   qualify:
-    name: world-pr104/all-active-nested-test-modules-v3
+    name: world-pr104/all-active-nested-test-modules-v4
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -47,7 +47,15 @@ jobs:
           test "$(git -C "$helper" rev-parse HEAD)" = "$GAME_HELPER_SHA"
           test -s "$helper/scripts/world-pr104-all-test-modules-transform.py"
           test -s "$helper/scripts/world-pr104-source-integrity-repair.py"
+          test -s "$helper/scripts/world-pr104-final-source-integrity-repair.py"
           test -s "$helper/scripts/upload-actions-artifact.py"
+          test -s "$helper/.github/actions/upload-evidence/action.yml"
+          test -s "$helper/.github/actions/upload-evidence/index.js"
+
+          rm -rf "$GITHUB_WORKSPACE/.github/actions/upload-evidence"
+          mkdir -p "$GITHUB_WORKSPACE/.github/actions" "$GITHUB_WORKSPACE/scripts"
+          cp -R "$helper/.github/actions/upload-evidence" "$GITHUB_WORKSPACE/.github/actions/"
+          cp "$helper/scripts/upload-actions-artifact.py" "$GITHUB_WORKSPACE/scripts/"
 
       - name: Install pinned Rust and native dependencies
         shell: bash
@@ -74,6 +82,8 @@ jobs:
           python3 "$RUNNER_TEMP/game-helper/scripts/world-pr104-all-test-modules-transform.py" \
             "$world" --source-sha "$WORLD_SOURCE_SHA"
           python3 "$RUNNER_TEMP/game-helper/scripts/world-pr104-source-integrity-repair.py" \
+            "$world"
+          python3 "$RUNNER_TEMP/game-helper/scripts/world-pr104-final-source-integrity-repair.py" \
             "$world"
           cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all
 
@@ -177,8 +187,8 @@ jobs:
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          packet="$world/run/world-all-active-nested-test-modules-v3"
-          archive="$RUNNER_TEMP/world-all-active-nested-test-modules-v3.tar.gz"
+          packet="$world/run/world-all-active-nested-test-modules-v4"
+          archive="$RUNNER_TEMP/world-all-active-nested-test-modules-v4.tar.gz"
           mkdir -p "$packet"
           paths=(
             .github/workflows/trnm-world-authority-cutover.yml
@@ -216,35 +226,33 @@ jobs:
             printf 'seams_migrated=10\n'
             printf 'workflows_catalogued=14\n'
             printf 'static_contexts=41\n'
-            printf 'documentation_cli=option-root\n'
+            printf 'documentation_cli=option-root-all-callers\n'
             printf 'production_authorization=not_granted\n'
           } > "$packet/identity.txt"
           (
             cd "$world"
             sha256sum "${paths[@]}" \
-              run/world-all-active-nested-test-modules-v3/candidate.patch \
-              run/world-all-active-nested-test-modules-v3/identity.txt \
-              > run/world-all-active-nested-test-modules-v3/SHA256SUMS
+              run/world-all-active-nested-test-modules-v4/candidate.patch \
+              run/world-all-active-nested-test-modules-v4/identity.txt \
+              > run/world-all-active-nested-test-modules-v4/SHA256SUMS
           )
           tar --sort=name --format=gnu --mtime='UTC 2026-09-10' \
             --owner=0 --group=0 --numeric-owner \
             -czf "$archive" -C "$world" \
             "${paths[@]}" \
-            run/world-all-active-nested-test-modules-v3/candidate.patch \
-            run/world-all-active-nested-test-modules-v3/identity.txt \
-            run/world-all-active-nested-test-modules-v3/SHA256SUMS
+            run/world-all-active-nested-test-modules-v4/candidate.patch \
+            run/world-all-active-nested-test-modules-v4/identity.txt \
+            run/world-all-active-nested-test-modules-v4/SHA256SUMS
           test -s "$archive"
           sha256sum "$archive"
 
       - name: Retain transformed-source artifact
         id: retained-world-test-modules
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 "$RUNNER_TEMP/game-helper/scripts/upload-actions-artifact.py" \
-            "world-all-active-nested-test-modules-v3-${WORLD_SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            "$RUNNER_TEMP/world-all-active-nested-test-modules-v3.tar.gz" \
-            --mime-type application/gzip
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-all-active-nested-test-modules-v4-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-all-active-nested-test-modules-v4.tar.gz
+          mime_type: application/gzip
 
       - name: Emit retained artifact identity
         shell: bash
