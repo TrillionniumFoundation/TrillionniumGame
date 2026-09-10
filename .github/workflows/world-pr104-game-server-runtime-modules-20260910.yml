@@ -1,4 +1,4 @@
-name: world-pr127-game-server-runtime-modules-v2
+name: world-pr127-game-server-runtime-modules-v3
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr127-game-server-runtime-modules-v2
+  group: world-pr127-game-server-runtime-modules-v3
   cancel-in-progress: true
 
 env:
@@ -25,7 +25,7 @@ env:
 
 jobs:
   qualify:
-    name: world-pr127/game-server-runtime-modules-v2
+    name: world-pr127/game-server-runtime-modules-v3
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
@@ -51,7 +51,7 @@ jobs:
           git -C "$stack" fetch --no-tags --depth=1 origin "$STACK_HELPER_SHA"
           git -C "$stack" checkout --detach FETCH_HEAD
           test "$(git -C "$stack" rev-parse HEAD)" = "$STACK_HELPER_SHA"
-          test -s "$common/scripts/world-pr104-all-test-modules-qualified-transform.py"
+          test -s "$common/scripts/world-pr104-all-test-modules-transform.py"
           test -s "$stack/scripts/world-pr104-campaign-runtime-modules-transform.py"
           test -s "$stack/scripts/world-pr104-rts-runtime-modules-transform.py"
           test -s "$stack/scripts/world-pr104-game-server-runtime-modules-transform.py"
@@ -80,7 +80,11 @@ jobs:
           world="$RUNNER_TEMP/world"
           common="$RUNNER_TEMP/common-helper"
           stack="$RUNNER_TEMP/stack-helper"
-          python3 "$common/scripts/world-pr104-all-test-modules-qualified-transform.py" \
+
+          # Apply only the mechanical nested-test conversion. The historical
+          # qualified wrapper also rewrote now-retired workflows and therefore
+          # is intentionally not valid for World PR #127.
+          python3 "$common/scripts/world-pr104-all-test-modules-transform.py" \
             "$world" --source-sha "$WORLD_SOURCE_SHA"
           python3 "$stack/scripts/world-pr104-campaign-runtime-modules-transform.py" \
             "$world" --completed-commit "$WORLD_SOURCE_SHA"
@@ -88,6 +92,59 @@ jobs:
             "$world" --completed-commit "$WORLD_SOURCE_SHA"
           python3 "$stack/scripts/world-pr104-game-server-runtime-modules-transform.py" \
             "$world" --completed-commit "$WORLD_SOURCE_SHA" --helper-root "$stack/scripts"
+
+          # Preserve WebSocket close semantics while avoiding result_large_err
+          # from a discarded closure result under Rust 1.98.1. Accept exactly
+          # the old or already-repaired form and fail on any third shape.
+          python3 - "$world" <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import sys
+
+          root = Path(sys.argv[1])
+          online = root / 'trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs'
+          source = online.read_text(encoding='utf-8', errors='strict')
+          old = '    let _ = tokio::task::block_in_place(|| state_stream.close(None));'
+          new = '    tokio::task::block_in_place(|| {\n        let _ = state_stream.close(None);\n    });'
+          if source.count(old) == 1 and new not in source:
+              online.write_text(source.replace(old, new), encoding='utf-8')
+          elif source.count(new) != 1 or old in source:
+              raise SystemExit('WebSocket close repair anchor drift')
+          PY
+
+          cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all
+
+          # Rebind every closed-world direct-source record to the final
+          # rustfmt bytes, rather than trusting an intermediate transform.
+          python3 - "$world" <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import sys
+
+          root = Path(sys.argv[1])
+          manifests = (
+              root / 'trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json',
+              root / 'trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json',
+              root / 'trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json',
+          )
+          for manifest_path in manifests:
+              value = json.loads(manifest_path.read_text(encoding='utf-8'))
+              source_root = manifest_path.parent.parent
+              seen = 0
+              for field in ('parts', 'nested_test_parts'):
+                  for record in value.get(field, []):
+                      target = source_root / record['path']
+                      payload = target.read_bytes()
+                      record['bytes'] = len(payload)
+                      record['sha256'] = hashlib.sha256(payload).hexdigest()
+                      seen += 1
+              if seen == 0:
+                  raise SystemExit(f'empty manifest: {manifest_path}')
+              manifest_path.write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
+          PY
+
           git -C "$world" config user.name "World read-only qualification"
           git -C "$world" config user.email "world-read-only-qualification@invalid"
           git -C "$world" add -A
@@ -103,8 +160,8 @@ jobs:
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          packet="$world/run/world-game-server-runtime-modules-v2"
-          archive="$RUNNER_TEMP/world-game-server-runtime-modules-v2.tar.gz"
+          packet="$world/run/world-game-server-runtime-modules-v3"
+          archive="$RUNNER_TEMP/world-game-server-runtime-modules-v3.tar.gz"
           mkdir -p "$packet"
           git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" > "$packet/candidate.patch"
           test -s "$packet/candidate.patch"
@@ -122,23 +179,23 @@ jobs:
             printf 'production_authorization=not_granted\n'
           } > "$packet/identity.txt"
           (cd "$world" && sha256sum \
-            run/world-game-server-runtime-modules-v2/candidate.patch \
-            run/world-game-server-runtime-modules-v2/identity.txt \
-            > run/world-game-server-runtime-modules-v2/SHA256SUMS)
+            run/world-game-server-runtime-modules-v3/candidate.patch \
+            run/world-game-server-runtime-modules-v3/identity.txt \
+            > run/world-game-server-runtime-modules-v3/SHA256SUMS)
           tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
             --owner=0 --group=0 --numeric-owner \
             -czf "$archive" -C "$world" \
-            run/world-game-server-runtime-modules-v2/candidate.patch \
-            run/world-game-server-runtime-modules-v2/identity.txt \
-            run/world-game-server-runtime-modules-v2/SHA256SUMS
+            run/world-game-server-runtime-modules-v3/candidate.patch \
+            run/world-game-server-runtime-modules-v3/identity.txt \
+            run/world-game-server-runtime-modules-v3/SHA256SUMS
           test -s "$archive"
 
       - name: Retain unqualified candidate artifact
         id: candidate-artifact
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-game-server-runtime-modules-v2-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-game-server-runtime-modules-v2.tar.gz
+          name: world-game-server-runtime-modules-v3-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-game-server-runtime-modules-v3.tar.gz
           mime_type: application/gzip
 
       - name: Emit candidate artifact identity
@@ -163,7 +220,7 @@ jobs:
         run: |
           set -uo pipefail
           world="$RUNNER_TEMP/world"
-          diagnostics="$RUNNER_TEMP/world-game-server-runtime-modules-v2-diagnostics"
+          diagnostics="$RUNNER_TEMP/world-game-server-runtime-modules-v3-diagnostics"
           mkdir -p "$diagnostics"
 
           set +e
@@ -205,8 +262,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          diagnostics="$RUNNER_TEMP/world-game-server-runtime-modules-v2-diagnostics"
-          archive="$RUNNER_TEMP/world-game-server-runtime-modules-v2-diagnostics.tar.gz"
+          diagnostics="$RUNNER_TEMP/world-game-server-runtime-modules-v3-diagnostics"
+          archive="$RUNNER_TEMP/world-game-server-runtime-modules-v3-diagnostics.tar.gz"
           mkdir -p "$diagnostics"
           if test ! -s "$diagnostics/status.txt"; then
             {
@@ -223,15 +280,15 @@ jobs:
           tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
             --owner=0 --group=0 --numeric-owner \
             -czf "$archive" -C "$RUNNER_TEMP" \
-            world-game-server-runtime-modules-v2-diagnostics
+            world-game-server-runtime-modules-v3-diagnostics
           test -s "$archive"
 
       - name: Upload qualification diagnostics
         if: always()
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-game-server-runtime-modules-v2-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-game-server-runtime-modules-v2-diagnostics.tar.gz
+          name: world-game-server-runtime-modules-v3-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-game-server-runtime-modules-v3-diagnostics.tar.gz
           mime_type: application/gzip
 
       - name: Qualify transformed World truth and source
