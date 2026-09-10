@@ -1,0 +1,178 @@
+name: world-pr104-rts-runtime-modules-v1
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-pr104-rts-runtime-modules-v1
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_SOURCE_SHA: '33339b28a6f53668672d1797109da6c7bf57db49'
+  COMMON_HELPER_SHA: 'b02fef9a86b77c8babd19a7dd469081095ea2e90'
+  CAMPAIGN_HELPER_SHA: '80e6d3616134360a0f0907838de0813bb5411cbe'
+  RTS_HELPER_SHA: 'cf6bbef15899fcb8345817aadd9c0e7b1a072c8d'
+  RUSTUP_TOOLCHAIN: '1.98.1'
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+  RUST_BACKTRACE: '1'
+  RUST_TEST_THREADS: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  qualify:
+    name: world-pr104/rts-runtime-modules-v1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Fetch exact World source and pinned transforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          common="$RUNNER_TEMP/common-helper"
+          campaign="$RUNNER_TEMP/campaign-helper"
+          rts="$RUNNER_TEMP/rts-helper"
+          git init "$world"
+          git -C "$world" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$world" fetch --no-tags --depth=2 origin "$WORLD_SOURCE_SHA"
+          git -C "$world" checkout --detach FETCH_HEAD
+          test "$(git -C "$world" rev-parse HEAD)" = "$WORLD_SOURCE_SHA"
+          for spec in \
+            "$common:$COMMON_HELPER_SHA" \
+            "$campaign:$CAMPAIGN_HELPER_SHA" \
+            "$rts:$RTS_HELPER_SHA"; do
+            dir="${spec%%:*}"; sha="${spec#*:}"
+            git init "$dir"
+            git -C "$dir" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+            git -C "$dir" fetch --no-tags --depth=1 origin "$sha"
+            git -C "$dir" checkout --detach FETCH_HEAD
+            test "$(git -C "$dir" rev-parse HEAD)" = "$sha"
+          done
+          test -s "$common/scripts/world-pr104-all-test-modules-qualified-transform.py"
+          test -s "$campaign/scripts/world-pr104-campaign-runtime-modules-transform.py"
+          test -s "$rts/scripts/world-pr104-rts-runtime-modules-transform.py"
+          rm -rf "$GITHUB_WORKSPACE/.github/actions/upload-evidence"
+          mkdir -p "$GITHUB_WORKSPACE/.github/actions" "$GITHUB_WORKSPACE/scripts"
+          cp -R "$common/.github/actions/upload-evidence" "$GITHUB_WORKSPACE/.github/actions/"
+          cp "$common/scripts/upload-actions-artifact.py" "$GITHUB_WORKSPACE/scripts/"
+
+      - name: Install Rust 1.98.1 and native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.98.1
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.list.save
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libudev-dev libx11-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev pkg-config
+          test "$(rustc --version | awk '{print $2}')" = '1.98.1'
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Apply cumulative module transforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          python3 "$RUNNER_TEMP/common-helper/scripts/world-pr104-all-test-modules-qualified-transform.py" \
+            "$world" --source-sha "$WORLD_SOURCE_SHA"
+          python3 "$RUNNER_TEMP/campaign-helper/scripts/world-pr104-campaign-runtime-modules-transform.py" \
+            "$world" --completed-commit "$WORLD_SOURCE_SHA"
+          python3 "$RUNNER_TEMP/rts-helper/scripts/world-pr104-rts-runtime-modules-transform.py" \
+            "$world" --completed-commit "$WORLD_SOURCE_SHA"
+          git -C "$world" config user.name "World read-only qualification"
+          git -C "$world" config user.email "world-read-only-qualification@invalid"
+          git -C "$world" add -A
+          test -n "$(git -C "$world" diff --cached --name-only)"
+          GIT_AUTHOR_DATE='2026-09-10T00:00:00Z' \
+          GIT_COMMITTER_DATE='2026-09-10T00:00:00Z' \
+            git -C "$world" commit -m "refactor(world): extract campaign and RTS runtime modules"
+          test -z "$(git -C "$world" status --porcelain=v1)"
+          printf 'WORLD_TRANSFORMED_HEAD=%s\n' "$(git -C "$world" rev-parse HEAD)"
+          printf 'WORLD_TRANSFORMED_TREE=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
+
+      - name: Format, test and lint affected crates
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all --check
+          cargo test --manifest-path "$world/trillionnium/Cargo.toml" \
+            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
+            --all-targets --locked
+          cargo clippy --manifest-path "$world/trillionnium/Cargo.toml" \
+            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
+            --all-targets --locked -- -D warnings
+
+      - name: Qualify transformed World truth and source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world"
+          python3 scripts/check-trnm-world-include-boundaries.py
+          bash scripts/run-trnm-world-v6-qualification-v2.sh truth
+          bash scripts/run-trnm-world-v6-qualification-v2.sh source
+          test -z "$(git status --porcelain=v1)"
+          printf 'WORLD_RTS_RUNTIME_MODULE_QUALIFICATION=PASS\n'
+
+      - name: Build deterministic candidate artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          packet="$world/run/world-rts-runtime-modules-v1"
+          archive="$RUNNER_TEMP/world-rts-runtime-modules-v1.tar.gz"
+          mkdir -p "$packet"
+          git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" > "$packet/candidate.patch"
+          test -s "$packet/candidate.patch"
+          {
+            printf 'repository=%s\n' "$WORLD_REPOSITORY"
+            printf 'source=%s\n' "$WORLD_SOURCE_SHA"
+            printf 'candidate_commit=%s\n' "$(git -C "$world" rev-parse HEAD)"
+            printf 'candidate_tree=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
+            printf 'nested_test_seams_migrated=10\n'
+            printf 'campaign_runtime_seams_migrated=10\n'
+            printf 'rts_runtime_seams_migrated=7\n'
+            printf 'expected_active_migration_remaining=19\n'
+            printf 'production_authorization=not_granted\n'
+          } > "$packet/identity.txt"
+          (cd "$world" && sha256sum run/world-rts-runtime-modules-v1/candidate.patch run/world-rts-runtime-modules-v1/identity.txt > run/world-rts-runtime-modules-v1/SHA256SUMS)
+          tar --sort=name --format=gnu --mtime='UTC 2026-09-10' --owner=0 --group=0 --numeric-owner \
+            -czf "$archive" -C "$world" \
+            run/world-rts-runtime-modules-v1/candidate.patch \
+            run/world-rts-runtime-modules-v1/identity.txt \
+            run/world-rts-runtime-modules-v1/SHA256SUMS
+          test -s "$archive"
+          sha256sum "$archive"
+
+      - name: Retain candidate artifact
+        id: candidate-artifact
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-rts-runtime-modules-v1-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-rts-runtime-modules-v1.tar.gz
+          mime_type: application/gzip
+
+      - name: Emit artifact identity
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.candidate-artifact.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.candidate-artifact.outputs.sha256 }}
+          ARTIFACT_SIZE: ${{ steps.candidate-artifact.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_ID"
+          test -n "$ARTIFACT_SHA256"
+          test -n "$ARTIFACT_SIZE"
+          printf 'WORLD_RTS_RUNTIME_ARTIFACT_ID=%s\n' "$ARTIFACT_ID"
+          printf 'WORLD_RTS_RUNTIME_ARTIFACT_SHA256=%s\n' "$ARTIFACT_SHA256"
+          printf 'WORLD_RTS_RUNTIME_ARTIFACT_SIZE=%s\n' "$ARTIFACT_SIZE"
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
