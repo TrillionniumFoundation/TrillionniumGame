@@ -1,0 +1,61 @@
+name: world-pr127-source-snapshot
+
+on:
+  push:
+    branches:
+      - ops/world-pr127-source-snapshot-20260911
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-pr127-source-snapshot
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_SOURCE_SHA: '778152b6b11e0d394e5abe4ea851cd10f46f3314'
+
+jobs:
+  snapshot:
+    name: world-pr127/source-snapshot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Fetch exact World source
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          git init -q "$world"
+          git -C "$world" remote add origin \
+            "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$world" fetch -q --no-tags --depth=1 origin "$WORLD_SOURCE_SHA"
+          git -C "$world" checkout -q --detach FETCH_HEAD
+          test "$(git -C "$world" rev-parse HEAD)" = "$WORLD_SOURCE_SHA"
+          test -z "$(git -C "$world" status --porcelain=v1)"
+
+      - name: Package exact source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          packet="$RUNNER_TEMP/world-pr127-source-snapshot"
+          mkdir -p "$packet"
+          git -C "$world" archive --format=tar "$WORLD_SOURCE_SHA" \
+            | gzip -n > "$packet/source.tar.gz"
+          {
+            printf 'repository=%s\n' "$WORLD_REPOSITORY"
+            printf 'source=%s\n' "$WORLD_SOURCE_SHA"
+            printf 'tree=%s\n' "$(git -C "$world" rev-parse "${WORLD_SOURCE_SHA}^{tree}")"
+            printf 'production_authorization=not_granted\n'
+          } > "$packet/identity.txt"
+          (cd "$packet" && sha256sum source.tar.gz identity.txt > SHA256SUMS)
+
+      - name: Upload exact source snapshot
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-pr127-source-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-pr127-source-snapshot/**
+          if-no-files-found: error
+          retention-days: 7
