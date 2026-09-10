@@ -1,4 +1,4 @@
-name: world-pr104-campaign-test-module-tranche-v2
+name: world-pr104-campaign-test-module-tranche-v3
 
 on:
   pull_request:
@@ -8,12 +8,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr104-campaign-test-module-tranche-v2
+  group: world-pr104-campaign-test-module-tranche-v3
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_SOURCE_SHA: '7d6ae95ed17f7dcc267ce3f9bfef508c89cde4bd'
+  GAME_UPLOADER_SHA: '17952b49f7cd9699d153d9a16518cba56166367c'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: '0'
@@ -23,21 +24,32 @@ env:
 
 jobs:
   qualify:
-    name: world-pr104/campaign-test-module-tranche-v2
+    name: world-pr104/campaign-test-module-tranche-v3
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - name: Fetch immutable World source
+      - name: Fetch immutable World source and pinned artifact uploader
         shell: bash
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/world"
+          uploader="$RUNNER_TEMP/game-uploader"
+
           git init "$root"
           git -C "$root" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
           git -C "$root" fetch --no-tags --depth=2 origin "$WORLD_SOURCE_SHA"
           git -C "$root" checkout --detach FETCH_HEAD
           test "$(git -C "$root" rev-parse HEAD)" = "$WORLD_SOURCE_SHA"
+
+          git init "$uploader"
+          git -C "$uploader" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$uploader" fetch --no-tags --depth=1 origin "$GAME_UPLOADER_SHA"
+          git -C "$uploader" checkout --detach FETCH_HEAD
+          test "$(git -C "$uploader" rev-parse HEAD)" = "$GAME_UPLOADER_SHA"
+          test -s "$uploader/scripts/upload-actions-artifact.py"
+
           printf 'WORLD_CAMPAIGN_TRANCHE_SOURCE=%s\n' "$WORLD_SOURCE_SHA"
+          printf 'GAME_ARTIFACT_UPLOADER_SOURCE=%s\n' "$GAME_UPLOADER_SHA"
 
       - name: Install pinned Rust and native dependencies
         shell: bash
@@ -55,11 +67,11 @@ jobs:
           cargo --version --verbose
           rustfmt --version
 
-      - name: Apply bounded P0 lint repair and campaign module transformation
+      - name: Apply active-closure P0 repair and campaign test-module migration
         shell: bash
         run: |
           set -euo pipefail
-          python3 - "$RUNNER_TEMP/world" <<'PY'
+          python3 - "$RUNNER_TEMP/world" "$WORLD_SOURCE_SHA" <<'PY'
           from __future__ import annotations
           import json
           import re
@@ -67,13 +79,21 @@ jobs:
           from pathlib import Path
 
           root = Path(sys.argv[1])
+          source_sha = sys.argv[2]
+
+          closure = root / "scripts/archive/check-trnm-world-active-closure-v6-20260908-base.py"
+          closure_source = closure.read_text(encoding="utf-8")
+          old_closure = 'parser.add_argument("root", nargs="?", type=Path, default=Path(__file__).resolve().parents[1])'
+          new_closure = 'parser.add_argument("root", nargs="?", type=Path, default=Path(__file__).resolve().parents[2])'
+          assert closure_source.count(old_closure) == 1, "active-closure root anchor drift"
+          closure.write_text(closure_source.replace(old_closure, new_closure), encoding="utf-8")
 
           p0 = root / "trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
           p0_source = p0.read_text(encoding="utf-8")
-          old = ".rfind(|character| matches!(character, ';' | '{' | '}'))"
-          new = ".rfind([';', '{', '}'])"
-          assert p0_source.count(old) == 1, "P0 lint repair anchor drift"
-          p0.write_text(p0_source.replace(old, new), encoding="utf-8")
+          old_lint = ".rfind(|character| matches!(character, ';' | '{' | '}'))"
+          new_lint = ".rfind([';', '{', '}'])"
+          assert p0_source.count(old_lint) == 1, "P0 lint repair anchor drift"
+          p0.write_text(p0_source.replace(old_lint, new_lint), encoding="utf-8")
 
           tests = root / "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests"
           wrapper = tests / "part_01.rs"
@@ -148,7 +168,7 @@ jobs:
                       f'#[path = "campaign_tests_{index:02d}.rs"]',
                       f"mod campaign_tests_{index:02d};",
                   ],
-                  "completed_commit": "7d6ae95ed17f7dcc267ce3f9bfef508c89cde4bd",
+                  "completed_commit": source_sha,
               })
           ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
           print("WORLD_CAMPAIGN_TEST_MODULE_TRANSFORM=PASS")
@@ -186,53 +206,109 @@ jobs:
           print("WORLD_CAMPAIGN_TEST_MANIFEST_REFRESH=PASS")
           PY
 
-      - name: Qualify transformed source and truth
+          cd "$RUNNER_TEMP/world"
+          git config user.name "World read-only qualification"
+          git config user.email "world-read-only-qualification@invalid"
+          git add \
+            scripts/archive/check-trnm-world-active-closure-v6-20260908-base.py \
+            scripts/contracts/trnm-world-include-migrations-v1.json \
+            trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs \
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs \
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_01.rs \
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_02.rs \
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_03.rs \
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json
+          GIT_AUTHOR_DATE='2026-09-10T00:00:00Z' \
+          GIT_COMMITTER_DATE='2026-09-10T00:00:00Z' \
+            git commit -m "test(world): qualify campaign test modules and active closure root"
+          test -z "$(git status --porcelain=v1)"
+          printf 'WORLD_TRANSFORMED_HEAD=%s\n' "$(git rev-parse HEAD)"
+          printf 'WORLD_TRANSFORMED_TREE=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+
+      - name: Qualify transformed exact source and truth
         shell: bash
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/world"
           cd "$root"
           cargo fmt --manifest-path trillionnium/Cargo.toml --all --check
-          cargo test --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core --all-targets
-          cargo clippy --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core --all-targets -- -D warnings
+          cargo test --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core --all-targets --locked
+          cargo clippy --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core --all-targets --locked -- -D warnings
           python3 scripts/check-trnm-world-include-boundaries.py
           bash scripts/run-trnm-world-v6-qualification-v2.sh truth
           bash scripts/run-trnm-world-v6-qualification-v2.sh source
-          test -z "$(git status --porcelain=v1 --untracked-files=no)" || {
-            git status --short
-            git diff --stat
-            test -n "$(git status --porcelain=v1 --untracked-files=no)"
-          }
+          test -z "$(git status --porcelain=v1)"
           printf 'WORLD_CAMPAIGN_TEST_MODULE_QUALIFICATION=PASS\n'
 
-      - name: Emit complete content-addressed candidate blobs
+      - name: Build deterministic transformed-source artifact
         shell: bash
         run: |
           set -euo pipefail
-          python3 - "$RUNNER_TEMP/world" <<'PY'
-          import base64
-          import hashlib
-          import sys
-          from pathlib import Path
+          root="$RUNNER_TEMP/world"
+          packet="$root/run/world-campaign-test-module-v3"
+          archive="$RUNNER_TEMP/world-campaign-test-module-v3.tar.gz"
+          mkdir -p "$packet"
 
-          root = Path(sys.argv[1])
-          paths = [
-              "trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs",
-              "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs",
-              "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_01.rs",
-              "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_02.rs",
-              "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_03.rs",
-              "trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json",
-              "scripts/contracts/trnm-world-include-migrations-v1.json",
-          ]
-          chunk_size = 2400
-          for relative in paths:
-              payload = (root / relative).read_bytes()
-              encoded = base64.b64encode(payload).decode("ascii")
-              chunks = [encoded[offset:offset + chunk_size] for offset in range(0, len(encoded), chunk_size)]
-              print(f"TRNM_BLOB_BEGIN path={relative} bytes={len(payload)} sha256={hashlib.sha256(payload).hexdigest()} chunks={len(chunks)}")
-              for index, chunk in enumerate(chunks):
-                  print(f"TRNM_BLOB_CHUNK path={relative} index={index} data={chunk}")
-              print(f"TRNM_BLOB_END path={relative}")
-          print("PRODUCTION_AUTHORIZATION=not_granted")
-          PY
+          paths=(
+            scripts/archive/check-trnm-world-active-closure-v6-20260908-base.py
+            scripts/contracts/trnm-world-include-migrations-v1.json
+            trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_01.rs
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_02.rs
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_03.rs
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json
+          )
+
+          git -C "$root" diff --binary "$WORLD_SOURCE_SHA..HEAD" -- "${paths[@]}" > "$packet/candidate.patch"
+          test -s "$packet/candidate.patch"
+          {
+            printf 'repository=%s\n' "$WORLD_REPOSITORY"
+            printf 'source=%s\n' "$WORLD_SOURCE_SHA"
+            printf 'candidate_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
+            printf 'candidate_tree=%s\n' "$(git -C "$root" rev-parse 'HEAD^{tree}')"
+            printf 'rustc=%s\n' "$(rustc --version)"
+            printf 'production_authorization=not_granted\n'
+          } > "$packet/identity.txt"
+          (
+            cd "$root"
+            sha256sum "${paths[@]}" run/world-campaign-test-module-v3/candidate.patch \
+              run/world-campaign-test-module-v3/identity.txt \
+              > run/world-campaign-test-module-v3/SHA256SUMS
+          )
+
+          tar --sort=name --format=ustar --mtime='UTC 2026-09-10' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf "$archive" -C "$root" \
+            "${paths[@]}" \
+            run/world-campaign-test-module-v3/candidate.patch \
+            run/world-campaign-test-module-v3/identity.txt \
+            run/world-campaign-test-module-v3/SHA256SUMS
+          test -s "$archive"
+          sha256sum "$archive"
+
+      - name: Retain transformed-source artifact
+        id: retained-world-campaign-tranche
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/game-uploader/scripts/upload-actions-artifact.py" \
+            "world-campaign-test-module-v3-${WORLD_SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "$RUNNER_TEMP/world-campaign-test-module-v3.tar.gz" \
+            --mime-type application/gzip
+
+      - name: Emit retained artifact identity
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.retained-world-campaign-tranche.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.retained-world-campaign-tranche.outputs.sha256 }}
+          ARTIFACT_SIZE: ${{ steps.retained-world-campaign-tranche.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_ID"
+          test -n "$ARTIFACT_SHA256"
+          test -n "$ARTIFACT_SIZE"
+          printf 'WORLD_CAMPAIGN_TRANCHE_ARTIFACT_ID=%s\n' "$ARTIFACT_ID"
+          printf 'WORLD_CAMPAIGN_TRANCHE_ARTIFACT_SHA256=%s\n' "$ARTIFACT_SHA256"
+          printf 'WORLD_CAMPAIGN_TRANCHE_ARTIFACT_SIZE=%s\n' "$ARTIFACT_SIZE"
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
