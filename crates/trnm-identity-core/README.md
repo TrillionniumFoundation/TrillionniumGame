@@ -54,7 +54,7 @@ cargo test --package trnm-identity-core --all-targets --locked
 cargo clippy --package trnm-identity-core --all-targets --locked -- -D warnings
 ```
 
-Tests cover bounds, operation-scoped exact replay, changed fingerprints, provider and username collisions, stale revisions, last-provider protection, profile changes, account status, terminal deletion, receipt exhaustion and revision overflow. Authentication-specific regressions cover unchanged active replay plus disable, ban, reactivation, deletion, unlink, rebind, revision drift and cross-operation command reuse, with complete no-mutation assertions for every rejection.
+Tests cover bounds, operation-scoped exact replay, changed fingerprints, provider and username collisions, stale revisions, last-provider protection, profile changes, account status, terminal deletion, receipt exhaustion and revision overflow. A 7-by-7 public-operation matrix proves that create, authenticate, link, unlink, profile update, status change and delete receipts replay only through the exact originating API; all 42 cross-operation pairs fail with `command_operation_conflict` and preserve the complete registry. Authentication-specific regressions additionally cover unchanged active replay plus disable, ban, reactivation, deletion, unlink, rebind and revision drift.
 
 These tests are source-level evidence only. Exact-head CI, public-wire differentials, live database faults and independent review remain separate.
 
