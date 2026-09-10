@@ -1,4 +1,4 @@
-name: world-pr127-game-server-runtime-modules-v9
+name: world-pr127-complete-ownership-v10
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr127-game-server-runtime-modules-v9
+  group: world-pr127-complete-ownership-v10
   cancel-in-progress: true
 
 env:
@@ -25,7 +25,7 @@ env:
 
 jobs:
   qualify:
-    name: world-pr127/game-server-runtime-modules-v9
+    name: world-pr127/complete-ownership-v10
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
@@ -51,7 +51,12 @@ jobs:
             "https://github.com/${GITHUB_REPOSITORY}.git" "$STACK_HELPER_SHA"
           clone_exact "$RUNNER_TEMP/driver" \
             "https://github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_SHA"
-          test -s "$RUNNER_TEMP/driver/scripts/world-pr127-cumulative-modules-transform.py"
+          for path in \
+            scripts/world-pr127-cumulative-modules-transform.py \
+            scripts/world-pr127-campaign-runtime-driver.py \
+            scripts/world-pr127-settlement-worker-modules-transform.py; do
+            test -s "$RUNNER_TEMP/driver/$path"
+          done
           rm -rf "$GITHUB_WORKSPACE/.github/actions/upload-evidence"
           mkdir -p "$GITHUB_WORKSPACE/.github/actions" "$GITHUB_WORKSPACE/scripts"
           cp -R "$RUNNER_TEMP/common/.github/actions/upload-evidence" \
@@ -74,16 +79,62 @@ jobs:
             libxkbcommon-dev libwayland-dev pkg-config
           test "$(rustc --version | awk '{print $2}')" = "$RUSTUP_TOOLCHAIN"
 
-      - name: Transform and materialize exact candidate
+      - name: Transform every active ownership seam and materialize exact candidate
         shell: bash
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          python3 "$RUNNER_TEMP/driver/scripts/world-pr127-cumulative-modules-transform.py" \
+          driver="$RUNNER_TEMP/driver/scripts"
+          python3 "$driver/world-pr127-cumulative-modules-transform.py" \
             "$world" \
             --common-helper "$RUNNER_TEMP/common" \
             --stack-helper "$RUNNER_TEMP/stack" \
             --source-sha "$WORLD_SOURCE_SHA"
+          python3 "$driver/world-pr127-campaign-runtime-driver.py" \
+            "$world" \
+            --stack-helper "$RUNNER_TEMP/stack" \
+            --completed-commit "$WORLD_SOURCE_SHA"
+          python3 "$driver/world-pr127-settlement-worker-modules-transform.py" \
+            "$world" --completed-commit "$WORLD_SOURCE_SHA"
+
+          cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all
+          python3 - "$world" <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import sys
+
+          root = Path(sys.argv[1])
+          manifests = (
+              root / 'trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json',
+              root / 'trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json',
+              root / 'trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json',
+          )
+          for manifest_path in manifests:
+              value = json.loads(manifest_path.read_text(encoding='utf-8'))
+              source_root = manifest_path.parent.parent
+              seen = 0
+              for field in ('parts', 'nested_test_parts'):
+                  records = value.get(field, [])
+                  if not isinstance(records, list):
+                      raise SystemExit(f'{manifest_path}: {field} is not a list')
+                  for record in records:
+                      target = source_root / record['path']
+                      payload = target.read_bytes()
+                      record['bytes'] = len(payload)
+                      record['sha256'] = hashlib.sha256(payload).hexdigest()
+                      seen += 1
+              if seen == 0:
+                  raise SystemExit(f'empty manifest: {manifest_path}')
+              manifest_path.write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
+          PY
+
+          boundary="$(cd "$world" && python3 scripts/check-trnm-world-include-boundaries.py)"
+          printf '%s\n' "$boundary"
+          grep -F 'active_migration=0' <<<"$boundary"
+          grep -F 'completed_migration=54' <<<"$boundary"
+          grep -F 'frozen_legacy=11' <<<"$boundary"
+
           git -C "$world" config user.name 'World qualification'
           git -C "$world" config user.email 'world-qualification@invalid'
           git -C "$world" add -A
@@ -91,32 +142,49 @@ jobs:
           GIT_AUTHOR_DATE='2026-09-11T00:00:00Z' \
           GIT_COMMITTER_DATE='2026-09-11T00:00:00Z' \
             git -C "$world" commit -m \
-              'refactor(world): extract cumulative root modules'
-          packet="$RUNNER_TEMP/world-root-modules-v9"
+              'refactor(world): complete active Rust ownership modules'
+          test -z "$(git -C "$world" status --porcelain=v1 --untracked-files=no)"
+
+          packet="$RUNNER_TEMP/world-complete-ownership-v10"
           mkdir -p "$packet"
           git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" \
             > "$packet/candidate.patch"
+          git -C "$world" diff --name-only "$WORLD_SOURCE_SHA..HEAD" \
+            | LC_ALL=C sort > "$packet/changed-paths.txt"
+          git -C "$world" diff --name-status "$WORLD_SOURCE_SHA..HEAD" \
+            > "$packet/changed-status.txt"
           test -s "$packet/candidate.patch"
+          test -s "$packet/changed-paths.txt"
+          test -z "$(git -C "$world" diff --diff-filter=D --name-only "$WORLD_SOURCE_SHA..HEAD")"
+          tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
+            --owner=0 --group=0 --numeric-owner \
+            -cf "$packet/candidate-files.tar" -C "$world" \
+            -T "$packet/changed-paths.txt"
+          gzip -n "$packet/candidate-files.tar"
           {
             printf 'world_source=%s\n' "$WORLD_SOURCE_SHA"
             printf 'candidate_commit=%s\n' "$(git -C "$world" rev-parse HEAD)"
             printf 'candidate_tree=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
-            printf 'migrated_seams=44\n'
-            printf 'remaining_active_seams=2\n'
+            printf 'candidate_newly_completed_seams=46\n'
+            printf 'completed_migration_total=54\n'
+            printf 'remaining_active_seams=0\n'
+            printf 'frozen_legacy_seams=11\n'
             printf 'qualification=pending\n'
             printf 'production_authorization=not_granted\n'
           } > "$packet/identity.txt"
-          (cd "$packet" && sha256sum candidate.patch identity.txt > SHA256SUMS)
+          (cd "$packet" && sha256sum \
+            candidate.patch candidate-files.tar.gz changed-paths.txt \
+            changed-status.txt identity.txt > SHA256SUMS)
           tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
             --owner=0 --group=0 --numeric-owner \
-            -czf "$RUNNER_TEMP/world-root-modules-v9.tar.gz" \
-            -C "$RUNNER_TEMP" world-root-modules-v9
+            -czf "$RUNNER_TEMP/world-complete-ownership-v10.tar.gz" \
+            -C "$RUNNER_TEMP" world-complete-ownership-v10
 
       - name: Retain exact unqualified candidate
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-root-modules-v9-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-root-modules-v9.tar.gz
+          name: world-complete-ownership-v10-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-complete-ownership-v10.tar.gz
           mime_type: application/gzip
 
       - name: Run format tests and strict Clippy
@@ -124,7 +192,7 @@ jobs:
         run: |
           set -uo pipefail
           world="$RUNNER_TEMP/world"
-          diagnostics="$RUNNER_TEMP/world-root-modules-v9-diagnostics"
+          diagnostics="$RUNNER_TEMP/world-complete-ownership-v10-diagnostics"
           mkdir -p "$diagnostics"
           set +e
           cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" \
@@ -153,23 +221,35 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/world"
-          python3 scripts/check-trnm-world-include-boundaries.py
-          bash scripts/run-trnm-world-v6-qualification-v2.sh truth
-          bash scripts/run-trnm-world-v6-qualification-v2.sh source
-          test -z "$(git status --porcelain=v1 --untracked-files=no)"
-          printf 'WORLD_ROOT_MODULES_V9=PASS\n'
-          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+          world="$RUNNER_TEMP/world"
+          diagnostics="$RUNNER_TEMP/world-complete-ownership-v10-diagnostics"
+          cd "$world"
+          {
+            boundary="$(python3 scripts/check-trnm-world-include-boundaries.py)"
+            printf '%s\n' "$boundary"
+            grep -F 'active_migration=0' <<<"$boundary"
+            grep -F 'completed_migration=54' <<<"$boundary"
+            grep -F 'frozen_legacy=11' <<<"$boundary"
+            bash scripts/run-trnm-world-v6-qualification-v2.sh truth
+            bash scripts/run-trnm-world-v6-qualification-v2.sh source
+            test -z "$(git status --porcelain=v1 --untracked-files=no)"
+            printf 'WORLD_COMPLETE_OWNERSHIP_V10=PASS\n'
+            printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+          } 2>&1 | tee "$diagnostics/qualification.log"
+          printf 'qualification_status=0\n' > "$diagnostics/qualification-status.txt"
 
       - name: Package qualification diagnostics
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          diagnostics="$RUNNER_TEMP/world-root-modules-v9-diagnostics"
+          diagnostics="$RUNNER_TEMP/world-complete-ownership-v10-diagnostics"
           mkdir -p "$diagnostics"
           test -s "$diagnostics/status.txt" || \
             printf 'state=failed_before_test_status\n' > "$diagnostics/status.txt"
+          test -s "$diagnostics/qualification-status.txt" || \
+            printf 'qualification_status=failed_or_incomplete\n' \
+              > "$diagnostics/qualification-status.txt"
           {
             printf 'world_source=%s\n' "$WORLD_SOURCE_SHA"
             printf 'run_id=%s\n' "$GITHUB_RUN_ID"
@@ -180,13 +260,13 @@ jobs:
             -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
           tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
             --owner=0 --group=0 --numeric-owner \
-            -czf "$RUNNER_TEMP/world-root-modules-v9-diagnostics.tar.gz" \
-            -C "$RUNNER_TEMP" world-root-modules-v9-diagnostics
+            -czf "$RUNNER_TEMP/world-complete-ownership-v10-diagnostics.tar.gz" \
+            -C "$RUNNER_TEMP" world-complete-ownership-v10-diagnostics
 
       - name: Upload qualification diagnostics
         if: always()
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-root-modules-v9-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-root-modules-v9-diagnostics.tar.gz
+          name: world-complete-ownership-v10-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-complete-ownership-v10-diagnostics.tar.gz
           mime_type: application/gzip
