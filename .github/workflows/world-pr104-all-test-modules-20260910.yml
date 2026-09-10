@@ -1,0 +1,247 @@
+name: world-pr104-all-active-nested-test-modules-v1
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-pr104-all-active-nested-test-modules-v1
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_SOURCE_SHA: '33339b28a6f53668672d1797109da6c7bf57db49'
+  GAME_HELPER_SHA: '1e24b2a8bdf6d7eb4c852739184fff2c8bb6123d'
+  RUSTUP_TOOLCHAIN: '1.98.1'
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+  RUST_BACKTRACE: '1'
+  RUST_TEST_THREADS: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  qualify:
+    name: world-pr104/all-active-nested-test-modules-v1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Fetch immutable World source and pinned helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          helper="$RUNNER_TEMP/game-helper"
+          git init "$world"
+          git -C "$world" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
+          git -C "$world" fetch --no-tags --depth=2 origin "$WORLD_SOURCE_SHA"
+          git -C "$world" checkout --detach FETCH_HEAD
+          test "$(git -C "$world" rev-parse HEAD)" = "$WORLD_SOURCE_SHA"
+
+          git init "$helper"
+          git -C "$helper" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$helper" fetch --no-tags --depth=1 origin "$GAME_HELPER_SHA"
+          git -C "$helper" checkout --detach FETCH_HEAD
+          test "$(git -C "$helper" rev-parse HEAD)" = "$GAME_HELPER_SHA"
+          test -s "$helper/scripts/world-pr104-all-test-modules-transform.py"
+          test -s "$helper/scripts/upload-actions-artifact.py"
+
+      - name: Install pinned Rust and native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.98.1
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.list.save
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libudev-dev libx11-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev pkg-config
+          test "$(rustc --version | awk '{print $2}')" = '1.98.1'
+          rustc --version --verbose
+          cargo --version --verbose
+          rustfmt --version
+          clippy-driver --version
+
+      - name: Transform all active nested test bodies
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          python3 "$RUNNER_TEMP/game-helper/scripts/world-pr104-all-test-modules-transform.py" \
+            "$world" --source-sha "$WORLD_SOURCE_SHA"
+          cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all
+
+          python3 - "$world" <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          families = {
+              "trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json": {
+                  "lib_parts/tests/part_01.rs",
+                  "lib_parts/tests/campaign_tests_01.rs",
+                  "lib_parts/tests/campaign_tests_02.rs",
+                  "lib_parts/tests/campaign_tests_03.rs",
+              },
+              "trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json": {
+                  "lib_parts/tests/part_01.rs",
+                  "lib_parts/tests/rts_tests_01.rs",
+                  "lib_parts/tests/rts_tests_02.rs",
+                  "lib_parts/tests/rts_tests_03.rs",
+              },
+              "trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json": {
+                  "lib_parts/tests/part_01.rs",
+                  "lib_parts/tests/game_server_tests_01.rs",
+                  "lib_parts/tests/game_server_tests_02.rs",
+                  "lib_parts/tests/game_server_tests_03.rs",
+                  "lib_parts/tests/game_server_tests_04.rs",
+              },
+          }
+          for relative, changed in families.items():
+              manifest_path = root / relative
+              manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+              source_root = manifest_path.parent.parent
+              seen = set()
+              for field in ("parts", "nested_test_parts"):
+                  for record in manifest[field]:
+                      if record["path"] in changed:
+                          payload = (source_root / record["path"]).read_bytes()
+                          record["bytes"] = len(payload)
+                          record["sha256"] = hashlib.sha256(payload).hexdigest()
+                          seen.add(record["path"])
+              if seen != changed:
+                  raise SystemExit(f"{relative}: {seen} != {changed}")
+              manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          print("WORLD_ALL_TEST_MANIFEST_REFRESH=PASS")
+          PY
+
+          git -C "$world" config user.name "World read-only qualification"
+          git -C "$world" config user.email "world-read-only-qualification@invalid"
+          git -C "$world" add \
+            scripts/contracts/trnm-world-include-migrations-v1.json \
+            trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs \
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/tests \
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json \
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/tests \
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json \
+            trillionnium/crates/trnm-game-server/src/lib_parts/tests \
+            trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json
+          GIT_AUTHOR_DATE='2026-09-10T00:00:00Z' \
+          GIT_COMMITTER_DATE='2026-09-10T00:00:00Z' \
+            git -C "$world" commit -m "test(world): migrate all active nested test bodies to modules"
+          test -z "$(git -C "$world" status --porcelain=v1)"
+          printf 'WORLD_TRANSFORMED_HEAD=%s\n' "$(git -C "$world" rev-parse HEAD)"
+          printf 'WORLD_TRANSFORMED_TREE=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
+
+      - name: Format and compile-test the three affected crates
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all --check
+          cargo test --manifest-path "$world/trillionnium/Cargo.toml" \
+            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
+            --all-targets --locked
+          cargo clippy --manifest-path "$world/trillionnium/Cargo.toml" \
+            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
+            --all-targets --locked -- -D warnings
+
+      - name: Qualify complete transformed World source and truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          cd "$world"
+          python3 scripts/check-trnm-world-include-boundaries.py
+          bash scripts/run-trnm-world-v6-qualification-v2.sh truth
+          bash scripts/run-trnm-world-v6-qualification-v2.sh source
+          test -z "$(git status --porcelain=v1)"
+          printf 'WORLD_ALL_ACTIVE_NESTED_TEST_MODULE_QUALIFICATION=PASS\n'
+
+      - name: Build deterministic transformed-source artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          packet="$world/run/world-all-active-nested-test-modules-v1"
+          archive="$RUNNER_TEMP/world-all-active-nested-test-modules-v1.tar.gz"
+          mkdir -p "$packet"
+          paths=(
+            scripts/contracts/trnm-world-include-migrations-v1.json
+            trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_01.rs
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_02.rs
+            trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_03.rs
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/part_01.rs
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/rts_tests_01.rs
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/rts_tests_02.rs
+            trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/rts_tests_03.rs
+            trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json
+            trillionnium/crates/trnm-game-server/src/lib_parts/tests/part_01.rs
+            trillionnium/crates/trnm-game-server/src/lib_parts/tests/game_server_tests_01.rs
+            trillionnium/crates/trnm-game-server/src/lib_parts/tests/game_server_tests_02.rs
+            trillionnium/crates/trnm-game-server/src/lib_parts/tests/game_server_tests_03.rs
+            trillionnium/crates/trnm-game-server/src/lib_parts/tests/game_server_tests_04.rs
+          )
+          git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" -- "${paths[@]}" > "$packet/candidate.patch"
+          test -s "$packet/candidate.patch"
+          {
+            printf 'repository=%s\n' "$WORLD_REPOSITORY"
+            printf 'source=%s\n' "$WORLD_SOURCE_SHA"
+            printf 'candidate_commit=%s\n' "$(git -C "$world" rev-parse HEAD)"
+            printf 'candidate_tree=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
+            printf 'rustc=%s\n' "$(rustc --version)"
+            printf 'seams_migrated=10\n'
+            printf 'production_authorization=not_granted\n'
+          } > "$packet/identity.txt"
+          (
+            cd "$world"
+            sha256sum "${paths[@]}" \
+              run/world-all-active-nested-test-modules-v1/candidate.patch \
+              run/world-all-active-nested-test-modules-v1/identity.txt \
+              > run/world-all-active-nested-test-modules-v1/SHA256SUMS
+          )
+          tar --sort=name --format=gnu --mtime='UTC 2026-09-10' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf "$archive" -C "$world" \
+            "${paths[@]}" \
+            run/world-all-active-nested-test-modules-v1/candidate.patch \
+            run/world-all-active-nested-test-modules-v1/identity.txt \
+            run/world-all-active-nested-test-modules-v1/SHA256SUMS
+          test -s "$archive"
+          sha256sum "$archive"
+
+      - name: Retain transformed-source artifact
+        id: retained-world-test-modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/game-helper/scripts/upload-actions-artifact.py" \
+            "world-all-active-nested-test-modules-v1-${WORLD_SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "$RUNNER_TEMP/world-all-active-nested-test-modules-v1.tar.gz" \
+            --mime-type application/gzip
+
+      - name: Emit retained artifact identity
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.retained-world-test-modules.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.retained-world-test-modules.outputs.sha256 }}
+          ARTIFACT_SIZE: ${{ steps.retained-world-test-modules.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_ID"
+          test -n "$ARTIFACT_SHA256"
+          test -n "$ARTIFACT_SIZE"
+          printf 'WORLD_TEST_MODULES_ARTIFACT_ID=%s\n' "$ARTIFACT_ID"
+          printf 'WORLD_TEST_MODULES_ARTIFACT_SHA256=%s\n' "$ARTIFACT_SHA256"
+          printf 'WORLD_TEST_MODULES_ARTIFACT_SIZE=%s\n' "$ARTIFACT_SIZE"
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
