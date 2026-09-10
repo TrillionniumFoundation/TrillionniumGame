@@ -43,7 +43,7 @@ fn finish_storage_page(
     actor: Actor,
     owner: Option<UserId>,
     limit: usize,
-) -> (Vec<StorageObject>, Option<StorageListCursor>) {
+) -> StorageListPage {
     let has_more = objects.len() > limit;
     if has_more {
         objects.truncate(limit);

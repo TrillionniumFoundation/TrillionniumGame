@@ -23,3 +23,6 @@ const MAX_COLLECTION_BYTES: usize = 128;
 /// continuation from an untrusted client; a bare `StorageObjectKey` is not a
 /// valid cursor.
 pub type StorageListCursor = (Actor, Option<UserId>, StorageObjectKey);
+
+/// One bounded visible page and its optional scope-bound continuation.
+pub type StorageListPage = (Vec<StorageObject>, Option<StorageListCursor>);
