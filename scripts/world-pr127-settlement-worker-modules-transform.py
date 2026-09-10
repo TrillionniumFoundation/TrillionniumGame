@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Close the final settlement module seams and exact contract-doc trace gaps."""
+"""Close final settlement seams and deterministic contract-documentation gaps."""
 from __future__ import annotations
 
 import argparse
@@ -43,12 +43,11 @@ AUDIT_TRACE_NEW = (
     "`contracts/audit-events/README.md`; the maintained documentation surfaces are "
     "`docs/modules/contracts/audit-events-design.md` and "
     "`docs/modules/contracts/README.md`. Executable traceability is carried by the inline "
-    "Rust tests under `contracts/audit-events/src/` and by "
-    "`scripts/check-trnm-world-contract-module-documentation.py` plus its hostile fixture "
-    "suite. Tests must cover deterministic round trips, stable spellings, "
-    "duplicate/oversized/unsupported values, secret-like field rejection where supported, "
-    "exact duplicate identity and cross-crate fixture emission. Future sink conformance "
-    "requires golden bytes, database/outbox fault tests and independent review."
+    "Rust test modules and by `scripts/check-trnm-world-contract-module-documentation.py` "
+    "plus its hostile fixture suite. Tests must cover deterministic round trips, stable "
+    "spellings, duplicate/oversized/unsupported values, secret-like field rejection where "
+    "supported, exact duplicate identity and cross-crate fixture emission. Future sink "
+    "conformance requires golden bytes, database/outbox fault tests and independent review."
 )
 GOVERNANCE_TRACE_OLD = (
     "Primary source is `contracts/governance-guard/src/`; current scope is defined by "
@@ -61,14 +60,79 @@ GOVERNANCE_TRACE_NEW = (
     "Primary source is `contracts/governance-guard/src/`; the local contract is "
     "`contracts/governance-guard/README.md`, and the maintained documentation surfaces are "
     "`docs/modules/contracts/governance-guard-design.md` and "
-    "`docs/modules/contracts/README.md`. Executable traceability is carried by the Rust "
-    "tests under `contracts/governance-guard/src/` and by "
-    "`scripts/check-trnm-world-contract-module-documentation.py` plus its hostile fixture "
-    "suite. Tests cover schedule/execute/cancel, too-early and expired execution, "
-    "action/version drift, exact/altered duplicate, pause/resume role/state behavior, "
-    "overflow/bounds, state preservation and audit normalization. Host time, "
-    "signatures/quorum, durable execution and live governance probes remain absent."
+    "`docs/modules/contracts/README.md`. Executable traceability is carried by the inline "
+    "Rust test modules and by `scripts/check-trnm-world-contract-module-documentation.py` "
+    "plus its hostile fixture suite. Tests cover schedule/execute/cancel, too-early and "
+    "expired execution, action/version drift, exact/altered duplicate, pause/resume "
+    "role/state behavior, overflow/bounds, state preservation and audit normalization. Host "
+    "time, signatures/quorum, durable execution and live governance probes remain absent."
 )
+
+TEST_LINK_MUTATOR_OLD = '''            lambda text: text.replace(
+                "../../docs/modules/contracts/audit-events-design.md",
+                "../../docs/modules/contracts/missing-design.md",
+                1,
+            ),'''
+TEST_LINK_MUTATOR_NEW = '''            lambda text: text.replace(
+                "../../docs/modules/contracts/audit-events-design.md",
+                "../../docs/modules/contracts/missing-design.md",
+            ),'''
+TEST_FIXTURE_OLD = '''def clone_and_mutate(mutator) -> None:
+    with tempfile.TemporaryDirectory(prefix="trnm-contract-doc-") as temporary:
+        clone = Path(temporary) / "repo"
+        shutil.copytree(
+            ROOT,
+            clone,
+            ignore=shutil.ignore_patterns(".git", "target", "node_modules", "run"),
+        )
+        mutator(clone)
+        run(clone, expect_success=False)
+'''
+TEST_FIXTURE_NEW = '''MODULES = ("audit-events", "bridge-relay", "governance-guard", "settlement-vault")
+FIXTURE_FILES = (
+    CHECKER,
+    Path("scripts/trnm_world_strict_json.py"),
+    WORKSPACE,
+    Path("contracts/README.md"),
+    DOCUMENT_CATALOG,
+    COMPONENT_CATALOG,
+    Path("docs/modules/contracts/README.md"),
+)
+
+
+def copy_fixture_file(clone: Path, relative: Path) -> None:
+    source = ROOT / relative
+    target = clone / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+
+
+def materialize_fixture(clone: Path) -> None:
+    clone.mkdir(parents=True)
+    for relative in FIXTURE_FILES:
+        copy_fixture_file(clone, relative)
+    for module in MODULES:
+        for relative in (
+            Path(f"contracts/{module}/Cargo.toml"),
+            Path(f"contracts/{module}/README.md"),
+            Path(f"docs/modules/contracts/{module}-design.md"),
+        ):
+            copy_fixture_file(clone, relative)
+        source_root = ROOT / "contracts" / module / "src"
+        sources = sorted(source_root.glob("*.rs"))
+        if not sources:
+            raise AssertionError(f"missing fixture source for {module}")
+        for source in sources:
+            copy_fixture_file(clone, source.relative_to(ROOT))
+
+
+def clone_and_mutate(mutator) -> None:
+    with tempfile.TemporaryDirectory(prefix="trnm-contract-doc-") as temporary:
+        clone = Path(temporary) / "repo"
+        materialize_fixture(clone)
+        mutator(clone)
+        run(clone, expect_success=False)
+'''
 
 
 def replace_once(path: Path, old: str, new: str, label: str) -> None:
@@ -76,9 +140,9 @@ def replace_once(path: Path, old: str, new: str, label: str) -> None:
         raise RuntimeError(f"{label} is unavailable: {path}")
     text = path.read_text(encoding="utf-8", errors="strict")
     if text.count(old) != 1:
-        raise RuntimeError(f"{label} traceability boundary drift")
+        raise RuntimeError(f"{label} boundary drift")
     if new in text:
-        raise RuntimeError(f"{label} traceability repair already present")
+        raise RuntimeError(f"{label} repair already present")
     path.write_text(text.replace(old, new), encoding="utf-8")
 
 
@@ -87,13 +151,26 @@ def repair_contract_documentation(root: Path) -> None:
         root / "docs/modules/contracts/audit-events-design.md",
         AUDIT_TRACE_OLD,
         AUDIT_TRACE_NEW,
-        "audit-events design",
+        "audit-events design traceability",
     )
     replace_once(
         root / "docs/modules/contracts/governance-guard-design.md",
         GOVERNANCE_TRACE_OLD,
         GOVERNANCE_TRACE_NEW,
-        "governance-guard design",
+        "governance-guard design traceability",
+    )
+    test_path = root / "scripts/test-trnm-world-contract-module-documentation.py"
+    replace_once(
+        test_path,
+        TEST_LINK_MUTATOR_OLD,
+        TEST_LINK_MUTATOR_NEW,
+        "contract-documentation link hostile fixture",
+    )
+    replace_once(
+        test_path,
+        TEST_FIXTURE_OLD,
+        TEST_FIXTURE_NEW,
+        "contract-documentation bounded fixture",
     )
 
 
@@ -178,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
 
     repair_contract_documentation(root)
     print("WORLD_PR127_SETTLEMENT_WORKER_MODULE_TRANSFORM=PASS seams=2")
-    print("WORLD_PR127_CONTRACT_DOCUMENTATION_TRACEABILITY=PASS designs=2")
+    print("WORLD_PR127_CONTRACT_DOCUMENTATION_TRACEABILITY=PASS designs=2 fixtures=12")
     return 0
 
 
