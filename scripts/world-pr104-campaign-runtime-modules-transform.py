@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Convert every remaining campaign-core runtime include seam into Rust modules.
 
-The transform preserves the original crate-root public API, makes only the
-minimum sibling-module visibility widening required by the former shared
-include namespace, records every removed seam, and refreshes the closed-world
-source manifest.
+The transform preserves the original crate-root public API, widens only
+inherent-implementation members and private fields to crate visibility, imports
+only private top-level symbols that are actually referenced outside their
+owning module, records every removed seam, and refreshes the closed-world source
+manifest after rustfmt has produced the final bytes.
 """
 from __future__ import annotations
 
@@ -12,8 +13,9 @@ import argparse
 import hashlib
 import importlib.util
 import json
-import re
 from pathlib import Path
+import re
+import subprocess
 
 IDENT = r"(?:r#)?[A-Za-z_][A-Za-z0-9_]*"
 VIS_RE = r"(?P<vis>pub(?:\([^)]*\))?\s+)?"
@@ -24,7 +26,9 @@ OTHER_RE = re.compile(
     rf"^(?P<indent>\s*){VIS_RE}(?P<kind>struct|enum|union|trait|type|const|static)\s+(?P<name>{IDENT})"
 )
 IMPL_RE = re.compile(r"^\s*(?:unsafe\s+)?impl\b")
-FIELD_RE = re.compile(rf"^(?P<indent>\s*)(?P<vis>pub(?:\([^)]*\))?\s+)?(?P<name>{IDENT})\s*:")
+FIELD_RE = re.compile(
+    rf"^(?P<indent>\s*)(?P<vis>pub(?:\([^)]*\))?\s+)?(?P<name>{IDENT})\s*:"
+)
 ASSOC_OTHER_RE = re.compile(
     rf"^(?P<indent>\s*){VIS_RE}(?P<kind>type|const)\s+(?P<name>{IDENT})"
 )
@@ -34,7 +38,11 @@ def external_public(visibility: str | None) -> bool:
     return visibility == "pub "
 
 
-def add_visibility(line: str, match: re.Match[str], visibility: str = "pub(crate) ") -> str:
+def add_visibility(
+    line: str,
+    match: re.Match[str],
+    visibility: str = "pub(crate) ",
+) -> str:
     if match.groupdict().get("vis"):
         return line
     start = len(match.group("indent"))
@@ -43,6 +51,12 @@ def add_visibility(line: str, match: re.Match[str], visibility: str = "pub(crate
 
 def top_item(line: str) -> re.Match[str] | None:
     return FN_RE.match(line) or OTHER_RE.match(line)
+
+
+def classify_impl(header: str) -> str:
+    """Distinguish inherent impls from trait impls before member rewriting."""
+    before_open = header.split("{", 1)[0]
+    return "trait_impl" if re.search(r"\bfor\b", before_open) else "impl"
 
 
 def transform_part(path: Path, mask_fn) -> tuple[list[str], list[str]]:
@@ -57,6 +71,7 @@ def transform_part(path: Path, mask_fn) -> tuple[list[str], list[str]]:
 
     depth = 0
     pending_outer: str | None = None
+    pending_impl_header = ""
     outer_kind: str | None = None
     public: list[str] = []
     internal: list[str] = []
@@ -64,8 +79,11 @@ def transform_part(path: Path, mask_fn) -> tuple[list[str], list[str]]:
 
     for line, masked_line in zip(lines, masked):
         if depth == 0:
-            if IMPL_RE.match(masked_line):
-                pending_outer = "impl"
+            if pending_outer == "impl_pending":
+                pending_impl_header += masked_line
+            elif IMPL_RE.match(masked_line):
+                pending_outer = "impl_pending"
+                pending_impl_header = masked_line
             else:
                 match = top_item(masked_line)
                 if match:
@@ -82,6 +100,8 @@ def transform_part(path: Path, mask_fn) -> tuple[list[str], list[str]]:
             if field and not field.groupdict().get("vis"):
                 line = add_visibility(line, field)
         elif depth == 1 and outer_kind == "impl":
+            # Inherent methods may need sibling-module access. Trait items may
+            # never carry an explicit visibility qualifier (Rust E0449).
             associated = FN_RE.match(masked_line) or ASSOC_OTHER_RE.match(masked_line)
             if associated and not associated.groupdict().get("vis"):
                 line = add_visibility(line, associated)
@@ -92,12 +112,17 @@ def transform_part(path: Path, mask_fn) -> tuple[list[str], list[str]]:
         before = depth
         depth += opens - closes
         if before == 0 and opens:
-            outer_kind = pending_outer
+            if pending_outer == "impl_pending":
+                outer_kind = classify_impl(pending_impl_header)
+            else:
+                outer_kind = pending_outer
             pending_outer = None
+            pending_impl_header = ""
         if depth == 0:
             outer_kind = None
             if ";" in masked_line and opens == 0:
                 pending_outer = None
+                pending_impl_header = ""
 
     if depth != 0:
         raise RuntimeError(f"unbalanced braces after masking: {path}: {depth}")
@@ -139,6 +164,13 @@ def multipart_module(section: str, public: list[str], internal: list[str]) -> st
     )
 
 
+def word_used(name: str, texts: list[str]) -> bool:
+    pattern = re.compile(
+        rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])"
+    )
+    return any(pattern.search(text) for text in texts)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
@@ -163,14 +195,17 @@ def main() -> int:
         "economy_commands": ["part_01.rs"],
     }
     exports: dict[str, tuple[list[str], list[str]]] = {}
+    section_paths: dict[str, list[Path]] = {}
     changed: set[Path] = set()
 
     for section, filenames in families.items():
         section_public: list[str] = []
         section_internal: list[str] = []
         part_exports: list[tuple[str, list[str], list[str]]] = []
+        paths: list[Path] = []
         for filename in filenames:
             path = crate / "lib_parts" / section / filename
+            paths.append(path)
             public, internal = transform_part(path, engine.rust_code_mask)
             section_public.extend(public)
             section_internal.extend(internal)
@@ -181,6 +216,7 @@ def main() -> int:
         if len(section_internal) != len(set(section_internal)):
             raise RuntimeError(f"duplicate private name across {section}")
         exports[section] = (section_public, section_internal)
+        section_paths[section] = paths
 
         if len(filenames) > 1:
             module_path = crate / "lib_parts" / section / "mod.rs"
@@ -193,6 +229,25 @@ def main() -> int:
                 chunks.append("\n")
             module_path.write_text("".join(chunks), encoding="utf-8")
             changed.add(module_path)
+
+    # Keep a private symbol at the crate root only when another module or the
+    # test surface actually references it. This avoids masking bad extraction
+    # with unused-import allowances.
+    masked_by_path = {
+        path: engine.rust_code_mask(path.read_text(encoding="utf-8", errors="strict"))
+        for path in crate.rglob("*.rs")
+    }
+    for section, (public, internal) in list(exports.items()):
+        excluded = set(section_paths[section])
+        excluded.add(crate / "lib_parts" / section / "mod.rs")
+        outside = [
+            text for path, text in masked_by_path.items()
+            if path not in excluded
+        ]
+        exports[section] = (
+            public,
+            [name for name in internal if word_used(name, outside)],
+        )
 
     lib = crate / "lib.rs"
     source = lib.read_text(encoding="utf-8", errors="strict")
@@ -215,18 +270,24 @@ def main() -> int:
     public, internal = exports["economy_commands"]
     if source.count(old_economy) != 1:
         raise RuntimeError("economy include anchor drift")
-    source = source.replace(old_economy, single_module("economy_commands", public, internal))
+    source = source.replace(
+        old_economy,
+        single_module("economy_commands", public, internal),
+    )
     lib.write_text(source, encoding="utf-8")
     changed.add(lib)
 
     ledger_path = root / "scripts/contracts/trnm-world-include-migrations-v1.json"
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-    existing = {(entry["path"], entry["expression"]) for entry in ledger["completed"]}
+    existing = {(item["path"], item["expression"]) for item in ledger["completed"]}
     for section, filenames in families.items():
         replacement_path = "mod.rs" if len(filenames) > 1 else filenames[0]
         for filename in filenames:
             expression = f'"lib_parts/{section}/{filename}"'
-            key = ("trillionnium/crates/trnm-campaign-core/src/lib.rs", expression)
+            key = (
+                "trillionnium/crates/trnm-campaign-core/src/lib.rs",
+                expression,
+            )
             if key in existing:
                 raise RuntimeError(f"already completed: {key}")
             ledger["completed"].append(
@@ -249,8 +310,26 @@ def main() -> int:
     if any(record["path"] == new_relative for record in manifest["parts"]):
         raise RuntimeError("campaign_commands/mod.rs is already catalogued")
     manifest["parts"].append(
-        {"bytes": 0, "path": new_relative, "section": "campaign_commands", "sha256": ""}
+        {
+            "bytes": 0,
+            "path": new_relative,
+            "section": "campaign_commands",
+            "sha256": "",
+        }
     )
+
+    # Rustfmt first; the closed-world manifest must bind the final bytes.
+    subprocess.run(
+        [
+            "cargo",
+            "fmt",
+            "--manifest-path",
+            str(root / "trillionnium/Cargo.toml"),
+            "--all",
+        ],
+        check=True,
+    )
+
     records = {record["path"]: record for record in manifest["parts"]}
     changed.add(manifest_path)
     for path in changed:
@@ -266,13 +345,16 @@ def main() -> int:
         record["sha256"] = hashlib.sha256(payload).hexdigest()
     manifest["parts"] = sorted(
         manifest["parts"],
-        key=lambda record: (manifest["sections"].index(record["section"]), record["path"]),
+        key=lambda record: (
+            manifest["sections"].index(record["section"]),
+            record["path"],
+        ),
     )
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     print("WORLD_CAMPAIGN_RUNTIME_MODULE_TRANSFORM=PASS seams=10")
     for section, (public, internal) in exports.items():
-        print(f"{section}: public={len(public)} internal={len(internal)}")
+        print(f"{section}: public={len(public)} cross_module_internal={len(internal)}")
     return 0
 
 
