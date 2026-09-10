@@ -1,0 +1,84 @@
+name: tmp-fix-social-rebind-runner
+
+on:
+  push:
+    branches:
+      - ops/social-core-rebind-repair-20260910
+    paths:
+      - .github/workflows/tmp-fix-social-rebind-runner.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  repair-and-dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      TARGET_BRANCH: ops/social-core-rebind-repair-20260910
+      TARGET_WORKFLOW: .github/workflows/tmp-social-core-rebind-repair.yml
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Patch exact workflow source and dispatch it explicitly
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/ops-repair"
+          rm -rf "$work"
+          git init "$work"
+          git -C "$work" remote add origin "https://github.com/${REPOSITORY}.git"
+          test "$(git ls-remote "https://github.com/${REPOSITORY}.git" "refs/heads/${TARGET_BRANCH}" | cut -f1)" = "$GITHUB_SHA"
+          git -C "$work" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$work" checkout --detach FETCH_HEAD
+          python3 - "$work/$TARGET_WORKFLOW" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          old = '''on:
+            push:
+              branches:
+                - ops/social-core-rebind-repair-20260910
+              paths:
+                - .github/workflows/tmp-social-core-rebind-repair.yml
+          '''
+          new = '''on:
+            workflow_dispatch:
+            push:
+              branches:
+                - ops/social-core-rebind-repair-20260910
+              paths:
+                - .github/workflows/tmp-social-core-rebind-repair.yml
+          '''
+          if text.count(old) != 1:
+              raise SystemExit("workflow trigger contract changed")
+          text = text.replace(old, new, 1)
+          old_cleanup = '''          rm -rf "$GITHUB_WORKSPACE"
+                    git init "$GITHUB_WORKSPACE"
+          '''
+          new_cleanup = '''          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+                    git init "$GITHUB_WORKSPACE"
+          '''
+          if text.count(old_cleanup) != 1:
+              raise SystemExit("workspace cleanup contract changed")
+          path.write_text(text.replace(old_cleanup, new_cleanup, 1), encoding="utf-8")
+          PY
+          git -C "$work" config user.name 'github-actions[bot]'
+          git -C "$work" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C "$work" add "$TARGET_WORKFLOW"
+          git -C "$work" diff --cached --check
+          git -C "$work" commit -m 'fix(ci): preserve runner cwd for Surface 2 repair'
+          remote_head="$(git ls-remote "https://github.com/${REPOSITORY}.git" "refs/heads/${TARGET_BRANCH}" | cut -f1)"
+          test "$remote_head" = "$GITHUB_SHA"
+          git -C "$work" remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git -C "$work" push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${REPOSITORY}/actions/workflows/tmp-social-core-rebind-repair.yml/dispatches" \
+            -d "{\"ref\":\"${TARGET_BRANCH}\"}"
