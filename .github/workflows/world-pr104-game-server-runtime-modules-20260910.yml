@@ -1,4 +1,4 @@
-name: world-pr104-game-server-runtime-modules-v1
+name: world-pr127-game-server-runtime-modules-v2
 
 on:
   pull_request:
@@ -8,12 +8,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr104-game-server-runtime-modules-v1
+  group: world-pr127-game-server-runtime-modules-v2
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
-  WORLD_SOURCE_SHA: '20942ec3505d977d385f2660499ecc7a26c26232'
+  WORLD_SOURCE_SHA: 'cc608ce65a4a51b7972fcfd01110a2f95d7571cb'
   COMMON_HELPER_SHA: 'b02fef9a86b77c8babd19a7dd469081095ea2e90'
   STACK_HELPER_SHA: '3aa075564891e4f7abba57c682dafc9f6b06c7b2'
   RUSTUP_TOOLCHAIN: '1.98.1'
@@ -25,9 +25,9 @@ env:
 
 jobs:
   qualify:
-    name: world-pr104/game-server-runtime-modules-v1
+    name: world-pr127/game-server-runtime-modules-v2
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - name: Fetch exact World source and pinned transforms
         shell: bash
@@ -64,14 +64,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
-          rustup default 1.98.1
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+          rustup default "$RUSTUP_TOOLCHAIN"
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.list.save
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev libudev-dev libx11-dev libxi-dev \
             libxkbcommon-dev libwayland-dev pkg-config
-          test "$(rustc --version | awk '{print $2}')" = '1.98.1'
+          test "$(rustc --version | awk '{print $2}')" = "$RUSTUP_TOOLCHAIN"
 
       - name: Apply cumulative module transforms
         shell: bash
@@ -92,43 +92,19 @@ jobs:
           git -C "$world" config user.email "world-read-only-qualification@invalid"
           git -C "$world" add -A
           test -n "$(git -C "$world" diff --cached --name-only)"
-          GIT_AUTHOR_DATE='2026-09-10T00:00:00Z' GIT_COMMITTER_DATE='2026-09-10T00:00:00Z' \
+          GIT_AUTHOR_DATE='2026-09-11T00:00:00Z' GIT_COMMITTER_DATE='2026-09-11T00:00:00Z' \
             git -C "$world" commit -m "refactor(world): extract campaign RTS and game-server root modules"
           test -z "$(git -C "$world" status --porcelain=v1)"
           printf 'WORLD_TRANSFORMED_HEAD=%s\n' "$(git -C "$world" rev-parse HEAD)"
           printf 'WORLD_TRANSFORMED_TREE=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
 
-      - name: Format, test and lint affected crates
+      - name: Build deterministic candidate artifact before qualification
         shell: bash
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all --check
-          cargo test --manifest-path "$world/trillionnium/Cargo.toml" \
-            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
-            --all-targets --locked
-          cargo clippy --manifest-path "$world/trillionnium/Cargo.toml" \
-            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
-            --all-targets --locked -- -D warnings
-
-      - name: Qualify transformed World truth and source
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/world"
-          python3 scripts/check-trnm-world-include-boundaries.py
-          bash scripts/run-trnm-world-v6-qualification-v2.sh truth
-          bash scripts/run-trnm-world-v6-qualification-v2.sh source
-          test -z "$(git status --porcelain=v1)"
-          printf 'WORLD_GAME_SERVER_RUNTIME_MODULE_QUALIFICATION=PASS\n'
-
-      - name: Build deterministic candidate artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-          world="$RUNNER_TEMP/world"
-          packet="$world/run/world-game-server-runtime-modules-v1"
-          archive="$RUNNER_TEMP/world-game-server-runtime-modules-v1.tar.gz"
+          packet="$world/run/world-game-server-runtime-modules-v2"
+          archive="$RUNNER_TEMP/world-game-server-runtime-modules-v2.tar.gz"
           mkdir -p "$packet"
           git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" > "$packet/candidate.patch"
           test -s "$packet/candidate.patch"
@@ -142,25 +118,30 @@ jobs:
             printf 'rts_runtime_seams_migrated=7\n'
             printf 'game_server_root_runtime_seams_migrated=17\n'
             printf 'expected_active_migration_remaining=2\n'
+            printf 'qualification_state=pending\n'
             printf 'production_authorization=not_granted\n'
           } > "$packet/identity.txt"
-          (cd "$world" && sha256sum run/world-game-server-runtime-modules-v1/candidate.patch run/world-game-server-runtime-modules-v1/identity.txt > run/world-game-server-runtime-modules-v1/SHA256SUMS)
-          tar --sort=name --format=gnu --mtime='UTC 2026-09-10' --owner=0 --group=0 --numeric-owner \
+          (cd "$world" && sha256sum \
+            run/world-game-server-runtime-modules-v2/candidate.patch \
+            run/world-game-server-runtime-modules-v2/identity.txt \
+            > run/world-game-server-runtime-modules-v2/SHA256SUMS)
+          tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
+            --owner=0 --group=0 --numeric-owner \
             -czf "$archive" -C "$world" \
-            run/world-game-server-runtime-modules-v1/candidate.patch \
-            run/world-game-server-runtime-modules-v1/identity.txt \
-            run/world-game-server-runtime-modules-v1/SHA256SUMS
+            run/world-game-server-runtime-modules-v2/candidate.patch \
+            run/world-game-server-runtime-modules-v2/identity.txt \
+            run/world-game-server-runtime-modules-v2/SHA256SUMS
           test -s "$archive"
 
-      - name: Retain candidate artifact
+      - name: Retain unqualified candidate artifact
         id: candidate-artifact
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-game-server-runtime-modules-v1-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-game-server-runtime-modules-v1.tar.gz
+          name: world-game-server-runtime-modules-v2-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-game-server-runtime-modules-v2.tar.gz
           mime_type: application/gzip
 
-      - name: Emit artifact identity
+      - name: Emit candidate artifact identity
         shell: bash
         env:
           ARTIFACT_ID: ${{ steps.candidate-artifact.outputs.artifact_id }}
@@ -174,4 +155,93 @@ jobs:
           printf 'WORLD_GAME_SERVER_RUNTIME_ARTIFACT_ID=%s\n' "$ARTIFACT_ID"
           printf 'WORLD_GAME_SERVER_RUNTIME_ARTIFACT_SHA256=%s\n' "$ARTIFACT_SHA256"
           printf 'WORLD_GAME_SERVER_RUNTIME_ARTIFACT_SIZE=%s\n' "$ARTIFACT_SIZE"
+          printf 'QUALIFICATION_STATE=pending\n'
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+
+      - name: Format, test and strict-Clippy affected crates with retained logs
+        shell: bash
+        run: |
+          set -uo pipefail
+          world="$RUNNER_TEMP/world"
+          diagnostics="$RUNNER_TEMP/world-game-server-runtime-modules-v2-diagnostics"
+          mkdir -p "$diagnostics"
+
+          set +e
+          cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all --check \
+            2>&1 | tee "$diagnostics/fmt.log"
+          fmt_status=${PIPESTATUS[0]}
+
+          cargo test --manifest-path "$world/trillionnium/Cargo.toml" \
+            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
+            --all-targets --locked \
+            2>&1 | tee "$diagnostics/test.log"
+          test_status=${PIPESTATUS[0]}
+
+          cargo clippy --manifest-path "$world/trillionnium/Cargo.toml" \
+            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
+            --all-targets --locked -- -D warnings \
+            2>&1 | tee "$diagnostics/clippy.log"
+          clippy_status=${PIPESTATUS[0]}
+          set -e
+
+          {
+            printf 'world_source=%s\n' "$WORLD_SOURCE_SHA"
+            printf 'candidate_commit=%s\n' "$(git -C "$world" rev-parse HEAD)"
+            printf 'candidate_tree=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
+            printf 'fmt_status=%s\n' "$fmt_status"
+            printf 'test_status=%s\n' "$test_status"
+            printf 'clippy_status=%s\n' "$clippy_status"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'production_authorization=not_granted\n'
+          } > "$diagnostics/status.txt"
+
+          test "$fmt_status" -eq 0
+          test "$test_status" -eq 0
+          test "$clippy_status" -eq 0
+
+      - name: Retain qualification diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          diagnostics="$RUNNER_TEMP/world-game-server-runtime-modules-v2-diagnostics"
+          archive="$RUNNER_TEMP/world-game-server-runtime-modules-v2-diagnostics.tar.gz"
+          mkdir -p "$diagnostics"
+          if test ! -s "$diagnostics/status.txt"; then
+            {
+              printf 'world_source=%s\n' "$WORLD_SOURCE_SHA"
+              printf 'qualification_state=failed_before_status_record\n'
+              printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+              printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+              printf 'production_authorization=not_granted\n'
+            } > "$diagnostics/status.txt"
+          fi
+          find "$diagnostics" -maxdepth 1 -type f ! -name SHA256SUMS \
+            -print0 | sort -z | xargs -0 -r sha256sum \
+            > "$diagnostics/SHA256SUMS"
+          tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf "$archive" -C "$RUNNER_TEMP" \
+            world-game-server-runtime-modules-v2-diagnostics
+          test -s "$archive"
+
+      - name: Upload qualification diagnostics
+        if: always()
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-game-server-runtime-modules-v2-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-game-server-runtime-modules-v2-diagnostics.tar.gz
+          mime_type: application/gzip
+
+      - name: Qualify transformed World truth and source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world"
+          python3 scripts/check-trnm-world-include-boundaries.py
+          bash scripts/run-trnm-world-v6-qualification-v2.sh truth
+          bash scripts/run-trnm-world-v6-qualification-v2.sh source
+          test -z "$(git status --porcelain=v1)"
+          printf 'WORLD_GAME_SERVER_RUNTIME_MODULE_QUALIFICATION=PASS\n'
           printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
