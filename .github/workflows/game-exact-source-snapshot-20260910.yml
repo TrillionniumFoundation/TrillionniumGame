@@ -1,0 +1,102 @@
+name: game-exact-source-snapshot-20260910
+
+on:
+  pull_request:
+  push:
+    branches:
+      - ops/game-exact-source-snapshot-20260910
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: game-exact-source-snapshot-20260910-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  GAME_SOURCE_SHA: '1e5e8c6be5f66e7e7671ad3f0f6ca90ef2d95ee1'
+  GAME_SOURCE_TREE: '7a5c26f15563b01d879af755d88cc33003a9aa89'
+  GAME_UPLOADER_SHA: '425ee015d53800f3e2c2936f97ded9cdbacf7f14'
+
+jobs:
+  snapshot:
+    name: game-exact-source-snapshot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Fetch exact Game source and pinned uploader
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_tree="$RUNNER_TEMP/game-source"
+          helper="$RUNNER_TEMP/game-helper"
+
+          git init "$source_tree"
+          git -C "$source_tree" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$source_tree" fetch --no-tags --depth=1 origin "$GAME_SOURCE_SHA"
+          git -C "$source_tree" checkout --detach FETCH_HEAD
+          test "$(git -C "$source_tree" rev-parse HEAD)" = "$GAME_SOURCE_SHA"
+          test "$(git -C "$source_tree" rev-parse HEAD^{tree})" = "$GAME_SOURCE_TREE"
+
+          git init "$helper"
+          git -C "$helper" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$helper" fetch --no-tags --depth=1 origin "$GAME_UPLOADER_SHA"
+          git -C "$helper" checkout --detach FETCH_HEAD
+          test "$(git -C "$helper" rev-parse HEAD)" = "$GAME_UPLOADER_SHA"
+          test -s "$helper/scripts/upload-actions-artifact.py"
+          test -s "$helper/.github/actions/upload-evidence/action.yml"
+          test -s "$helper/.github/actions/upload-evidence/index.js"
+
+          rm -rf "$GITHUB_WORKSPACE/.github/actions/upload-evidence"
+          mkdir -p "$GITHUB_WORKSPACE/.github/actions" "$GITHUB_WORKSPACE/scripts"
+          cp -R "$helper/.github/actions/upload-evidence" "$GITHUB_WORKSPACE/.github/actions/"
+          cp "$helper/scripts/upload-actions-artifact.py" "$GITHUB_WORKSPACE/scripts/"
+
+      - name: Build deterministic exact-source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_tree="$RUNNER_TEMP/game-source"
+          archive="$RUNNER_TEMP/TrillionniumGame-${GAME_SOURCE_SHA}.tar.gz"
+          identity="$RUNNER_TEMP/TrillionniumGame-${GAME_SOURCE_SHA}.identity.txt"
+
+          git -C "$source_tree" archive \
+            --format=tar \
+            --prefix="TrillionniumGame-${GAME_SOURCE_SHA}/" \
+            "$GAME_SOURCE_SHA" | gzip -n -9 > "$archive"
+          test -s "$archive"
+          {
+            printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'source=%s\n' "$GAME_SOURCE_SHA"
+            printf 'tree=%s\n' "$(git -C "$source_tree" rev-parse "${GAME_SOURCE_SHA}^{tree}")"
+            printf 'archive_sha256=%s\n' "$(sha256sum "$archive" | awk '{print $1}')"
+            printf 'archive_bytes=%s\n' "$(stat -c %s "$archive")"
+            printf 'scope=diagnostic_source_snapshot\n'
+            printf 'production_authorization=not_granted\n'
+          } > "$identity"
+          cat "$identity"
+
+      - name: Retain exact source archive
+        id: source-artifact
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: game-exact-source-${{ env.GAME_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/TrillionniumGame-${{ env.GAME_SOURCE_SHA }}.tar.gz
+          mime_type: application/gzip
+
+      - name: Emit artifact identity
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.source-artifact.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.source-artifact.outputs.sha256 }}
+          ARTIFACT_SIZE: ${{ steps.source-artifact.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_ID"
+          test -n "$ARTIFACT_SHA256"
+          test -n "$ARTIFACT_SIZE"
+          printf 'GAME_SOURCE_ARTIFACT_ID=%s\n' "$ARTIFACT_ID"
+          printf 'GAME_SOURCE_ARTIFACT_SHA256=%s\n' "$ARTIFACT_SHA256"
+          printf 'GAME_SOURCE_ARTIFACT_SIZE=%s\n' "$ARTIFACT_SIZE"
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
