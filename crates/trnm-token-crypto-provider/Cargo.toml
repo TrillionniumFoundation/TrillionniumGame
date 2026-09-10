@@ -1,13 +1,20 @@
 [package]
 name = "trnm-token-crypto-provider"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.85"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Opaque HS256 provider and key-domain boundary for TrillionniumGame"
-publish = false
+publish.workspace = true
+
+[dependencies]
+subtle = "=2.6.1"
+sha2 = "=0.11.0"
+hmac = "=0.13.0"
+zeroize = "=1.8.2"
 
 [lib]
 path = "src/lib.rs"
 
-[workspace]
+[lints]
+workspace = true

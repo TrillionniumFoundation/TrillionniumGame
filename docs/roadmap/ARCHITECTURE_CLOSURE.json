@@ -1,0 +1,210 @@
+{
+  "schema": "trillionnium.architecture-closure.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "revision": "2026-09-08",
+  "source_baseline": {
+    "base_branch": "codex/branch-evidence-closure-2026-09-02",
+    "base_commit": "6dd5a101c67d78572a9dcaa3ab6ff96ef1966850",
+    "base_tree": "01d528735ac10653eb811500e0febb2f4a6eef14",
+    "integration_pr": 63,
+    "rule": "Movement of the base or candidate invalidates exact-head execution and review bindings but does not authorize scope reduction."
+  },
+  "non_negotiable_principles": [
+    "Keep the complete Nakama OSS D0-D8 denominator; the core-delivery track cannot increase parity percentages or delete mandatory leaves.",
+    "Converge to one first-party trnm-server composition root and one supervised lifecycle; temporary binaries require an explicit removal edge.",
+    "Production cryptography uses reviewed libraries or an independently accepted provider; private SHA, HMAC, tag comparison, randomness and key storage are forbidden on production paths.",
+    "Public HTTP, gRPC and WebSocket framing uses maintained protocol libraries; handwritten codecs are quarantined to bounded compatibility fixtures with differential evidence.",
+    "PostgreSQL is the first release-candidate operational profile; CockroachDB remains a separately evidenced target profile and cannot inherit PostgreSQL credit.",
+    "No synchronous dual business write, no external I/O inside mutable database transactions and no acknowledgement before durable commit or exact receipt replay.",
+    "Source completion, successful CI, evidence admission, independent acceptance and production promotion remain distinct states.",
+    "Administrator and human-review facts cannot be synthesized, self-approved or auto-closed by repository code."
+  ],
+  "delivery_tracks": [
+    {
+      "id": "TRACK-CORE-DELIVERY",
+      "purpose": "Deliver one operable Trillionnium golden vertical slice without claiming repository-wide Nakama replacement.",
+      "scope": [
+        "one server composition root",
+        "access and refresh session lifecycle",
+        "storage and one authoritative command",
+        "HTTP, generated gRPC and persistent realtime ingress",
+        "PostgreSQL transaction, receipt, event and outbox",
+        "response-loss, restart, reconnect, backup and rollback evidence"
+      ],
+      "claim_ceiling_before_independent_acceptance": "source-candidate"
+    },
+    {
+      "id": "TRACK-NAKAMA-PARITY",
+      "purpose": "Retain and close every mandatory Nakama OSS compatibility leaf through reviewed denominator, oracle and consumer evidence.",
+      "scope_source": "docs/development/PARITY_DENOMINATORS.json",
+      "family_count": 14,
+      "candidate_leaf_count": 10173,
+      "claim_ceiling_before_global_sg1_acceptance": "C0-planning"
+    }
+  ],
+  "phases": [
+    {
+      "id": "AC-0",
+      "priority": 0,
+      "title": "Freeze singular integration and preserve truthful control state",
+      "repository_controlled": true,
+      "gap_links": [
+        "GAP-P0-PR-001",
+        "GAP-P0-PLAN-001",
+        "GAP-P0-EVIDENCE-001",
+        "GAP-P1-DOCS-001"
+      ],
+      "work": [
+        "Keep PR #63 as the singular main-target integration object and stack architecture changes on its exact head.",
+        "Machine-check this closure program and the cross-language component documentation registry.",
+        "Reject any status promotion based only on source presence, workflow count or edited status JSON."
+      ],
+      "exit_criteria": [
+        "one exact candidate lineage",
+        "architecture and component registries pass hostile validation",
+        "all claim boundaries remain fail closed"
+      ]
+    },
+    {
+      "id": "AC-1",
+      "priority": 1,
+      "title": "Remove private cryptographic primitives from active server paths",
+      "repository_controlled": true,
+      "gap_links": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P1-CRYPTO-002",
+        "GAP-P0-SERVER-001"
+      ],
+      "work": [
+        "Move database-backed server JWT verification and refresh hashing onto a reviewed cryptographic provider.",
+        "Keep strict epoch routing, exact issuer and audience checks, bounded parsing, lifetime checks and no-fallback behavior.",
+        "Replace every remaining production-path custom constant-time helper with a reviewed comparison primitive.",
+        "Introduce KMS, HSM or approved secret-manager providers without exposing raw key bytes to handlers."
+      ],
+      "exit_criteria": [
+        "no production binary reaches private SHA or HMAC code",
+        "wrong length, wrong epoch, tamper, rotation and revoke corpora pass",
+        "dependency, provenance and independent security acceptance are retained"
+      ]
+    },
+    {
+      "id": "AC-2",
+      "priority": 2,
+      "title": "Converge server and ingress architecture",
+      "repository_controlled": true,
+      "gap_links": [
+        "GAP-P0-SERVER-001",
+        "GAP-P1-PG-001",
+        "GAP-P1-TEST-001"
+      ],
+      "work": [
+        "Move the temporary database-backed binary into the unique trnm-server composition root atomically.",
+        "Use maintained HTTP and WebSocket framing libraries while preserving narrow compatibility adapters above them.",
+        "Route adapters through command and query services rather than direct repository access.",
+        "Supervise listeners, connection actors, database work, outbox workers and drain under one cancellation tree."
+      ],
+      "exit_criteria": [
+        "one production binary and no duplicate composition authority",
+        "bounded keep-alive, frame, queue, deadline and drain behavior",
+        "official client and immutable-oracle differential for the golden slice"
+      ]
+    },
+    {
+      "id": "AC-3",
+      "priority": 3,
+      "title": "Make PostgreSQL the first complete operational profile",
+      "repository_controlled": true,
+      "gap_links": [
+        "GAP-P0-DATA-001",
+        "GAP-P1-OUTBOX-001",
+        "GAP-P1-PG-001",
+        "GAP-P1-STORAGE-001"
+      ],
+      "work": [
+        "Complete catalog invariants, transaction fault points, cancellation, ambiguous commit reconciliation and concrete effect adapters on PostgreSQL.",
+        "Execute profile-appropriate backup, PITR, RPO and RTO rehearsal before release promotion.",
+        "Retain CockroachDB as a separate target profile with its own restart, leaseholder, failover, PITR and endurance evidence."
+      ],
+      "exit_criteria": [
+        "zero acknowledged command loss, duplicate visible effect, stale writer acceptance and partial commit",
+        "accepted PostgreSQL restore and rollback packet",
+        "no transfer of PostgreSQL evidence to CockroachDB"
+      ]
+    },
+    {
+      "id": "AC-4",
+      "priority": 4,
+      "title": "Close denominator, oracle and official-consumer proof",
+      "repository_controlled": false,
+      "gap_links": [
+        "GAP-P0-SCOPE-001",
+        "GAP-P1-REVIEW-001"
+      ],
+      "work": [
+        "Classify and independently lock all fourteen denominator families without deleting mandatory leaves.",
+        "Build immutable and instrumented oracle images and execute the approved corpus ten times per lane.",
+        "Run supported official SDK clients against both oracle and candidate profiles.",
+        "Obtain distinct family decisions and a separate global SG1 decision."
+      ],
+      "exit_criteria": [
+        "zero unclassified and unreviewed leaves",
+        "zero unexplained P0 or P1 divergence",
+        "conflict-free reviewers accept exact artifacts and current candidate identities"
+      ]
+    },
+    {
+      "id": "AC-5",
+      "priority": 5,
+      "title": "Complete distributed, operational and migration closure",
+      "repository_controlled": false,
+      "gap_links": [
+        "GAP-P0-GOV-001",
+        "GAP-P0-CI-001",
+        "GAP-P1-BRANCH-001",
+        "GAP-P1-REVIEW-001"
+      ],
+      "work": [
+        "Obtain administration-scoped no-bypass governance read-back and ordinary protected admission.",
+        "Provision redundant conflict-free reviewers for governance, security, database, protocol, compatibility and SRE domains.",
+        "Complete multi-node ownership, partition, takeover, capacity, rolling upgrade and 24h, 72h and 7d endurance evidence.",
+        "Execute shadow, exclusive canary, rollback, cutover and retirement only after dependent gates pass."
+      ],
+      "exit_criteria": [
+        "all external administration and reviewer facts are independently accepted",
+        "all product and operational gates are evidence-derived pass",
+        "Nakama retirement receives a separate explicit decision"
+      ]
+    }
+  ],
+  "external_blockers": [
+    {
+      "id": "EXT-GOVERNANCE-READBACK",
+      "actor": "repository or organization administrator",
+      "may_auto_close": false,
+      "required_fact": "complete branch protection, ruleset, Actions and protected-environment packet plus harmless no-bypass rehearsal"
+    },
+    {
+      "id": "EXT-REVIEWER-CAPACITY",
+      "actor": "at least two conflict-free qualified human principals or approved teams",
+      "may_auto_close": false,
+      "required_fact": "redundant domain coverage and current-object decisions bound to exact source, merge and artifact identities"
+    },
+    {
+      "id": "EXT-DENOMINATOR-ACCEPTANCE",
+      "actor": "independent compatibility, legal and domain reviewers",
+      "may_auto_close": false,
+      "required_fact": "fourteen accepted family locks and a separate global SG1 decision"
+    }
+  ],
+  "claim_boundary": {
+    "all_gaps_closed": false,
+    "accepted_evidence": false,
+    "complete_nakama_compatibility": false,
+    "production_ready": false,
+    "public_online": false,
+    "cutover_authorized": false,
+    "nakama_retired": false,
+    "administrator_bypass": false
+  }
+}

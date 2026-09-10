@@ -7,18 +7,19 @@
   "contract": "contracts/server/rust-server-vertical-slice.v1.json",
   "gap_id": "GAP-P0-SERVER-001",
   "implemented": [
-    "isolated non-authoritative trnm-server-composition-candidate binary",
-    "typed bounded configuration and check-config/migrate/serve CLI",
-    "PostgreSQL repository composition source",
+    "canonical default trnm-server composition source in the root workspace",
+    "feature-gated diagnostic trnm-pg-compat-server retained without default authority",
+    "typed bounded configuration and check-config migrate serve CLI",
+    "PostgreSQL and CockroachDB repository composition source",
     "bounded HTTP gRPC and WebSocket listener source",
     "health readiness metrics and authenticated drain source",
     "authority bootstrap and acknowledgement-after-commit command source",
     "session access refresh logout and replay-revocation source",
     "bounded pool retry cancellation parser queue frame and message policies",
-    "isolated lockfile and hostile unit/live-test modules"
+    "hostile unit live-test and differential harness sources"
   ],
   "not_implemented": [
-    "atomic canonical authority transfer from trnm-persistence-pg",
+    "accepted exact-head canonical-composition evidence for the current rebind",
     "complete Nakama HTTP gRPC gateway and RTAPI parity",
     "complete accounts social leaderboard tournament party matchmaker and multiplayer surfaces",
     "complete Runtime provider IAP subscription and Console surfaces",
@@ -32,7 +33,7 @@
   ],
   "verification": {
     "source_present": true,
-    "isolated_preflight_run": 34162915216,
+    "isolated_preflight_run": 34300987074,
     "isolated_preflight_terminal_success": true,
     "exact_head_local_commands_recorded": false,
     "target_native_actions_run": false,

@@ -9,8 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CRATE = ROOT / "crates/trnm-server"
 STATUS = ROOT / "docs/status/RUST_SERVER_VERTICAL_SLICE_STATUS.json"
-CANONICAL_SERVER = ROOT / "crates/trnm-persistence-pg/src/bin/trnm-server.rs"
-CANDIDATE_SERVER = CRATE / "src/main.rs"
+CANONICAL_SERVER = CRATE / "src/main.rs"
+CANDIDATE_SERVER = ROOT / "crates/trnm-persistence-pg/src/bin/trnm-server.rs"
 RETIRED_ALTERNATE = ROOT / "crates/trnm-persistence-core/src/bin/trnm-server.rs"
 PRODUCT_CLAIMS = (
     "nakama_wire_compatible",
@@ -41,13 +41,13 @@ def read(path: Path) -> str:
 
 
 def validate() -> dict[str, object]:
-    require(CANONICAL_SERVER.is_file(), "current canonical persistence-owned server is missing")
-    require(CANDIDATE_SERVER.is_file(), "package-local composition candidate is missing")
+    require(CANONICAL_SERVER.is_file(), "canonical trnm-server composition root is missing")
+    require(CANDIDATE_SERVER.is_file(), "diagnostic persistence compatibility server is missing")
     require(not RETIRED_ALTERNATE.exists(), "retired persistence-core alternate server returned")
 
     manifest = read(CRATE / "Cargo.toml")
     readme = read(CRATE / "README.md")
-    source_paths = [CRATE / "src/lib.rs", CANDIDATE_SERVER] + sorted(
+    source_paths = [CRATE / "src/lib.rs", CANONICAL_SERVER] + sorted(
         (CRATE / "src/runtime").glob("*.rs")
     )
     source = "\n".join(read(path) for path in source_paths)
@@ -55,8 +55,8 @@ def validate() -> dict[str, object]:
     require(isinstance(status, dict), "status object required")
 
     require('name = "trnm-server"' in manifest, "candidate package name missing")
-    require('name = "trnm-server-composition-candidate"\npath = "src/main.rs"' in manifest, "candidate binary binding missing")
-    require("[workspace]" in manifest, "candidate must remain isolated")
+    require('name = "trnm-server"\npath = "src/main.rs"' in manifest, "candidate binary binding missing")
+    require("[workspace]" not in manifest, "nested canonical server workspace returned")
     required_source_tokens = (
         "#![forbid(unsafe_code)]",
         "trnm_server::run_from_environment()",
@@ -98,7 +98,7 @@ def validate() -> dict[str, object]:
     gaps = status.get("not_implemented")
     require(isinstance(gaps, list), "not_implemented list required")
     for required_gap in (
-        "atomic canonical authority transfer from trnm-persistence-pg",
+        "accepted exact-head canonical-composition evidence for the current rebind",
         "complete Nakama HTTP gRPC gateway and RTAPI parity",
         "accepted PostgreSQL and CockroachDB durability and ambiguity evidence",
         "conflict-free database protocol security SRE and whole-candidate review",
@@ -114,10 +114,10 @@ def validate() -> dict[str, object]:
     return {
         "schema": "trillionnium.rust-server-slice-contract.v3",
         "source": str((CRATE / "src/lib.rs").relative_to(ROOT)),
-        "candidate_server": str(CANDIDATE_SERVER.relative_to(ROOT)),
+        "diagnostic_server": str(CANDIDATE_SERVER.relative_to(ROOT)),
         "canonical_server": str(CANONICAL_SERVER.relative_to(ROOT)),
         "source_tokens": len(required_source_tokens),
-        "authority_transferred": False,
+        "authority_transferred_source_candidate": True,
         "claims_all_false": True,
         "status": "passed",
         "compatibility_credit": False,

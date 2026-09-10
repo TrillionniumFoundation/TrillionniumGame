@@ -12,6 +12,9 @@
 //! consistent with activation and the checkpoint time high-water.
 
 mod lifecycle;
+mod software;
+
+pub use software::{SecretKeyMaterial, SoftwareHs256Provider};
 
 use core::fmt;
 
@@ -121,6 +124,7 @@ pub enum VerificationDecision {
 pub enum ProviderError {
     InvalidKeyHandle,
     InvalidKeyEpoch,
+    InvalidKeyMaterial,
     SigningInputEmpty,
     SigningInputTooLarge { actual: usize },
     KeyUnavailable,
@@ -136,6 +140,7 @@ impl fmt::Display for ProviderError {
         match self {
             Self::InvalidKeyHandle => formatter.write_str("invalid key handle"),
             Self::InvalidKeyEpoch => formatter.write_str("key epoch must be greater than zero"),
+            Self::InvalidKeyMaterial => formatter.write_str("invalid software key material"),
             Self::SigningInputEmpty => formatter.write_str("JWT signing input must not be empty"),
             Self::SigningInputTooLarge { actual } => write!(
                 formatter,

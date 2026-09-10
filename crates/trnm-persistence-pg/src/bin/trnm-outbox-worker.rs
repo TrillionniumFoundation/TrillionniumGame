@@ -9,12 +9,13 @@ use std::process::{self, ExitCode};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use openssl::hash::{hash, MessageDigest};
+use openssl::memcmp;
 use trnm_contracts::{Digest32, DomainError, RetryClass};
 use trnm_persistence_pg::{
     DatabaseProfile, IntentKind, NodeId, OutboxLease, OutboxRetryOutcome, PgPool, PgPoolConfig,
     PgTlsConfig,
 };
-use trnm_token_jwt_adapter::sha256_digest;
 
 const DEFAULT_BATCH_SIZE: u64 = 16;
 const DEFAULT_LEASE_DURATION_MS: u64 = 30_000;
@@ -336,6 +337,7 @@ impl WorkerConfig {
 #[derive(Debug)]
 enum WorkerError {
     Configuration(&'static str),
+    Crypto(&'static str),
     Io(io::Error),
     Domain(DomainError),
 }
@@ -344,6 +346,7 @@ impl fmt::Display for WorkerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Configuration(reason) => formatter.write_str(reason),
+            Self::Crypto(reason) => write!(formatter, "crypto_failure({reason})"),
             Self::Io(error) => write!(formatter, "io_failure({:?})", error.kind()),
             Self::Domain(error) => write!(
                 formatter,
@@ -404,7 +407,7 @@ impl SpoolSink {
             .join(format!("{}.json", encode_hex(lease.id.as_bytes())));
         if final_path.exists() {
             verify_existing_file(&final_path, &record)?;
-            return Ok(Digest32::new(sha256_digest(&record)));
+            return Ok(Digest32::new(sha256_delivery(&record)?));
         }
 
         let temporary_path = self.directory.join(format!(
@@ -428,7 +431,7 @@ impl SpoolSink {
         let _ = fs::remove_file(&temporary_path);
         sync_directory(&self.directory)?;
         verify_existing_file(&final_path, &record)?;
-        Ok(Digest32::new(sha256_digest(&record)))
+        Ok(Digest32::new(sha256_delivery(&record)?))
     }
 }
 
@@ -572,11 +575,11 @@ fn process_once_attempt(
             }
             Err(failure) => {
                 let retry_now_ms = now_millis()?;
-                let delay_ms = retry_delay_ms(&lease, config.max_backoff_ms);
+                let delay_ms = retry_delay_ms(&lease, config.max_backoff_ms)?;
                 let next_available_at_ms = retry_now_ms
                     .checked_add(delay_ms)
                     .ok_or(WorkerError::Configuration("retry_timestamp_overflow"))?;
-                let reason = Digest32::new(sha256_digest(failure.code.as_bytes()));
+                let reason = Digest32::new(sha256_worker(failure.code.as_bytes())?);
                 match repository.retry_or_dead_letter_outbox(
                     &lease,
                     retry_now_ms,
@@ -669,13 +672,31 @@ fn verify_existing_file(path: &Path, expected: &[u8]) -> Result<(), DeliveryFail
     let actual = fs::read(path).map_err(|_| DeliveryFailure {
         code: "spool_read_failed",
     })?;
-    if constant_time_eq(&actual, expected) {
+    if actual.len() == expected.len() && memcmp::eq(&actual, expected) {
         Ok(())
     } else {
         Err(DeliveryFailure {
             code: "spool_receipt_conflict",
         })
     }
+}
+
+fn sha256_delivery(input: &[u8]) -> Result<[u8; 32], DeliveryFailure> {
+    let digest = hash(MessageDigest::sha256(), input).map_err(|_| DeliveryFailure {
+        code: "spool_digest_failed",
+    })?;
+    digest.as_ref().try_into().map_err(|_| DeliveryFailure {
+        code: "spool_digest_failed",
+    })
+}
+
+fn sha256_worker(input: &[u8]) -> Result<[u8; 32], WorkerError> {
+    let digest = hash(MessageDigest::sha256(), input)
+        .map_err(|_| WorkerError::Crypto("sha256_digest_failed"))?;
+    digest
+        .as_ref()
+        .try_into()
+        .map_err(|_| WorkerError::Crypto("sha256_digest_failed"))
 }
 
 #[cfg(unix)]
@@ -692,7 +713,7 @@ fn sync_directory(_path: &Path) -> Result<(), DeliveryFailure> {
     Ok(())
 }
 
-fn retry_delay_ms(lease: &OutboxLease, maximum_ms: u64) -> u64 {
+fn retry_delay_ms(lease: &OutboxLease, maximum_ms: u64) -> Result<u64, WorkerError> {
     let exponent = lease.attempt.saturating_sub(1).min(20);
     let base = 100_u64
         .checked_shl(exponent)
@@ -705,10 +726,10 @@ fn retry_delay_ms(lease: &OutboxLease, maximum_ms: u64) -> u64 {
     material.extend_from_slice(lease.id.as_bytes());
     material.extend_from_slice(lease.owner.as_bytes());
     material.extend_from_slice(&lease.lease_generation.to_be_bytes());
-    let digest = sha256_digest(&material);
+    let digest = sha256_worker(&material)?;
     let mut seed_bytes = [0_u8; 8];
     seed_bytes.copy_from_slice(&digest[..8]);
-    floor.saturating_add(u64::from_be_bytes(seed_bytes) % width)
+    Ok(floor.saturating_add(u64::from_be_bytes(seed_bytes) % width))
 }
 
 fn stop_requested(path: Option<&Path>) -> Result<bool, WorkerError> {
@@ -849,17 +870,6 @@ fn intent_kind_name(kind: IntentKind) -> &'static str {
     }
 }
 
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let maximum = left.len().max(right.len());
-    let mut difference = left.len() ^ right.len();
-    for index in 0..maximum {
-        let left_byte = left.get(index).copied().unwrap_or(0);
-        let right_byte = right.get(index).copied().unwrap_or(0);
-        difference |= usize::from(left_byte ^ right_byte);
-    }
-    difference == 0
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -934,7 +944,7 @@ mod tests {
         assert_eq!(first, second);
         let final_path = directory.join(format!("{}.json", encode_hex(value.id.as_bytes())));
         let content = fs::read(&final_path).unwrap();
-        assert_eq!(first, Digest32::new(sha256_digest(&content)));
+        assert_eq!(first, Digest32::new(sha256_delivery(&content).unwrap()));
         assert!(String::from_utf8(content)
             .unwrap()
             .contains("\"schema\":\"trillionnium.outbox-spool.v1\""));
@@ -983,14 +993,14 @@ mod tests {
     #[test]
     fn retry_delay_is_stable_and_bounded() {
         let value = lease();
-        let first = retry_delay_ms(&value, 60_000);
-        let second = retry_delay_ms(&value, 60_000);
+        let first = retry_delay_ms(&value, 60_000).unwrap();
+        let second = retry_delay_ms(&value, 60_000).unwrap();
         assert_eq!(first, second);
         assert!((100..=200).contains(&first));
 
         let mut exhausted = value;
         exhausted.attempt = 100;
-        let bounded = retry_delay_ms(&exhausted, 5_000);
+        let bounded = retry_delay_ms(&exhausted, 5_000).unwrap();
         assert!((2_500..=5_000).contains(&bounded));
     }
 

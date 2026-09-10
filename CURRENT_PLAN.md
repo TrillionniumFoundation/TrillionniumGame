@@ -1,7 +1,7 @@
 # TrillionniumGame 全量 Rust 重写开发计划 v3.1
 
 状态：**当前执行计划；所有兼容性、生产与退役声明继续 fail closed**  
-文档修订：2026-09-01  
+文档修订：2026-09-09
 机器计划版本：`3`  
 项目 ID：`trillionnium-game`  
 权威仓库：`TrillionniumFoundation/TrillionniumGame`  
@@ -42,7 +42,7 @@
 
 仓库已有 authority、session、storage、canonical framing、transport error、query、presence、JWT/token、PostgreSQL/CockroachDB persistence、transactional outbox、HTTP/WebSocket、有限 gRPC Healthcheck、response-loss 和 backup/restore 的局部 source/CI candidates。
 
-当前 canonical database-backed server 仍位于 `crates/trnm-persistence-pg`；`crates/trnm-server` 是受限 foundation executable。最终必须收敛到一个生产 composition root，并把 persistence、protocol、service 和 process lifecycle 分层。现有局部成功不能推导完整 Nakama parity。
+`crates/trnm-server` 现在是唯一默认 `trnm-server` composition authority 的源码候选；`crates/trnm-persistence-pg` 只保留 feature-gated 的 `trnm-pg-compat-server` 诊断兼容进程。Plan v3.1 的仓库源码基线已通过 PR #63 接入 `main`，但该接入只建立集成基线，不授予兼容性、持久性、生产、公开上线、切换或退役声明。最终仍需把 transport、application service、domain、persistence 和 process lifecycle 的边界完全落地，并以精确对象证据验证。
 
 以下声明当前全部为 false：
 

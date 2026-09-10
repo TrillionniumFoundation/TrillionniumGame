@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use openssl::memcmp;
 use trnm_contracts::{
     CommandId, Digest32, DomainError, RetryClass, SessionFamilyId, StableCode, UserId,
 };
@@ -533,7 +534,7 @@ trnm_server_session_logout_revoked_total {}\n",
         let expected = format!("Bearer {}", self.admin_token);
         request
             .header("authorization")
-            .is_some_and(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
+            .is_some_and(|value| secure_token_eq(value.as_bytes(), expected.as_bytes()))
     }
 
     fn input_failure(&mut self, _error: InputError) -> Response {
@@ -748,15 +749,8 @@ fn escape_json(value: &str) -> String {
     output
 }
 
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let maximum = left.len().max(right.len());
-    let mut difference = left.len() ^ right.len();
-    for index in 0..maximum {
-        let left_byte = left.get(index).copied().unwrap_or(0);
-        let right_byte = right.get(index).copied().unwrap_or(0);
-        difference |= usize::from(left_byte ^ right_byte);
-    }
-    difference == 0
+fn secure_token_eq(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len() && memcmp::eq(left, right)
 }
 
 const fn http_status(code: StableCode) -> u16 {
@@ -1124,6 +1118,6 @@ mod tests {
     fn admin_token_comparison_rejects_a_256_byte_length_delta() {
         let short = [0_u8; 32];
         let long = [0_u8; 288];
-        assert!(!constant_time_eq(&short, &long));
+        assert!(!secure_token_eq(&short, &long));
     }
 }

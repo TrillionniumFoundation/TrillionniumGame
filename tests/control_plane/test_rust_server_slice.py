@@ -33,12 +33,12 @@ class RustServerSliceContractTests(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertFalse(result["compatibility_credit"])
         self.assertTrue(result["claims_all_false"])
-        self.assertFalse(result["authority_transferred"])
+        self.assertTrue(result["authority_transferred_source_candidate"])
         self.assertEqual(
             result["canonical_server"],
-            "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
+            "crates/trnm-server/src/main.rs",
         )
-        self.assertEqual(result["candidate_server"], "crates/trnm-server/src/main.rs")
+        self.assertEqual(result["diagnostic_server"], "crates/trnm-persistence-pg/src/bin/trnm-server.rs")
         self.assertGreaterEqual(result["source_tokens"], 20)
 
     def test_standalone_source_checker_passes_as_a_subprocess(self) -> None:
@@ -50,7 +50,7 @@ class RustServerSliceContractTests(unittest.TestCase):
         result = json.loads(completed.stdout)
         self.assertEqual(result["schema"], "trillionnium.server-source-check.v3")
         self.assertEqual(result["status"], "passed")
-        self.assertEqual(result["binary"], "trnm-server-composition-candidate")
+        self.assertEqual(result["binary"], "trnm-server")
         self.assertEqual(result["runtime_module_count"], 17)
         self.assertGreaterEqual(result["source_marker_count"], 20)
         self.assertFalse(result["claims"]["compiled"])
@@ -77,7 +77,7 @@ class RustServerSliceContractTests(unittest.TestCase):
         spec.loader.exec_module(module)
         result = module.validate()
         self.assertGreaterEqual(result["source_tokens"], 20)
-        self.assertFalse(result["authority_transferred"])
+        self.assertTrue(result["authority_transferred_source_candidate"])
 
 
 if __name__ == "__main__":

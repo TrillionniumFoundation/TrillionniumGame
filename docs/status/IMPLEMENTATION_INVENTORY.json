@@ -2,7 +2,7 @@
   "schema": "trillionnium.implementation-inventory.v2",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "generated_at": "2026-08-29",
+  "generated_at": "2026-09-09",
   "claim_rule": "A component entry records source presence only. Compatibility, durability, gate and production claims require exact accepted evidence and independent review.",
   "components": [
     {
@@ -176,37 +176,29 @@
     {
       "id": "COMP-PERSISTENCE-PG",
       "path": "crates/trnm-persistence-pg",
-      "kind": "rust-library-and-temporary-server-binary-package",
+      "kind": "rust-database-adapter-and-feature-gated-diagnostic-server-package",
       "workstreams": [
         "W1",
         "W2",
         "W14",
         "W15"
       ],
-      "status": "http-websocket-database-vertical-source-candidate",
+      "status": "authority-storage-persistence-source-candidate",
       "implemented": [
-        "PG-wire serializable commit",
-        "entity compare-and-swap",
-        "command/event/outbox transaction",
-        "exact receipt replay",
-        "PostgreSQL and CockroachDB profile selection",
-        "trnm-server check-config/migrate/serve binary",
-        "bounded HTTP/JSON bootstrap and commit endpoints",
-        "one compiled and routed RFC 6455 JSON commit frame",
-        "bounded retry attempt and elapsed-budget supervisor",
-        "acknowledgement constructed after commit or receipt replay",
-        "health/readiness/metrics/drain source paths"
+        "PG-wire serializable commit and exact command receipt replay",
+        "typed authority lease acquisition renewal release and expired-owner takeover",
+        "typed atomic storage read write and delete adapters with ACL OCC and public version separation",
+        "PostgreSQL and CockroachDB profile selection and authoritative migration binding",
+        "bounded pool TLS statement lock idle-transaction retry and cancellation source controls",
+        "transactional event receipt and outbox persistence",
+        "feature-gated trnm-pg-compat-server diagnostic harness",
+        "outbox worker and database fault/backup test entrypoints"
       ],
       "missing": [
-        "exact-head compile/test/Clippy",
-        "live current-head database evidence",
-        "pool, TLS and cancellation of an in-flight blocking database operation",
-        "concurrent bounded connection supervision",
-        "gRPC, grpc-gateway and WebSocket protobuf",
-        "persistent socket heartbeat, reconnect and multi-message lifecycle",
-        "session verification",
-        "outbox delivery worker",
-        "HA/PITR and oracle differential"
+        "accepted exact-head and prospective-merge database evidence for the current candidate",
+        "complete profile-specific HA failover PITR RPO RTO capacity and endurance evidence",
+        "independent database data-integrity performance security and recovery acceptance",
+        "complete Nakama data migration and immutable-oracle differential"
       ],
       "blocking_gaps": [
         "GAP-P0-SERVER-001",
@@ -232,35 +224,33 @@
     },
     {
       "id": "COMP-TRNM-SERVER",
-      "path": "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
-      "kind": "first-party-rust-binary-source-candidate",
+      "path": "crates/trnm-server",
+      "kind": "canonical-first-party-rust-composition-root-source-candidate",
       "workstreams": [
         "W1",
         "W2",
         "W3",
         "W15"
       ],
-      "status": "http-websocket-source-candidate",
+      "status": "http-grpc-websocket-session-database-source-candidate",
       "implemented": [
-        "typed/redacted config",
-        "authoritative migrations",
-        "bounded HTTP framing",
-        "strict JSON/hex",
-        "bootstrap/commit",
-        "post-commit response fence",
-        "authenticated drain",
-        "compiled WebSocket module with strict handshake and one masked JSON commit frame",
-        "bounded retry supervisor that checks elapsed budget before another attempt"
+        "only default first-party trnm-server target",
+        "typed redacted configuration with check-config migrate and serve commands",
+        "bounded listener workers accepted-connection queue and request/frame/message budgets",
+        "health readiness metrics and authenticated drain",
+        "authority bootstrap and acknowledgement-after-commit command path",
+        "session access refresh logout and replay-revocation source integration",
+        "generated Nakama Healthcheck gRPC source",
+        "bounded WebSocket JSON and narrow protobuf-envelope source",
+        "bounded database pool retry deadline cancellation and physical-backend retirement composition"
       ],
       "missing": [
-        "remote compile",
-        "live database",
-        "pool/TLS/in-flight cancellation",
-        "session",
-        "gRPC/grpc-gateway",
-        "WebSocket protobuf and persistent lifecycle",
-        "distributed realtime",
-        "oracle/SDK/load/security evidence"
+        "current rebind exact-head and prospective-merge execution and acceptance",
+        "complete Nakama HTTP gRPC gateway and RTAPI surface",
+        "complete account social leaderboard tournament party matchmaker multiplayer Runtime Console provider and IAP domains",
+        "distributed realtime ownership and multi-node recovery",
+        "official SDK and immutable-oracle differentials",
+        "production KMS HSM HA PITR capacity endurance migration canary cutover and retirement evidence"
       ],
       "blocking_gaps": [
         "GAP-P0-SERVER-001",
@@ -592,15 +582,17 @@
       ],
       "status": "source-candidate",
       "implemented": [
-        "root-member and isolated-workspace machine inventory",
+        "root-member and isolated-gate machine inventory",
         "explicit target-path existence checks",
-        "aggregate-gate coverage for isolated workspaces",
-        "single temporary trnm-server binary authority",
-        "removal of an untracked duplicate package with a missing lib target"
+        "aggregate-gate coverage for the two isolated JWT test gates",
+        "one canonical default trnm-server package authority",
+        "one feature-gated diagnostic trnm-pg-compat-server target",
+        "root workspace and lockfile convergence for all long-lived Rust packages"
       ],
       "missing": [
-        "non-empty exact-head checker run",
-        "Cargo build/test/Clippy evidence"
+        "current rebind exact-head build test and strict-Clippy evidence",
+        "independent source and package-authority acceptance",
+        "explicit retirement packet for the two temporary JWT gate packages"
       ],
       "blocking_gaps": [
         "GAP-P0-CI-001",

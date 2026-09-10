@@ -23,7 +23,10 @@ REQUIRED_FILES = {
     POOL_ROOT,
     *POOL_PARTS,
     PERSISTENCE_ROOT / "session.rs",
+    PERSISTENCE_ROOT / "storage.rs",
+    ROOT / "crates/trnm-persistence-pg/tests/authority_storage.rs",
     PERSISTENCE_ROOT / "auth.rs",
+    PERSISTENCE_ROOT / "authority.rs",
     SERVER_ROOT / "trnm-server.rs",
     MODULE_ROOT / "mod.rs",
     MODULE_ROOT / "app.rs",
@@ -64,6 +67,8 @@ REQUIRED_TESTS = {
     "successful_result_after_budget_is_rejected",
     "each_attempt_receives_only_the_remaining_total_budget",
     "jitter_remains_inside_half_to_full_backoff",
+    "authority_takeover_fences_stale_generation",
+    "storage_occ_acl_and_batch_rollback_are_transactional",
     "create_and_rotation_validation_fail_closed",
     "persisted_revocation_reason_mapping_is_exact",
     "generic_session_failure_does_not_disclose_identity_state",
@@ -245,10 +250,14 @@ def main() -> int:
         "crates/trnm-persistence-pg/src/auth.rs": (
             "pub struct AccessTokenVerifier",
             "allow_legacy_without_key_id: false",
-            "max_lifetime_seconds: Some(15 * 60)",
+            "MAX_ACCESS_TOKEN_LIFETIME_SECONDS",
+            "if lifetime > MAX_ACCESS_TOKEN_LIFETIME_SECONDS",
             "claim_string(claims, \"sid\")",
             "claim_unsigned(claims, \"sgn\")",
             "sha256_digest(value.as_bytes())",
+            "trnm_token_jwt_provider_adapter",
+            "authenticate(",
+            "from_provider(",
             "\"session_authentication_failed\"",
         ),
         "crates/trnm-persistence-pg/src/bin/trnm_server/mod.rs": (
@@ -416,15 +425,15 @@ def main() -> int:
     server = authority.get("server_binary_authority", {})
     if server.get("name") != "trnm-server":
         fail("Rust package authority does not name trnm-server")
-    if server.get("manifest") != "crates/trnm-persistence-pg/Cargo.toml":
+    if server.get("manifest") != "crates/trnm-server/Cargo.toml":
         fail("Rust package authority points to another server manifest")
-    if server.get("source") != "crates/trnm-persistence-pg/src/bin/trnm-server.rs":
+    if server.get("source") != "crates/trnm-server/src/main.rs":
         fail("Rust package authority points to another server source")
 
     status = json.loads(
         (ROOT / "docs/status/TRNM_SERVER_STATUS.json").read_text(encoding="utf-8")
     )
-    if status.get("stage") != "http-websocket-session-database-vertical-source-candidate":
+    if status.get("stage") != "canonical-http-grpc-websocket-session-database-source-candidate":
         fail("unexpected server status stage")
     claims = status.get("claims", {})
     forbidden_positive_claims = [

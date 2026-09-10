@@ -2,7 +2,7 @@
 
 Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
 Path: `crates/trnm-storage-nakama-version`  
-Workspace class: `isolated`  
+Workspace class: `root`
 Lifecycle: `storage-compatibility-adapter`  
 Owner role: `storage`
 

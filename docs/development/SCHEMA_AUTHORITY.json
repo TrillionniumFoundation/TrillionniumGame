@@ -17,14 +17,28 @@
         "path": "migrations/postgresql",
         "runtime_adapter": "crates/trnm-persistence-pg",
         "status": "production-authority-candidate",
-        "evidence_required": ["fresh-apply", "catalog-introspection", "negative-constraints", "transaction-faults", "backup-restore", "pitr"]
+        "evidence_required": [
+          "fresh-apply",
+          "catalog-introspection",
+          "negative-constraints",
+          "transaction-faults",
+          "backup-restore",
+          "pitr"
+        ]
       },
       {
         "id": "cockroachdb",
         "path": "migrations/cockroachdb",
         "runtime_adapter": "crates/trnm-persistence-pg",
         "status": "production-authority-candidate",
-        "evidence_required": ["fresh-apply", "catalog-introspection", "negative-constraints", "transaction-restarts", "leaseholder-failover", "backup-restore"]
+        "evidence_required": [
+          "fresh-apply",
+          "catalog-introspection",
+          "negative-constraints",
+          "transaction-restarts",
+          "leaseholder-failover",
+          "backup-restore"
+        ]
       }
     ],
     "metadata_table": "trnm_schema_metadata",
@@ -36,8 +50,19 @@
       "path": "database/schema/v2",
       "classification": "design-history",
       "reason": "This family uses incompatible tenant, identifier, timestamp and table/column semantics and has not been adopted through an ADR and data migration.",
-      "allowed_consumers": ["human-design-review", "historical-differential-analysis"],
-      "forbidden_consumers": ["runtime", "migration-runner", "ci-live-database", "backup", "restore", "release", "production-deployment"],
+      "allowed_consumers": [
+        "human-design-review",
+        "historical-differential-analysis"
+      ],
+      "forbidden_consumers": [
+        "runtime",
+        "migration-runner",
+        "ci-live-database",
+        "backup",
+        "restore",
+        "release",
+        "production-deployment"
+      ],
       "compatibility_credit": false
     }
   ],
@@ -71,7 +96,21 @@
       "database clock as public contract time",
       "cascade delete of durable business history",
       "shared conclusion for PostgreSQL and CockroachDB"
-    ]
+    ],
+    "source_modules": [
+      "crates/trnm-persistence-pg/src/lib.rs",
+      "crates/trnm-persistence-pg/src/authority.rs",
+      "crates/trnm-persistence-pg/src/session.rs",
+      "crates/trnm-persistence-pg/src/storage.rs",
+      "crates/trnm-persistence-pg/src/outbox.rs"
+    ],
+    "source_coverage_candidate": {
+      "all_required_tables_referenced": true,
+      "authority_lease_takeover_fences_entity_generation": true,
+      "session_family_and_refresh_rotation_transactional": true,
+      "storage_occ_acl_batch_transactional": true,
+      "independently_accepted": false
+    }
   },
   "change_control": {
     "required_for_semantic_change": [
@@ -99,6 +138,7 @@
     "pitr_proven": false,
     "ha_proven": false,
     "sg4_complete": false,
-    "production_ready": false
+    "production_ready": false,
+    "adapter_table_surface_source_candidate": true
   }
 }

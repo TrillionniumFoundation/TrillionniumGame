@@ -2,7 +2,7 @@
 
 Status: **module documentation; source-candidate; no automatic compatibility or production credit**  
 Path: `crates/trnm-realtime-wire`  
-Workspace class: `isolated`  
+Workspace class: `root`
 Lifecycle: `realtime-wire-compatibility-candidate`  
 Owner role: `protocol`
 

@@ -117,9 +117,9 @@ cargo --version --verbose > "$evidence/cargo-version.txt"
 docker version > "$evidence/docker-version.txt"
 python3 --version > "$evidence/python-version.txt" 2>&1
 
-cargo build --locked -p trnm-persistence-pg --bin trnm-server \
+cargo build --locked -p trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server \
   2>&1 | tee "$evidence/cargo-build.log"
-binary=target/debug/trnm-server
+binary=target/debug/trnm-pg-compat-server
 test -x "$binary"
 sha256sum "$binary" > "$evidence/server-binary-sha256.txt"
 

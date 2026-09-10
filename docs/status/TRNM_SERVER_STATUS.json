@@ -1,16 +1,18 @@
 {
   "schema": "trillionnium.trnm-server-status.v1",
   "project_id": "trillionnium-game",
-  "stage": "http-websocket-session-database-vertical-source-candidate",
+  "stage": "canonical-http-grpc-websocket-session-database-source-candidate",
   "binary_target": "trnm-server",
-  "temporary_package": "crates/trnm-persistence-pg",
   "source_paths": [
-    "crates/trnm-persistence-pg/src/bin/trnm-server.rs",
-    "crates/trnm-persistence-pg/src/bin/trnm_server",
+    "crates/trnm-server/src/main.rs",
+    "crates/trnm-server/src/runtime",
+    "crates/trnm-persistence-pg/src/lib.rs",
     "crates/trnm-persistence-pg/src/pool.rs",
     "crates/trnm-persistence-pg/src/pool_parts",
     "crates/trnm-persistence-pg/src/session.rs",
     "crates/trnm-persistence-pg/src/auth.rs",
+    "crates/trnm-persistence-pg/src/authority.rs",
+    "crates/trnm-persistence-pg/src/storage.rs",
     "crates/trnm-realtime-wire",
     "contracts/realtime/trnm-authority-envelope-v1.proto"
   ],
@@ -134,5 +136,7 @@
     "accepted": false,
     "gap_closed": false,
     "runtime_behavior_changed": false
-  }
+  },
+  "composition_package": "crates/trnm-server",
+  "diagnostic_package": "crates/trnm-persistence-pg"
 }

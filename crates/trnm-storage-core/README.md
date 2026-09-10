@@ -2,7 +2,7 @@
 
 Status: **module documentation; public-version-source-candidate; no automatic compatibility or production credit**  
 Path: `crates/trnm-storage-core`  
-Workspace class: `root`  
+Workspace class: `root`
 Lifecycle: `product-library`  
 Owner role: `storage`
 
@@ -26,7 +26,7 @@ Dependency direction is reviewed as part of package authority. This module must 
 
 ## Public contracts
 
-For the pinned Nakama profile, public ContentVersion is lowercase MD5 over exact stored value bytes; internal IntegrityDigest remains a distinct strong type.
+For the pinned Nakama profile, public ContentVersion is lowercase MD5 over exact stored value bytes. Internal IntegrityDigest is a distinct SHA-256 strong type derived only by the storage boundary; write callers cannot inject it, and stored digests must verify against exact value bytes on readback.
 
 Public Rust types, serialized fields, configuration keys, database predicates, and externally observable error classes are change-controlled. A breaking change requires an explicit migration or compatibility decision and updated tests in the same candidate.
 
@@ -38,7 +38,7 @@ All inputs, loops, retries, batches, queues, allocations, and shutdown paths are
 
 ## Security and privacy
 
-MD5 is used only for compatibility and receives no integrity-authentication credit. Payload, ACL, and identifier bounds are mandatory.
+MD5 is used only for compatibility and receives no integrity-authentication credit. Canonical SHA-256 detects stored-byte corruption but is not a MAC or authenticity proof. Payload, ACL, and identifier bounds are mandatory.
 
 Secrets, raw tokens, user payloads, receipts, and provider credentials are not logged or used as metric labels. Any new cryptographic, parser, unsafe, native, or externally reachable boundary requires the appropriate threat, fuzz, and independent review.
 
