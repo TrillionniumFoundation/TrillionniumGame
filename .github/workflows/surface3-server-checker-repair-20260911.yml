@@ -1,0 +1,170 @@
+name: surface3-server-checker-repair-20260911
+
+on:
+  push:
+    branches:
+      - ops/game-exact-source-snapshot-20260910
+    paths:
+      - .github/workflows/surface3-server-checker-repair-20260911.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: surface3-server-checker-repair-20260911
+  cancel-in-progress: false
+
+env:
+  TARGET_BRANCH: feature/plan-v32-storage-api-core-20260910
+  EXPECTED_HEAD: 1abba3f29f0bba0720b56a307c6000e04f33c07a
+  EXPECTED_TREE: 23de20a315d38239d8a9d67ff5a5b327778bde2c
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch exact target without rewriting history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$RUNNER_TEMP/surface3"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git init "$target"
+          git -C "$target" remote add origin "$remote"
+          git -C "$target" fetch --no-tags origin "refs/heads/${TARGET_BRANCH}"
+          git -C "$target" checkout -B "$TARGET_BRANCH" FETCH_HEAD
+          test "$(git -C "$target" rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git -C "$target" rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          printf 'TARGET_ROOT=%s\n' "$target" >> "$GITHUB_ENV"
+
+      - name: Bind server checker to exact authority-storage include set
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path(__import__('os').environ['TARGET_ROOT'])
+          path = root / 'scripts/check-trnm-server.py'
+          text = path.read_text(encoding='utf-8')
+
+          replacements = (
+              (
+                  'SERVER_ROOT = PERSISTENCE_ROOT / "bin"\nMODULE_ROOT = SERVER_ROOT / "trnm_server"\nREQUIRED_FILES = {\n',
+                  'SERVER_ROOT = PERSISTENCE_ROOT / "bin"\nMODULE_ROOT = SERVER_ROOT / "trnm_server"\nAUTHORITY_STORAGE_ROOT = ROOT / "crates/trnm-persistence-pg/tests/authority_storage.rs"\nAUTHORITY_STORAGE_PARTS = tuple(\n    AUTHORITY_STORAGE_ROOT.parent / "authority_storage_parts" / name\n    for name in ("00_helpers.rs", "01_authority.rs", "02_storage_batch.rs", "03_storage_list.rs")\n)\nREQUIRED_FILES = {\n',
+                  'authority-storage constants',
+              ),
+              (
+                  '    ROOT / "crates/trnm-persistence-pg/tests/authority_storage.rs",\n',
+                  '    AUTHORITY_STORAGE_ROOT,\n    *AUTHORITY_STORAGE_PARTS,\n',
+                  'authority-storage required files',
+              ),
+              (
+                  '    pool_source = "\\n".join(\n        [sources[pool_root_key], *(sources[part.relative_to(ROOT)] for part in POOL_PARTS)]\n    )\n    combined = "\\n".join(sources.values())\n',
+                  '    pool_source = "\\n".join(\n        [sources[pool_root_key], *(sources[part.relative_to(ROOT)] for part in POOL_PARTS)]\n    )\n\n    authority_storage_root_key = AUTHORITY_STORAGE_ROOT.relative_to(ROOT)\n    expected_authority_storage_root = "\\n".join(\n        f\'include!("authority_storage_parts/{part.name}");\'\n        for part in AUTHORITY_STORAGE_PARTS\n    ) + "\\n"\n    if sources[authority_storage_root_key] != expected_authority_storage_root:\n        fail("authority_storage.rs must remain the exact four-part include authority")\n    authority_storage_source = "\\n".join(\n        [\n            sources[authority_storage_root_key],\n            *(sources[part.relative_to(ROOT)] for part in AUTHORITY_STORAGE_PARTS),\n        ]\n    )\n    combined = "\\n".join(sources.values())\n',
+                  'authority-storage composition validation',
+              ),
+              (
+                  '    test_names = set(re.findall(r"fn\\s+([a-z0-9_]+)\\s*\\(\\)\\s*\\{", combined))\n',
+                  '    test_names = set(\n        re.findall(\n            r"fn\\s+([a-z0-9_]+)\\s*\\(\\)\\s*\\{",\n            combined + "\\n" + authority_storage_source,\n        )\n    )\n',
+                  'split-test discovery',
+              ),
+          )
+          for old, new, label in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'{label}: expected exactly one replacement target')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+
+          test_path = root / 'tests/control_plane/test_trnm_server_dependency_contract.py'
+          tests = test_path.read_text(encoding='utf-8')
+          anchor = '    def test_real_main_still_rejects_missing_required_source(self):\n'
+          inserted = '''    def test_authority_storage_include_authority_is_exact_and_ordered(self):
+        expected = "\\n".join(
+            f'include!("authority_storage_parts/{part.name}");'
+            for part in self.server.AUTHORITY_STORAGE_PARTS
+        ) + "\\n"
+        self.assertEqual(self.server.AUTHORITY_STORAGE_ROOT.read_text(encoding="utf-8"), expected)
+
+        original = Path.read_text
+        mutations = (
+            expected.replace('include!("authority_storage_parts/03_storage_list.rs");\\n', ""),
+            expected.replace(
+                'include!("authority_storage_parts/01_authority.rs");\\n'
+                'include!("authority_storage_parts/02_storage_batch.rs");\\n',
+                'include!("authority_storage_parts/02_storage_batch.rs");\\n'
+                'include!("authority_storage_parts/01_authority.rs");\\n',
+            ),
+            expected + 'include!("authority_storage_parts/99_unreviewed.rs");\\n',
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                def replaced(path, *args, **kwargs):
+                    if path == self.server.AUTHORITY_STORAGE_ROOT:
+                        return mutation
+                    return original(path, *args, **kwargs)
+
+                with patch.object(Path, "read_text", replaced):
+                    with self.assertRaisesRegex(SystemExit, "exact four-part include authority"):
+                        self.server.main()
+
+    def test_authority_storage_parts_are_required_source_inputs(self):
+        expected = {
+            "00_helpers.rs",
+            "01_authority.rs",
+            "02_storage_batch.rs",
+            "03_storage_list.rs",
+        }
+        self.assertEqual({path.name for path in self.server.AUTHORITY_STORAGE_PARTS}, expected)
+        self.assertTrue(set(self.server.AUTHORITY_STORAGE_PARTS) <= self.server.REQUIRED_FILES)
+
+'''
+          if tests.count(anchor) != 1:
+              raise SystemExit('hostile regression insertion point is not exact')
+          tests = tests.replace(anchor, inserted + anchor, 1)
+          test_path.write_text(tests, encoding='utf-8')
+          PY
+
+      - name: Verify exact source checker and hostile regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$TARGET_ROOT"
+          python3 -m py_compile \
+            scripts/check-trnm-server.py \
+            tests/control_plane/test_trnm_server_dependency_contract.py
+          python3 scripts/check-trnm-server.py | tee "$RUNNER_TEMP/server-contract.json"
+          jq -e '
+            .status == "trnm-server-source-contract-passed" and
+            .source_tests >= 100 and
+            .cargo_executed_here == false and
+            .live_database_executed_here == false and
+            .compatibility_credit == false and
+            .sg4_complete == false
+          ' "$RUNNER_TEMP/server-contract.json" >/dev/null
+          python3 -m unittest tests.control_plane.test_trnm_server_dependency_contract -v
+          git diff --check
+
+      - name: Commit and fast-forward the exact Surface 3 branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$TARGET_ROOT"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git config user.name 'Plan v3.2 checker repair'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git add scripts/check-trnm-server.py tests/control_plane/test_trnm_server_dependency_contract.py
+          test -n "$(git diff --cached --name-only)"
+          git commit -m 'fix(server): bind checker to split authority-storage tests' \
+            -m 'Require the exact ordered four-part authority_storage include authority, scan every retained test part, and add hostile omission/order/substitution regressions. This repairs source-contract discovery without weakening Rust, database, evidence, compatibility or production boundaries.'
+          new_head=$(git rev-parse HEAD)
+          new_tree=$(git rev-parse HEAD^{tree})
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          printf 'old_head=%s\nnew_head=%s\nnew_tree=%s\nhistory_rewritten=false\n' \
+            "$EXPECTED_HEAD" "$new_head" "$new_tree" | tee "$GITHUB_STEP_SUMMARY"
