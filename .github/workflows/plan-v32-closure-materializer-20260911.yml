@@ -80,12 +80,23 @@ jobs:
             echo 'materializer may not alter target workflow definitions' >&2
             exit 1
           fi
-          grep -q '"production_ready": false' \
-            "$TARGET_ROOT/contracts/security/remote-mac-provider.v1.json"
-          grep -q '"accepted_evidence": false' \
-            "$TARGET_ROOT/contracts/operations/database-endurance-plan.v1.json"
-          grep -q '"global_sg1_accepted": false' \
-            "$TARGET_ROOT/docs/review/denominator-family-packets/index.json"
+          jq -e '.claim_boundary.production_ready == false' \
+            "$TARGET_ROOT/contracts/security/remote-mac-provider.v1.json" >/dev/null
+          jq -e '
+            .claim_boundary.capacity_complete == false and
+            .claim_boundary.endurance_24h_complete == false and
+            .claim_boundary.endurance_72h_complete == false and
+            .claim_boundary.endurance_7d_complete == false and
+            .claim_boundary.independently_accepted == false and
+            .claim_boundary.production_ready == false
+          ' "$TARGET_ROOT/contracts/operations/database-endurance-plan.v1.json" >/dev/null
+          jq -e '
+            .claim_boundary.all_families_accepted == false and
+            .claim_boundary.all_families_classified == false and
+            .claim_boundary.global_sg1_accepted == false and
+            .claim_boundary.complete_nakama_compatibility == false and
+            .claim_boundary.production_ready == false
+          ' "$TARGET_ROOT/docs/review/denominator-family-packets/index.json" >/dev/null
           jq -e '
             .claims.public_online == false and
             .claims.cutover_authorized == false and
