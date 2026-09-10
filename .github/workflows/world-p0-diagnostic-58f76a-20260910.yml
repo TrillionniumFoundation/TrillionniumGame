@@ -6,26 +6,43 @@ on:
       - ops/world-p0-diagnostic-58f76a-20260910
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: world-p0-diagnostic-58f76a-20260910
   cancel-in-progress: true
 
 jobs:
-  verify_export:
-    name: world-p0/verify-and-export-statement-let-fix
+  verify_batch:
+    name: world-p0/exact-operator-batch
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 150
+    services:
+      postgres:
+        image: postgres:16.14-bookworm
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: world_p0_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d world_p0_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
       WORLD_COMMIT: 58f76a6100bade6e148a56bd429eff34f8a255cd
-      PATCH_COMMIT: 620995b66f2674f5e70df32defa72ee3c259524b
-      PATCH_BLOB: b2c125cdcdc4334f98966f87a8ffd931b7878e6a
+      PATCH_COMMIT: a04b611d353b00fcc769cac4a5157014fe1c6889
+      PATCH_BLOB: a49031f17be2eac94a417ff45205aa8938798dbd
       RUSTUP_TOOLCHAIN: '1.98.1'
       CARGO_INCREMENTAL: '0'
       RUST_BACKTRACE: '1'
       RUST_TEST_THREADS: '1'
+      TRNM_SETTLEMENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/world_p0_ci
+      TRNM_REQUIRE_SETTLEMENT_DATABASE_TEST: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - name: Fetch exact World source and pinned patch helper
         shell: bash
@@ -45,68 +62,102 @@ jobs:
           test "$(git hash-object "$helper")" = "$PATCH_BLOB"
           test -z "$(git -C "$world" status --porcelain=v1 --untracked-files=no)"
 
-      - name: Apply exact repair in temporary clone
+      - name: Apply exact five-file batch
         shell: bash
         run: |
           set -euo pipefail
-          target="$RUNNER_TEMP/world/trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
-          python3 "$RUNNER_TEMP/patch-p0-statement-let.py" "$target"
+          python3 "$RUNNER_TEMP/patch-p0-statement-let.py" "$RUNNER_TEMP/world"
           git -C "$RUNNER_TEMP/world" diff --check
-          test "$(git -C "$RUNNER_TEMP/world" diff --name-only)" = \
-            "trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
 
-      - name: Execute full P0 boundary contract
+      - name: Install exact Rust and format batch
         shell: bash
         run: |
           set -euo pipefail
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt
+          rustup default 1.98.1
           cd "$RUNNER_TEMP/world"
-          cargo fmt --manifest-path trillionnium/Cargo.toml --all -- --check
+          cargo fmt --manifest-path trillionnium/Cargo.toml --all
+          git diff --check
+          git diff --name-only | LC_ALL=C sort > "$RUNNER_TEMP/changed.txt"
+          cat > "$RUNNER_TEMP/expected.txt" <<'EOF'
+          trillionnium/crates/trnm-game-server/migrations/0018_online_settlement_operator_controls_v1.sql
+          trillionnium/crates/trnm-game-server/src/lib_parts/configuration_and_migrations/part_01.rs
+          trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json
+          trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs
+          trillionnium/crates/trnm-game-server/tests/settlement_operator_controls_database.rs
+          EOF
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/changed.txt"
+
+      - name: Verify direct-source manifest binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          root = Path('trillionnium/crates/trnm-game-server/src')
+          manifest = json.loads((root / 'lib_parts/manifest.json').read_text())
+          relative = 'lib_parts/configuration_and_migrations/part_01.rs'
+          matches = [item for item in manifest['parts'] if item['path'] == relative]
+          assert len(matches) == 1
+          data = (root / relative).read_bytes()
+          assert matches[0]['bytes'] == len(data)
+          assert matches[0]['sha256'] == hashlib.sha256(data).hexdigest()
+          print('WORLD_DIRECT_SOURCE_MANIFEST_BINDING=PASS')
+          PY
+
+      - name: Run complete P0 boundary contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/world"
           cargo test \
             --manifest-path trillionnium/Cargo.toml \
             -p trnm-game-server \
             --test p0_boundary_contract \
             --locked -- --nocapture
 
-      - name: Upload immutable patched test blob
+      - name: Run settlement operator PostgreSQL contract
         shell: bash
-        env:
-          GH_OBJECT_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python3 - "$RUNNER_TEMP/world/trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs" <<'PY'
-          import base64
-          import json
-          import os
-          from pathlib import Path
-          import subprocess
-          import sys
-          import urllib.request
+          cd "$RUNNER_TEMP/world"
+          cargo test \
+            --manifest-path trillionnium/Cargo.toml \
+            -p trnm-game-server \
+            --test settlement_operator_controls_database \
+            --locked -- --nocapture
 
-          path = Path(sys.argv[1])
-          expected = subprocess.check_output(
-              ["git", "hash-object", str(path)], text=True
-          ).strip()
-          payload = json.dumps({
-              "content": base64.b64encode(path.read_bytes()).decode("ascii"),
-              "encoding": "base64",
-          }, separators=(",", ":")).encode("utf-8")
-          request = urllib.request.Request(
-              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/git/blobs",
-              data=payload,
-              method="POST",
-              headers={
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": f"Bearer {os.environ['GH_OBJECT_TOKEN']}",
-                  "Content-Type": "application/json",
-                  "X-GitHub-Api-Version": "2022-11-28",
-              },
-          )
-          with urllib.request.urlopen(request, timeout=60) as response:
-              result = json.load(response)
-          observed = result.get("sha")
-          assert observed == expected, (expected, observed)
-          print(f"WORLD_P0_PATCHED_BLOB_SHA={observed}")
-          print("REFS_MOVED=false")
-          print("PRODUCTION_AUTHORIZATION=not_granted")
-          PY
+      - name: Package exact validated source files
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          out="$GITHUB_WORKSPACE/world-p0-batch"
+          rm -rf "$out"
+          mkdir -p "$out/trillionnium/crates/trnm-game-server/migrations"
+          mkdir -p "$out/trillionnium/crates/trnm-game-server/src/lib_parts/configuration_and_migrations"
+          mkdir -p "$out/trillionnium/crates/trnm-game-server/src/lib_parts"
+          mkdir -p "$out/trillionnium/crates/trnm-game-server/tests"
+          cp "$world/trillionnium/crates/trnm-game-server/migrations/0018_online_settlement_operator_controls_v1.sql" \
+            "$out/trillionnium/crates/trnm-game-server/migrations/"
+          cp "$world/trillionnium/crates/trnm-game-server/src/lib_parts/configuration_and_migrations/part_01.rs" \
+            "$out/trillionnium/crates/trnm-game-server/src/lib_parts/configuration_and_migrations/"
+          cp "$world/trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json" \
+            "$out/trillionnium/crates/trnm-game-server/src/lib_parts/"
+          cp "$world/trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs" \
+            "$world/trillionnium/crates/trnm-game-server/tests/settlement_operator_controls_database.rs" \
+            "$out/trillionnium/crates/trnm-game-server/tests/"
+          find "$out" -type f -print0 | sort -z | xargs -0 sha256sum
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+
+      - name: Upload exact validated World batch
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-p0-batch-58f76a
+          path: world-p0-batch/**
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
