@@ -8,8 +8,10 @@ This script is intentionally bound to the current World V6 source shape. It:
 2. gives the authority-cutover workflow unique non-protected context names so
    it cannot accidentally satisfy the three protected admission contexts;
 3. reconciles the closed-world CI inventory with all fourteen tracked workflow
-   files and forty-one unique static job contexts; and
-4. updates the inventory regression test without weakening any fail-closed
+   files and forty-one unique static job contexts;
+4. updates the aggregate documentation gate for the detailed checker's
+   option-based `--root` interface; and
+5. updates the inventory regression test without weakening any fail-closed
    checks.
 """
 from __future__ import annotations
@@ -179,7 +181,15 @@ def main() -> int:
         raise RuntimeError(f"CI inventory test anchor drift: {count}")
     tests.write_text(test_source, encoding="utf-8")
 
-    print("WORLD_SOURCE_INTEGRITY_REPAIR=PASS workflows=14 contexts=41")
+    documentation = root / "scripts/check-trnm-world-documentation.py"
+    replace_once(
+        documentation,
+        '("scripts/check-trnm-world-detailed-documentation.py", [str(ROOT)]),',
+        '("scripts/check-trnm-world-detailed-documentation.py", ["--root", str(ROOT)]),',
+        "detailed documentation aggregate CLI",
+    )
+
+    print("WORLD_SOURCE_INTEGRITY_REPAIR=PASS workflows=14 contexts=41 documentation_cli=option-root")
     return 0
 
 
