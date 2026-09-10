@@ -37,7 +37,6 @@ impl SocialRegistry {
         Ok(true)
     }
 
-    #[must_use]
     pub fn relationship(
         &self,
         actor: AccountId,

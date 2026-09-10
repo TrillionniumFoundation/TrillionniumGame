@@ -29,7 +29,7 @@ impl Default for SocialLimits {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SocialConfig {
     limits: SocialLimits,
 }
@@ -80,14 +80,6 @@ impl SocialConfig {
     #[must_use]
     pub const fn limits(&self) -> SocialLimits {
         self.limits
-    }
-}
-
-impl Default for SocialConfig {
-    fn default() -> Self {
-        Self {
-            limits: SocialLimits::default(),
-        }
     }
 }
 
