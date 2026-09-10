@@ -1,20 +1,21 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use postgres::{IsolationLevel, Row, Transaction};
-#[cfg(test)]
-use trnm_contracts::UserId;
-use trnm_contracts::{DomainError, RetryClass, StableCode};
+use trnm_contracts::{DomainError, RetryClass, StableCode, UserId};
 use trnm_storage_core::{
     Actor, BatchOperation, ContentVersion, DeleteOperation, IntegrityDigest, MutationReceipt,
     ReadPermission, StorageObject, StorageObjectKey, VersionCheck, WriteOperation, WritePermission,
 };
 
-#[cfg(test)]
-use super::decode_id16;
-use super::{data_loss, decode_digest, error, invalid, map_postgres_error, to_i64, PgRepository};
+use super::{
+    data_loss, decode_digest, decode_id16, error, invalid, map_postgres_error, to_i64,
+    PgRepository,
+};
 
 const MAX_BATCH_OPERATIONS: usize = 100;
+const MAX_LIST_LIMIT: usize = 100;
 const MAX_VALUE_BYTES: usize = 1024 * 1024;
+const MAX_COLLECTION_BYTES: usize = 128;
 
 impl PgRepository {
     pub fn read_storage_object(
@@ -39,6 +40,74 @@ impl PgRepository {
         let object = decode_storage_object(key.clone(), &row)?;
         authorize_read(actor, &object)?;
         Ok(object)
+    }
+
+    /// List one bounded storage page using a typed keyset cursor.
+    ///
+    /// Ordering is stable by `(object_key, user_id)` inside one collection. The
+    /// optional owner narrows the page to one exact storage owner. ACL filtering
+    /// is performed by the database before the limit is applied, so inaccessible
+    /// rows neither consume page capacity nor become cursors. The returned cursor
+    /// is the last visible object in the page and is present only when one bounded
+    /// sentinel row proves that another visible object exists.
+    pub fn list_storage_objects(
+        &mut self,
+        actor: Actor,
+        collection: &str,
+        owner: Option<UserId>,
+        after: Option<&StorageObjectKey>,
+        limit: usize,
+    ) -> Result<(Vec<StorageObject>, Option<StorageObjectKey>), DomainError> {
+        validate_list_request(actor, collection, owner, after, limit)?;
+        let fetch_limit = limit
+            .checked_add(1)
+            .and_then(|value| i64::try_from(value).ok())
+            .ok_or_else(|| invalid("invalid_storage_list_limit"))?;
+
+        let owner_bytes = owner.map(|user| user.as_bytes().to_vec());
+        let actor_bytes = match actor {
+            Actor::Server => None,
+            Actor::User(user) => Some(user.as_bytes().to_vec()),
+        };
+        let (after_key, after_user) = after.map_or_else(
+            || (String::new(), vec![0_u8; 16]),
+            |cursor| {
+                (
+                    cursor.key().to_owned(),
+                    cursor.user_id().as_bytes().to_vec(),
+                )
+            },
+        );
+
+        let rows = self
+            .client
+            .query(
+                "SELECT object_key, user_id, value_bytes, version_digest, \
+                        read_permission, write_permission \
+                 FROM trnm_storage_objects \
+                 WHERE collection = $1 \
+                   AND ($2::bytea IS NULL OR user_id = $2) \
+                   AND (object_key > $3 OR (object_key = $3 AND user_id > $4)) \
+                   AND ($5::bytea IS NULL OR read_permission = 2 \
+                        OR (user_id = $5 AND read_permission = 1)) \
+                 ORDER BY object_key ASC, user_id ASC \
+                 LIMIT $6",
+                &[
+                    &collection,
+                    &owner_bytes,
+                    &after_key,
+                    &after_user,
+                    &actor_bytes,
+                    &fetch_limit,
+                ],
+            )
+            .map_err(map_postgres_error)?;
+
+        let objects = rows
+            .iter()
+            .map(|row| decode_listed_storage_object(collection, row))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(finish_storage_page(objects, limit))
     }
 
     pub fn apply_storage_batch(
@@ -77,6 +146,52 @@ impl PgRepository {
         transaction.commit().map_err(map_postgres_error)?;
         Ok(receipts)
     }
+}
+
+fn validate_list_request(
+    actor: Actor,
+    collection: &str,
+    owner: Option<UserId>,
+    after: Option<&StorageObjectKey>,
+    limit: usize,
+) -> Result<(), DomainError> {
+    if collection.is_empty()
+        || collection.len() > MAX_COLLECTION_BYTES
+        || collection.chars().any(char::is_control)
+        || collection.starts_with('.')
+    {
+        return Err(invalid("invalid_storage_collection"));
+    }
+    if limit == 0 || limit > MAX_LIST_LIMIT {
+        return Err(invalid("invalid_storage_list_limit"));
+    }
+    if matches!(actor, Actor::User(user) if user.is_zero()) {
+        return Err(invalid("invalid_storage_actor"));
+    }
+    if let Some(cursor) = after {
+        if cursor.collection() != collection || owner.is_some_and(|user| user != cursor.user_id()) {
+            return Err(invalid("storage_cursor_scope_mismatch"));
+        }
+    }
+    Ok(())
+}
+
+fn finish_storage_page(
+    mut objects: Vec<StorageObject>,
+    limit: usize,
+) -> (Vec<StorageObject>, Option<StorageObjectKey>) {
+    let has_more = objects.len() > limit;
+    if has_more {
+        objects.truncate(limit);
+    }
+    let next = has_more.then(|| {
+        objects
+            .last()
+            .expect("validated positive list limit retains a last page object")
+            .key
+            .clone()
+    });
+    (objects, next)
 }
 
 fn sorted_keys(operations: &[BatchOperation]) -> BTreeSet<StorageObjectKey> {
@@ -305,23 +420,41 @@ fn authorize_write(
 }
 
 fn decode_storage_object(key: StorageObjectKey, row: &Row) -> Result<StorageObject, DomainError> {
-    let value: Vec<u8> = row.get(0);
+    decode_storage_object_at(key, row, 0)
+}
+
+fn decode_listed_storage_object(
+    collection: &str,
+    row: &Row,
+) -> Result<StorageObject, DomainError> {
+    let object_key: String = row.get(0);
+    let user_bytes: Vec<u8> = row.get(1);
+    let key = decode_storage_key(collection.to_owned(), object_key, user_bytes)?;
+    decode_storage_object_at(key, row, 2)
+}
+
+fn decode_storage_object_at(
+    key: StorageObjectKey,
+    row: &Row,
+    offset: usize,
+) -> Result<StorageObject, DomainError> {
+    let value: Vec<u8> = row.get(offset);
     if value.len() > MAX_VALUE_BYTES {
         return Err(data_loss("invalid_storage_value_bytes"));
     }
     let integrity_digest = IntegrityDigest::new(decode_digest(
-        row.get(1),
+        row.get(offset + 1),
         "invalid_storage_integrity_digest",
     )?)
     .map_err(|_| data_loss("invalid_storage_integrity_digest"))?;
     verify_storage_integrity(&value, integrity_digest)?;
-    let read_permission = match row.get::<_, i16>(2) {
+    let read_permission = match row.get::<_, i16>(offset + 2) {
         0 => ReadPermission::None,
         1 => ReadPermission::Owner,
         2 => ReadPermission::Public,
         _ => return Err(data_loss("invalid_storage_read_permission")),
     };
-    let write_permission = match row.get::<_, i16>(3) {
+    let write_permission = match row.get::<_, i16>(offset + 3) {
         0 => WritePermission::None,
         1 => WritePermission::Owner,
         _ => return Err(data_loss("invalid_storage_write_permission")),
@@ -344,7 +477,6 @@ fn verify_storage_integrity(value: &[u8], stored: IntegrityDigest) -> Result<(),
     }
 }
 
-#[cfg(test)]
 fn decode_storage_key(
     collection: String,
     object_key: String,
@@ -403,6 +535,17 @@ mod tests {
         })
     }
 
+    fn object(value: u8) -> StorageObject {
+        StorageObject {
+            key: key(value),
+            value: vec![value],
+            version: ContentVersion::from_value(&[value]),
+            integrity_digest: IntegrityDigest::from_value(&[value]),
+            read_permission: ReadPermission::Owner,
+            write_permission: WritePermission::Owner,
+        }
+    }
+
     #[test]
     fn batch_validation_rejects_empty_duplicate_and_excess() {
         assert_eq!(
@@ -421,6 +564,77 @@ mod tests {
             validate_batch(&excess).unwrap_err().reason(),
             "invalid_storage_batch_size"
         );
+    }
+
+    #[test]
+    fn list_validation_rejects_invalid_limits_actor_and_cursor_scope() {
+        assert_eq!(
+            validate_list_request(Actor::Server, "profile", None, None, 0)
+                .unwrap_err()
+                .reason(),
+            "invalid_storage_list_limit"
+        );
+        assert_eq!(
+            validate_list_request(
+                Actor::Server,
+                "profile",
+                None,
+                None,
+                MAX_LIST_LIMIT + 1,
+            )
+            .unwrap_err()
+            .reason(),
+            "invalid_storage_list_limit"
+        );
+        assert_eq!(
+            validate_list_request(
+                Actor::User(UserId::new([0; 16])),
+                "profile",
+                None,
+                None,
+                1,
+            )
+            .unwrap_err()
+            .reason(),
+            "invalid_storage_actor"
+        );
+        let other_collection =
+            StorageObjectKey::new("other", "object", UserId::new([1; 16])).unwrap();
+        assert_eq!(
+            validate_list_request(
+                Actor::Server,
+                "profile",
+                None,
+                Some(&other_collection),
+                1,
+            )
+            .unwrap_err()
+            .reason(),
+            "storage_cursor_scope_mismatch"
+        );
+        assert_eq!(
+            validate_list_request(
+                Actor::Server,
+                "profile",
+                Some(UserId::new([2; 16])),
+                Some(&key(1)),
+                1,
+            )
+            .unwrap_err()
+            .reason(),
+            "storage_cursor_scope_mismatch"
+        );
+    }
+
+    #[test]
+    fn keyset_page_returns_last_visible_key_only_with_sentinel() {
+        let (page, cursor) = finish_storage_page(vec![object(1), object(2), object(3)], 2);
+        assert_eq!(page.len(), 2);
+        assert_eq!(cursor, Some(key(2)));
+
+        let (final_page, final_cursor) = finish_storage_page(vec![object(1), object(2)], 2);
+        assert_eq!(final_page.len(), 2);
+        assert_eq!(final_cursor, None);
     }
 
     #[test]
