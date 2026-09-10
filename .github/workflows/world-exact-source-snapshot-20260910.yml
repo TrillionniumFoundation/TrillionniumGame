@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Fetch exact World source and pinned uploader
+      - name: Fetch exact World source and pinned local uploader action
         shell: bash
         run: |
           set -euo pipefail
@@ -44,6 +44,13 @@ jobs:
           git -C "$helper" checkout --detach FETCH_HEAD
           test "$(git -C "$helper" rev-parse HEAD)" = "$GAME_UPLOADER_SHA"
           test -s "$helper/scripts/upload-actions-artifact.py"
+          test -s "$helper/.github/actions/upload-evidence/action.yml"
+          test -s "$helper/.github/actions/upload-evidence/index.js"
+
+          rm -rf "$GITHUB_WORKSPACE/.github/actions/upload-evidence"
+          mkdir -p "$GITHUB_WORKSPACE/.github/actions" "$GITHUB_WORKSPACE/scripts"
+          cp -R "$helper/.github/actions/upload-evidence" "$GITHUB_WORKSPACE/.github/actions/"
+          cp "$helper/scripts/upload-actions-artifact.py" "$GITHUB_WORKSPACE/scripts/"
 
       - name: Build deterministic exact-source archive
         shell: bash
@@ -70,13 +77,11 @@ jobs:
 
       - name: Retain exact source archive
         id: source-artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 "$RUNNER_TEMP/game-helper/scripts/upload-actions-artifact.py" \
-            "world-exact-source-${WORLD_SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            "$RUNNER_TEMP/Trillionnium-World-${WORLD_SOURCE_SHA}.tar.gz" \
-            --mime-type application/gzip
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-exact-source-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/Trillionnium-World-${{ env.WORLD_SOURCE_SHA }}.tar.gz
+          mime_type: application/gzip
 
       - name: Emit artifact identity
         shell: bash
