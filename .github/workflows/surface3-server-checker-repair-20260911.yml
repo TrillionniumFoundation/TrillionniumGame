@@ -16,6 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  REPAIR_REVISION: '1'
   TARGET_BRANCH: feature/plan-v32-storage-api-core-20260910
   EXPECTED_HEAD: 1abba3f29f0bba0720b56a307c6000e04f33c07a
   EXPECTED_TREE: 23de20a315d38239d8a9d67ff5a5b327778bde2c
@@ -166,5 +167,5 @@ jobs:
           new_head=$(git rev-parse HEAD)
           new_tree=$(git rev-parse HEAD^{tree})
           git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
-          printf 'old_head=%s\nnew_head=%s\nnew_tree=%s\nhistory_rewritten=false\n' \
-            "$EXPECTED_HEAD" "$new_head" "$new_tree" | tee "$GITHUB_STEP_SUMMARY"
+          printf 'repair_revision=%s\nold_head=%s\nnew_head=%s\nnew_tree=%s\nhistory_rewritten=false\n' \
+            "$REPAIR_REVISION" "$EXPECTED_HEAD" "$new_head" "$new_tree" | tee "$GITHUB_STEP_SUMMARY"
