@@ -1,0 +1,248 @@
+name: world-game-chain-integration-locks-20260910
+
+on:
+  push:
+    branches:
+      - ops/cross-repo-gap-closure-20260910
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-game-chain-integration-locks-20260910
+  cancel-in-progress: false
+
+jobs:
+  discover_freeze:
+    name: discover/fail-closed-repository-identities
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      world_sha: ${{ steps.freeze.outputs.world_sha }}
+      game_sha: ${{ steps.freeze.outputs.game_sha }}
+      chain_repo: ${{ steps.freeze.outputs.chain_repo }}
+      chain_branch: ${{ steps.freeze.outputs.chain_branch }}
+      chain_sha: ${{ steps.freeze.outputs.chain_sha }}
+      integration_repo: ${{ steps.freeze.outputs.integration_repo }}
+      integration_branch: ${{ steps.freeze.outputs.integration_branch }}
+      integration_sha: ${{ steps.freeze.outputs.integration_sha }}
+    steps:
+      - id: freeze
+        name: Discover unique Chain and Integration repositories and freeze heads
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            'https://api.github.com/orgs/TrillionniumFoundation/repos?per_page=100&type=all' \
+            > "$RUNNER_TEMP/repos.json"
+          python3 - "$RUNNER_TEMP/repos.json" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import re
+          import subprocess
+          import sys
+
+          repos = json.load(open(sys.argv[1], encoding="utf-8"))
+          if not isinstance(repos, list):
+              raise SystemExit("organization repository response is not a list")
+
+          def unique(label, predicate):
+              values = [item for item in repos if predicate(item["name"].lower())]
+              if len(values) != 1:
+                  raise SystemExit(f"{label} repository discovery is ambiguous: {[v['full_name'] for v in values]}")
+              return values[0]
+
+          chain = unique(
+              "Chain",
+              lambda name: name not in {"cex", "trillionnium-world", "trillionniumgame"}
+              and re.search(r"(?:^|[-_])chain(?:$|[-_])", name) is not None,
+          )
+          integration = unique(
+              "Integration",
+              lambda name: "integration" in name and name != "trillionniumgame",
+          )
+
+          def sha(repo, branch):
+              remote = f"https://github.com/{repo}.git"
+              value = subprocess.check_output(
+                  ["git", "ls-remote", remote, f"refs/heads/{branch}"], text=True
+              ).split()[0]
+              if not re.fullmatch(r"[0-9a-f]{40}", value):
+                  raise SystemExit(f"invalid head for {repo}@{branch}: {value}")
+              return value
+
+          values = {
+              "world_sha": sha(
+                  "TrillionniumFoundation/Trillionnium-World",
+                  "refactor/campaign-module-stack-v2-20260909",
+              ),
+              "game_sha": sha("TrillionniumFoundation/TrillionniumGame", "main"),
+              "chain_repo": chain["full_name"],
+              "chain_branch": chain["default_branch"],
+              "chain_sha": sha(chain["full_name"], chain["default_branch"]),
+              "integration_repo": integration["full_name"],
+              "integration_branch": integration["default_branch"],
+              "integration_sha": sha(integration["full_name"], integration["default_branch"]),
+          }
+          with open(sys.argv[2], "a", encoding="utf-8") as output:
+              for key, value in values.items():
+                  output.write(f"{key}={value}\n")
+          print(json.dumps(values, sort_keys=True))
+          print("PRODUCTION_AUTHORIZATION=not_granted")
+          PY
+
+  execute_locks:
+    name: execute/world-game-chain-integration-locks
+    needs: discover_freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: cross_repo_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cross_repo_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      WORLD_SHA: ${{ needs.discover_freeze.outputs.world_sha }}
+      GAME_SHA: ${{ needs.discover_freeze.outputs.game_sha }}
+      CHAIN_REPO: ${{ needs.discover_freeze.outputs.chain_repo }}
+      CHAIN_SHA: ${{ needs.discover_freeze.outputs.chain_sha }}
+      INTEGRATION_REPO: ${{ needs.discover_freeze.outputs.integration_repo }}
+      INTEGRATION_SHA: ${{ needs.discover_freeze.outputs.integration_sha }}
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      CARGO_INCREMENTAL: '0'
+      RUST_BACKTRACE: '1'
+      RUST_TEST_THREADS: '1'
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/cross_repo_test
+      TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/cross_repo_test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Fetch all frozen repository objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS='|' read -r name repo sha; do
+            root="$RUNNER_TEMP/$name"
+            git init "$root"
+            git -C "$root" remote add origin "https://github.com/${repo}.git"
+            git -C "$root" fetch --no-tags --depth=1 origin "$sha"
+            git -C "$root" checkout --detach FETCH_HEAD
+            test "$(git -C "$root" rev-parse HEAD)" = "$sha"
+            test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
+          done <<EOF
+          world|TrillionniumFoundation/Trillionnium-World|$WORLD_SHA
+          game|TrillionniumFoundation/TrillionniumGame|$GAME_SHA
+          chain|$CHAIN_REPO|$CHAIN_SHA
+          integration|$INTEGRATION_REPO|$INTEGRATION_SHA
+          EOF
+
+      - name: Install pinned language toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal
+          go version
+          node --version
+          npm --version
+
+      - name: Execute language-native tests without guessing commands
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import subprocess
+
+          roots = [Path(os.environ["RUNNER_TEMP"]) / name for name in ("game", "chain", "integration")]
+          executed = {}
+          for root in roots:
+              commands = []
+              cargo = sorted(
+                  p for p in root.rglob("Cargo.toml")
+                  if not any(part in {"target", "vendor", "node_modules"} for part in p.parts)
+              )
+              workspace = next(
+                  (p for p in cargo if "[workspace]" in p.read_text(encoding="utf-8", errors="ignore")),
+                  None,
+              )
+              if workspace:
+                  commands.append(["cargo", "test", "--manifest-path", str(workspace), "--workspace", "--all-targets", "--locked"])
+              go_mod = root / "go.mod"
+              if go_mod.is_file():
+                  commands.append(["go", "test", "./..."])
+              package = root / "package.json"
+              if package.is_file():
+                  commands.append(["npm", "test", "--", "--runInBand"])
+              if not commands:
+                  raise SystemExit(f"{root.name}: no supported repository-native test root")
+              for command in commands:
+                  print("EXECUTE", root.name, command, flush=True)
+                  subprocess.run(command, cwd=root, check=True)
+              executed[root.name] = len(commands)
+          print("CROSS_REPOSITORY_NATIVE_TESTS=PASS", executed)
+          PY
+
+      - name: Execute World game-server and Nakama-facing boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path "$RUNNER_TEMP/world/trillionnium/Cargo.toml" \
+            -p trnm-game-server --all-targets --locked
+          if find "$RUNNER_TEMP/game" -type f \( -iname '*nakama*' -o -path '*/nakama/*' \) -print -quit | grep -q .; then
+            grep -RIl --exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules \
+              -e 'Trillionnium-World' -e 'trnm-world' "$RUNNER_TEMP/game" | grep -q .
+            grep -RIl --exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules \
+              -e 'TrillionniumGame' -e 'Nakama' "$RUNNER_TEMP/world" | grep -q .
+          else
+            echo 'Game repository has no Nakama-facing source evidence' >&2
+            exit 1
+          fi
+          printf 'WORLD_GAME_NAKAMA_LOCK=PASS\n'
+
+      - name: Require bidirectional repository contract references
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -RIl --exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules \
+            -e "$CHAIN_REPO" -e 'Game' "$RUNNER_TEMP/integration" | grep -q .
+          grep -RIl --exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules \
+            -e "$INTEGRATION_REPO" -e 'Integration' "$RUNNER_TEMP/chain" | grep -q .
+          grep -RIl --exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules \
+            -e "$CHAIN_REPO" -e 'Chain' "$RUNNER_TEMP/game" | grep -q .
+          grep -RIl --exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules \
+            -e 'TrillionniumGame' -e 'Game' "$RUNNER_TEMP/chain" | grep -q .
+          printf 'GAME_CHAIN_INTEGRATION_REFERENCE_LOCK=PASS\n'
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+
+  refreeze:
+    name: refreeze/reject-any-repository-movement
+    needs: [discover_freeze, execute_locks]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      WORLD_SHA: ${{ needs.discover_freeze.outputs.world_sha }}
+      GAME_SHA: ${{ needs.discover_freeze.outputs.game_sha }}
+      CHAIN_REPO: ${{ needs.discover_freeze.outputs.chain_repo }}
+      CHAIN_BRANCH: ${{ needs.discover_freeze.outputs.chain_branch }}
+      CHAIN_SHA: ${{ needs.discover_freeze.outputs.chain_sha }}
+      INTEGRATION_REPO: ${{ needs.discover_freeze.outputs.integration_repo }}
+      INTEGRATION_BRANCH: ${{ needs.discover_freeze.outputs.integration_branch }}
+      INTEGRATION_SHA: ${{ needs.discover_freeze.outputs.integration_sha }}
+    steps:
+      - name: Re-read all frozen refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote https://github.com/TrillionniumFoundation/Trillionnium-World.git refs/heads/refactor/campaign-module-stack-v2-20260909 | cut -f1)" = "$WORLD_SHA"
+          test "$(git ls-remote https://github.com/TrillionniumFoundation/TrillionniumGame.git refs/heads/main | cut -f1)" = "$GAME_SHA"
+          test "$(git ls-remote https://github.com/${CHAIN_REPO}.git refs/heads/${CHAIN_BRANCH} | cut -f1)" = "$CHAIN_SHA"
+          test "$(git ls-remote https://github.com/${INTEGRATION_REPO}.git refs/heads/${INTEGRATION_BRANCH} | cut -f1)" = "$INTEGRATION_SHA"
+          printf 'WORLD_GAME_CHAIN_INTEGRATION_TUPLE_STABLE=PASS\n'
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
