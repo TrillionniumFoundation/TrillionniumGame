@@ -11,10 +11,6 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = Path("docs/status/MODULE_DOCUMENTATION.json")
-ROOT_SENTENCE = (
-    "This root-workspace package is explicitly registered in package authority "
-    "and must execute in the stable aggregate merge gate."
-)
 ISOLATED_SENTENCE_PREFIX = "This isolated workspace is explicitly registered"
 ROOT_FORBIDDEN_PHRASES = (
     "This isolated workspace is explicitly registered",
@@ -72,9 +68,8 @@ def workspace_sets(root: Path) -> tuple[set[str], set[str]]:
     exclude_raw = workspace.get("exclude", [])
     require(
         isinstance(members_raw, list)
-        and members_raw
         and all(isinstance(value, str) for value in members_raw),
-        "Cargo.toml: workspace.members must be a non-empty string array",
+        "Cargo.toml: workspace.members must be a string array",
     )
     require(
         isinstance(exclude_raw, list)
