@@ -54,7 +54,7 @@ jobs:
             crates/trnm-identity-core/tests/receipt_operation_scope.rs
           cargo fmt --all
           git diff --check
-          actual="$(git status --short | sed -E 's/^.. //' | sort)"
+          actual="$(git status --short --untracked-files=all | sed -E 's/^.. //' | sort)"
           expected="$(printf '%s\n' \
             crates/trnm-identity-core/README.md \
             crates/trnm-identity-core/src/lib.rs \
