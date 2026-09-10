@@ -46,8 +46,8 @@ impl SocialRegistry {
             sender: request.sender,
             recipient: request.recipient,
             kind: request.kind,
-            subject: request.subject,
-            content: request.content,
+            subject: request.subject.clone(),
+            content: request.content.clone(),
             sequence: revision,
             read: false,
         };
@@ -58,10 +58,15 @@ impl SocialRegistry {
             .or_default()
             .insert(request.notification, record);
         let actor = request.sender.unwrap_or(request.recipient);
-        let intents = [(
-            Some(request.recipient),
-            OutboxIntentKind::NotificationDelivery,
-        )];
+        let intents = [OutboxIntentPayload::NotificationDelivery {
+            sender: request.sender,
+            recipient: request.recipient,
+            notification: request.notification,
+            kind: request.kind,
+            subject: request.subject,
+            content: request.content,
+            sequence: revision,
+        }];
         let receipt = self.finish_command(
             &mut candidate,
             CommandCompletion {

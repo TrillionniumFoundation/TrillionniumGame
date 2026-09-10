@@ -122,20 +122,27 @@ impl SocialRegistry {
         let revision = self.next_command_revision()?;
         let mut candidate = self.clone();
         let candidate_group = candidate.groups.get_mut(&group_id).ok_or_else(invariant_error)?;
-        let (outcome, intents): (ReceiptOutcome, Vec<(Option<AccountId>, OutboxIntentKind)>) =
+        let (outcome, intents): (ReceiptOutcome, Vec<OutboxIntentPayload>) =
             match candidate_group.join_mode {
                 GroupJoinMode::Open => {
                     candidate_group.members.insert(actor, GroupRole::Member);
                     (
                         ReceiptOutcome::GroupJoined,
-                        vec![(Some(actor), OutboxIntentKind::GroupJoinAccepted)],
+                        vec![OutboxIntentPayload::GroupJoinAccepted {
+                            group: group_id,
+                            actor,
+                            member: actor,
+                        }],
                     )
                 }
                 GroupJoinMode::AdminApproval => {
                     candidate_group.join_requests.insert(actor);
                     (
                         ReceiptOutcome::GroupJoinRequested,
-                        vec![(None, OutboxIntentKind::GroupJoinRequested)],
+                        vec![OutboxIntentPayload::GroupJoinRequested {
+                            group: group_id,
+                            requester: actor,
+                        }],
                     )
                 }
                 GroupJoinMode::Closed => return Err(invariant_error()),
@@ -199,7 +206,11 @@ impl SocialRegistry {
         candidate_group.join_requests.remove(&target);
         candidate_group.members.insert(target, GroupRole::Member);
         candidate_group.revision = group_revision;
-        let intents = [(Some(target), OutboxIntentKind::GroupJoinAccepted)];
+        let intents = [OutboxIntentPayload::GroupJoinAccepted {
+            group: group_id,
+            actor,
+            member: target,
+        }];
         let receipt = self.finish_command(
             &mut candidate,
             CommandCompletion {

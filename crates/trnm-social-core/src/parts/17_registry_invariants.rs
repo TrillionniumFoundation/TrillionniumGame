@@ -72,6 +72,113 @@ impl SocialRegistry {
         Ok(())
     }
 
+    fn validate_outbox_payload(
+        &self,
+        payload: &OutboxIntentPayload,
+        receipt: CommandReceipt,
+    ) -> Result<(), SocialError> {
+        if !payload.matches_receipt(receipt) {
+            return Err(invariant_error());
+        }
+        match payload {
+            OutboxIntentPayload::FriendRequest { requester, target } => {
+                self.ensure_known_user(*requester)
+                    .map_err(|_| invariant_error())?;
+                self.ensure_known_user(*target)
+                    .map_err(|_| invariant_error())?;
+                UserPair::new(*requester, *target).map_err(|_| invariant_error())?;
+            }
+            OutboxIntentPayload::FriendAccepted {
+                accepter,
+                requester,
+            } => {
+                self.ensure_known_user(*accepter)
+                    .map_err(|_| invariant_error())?;
+                self.ensure_known_user(*requester)
+                    .map_err(|_| invariant_error())?;
+                UserPair::new(*accepter, *requester).map_err(|_| invariant_error())?;
+            }
+            OutboxIntentPayload::GroupJoinRequested { group, requester } => {
+                self.ensure_known_user(*requester)
+                    .map_err(|_| invariant_error())?;
+                if !self.groups.contains_key(group) {
+                    return Err(invariant_error());
+                }
+            }
+            OutboxIntentPayload::GroupJoinAccepted {
+                group,
+                actor,
+                member,
+            }
+            | OutboxIntentPayload::GroupRoleChanged {
+                group,
+                actor,
+                member,
+                ..
+            } => {
+                self.ensure_known_user(*actor)
+                    .map_err(|_| invariant_error())?;
+                self.ensure_known_user(*member)
+                    .map_err(|_| invariant_error())?;
+                if !self.groups.contains_key(group) {
+                    return Err(invariant_error());
+                }
+            }
+            OutboxIntentPayload::ChatMessage {
+                group,
+                message,
+                sender,
+                sequence,
+                body,
+            } => {
+                self.ensure_known_user(*sender)
+                    .map_err(|_| invariant_error())?;
+                if *sequence == 0
+                    || body.is_empty()
+                    || body.len() > self.config.limits.max_message_bytes
+                {
+                    return Err(invariant_error());
+                }
+                let stored = self
+                    .messages
+                    .get(group)
+                    .and_then(|messages| messages.iter().find(|item| item.id == *message))
+                    .ok_or_else(invariant_error)?;
+                if stored.group != *group
+                    || stored.sender != *sender
+                    || stored.sequence != *sequence
+                    || stored.body.as_bytes() != body.as_bytes()
+                {
+                    return Err(invariant_error());
+                }
+            }
+            OutboxIntentPayload::NotificationDelivery {
+                sender,
+                recipient,
+                subject,
+                content,
+                sequence,
+                ..
+            } => {
+                self.ensure_known_user(*recipient)
+                    .map_err(|_| invariant_error())?;
+                if let Some(sender) = sender {
+                    self.ensure_known_user(*sender)
+                        .map_err(|_| invariant_error())?;
+                }
+                if *sequence != receipt.revision
+                    || subject.is_empty()
+                    || content.is_empty()
+                    || subject.len() > self.config.limits.max_notification_text_bytes
+                    || content.len() > self.config.limits.max_notification_text_bytes
+                {
+                    return Err(invariant_error());
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn validate_invariants(&self) -> Result<(), SocialError> {
         if self.users.len() > self.config.limits.max_users
             || self.groups.len() > self.config.limits.max_groups
@@ -214,15 +321,15 @@ impl SocialRegistry {
             }
         }
         for (id, intent) in &self.outbox {
-            if intent.id != *id
-                || id.ordinal == 0
-                || !self.receipts.contains_key(&id.command)
-                || intent
-                    .recipient
-                    .is_some_and(|recipient| !self.users.contains(&recipient))
-            {
+            let receipt = self
+                .receipts
+                .get(&id.command)
+                .copied()
+                .ok_or_else(invariant_error)?;
+            if intent.id != *id || id.ordinal == 0 {
                 return Err(invariant_error());
             }
+            self.validate_outbox_payload(&intent.payload, receipt)?;
         }
         Ok(())
     }

@@ -48,7 +48,12 @@ impl SocialRegistry {
         let candidate_group = candidate.groups.get_mut(&group_id).ok_or_else(invariant_error)?;
         candidate_group.members.insert(target, role);
         candidate_group.revision = group_revision;
-        let intents = [(Some(target), OutboxIntentKind::GroupRoleChanged)];
+        let intents = [OutboxIntentPayload::GroupRoleChanged {
+            group: group_id,
+            actor,
+            member: target,
+            role,
+        }];
         let receipt = self.finish_command(
             &mut candidate,
             CommandCompletion {

@@ -5,7 +5,7 @@ impl SocialRegistry {
     }
 
     pub fn outbox_intents(&self) -> impl ExactSizeIterator<Item = OutboxIntent> + '_ {
-        self.outbox.values().copied()
+        self.outbox.values().cloned()
     }
 
     fn next_command_revision(&self) -> Result<u64, SocialError> {
@@ -87,19 +87,12 @@ impl SocialRegistry {
         };
         candidate.revision = revision;
         candidate.receipts.insert(command, receipt);
-        for (index, (recipient, kind)) in intents.iter().copied().enumerate() {
+        for (index, payload) in intents.iter().cloned().enumerate() {
             let ordinal = u16::try_from(index + 1).map_err(|_| {
                 SocialError::new(SocialErrorCode::OutOfRange, "outbox_ordinal_overflow")
             })?;
             let id = OutboxIntentId { command, ordinal };
-            candidate.outbox.insert(
-                id,
-                OutboxIntent {
-                    id,
-                    recipient,
-                    kind,
-                },
-            );
+            candidate.outbox.insert(id, OutboxIntent { id, payload });
         }
         candidate.validate_invariants()?;
         Ok(receipt)

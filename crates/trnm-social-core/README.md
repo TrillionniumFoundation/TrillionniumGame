@@ -8,13 +8,13 @@ Owner role: `social`
 
 ## Status and authority
 
-This crate is the transport- and persistence-independent social-domain state machine for the second Plan v3.2 surface tracked by issue #138. It defines a bounded source candidate for friend relationships, blocking, group membership, ordered group chat, notifications, command receipts and post-commit outbox intents.
+This crate is the transport- and persistence-independent social-domain state machine for the second Plan v3.2 surface tracked by issue #138. It defines a bounded source candidate for friend relationships, blocking, group membership, ordered group chat, notifications, command receipts and post-commit outbox intents with immutable typed delivery payloads.
 
 Its authority ends at deterministic in-memory transitions. It is not a complete Nakama users/social API, network adapter, database implementation, distributed presence service, notification delivery worker, official-SDK compatibility result or production social authority.
 
 ## Responsibilities
 
-The crate owns typed social command, fingerprint, group, message and notification identities; friend request, acceptance, removal, block and unblock transitions; stable friend pagination; group creation, open or approval-based join, role change, leave, ban and unban; contiguous group-message sequencing; ordered notification read/delete state; exact command replay; and bounded outbox intent construction.
+The crate owns typed social command, fingerprint, group, message and notification identities; friend request, acceptance, removal, block and unblock transitions; stable friend pagination; group creation, open or approval-based join, role change, leave, ban and unban; contiguous group-message sequencing; ordered notification read/delete state; exact command replay; and bounded outbox intent construction. Every effect-bearing intent carries an immutable typed payload containing the complete account/group/message/notification subject needed to identify the committed effect; chat and notification payload bytes are retained in redacted bounded wrappers rather than reconstructed from mutable state.
 
 Every collection and payload has a validated finite limit. Accepted mutations are applied to a cloned candidate and committed only after reverse relationships, membership sets, sequence continuity, receipt/outbox cardinality and ownership references pass invariant validation.
 
@@ -42,7 +42,7 @@ Friend, message and notification cursors are scoped to their owner, group or rec
 
 Validation, unknown identity, self-relationship, collision, stale command fingerprint, actor mismatch, operation mismatch, capacity exhaustion, permission failure, last-superadmin protection, duplicate message/notification identity and checked counter overflow fail before committing the candidate. Receipt invariants require every recorded actor to remain a registered user.
 
-The receipt records actor, global social revision, outcome and exact outbox count. Outbox IDs are derived from command identity plus a positive ordinal, preventing one accepted command from silently creating duplicate intent identities.
+The receipt records actor, global social revision, outcome and exact outbox count. Outbox IDs are derived from command identity plus a positive ordinal, preventing one accepted command from silently creating duplicate intent identities. Each intent payload is checked against its receipt outcome and actor. Message payloads must match the exact committed message identity, sequence, sender and bytes; notification delivery retains its exact sender, recipient, identifier, kind, text and source revision even if the mutable notification record is later read or deleted. A worker therefore never has to guess an effect subject from kind plus command ID or consult mutable state to recover content.
 
 Crash safety, response-loss reconciliation and external exactly-once effects are not properties of this in-memory crate. A durable adapter must commit domain mutation, receipt and intents together; workers must lease, fence, reconcile and terminally classify delivery according to the repository outbox contract.
 
@@ -62,7 +62,7 @@ cargo test --package trnm-social-core --all-targets --locked
 cargo clippy --package trnm-social-core --all-targets --locked -- -D warnings
 ```
 
-The focused corpus covers actor-and-operation-scoped exact receipt replay, changed fingerprints, friendship transitions, mutual blocking, keyset pagination, approval joins, role and last-superadmin rules, bans, chat sequencing, cursor scope, notification ordering/read/delete, capacity failures, checked limits and payload redaction. Hostile receipt tests prove that a command/fingerprint pair cannot be replayed through another actor or operation and that the two valid `join_group` outcomes remain in one operation family.
+The focused corpus covers actor-and-operation-scoped exact receipt replay, changed fingerprints, friendship transitions, mutual blocking, keyset pagination, approval joins, role and last-superadmin rules, bans, chat sequencing, cursor scope, notification ordering/read/delete, complete typed outbox subjects, retention of notification delivery payloads after source-record deletion, capacity failures, checked limits and payload redaction. Hostile receipt tests prove that a command/fingerprint pair cannot be replayed through another actor or operation and that the two valid `join_group` outcomes remain in one operation family.
 
 These tests establish only source-level deterministic behavior. Required exact-head and prospective-merge CI, PostgreSQL and CockroachDB live profiles, protocol/SDK differentials, reconnect/failure injection and independent specialist review remain separate.
 

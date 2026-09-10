@@ -122,7 +122,10 @@ impl SocialRegistry {
         let mut candidate = self.clone();
         candidate.friend_requests.insert((actor, target));
         debug_assert!(!candidate.friendships.contains(&pair));
-        let intents = [(Some(target), OutboxIntentKind::FriendRequest)];
+        let intents = [OutboxIntentPayload::FriendRequest {
+            requester: actor,
+            target,
+        }];
         let receipt = self.finish_command(
             &mut candidate,
             CommandCompletion {
@@ -174,7 +177,10 @@ impl SocialRegistry {
         let mut candidate = self.clone();
         candidate.friend_requests.remove(&(requester, actor));
         candidate.friendships.insert(pair);
-        let intents = [(Some(requester), OutboxIntentKind::FriendAccepted)];
+        let intents = [OutboxIntentPayload::FriendAccepted {
+            accepter: actor,
+            requester,
+        }];
         let receipt = self.finish_command(
             &mut candidate,
             CommandCompletion {

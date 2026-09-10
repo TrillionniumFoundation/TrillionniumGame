@@ -52,7 +52,7 @@ impl SocialRegistry {
             group: request.group,
             sender: request.sender,
             sequence,
-            body: request.body,
+            body: request.body.clone(),
         };
         let mut candidate = self.clone();
         candidate
@@ -65,7 +65,13 @@ impl SocialRegistry {
             .get_mut(&request.group)
             .ok_or_else(invariant_error)?
             .next_message_sequence = next_sequence;
-        let intents = [(None, OutboxIntentKind::ChatMessage)];
+        let intents = [OutboxIntentPayload::ChatMessage {
+            group: request.group,
+            message: request.message,
+            sender: request.sender,
+            sequence,
+            body: request.body,
+        }];
         let receipt = self.finish_command(
             &mut candidate,
             CommandCompletion {
