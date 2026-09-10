@@ -231,7 +231,7 @@ class DocumentationAuthorityTests(unittest.TestCase):
         result = json.loads(completed.stdout)
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["current_human_document_count"], 9)
-        self.assertEqual(result["module_document_count"], 21)
+        self.assertEqual(result["module_document_count"], 22)
         self.assertEqual(result["undocumented_module_count"], 0)
         self.assertGreater(result["repository_markdown_count"], 21)
         self.assertEqual(result["historical_markdown_count"], 0)

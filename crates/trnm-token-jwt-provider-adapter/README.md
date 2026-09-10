@@ -20,7 +20,7 @@ Non-goals: It is not a KMS implementation, general JWT library, authorization se
 
 ## Architecture and dependencies
 
-It composes token policy, strict format validation, and the crypto-provider interface while remaining an isolated mandatory gate target.
+It composes token policy, strict format validation, and the crypto-provider interface as a root-workspace mandatory aggregate target.
 
 Dependency direction is reviewed as part of package authority. This module must not introduce hidden global state, untracked background work, unbounded queues, or transport/database coupling outside the declared lifecycle.
 
@@ -50,7 +50,7 @@ cargo test --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml --a
 cargo clippy --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml --all-targets --locked -- -D warnings
 ```
 
-This isolated workspace is explicitly registered in package authority and must execute in the stable aggregate merge gate. Empty discovery, skipped mandatory tests, warnings, older-head results, and local-only execution do not earn remote verification or claim credit.
+This root-workspace package is explicitly registered in package authority and must execute in the stable aggregate merge gate. Empty discovery, skipped mandatory tests, warnings, older-head results, and local-only execution do not earn remote verification or claim credit.
 
 Focused vectors and live/fault/differential suites are required when this module's behavior crosses protocol, database, security, realtime, or operational boundaries.
 

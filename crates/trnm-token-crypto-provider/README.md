@@ -107,7 +107,7 @@ The unit corpus covers all six domains, non-overlapping sign windows, bounded ve
 
 Signer-journal hostile cases additionally cover forged outcomes, wrong request/provider/endpoint/attempt, signature-byte and digest substitution, response-loss reconciliation, current and archived receipt reuse, first/successor checkpoint shape and predecessor binding. Deterministic verifier fixtures prove that the source boundary invokes the verifier and preserves state on rejection; they do not prove a real provider response format, KMS/HSM authentication, durable database atomicity or cross-node convergence.
 
-This isolated workspace is explicitly registered in package authority and must execute in the stable aggregate merge gate. Empty discovery, skipped mandatory tests, warnings, older-head results, local-only execution and self-review do not earn remote verification or claim credit.
+This root-workspace package is explicitly registered in package authority and must execute in the stable aggregate merge gate. Empty discovery, skipped mandatory tests, warnings, older-head results, local-only execution and self-review do not earn remote verification or claim credit.
 
 Focused vectors and live/fault/differential suites are required when this module's behavior crosses protocol, database, security, realtime, provider or operational boundaries.
 

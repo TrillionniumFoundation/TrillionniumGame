@@ -7,7 +7,7 @@
     "docs/README.md": "2026-09-03",
     "docs/ARCHITECTURE.md": "2026-09-03",
     "docs/DEVELOPMENT.md": "2026-09-03",
-    "docs/GOVERNANCE.md": "2026-09-05",
+    "docs/GOVERNANCE.md": "2026-09-10",
     "docs/TESTING_AND_EVIDENCE.md": "2026-09-05",
     "docs/SECURITY_AND_PRIVACY.md": "2026-09-05"
   },
@@ -83,7 +83,10 @@
     "docs/governance/ACTIVE_BRANCHES.json",
     "docs/governance/GITHUB_ADMIN_ACCEPTANCE.json",
     "docs/governance/MAIN_RULESET_DESIRED.json",
+    "docs/governance/REQUIRED_AGGREGATE_OVERLAY_V1.json",
     "docs/governance/REQUIRED_CHECKS.json",
+    "docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json",
+    "docs/governance/REQUIRED_WORKFLOWS_V1.json",
     "docs/governance/RULESET_DESIRED_ACTIVE_REQUEST.json"
   ],
   "machine_record_roots": [

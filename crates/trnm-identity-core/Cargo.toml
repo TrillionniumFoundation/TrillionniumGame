@@ -1,0 +1,11 @@
+[package]
+name = "trnm-identity-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bounded account and provider identity state machine for TrillionniumGame"
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -2,6 +2,7 @@ name: trillionnium-game-merge-gate
 
 on:
   pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
   workflow_dispatch:
@@ -44,6 +45,28 @@ jobs:
           git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
           test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
           git -C "$GITHUB_WORKSPACE" show -s --format='commit=%H%ntree=%T'
+      - name: Validate pull request metadata contract
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > pull-request-body.md
+          jq -r '.pull_request.draft' "$GITHUB_EVENT_PATH" > pull-request-draft.txt
+          tree=$(git show -s --format=%T "$CANDIDATE_SHA")
+          python3 scripts/check-pull-request-contract.py \
+            --body-file pull-request-body.md \
+            --head "$CANDIDATE_SHA" \
+            --tree "$tree" \
+            --draft "$(cat pull-request-draft.txt)" \
+            | tee pull-request-contract.json
+          jq -e '
+            .claims.compatibility_credit == false and
+            .claims.production_ready == false and
+            (
+              (.draft == true and .claims.merge_ready == false) or
+              (.draft == false and .claims.merge_ready == true)
+            )
+          ' pull-request-contract.json >/dev/null
       - name: Validate plan, status, gates and schema authority
         run: python3 scripts/check-plan.py
       - name: Validate repository-native workflow action and syntax policy
@@ -70,6 +93,7 @@ jobs:
         run: |
           python3 -m py_compile \
             scripts/check-plan.py \
+            scripts/check-pull-request-contract.py \
             scripts/check-status-transitions.py \
             scripts/derive-gates.py \
             scripts/check-schema-authority.py \

@@ -1,7 +1,7 @@
 # Governance
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-05
+Revision: 2026-09-10
 
 ## 1. Integration authority
 
@@ -25,9 +25,17 @@ Minimum source coverage includes documentation/control plane, workflow policy, r
 
 The closed required-workflow set applies to every candidate head, not only to changed paths. A mandatory `pull_request` workflow must not have `paths`, `paths-ignore`, `branches`, or `branches-ignore` selectors. Explicit activity types must include `opened`, `synchronize`, and `reopened`. Main-push selectors and all job bodies, permissions, test assertions and evidence requirements remain separate and unchanged. This intentionally trades additional CI execution for complete exact-head qualification; optimization requires an independently reviewed scope-aware evidence contract, never silently treating absent execution as success.
 
-`python3 -m unittest tests.control_plane.test_required_workflow_source_contract -v` checks the real composed manifest against current workflow bytes, verifies every required PR trigger, and requires both source/unit and live jobs for the PostgreSQL TLS and CockroachDB retry lanes. The bounded trigger helper rejects ambiguous forms rather than acting as a general YAML parser; the existing workflow syntax policy remains mandatory. The immutable base manifest is not rewritten. Definition changes are bound through the existing digest-verified overlay, without changing workflow identity, removing required workflows, or granting old-head evidence credit.
+`python3 -m unittest tests.control_plane.test_required_workflow_source_contract -v` checks the real composed manifest against current workflow bytes, verifies every required PR trigger, and requires both source/unit and live jobs for the PostgreSQL TLS and CockroachDB retry lanes. The bounded trigger helper rejects ambiguous forms rather than acting as a general YAML parser; the existing workflow syntax policy remains mandatory. The immutable base manifest is not rewritten. Child-workflow definition changes are bound through the digest-verified workflow overlay. Aggregate-definition changes are separately bound through `docs/governance/REQUIRED_AGGREGATE_OVERLAY_V1.json`. Neither overlay may change workflow identity, remove mandatory execution, or grant old-head evidence credit.
 
 GitHub's repository workflow catalog may temporarily expose the full registered path as its display name. The catalog identity helper permits only that exact form, and only when active ID/path, a successful current-head PR run, its canonical name, and the current regular source definition's Git blob all agree. Other renamed, disabled, missing, stale or substituted workflows reject. Receipts preserve the original observed catalog name. This does not relax job/assertion verification, rerun freshness, independent review or production gates.
+
+### Pull-request metadata freshness
+
+The stable aggregate listens to `opened`, `edited`, `synchronize`, `reopened`, `ready_for_review`, and `converted_to_draft`. On every pull-request event, its control-plane lane validates the current PR body, exact head/tree and Draft state with `scripts/check-pull-request-contract.py` before any aggregate success can be emitted. Editing the body or changing Draft state therefore creates a new aggregate check on the same source head; an earlier green aggregate cannot remain the current metadata decision.
+
+A Draft PR may carry an incomplete execution description but always has `merge_ready=false`. A non-Draft PR must satisfy the complete body contract, including exact identity, gap linkage, result policy, independent-review section and fail-closed claims. The checker's legacy `merge_ready` output means only that the PR body and Draft state are internally consistent. It does not establish reviewer independence, conversation resolution, branch protection, administrative no-bypass state or merge authorization.
+
+This metadata revalidation is repository-controlled source policy. It does not replace administrator-scoped required-check configuration or the negative merge rehearsal required to close `GAP-P0-GOV-001`.
 
 ## 3. Pull request state
 

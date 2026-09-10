@@ -67,6 +67,25 @@
       "claim_credit": false
     },
     {
+      "id": "trnm-identity-core",
+      "path": "crates/trnm-identity-core",
+      "manifest": "crates/trnm-identity-core/Cargo.toml",
+      "documentation": "crates/trnm-identity-core/README.md",
+      "workspace": "root",
+      "lifecycle": "product-library",
+      "maturity": "account-and-provider-identity-source-candidate",
+      "owner_role": "identity",
+      "authority": "bounded account and provider-identity domain state machine",
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-DATA-001",
+        "GAP-P0-CRYPTO-001",
+        "GAP-P0-SCOPE-001",
+        "GAP-P1-REVIEW-001"
+      ],
+      "claim_credit": false
+    },
+    {
       "id": "trnm-storage-core",
       "path": "crates/trnm-storage-core",
       "manifest": "crates/trnm-storage-core/Cargo.toml",
@@ -370,9 +389,9 @@
     }
   ],
   "summary": {
-    "module_count": 21,
-    "documented_count": 21,
-    "root_workspace_count": 19,
+    "module_count": 22,
+    "documented_count": 22,
+    "root_workspace_count": 20,
     "isolated_workspace_count": 2,
     "undocumented_count": 0
   }

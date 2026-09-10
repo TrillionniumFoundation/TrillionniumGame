@@ -105,6 +105,45 @@
       }
     },
     {
+      "id": "COMP-IDENTITY-CORE",
+      "path": "crates/trnm-identity-core",
+      "kind": "rust-library",
+      "workstreams": [
+        "W3"
+      ],
+      "status": "account-and-provider-identity-source-candidate",
+      "implemented": [
+        "typed account and provider identities for nine provider classes",
+        "unique username and provider reverse-index invariants",
+        "exact command receipt replay and changed-fingerprint rejection",
+        "account revision fencing and checked overflow",
+        "link unlink and last-provider protection",
+        "active disabled banned and terminal deleted states",
+        "bounded account identity and receipt capacity",
+        "retired username and provider identity tombstones"
+      ],
+      "missing": [
+        "public HTTP and gRPC account/authentication adapters",
+        "real provider token and callback verification",
+        "durable PostgreSQL repository and migration",
+        "session issuance refresh and socket revocation integration",
+        "official SDK and immutable-oracle differential",
+        "provider sandbox hostile corpus and independent review"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-DATA-001",
+        "GAP-P0-CRYPTO-001",
+        "GAP-P0-SCOPE-001",
+        "GAP-P1-REVIEW-001"
+      ],
+      "parity_ids": [
+        "TG-PAR-017"
+      ],
+      "evidence_ids": [],
+      "claim_credit": false
+    },
+    {
       "id": "COMP-STORAGE",
       "path": "crates/trnm-storage-core",
       "kind": "rust-library",

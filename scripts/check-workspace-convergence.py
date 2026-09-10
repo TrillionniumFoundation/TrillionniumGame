@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LONG_LIVED = [
     "trnm-contracts",
     "trnm-authority-core",
+    "trnm-identity-core",
     "trnm-session-core",
     "trnm-storage-core",
     "trnm-persistence-core",

@@ -2,19 +2,19 @@
   "schema": "trillionnium.current-state.v1",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "observed_at": "2026-09-10T04:30:00Z",
+  "observed_at": "2026-09-10T07:35:00Z",
   "authority": {
     "repository": "TrillionniumFoundation/TrillionniumGame",
     "repository_id": 1323087470,
     "default_branch": "main",
-    "audited_main_commit": "0a89ca431be4b82101d6424c6d06c8b4cfca2aa3",
-    "audited_main_tree": "1c171f4731be313978c80555b5ad0f3af88be593",
+    "audited_main_commit": "425ee015d53800f3e2c2936f97ded9cdbacf7f14",
+    "audited_main_tree": "ed47de87507feeef60795c997bce3a6e88699e9d",
     "candidate_branch": "feature/plan-v32-identity-core-20260909",
     "candidate_pull_request": 163,
-    "candidate_commit": "e78eca8dd34056a1e9c1a60e52d35e19dda4cdc1",
-    "candidate_tree": "20ed71fd2c8a77bf2be73ca7a5cabd7d7ac9d58e",
-    "candidate_identity_rule": "The active Plan v3.2 surface is bound to pull request 163, its exact head/tree and the GitHub prospective merge object; any head, base or tree movement invalidates prior qualification and requires a fresh packet.",
-    "last_admitted_pull_request": 150
+    "candidate_commit": null,
+    "candidate_tree": null,
+    "candidate_identity_rule": "The tracked state binds the active Plan v3.2 surface to pull request 163 without guessing its self-referential final commit. GitHub pull-request metadata, the exact head/tree and the actual prospective merge object are the execution authority; any head, base or tree movement invalidates prior qualification and requires a fresh packet.",
+    "last_admitted_pull_request": 168
   },
   "repository_governance": {
     "main_protected": true,
@@ -32,7 +32,7 @@
     "full_review_policy_read_back": false,
     "administrator_and_bypass_policy_read_back": false,
     "negative_no_bypass_rehearsal_accepted": false,
-    "status": "Plan v3.2 source convergence was admitted to protected main by pull request 150; retained post-merge main evidence, complete administrative read-back and conflict-free specialist acceptance remain open.",
+    "status": "Plan v3.2 convergence and post-merge truth were admitted through pull requests 150 and 168. Surface 1 is being rebound to that protected baseline; retained post-merge evidence, complete administrative read-back and conflict-free specialist acceptance remain open.",
     "blocking_gaps": [
       "GAP-P0-GOV-001",
       "GAP-P1-REVIEW-001"
@@ -68,7 +68,8 @@
     "single_default_server_authority_source_candidate": true,
     "long_lived_rust_workspace_converged": true,
     "authority_and_storage_database_adapters_source_candidate": true,
-    "active_token_crypto_provider_composed": true
+    "active_token_crypto_provider_composed": true,
+    "identity_core_source_candidate": true
   },
   "scope": {
     "baseline": "heroiclabs/nakama@v3.40.0",
@@ -110,8 +111,8 @@
     }
   },
   "active_priority": [
-    "merge the post-merge truth and active-branch reconciliation through the ordinary protected path",
-    "rebind and qualify Plan v3.2 Surface 1 on one exact head and actual prospective merge object",
+    "qualify Plan v3.2 Surface 1 on one exact head and actual prospective merge object",
+    "obtain current-head conflict-free review and ordinary protected admission for Surface 1",
     "rebind and qualify the stacked Surface 2 only after Surface 1 is admitted",
     "retain and independently accept the post-merge main packet",
     "read back complete branch/ruleset review freshness CODEOWNER conversation and bypass policy",

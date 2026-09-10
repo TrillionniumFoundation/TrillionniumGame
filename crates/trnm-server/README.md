@@ -1,6 +1,10 @@
 # trnm-server
 
-Status: **module documentation; source candidate; no compatibility, durability, SG4, production, public-online, cutover, or retirement credit**
+Status: **module documentation; source candidate; no compatibility, durability, SG4, production, public-online, cutover, or retirement credit**  
+Path: `crates/trnm-server`  
+Workspace class: `root`
+Lifecycle: `canonical-server-composition-root`  
+Owner role: `foundation-runtime`
 
 This document is the module-level authority for the root-workspace Rust server composition package.
 

@@ -1537,6 +1537,10 @@ name = "trnm-contracts"
 version = "0.1.0"
 
 [[package]]
+name = "trnm-identity-core"
+version = "0.1.0"
+
+[[package]]
 name = "trnm-persistence-core"
 version = "0.1.0"
 dependencies = [
