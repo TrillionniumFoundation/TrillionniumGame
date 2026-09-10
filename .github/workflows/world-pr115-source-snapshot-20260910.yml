@@ -1,4 +1,4 @@
-name: world-pr115-read-only-source-snapshot
+name: world-pr104-read-only-source-packet
 
 on:
   pull_request:
@@ -7,111 +7,68 @@ permissions:
   contents: read
 
 jobs:
-  snapshot:
-    name: world-pr115/read-only-source-snapshot
+  packet:
+    name: world-pr104/read-only-source-packet
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Fetch, verify, and package exact World PR 115 head
+      - name: Export exact World PR 104 migration inputs to the immutable log
         shell: bash
         run: |
           set -euo pipefail
-          api='https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/pulls/115'
-          start="$RUNNER_TEMP/world-pr-start.json"
-          finish="$RUNNER_TEMP/world-pr-finish.json"
-          head_dir="$RUNNER_TEMP/world-head"
-          out="$RUNNER_TEMP/world-pr115-source"
-
+          api='https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/pulls/104'
+          pull="$RUNNER_TEMP/world-pr104.json"
+          root="$RUNNER_TEMP/world-pr104"
           curl --fail --silent --show-error --location \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "$api" > "$start"
-          read -r base head merge state draft < <(
-            python3 - "$start" <<'PY'
-          import json
-          import sys
-          with open(sys.argv[1], encoding='utf-8') as handle:
-              pull = json.load(handle)
-          print(
-              pull['base']['sha'],
-              pull['head']['sha'],
-              pull['merge_commit_sha'],
-              pull['state'],
-              str(pull['draft']).lower(),
-          )
-          PY
-          )
+            "$api" > "$pull"
+          base="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["base"]["sha"])' "$pull")"
+          head="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["head"]["sha"])' "$pull")"
+          merge="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["merge_commit_sha"])' "$pull")"
+          state="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$pull")"
+          draft="$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["draft"]).lower())' "$pull")"
           test "$state" = open
           test "$draft" = true
           test -n "$base"
           test -n "$head"
           test -n "$merge"
-
-          rm -rf "$head_dir" "$out"
-          git init "$head_dir"
-          git -C "$head_dir" remote add origin \
-            'https://github.com/TrillionniumFoundation/Trillionnium-World.git'
-          git -C "$head_dir" fetch --no-tags --depth=1 origin "$head"
-          git -C "$head_dir" checkout --detach FETCH_HEAD
-          test "$(git -C "$head_dir" rev-parse HEAD)" = "$head"
-          tree="$(git -C "$head_dir" rev-parse 'HEAD^{tree}')"
-
-          mkdir -p "$out"
-          tar \
-            --sort=name \
-            --mtime='UTC 1970-01-01' \
-            --owner=0 \
-            --group=0 \
-            --numeric-owner \
-            --exclude=.git \
-            --exclude=target \
-            --exclude=run \
-            -czf "$out/world-pr115-head-source.tar.gz" \
-            -C "$head_dir" .
-          sha256sum "$out/world-pr115-head-source.tar.gz" > "$out/SHA256SUMS"
-
+          rm -rf "$root"
+          git init "$root"
+          git -C "$root" remote add origin 'https://github.com/TrillionniumFoundation/Trillionnium-World.git'
+          git -C "$root" fetch --no-tags --depth=1 origin "$head"
+          git -C "$root" checkout --detach FETCH_HEAD
+          test "$(git -C "$root" rev-parse HEAD)" = "$head"
+          tree="$(git -C "$root" rev-parse 'HEAD^{tree}')"
+          printf 'WORLD_PR104_PACKET_IDENTITY base=%s head=%s tree=%s merge=%s\n' "$base" "$head" "$tree" "$merge"
+          files=(
+            'trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs'
+            'trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_03.rs'
+            'trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json'
+            'trillionnium/crates/trnm-game-server/src/lib_parts/tests/part_01.rs'
+            'trillionnium/crates/trnm-game-server/src/lib_parts/tests/game_server_tests_04.rs'
+            'trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json'
+            'trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/part_01.rs'
+            'trillionnium/crates/trnm-rts-sim/src/lib_parts/tests/rts_tests_03.rs'
+            'trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json'
+            'scripts/contracts/trnm-world-include-migrations-v1.json'
+          )
+          for relative in "${files[@]}"; do
+            file="$root/$relative"
+            test -f "$file"
+            bytes="$(wc -c < "$file")"
+            digest="$(sha256sum "$file" | cut -d' ' -f1)"
+            printf 'WORLD_PACKET_FILE_BEGIN path=%s bytes=%s sha256=%s\n' "$relative" "$bytes" "$digest"
+            base64 -w0 "$file"
+            printf '\nWORLD_PACKET_FILE_END path=%s\n' "$relative"
+          done
           curl --fail --silent --show-error --location \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "$api" > "$finish"
-          python3 - "$start" "$finish" <<'PY'
-          import json
-          import sys
-          with open(sys.argv[1], encoding='utf-8') as handle:
-              start = json.load(handle)
-          with open(sys.argv[2], encoding='utf-8') as handle:
-              finish = json.load(handle)
-          def subject(pull):
-              return (
-                  pull['base']['sha'],
-                  pull['head']['sha'],
-                  pull['merge_commit_sha'],
-                  pull['state'],
-                  pull['draft'],
-              )
-          assert subject(start) == subject(finish), (subject(start), subject(finish))
-          PY
-
-          {
-            printf 'repository=TrillionniumFoundation/Trillionnium-World\n'
-            printf 'pull_request=115\n'
-            printf 'base=%s\n' "$base"
-            printf 'head=%s\n' "$head"
-            printf 'head_tree=%s\n' "$tree"
-            printf 'prospective_merge=%s\n' "$merge"
-            printf 'runner_repository=%s\n' "$GITHUB_REPOSITORY"
-            printf 'runner_commit=%s\n' "$GITHUB_SHA"
-            printf 'runner_run_id=%s\n' "$GITHUB_RUN_ID"
-            printf 'production_authorization=not_granted\n'
-          } > "$out/identity.txt"
-          cat "$out/identity.txt"
-          cat "$out/SHA256SUMS"
-          printf 'WORLD_PR115_SOURCE_SNAPSHOT=PASS\n'
-
-      - name: Upload exact World source snapshot
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: world-pr115-source-snapshot
-          path: ${{ runner.temp }}/world-pr115-source/**
-          if-no-files-found: error
-          retention-days: 7
+            "$api" > "$RUNNER_TEMP/world-pr104-finish.json"
+          finish_head="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["head"]["sha"])' "$RUNNER_TEMP/world-pr104-finish.json")"
+          finish_merge="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["merge_commit_sha"])' "$RUNNER_TEMP/world-pr104-finish.json")"
+          test "$finish_head" = "$head"
+          test "$finish_merge" = "$merge"
+          printf 'WORLD_PR104_READ_ONLY_SOURCE_PACKET=PASS\n'
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
