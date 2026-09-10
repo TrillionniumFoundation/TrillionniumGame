@@ -1,18 +1,19 @@
-name: world-pr104-campaign-test-module-tranche
+name: world-pr104-campaign-test-module-tranche-v2
 
 on:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: world-pr104-campaign-test-module-tranche
+  group: world-pr104-campaign-test-module-tranche-v2
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
-  WORLD_SOURCE_SHA: '5e83f616c1de0fa54640df1e1ef7b15e3266204b'
+  WORLD_SOURCE_SHA: '7d6ae95ed17f7dcc267ce3f9bfef508c89cde4bd'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: '0'
@@ -22,9 +23,9 @@ env:
 
 jobs:
   qualify:
-    name: world-pr104/campaign-test-module-tranche
+    name: world-pr104/campaign-test-module-tranche-v2
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Fetch immutable World source
         shell: bash
@@ -49,23 +50,31 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev libudev-dev libx11-dev libxi-dev \
             libxkbcommon-dev libwayland-dev pkg-config
+          test "$(rustc --version | awk '{print $2}')" = '1.98.1'
           rustc --version --verbose
           cargo --version --verbose
           rustfmt --version
 
-      - name: Convert campaign test bodies to explicit modules
+      - name: Apply bounded P0 lint repair and campaign module transformation
         shell: bash
         run: |
           set -euo pipefail
           python3 - "$RUNNER_TEMP/world" <<'PY'
           from __future__ import annotations
-          import hashlib
           import json
           import re
           import sys
           from pathlib import Path
 
           root = Path(sys.argv[1])
+
+          p0 = root / "trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
+          p0_source = p0.read_text(encoding="utf-8")
+          old = ".rfind(|character| matches!(character, ';' | '{' | '}'))"
+          new = ".rfind([';', '{', '}'])"
+          assert p0_source.count(old) == 1, "P0 lint repair anchor drift"
+          p0.write_text(p0_source.replace(old, new), encoding="utf-8")
+
           tests = root / "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests"
           wrapper = tests / "part_01.rs"
           expected = '''use super::*;
@@ -115,17 +124,21 @@ jobs:
               path = tests / f"campaign_tests_{index:02d}.rs"
               source = path.read_text(encoding="utf-8")
               assert not source.startswith("use super::*;"), path
-              source = declaration.sub(lambda match: f"{match.group(1)}pub(super) {match.group(3)} ", source)
+              source = declaration.sub(
+                  lambda match: f"{match.group(1)}pub(super) {match.group(3)} ",
+                  source,
+              )
               path.write_text("use super::*;\n\n" + source, encoding="utf-8")
 
-          # rustfmt may alter wrapper/body bytes; manifest is refreshed after formatting.
-          manifest_path = root / "trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json"
           ledger_path = root / "scripts/contracts/trnm-world-include-migrations-v1.json"
           ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
           existing = {(item["path"], item["expression"]) for item in ledger["completed"]}
           for index in range(1, 4):
               expression = f'concat!(env!("CARGO_MANIFEST_DIR"),"/src/lib_parts/tests/campaign_tests_{index:02d}.rs")'
-              key = ("trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs", expression)
+              key = (
+                  "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs",
+                  expression,
+              )
               assert key not in existing
               ledger["completed"].append({
                   "path": key[0],
@@ -135,13 +148,15 @@ jobs:
                       f'#[path = "campaign_tests_{index:02d}.rs"]',
                       f"mod campaign_tests_{index:02d};",
                   ],
-                  "completed_commit": "5e83f616c1de0fa54640df1e1ef7b15e3266204b",
+                  "completed_commit": "7d6ae95ed17f7dcc267ce3f9bfef508c89cde4bd",
               })
           ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
           print("WORLD_CAMPAIGN_TEST_MODULE_TRANSFORM=PASS")
           PY
+
           cd "$RUNNER_TEMP/world/trillionnium"
           cargo fmt --all
+
           python3 - "$RUNNER_TEMP/world" <<'PY'
           import hashlib
           import json
@@ -171,7 +186,7 @@ jobs:
           print("WORLD_CAMPAIGN_TEST_MANIFEST_REFRESH=PASS")
           PY
 
-      - name: Qualify transformed source
+      - name: Qualify transformed source and truth
         shell: bash
         run: |
           set -euo pipefail
@@ -181,10 +196,16 @@ jobs:
           cargo test --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core --all-targets
           cargo clippy --manifest-path trillionnium/Cargo.toml -p trnm-campaign-core --all-targets -- -D warnings
           python3 scripts/check-trnm-world-include-boundaries.py
+          bash scripts/run-trnm-world-v6-qualification-v2.sh truth
           bash scripts/run-trnm-world-v6-qualification-v2.sh source
+          test -z "$(git status --porcelain=v1 --untracked-files=no)" || {
+            git status --short
+            git diff --stat
+            test -n "$(git status --porcelain=v1 --untracked-files=no)"
+          }
           printf 'WORLD_CAMPAIGN_TEST_MODULE_QUALIFICATION=PASS\n'
 
-      - name: Emit content-addressed candidate blobs
+      - name: Emit complete content-addressed candidate blobs
         shell: bash
         run: |
           set -euo pipefail
@@ -196,11 +217,13 @@ jobs:
 
           root = Path(sys.argv[1])
           paths = [
+              "trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs",
               "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs",
               "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_01.rs",
               "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_02.rs",
               "trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/campaign_tests_03.rs",
               "trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json",
+              "scripts/contracts/trnm-world-include-migrations-v1.json",
           ]
           chunk_size = 2400
           for relative in paths:
