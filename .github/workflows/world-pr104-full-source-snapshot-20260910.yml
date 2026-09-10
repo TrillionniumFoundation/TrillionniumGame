@@ -85,7 +85,7 @@ jobs:
           output.write_text("".join(lines), encoding="utf-8")
           PY
 
-          tar --sort=name --format=ustar --mtime='UTC 2026-09-10' \
+          tar --sort=name --format=gnu --mtime='UTC 2026-09-10' \
             --owner=0 --group=0 --numeric-owner \
             -czf "$archive" -C "$world" \
             --null --files-from="$packet/files.zlist"
