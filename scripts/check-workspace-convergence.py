@@ -14,6 +14,7 @@ LONG_LIVED = [
     "trnm-contracts",
     "trnm-authority-core",
     "trnm-identity-core",
+    "trnm-social-core",
     "trnm-session-core",
     "trnm-storage-core",
     "trnm-persistence-core",

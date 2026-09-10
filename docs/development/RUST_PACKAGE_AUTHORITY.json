@@ -11,6 +11,7 @@
       "crates/trnm-authority-core",
       "crates/trnm-session-core",
       "crates/trnm-identity-core",
+      "crates/trnm-social-core",
       "crates/trnm-storage-core",
       "crates/trnm-persistence-core",
       "crates/trnm-persistence-pg",

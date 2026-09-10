@@ -2,7 +2,7 @@
   "schema": "trillionnium.implementation-inventory.v2",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "generated_at": "2026-09-09",
+  "generated_at": "2026-09-10",
   "claim_rule": "A component entry records source presence only. Compatibility, durability, gate and production claims require exact accepted evidence and independent review.",
   "components": [
     {
@@ -140,6 +140,46 @@
       "parity_ids": [
         "TG-PAR-017"
       ],
+      "evidence_ids": [],
+      "claim_credit": false
+    },
+    {
+      "id": "COMP-SOCIAL-CORE",
+      "path": "crates/trnm-social-core",
+      "kind": "rust-library",
+      "workstreams": [
+        "W5",
+        "W6"
+      ],
+      "status": "social-domain-source-candidate",
+      "implemented": [
+        "typed registered-user and social command identities",
+        "actor-and-operation-scoped exact command receipt replay with changed-fingerprint rejection",
+        "friend request acceptance removal block and unblock transitions",
+        "bounded deterministic friend keyset pagination",
+        "group creation join approval roles leave ban and unban transitions",
+        "contiguous bounded group-chat sequence and scoped cursor model",
+        "bounded ordered notification create read delete and pagination state",
+        "post-commit outbox intent identities derived from command and ordinal",
+        "finite profile limits and whole-state invariant validation",
+        "payload-bearing debug output redacted to byte length"
+      ],
+      "missing": [
+        "complete users search import and public profile semantics",
+        "public HTTP gRPC gateway and complete RTAPI adapters",
+        "direct room and channel chat plus distributed presence integration",
+        "durable PostgreSQL and CockroachDB repositories and migrations",
+        "outbox worker delivery restart reconnect and response-loss evidence",
+        "complete denominator leaf mapping and official SDK oracle differential",
+        "conflict-free protocol data-integrity realtime security review"
+      ],
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-DATA-001",
+        "GAP-P0-SCOPE-001",
+        "GAP-P1-REVIEW-001"
+      ],
+      "parity_ids": [],
       "evidence_ids": [],
       "claim_credit": false
     },
