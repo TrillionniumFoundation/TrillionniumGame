@@ -208,6 +208,7 @@ jobs:
           rm -f \
             tools/plan-v32-social-existing.patch \
             .github/workflows/plan-v32-social-materialize.yml
+          git add -A
 
       - name: Format social source
         shell: bash
