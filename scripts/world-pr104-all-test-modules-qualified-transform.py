@@ -50,6 +50,16 @@ def main() -> int:
     run(sys.executable, str(helper / "world-pr104-source-integrity-repair.py"), str(root))
     run(sys.executable, str(helper / "world-pr104-final-source-integrity-repair.py"), str(root))
 
+    # Rustfmt changes the exact bytes of the newly promoted nested test modules.
+    # Format first, then bind the closed-world manifests to final source bytes.
+    run(
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        str(root / "trillionnium/Cargo.toml"),
+        "--all",
+    )
+
     refresh_manifest(
         root,
         "trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json",
@@ -84,7 +94,8 @@ def main() -> int:
 
     print(
         "WORLD_ALL_TEST_MODULES_QUALIFIED_TRANSFORM=PASS "
-        "seams=10 workflows=14 contexts=41 current_conformance=wrapped-boundary"
+        "seams=10 workflows=14 contexts=41 current_conformance=wrapped-boundary "
+        "manifest_bytes=post-rustfmt"
     )
     return 0
 
