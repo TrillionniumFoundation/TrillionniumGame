@@ -6,62 +6,107 @@ on:
       - ops/world-p0-diagnostic-58f76a-20260910
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: world-p0-diagnostic-58f76a-20260910
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
-  p0_diagnostic:
-    name: world-p0/exact-source-diagnostic
+  verify_export:
+    name: world-p0/verify-and-export-statement-let-fix
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
       WORLD_COMMIT: 58f76a6100bade6e148a56bd429eff34f8a255cd
+      PATCH_COMMIT: 620995b66f2674f5e70df32defa72ee3c259524b
+      PATCH_BLOB: b2c125cdcdc4334f98966f87a8ffd931b7878e6a
       RUSTUP_TOOLCHAIN: '1.98.1'
       CARGO_INCREMENTAL: '0'
       RUST_BACKTRACE: '1'
       RUST_TEST_THREADS: '1'
     steps:
-      - name: Fetch exact World source and diagnostic helper
+      - name: Fetch exact World source and pinned patch helper
         shell: bash
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          helper="$RUNNER_TEMP/helper"
+          helper="$RUNNER_TEMP/patch-p0-statement-let.py"
           rm -rf "$world" "$helper"
           git init "$world"
           git -C "$world" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
           git -C "$world" fetch --no-tags --depth=1 origin "$WORLD_COMMIT"
           git -C "$world" checkout --detach FETCH_HEAD
           test "$(git -C "$world" rev-parse HEAD)" = "$WORLD_COMMIT"
-          git init "$helper"
-          git -C "$helper" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "$helper" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
-          git -C "$helper" checkout --detach FETCH_HEAD
-          test "$(git -C "$helper" rev-parse HEAD)" = "$GITHUB_SHA"
-          test -s "$helper/scripts/instrument-world-p0.py"
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/${WORLD_REPOSITORY}/${PATCH_COMMIT}/scripts/patch-p0-statement-let.py" \
+            > "$helper"
+          test "$(git hash-object "$helper")" = "$PATCH_BLOB"
           test -z "$(git -C "$world" status --porcelain=v1 --untracked-files=no)"
 
-      - name: Instrument exact test in the temporary clone
+      - name: Apply exact repair in temporary clone
         shell: bash
         run: |
           set -euo pipefail
-          python3 "$RUNNER_TEMP/helper/scripts/instrument-world-p0.py" \
-            "$RUNNER_TEMP/world/trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
+          target="$RUNNER_TEMP/world/trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
+          python3 "$RUNNER_TEMP/patch-p0-statement-let.py" "$target"
           git -C "$RUNNER_TEMP/world" diff --check
+          test "$(git -C "$RUNNER_TEMP/world" diff --name-only)" = \
+            "trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs"
 
-      - name: Execute only the captured-receipt boundary test
+      - name: Execute full P0 boundary contract
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install 1.98.1 --profile minimal
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt
           cd "$RUNNER_TEMP/world"
+          cargo fmt --manifest-path trillionnium/Cargo.toml --all -- --check
           cargo test \
             --manifest-path trillionnium/Cargo.toml \
             -p trnm-game-server \
             --test p0_boundary_contract \
-            settlement_external_io_is_not_owned_by_a_database_transaction_function \
-            --locked -- --exact --nocapture
+            --locked -- --nocapture
+
+      - name: Upload immutable patched test blob
+        shell: bash
+        env:
+          GH_OBJECT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/world/trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs" <<'PY'
+          import base64
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import urllib.request
+
+          path = Path(sys.argv[1])
+          expected = subprocess.check_output(
+              ["git", "hash-object", str(path)], text=True
+          ).strip()
+          payload = json.dumps({
+              "content": base64.b64encode(path.read_bytes()).decode("ascii"),
+              "encoding": "base64",
+          }, separators=(",", ":")).encode("utf-8")
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/git/blobs",
+              data=payload,
+              method="POST",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GH_OBJECT_TOKEN']}",
+                  "Content-Type": "application/json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=60) as response:
+              result = json.load(response)
+          observed = result.get("sha")
+          assert observed == expected, (expected, observed)
+          print(f"WORLD_P0_PATCHED_BLOB_SHA={observed}")
+          print("REFS_MOVED=false")
+          print("PRODUCTION_AUTHORIZATION=not_granted")
+          PY
