@@ -1,0 +1,43 @@
+name: immutable-upload-artifact
+
+description: Run one exact verified actions/upload-artifact implementation as a local JavaScript action.
+
+inputs:
+  name:
+    description: Artifact name.
+    required: true
+  path:
+    description: File or directory path to upload.
+    required: true
+  if-no-files-found:
+    description: Behaviour when the path does not match files.
+    required: false
+    default: warn
+  retention-days:
+    description: Artifact retention in days.
+    required: false
+    default: '7'
+  compression-level:
+    description: ZIP compression level.
+    required: false
+    default: '6'
+  overwrite:
+    description: Replace an existing artifact with the same name.
+    required: false
+    default: 'false'
+  include-hidden-files:
+    description: Include hidden files.
+    required: false
+    default: 'false'
+
+outputs:
+  artifact-id:
+    description: Uploaded artifact identifier.
+  artifact-url:
+    description: Uploaded artifact URL.
+  artifact-digest:
+    description: SHA-256 digest reported by the artifact service.
+
+runs:
+  using: node24
+  main: main.js
