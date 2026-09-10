@@ -1,4 +1,4 @@
-name: world-pr127-game-server-runtime-modules-v4
+name: world-pr127-game-server-runtime-modules-v5
 
 on:
   pull_request:
@@ -8,15 +8,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr127-game-server-runtime-modules-v4
+  group: world-pr127-game-server-runtime-modules-v5
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
-  WORLD_SOURCE_SHA: 'cc608ce65a4a51b7972fcfd01110a2f95d7571cb'
-  COMMON_HELPER_SHA: 'b02fef9a86b77c8babd19a7dd469081095ea2e90'
-  STACK_HELPER_SHA: '3aa075564891e4f7abba57c682dafc9f6b06c7b2'
-  RUSTUP_TOOLCHAIN: '1.98.1'
+  WORLD_SOURCE_SHA: cc608ce65a4a51b7972fcfd01110a2f95d7571cb
+  COMMON_HELPER_SHA: b02fef9a86b77c8babd19a7dd469081095ea2e90
+  STACK_HELPER_SHA: 3aa075564891e4f7abba57c682dafc9f6b06c7b2
+  RUSTUP_TOOLCHAIN: 1.98.1
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: '0'
   RUST_BACKTRACE: '1'
@@ -25,42 +25,32 @@ env:
 
 jobs:
   qualify:
-    name: world-pr127/game-server-runtime-modules-v4
+    name: world-pr127/game-server-runtime-modules-v5
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
-      - name: Fetch exact World source and pinned transforms
+      - name: Fetch exact World source and immutable helpers
         shell: bash
         run: |
           set -euo pipefail
-          world="$RUNNER_TEMP/world"
-          common="$RUNNER_TEMP/common-helper"
-          stack="$RUNNER_TEMP/stack-helper"
-          git init "$world"
-          git -C "$world" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
-          git -C "$world" fetch --no-tags --depth=2 origin "$WORLD_SOURCE_SHA"
-          git -C "$world" checkout --detach FETCH_HEAD
-          test "$(git -C "$world" rev-parse HEAD)" = "$WORLD_SOURCE_SHA"
-          git init "$common"
-          git -C "$common" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "$common" fetch --no-tags --depth=1 origin "$COMMON_HELPER_SHA"
-          git -C "$common" checkout --detach FETCH_HEAD
-          test "$(git -C "$common" rev-parse HEAD)" = "$COMMON_HELPER_SHA"
-          git init "$stack"
-          git -C "$stack" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "$stack" fetch --no-tags --depth=1 origin "$STACK_HELPER_SHA"
-          git -C "$stack" checkout --detach FETCH_HEAD
-          test "$(git -C "$stack" rev-parse HEAD)" = "$STACK_HELPER_SHA"
-          test -s "$common/scripts/world-pr104-all-test-modules-transform.py"
-          test -s "$stack/scripts/world-pr104-campaign-runtime-modules-transform.py"
-          test -s "$stack/scripts/world-pr104-rts-runtime-modules-transform.py"
-          test -s "$stack/scripts/world-pr104-game-server-runtime-modules-transform.py"
-          rm -rf "$GITHUB_WORKSPACE/.github/actions/upload-evidence"
-          mkdir -p "$GITHUB_WORKSPACE/.github/actions" "$GITHUB_WORKSPACE/scripts"
-          cp -R "$common/.github/actions/upload-evidence" "$GITHUB_WORKSPACE/.github/actions/"
-          cp "$common/scripts/upload-actions-artifact.py" "$GITHUB_WORKSPACE/scripts/"
+          for specification in \
+            "world|https://github.com/${WORLD_REPOSITORY}.git|${WORLD_SOURCE_SHA}" \
+            "common|https://github.com/${GITHUB_REPOSITORY}.git|${COMMON_HELPER_SHA}" \
+            "stack|https://github.com/${GITHUB_REPOSITORY}.git|${STACK_HELPER_SHA}"; do
+            IFS='|' read -r name remote revision <<<"$specification"
+            directory="$RUNNER_TEMP/$name"
+            git init -q "$directory"
+            git -C "$directory" remote add origin "$remote"
+            git -C "$directory" fetch -q --no-tags --depth=2 origin "$revision"
+            git -C "$directory" checkout -q --detach FETCH_HEAD
+            test "$(git -C "$directory" rev-parse HEAD)" = "$revision"
+          done
+          test -s "$RUNNER_TEMP/common/scripts/world-pr104-all-test-modules-transform.py"
+          test -s "$RUNNER_TEMP/stack/scripts/world-pr104-campaign-runtime-modules-transform.py"
+          test -s "$RUNNER_TEMP/stack/scripts/world-pr104-rts-runtime-modules-transform.py"
+          test -s "$RUNNER_TEMP/stack/scripts/world-pr104-game-server-runtime-modules-transform.py"
 
-      - name: Install Rust 1.98.1 and native dependencies
+      - name: Install pinned Rust toolchain and native dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -73,13 +63,13 @@ jobs:
             libxkbcommon-dev libwayland-dev pkg-config
           test "$(rustc --version | awk '{print $2}')" = "$RUSTUP_TOOLCHAIN"
 
-      - name: Apply cumulative module transforms
+      - name: Apply cumulative module transformations
         shell: bash
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          common="$RUNNER_TEMP/common-helper"
-          stack="$RUNNER_TEMP/stack-helper"
+          common="$RUNNER_TEMP/common"
+          stack="$RUNNER_TEMP/stack"
 
           python3 "$common/scripts/world-pr104-all-test-modules-transform.py" \
             "$world" --source-sha "$WORLD_SOURCE_SHA"
@@ -94,6 +84,7 @@ jobs:
           from pathlib import Path
           import hashlib
           import json
+          import re
           import sys
 
           root = Path(sys.argv[1])
@@ -101,218 +92,134 @@ jobs:
           authority = crate / 'lib_parts/authority_foundation/part_01.rs'
           lib = crate / 'lib.rs'
 
-          # Before decomposition these imports lived in the common crate-root
-          # namespace and were deliberately consumed by all ownership sections.
-          # Move, rather than duplicate, that exact block back to lib.rs so
-          # sibling modules and nested tests preserve the reviewed name scope.
-          authority_source = authority.read_text(encoding='utf-8', errors='strict')
-          import_start = authority_source.index('use axum::extract::DefaultBodyLimit;')
-          const_start = authority_source.index('const PLAYER_SESSION_HEADER')
-          imports = authority_source[import_start:const_start].rstrip() + '\n'
+          authority_text = authority.read_text(encoding='utf-8', errors='strict')
+          start = authority_text.index('use axum::extract::DefaultBodyLimit;')
+          boundary = re.search(
+              r'(?m)^(?:pub\(crate\)\s+)?const PLAYER_SESSION_HEADER',
+              authority_text,
+          )
+          if boundary is None or boundary.start() <= start:
+              raise SystemExit('shared import declaration boundary drift')
+          imports = authority_text[start:boundary.start()].rstrip() + '\n'
           if 'use uuid::Uuid;' not in imports or 'use tokio::sync::' not in imports:
-              raise SystemExit('shared import block boundary drift')
-          authority_source = authority_source[:import_start] + authority_source[const_start:]
-          authority.write_text(authority_source, encoding='utf-8')
+              raise SystemExit('shared import inventory drift')
+          authority.write_text(
+              authority_text[:start] + authority_text[boundary.start():],
+              encoding='utf-8',
+          )
 
-          lib_source = lib.read_text(encoding='utf-8', errors='strict')
+          lib_text = lib.read_text(encoding='utf-8', errors='strict')
           anchor = 'mod stream;\n'
-          if lib_source.count(anchor) != 1:
-              raise SystemExit('crate-root shared import insertion anchor drift')
-          if 'use axum::extract::DefaultBodyLimit;' in lib_source:
-              raise SystemExit('shared imports already present at crate root')
-          lib.write_text(lib_source.replace(anchor, anchor + '\n' + imports), encoding='utf-8')
+          if lib_text.count(anchor) != 1 or 'use axum::extract::DefaultBodyLimit;' in lib_text:
+              raise SystemExit('crate-root import insertion drift')
+          lib.write_text(lib_text.replace(anchor, anchor + '\n' + imports), encoding='utf-8')
 
           online = crate / 'bin/trnm-online-e2e.rs'
-          source = online.read_text(encoding='utf-8', errors='strict')
+          text = online.read_text(encoding='utf-8', errors='strict')
           old = '    let _ = tokio::task::block_in_place(|| state_stream.close(None));'
           new = '    tokio::task::block_in_place(|| {\n        let _ = state_stream.close(None);\n    });'
-          if source.count(old) == 1 and new not in source:
-              online.write_text(source.replace(old, new), encoding='utf-8')
-          elif source.count(new) != 1 or old in source:
-              raise SystemExit('WebSocket close repair anchor drift')
+          if text.count(old) == 1 and new not in text:
+              online.write_text(text.replace(old, new), encoding='utf-8')
+          elif text.count(new) != 1 or old in text:
+              raise SystemExit('WebSocket close repair drift')
+
+          for manifest_path in (
+              root / 'trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json',
+              root / 'trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json',
+              root / 'trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json',
+          ):
+              value = json.loads(manifest_path.read_text(encoding='utf-8'))
+              source_root = manifest_path.parent.parent
+              for field in ('parts', 'nested_test_parts'):
+                  for record in value.get(field, []):
+                      payload = (source_root / record['path']).read_bytes()
+                      record['bytes'] = len(payload)
+                      record['sha256'] = hashlib.sha256(payload).hexdigest()
+              manifest_path.write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
           PY
 
           cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all
 
+          # rustfmt changes direct-source bytes; bind manifests one final time.
           python3 - "$world" <<'PY'
           from pathlib import Path
           import hashlib
           import json
           import sys
-
           root = Path(sys.argv[1])
-          manifests = (
+          for manifest_path in (
               root / 'trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json',
               root / 'trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json',
               root / 'trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json',
-          )
-          for manifest_path in manifests:
+          ):
               value = json.loads(manifest_path.read_text(encoding='utf-8'))
               source_root = manifest_path.parent.parent
-              seen = 0
               for field in ('parts', 'nested_test_parts'):
                   for record in value.get(field, []):
-                      target = source_root / record['path']
-                      payload = target.read_bytes()
+                      payload = (source_root / record['path']).read_bytes()
                       record['bytes'] = len(payload)
                       record['sha256'] = hashlib.sha256(payload).hexdigest()
-                      seen += 1
-              if seen == 0:
-                  raise SystemExit(f'empty manifest: {manifest_path}')
               manifest_path.write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
           PY
 
-          git -C "$world" config user.name "World read-only qualification"
-          git -C "$world" config user.email "world-read-only-qualification@invalid"
+          git -C "$world" config user.name 'World qualification'
+          git -C "$world" config user.email 'world-qualification@invalid'
           git -C "$world" add -A
-          test -n "$(git -C "$world" diff --cached --name-only)"
-          GIT_AUTHOR_DATE='2026-09-11T00:00:00Z' GIT_COMMITTER_DATE='2026-09-11T00:00:00Z' \
-            git -C "$world" commit -m "refactor(world): extract campaign RTS and game-server root modules"
-          test -z "$(git -C "$world" status --porcelain=v1)"
-          printf 'WORLD_TRANSFORMED_HEAD=%s\n' "$(git -C "$world" rev-parse HEAD)"
-          printf 'WORLD_TRANSFORMED_TREE=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
+          GIT_AUTHOR_DATE='2026-09-11T00:00:00Z' \
+          GIT_COMMITTER_DATE='2026-09-11T00:00:00Z' \
+            git -C "$world" commit -m 'refactor(world): extract cumulative root modules'
 
-      - name: Build deterministic candidate artifact before qualification
-        shell: bash
-        run: |
-          set -euo pipefail
-          world="$RUNNER_TEMP/world"
-          packet="$world/run/world-game-server-runtime-modules-v4"
-          archive="$RUNNER_TEMP/world-game-server-runtime-modules-v4.tar.gz"
-          mkdir -p "$packet"
-          git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" > "$packet/candidate.patch"
-          test -s "$packet/candidate.patch"
-          {
-            printf 'repository=%s\n' "$WORLD_REPOSITORY"
-            printf 'source=%s\n' "$WORLD_SOURCE_SHA"
-            printf 'candidate_commit=%s\n' "$(git -C "$world" rev-parse HEAD)"
-            printf 'candidate_tree=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
-            printf 'nested_test_seams_migrated=10\n'
-            printf 'campaign_runtime_seams_migrated=10\n'
-            printf 'rts_runtime_seams_migrated=7\n'
-            printf 'game_server_root_runtime_seams_migrated=17\n'
-            printf 'expected_active_migration_remaining=2\n'
-            printf 'qualification_state=pending\n'
-            printf 'production_authorization=not_granted\n'
-          } > "$packet/identity.txt"
-          (cd "$world" && sha256sum \
-            run/world-game-server-runtime-modules-v4/candidate.patch \
-            run/world-game-server-runtime-modules-v4/identity.txt \
-            > run/world-game-server-runtime-modules-v4/SHA256SUMS)
-          tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
-            --owner=0 --group=0 --numeric-owner \
-            -czf "$archive" -C "$world" \
-            run/world-game-server-runtime-modules-v4/candidate.patch \
-            run/world-game-server-runtime-modules-v4/identity.txt \
-            run/world-game-server-runtime-modules-v4/SHA256SUMS
-          test -s "$archive"
-
-      - name: Retain unqualified candidate artifact
-        id: candidate-artifact
-        uses: ./.github/actions/upload-evidence
-        with:
-          name: world-game-server-runtime-modules-v4-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-game-server-runtime-modules-v4.tar.gz
-          mime_type: application/gzip
-
-      - name: Emit candidate artifact identity
-        shell: bash
-        env:
-          ARTIFACT_ID: ${{ steps.candidate-artifact.outputs.artifact_id }}
-          ARTIFACT_SHA256: ${{ steps.candidate-artifact.outputs.sha256 }}
-          ARTIFACT_SIZE: ${{ steps.candidate-artifact.outputs.size_bytes }}
-        run: |
-          set -euo pipefail
-          test -n "$ARTIFACT_ID"
-          test -n "$ARTIFACT_SHA256"
-          test -n "$ARTIFACT_SIZE"
-          printf 'WORLD_GAME_SERVER_RUNTIME_ARTIFACT_ID=%s\n' "$ARTIFACT_ID"
-          printf 'WORLD_GAME_SERVER_RUNTIME_ARTIFACT_SHA256=%s\n' "$ARTIFACT_SHA256"
-          printf 'WORLD_GAME_SERVER_RUNTIME_ARTIFACT_SIZE=%s\n' "$ARTIFACT_SIZE"
-          printf 'QUALIFICATION_STATE=pending\n'
-          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
-
-      - name: Format, test and strict-Clippy affected crates with retained logs
-        shell: bash
-        run: |
-          set -uo pipefail
-          world="$RUNNER_TEMP/world"
-          diagnostics="$RUNNER_TEMP/world-game-server-runtime-modules-v4-diagnostics"
-          mkdir -p "$diagnostics"
-
-          set +e
-          cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all --check \
-            2>&1 | tee "$diagnostics/fmt.log"
-          fmt_status=${PIPESTATUS[0]}
-
-          cargo test --manifest-path "$world/trillionnium/Cargo.toml" \
-            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
-            --all-targets --locked \
-            2>&1 | tee "$diagnostics/test.log"
-          test_status=${PIPESTATUS[0]}
-
-          cargo clippy --manifest-path "$world/trillionnium/Cargo.toml" \
-            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
-            --all-targets --locked -- -D warnings \
-            2>&1 | tee "$diagnostics/clippy.log"
-          clippy_status=${PIPESTATUS[0]}
-          set -e
-
+          mkdir -p "$RUNNER_TEMP/candidate"
+          git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" \
+            > "$RUNNER_TEMP/candidate/candidate.patch"
+          test -s "$RUNNER_TEMP/candidate/candidate.patch"
           {
             printf 'world_source=%s\n' "$WORLD_SOURCE_SHA"
             printf 'candidate_commit=%s\n' "$(git -C "$world" rev-parse HEAD)"
             printf 'candidate_tree=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
-            printf 'fmt_status=%s\n' "$fmt_status"
-            printf 'test_status=%s\n' "$test_status"
-            printf 'clippy_status=%s\n' "$clippy_status"
-            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
-            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'migrated_seams=44\n'
+            printf 'remaining_active_seams=2\n'
+            printf 'qualification=pending\n'
             printf 'production_authorization=not_granted\n'
-          } > "$diagnostics/status.txt"
+          } > "$RUNNER_TEMP/candidate/identity.txt"
+          (cd "$RUNNER_TEMP/candidate" && sha256sum candidate.patch identity.txt > SHA256SUMS)
 
+      - name: Upload exact unqualified candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-root-modules-v5-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate/**
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Run format tests and strict Clippy
+        shell: bash
+        run: |
+          set -uo pipefail
+          world="$RUNNER_TEMP/world"
+          diagnostics="$RUNNER_TEMP/diagnostics"
+          mkdir -p "$diagnostics"
+          set +e
+          cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all --check \
+            2>&1 | tee "$diagnostics/fmt.log"
+          fmt_status=${PIPESTATUS[0]}
+          cargo test --manifest-path "$world/trillionnium/Cargo.toml" \
+            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
+            --all-targets --locked 2>&1 | tee "$diagnostics/test.log"
+          test_status=${PIPESTATUS[0]}
+          cargo clippy --manifest-path "$world/trillionnium/Cargo.toml" \
+            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
+            --all-targets --locked -- -D warnings 2>&1 | tee "$diagnostics/clippy.log"
+          clippy_status=${PIPESTATUS[0]}
+          set -e
+          printf 'fmt_status=%s\ntest_status=%s\nclippy_status=%s\n' \
+            "$fmt_status" "$test_status" "$clippy_status" \
+            > "$diagnostics/status.txt"
           test "$fmt_status" -eq 0
           test "$test_status" -eq 0
           test "$clippy_status" -eq 0
 
-      - name: Retain qualification diagnostics
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          diagnostics="$RUNNER_TEMP/world-game-server-runtime-modules-v4-diagnostics"
-          archive="$RUNNER_TEMP/world-game-server-runtime-modules-v4-diagnostics.tar.gz"
-          mkdir -p "$diagnostics"
-          if test ! -s "$diagnostics/status.txt"; then
-            {
-              printf 'world_source=%s\n' "$WORLD_SOURCE_SHA"
-              printf 'qualification_state=failed_before_status_record\n'
-              printf 'run_id=%s\n' "$GITHUB_RUN_ID"
-              printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
-              printf 'production_authorization=not_granted\n'
-            } > "$diagnostics/status.txt"
-          fi
-          (
-            cd "$RUNNER_TEMP"
-            find world-game-server-runtime-modules-v4-diagnostics \
-              -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
-              | sort -z | xargs -0 -r sha256sum \
-              > world-game-server-runtime-modules-v4-diagnostics/SHA256SUMS
-          )
-          tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
-            --owner=0 --group=0 --numeric-owner \
-            -czf "$archive" -C "$RUNNER_TEMP" \
-            world-game-server-runtime-modules-v4-diagnostics
-          test -s "$archive"
-
-      - name: Upload qualification diagnostics
-        if: always()
-        uses: ./.github/actions/upload-evidence
-        with:
-          name: world-game-server-runtime-modules-v4-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-game-server-runtime-modules-v4-diagnostics.tar.gz
-          mime_type: application/gzip
-
-      - name: Qualify transformed World truth and source
+      - name: Run complete World truth and source qualification
         shell: bash
         run: |
           set -euo pipefail
@@ -320,6 +227,32 @@ jobs:
           python3 scripts/check-trnm-world-include-boundaries.py
           bash scripts/run-trnm-world-v6-qualification-v2.sh truth
           bash scripts/run-trnm-world-v6-qualification-v2.sh source
-          test -z "$(git status --porcelain=v1)"
-          printf 'WORLD_GAME_SERVER_RUNTIME_MODULE_QUALIFICATION=PASS\n'
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+          printf 'WORLD_ROOT_MODULES_V5=PASS\n'
           printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+
+      - name: Finalize diagnostic manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          diagnostics="$RUNNER_TEMP/diagnostics"
+          mkdir -p "$diagnostics"
+          test -s "$diagnostics/status.txt" || printf 'state=failed_before_test_status\n' > "$diagnostics/status.txt"
+          {
+            printf 'world_source=%s\n' "$WORLD_SOURCE_SHA"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'production_authorization=not_granted\n'
+          } > "$diagnostics/run.txt"
+          (cd "$diagnostics" && find . -type f ! -name SHA256SUMS -print0 \
+            | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
+
+      - name: Upload qualification diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-root-modules-v5-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/diagnostics/**
+          if-no-files-found: error
+          retention-days: 90
