@@ -2,7 +2,7 @@
   "schema": "trillionnium.implementation-inventory.v2",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "generated_at": "2026-09-09",
+  "generated_at": "2026-09-10",
   "claim_rule": "A component entry records source presence only. Compatibility, durability, gate and production claims require exact accepted evidence and independent review.",
   "components": [
     {
@@ -154,7 +154,7 @@
       "status": "social-domain-source-candidate",
       "implemented": [
         "typed registered-user and social command identities",
-        "exact command receipt replay and changed-fingerprint rejection",
+        "actor-and-operation-scoped exact command receipt replay with changed-fingerprint rejection",
         "friend request acceptance removal block and unblock transitions",
         "bounded deterministic friend keyset pagination",
         "group creation join approval roles leave ban and unban transitions",

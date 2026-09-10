@@ -5,7 +5,14 @@ impl SocialRegistry {
         fingerprint: CommandFingerprint,
         request: CreateGroupRequest,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            request.creator,
+            &[
+                ReceiptOutcome::GroupCreated,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(request.creator)?;
@@ -66,7 +73,15 @@ impl SocialRegistry {
         group_id: GroupId,
         actor: AccountId,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            actor,
+            &[
+                ReceiptOutcome::GroupJoined,
+                ReceiptOutcome::GroupJoinRequested,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(actor)?;
@@ -149,7 +164,14 @@ impl SocialRegistry {
         actor: AccountId,
         target: AccountId,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            actor,
+            &[
+                ReceiptOutcome::GroupJoinApproved,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(actor)?;

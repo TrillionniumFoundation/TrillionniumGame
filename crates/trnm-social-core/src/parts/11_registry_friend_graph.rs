@@ -6,7 +6,14 @@ impl SocialRegistry {
         actor: AccountId,
         target: AccountId,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            actor,
+            &[
+                ReceiptOutcome::FriendRemoved,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(actor)?;
@@ -43,7 +50,14 @@ impl SocialRegistry {
         actor: AccountId,
         target: AccountId,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            actor,
+            &[
+                ReceiptOutcome::UserBlocked,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(actor)?;
@@ -84,7 +98,14 @@ impl SocialRegistry {
         actor: AccountId,
         target: AccountId,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            actor,
+            &[
+                ReceiptOutcome::UserUnblocked,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(actor)?;

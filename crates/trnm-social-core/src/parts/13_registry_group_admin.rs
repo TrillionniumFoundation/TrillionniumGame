@@ -8,7 +8,14 @@ impl SocialRegistry {
         target: AccountId,
         role: GroupRole,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            actor,
+            &[
+                ReceiptOutcome::GroupRoleChanged,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(actor)?;
@@ -64,7 +71,14 @@ impl SocialRegistry {
         group_id: GroupId,
         actor: AccountId,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            actor,
+            &[
+                ReceiptOutcome::GroupLeft,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(actor)?;
@@ -109,7 +123,14 @@ impl SocialRegistry {
         actor: AccountId,
         target: AccountId,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            actor,
+            &[
+                ReceiptOutcome::GroupMemberBanned,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(actor)?;
@@ -174,7 +195,14 @@ impl SocialRegistry {
         actor: AccountId,
         target: AccountId,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            actor,
+            &[
+                ReceiptOutcome::GroupMemberUnbanned,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(actor)?;

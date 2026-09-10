@@ -438,6 +438,34 @@ impl IdentityRegistry {
         provider: &ProviderIdentity,
     ) -> Result<CommandReceipt, IdentityError> {
         if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+            if receipt.outcome != ReceiptOutcome::Authenticated {
+                return Err(IdentityError::new(
+                    IdentityErrorCode::Conflict,
+                    "command_operation_conflict",
+                ));
+            }
+            let account = self.provider_owner.get(provider).copied().ok_or_else(|| {
+                IdentityError::new(IdentityErrorCode::Unauthenticated, "identity_unknown")
+            })?;
+            if account != receipt.account {
+                return Err(IdentityError::new(
+                    IdentityErrorCode::Unauthenticated,
+                    "identity_binding_changed",
+                ));
+            }
+            let record = self.accounts.get(&account).ok_or_else(invariant_error)?;
+            if record.status != AccountStatus::Active {
+                return Err(IdentityError::new(
+                    IdentityErrorCode::PermissionDenied,
+                    "account_not_active",
+                ));
+            }
+            if record.revision != receipt.revision {
+                return Err(IdentityError::new(
+                    IdentityErrorCode::Conflict,
+                    "authentication_state_changed",
+                ));
+            }
             return Ok(receipt);
         }
         self.ensure_receipt_capacity()?;
@@ -464,7 +492,6 @@ impl IdentityRegistry {
         *self = candidate;
         Ok(receipt)
     }
-
     pub fn link_provider(
         &mut self,
         command: CommandId,
@@ -1211,6 +1238,182 @@ mod tests {
                 .code(),
             IdentityErrorCode::ResourceExhausted
         );
+        assert_eq!(snapshot, registry);
+    }
+
+    #[test]
+    fn authentication_exact_replay_requires_unchanged_active_authority() {
+        let provider = identity(IdentityProvider::Device, "device-auth-replay");
+        let mut registry = registry(4, 4, 32);
+        create(&mut registry, 1, provider.clone());
+        let receipt = registry
+            .authenticate(command(2), fingerprint(2), &provider)
+            .unwrap();
+        let snapshot = registry.clone();
+        let replay = registry
+            .authenticate(command(2), fingerprint(2), &provider)
+            .unwrap();
+        assert_eq!(receipt, replay);
+        assert_eq!(snapshot, registry);
+
+        registry
+            .update_profile(
+                command(3),
+                fingerprint(3),
+                account(1),
+                1,
+                None,
+                Some(DisplayName::new("Changed").unwrap()),
+            )
+            .unwrap();
+        let changed = registry.clone();
+        let error = registry
+            .authenticate(command(2), fingerprint(2), &provider)
+            .unwrap_err();
+        assert_eq!(error.code(), IdentityErrorCode::Conflict);
+        assert_eq!(error.reason(), "authentication_state_changed");
+        assert_eq!(changed, registry);
+    }
+
+    #[test]
+    fn authentication_replay_after_disabled_or_banned_is_denied_atomically() {
+        for (index, target) in [AccountStatus::Disabled, AccountStatus::Banned]
+            .into_iter()
+            .enumerate()
+        {
+            let provider = identity(
+                IdentityProvider::Facebook,
+                &format!("provider-status-{index}"),
+            );
+            let mut registry = registry(4, 4, 32);
+            create(&mut registry, 1, provider.clone());
+            registry
+                .authenticate(command(2), fingerprint(2), &provider)
+                .unwrap();
+            registry
+                .set_status(command(3), fingerprint(3), account(1), 1, target)
+                .unwrap();
+            let snapshot = registry.clone();
+            let error = registry
+                .authenticate(command(2), fingerprint(2), &provider)
+                .unwrap_err();
+            assert_eq!(error.code(), IdentityErrorCode::PermissionDenied);
+            assert_eq!(error.reason(), "account_not_active");
+            assert_eq!(snapshot, registry);
+        }
+    }
+
+    #[test]
+    fn authentication_replay_after_reactivation_remains_stale() {
+        let provider = identity(IdentityProvider::Google, "provider-reactivated");
+        let mut registry = registry(4, 4, 32);
+        create(&mut registry, 1, provider.clone());
+        registry
+            .authenticate(command(2), fingerprint(2), &provider)
+            .unwrap();
+        registry
+            .set_status(
+                command(3),
+                fingerprint(3),
+                account(1),
+                1,
+                AccountStatus::Disabled,
+            )
+            .unwrap();
+        registry
+            .set_status(
+                command(4),
+                fingerprint(4),
+                account(1),
+                2,
+                AccountStatus::Active,
+            )
+            .unwrap();
+        let snapshot = registry.clone();
+        let error = registry
+            .authenticate(command(2), fingerprint(2), &provider)
+            .unwrap_err();
+        assert_eq!(error.code(), IdentityErrorCode::Conflict);
+        assert_eq!(error.reason(), "authentication_state_changed");
+        assert_eq!(snapshot, registry);
+    }
+
+    #[test]
+    fn authentication_replay_after_deletion_is_denied_atomically() {
+        let provider = identity(IdentityProvider::Steam, "provider-deleted");
+        let mut registry = registry(4, 4, 32);
+        create(&mut registry, 1, provider.clone());
+        registry
+            .authenticate(command(2), fingerprint(2), &provider)
+            .unwrap();
+        registry
+            .delete_account(command(3), fingerprint(3), account(1), 1)
+            .unwrap();
+        let snapshot = registry.clone();
+        let error = registry
+            .authenticate(command(2), fingerprint(2), &provider)
+            .unwrap_err();
+        assert_eq!(error.code(), IdentityErrorCode::Unauthenticated);
+        assert_eq!(error.reason(), "identity_unknown");
+        assert_eq!(snapshot, registry);
+    }
+
+    #[test]
+    fn authentication_replay_after_unlink_or_rebind_is_denied_atomically() {
+        let provider = identity(IdentityProvider::Device, "provider-movable");
+        let fallback = identity(IdentityProvider::Email, "fallback@example.invalid");
+        let mut registry = registry(8, 4, 64);
+        create(&mut registry, 1, provider.clone());
+        registry
+            .link_provider(command(2), fingerprint(2), account(1), 1, fallback)
+            .unwrap();
+        registry
+            .authenticate(command(3), fingerprint(3), &provider)
+            .unwrap();
+        registry
+            .unlink_provider(command(4), fingerprint(4), account(1), 2, &provider)
+            .unwrap();
+        let unlinked = registry.clone();
+        let error = registry
+            .authenticate(command(3), fingerprint(3), &provider)
+            .unwrap_err();
+        assert_eq!(error.code(), IdentityErrorCode::Unauthenticated);
+        assert_eq!(error.reason(), "identity_unknown");
+        assert_eq!(unlinked, registry);
+
+        registry
+            .create_account(
+                command(5),
+                fingerprint(5),
+                account(2),
+                Username::new("rebind-target").unwrap(),
+                DisplayName::new("Rebind Target").unwrap(),
+                identity(IdentityProvider::Apple, "apple-rebind-target"),
+            )
+            .unwrap();
+        registry
+            .link_provider(command(6), fingerprint(6), account(2), 1, provider.clone())
+            .unwrap();
+        let rebound = registry.clone();
+        let error = registry
+            .authenticate(command(3), fingerprint(3), &provider)
+            .unwrap_err();
+        assert_eq!(error.code(), IdentityErrorCode::Unauthenticated);
+        assert_eq!(error.reason(), "identity_binding_changed");
+        assert_eq!(rebound, registry);
+    }
+
+    #[test]
+    fn authentication_replay_rejects_receipt_from_another_operation() {
+        let provider = identity(IdentityProvider::Custom, "provider-operation");
+        let mut registry = registry(4, 4, 16);
+        create(&mut registry, 1, provider.clone());
+        let snapshot = registry.clone();
+        let error = registry
+            .authenticate(command(1), fingerprint(1), &provider)
+            .unwrap_err();
+        assert_eq!(error.code(), IdentityErrorCode::Conflict);
+        assert_eq!(error.reason(), "command_operation_conflict");
         assert_eq!(snapshot, registry);
     }
 

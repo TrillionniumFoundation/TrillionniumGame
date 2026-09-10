@@ -5,7 +5,14 @@ impl SocialRegistry {
         fingerprint: CommandFingerprint,
         request: CreateNotificationRequest,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            request.sender.unwrap_or(request.recipient),
+            &[
+                ReceiptOutcome::NotificationCreated,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(request.recipient)?;
@@ -77,7 +84,14 @@ impl SocialRegistry {
         recipient: AccountId,
         notification: NotificationId,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            recipient,
+            &[
+                ReceiptOutcome::NotificationMarkedRead,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(recipient)?;
@@ -122,7 +136,14 @@ impl SocialRegistry {
         recipient: AccountId,
         notification: NotificationId,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            recipient,
+            &[
+                ReceiptOutcome::NotificationDeleted,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(recipient)?;

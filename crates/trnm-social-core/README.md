@@ -32,7 +32,7 @@ No external delivery may occur inside the mutable transaction. A mutable Rust va
 
 All-zero identifiers are rejected. Group names, message bodies and notification text are bounded, and payload-bearing debug output exposes byte length rather than content. Page sizes are positive and capped.
 
-A social command ID is idempotent only with the exact original fingerprint. Exact replay returns the original receipt and produces no duplicate state or outbox intent. Reuse with a changed fingerprint fails as a conflict without mutation.
+A social command ID is idempotent only for the exact original fingerprint, actor and operation family. Exact replay returns the original receipt and produces no duplicate state or outbox intent. Cross-actor or cross-operation reuse fails as a conflict even when a caller repeats the same fingerprint; reuse with a changed fingerprint also fails without mutation. Trusted adapters must derive the fingerprint from the canonical complete command, including every target, group, message, notification and payload field, rather than accepting an arbitrary caller-selected value.
 
 Relationships are mutually exclusive across friendship, pending request and directional block state. A block removes friendship and pending requests. Group roles are ordered; at least one superadmin remains; a member cannot be both active, pending and banned. Group message sequence begins at one and remains contiguous.
 
@@ -40,7 +40,7 @@ Friend, message and notification cursors are scoped to their owner, group or rec
 
 ## Correctness and failure model
 
-Validation, unknown identity, self-relationship, collision, stale command fingerprint, capacity exhaustion, permission failure, last-superadmin protection, duplicate message/notification identity and checked counter overflow fail before committing the candidate.
+Validation, unknown identity, self-relationship, collision, stale command fingerprint, actor mismatch, operation mismatch, capacity exhaustion, permission failure, last-superadmin protection, duplicate message/notification identity and checked counter overflow fail before committing the candidate. Receipt invariants require every recorded actor to remain a registered user.
 
 The receipt records actor, global social revision, outcome and exact outbox count. Outbox IDs are derived from command identity plus a positive ordinal, preventing one accepted command from silently creating duplicate intent identities.
 
@@ -62,7 +62,7 @@ cargo test --package trnm-social-core --all-targets --locked
 cargo clippy --package trnm-social-core --all-targets --locked -- -D warnings
 ```
 
-The focused corpus covers exact receipt replay, changed fingerprints, friendship transitions, mutual blocking, keyset pagination, approval joins, role and last-superadmin rules, bans, chat sequencing, cursor scope, notification ordering/read/delete, capacity failures, checked limits and payload redaction.
+The focused corpus covers actor-and-operation-scoped exact receipt replay, changed fingerprints, friendship transitions, mutual blocking, keyset pagination, approval joins, role and last-superadmin rules, bans, chat sequencing, cursor scope, notification ordering/read/delete, capacity failures, checked limits and payload redaction. Hostile receipt tests prove that a command/fingerprint pair cannot be replayed through another actor or operation and that the two valid `join_group` outcomes remain in one operation family.
 
 These tests establish only source-level deterministic behavior. Required exact-head and prospective-merge CI, PostgreSQL and CockroachDB live profiles, protocol/SDK differentials, reconnect/failure injection and independent specialist review remain separate.
 

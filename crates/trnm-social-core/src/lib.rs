@@ -33,4 +33,5 @@ mod tests {
     include!("tests/03_messages.rs");
     include!("tests/04_notifications_limits.rs");
     include!("tests/05_config.rs");
+    include!("tests/06_receipt_scope.rs");
 }

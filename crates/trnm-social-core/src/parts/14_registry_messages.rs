@@ -5,7 +5,14 @@ impl SocialRegistry {
         fingerprint: CommandFingerprint,
         request: SendGroupMessageRequest,
     ) -> Result<CommandReceipt, SocialError> {
-        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {
+        if let Some(receipt) = self.existing_receipt(
+            command,
+            fingerprint,
+            request.sender,
+            &[
+                ReceiptOutcome::ChatMessageSent,
+            ],
+        )? {
             return Ok(receipt);
         }
         self.ensure_known_user(request.sender)?;

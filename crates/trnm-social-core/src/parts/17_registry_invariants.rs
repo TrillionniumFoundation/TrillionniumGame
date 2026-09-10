@@ -197,7 +197,11 @@ impl SocialRegistry {
             }
         }
         for (command, receipt) in &self.receipts {
-            if receipt.command != *command || receipt.revision == 0 || receipt.revision > self.revision {
+            if receipt.command != *command
+                || !self.users.contains(&receipt.actor)
+                || receipt.revision == 0
+                || receipt.revision > self.revision
+            {
                 return Err(invariant_error());
             }
             let intent_count = self

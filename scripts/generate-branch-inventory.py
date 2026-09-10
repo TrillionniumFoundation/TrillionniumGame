@@ -172,7 +172,7 @@ def load_active_branches(
             require(pull_request is None, "main cannot have a pull request")
         else:
             require(
-                name.startswith(("codex/", "integration/", "archive/")),
+                name.startswith(("codex/", "integration/", "feature/", "archive/")),
                 f"{name}: active branch namespace is not approved",
             )
         result[name] = row

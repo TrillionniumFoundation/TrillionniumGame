@@ -16,6 +16,8 @@ impl SocialRegistry {
         &self,
         command: SocialCommandId,
         fingerprint: CommandFingerprint,
+        actor: AccountId,
+        allowed_outcomes: &[ReceiptOutcome],
     ) -> Result<Option<CommandReceipt>, SocialError> {
         let Some(receipt) = self.receipts.get(&command).copied() else {
             return Ok(None);
@@ -26,9 +28,20 @@ impl SocialRegistry {
                 "social_command_fingerprint_mismatch",
             ));
         }
+        if receipt.actor != actor {
+            return Err(SocialError::new(
+                SocialErrorCode::Conflict,
+                "social_command_actor_mismatch",
+            ));
+        }
+        if !allowed_outcomes.contains(&receipt.outcome) {
+            return Err(SocialError::new(
+                SocialErrorCode::Conflict,
+                "social_command_operation_mismatch",
+            ));
+        }
         Ok(Some(receipt))
     }
-
     fn finish_command(
         &self,
         candidate: &mut Self,
