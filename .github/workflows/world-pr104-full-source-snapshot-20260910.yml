@@ -1,4 +1,4 @@
-name: world-pr104-full-source-snapshot-v1
+name: world-pr104-full-source-snapshot-v2
 
 on:
   pull_request:
@@ -8,18 +8,18 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr104-full-source-snapshot-v1
+  group: world-pr104-full-source-snapshot-v2
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
-  WORLD_SOURCE_SHA: '7d6ae95ed17f7dcc267ce3f9bfef508c89cde4bd'
+  WORLD_SOURCE_SHA: '33339b28a6f53668672d1797109da6c7bf57db49'
   GAME_UPLOADER_SHA: '425ee015d53800f3e2c2936f97ded9cdbacf7f14'
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
   snapshot:
-    name: world-pr104/full-source-snapshot-v1
+    name: world-pr104/full-source-snapshot-v2
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -57,7 +57,7 @@ jobs:
             printf 'pull_request=104\n'
             printf 'commit=%s\n' "$WORLD_SOURCE_SHA"
             printf 'tree=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
-            printf 'captured_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            printf 'source_commit_time=%s\n' "$(git -C "$world" show -s --format=%cI HEAD)"
             printf 'production_authorization=not_granted\n'
           } > "$packet/identity.txt"
 
