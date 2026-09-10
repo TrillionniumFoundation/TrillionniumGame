@@ -28,13 +28,13 @@ The in-memory registry clones its bounded candidate state and commits only after
 
 Account, command and fingerprint identities reject all-zero values. Usernames, display names and provider identities have byte and control-character bounds. Provider identity and username uniqueness are global inside one registry authority.
 
-Every mutating operation names an exact expected account revision. A duplicate command ID with the same fingerprint replays its exact receipt; a changed fingerprint is a conflict and changes no state.
+Every mutating operation names an exact expected account revision. Receipt replay is operation-scoped: a command receipt created by another operation is a conflict even when its fingerprint matches. Authentication replay is returned as current authority only while the provider still resolves to the receipt account, that account remains Active, and its revision is exactly the revision recorded by the authentication receipt. Any profile, provider or status mutation makes the old authentication receipt stale; deletion, unlink and rebind fail closed. A changed fingerprint is always a conflict and all denied replays leave state unchanged. Trusted adapters must derive the fingerprint from the canonical complete operation and provider input rather than accepting an arbitrary caller-selected value.
 
 Deletion is terminal inside the registry: the record remains, and former usernames and provider identities are retired rather than silently rebound.
 
 ## Correctness and failure model
 
-Failed validation, capacity, collision, stale revision, inactive status, last-provider removal and counter overflow leave the complete registry unchanged. Revision increments are checked before mutation.
+Failed validation, capacity, collision, stale revision, inactive status, last-provider removal and counter overflow leave the complete registry unchanged. Revision increments are checked before mutation. Authentication receipt replay evaluates fingerprint and operation type first, then current provider ownership, account activity and exact revision; a historical receipt never bypasses a later disable, ban, deletion, unlink, rebind, reactivation or other account mutation.
 
 Account/provider/username reverse indexes are verified after each accepted transition. Every non-deleted account has at least one provider identity. A deleted account has no active reverse-index entries and all former identities appear in retirement sets.
 
@@ -54,7 +54,7 @@ cargo test --package trnm-identity-core --all-targets --locked
 cargo clippy --package trnm-identity-core --all-targets --locked -- -D warnings
 ```
 
-Tests cover bounds, exact replay, changed fingerprints, provider and username collisions, stale revisions, last-provider protection, profile changes, account status, terminal deletion, receipt exhaustion and revision overflow.
+Tests cover bounds, operation-scoped exact replay, changed fingerprints, provider and username collisions, stale revisions, last-provider protection, profile changes, account status, terminal deletion, receipt exhaustion and revision overflow. Authentication-specific regressions cover unchanged active replay plus disable, ban, reactivation, deletion, unlink, rebind, revision drift and cross-operation command reuse, with complete no-mutation assertions for every rejection.
 
 These tests are source-level evidence only. Exact-head CI, public-wire differentials, live database faults and independent review remain separate.
 
