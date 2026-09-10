@@ -22,30 +22,39 @@ jobs:
       CEX_COMMIT: fc8643d76e7c9ca2691712e39985c7b2ae06ad74
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
-      - name: Fetch exact CEX source
+      - name: Fetch exact CEX source and runner helper
         shell: bash
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/cex"
-          rm -rf "$root"
+          helper="$RUNNER_TEMP/helper"
+          rm -rf "$root" "$helper"
           git init "$root"
           git -C "$root" remote add origin "https://github.com/${CEX_REPOSITORY}.git"
           git -C "$root" fetch --no-tags --depth=1 origin "$CEX_COMMIT"
           git -C "$root" checkout --detach FETCH_HEAD
           test "$(git -C "$root" rev-parse HEAD)" = "$CEX_COMMIT"
+          git init "$helper"
+          git -C "$helper" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$helper" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$helper" checkout --detach FETCH_HEAD
+          test "$(git -C "$helper" rev-parse HEAD)" = "$GITHUB_SHA"
+          test -s "$helper/scripts/cex-semantic-compare.py"
           test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
+          test -z "$(git -C "$helper" status --porcelain=v1 --untracked-files=no)"
 
       - name: Generate and compare semantic contract
         shell: bash
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/cex"
+          helper="$RUNNER_TEMP/helper"
           output="$RUNNER_TEMP/repository-contract-semantics-v1.json"
           (
             cd "$root"
             python3 scripts/generate-repository-semantics.py --stdout
           ) > "$output"
-          python3 scripts/cex-semantic-compare.py \
+          python3 "$helper/scripts/cex-semantic-compare.py" \
             "$root/docs/repository-contract-semantics-v1.json" \
             "$output" \
             "$CEX_COMMIT"
