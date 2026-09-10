@@ -209,21 +209,68 @@ jobs:
             tools/plan-v32-social-existing.patch \
             .github/workflows/plan-v32-social-materialize.yml
 
-      - name: Validate the clean source candidate
+      - name: Format social source
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           cargo fmt --all
-          cargo check --package trnm-social-core
           cargo fmt --all -- --check
+
+      - name: Resolve lock and compile social core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo check --package trnm-social-core
+
+      - name: Execute social core tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
           cargo test --package trnm-social-core --all-targets --locked
+
+      - name: Execute social core strict Clippy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
           cargo clippy --package trnm-social-core --all-targets --locked -- -D warnings
+
+      - name: Validate documentation authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
           python3 scripts/check-documentation-authority.py
+
+      - name: Validate Rust package authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
           python3 scripts/check-rust-foundation.py
+
+      - name: Validate workspace convergence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
           python3 scripts/check-workspace-convergence.py
-          python3 -m unittest \
-            tests.control_plane.test_documentation_authority -v
+
+      - name: Execute documentation authority regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 -m unittest tests.control_plane.test_documentation_authority -v
+
+      - name: Validate clean candidate diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
           git diff --check
           test ! -e tools/plan-v32-social-existing.patch
           test ! -e .github/workflows/plan-v32-social-materialize.yml
