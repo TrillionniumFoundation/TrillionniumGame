@@ -1,46 +1,61 @@
-name: world-pr127-source-snapshot
+name: world-pr127-source-snapshot-v2
 
 on:
   push:
     branches:
       - ops/world-pr127-source-snapshot-20260911
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: world-pr127-source-snapshot
+  group: world-pr127-source-snapshot-v2
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_SOURCE_SHA: '778152b6b11e0d394e5abe4ea851cd10f46f3314'
+  COMMON_HELPER_SHA: 'b02fef9a86b77c8babd19a7dd469081095ea2e90'
 
 jobs:
   snapshot:
-    name: world-pr127/source-snapshot
+    name: world-pr127/source-snapshot-v2
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Fetch exact World source
+      - name: Fetch exact World and evidence helper sources
         shell: bash
         run: |
           set -euo pipefail
-          world="$RUNNER_TEMP/world"
-          git init -q "$world"
-          git -C "$world" remote add origin \
-            "https://github.com/${WORLD_REPOSITORY}.git"
-          git -C "$world" fetch -q --no-tags --depth=1 origin "$WORLD_SOURCE_SHA"
-          git -C "$world" checkout -q --detach FETCH_HEAD
-          test "$(git -C "$world" rev-parse HEAD)" = "$WORLD_SOURCE_SHA"
-          test -z "$(git -C "$world" status --porcelain=v1)"
+          clone_exact() {
+            local directory="$1"
+            local remote="$2"
+            local revision="$3"
+            git init -q "$directory"
+            git -C "$directory" remote add origin "$remote"
+            git -C "$directory" fetch -q --no-tags --depth=1 origin "$revision"
+            git -C "$directory" checkout -q --detach FETCH_HEAD
+            test "$(git -C "$directory" rev-parse HEAD)" = "$revision"
+          }
+          clone_exact "$RUNNER_TEMP/world" \
+            "https://github.com/${WORLD_REPOSITORY}.git" "$WORLD_SOURCE_SHA"
+          clone_exact "$RUNNER_TEMP/common" \
+            "https://github.com/${GITHUB_REPOSITORY}.git" "$COMMON_HELPER_SHA"
+          test -z "$(git -C "$RUNNER_TEMP/world" status --porcelain=v1)"
+          rm -rf "$GITHUB_WORKSPACE/.github/actions/upload-evidence"
+          mkdir -p "$GITHUB_WORKSPACE/.github/actions" "$GITHUB_WORKSPACE/scripts"
+          cp -R "$RUNNER_TEMP/common/.github/actions/upload-evidence" \
+            "$GITHUB_WORKSPACE/.github/actions/"
+          cp "$RUNNER_TEMP/common/scripts/upload-actions-artifact.py" \
+            "$GITHUB_WORKSPACE/scripts/"
 
       - name: Package exact source tree
         shell: bash
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          packet="$RUNNER_TEMP/world-pr127-source-snapshot"
+          packet="$RUNNER_TEMP/world-pr127-source-snapshot-v2"
           mkdir -p "$packet"
           git -C "$world" archive --format=tar "$WORLD_SOURCE_SHA" \
             | gzip -n > "$packet/source.tar.gz"
@@ -53,9 +68,8 @@ jobs:
           (cd "$packet" && sha256sum source.tar.gz identity.txt > SHA256SUMS)
 
       - name: Upload exact source snapshot
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: ./.github/actions/upload-evidence
         with:
-          name: world-pr127-source-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-pr127-source-snapshot/**
-          if-no-files-found: error
-          retention-days: 7
+          name: world-pr127-source-v2-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-pr127-source-snapshot-v2/source.tar.gz
+          mime_type: application/gzip
