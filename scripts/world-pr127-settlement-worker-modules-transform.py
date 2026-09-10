@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replace the two remaining settlement-worker include seams with Rust modules."""
+"""Close the final settlement module seams and exact contract-doc trace gaps."""
 from __future__ import annotations
 
 import argparse
@@ -29,6 +29,72 @@ mod runtime_v2;
 pub use runtime_v2::run_v2;
 
 '''
+
+AUDIT_TRACE_OLD = (
+    "Primary source is `contracts/audit-events/src/`. The workspace boundary and honest "
+    "status are defined by `contracts/README.md` and this index. Tests must cover "
+    "deterministic round trips, stable spellings, duplicate/oversized/unsupported values, "
+    "secret-like field rejection where supported, exact duplicate identity and cross-crate "
+    "fixture emission. Future sink conformance requires golden bytes, database/outbox fault "
+    "tests and independent review."
+)
+AUDIT_TRACE_NEW = (
+    "Primary source is `contracts/audit-events/src/`. The local contract is bound by "
+    "`contracts/audit-events/README.md`; the maintained documentation surfaces are "
+    "`docs/modules/contracts/audit-events-design.md` and "
+    "`docs/modules/contracts/README.md`. Executable traceability is carried by the inline "
+    "Rust tests under `contracts/audit-events/src/` and by "
+    "`scripts/check-trnm-world-contract-module-documentation.py` plus its hostile fixture "
+    "suite. Tests must cover deterministic round trips, stable spellings, "
+    "duplicate/oversized/unsupported values, secret-like field rejection where supported, "
+    "exact duplicate identity and cross-crate fixture emission. Future sink conformance "
+    "requires golden bytes, database/outbox fault tests and independent review."
+)
+GOVERNANCE_TRACE_OLD = (
+    "Primary source is `contracts/governance-guard/src/`; current scope is defined by "
+    "`contracts/README.md`. Tests cover schedule/execute/cancel, too-early and expired "
+    "execution, action/version drift, exact/altered duplicate, pause/resume role/state "
+    "behavior, overflow/bounds, state preservation and audit normalization. Host time, "
+    "signatures/quorum, durable execution and live governance probes remain absent."
+)
+GOVERNANCE_TRACE_NEW = (
+    "Primary source is `contracts/governance-guard/src/`; the local contract is "
+    "`contracts/governance-guard/README.md`, and the maintained documentation surfaces are "
+    "`docs/modules/contracts/governance-guard-design.md` and "
+    "`docs/modules/contracts/README.md`. Executable traceability is carried by the Rust "
+    "tests under `contracts/governance-guard/src/` and by "
+    "`scripts/check-trnm-world-contract-module-documentation.py` plus its hostile fixture "
+    "suite. Tests cover schedule/execute/cancel, too-early and expired execution, "
+    "action/version drift, exact/altered duplicate, pause/resume role/state behavior, "
+    "overflow/bounds, state preservation and audit normalization. Host time, "
+    "signatures/quorum, durable execution and live governance probes remain absent."
+)
+
+
+def replace_once(path: Path, old: str, new: str, label: str) -> None:
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError(f"{label} is unavailable: {path}")
+    text = path.read_text(encoding="utf-8", errors="strict")
+    if text.count(old) != 1:
+        raise RuntimeError(f"{label} traceability boundary drift")
+    if new in text:
+        raise RuntimeError(f"{label} traceability repair already present")
+    path.write_text(text.replace(old, new), encoding="utf-8")
+
+
+def repair_contract_documentation(root: Path) -> None:
+    replace_once(
+        root / "docs/modules/contracts/audit-events-design.md",
+        AUDIT_TRACE_OLD,
+        AUDIT_TRACE_NEW,
+        "audit-events design",
+    )
+    replace_once(
+        root / "docs/modules/contracts/governance-guard-design.md",
+        GOVERNANCE_TRACE_OLD,
+        GOVERNANCE_TRACE_NEW,
+        "governance-guard design",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -110,7 +176,9 @@ def main(argv: list[str] | None = None) -> int:
         existing.add(key)
     ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
 
+    repair_contract_documentation(root)
     print("WORLD_PR127_SETTLEMENT_WORKER_MODULE_TRANSFORM=PASS seams=2")
+    print("WORLD_PR127_CONTRACT_DOCUMENTATION_TRACEABILITY=PASS designs=2")
     return 0
 
 
