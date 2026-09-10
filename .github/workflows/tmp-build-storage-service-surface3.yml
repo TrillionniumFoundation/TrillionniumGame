@@ -1,0 +1,190 @@
+name: tmp-build-storage-service-surface3
+
+on:
+  push:
+    branches:
+      - ops/identity-auth-replay-fix-20260910
+    paths:
+      - .github/workflows/tmp-build-storage-service-surface3.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-storage-service-surface3-20260910
+  cancel-in-progress: false
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      BASE_HEAD: 1e5e8c6be5f66e7e7671ad3f0f6ca90ef2d95ee1
+      TEMPLATE_HEAD: 79ff3f3413c0459c0790c554a9836949d0ef3002
+      FEATURE_BRANCH: feature/plan-v32-storage-service-20260910
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch exact social base and historical reviewed template
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags origin "$BASE_HEAD" "$TEMPLATE_HEAD"
+          git -C "$GITHUB_WORKSPACE" show \
+            "$TEMPLATE_HEAD:.github/workflows/tmp-storage-service-wave2.yml" \
+            > "$RUNNER_TEMP/storage-template.yml"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$BASE_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$BASE_HEAD"
+
+      - name: Extract and execute the bounded source and registration steps
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path("/tmp").joinpath("unused")
+          template = Path("${{ runner.temp }}/storage-template.yml").read_text(encoding="utf-8")
+          lines = template.splitlines()
+
+          def extract(name: str) -> str:
+              marker = f"      - name: {name}"
+              matches = [index for index, line in enumerate(lines) if line == marker]
+              if len(matches) != 1:
+                  raise SystemExit(f"{name}: expected one step, found {len(matches)}")
+              start = matches[0]
+              run_index = None
+              for index in range(start + 1, len(lines)):
+                  if lines[index].startswith("      - name: "):
+                      break
+                  if lines[index] == "        run: |":
+                      run_index = index
+                      break
+              if run_index is None:
+                  raise SystemExit(f"{name}: run block missing")
+              body = []
+              for line in lines[run_index + 1:]:
+                  if line.startswith("      - name: "):
+                      break
+                  if line.startswith("          "):
+                      body.append(line[10:])
+                  elif line == "":
+                      body.append("")
+                  else:
+                      raise SystemExit(f"{name}: unexpected indentation: {line!r}")
+              script = "\n".join(body).rstrip() + "\n"
+              if "set -euo pipefail" not in script:
+                  raise SystemExit(f"{name}: fail-closed preamble missing")
+              return script
+
+          Path("${{ runner.temp }}/write-storage-service.sh").write_text(
+              extract("Write protocol-neutral storage application service"),
+              encoding="utf-8",
+          )
+          Path("${{ runner.temp }}/register-storage-service.sh").write_text(
+              extract("Register module without raising claims"),
+              encoding="utf-8",
+          )
+          PY
+          bash "$RUNNER_TEMP/write-storage-service.sh"
+          bash "$RUNNER_TEMP/register-storage-service.sh"
+
+      - name: Normalize and enforce the exact changed-path boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup override set 1.85.1
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+          python3 - <<'PY'
+          import subprocess
+
+          allowed_exact = {
+              "Cargo.lock",
+              "Cargo.toml",
+              "docs/development/RUST_PACKAGE_AUTHORITY.json",
+              "docs/status/CURRENT_STATE.json",
+              "docs/status/IMPLEMENTATION_INVENTORY.json",
+              "docs/status/MODULE_DOCUMENTATION.json",
+          }
+          allowed_prefix = "crates/trnm-storage-service/"
+          output = subprocess.check_output(
+              ["git", "status", "--short", "--untracked-files=all"],
+              text=True,
+          )
+          paths = []
+          for line in output.splitlines():
+              path = line[3:]
+              if " -> " in path:
+                  path = path.split(" -> ", 1)[1]
+              paths.append(path)
+          unexpected = sorted(
+              path for path in paths
+              if path not in allowed_exact and not path.startswith(allowed_prefix)
+          )
+          if unexpected:
+              raise SystemExit(f"unexpected generated paths: {unexpected}")
+          required = allowed_exact | {
+              "crates/trnm-storage-service/Cargo.toml",
+              "crates/trnm-storage-service/README.md",
+              "crates/trnm-storage-service/src/lib.rs",
+          }
+          missing = sorted(required - set(paths))
+          if missing:
+              raise SystemExit(f"required generated paths missing: {missing}")
+          PY
+
+      - name: Execute focused and whole-repository qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo fmt --all -- --check
+          cargo test --package trnm-storage-service --all-targets --locked
+          cargo clippy --package trnm-storage-service --all-targets --locked -- -D warnings
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for manifest in \
+            crates/trnm-token-jwt-adapter-gate/Cargo.toml \
+            crates/trnm-token-jwt-adapter-gate-v2/Cargo.toml; do
+            cargo test --manifest-path "$manifest" --all-targets --locked
+            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
+          done
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          python3 -m compileall -q scripts tools tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --check
+
+      - name: Commit and publish the exact Surface 3 source candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test -z "$(git ls-remote origin "refs/heads/${FEATURE_BRANCH}")"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -b "$FEATURE_BRANCH"
+          git add \
+            Cargo.toml Cargo.lock \
+            crates/trnm-storage-service \
+            docs/development/RUST_PACKAGE_AUTHORITY.json \
+            docs/status/CURRENT_STATE.json \
+            docs/status/IMPLEMENTATION_INVENTORY.json \
+            docs/status/MODULE_DOCUMENTATION.json
+          git diff --cached --check
+          git commit -m 'feat(storage): add bounded application service boundary'
+          new_head="$(git rev-parse HEAD)"
+          new_tree="$(git rev-parse HEAD^{tree})"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${FEATURE_BRANCH}"
+          printf 'published_head=%s\npublished_tree=%s\n' "$new_head" "$new_tree" >> "$GITHUB_STEP_SUMMARY"
