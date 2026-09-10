@@ -1,0 +1,551 @@
+name: tmp-social-core-rebind-repair
+
+on:
+  push:
+    branches:
+      - ops/social-core-rebind-repair-20260910
+    paths:
+      - .github/workflows/tmp-social-core-rebind-repair.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: social-core-rebind-repair-20260910
+  cancel-in-progress: false
+
+jobs:
+  merge-patch-test-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      REPOSITORY: TrillionniumFoundation/TrillionniumGame
+      SOCIAL_BRANCH: feature/plan-v32-social-core-20260910
+      SOCIAL_HEAD: 336d3c2084732c7f7af52f157cfbac397928f1a7
+      IDENTITY_BRANCH: feature/plan-v32-identity-core-20260909
+      IDENTITY_HEAD: 4ef337a1a279252f9d81f8a9dbbb85d280ff03f9
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch exact stacked heads without external actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${REPOSITORY}.git"
+          test "$(git ls-remote "https://github.com/${REPOSITORY}.git" "refs/heads/${SOCIAL_BRANCH}" | cut -f1)" = "$SOCIAL_HEAD"
+          test "$(git ls-remote "https://github.com/${REPOSITORY}.git" "refs/heads/${IDENTITY_BRANCH}" | cut -f1)" = "$IDENTITY_HEAD"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags origin "$SOCIAL_HEAD" "$IDENTITY_HEAD"
+          git -C "$GITHUB_WORKSPACE" checkout --detach "$SOCIAL_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$SOCIAL_HEAD"
+
+      - name: Merge current Surface 1 parent without rewriting history
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          set +e
+          git merge --no-commit --no-ff "$IDENTITY_HEAD"
+          merge_rc=$?
+          set -e
+          if [[ "$merge_rc" -ne 0 ]]; then
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            printf 'merge conflicts:\n%s\n' "${conflicts[*]}"
+            test "${#conflicts[@]}" -eq 1
+            test "${conflicts[0]}" = 'docs/status/CURRENT_STATE.json'
+            git checkout --theirs -- docs/status/CURRENT_STATE.json
+            git add docs/status/CURRENT_STATE.json
+          fi
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git merge-base --is-ancestor "$SOCIAL_HEAD" HEAD
+          git merge-base --is-ancestor "$IDENTITY_HEAD" HEAD
+          grep -q 'authentication_state_changed' crates/trnm-identity-core/src/lib.rs
+          grep -q 'authentication_replay_after_unlink_or_rebind_is_denied_atomically' crates/trnm-identity-core/src/lib.rs
+          grep -q 'crates/trnm-social-core' Cargo.toml
+          grep -q '"id": "trnm-social-core"' docs/status/MODULE_DOCUMENTATION.json
+
+      - name: Scope receipt replay to actor and operation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("crates/trnm-social-core/src")
+          helper_path = root / "parts/16_registry_receipts.rs"
+          helper = helper_path.read_text(encoding="utf-8")
+          start_marker = "    fn existing_receipt(\n"
+          end_marker = "\n    fn finish_command(\n"
+          if helper.count(start_marker) != 1 or helper.count(end_marker) != 1:
+              raise SystemExit("receipt helper boundaries changed")
+          start = helper.index(start_marker)
+          end = helper.index(end_marker, start)
+          old = helper[start:end]
+          if '"social_command_fingerprint_mismatch"' not in old:
+              raise SystemExit("receipt helper no longer matches expected source")
+          new = '''    fn existing_receipt(
+              &self,
+              command: SocialCommandId,
+              fingerprint: CommandFingerprint,
+              actor: AccountId,
+              allowed_outcomes: &[ReceiptOutcome],
+          ) -> Result<Option<CommandReceipt>, SocialError> {
+              let Some(receipt) = self.receipts.get(&command).copied() else {
+                  return Ok(None);
+              };
+              if receipt.fingerprint != fingerprint {
+                  return Err(SocialError::new(
+                      SocialErrorCode::Conflict,
+                      "social_command_fingerprint_mismatch",
+                  ));
+              }
+              if receipt.actor != actor {
+                  return Err(SocialError::new(
+                      SocialErrorCode::Conflict,
+                      "social_command_actor_mismatch",
+                  ));
+              }
+              if !allowed_outcomes.contains(&receipt.outcome) {
+                  return Err(SocialError::new(
+                      SocialErrorCode::Conflict,
+                      "social_command_operation_mismatch",
+                  ));
+              }
+              Ok(Some(receipt))
+          }
+          '''
+          helper_path.write_text(helper[:start] + new.rstrip("\n") + helper[end:], encoding="utf-8")
+
+          mappings = {
+              "parts/10_registry_friend_request.rs": [
+                  ("send_friend_request", "actor", ["FriendRequestSent"]),
+                  ("accept_friend_request", "actor", ["FriendRequestAccepted"]),
+              ],
+              "parts/11_registry_friend_graph.rs": [
+                  ("remove_friend", "actor", ["FriendRemoved"]),
+                  ("block_user", "actor", ["UserBlocked"]),
+                  ("unblock_user", "actor", ["UserUnblocked"]),
+              ],
+              "parts/12_registry_group_join.rs": [
+                  ("create_group", "request.creator", ["GroupCreated"]),
+                  ("join_group", "actor", ["GroupJoined", "GroupJoinRequested"]),
+                  ("approve_group_join", "actor", ["GroupJoinApproved"]),
+              ],
+              "parts/13_registry_group_admin.rs": [
+                  ("change_group_role", "actor", ["GroupRoleChanged"]),
+                  ("leave_group", "actor", ["GroupLeft"]),
+                  ("ban_group_member", "actor", ["GroupMemberBanned"]),
+                  ("unban_group_member", "actor", ["GroupMemberUnbanned"]),
+              ],
+              "parts/14_registry_messages.rs": [
+                  ("send_group_message", "request.sender", ["ChatMessageSent"]),
+              ],
+              "parts/15_registry_notifications.rs": [
+                  (
+                      "create_notification",
+                      "request.sender.unwrap_or(request.recipient)",
+                      ["NotificationCreated"],
+                  ),
+                  ("mark_notification_read", "recipient", ["NotificationMarkedRead"]),
+                  ("delete_notification", "recipient", ["NotificationDeleted"]),
+              ],
+          }
+
+          old_call = "        if let Some(receipt) = self.existing_receipt(command, fingerprint)? {"
+          patched = 0
+          for relative, functions in mappings.items():
+              path = root / relative
+              text = path.read_text(encoding="utf-8")
+              for name, actor, outcomes in functions:
+                  marker = f"    pub fn {name}(\n"
+                  if text.count(marker) != 1:
+                      raise SystemExit(f"{relative}: function boundary changed for {name}")
+                  start = text.index(marker)
+                  next_public = text.find("\n    pub fn ", start + len(marker))
+                  block_end = len(text) if next_public == -1 else next_public
+                  block = text[start:block_end]
+                  if block.count(old_call) != 1:
+                      raise SystemExit(f"{relative}:{name}: expected one legacy replay call")
+                  outcome_lines = ",\n".join(
+                      f"                ReceiptOutcome::{value}" for value in outcomes
+                  )
+                  replacement = (
+                      "        if let Some(receipt) = self.existing_receipt(\n"
+                      "            command,\n"
+                      "            fingerprint,\n"
+                      f"            {actor},\n"
+                      "            &[\n"
+                      f"{outcome_lines},\n"
+                      "            ],\n"
+                      "        )? {"
+                  )
+                  block = block.replace(old_call, replacement, 1)
+                  text = text[:start] + block + text[block_end:]
+                  patched += 1
+              path.write_text(text, encoding="utf-8")
+
+          if patched != 16:
+              raise SystemExit(f"unexpected patched replay call count: {patched}")
+          remaining = 0
+          for path in (root / "parts").glob("*.rs"):
+              remaining += path.read_text(encoding="utf-8").count(
+                  "existing_receipt(command, fingerprint)"
+              )
+          if remaining:
+              raise SystemExit(f"legacy receipt calls remain: {remaining}")
+
+          invariant_path = root / "parts/17_registry_invariants.rs"
+          invariant = invariant_path.read_text(encoding="utf-8")
+          old_invariant = """        for (command, receipt) in &self.receipts {
+              if receipt.command != *command || receipt.revision == 0 || receipt.revision > self.revision {
+                  return Err(invariant_error());
+              }
+          """
+          new_invariant = """        for (command, receipt) in &self.receipts {
+              if receipt.command != *command
+                  || !self.users.contains(&receipt.actor)
+                  || receipt.revision == 0
+                  || receipt.revision > self.revision
+              {
+                  return Err(invariant_error());
+              }
+          """
+          if invariant.count(old_invariant) != 1:
+              raise SystemExit("receipt invariant source changed")
+          invariant_path.write_text(invariant.replace(old_invariant, new_invariant, 1), encoding="utf-8")
+
+          lib_path = root / "lib.rs"
+          lib = lib_path.read_text(encoding="utf-8")
+          include_marker = '    include!("tests/05_config.rs");\n'
+          if lib.count(include_marker) != 1 or 'tests/06_receipt_scope.rs' in lib:
+              raise SystemExit("test include contract changed")
+          lib_path.write_text(
+              lib.replace(
+                  include_marker,
+                  include_marker + '    include!("tests/06_receipt_scope.rs");\n',
+                  1,
+              ),
+              encoding="utf-8",
+          )
+
+          test_path = root / "tests/06_receipt_scope.rs"
+          if test_path.exists():
+              raise SystemExit("receipt scope test already exists")
+          test_path.write_text(
+              '''#[test]
+          fn exact_replay_is_scoped_to_operation_and_actor() {
+              let mut registry = registry_with_users(3);
+              let receipt = registry
+                  .send_friend_request(command(1), fingerprint(1), account(1), account(2))
+                  .unwrap();
+              let unchanged = registry.clone();
+              let replay = registry
+                  .send_friend_request(command(1), fingerprint(1), account(1), account(2))
+                  .unwrap();
+              assert_eq!(receipt, replay);
+              assert_eq!(unchanged, registry);
+
+              let before_operation = registry.clone();
+              let error = registry
+                  .block_user(command(1), fingerprint(1), account(1), account(2))
+                  .unwrap_err();
+              assert_eq!(error.code(), SocialErrorCode::Conflict);
+              assert_eq!(error.reason(), "social_command_operation_mismatch");
+              assert_eq!(before_operation, registry);
+
+              let before_actor = registry.clone();
+              let error = registry
+                  .send_friend_request(command(1), fingerprint(1), account(3), account(2))
+                  .unwrap_err();
+              assert_eq!(error.code(), SocialErrorCode::Conflict);
+              assert_eq!(error.reason(), "social_command_actor_mismatch");
+              assert_eq!(before_actor, registry);
+          }
+
+          #[test]
+          fn join_group_replay_accepts_both_operation_outcomes_only() {
+              let mut registry = registry_with_users(2);
+              registry
+                  .create_group(
+                      command(1),
+                      fingerprint(1),
+                      CreateGroupRequest::new(
+                          group(1),
+                          account(1),
+                          GroupName::new("approval").unwrap(),
+                          GroupJoinMode::AdminApproval,
+                          10,
+                      ),
+                  )
+                  .unwrap();
+              let receipt = registry
+                  .join_group(command(2), fingerprint(2), group(1), account(2))
+                  .unwrap();
+              assert_eq!(receipt.outcome(), ReceiptOutcome::GroupJoinRequested);
+              let snapshot = registry.clone();
+              let replay = registry
+                  .join_group(command(2), fingerprint(2), group(1), account(2))
+                  .unwrap();
+              assert_eq!(receipt, replay);
+              assert_eq!(snapshot, registry);
+
+              let error = registry
+                  .leave_group(command(2), fingerprint(2), group(1), account(2))
+                  .unwrap_err();
+              assert_eq!(error.code(), SocialErrorCode::Conflict);
+              assert_eq!(error.reason(), "social_command_operation_mismatch");
+              assert_eq!(snapshot, registry);
+          }
+          ''',
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Bind documentation, inventories and current stack truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          readme_path = Path("crates/trnm-social-core/README.md")
+          readme = readme_path.read_text(encoding="utf-8")
+          replacements = {
+              "A social command ID is idempotent only with the exact original fingerprint. Exact replay returns the original receipt and produces no duplicate state or outbox intent. Reuse with a changed fingerprint fails as a conflict without mutation.": "A social command ID is idempotent only for the exact original fingerprint, actor and operation family. Exact replay returns the original receipt and produces no duplicate state or outbox intent. Cross-actor or cross-operation reuse fails as a conflict even when a caller repeats the same fingerprint; reuse with a changed fingerprint also fails without mutation. Trusted adapters must derive the fingerprint from the canonical complete command, including every target, group, message, notification and payload field, rather than accepting an arbitrary caller-selected value.",
+              "Validation, unknown identity, self-relationship, collision, stale command fingerprint, capacity exhaustion, permission failure, last-superadmin protection, duplicate message/notification identity and checked counter overflow fail before committing the candidate.": "Validation, unknown identity, self-relationship, collision, stale command fingerprint, actor mismatch, operation mismatch, capacity exhaustion, permission failure, last-superadmin protection, duplicate message/notification identity and checked counter overflow fail before committing the candidate. Receipt invariants require every recorded actor to remain a registered user.",
+              "The focused corpus covers exact receipt replay, changed fingerprints, friendship transitions, mutual blocking, keyset pagination, approval joins, role and last-superadmin rules, bans, chat sequencing, cursor scope, notification ordering/read/delete, capacity failures, checked limits and payload redaction.": "The focused corpus covers actor-and-operation-scoped exact receipt replay, changed fingerprints, friendship transitions, mutual blocking, keyset pagination, approval joins, role and last-superadmin rules, bans, chat sequencing, cursor scope, notification ordering/read/delete, capacity failures, checked limits and payload redaction. Hostile receipt tests prove that a command/fingerprint pair cannot be replayed through another actor or operation and that the two valid `join_group` outcomes remain in one operation family.",
+          }
+          for old, new in replacements.items():
+              if readme.count(old) != 1:
+                  raise SystemExit(f"social README contract changed: {old[:48]}")
+              readme = readme.replace(old, new, 1)
+          readme_path.write_text(readme, encoding="utf-8")
+
+          inventory_path = Path("docs/status/IMPLEMENTATION_INVENTORY.json")
+          inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+          rows = [row for row in inventory["components"] if row.get("id") == "COMP-SOCIAL-CORE"]
+          if len(rows) != 1:
+              raise SystemExit("social implementation inventory row missing or duplicated")
+          row = rows[0]
+          old = "exact command receipt replay and changed-fingerprint rejection"
+          if row["implemented"].count(old) != 1:
+              raise SystemExit("social receipt inventory contract changed")
+          row["implemented"][row["implemented"].index(old)] = (
+              "actor-and-operation-scoped exact command receipt replay with changed-fingerprint rejection"
+          )
+          inventory["generated_at"] = "2026-09-10"
+          inventory_path.write_text(json.dumps(inventory, indent=2) + "\n", encoding="utf-8")
+
+          state_path = Path("docs/status/CURRENT_STATE.json")
+          state = json.loads(state_path.read_text(encoding="utf-8"))
+          state["observed_at"] = "2026-09-10T08:15:00Z"
+          state["authority"].update(
+              {
+                  "audited_main_commit": "425ee015d53800f3e2c2936f97ded9cdbacf7f14",
+                  "audited_main_tree": "ed47de87507feeef60795c997bce3a6e88699e9d",
+                  "candidate_branch": "feature/plan-v32-social-core-20260910",
+                  "candidate_pull_request": 164,
+                  "candidate_commit": None,
+                  "candidate_tree": None,
+                  "candidate_identity_rule": "The tracked state binds stacked Plan v3.2 Surface 2 to pull request 164 without guessing its self-referential final commit. Surface 1 must remain the exact base ancestor; GitHub head/tree and actual prospective-merge metadata are execution authority, and any parent, head, base or tree movement requires fresh qualification.",
+                  "last_admitted_pull_request": 168,
+              }
+          )
+          state["repository_governance"]["status"] = (
+              "Plan v3.2 convergence and post-merge truth are admitted on main. Surface 1 and stacked Surface 2 are source candidates undergoing exact-object qualification; external governance and conflict-free specialist acceptance remain open."
+          )
+          state["implementation"]["identity_core_source_candidate"] = True
+          state["implementation"]["social_core_source_candidate"] = True
+          state["implementation"]["social_receipt_scope_source_repaired"] = True
+          state["active_priority"] = [
+              "complete exact-head and prospective-merge qualification and conflict-free review for Plan v3.2 Surface 1",
+              "qualify stacked Plan v3.2 Surface 2 only against the exact admitted Surface 1 parent",
+              "retain and independently accept each post-merge main packet",
+              "read back complete branch and ruleset review freshness CODEOWNER conversation and bypass policy",
+              "provision conflict-free security database protocol realtime compatibility and SRE reviewers",
+              "classify and independently lock every D0-D8 leaf and obtain separate global SG1 acceptance",
+              "complete the remaining storage competition multiplayer protocol RTAPI Runtime Console provider IAP migration HA endurance canary cutover and retirement surfaces",
+          ]
+          state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+          PY
+
+          cat > tests/control_plane/test_social_module_registration.py <<'PY'
+          from __future__ import annotations
+
+          import copy
+          import importlib.util
+          import json
+          import shutil
+          import tempfile
+          import tomllib
+          import unittest
+          from pathlib import Path
+
+          ROOT = Path(__file__).resolve().parents[2]
+          CHECKER = ROOT / "scripts/check-documentation-authority.py"
+          SOCIAL_ID = "trnm-social-core"
+          SOCIAL_PATH = "crates/trnm-social-core"
+
+
+          def load_checker():
+              spec = importlib.util.spec_from_file_location("documentation_authority", CHECKER)
+              assert spec is not None and spec.loader is not None
+              module = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(module)
+              return module
+
+
+          class SocialModuleRegistrationTests(unittest.TestCase):
+              def test_social_module_is_bound_in_every_current_inventory(self) -> None:
+                  cargo = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+                  self.assertEqual(cargo["workspace"]["members"].count(SOCIAL_PATH), 1)
+
+                  package = json.loads(
+                      (ROOT / "docs/development/RUST_PACKAGE_AUTHORITY.json").read_text(
+                          encoding="utf-8"
+                      )
+                  )
+                  self.assertEqual(package["workspace"]["members"].count(SOCIAL_PATH), 1)
+
+                  modules = json.loads(
+                      (ROOT / "docs/status/MODULE_DOCUMENTATION.json").read_text(
+                          encoding="utf-8"
+                      )
+                  )
+                  module_rows = [row for row in modules["modules"] if row.get("id") == SOCIAL_ID]
+                  self.assertEqual(len(module_rows), 1)
+                  self.assertEqual(module_rows[0]["path"], SOCIAL_PATH)
+                  self.assertEqual(module_rows[0]["manifest"], f"{SOCIAL_PATH}/Cargo.toml")
+                  self.assertEqual(module_rows[0]["documentation"], f"{SOCIAL_PATH}/README.md")
+                  self.assertFalse(module_rows[0]["claim_credit"])
+
+                  implementation = json.loads(
+                      (ROOT / "docs/status/IMPLEMENTATION_INVENTORY.json").read_text(
+                          encoding="utf-8"
+                      )
+                  )
+                  component_rows = [
+                      row
+                      for row in implementation["components"]
+                      if row.get("id") == "COMP-SOCIAL-CORE"
+                  ]
+                  self.assertEqual(len(component_rows), 1)
+                  self.assertEqual(component_rows[0]["path"], SOCIAL_PATH)
+                  self.assertFalse(component_rows[0]["claim_credit"])
+
+                  state = json.loads(
+                      (ROOT / "docs/status/CURRENT_STATE.json").read_text(encoding="utf-8")
+                  )
+                  self.assertIs(state["implementation"]["social_core_source_candidate"], True)
+
+              def _minimal_root(self, directory: str):
+                  root = Path(directory)
+                  source_manifest = ROOT / SOCIAL_PATH / "Cargo.toml"
+                  source_readme = ROOT / SOCIAL_PATH / "README.md"
+                  target = root / SOCIAL_PATH
+                  target.mkdir(parents=True)
+                  shutil.copy2(source_manifest, target / "Cargo.toml")
+                  shutil.copy2(source_readme, target / "README.md")
+
+                  registry = json.loads(
+                      (ROOT / "docs/status/MODULE_DOCUMENTATION.json").read_text(
+                          encoding="utf-8"
+                      )
+                  )
+                  row = next(row for row in registry["modules"] if row["id"] == SOCIAL_ID)
+                  registry["modules"] = [copy.deepcopy(row)]
+                  registry["summary"] = {
+                      "module_count": 1,
+                      "documented_count": 1,
+                      "root_workspace_count": 1,
+                      "isolated_workspace_count": 0,
+                      "undocumented_count": 0,
+                  }
+                  registry_path = root / "docs/status/MODULE_DOCUMENTATION.json"
+                  registry_path.parent.mkdir(parents=True)
+                  registry_path.write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")
+                  return root, registry_path, registry
+
+              def test_social_registration_removal_and_path_substitution_fail_closed(self) -> None:
+                  checker = load_checker()
+                  with tempfile.TemporaryDirectory() as directory:
+                      root, registry_path, registry = self._minimal_root(directory)
+                      documented, summary = checker.validate_module_registry(root, registry_path)
+                      self.assertEqual(len(documented), 1)
+                      self.assertEqual(summary["module_count"], 1)
+
+                      removed = copy.deepcopy(registry)
+                      removed["modules"] = []
+                      removed["summary"].update(
+                          module_count=0,
+                          documented_count=0,
+                          root_workspace_count=0,
+                          undocumented_count=0,
+                      )
+                      registry_path.write_text(
+                          json.dumps(removed, indent=2) + "\n", encoding="utf-8"
+                      )
+                      with self.assertRaisesRegex(
+                          checker.ValidationError, "module registry must contain modules"
+                      ):
+                          checker.validate_module_registry(root, registry_path)
+
+                      substituted = copy.deepcopy(registry)
+                      substituted["modules"][0]["path"] = "crates/trnm-identity-core"
+                      registry_path.write_text(
+                          json.dumps(substituted, indent=2) + "\n", encoding="utf-8"
+                      )
+                      with self.assertRaisesRegex(
+                          checker.ValidationError, "path must be crates/trnm-social-core"
+                      ):
+                          checker.validate_module_registry(root, registry_path)
+
+
+          if __name__ == "__main__":
+              unittest.main()
+          PY
+
+      - name: Format and execute focused and repository contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --package trnm-identity-core --package trnm-social-core --all-targets --locked
+          cargo clippy --package trnm-identity-core --package trnm-social-core --all-targets --locked -- -D warnings
+          python3 -m unittest tests.control_plane.test_social_module_registration -v
+          python3 -m unittest tests.control_plane.test_documentation_authority -v
+          python3 scripts/check-documentation-authority.py
+          python3 scripts/check-rust-package-inventory.py
+          python3 scripts/check-workspace-convergence.py
+          python3 scripts/check-plan.py
+          git diff --check
+
+      - name: Commit merge repair and fast-forward exact social branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          remote_social="$(git ls-remote origin "refs/heads/${SOCIAL_BRANCH}" | cut -f1)"
+          remote_identity="$(git ls-remote origin "refs/heads/${IDENTITY_BRANCH}" | cut -f1)"
+          test "$remote_social" = "$SOCIAL_HEAD"
+          test "$remote_identity" = "$IDENTITY_HEAD"
+          git add \
+            crates/trnm-social-core \
+            docs/status/CURRENT_STATE.json \
+            docs/status/IMPLEMENTATION_INVENTORY.json \
+            tests/control_plane/test_social_module_registration.py
+          git diff --cached --check
+          git commit -m 'merge(social): rebind Surface 2 and scope receipt replay'
+          new_head="$(git rev-parse HEAD)"
+          new_tree="$(git rev-parse HEAD^{tree})"
+          test "$(git rev-list --parents -n1 HEAD | wc -w)" -eq 3
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${SOCIAL_BRANCH}"
+          printf 'published_head=%s\npublished_tree=%s\n' "$new_head" "$new_tree" >> "$GITHUB_STEP_SUMMARY"
