@@ -1,4 +1,4 @@
-name: world-pr104-all-active-nested-test-modules-v1
+name: world-pr104-all-active-nested-test-modules-v2
 
 on:
   pull_request:
@@ -8,13 +8,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr104-all-active-nested-test-modules-v1
+  group: world-pr104-all-active-nested-test-modules-v2
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_SOURCE_SHA: '33339b28a6f53668672d1797109da6c7bf57db49'
-  GAME_HELPER_SHA: '1e24b2a8bdf6d7eb4c852739184fff2c8bb6123d'
+  GAME_HELPER_SHA: 'af7f4fc482ada973add4edb40153ba352257c01b'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: '0'
@@ -24,7 +24,7 @@ env:
 
 jobs:
   qualify:
-    name: world-pr104/all-active-nested-test-modules-v1
+    name: world-pr104/all-active-nested-test-modules-v2
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -46,6 +46,7 @@ jobs:
           git -C "$helper" checkout --detach FETCH_HEAD
           test "$(git -C "$helper" rev-parse HEAD)" = "$GAME_HELPER_SHA"
           test -s "$helper/scripts/world-pr104-all-test-modules-transform.py"
+          test -s "$helper/scripts/world-pr104-source-integrity-repair.py"
           test -s "$helper/scripts/upload-actions-artifact.py"
 
       - name: Install pinned Rust and native dependencies
@@ -65,13 +66,15 @@ jobs:
           rustfmt --version
           clippy-driver --version
 
-      - name: Transform all active nested test bodies
+      - name: Transform modules and repair current source integrity
         shell: bash
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
           python3 "$RUNNER_TEMP/game-helper/scripts/world-pr104-all-test-modules-transform.py" \
             "$world" --source-sha "$WORLD_SOURCE_SHA"
+          python3 "$RUNNER_TEMP/game-helper/scripts/world-pr104-source-integrity-repair.py" \
+            "$world"
           cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all
 
           python3 - "$world" <<'PY'
@@ -124,7 +127,11 @@ jobs:
           git -C "$world" config user.name "World read-only qualification"
           git -C "$world" config user.email "world-read-only-qualification@invalid"
           git -C "$world" add \
+            .github/workflows/trnm-world-authority-cutover.yml \
+            scripts/check-trnm-world-ci-integrity.py \
+            scripts/test-trnm-world-ci-integrity.py \
             scripts/contracts/trnm-world-include-migrations-v1.json \
+            trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs \
             trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs \
             trillionnium/crates/trnm-campaign-core/src/lib_parts/tests \
             trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json \
@@ -134,7 +141,7 @@ jobs:
             trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json
           GIT_AUTHOR_DATE='2026-09-10T00:00:00Z' \
           GIT_COMMITTER_DATE='2026-09-10T00:00:00Z' \
-            git -C "$world" commit -m "test(world): migrate all active nested test bodies to modules"
+            git -C "$world" commit -m "refactor(world): migrate test modules and reconcile source integrity"
           test -z "$(git -C "$world" status --porcelain=v1)"
           printf 'WORLD_TRANSFORMED_HEAD=%s\n' "$(git -C "$world" rev-parse HEAD)"
           printf 'WORLD_TRANSFORMED_TREE=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
@@ -169,11 +176,15 @@ jobs:
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          packet="$world/run/world-all-active-nested-test-modules-v1"
-          archive="$RUNNER_TEMP/world-all-active-nested-test-modules-v1.tar.gz"
+          packet="$world/run/world-all-active-nested-test-modules-v2"
+          archive="$RUNNER_TEMP/world-all-active-nested-test-modules-v2.tar.gz"
           mkdir -p "$packet"
           paths=(
+            .github/workflows/trnm-world-authority-cutover.yml
+            scripts/check-trnm-world-ci-integrity.py
+            scripts/test-trnm-world-ci-integrity.py
             scripts/contracts/trnm-world-include-migrations-v1.json
+            trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs
             trillionnium/crates/trnm-game-server/tests/p0_boundary_contract.rs
             trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json
             trillionnium/crates/trnm-campaign-core/src/lib_parts/tests/part_01.rs
@@ -201,22 +212,24 @@ jobs:
             printf 'candidate_tree=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
             printf 'rustc=%s\n' "$(rustc --version)"
             printf 'seams_migrated=10\n'
+            printf 'workflows_catalogued=14\n'
+            printf 'static_contexts=41\n'
             printf 'production_authorization=not_granted\n'
           } > "$packet/identity.txt"
           (
             cd "$world"
             sha256sum "${paths[@]}" \
-              run/world-all-active-nested-test-modules-v1/candidate.patch \
-              run/world-all-active-nested-test-modules-v1/identity.txt \
-              > run/world-all-active-nested-test-modules-v1/SHA256SUMS
+              run/world-all-active-nested-test-modules-v2/candidate.patch \
+              run/world-all-active-nested-test-modules-v2/identity.txt \
+              > run/world-all-active-nested-test-modules-v2/SHA256SUMS
           )
           tar --sort=name --format=gnu --mtime='UTC 2026-09-10' \
             --owner=0 --group=0 --numeric-owner \
             -czf "$archive" -C "$world" \
             "${paths[@]}" \
-            run/world-all-active-nested-test-modules-v1/candidate.patch \
-            run/world-all-active-nested-test-modules-v1/identity.txt \
-            run/world-all-active-nested-test-modules-v1/SHA256SUMS
+            run/world-all-active-nested-test-modules-v2/candidate.patch \
+            run/world-all-active-nested-test-modules-v2/identity.txt \
+            run/world-all-active-nested-test-modules-v2/SHA256SUMS
           test -s "$archive"
           sha256sum "$archive"
 
@@ -226,8 +239,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$RUNNER_TEMP/game-helper/scripts/upload-actions-artifact.py" \
-            "world-all-active-nested-test-modules-v1-${WORLD_SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            "$RUNNER_TEMP/world-all-active-nested-test-modules-v1.tar.gz" \
+            "world-all-active-nested-test-modules-v2-${WORLD_SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "$RUNNER_TEMP/world-all-active-nested-test-modules-v2.tar.gz" \
             --mime-type application/gzip
 
       - name: Emit retained artifact identity
