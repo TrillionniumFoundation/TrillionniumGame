@@ -1,4 +1,4 @@
-name: world-pr104-full-source-snapshot-v2
+name: world-pr104-full-source-snapshot-v3
 
 on:
   pull_request:
@@ -8,27 +8,25 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr104-full-source-snapshot-v2
+  group: world-pr104-full-source-snapshot-v3
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_SOURCE_SHA: '33339b28a6f53668672d1797109da6c7bf57db49'
-  GAME_UPLOADER_SHA: '425ee015d53800f3e2c2936f97ded9cdbacf7f14'
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
   snapshot:
-    name: world-pr104/full-source-snapshot-v2
+    name: world-pr104/full-source-snapshot-v3
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Fetch immutable World source and pinned artifact uploader
+      - name: Fetch immutable World source
         shell: bash
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          uploader="$RUNNER_TEMP/game-uploader"
           git init "$world"
           git -C "$world" remote add origin "https://github.com/${WORLD_REPOSITORY}.git"
           git -C "$world" fetch --no-tags --depth=1 origin "$WORLD_SOURCE_SHA"
@@ -36,13 +34,6 @@ jobs:
           test "$(git -C "$world" rev-parse HEAD)" = "$WORLD_SOURCE_SHA"
           test "$(git -C "$world" rev-parse 'HEAD^{tree}')" = "$(git -C "$world" write-tree)"
           test -z "$(git -C "$world" status --porcelain=v1)"
-
-          git init "$uploader"
-          git -C "$uploader" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C "$uploader" fetch --no-tags --depth=1 origin "$GAME_UPLOADER_SHA"
-          git -C "$uploader" checkout --detach FETCH_HEAD
-          test "$(git -C "$uploader" rev-parse HEAD)" = "$GAME_UPLOADER_SHA"
-          test -s "$uploader/scripts/upload-actions-artifact.py"
 
       - name: Build deterministic complete source snapshot
         shell: bash
@@ -91,32 +82,29 @@ jobs:
             --null --files-from="$packet/files.zlist"
           test -s "$archive"
           test "$(stat -c '%s' "$archive")" -le 67108864
-          sha256sum "$archive"
-          printf '%s\n' "$archive" > "$RUNNER_TEMP/world-source-archive-path"
+          sha256sum "$archive" | tee "$RUNNER_TEMP/world-source-archive.sha256"
 
       - name: Retain complete source snapshot
         id: retained-world-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$(cat "$RUNNER_TEMP/world-source-archive-path")"
-          python3 "$RUNNER_TEMP/game-uploader/scripts/upload-actions-artifact.py" \
-            "world-pr104-source-${WORLD_SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            "$archive" \
-            --mime-type application/gzip
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: world-pr104-source-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/world-pr104-source-${{ env.WORLD_SOURCE_SHA }}.tar.gz
+            ${{ runner.temp }}/world-source-archive.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
       - name: Emit retained artifact identity
         shell: bash
         env:
-          ARTIFACT_ID: ${{ steps.retained-world-source.outputs.artifact_id }}
-          ARTIFACT_SHA256: ${{ steps.retained-world-source.outputs.sha256 }}
-          ARTIFACT_SIZE: ${{ steps.retained-world-source.outputs.size_bytes }}
+          ARTIFACT_ID: ${{ steps.retained-world-source.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.retained-world-source.outputs.artifact-digest }}
         run: |
           set -euo pipefail
           test -n "$ARTIFACT_ID"
-          test -n "$ARTIFACT_SHA256"
-          test -n "$ARTIFACT_SIZE"
+          test -n "$ARTIFACT_DIGEST"
           printf 'WORLD_SOURCE_ARTIFACT_ID=%s\n' "$ARTIFACT_ID"
-          printf 'WORLD_SOURCE_ARTIFACT_SHA256=%s\n' "$ARTIFACT_SHA256"
-          printf 'WORLD_SOURCE_ARTIFACT_SIZE=%s\n' "$ARTIFACT_SIZE"
+          printf 'WORLD_SOURCE_ARTIFACT_DIGEST=%s\n' "$ARTIFACT_DIGEST"
           printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
