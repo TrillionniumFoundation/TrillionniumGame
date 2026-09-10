@@ -1,0 +1,90 @@
+name: cex-semantic-export-fc8643d-20260910
+
+on:
+  push:
+    branches:
+      - ops/cex-semantic-export-fc8643d-20260910
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cex-semantic-export-fc8643d-20260910
+  cancel-in-progress: false
+
+jobs:
+  export:
+    name: cex-semantic/exact-source-export
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CEX_REPOSITORY: TrillionniumFoundation/CEX
+      CEX_COMMIT: fc8643d76e7c9ca2691712e39985c7b2ae06ad74
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Fetch exact CEX source without persisting credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/cex"
+          rm -rf "$root"
+          git init "$root"
+          git -C "$root" remote add origin "https://github.com/${CEX_REPOSITORY}.git"
+          git -C "$root" fetch --no-tags --depth=1 origin "$CEX_COMMIT"
+          git -C "$root" checkout --detach FETCH_HEAD
+          test "$(git -C "$root" rev-parse HEAD)" = "$CEX_COMMIT"
+          test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
+
+      - name: Generate and structurally compare semantic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/cex"
+          mkdir -p "$GITHUB_WORKSPACE/export"
+          (
+            cd "$root"
+            python3 scripts/generate-repository-semantics.py --stdout
+          ) > "$GITHUB_WORKSPACE/export/repository-contract-semantics-v1.json"
+          python3 - "$root/docs/repository-contract-semantics-v1.json" \
+            "$GITHUB_WORKSPACE/export/repository-contract-semantics-v1.json" \
+            "$GITHUB_WORKSPACE/export/comparison.json" <<'PY'
+          import hashlib
+          import json
+          import sys
+
+          old_path, new_path, report_path = sys.argv[1:]
+          with open(old_path, encoding="utf-8") as handle:
+              old = json.load(handle)
+          with open(new_path, encoding="utf-8") as handle:
+              new = json.load(handle)
+          old_hash = old.pop("source_tree_sha256", None)
+          new_hash = new.pop("source_tree_sha256", None)
+          structurally_equal = old == new
+          report = {
+              "schema": "cex.semantic-export-comparison.v1",
+              "repository": "TrillionniumFoundation/CEX",
+              "commit": "fc8643d76e7c9ca2691712e39985c7b2ae06ad74",
+              "old_source_tree_sha256": old_hash,
+              "new_source_tree_sha256": new_hash,
+              "all_other_json_equal": structurally_equal,
+              "generated_file_sha256": "sha256:" + hashlib.sha256(
+                  open(new_path, "rb").read()
+              ).hexdigest(),
+              "production_authorization": "not_granted",
+          }
+          with open(report_path, "w", encoding="utf-8") as handle:
+              json.dump(report, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          print(json.dumps(report, sort_keys=True))
+          if not structurally_equal:
+              raise SystemExit("semantic contract changed outside source_tree_sha256")
+          PY
+          test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
+
+      - name: Upload exact generated contract
+        uses: actions/upload-artifact@043fb460e6257d1ca154e89a5e86196c74e480f8
+        with:
+          name: cex-semantic-fc8643d
+          path: export/**
+          if-no-files-found: error
+          retention-days: 1
