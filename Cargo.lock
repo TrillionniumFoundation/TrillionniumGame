@@ -1633,6 +1633,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "trnm-social-core"
+version = "0.1.0"
+dependencies = [
+ "trnm-identity-core",
+]
+
+[[package]]
 name = "trnm-storage-core"
 version = "0.1.0"
 dependencies = [
