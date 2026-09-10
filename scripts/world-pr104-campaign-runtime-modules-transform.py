@@ -171,6 +171,26 @@ def word_used(name: str, texts: list[str]) -> bool:
     return any(pattern.search(text) for text in texts)
 
 
+def macro_attribute_used(name: str, texts: list[str]) -> bool:
+    """Preserve identifiers referenced through string-valued Rust attributes.
+
+    rust_code_mask intentionally blanks string contents before ordinary symbol
+    analysis. Derive/helper attributes such as `#[serde(default = "helper")]`
+    are nevertheless compile-time references and must participate in the
+    module-dependency graph. Limit the raw-text fallback to attribute bodies so
+    comments and ordinary string literals cannot manufacture crate-root imports.
+    """
+    attribute = re.compile(r"#\s*\[[^\]]*\]", re.DOTALL)
+    quoted_name = re.compile(
+        rf'"(?:{IDENT}::)*{re.escape(name)}"'
+    )
+    return any(
+        quoted_name.search(match.group(0))
+        for text in texts
+        for match in attribute.finditer(text)
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
@@ -231,22 +251,37 @@ def main() -> int:
             changed.add(module_path)
 
     # Keep a private symbol at the crate root only when another module or the
-    # test surface actually references it. This avoids masking bad extraction
-    # with unused-import allowances.
-    masked_by_path = {
-        path: engine.rust_code_mask(path.read_text(encoding="utf-8", errors="strict"))
+    # test surface actually references it. Masked code catches ordinary Rust
+    # references; raw attribute text catches macro string references such as
+    # serde(default = "helper") without allowing comments/normal strings to
+    # create spurious imports.
+    raw_by_path = {
+        path: path.read_text(encoding="utf-8", errors="strict")
         for path in crate.rglob("*.rs")
+    }
+    masked_by_path = {
+        path: engine.rust_code_mask(text)
+        for path, text in raw_by_path.items()
     }
     for section, (public, internal) in list(exports.items()):
         excluded = set(section_paths[section])
         excluded.add(crate / "lib_parts" / section / "mod.rs")
-        outside = [
+        outside_masked = [
             text for path, text in masked_by_path.items()
+            if path not in excluded
+        ]
+        outside_raw = [
+            text for path, text in raw_by_path.items()
             if path not in excluded
         ]
         exports[section] = (
             public,
-            [name for name in internal if word_used(name, outside)],
+            [
+                name
+                for name in internal
+                if word_used(name, outside_masked)
+                or macro_attribute_used(name, outside_raw)
+            ],
         )
 
     lib = crate / "lib.rs"
@@ -357,6 +392,3 @@ def main() -> int:
         print(f"{section}: public={len(public)} cross_module_internal={len(internal)}")
     return 0
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())
