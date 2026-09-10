@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GAME_SOURCE_SHA: '1e5e8c6be5f66e7e7671ad3f0f6ca90ef2d95ee1'
-  GAME_SOURCE_TREE: '7a5c26f15563b01d879af755d88cc33003a9aa89'
+  GAME_SOURCE_SHA: '79ad65ad9fb98cd804c1f64cd3fb2b9d58bd898d'
+  GAME_SOURCE_TREE: '0b8d43bcb92e16b2e2b5cca26293fe7616337303'
   GAME_UPLOADER_SHA: '425ee015d53800f3e2c2936f97ded9cdbacf7f14'
 
 jobs:
