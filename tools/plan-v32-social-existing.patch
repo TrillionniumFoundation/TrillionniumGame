@@ -1,0 +1,193 @@
+diff --git a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -4,6 +4,7 @@ members = [
+   "crates/trnm-authority-core",
+   "crates/trnm-session-core",
+   "crates/trnm-identity-core",
++  "crates/trnm-social-core",
+   "crates/trnm-storage-core",
+   "crates/trnm-persistence-core",
+   "crates/trnm-persistence-pg",
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1536,6 +1536,13 @@ dependencies = [
+ name = "trnm-identity-core"
+ version = "0.1.0"
+ 
++[[package]]
++name = "trnm-social-core"
++version = "0.1.0"
++dependencies = [
++ "trnm-identity-core",
++]
++
+ [[package]]
+ name = "trnm-persistence-core"
+ version = "0.1.0"
+diff --git a/docs/development/RUST_PACKAGE_AUTHORITY.json b/docs/development/RUST_PACKAGE_AUTHORITY.json
+--- a/docs/development/RUST_PACKAGE_AUTHORITY.json
++++ b/docs/development/RUST_PACKAGE_AUTHORITY.json
+@@ -11,6 +11,7 @@
+       "crates/trnm-authority-core",
+       "crates/trnm-session-core",
+       "crates/trnm-identity-core",
++      "crates/trnm-social-core",
+       "crates/trnm-storage-core",
+       "crates/trnm-persistence-core",
+       "crates/trnm-persistence-pg",
+diff --git a/docs/status/MODULE_DOCUMENTATION.json b/docs/status/MODULE_DOCUMENTATION.json
+--- a/docs/status/MODULE_DOCUMENTATION.json
++++ b/docs/status/MODULE_DOCUMENTATION.json
+@@ -84,6 +84,24 @@
+       ],
+       "claim_credit": false
+     },
++    {
++      "id": "trnm-social-core",
++      "path": "crates/trnm-social-core",
++      "manifest": "crates/trnm-social-core/Cargo.toml",
++      "documentation": "crates/trnm-social-core/README.md",
++      "workspace": "root",
++      "lifecycle": "product-library",
++      "maturity": "social-domain-source-candidate",
++      "owner_role": "social",
++      "authority": "bounded social graph, group, chat and notification state machine",
++      "blocking_gaps": [
++        "GAP-P0-SERVER-001",
++        "GAP-P0-DATA-001",
++        "GAP-P0-SCOPE-001",
++        "GAP-P1-REVIEW-001"
++      ],
++      "claim_credit": false
++    },
+     {
+       "id": "trnm-storage-core",
+       "path": "crates/trnm-storage-core",
+@@ -390,9 +408,9 @@
+     }
+   ],
+   "summary": {
+-    "module_count": 22,
+-    "documented_count": 22,
+-    "root_workspace_count": 20,
++    "module_count": 23,
++    "documented_count": 23,
++    "root_workspace_count": 21,
+     "isolated_workspace_count": 2,
+     "undocumented_count": 0
+   }
+diff --git a/docs/status/CURRENT_STATE.json b/docs/status/CURRENT_STATE.json
+--- a/docs/status/CURRENT_STATE.json
++++ b/docs/status/CURRENT_STATE.json
+@@ -67,7 +67,8 @@
+     "long_lived_rust_workspace_converged": true,
+     "authority_and_storage_database_adapters_source_candidate": true,
+     "active_token_crypto_provider_composed": true,
+-    "identity_core_source_candidate": true
++    "identity_core_source_candidate": true,
++    "social_core_source_candidate": true
+   },
+   "scope": {
+     "baseline": "heroiclabs/nakama@v3.40.0",
+diff --git a/docs/status/IMPLEMENTATION_INVENTORY.json b/docs/status/IMPLEMENTATION_INVENTORY.json
+--- a/docs/status/IMPLEMENTATION_INVENTORY.json
++++ b/docs/status/IMPLEMENTATION_INVENTORY.json
+@@ -141,6 +141,47 @@
+       "evidence_ids": [],
+       "claim_credit": false
+     },
++    {
++      "id": "COMP-SOCIAL-CORE",
++      "path": "crates/trnm-social-core",
++      "kind": "rust-library",
++      "workstreams": [
++        "W5",
++        "W6"
++      ],
++      "status": "social-domain-source-candidate",
++      "implemented": [
++        "typed registered-user and social command identities",
++        "exact command receipt replay and changed-fingerprint rejection",
++        "friend request acceptance removal block and unblock transitions",
++        "bounded deterministic friend keyset pagination",
++        "group creation join approval roles leave ban and unban transitions",
++        "contiguous bounded group-chat sequence and scoped cursor model",
++        "bounded ordered notification create read delete and pagination state",
++        "post-commit outbox intent identities derived from command and ordinal",
++        "finite profile limits and whole-state invariant validation",
++        "payload-bearing debug output redacted to byte length"
++      ],
++      "missing": [
++        "complete users search import and public profile semantics",
++        "public HTTP gRPC gateway and complete RTAPI adapters",
++        "direct room and channel chat plus distributed presence integration",
++        "durable PostgreSQL and CockroachDB repositories and migrations",
++        "outbox worker delivery restart reconnect and response-loss evidence",
++        "complete denominator leaf mapping and official SDK oracle differential",
++        "conflict-free protocol data-integrity realtime security review"
++      ],
++      "blocking_gaps": [
++        "GAP-P0-SERVER-001",
++        "GAP-P0-DATA-001",
++        "GAP-P0-SCOPE-001",
++        "GAP-P1-REVIEW-001"
++      ],
++      "parity_ids": [],
++      "evidence_ids": [],
++      "claim_credit": false
++    },
+     {
+       "id": "COMP-STORAGE",
+       "path": "crates/trnm-storage-core",
+diff --git a/scripts/check-rust-foundation.py b/scripts/check-rust-foundation.py
+--- a/scripts/check-rust-foundation.py
++++ b/scripts/check-rust-foundation.py
+@@ -12,6 +12,7 @@ EXPECTED_MEMBERS = {
+     "crates/trnm-contracts",
+     "crates/trnm-authority-core",
+     "crates/trnm-identity-core",
++    "crates/trnm-social-core",
+     "crates/trnm-session-core",
+     "crates/trnm-storage-core",
+     "crates/trnm-persistence-core",
+@@ -34,6 +35,7 @@ PURE_CORE_MEMBERS = {
+     "crates/trnm-contracts",
+     "crates/trnm-authority-core",
+     "crates/trnm-identity-core",
++    "crates/trnm-social-core",
+     "crates/trnm-session-core",
+     "crates/trnm-storage-core",
+     "crates/trnm-persistence-core",
+@@ -47,6 +49,7 @@ EXPECTED_DEPENDENCIES: dict[str, dict[str, Any]] = {'crates/trnm-authority-core': {'trnm-contracts': {'path': '../trnm-contracts'}},
+  'crates/trnm-canonical-core': {'trnm-contracts': {'path': '../trnm-contracts'}},
+  'crates/trnm-contracts': {},
+  'crates/trnm-identity-core': {},
++ 'crates/trnm-social-core': {'trnm-identity-core': {'path': '../trnm-identity-core'}},
+  'crates/trnm-persistence-core': {'trnm-contracts': {'path': '../trnm-contracts'}},
+  'crates/trnm-persistence-pg': {'native-tls': '=0.2.18',
+                                 'openssl': '=0.10.81',
+diff --git a/scripts/check-workspace-convergence.py b/scripts/check-workspace-convergence.py
+--- a/scripts/check-workspace-convergence.py
++++ b/scripts/check-workspace-convergence.py
+@@ -14,6 +14,7 @@ LONG_LIVED = [
+     "trnm-contracts",
+     "trnm-authority-core",
+     "trnm-identity-core",
++    "trnm-social-core",
+     "trnm-session-core",
+     "trnm-storage-core",
+     "trnm-persistence-core",
+diff --git a/tests/control_plane/test_documentation_authority.py b/tests/control_plane/test_documentation_authority.py
+--- a/tests/control_plane/test_documentation_authority.py
++++ b/tests/control_plane/test_documentation_authority.py
+@@ -231,7 +231,7 @@ class DocumentationAuthorityTests(unittest.TestCase):
+         result = json.loads(completed.stdout)
+         self.assertEqual(result["status"], "passed")
+         self.assertEqual(result["current_human_document_count"], 9)
+-        self.assertEqual(result["module_document_count"], 22)
++        self.assertEqual(result["module_document_count"], 23)
+         self.assertEqual(result["undocumented_module_count"], 0)
+         self.assertGreater(result["repository_markdown_count"], 21)
+         self.assertEqual(result["historical_markdown_count"], 0)
