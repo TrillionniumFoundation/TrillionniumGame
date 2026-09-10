@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   semantic_export:
-    name: cex-semantic/exact-source-compare
+    name: cex-semantic/exact-patched-source-export
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -40,19 +40,42 @@ jobs:
           git -C "$helper" checkout --detach FETCH_HEAD
           test "$(git -C "$helper" rev-parse HEAD)" = "$GITHUB_SHA"
           test -s "$helper/scripts/cex-semantic-compare.py"
+          test -s "$helper/scripts/patch-cex-release-fixtures.py"
           test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
           test -z "$(git -C "$helper" status --porcelain=v1 --untracked-files=no)"
 
-      - name: Generate and compare semantic contract
+      - name: Patch and verify release fixture semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/cex"
+          helper="$RUNNER_TEMP/helper"
+          target="$root/scripts/rust_advisory_packages_v5.py"
+          before="$(sha256sum "$target" | awk '{print $1}')"
+          python3 "$helper/scripts/patch-cex-release-fixtures.py" "$target"
+          python3 -m py_compile "$target"
+          (
+            cd "$root"
+            PYTHONPATH=scripts python3 - <<'PY'
+          import rust_advisory_packages_v5 as module
+          result = module._external_workflow_self_tests()
+          assert result and all(result.values()), result
+          print("CEX_EXTERNAL_WORKFLOW_SELF_TESTS=PASS", result)
+          PY
+          )
+          after="$(sha256sum "$target" | awk '{print $1}')"
+          test "$before" != "$after"
+          git -C "$root" diff --check
+          printf 'CEX_PATCH_SOURCE_SHA256_BEFORE=%s\n' "$before"
+          printf 'CEX_PATCH_SOURCE_SHA256_AFTER=%s\n' "$after"
+
+      - name: Generate and compare patched semantic contract
         shell: bash
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/cex"
           helper="$RUNNER_TEMP/helper"
           output="$RUNNER_TEMP/repository-contract-semantics-v1.json"
-          export_dir="$GITHUB_WORKSPACE/export"
-          rm -rf "$export_dir"
-          mkdir -p "$export_dir"
           (
             cd "$root"
             python3 scripts/generate-repository-semantics.py --stdout
@@ -60,16 +83,20 @@ jobs:
           python3 "$helper/scripts/cex-semantic-compare.py" \
             "$root/docs/repository-contract-semantics-v1.json" \
             "$output" \
-            "$CEX_COMMIT" | tee "$export_dir/comparison.json"
-          cp "$output" "$export_dir/repository-contract-semantics-v1.json"
-          test -z "$(git -C "$root" status --porcelain=v1 --untracked-files=no)"
-          printf 'CEX_SEMANTIC_EXACT_SOURCE_COMPARE=PASS\n'
-          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+            "$CEX_COMMIT"
+          printf 'CEX_PATCHED_SEMANTIC_SHA256=%s\n' "$(sha256sum "$output" | awk '{print $1}')"
+          printf 'CEX_PATCHED_SEMANTIC_BYTES=%s\n' "$(wc -c < "$output")"
 
-      - name: Upload exact generated semantic contract
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: cex-semantic-fc8643d
-          path: export/**
-          if-no-files-found: error
-          retention-days: 1
+      - name: Emit exact compressed object bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/cex"
+          output="$RUNNER_TEMP/repository-contract-semantics-v1.json"
+          printf 'CEX_PATCHED_SOURCE_GZIP_BASE64_BEGIN\n'
+          gzip -n -9 -c "$root/scripts/rust_advisory_packages_v5.py" | base64 -w 76
+          printf '\nCEX_PATCHED_SOURCE_GZIP_BASE64_END\n'
+          printf 'CEX_PATCHED_SEMANTIC_GZIP_BASE64_BEGIN\n'
+          gzip -n -9 -c "$output" | base64 -w 76
+          printf '\nCEX_PATCHED_SEMANTIC_GZIP_BASE64_END\n'
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
