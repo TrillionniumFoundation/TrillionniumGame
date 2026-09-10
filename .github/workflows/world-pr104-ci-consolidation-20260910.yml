@@ -1,4 +1,4 @@
-name: world-pr104-ci-consolidation-qualification-v1
+name: world-pr104-ci-consolidation-qualification-v2
 
 on:
   pull_request:
@@ -8,13 +8,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr104-ci-consolidation-qualification-v1
+  group: world-pr104-ci-consolidation-qualification-v2
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
   WORLD_SOURCE_SHA: '33339b28a6f53668672d1797109da6c7bf57db49'
-  GAME_HELPER_SHA: 'f0304fa4d2e23c9cbbd3f5c9c6b0514c4f088320'
+  GAME_HELPER_SHA: '897c49157042e9be727c22c9f420ad623776ba84'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: '0'
@@ -24,7 +24,7 @@ env:
 
 jobs:
   qualify:
-    name: world-pr104/ci-consolidation-v1
+    name: world-pr104/ci-consolidation-v2
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
@@ -47,6 +47,7 @@ jobs:
           git -C "$helper" checkout --detach FETCH_HEAD
           test "$(git -C "$helper" rev-parse HEAD)" = "$GAME_HELPER_SHA"
           test -s "$helper/scripts/world-pr104-ci-consolidation-transform.py"
+          test -s "$helper/scripts/world-pr104-ci-consolidation-parent-count-fix.py"
 
       - name: Apply closed-world workflow consolidation
         shell: bash
@@ -54,6 +55,7 @@ jobs:
           set -euo pipefail
           world="$RUNNER_TEMP/world"
           python3 "$RUNNER_TEMP/game-helper/scripts/world-pr104-ci-consolidation-transform.py" "$world"
+          python3 "$RUNNER_TEMP/game-helper/scripts/world-pr104-ci-consolidation-parent-count-fix.py" "$world"
           git -C "$world" diff --check
           python3 -m py_compile \
             "$world/scripts/check-trnm-world-ci-integrity.py" \
