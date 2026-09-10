@@ -1,4 +1,4 @@
-name: world-pr127-game-server-runtime-modules-v3
+name: world-pr127-game-server-runtime-modules-v4
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr127-game-server-runtime-modules-v3
+  group: world-pr127-game-server-runtime-modules-v4
   cancel-in-progress: true
 
 env:
@@ -25,7 +25,7 @@ env:
 
 jobs:
   qualify:
-    name: world-pr127/game-server-runtime-modules-v3
+    name: world-pr127/game-server-runtime-modules-v4
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
@@ -81,9 +81,6 @@ jobs:
           common="$RUNNER_TEMP/common-helper"
           stack="$RUNNER_TEMP/stack-helper"
 
-          # Apply only the mechanical nested-test conversion. The historical
-          # qualified wrapper also rewrote now-retired workflows and therefore
-          # is intentionally not valid for World PR #127.
           python3 "$common/scripts/world-pr104-all-test-modules-transform.py" \
             "$world" --source-sha "$WORLD_SOURCE_SHA"
           python3 "$stack/scripts/world-pr104-campaign-runtime-modules-transform.py" \
@@ -93,9 +90,6 @@ jobs:
           python3 "$stack/scripts/world-pr104-game-server-runtime-modules-transform.py" \
             "$world" --completed-commit "$WORLD_SOURCE_SHA" --helper-root "$stack/scripts"
 
-          # Preserve WebSocket close semantics while avoiding result_large_err
-          # from a discarded closure result under Rust 1.98.1. Accept exactly
-          # the old or already-repaired form and fail on any third shape.
           python3 - "$world" <<'PY'
           from pathlib import Path
           import hashlib
@@ -103,7 +97,32 @@ jobs:
           import sys
 
           root = Path(sys.argv[1])
-          online = root / 'trillionnium/crates/trnm-game-server/src/bin/trnm-online-e2e.rs'
+          crate = root / 'trillionnium/crates/trnm-game-server/src'
+          authority = crate / 'lib_parts/authority_foundation/part_01.rs'
+          lib = crate / 'lib.rs'
+
+          # Before decomposition these imports lived in the common crate-root
+          # namespace and were deliberately consumed by all ownership sections.
+          # Move, rather than duplicate, that exact block back to lib.rs so
+          # sibling modules and nested tests preserve the reviewed name scope.
+          authority_source = authority.read_text(encoding='utf-8', errors='strict')
+          import_start = authority_source.index('use axum::extract::DefaultBodyLimit;')
+          const_start = authority_source.index('const PLAYER_SESSION_HEADER')
+          imports = authority_source[import_start:const_start].rstrip() + '\n'
+          if 'use uuid::Uuid;' not in imports or 'use tokio::sync::' not in imports:
+              raise SystemExit('shared import block boundary drift')
+          authority_source = authority_source[:import_start] + authority_source[const_start:]
+          authority.write_text(authority_source, encoding='utf-8')
+
+          lib_source = lib.read_text(encoding='utf-8', errors='strict')
+          anchor = 'mod stream;\n'
+          if lib_source.count(anchor) != 1:
+              raise SystemExit('crate-root shared import insertion anchor drift')
+          if 'use axum::extract::DefaultBodyLimit;' in lib_source:
+              raise SystemExit('shared imports already present at crate root')
+          lib.write_text(lib_source.replace(anchor, anchor + '\n' + imports), encoding='utf-8')
+
+          online = crate / 'bin/trnm-online-e2e.rs'
           source = online.read_text(encoding='utf-8', errors='strict')
           old = '    let _ = tokio::task::block_in_place(|| state_stream.close(None));'
           new = '    tokio::task::block_in_place(|| {\n        let _ = state_stream.close(None);\n    });'
@@ -115,8 +134,6 @@ jobs:
 
           cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all
 
-          # Rebind every closed-world direct-source record to the final
-          # rustfmt bytes, rather than trusting an intermediate transform.
           python3 - "$world" <<'PY'
           from pathlib import Path
           import hashlib
@@ -160,8 +177,8 @@ jobs:
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          packet="$world/run/world-game-server-runtime-modules-v3"
-          archive="$RUNNER_TEMP/world-game-server-runtime-modules-v3.tar.gz"
+          packet="$world/run/world-game-server-runtime-modules-v4"
+          archive="$RUNNER_TEMP/world-game-server-runtime-modules-v4.tar.gz"
           mkdir -p "$packet"
           git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" > "$packet/candidate.patch"
           test -s "$packet/candidate.patch"
@@ -179,23 +196,23 @@ jobs:
             printf 'production_authorization=not_granted\n'
           } > "$packet/identity.txt"
           (cd "$world" && sha256sum \
-            run/world-game-server-runtime-modules-v3/candidate.patch \
-            run/world-game-server-runtime-modules-v3/identity.txt \
-            > run/world-game-server-runtime-modules-v3/SHA256SUMS)
+            run/world-game-server-runtime-modules-v4/candidate.patch \
+            run/world-game-server-runtime-modules-v4/identity.txt \
+            > run/world-game-server-runtime-modules-v4/SHA256SUMS)
           tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
             --owner=0 --group=0 --numeric-owner \
             -czf "$archive" -C "$world" \
-            run/world-game-server-runtime-modules-v3/candidate.patch \
-            run/world-game-server-runtime-modules-v3/identity.txt \
-            run/world-game-server-runtime-modules-v3/SHA256SUMS
+            run/world-game-server-runtime-modules-v4/candidate.patch \
+            run/world-game-server-runtime-modules-v4/identity.txt \
+            run/world-game-server-runtime-modules-v4/SHA256SUMS
           test -s "$archive"
 
       - name: Retain unqualified candidate artifact
         id: candidate-artifact
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-game-server-runtime-modules-v3-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-game-server-runtime-modules-v3.tar.gz
+          name: world-game-server-runtime-modules-v4-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-game-server-runtime-modules-v4.tar.gz
           mime_type: application/gzip
 
       - name: Emit candidate artifact identity
@@ -220,7 +237,7 @@ jobs:
         run: |
           set -uo pipefail
           world="$RUNNER_TEMP/world"
-          diagnostics="$RUNNER_TEMP/world-game-server-runtime-modules-v3-diagnostics"
+          diagnostics="$RUNNER_TEMP/world-game-server-runtime-modules-v4-diagnostics"
           mkdir -p "$diagnostics"
 
           set +e
@@ -262,8 +279,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          diagnostics="$RUNNER_TEMP/world-game-server-runtime-modules-v3-diagnostics"
-          archive="$RUNNER_TEMP/world-game-server-runtime-modules-v3-diagnostics.tar.gz"
+          diagnostics="$RUNNER_TEMP/world-game-server-runtime-modules-v4-diagnostics"
+          archive="$RUNNER_TEMP/world-game-server-runtime-modules-v4-diagnostics.tar.gz"
           mkdir -p "$diagnostics"
           if test ! -s "$diagnostics/status.txt"; then
             {
@@ -274,21 +291,25 @@ jobs:
               printf 'production_authorization=not_granted\n'
             } > "$diagnostics/status.txt"
           fi
-          find "$diagnostics" -maxdepth 1 -type f ! -name SHA256SUMS \
-            -print0 | sort -z | xargs -0 -r sha256sum \
-            > "$diagnostics/SHA256SUMS"
+          (
+            cd "$RUNNER_TEMP"
+            find world-game-server-runtime-modules-v4-diagnostics \
+              -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+              | sort -z | xargs -0 -r sha256sum \
+              > world-game-server-runtime-modules-v4-diagnostics/SHA256SUMS
+          )
           tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
             --owner=0 --group=0 --numeric-owner \
             -czf "$archive" -C "$RUNNER_TEMP" \
-            world-game-server-runtime-modules-v3-diagnostics
+            world-game-server-runtime-modules-v4-diagnostics
           test -s "$archive"
 
       - name: Upload qualification diagnostics
         if: always()
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-game-server-runtime-modules-v3-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-game-server-runtime-modules-v3-diagnostics.tar.gz
+          name: world-game-server-runtime-modules-v4-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-game-server-runtime-modules-v4-diagnostics.tar.gz
           mime_type: application/gzip
 
       - name: Qualify transformed World truth and source
