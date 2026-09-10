@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GAME_SOURCE_SHA: 'c78f20a02a475c2ddc1a376fd24b79930d3c7e29'
-  GAME_SOURCE_TREE: '57bf49f0e6cc9996eb6444c96565d6be8987d38d'
+  GAME_SOURCE_SHA: '1abba3f29f0bba0720b56a307c6000e04f33c07a'
+  GAME_SOURCE_TREE: '23de20a315d38239d8a9d67ff5a5b327778bde2c'
   GAME_UPLOADER_SHA: '425ee015d53800f3e2c2936f97ded9cdbacf7f14'
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Fetch exact controller source and pinned uploader
+      - name: Fetch exact Surface 3 source and pinned uploader
         shell: bash
         run: |
           set -euo pipefail
@@ -72,7 +72,7 @@ jobs:
             printf 'tree=%s\n' "$(git -C "$source_tree" rev-parse "${GAME_SOURCE_SHA}^{tree}")"
             printf 'archive_sha256=%s\n' "$(sha256sum "$archive" | awk '{print $1}')"
             printf 'archive_bytes=%s\n' "$(stat -c %s "$archive")"
-            printf 'scope=diagnostic_controller_snapshot\n'
+            printf 'scope=diagnostic_surface3_snapshot\n'
             printf 'production_authorization=not_granted\n'
           } > "$identity"
           cat "$identity"
