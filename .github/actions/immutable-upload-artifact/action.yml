@@ -29,6 +29,10 @@ inputs:
     description: Include hidden files.
     required: false
     default: 'false'
+  archive:
+    description: Archive matching files before upload.
+    required: false
+    default: 'true'
 
 outputs:
   artifact-id:
