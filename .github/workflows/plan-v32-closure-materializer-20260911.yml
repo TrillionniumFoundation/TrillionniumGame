@@ -16,6 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  MATERIALIZER_REVISION: '5'
   TARGET_BASE_SHA: '79ad65ad9fb98cd804c1f64cd3fb2b9d58bd898d'
   TARGET_BASE_TREE: '0b8d43bcb92e16b2e2b5cca26293fe7616337303'
   CONTROLLER_SHA: 'c78f20a02a475c2ddc1a376fd24b79930d3c7e29'
@@ -49,6 +50,7 @@ jobs:
           git -C "$driver" checkout --detach FETCH_HEAD
           test "$(git -C "$driver" rev-parse HEAD)" = "$GITHUB_SHA"
           test -s "$driver/tools/materialize_plan_v32_closure.py"
+          test -s "$driver/tools/repair_plan_v32_remote_unix.py"
 
           git init "$target"
           git -C "$target" remote add origin "$remote"
@@ -74,6 +76,13 @@ jobs:
           python3 "$DRIVER_ROOT/tools/materialize_plan_v32_closure.py" \
             --root "$TARGET_ROOT" \
             --controller "$CONTROLLER_ROOT"
+          python3 "$DRIVER_ROOT/tools/repair_plan_v32_remote_unix.py" \
+            --root "$TARGET_ROOT"
+          (
+            cd "$TARGET_ROOT"
+            python3 scripts/check-remote-mac-unix-transport.py
+            python3 -m unittest tests.control_plane.test_remote_mac_unix_transport -q
+          )
           git -C "$TARGET_ROOT" diff --check
           test -n "$(git -C "$TARGET_ROOT" status --porcelain)"
           if git -C "$TARGET_ROOT" status --porcelain | grep -E '(^| )\.github/workflows/'; then
@@ -155,6 +164,7 @@ jobs:
             printf 'BASE_COMMIT=%s\n' "$TARGET_BASE_SHA"
             printf 'BASE_TREE=%s\n' "$TARGET_BASE_TREE"
             printf 'CONTROLLER_COMMIT=%s\n' "$CONTROLLER_SHA"
+            printf 'MATERIALIZER_REVISION=%s\n' "$MATERIALIZER_REVISION"
             printf 'HISTORY_REWRITTEN=false\n'
             printf 'ACCEPTED_EVIDENCE=false\n'
             printf 'PRODUCTION_READY=false\n'
