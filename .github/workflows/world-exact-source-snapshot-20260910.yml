@@ -1,6 +1,7 @@
 name: world-exact-source-snapshot-20260910
 
 on:
+  pull_request:
   push:
     branches:
       - ops/world-exact-source-snapshot-20260910
@@ -10,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-exact-source-snapshot-20260910
+  group: world-exact-source-snapshot-20260910-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
