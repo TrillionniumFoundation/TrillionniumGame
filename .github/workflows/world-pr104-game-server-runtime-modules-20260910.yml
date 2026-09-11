@@ -1,4 +1,4 @@
-name: world-pr127-complete-ownership-v12-retry
+name: world-pr127-complete-ownership-v13
 
 on:
   pull_request:
@@ -8,12 +8,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr127-complete-ownership-v12-retry
+  group: world-pr127-complete-ownership-v13
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
-  WORLD_SOURCE_SHA: 'ad1d1ea3b08090e1d4335b75ec3e036878715491'
+  WORLD_SOURCE_SHA: '8b7f426fbedfdee65c7a5904e072ffe55e82bb56'
   COMMON_HELPER_SHA: 'b02fef9a86b77c8babd19a7dd469081095ea2e90'
   STACK_HELPER_SHA: '3aa075564891e4f7abba57c682dafc9f6b06c7b2'
   RUSTUP_TOOLCHAIN: '1.98.1'
@@ -25,7 +25,7 @@ env:
 
 jobs:
   qualify:
-    name: world-pr127/complete-ownership-v12-retry
+    name: world-pr127/complete-ownership-v13
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
@@ -149,7 +149,7 @@ jobs:
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          diagnostics="$RUNNER_TEMP/world-complete-ownership-v12-retry-diagnostics"
+          diagnostics="$RUNNER_TEMP/world-complete-ownership-v13-diagnostics"
           mkdir -p "$diagnostics"
           cd "$world"
           {
@@ -168,7 +168,7 @@ jobs:
             bash scripts/run-trnm-world-v6-qualification-v2.sh truth
             bash scripts/run-trnm-world-v6-qualification-v2.sh source
             test -z "$(git status --porcelain=v1 --untracked-files=no)"
-            printf 'WORLD_COMPLETE_OWNERSHIP_V12_RETRY=PASS\n'
+            printf 'WORLD_COMPLETE_OWNERSHIP_V13=PASS\n'
             printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
           } 2>&1 | tee "$diagnostics/qualification.log"
 
@@ -177,8 +177,8 @@ jobs:
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          packet="$RUNNER_TEMP/world-complete-ownership-v12-retry"
-          diagnostics="$RUNNER_TEMP/world-complete-ownership-v12-retry-diagnostics"
+          packet="$RUNNER_TEMP/world-complete-ownership-v13"
+          diagnostics="$RUNNER_TEMP/world-complete-ownership-v13-diagnostics"
           mkdir -p "$packet" "$diagnostics"
           git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" \
             > "$packet/candidate.patch"
@@ -213,23 +213,23 @@ jobs:
             -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
           tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
             --owner=0 --group=0 --numeric-owner \
-            -czf "$RUNNER_TEMP/world-complete-ownership-v12-retry.tar.gz" \
-            -C "$RUNNER_TEMP" world-complete-ownership-v12-retry
+            -czf "$RUNNER_TEMP/world-complete-ownership-v13.tar.gz" \
+            -C "$RUNNER_TEMP" world-complete-ownership-v13
           tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
             --owner=0 --group=0 --numeric-owner \
-            -czf "$RUNNER_TEMP/world-complete-ownership-v12-retry-diagnostics.tar.gz" \
-            -C "$RUNNER_TEMP" world-complete-ownership-v12-retry-diagnostics
+            -czf "$RUNNER_TEMP/world-complete-ownership-v13-diagnostics.tar.gz" \
+            -C "$RUNNER_TEMP" world-complete-ownership-v13-diagnostics
 
       - name: Upload qualified candidate
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-complete-ownership-v12-retry-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-complete-ownership-v12-retry.tar.gz
+          name: world-complete-ownership-v13-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-complete-ownership-v13.tar.gz
           mime_type: application/gzip
 
       - name: Upload qualification diagnostics
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-complete-ownership-v12-retry-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-complete-ownership-v12-retry-diagnostics.tar.gz
+          name: world-complete-ownership-v13-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-complete-ownership-v13-diagnostics.tar.gz
           mime_type: application/gzip
