@@ -14,11 +14,34 @@ class StorageIntegrityContractTests(unittest.TestCase):
         self.assertIn("let integrity_digest = IntegrityDigest::from_value(&operation.value);", source)
 
     def test_persistence_derives_and_rechecks_sha256(self) -> None:
-        source = (ROOT / "crates/trnm-persistence-pg/src/storage.rs").read_text(encoding="utf-8")
+        storage_root = ROOT / "crates/trnm-persistence-pg/src"
+        source = (storage_root / "storage.rs").read_text(encoding="utf-8")
+        source += "".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((storage_root / "storage_parts").glob("*.rs"))
+        )
         self.assertIn("let integrity_digest = IntegrityDigest::from_value(&operation.value);", source)
         self.assertIn("verify_storage_integrity(&value, integrity_digest)?;", source)
         self.assertIn('data_loss("storage_integrity_digest_mismatch")', source)
         self.assertNotIn("operation.integrity_digest", source)
+
+    def test_listing_cursor_binds_exact_actor_owner_and_key_scope(self) -> None:
+        storage_root = ROOT / "crates/trnm-persistence-pg/src"
+        source = (storage_root / "storage.rs").read_text(encoding="utf-8")
+        source += "".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((storage_root / "storage_parts").glob("*.rs"))
+        )
+        self.assertIn(
+            "type StorageListCursor = (Actor, Option<UserId>, StorageObjectKey);",
+            source,
+        )
+        self.assertIn("after: Option<&StorageListCursor>", source)
+        self.assertIn("type StorageListPage = (Vec<StorageObject>, Option<StorageListCursor>);", source)
+        self.assertIn("cursor.0 != actor", source)
+        self.assertIn("cursor.1 != owner", source)
+        self.assertIn("cursor.2.collection() != collection", source)
+        self.assertNotIn("after: Option<&StorageObjectKey>", source)
 
     def test_sha256_dependency_is_exact_and_registered(self) -> None:
         manifest = (ROOT / "crates/trnm-storage-core/Cargo.toml").read_text(encoding="utf-8")

@@ -19,12 +19,18 @@ POOL_PARTS = tuple(
 )
 SERVER_ROOT = PERSISTENCE_ROOT / "bin"
 MODULE_ROOT = SERVER_ROOT / "trnm_server"
+AUTHORITY_STORAGE_ROOT = ROOT / "crates/trnm-persistence-pg/tests/authority_storage.rs"
+AUTHORITY_STORAGE_PARTS = tuple(
+    AUTHORITY_STORAGE_ROOT.parent / "authority_storage_parts" / name
+    for name in ("00_helpers.rs", "01_authority.rs", "02_storage_batch.rs", "03_storage_list.rs")
+)
 REQUIRED_FILES = {
     POOL_ROOT,
     *POOL_PARTS,
     PERSISTENCE_ROOT / "session.rs",
     PERSISTENCE_ROOT / "storage.rs",
-    ROOT / "crates/trnm-persistence-pg/tests/authority_storage.rs",
+    AUTHORITY_STORAGE_ROOT,
+    *AUTHORITY_STORAGE_PARTS,
     PERSISTENCE_ROOT / "auth.rs",
     PERSISTENCE_ROOT / "authority.rs",
     SERVER_ROOT / "trnm-server.rs",
@@ -192,6 +198,20 @@ def main() -> int:
         fail("pool.rs must remain the exact four-part include authority")
     pool_source = "\n".join(
         [sources[pool_root_key], *(sources[part.relative_to(ROOT)] for part in POOL_PARTS)]
+    )
+
+    authority_storage_root_key = AUTHORITY_STORAGE_ROOT.relative_to(ROOT)
+    expected_authority_storage_root = "\n".join(
+        f'include!("authority_storage_parts/{part.name}");'
+        for part in AUTHORITY_STORAGE_PARTS
+    ) + "\n"
+    if sources[authority_storage_root_key] != expected_authority_storage_root:
+        fail("authority_storage.rs must remain the exact four-part include authority")
+    authority_storage_source = "\n".join(
+        [
+            sources[authority_storage_root_key],
+            *(sources[part.relative_to(ROOT)] for part in AUTHORITY_STORAGE_PARTS),
+        ]
     )
     combined = "\n".join(sources.values())
 
@@ -401,7 +421,12 @@ def main() -> int:
     if not (0 <= cancel_position < drop_position < join_position):
         fail("shutdown cancellation must precede queue close and worker join")
 
-    test_names = set(re.findall(r"fn\s+([a-z0-9_]+)\s*\(\)\s*\{", combined))
+    test_names = set(
+        re.findall(
+            r"fn\s+([a-z0-9_]+)\s*\(\)\s*\{",
+            combined + "\n" + authority_storage_source,
+        )
+    )
     missing_tests = sorted(REQUIRED_TESTS - test_names)
     if missing_tests:
         fail(f"missing tests: {missing_tests}")

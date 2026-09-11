@@ -2,29 +2,29 @@
   "schema": "trillionnium.current-state.v1",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "observed_at": "2026-09-10T08:15:00Z",
+  "observed_at": "2026-09-10T21:15:00Z",
   "authority": {
     "repository": "TrillionniumFoundation/TrillionniumGame",
     "repository_id": 1323087470,
     "default_branch": "main",
-    "audited_main_commit": "425ee015d53800f3e2c2936f97ded9cdbacf7f14",
-    "audited_main_tree": "ed47de87507feeef60795c997bce3a6e88699e9d",
-    "candidate_branch": "feature/plan-v32-social-core-20260910",
-    "candidate_pull_request": 164,
+    "audited_main_commit": "52ed31692bee5c7a510c69df791c262b8646d20a",
+    "audited_main_tree": "a9828e6862d2312981367182f4406cd60cdf3e62",
+    "candidate_branch": "feature/plan-v32-storage-api-core-20260910",
+    "candidate_pull_request": 185,
     "candidate_commit": null,
     "candidate_tree": null,
-    "candidate_identity_rule": "The tracked state binds stacked Plan v3.2 Surface 2 to pull request 164 without guessing its self-referential final commit. Surface 1 must remain the exact base ancestor; GitHub head/tree and actual prospective-merge metadata are execution authority, and any parent, head, base or tree movement requires fresh qualification.",
-    "last_admitted_pull_request": 168
+    "candidate_identity_rule": "The tracked state binds Plan v3.2 Surface 3 to pull request 185 without guessing its self-referential final commit. GitHub pull-request metadata, exact head/tree and the actual prospective merge object are execution authority; any base, head or tree movement invalidates prior qualification and requires a fresh packet.",
+    "last_admitted_pull_request": 164
   },
   "repository_governance": {
     "main_protected": true,
     "required_checks_configured": true,
     "required_aggregate_context": "trillionnium-game-merge-gate",
     "required_check_enforcement_level": "everyone",
-    "last_qualified_source_head": "541016f34f2dbaf7c2be10cd45afdd04223c49f2",
-    "last_qualified_source_tree": "1c171f4731be313978c80555b5ad0f3af88be593",
-    "last_successful_aggregate_run_id": 34345167796,
-    "last_successful_prospective_merge_run_id": 34345167891,
+    "last_qualified_source_head": "f2cc49308161c8705f56afe499697a2fdec37072",
+    "last_qualified_source_tree": "a9828e6862d2312981367182f4406cd60cdf3e62",
+    "last_successful_aggregate_run_id": 34527577267,
+    "last_successful_prospective_merge_run_id": 34527516855,
     "native_pull_request_workflow_trigger_observed": true,
     "native_workflow_job_collection_nonempty": true,
     "codeowner_routing_source_candidate": true,
@@ -32,7 +32,7 @@
     "full_review_policy_read_back": false,
     "administrator_and_bypass_policy_read_back": false,
     "negative_no_bypass_rehearsal_accepted": false,
-    "status": "Plan v3.2 convergence and post-merge truth are admitted on main. Surface 1 and stacked Surface 2 are source candidates undergoing exact-object qualification; external governance and conflict-free specialist acceptance remain open.",
+    "status": "Plan v3.2 Surfaces 1 and 2 were admitted through ordinary protected pull requests 163 and 164. Surface 3 is the singular active source candidate; retained post-merge evidence, complete administrative read-back and conflict-free specialist acceptance remain open.",
     "blocking_gaps": [
       "GAP-P0-GOV-001",
       "GAP-P1-REVIEW-001"
@@ -71,7 +71,10 @@
     "active_token_crypto_provider_composed": true,
     "identity_core_source_candidate": true,
     "social_core_source_candidate": true,
-    "social_receipt_scope_source_repaired": true
+    "social_receipt_scope_source_repaired": true,
+    "storage_listing_source_candidate": true,
+    "storage_listing_cursor_scope_bound": true,
+    "storage_listing_live_profile_tests_present": true
   },
   "scope": {
     "baseline": "heroiclabs/nakama@v3.40.0",
@@ -113,13 +116,13 @@
     }
   },
   "active_priority": [
-    "complete exact-head and prospective-merge qualification and conflict-free review for Plan v3.2 Surface 1",
-    "qualify stacked Plan v3.2 Surface 2 only against the exact admitted Surface 1 parent",
-    "retain and independently accept each post-merge main packet",
+    "qualify the scope-bound Surface 3 storage listing candidate on one exact head and actual prospective merge object",
+    "obtain current-head database storage protocol and security review before ordinary protected admission",
+    "retain and independently accept post-merge main packets for admitted surfaces",
     "read back complete branch and ruleset review freshness CODEOWNER conversation and bypass policy",
     "provision conflict-free security database protocol realtime compatibility and SRE reviewers",
     "classify and independently lock every D0-D8 leaf and obtain separate global SG1 acceptance",
-    "complete the remaining storage competition multiplayer protocol RTAPI Runtime Console provider IAP migration HA endurance canary cutover and retirement surfaces"
+    "complete the remaining competition multiplayer protocol RTAPI Runtime Console provider IAP migration HA endurance canary cutover and retirement surfaces"
   ],
   "fail_closed": true
 }

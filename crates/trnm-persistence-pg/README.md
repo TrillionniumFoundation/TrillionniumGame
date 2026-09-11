@@ -157,3 +157,9 @@ These paths are source candidates. PostgreSQL/CockroachDB live execution, exact-
 ## Canonical storage integrity boundary
 
 Storage write callers provide exact value bytes, public OCC intent and ACLs; they do not provide an internal integrity digest. Both the in-memory domain boundary and this adapter derive SHA-256 over the exact value bytes. The adapter persists that digest separately from the Nakama-compatible public MD5 content version and recomputes SHA-256 on every database read, returning `DataLoss / storage_integrity_digest_mismatch` before an object can be authorized or returned when stored bytes disagree. This is corruption detection, not source authentication or a MAC, and does not replace database access control, encryption, backup validation or immutable-oracle differential evidence.
+
+## Scope-bound storage listing cursor
+
+`PgRepository::list_storage_objects` returns a scope-bound `(StorageActor, Option<UserId>, StorageObjectKey)` tuple rather than a bare object key. The cursor binds the exact `StorageActor`, optional owner filter and last `(collection, object_key, user_id)` key that produced the page. Continuation under a different authenticated actor, owner scope or collection fails closed with `storage_cursor_scope_mismatch`; zero actors and zero owner identities are rejected before SQL execution. ACL filtering remains inside the query before the bounded `limit + 1` sentinel is applied.
+
+This is an in-process source contract. Public HTTP/gRPC adapters must encode and authenticate the complete cursor tuple and reject tampering, profile changes and cross-project replay. The typed Rust value does not by itself establish Nakama wire compatibility, snapshot isolation across concurrent mutations, a stable public cursor format or accepted PostgreSQL/CockroachDB evidence.
