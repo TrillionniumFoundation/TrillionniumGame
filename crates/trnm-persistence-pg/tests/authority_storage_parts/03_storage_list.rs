@@ -203,3 +203,100 @@ fn storage_listing_acl_owner_scope_and_cursor_are_stable() {
         "storage_cursor_scope_mismatch"
     );
 }
+
+// The same test runs against PostgreSQL and CockroachDB. The expected sequence is
+// derived from Rust's exact UTF-8 bytes plus the 16-byte user identity, never from
+// an ambient database locale or text collation.
+#[test]
+fn storage_listing_unicode_order_matches_canonical_utf8_bytes() {
+    let Some((database_url, profile)) =
+        live_database_environment("storage canonical byte order contract")
+    else {
+        return;
+    };
+    let collection = "listing-byte-order-v1";
+    let hostile = [
+        ("é", 8_u8),
+        ("A", 7),
+        ("中", 6),
+        ("a", 5),
+        ("e\u{301}", 4),
+        ("~", 3),
+        ("_", 2),
+        ("😀", 1),
+        ("a", 1),
+    ];
+    let mut keys = hostile
+        .into_iter()
+        .map(|(object_key, user)| {
+            StorageObjectKey::new(collection, object_key, UserId::new([user; 16])).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let writes = keys
+        .iter()
+        .enumerate()
+        .map(|(index, key)| {
+            StorageBatchOperation::Write(StorageWriteOperation {
+                key: key.clone(),
+                value: format!("canonical-byte-order-{index}").into_bytes(),
+                expected: VersionCheck::MustNotExist,
+                read_permission: ReadPermission::Public,
+                write_permission: WritePermission::Owner,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut repository = PgRepository::connect(&database_url, profile).unwrap();
+    repository
+        .apply_storage_batch(StorageActor::Server, &writes, 70)
+        .unwrap();
+
+    keys.sort_by(|left, right| {
+        left.key()
+            .as_bytes()
+            .cmp(right.key().as_bytes())
+            .then_with(|| left.user_id().as_bytes().cmp(right.user_id().as_bytes()))
+    });
+
+    let mut observed = Vec::new();
+    let mut cursor = None;
+    let mut page_count = 0_usize;
+    loop {
+        page_count += 1;
+        assert!(page_count <= 4, "cursor failed to make bounded progress");
+        let (page, next) = repository
+            .list_storage_objects(
+                StorageActor::Server,
+                collection,
+                None,
+                cursor.as_ref(),
+                3,
+            )
+            .unwrap();
+        observed.extend(page.into_iter().map(|object| object.key));
+        cursor = next;
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    assert_eq!(page_count, 3);
+    assert_eq!(observed, keys);
+    assert_eq!(
+        observed
+            .iter()
+            .map(|key| (key.key(), key.user_id().as_bytes()[0]))
+            .collect::<Vec<_>>(),
+        vec![
+            ("A", 7),
+            ("_", 2),
+            ("a", 1),
+            ("a", 5),
+            ("e\u{301}", 4),
+            ("~", 3),
+            ("é", 8),
+            ("中", 6),
+            ("😀", 1),
+        ]
+    );
+}
