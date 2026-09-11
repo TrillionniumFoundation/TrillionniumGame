@@ -2,8 +2,9 @@
 """Validate the Unix remote MAC transport boundary.
 
 The validator intentionally checks executable production structure rather than
-identifier presence.  Test-only code, comments and string literals cannot pay
-for the deadline contract.
+identifier presence. Test-only code, comments and string literals cannot pay
+for production deadline call-graph obligations; focused runtime regression
+functions are separately required from the test module.
 """
 from __future__ import annotations
 
@@ -37,18 +38,15 @@ def require(value: bool, message: str) -> None:
         raise ValidationError(message)
 
 
-def production_source(source: str) -> str:
+def source_parts(source: str) -> tuple[str, str]:
     marker = "#[cfg(test)]"
-    return source.split(marker, 1)[0]
+    parts = source.split(marker, 1)
+    require(len(parts) == 2, "Unix MAC transport missing focused test module")
+    return parts[0], parts[1]
 
 
 def strip_comments_and_literals(source: str) -> str:
-    """Return Rust-like executable text with comments/string/char literals blanked.
-
-    This is deliberately a small lexer, not a Rust parser. It preserves braces,
-    identifiers and punctuation used by the structural checks below while making
-    dead markers in comments or literals ineligible.
-    """
+    """Return Rust-like executable text with comments/string/char literals blanked."""
     out: list[str] = []
     i = 0
     block_depth = 0
@@ -80,8 +78,6 @@ def strip_comments_and_literals(source: str) -> str:
             i += 2
             continue
         ch = source[i]
-        # Byte/raw/ordinary strings are irrelevant to the call graph. Handle the
-        # forms used by this source and fail closed on unterminated literals.
         prefix = None
         if source.startswith('b"', i):
             prefix = 'b"'
@@ -105,11 +101,10 @@ def strip_comments_and_literals(source: str) -> str:
                 else:
                     if c == '"' and not escaped:
                         break
-                    escaped = (c == "\\" and not escaped)
+                    escaped = c == "\\" and not escaped
                     if c != "\\":
                         escaped = False
             continue
-        # Rust character literals are not needed by the structural contract.
         if ch == "'" and i + 2 < len(source):
             end = i + 1
             escaped = False
@@ -118,11 +113,11 @@ def strip_comments_and_literals(source: str) -> str:
                 if c == "'" and not escaped:
                     end += 1
                     break
-                escaped = (c == "\\" and not escaped)
+                escaped = c == "\\" and not escaped
                 if c != "\\":
                     escaped = False
                 end += 1
-            if end <= len(source) and source[end - 1:end] == "'":
+            if end <= len(source) and source[end - 1 : end] == "'":
                 out.extend(" " * (end - i))
                 i = end
                 continue
@@ -142,7 +137,7 @@ def require_once(code: str, needle: str, label: str) -> None:
 
 
 def validate(source: str, lib: str, contract: dict) -> None:
-    production = production_source(source)
+    production, tests = source_parts(source)
     for marker in FORBIDDEN:
         require(
             marker not in production,
@@ -162,10 +157,8 @@ def validate(source: str, lib: str, contract: dict) -> None:
     require(contract.get("maximum_pending_connects") == 8, "connect budget contract")
 
     code = compact(strip_comments_and_literals(production))
+    test_code = compact(strip_comments_and_literals(tests))
 
-    # One deadline is created in exchange and the same variable is passed to
-    # every I/O stage. These exact call edges are the authority for the source
-    # contract; a dead helper or marker elsewhere cannot satisfy them.
     require_once(
         code,
         "letdeadline=Instant::now().checked_add(timeout).ok_or(RemoteMacError::InvalidRequest)?;",
@@ -201,10 +194,6 @@ def validate(source: str, lib: str, contract: dict) -> None:
         "read_exact_before_deadline(&mutstream,&mutresponse,deadline)?;",
         "deadline-bound response body read",
     )
-
-    # Helpers themselves must derive each blocking wait from remaining time on
-    # that deadline. Direct production read_exact/write_all calls are forbidden
-    # because they bypass the recomputation loop.
     require_once(
         code,
         "receiver.recv_timeout(remaining_timeout(deadline)?)",
@@ -225,6 +214,20 @@ def validate(source: str, lib: str, contract: dict) -> None:
         code,
         "deadline.checked_duration_since(Instant::now()).filter(|remaining|!remaining.is_zero()).ok_or(RemoteMacError::Timeout)",
         "monotonic remaining-time calculation",
+    )
+
+    # The behavioral slow-peer regression is a separate obligation. It is
+    # checked as executable test syntax after comments/literals are removed, so
+    # a dead marker cannot satisfy the contract.
+    require_once(
+        test_code,
+        "fnslow_drip_response_cannot_extend_total_deadline(){",
+        "slow-drip total-deadline regression",
+    )
+    require_once(
+        test_code,
+        "fnsign_round_trip_uses_bounded_opaque_frame(){",
+        "bounded opaque-frame regression",
     )
 
 
