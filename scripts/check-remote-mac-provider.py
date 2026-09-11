@@ -17,8 +17,13 @@ REQUIRED=(
   "RemoteMacError::ProtocolViolation",
   "RemoteMacError::TransportUnavailable",
   "RemoteMacError::VerificationRejected",
+  "impl fmt::Debug for RemoteMacRequestKind",
+  "impl fmt::Debug for RemoteMacRequest",
+  "impl fmt::Debug for RemoteMacResponse",
   "<opaque-key-reference>",
+  "<redacted-tag>",
   "mismatched_response_and_transport_failure_never_fall_back",
+  "request_kind_and_response_debug_never_expose_sensitive_bytes",
 )
 FORBIDDEN=(
   "raw_key",
