@@ -41,13 +41,65 @@ class RemoteMacUnixTransportContractTests(unittest.TestCase):
             "slow_drip_response_cannot_extend_total_deadline",
         ):
             with self.subTest(marker=marker):
-                # Remove every occurrence. Several deadline helpers are intentionally
-                # referenced by both production code and focused tests, so replacing
-                # only the first occurrence does not model marker removal.
                 mutated = self.source.replace(marker, "removed-deadline-marker")
                 self.assertNotIn(marker, mutated)
                 with self.assertRaisesRegex(self.checker.ValidationError, "missing"):
                     self.checker.validate(mutated, self.lib, self.contract)
+
+    def test_per_syscall_timeout_reset_is_rejected(self):
+        mutated = self.source.replace(
+            "set_read_timeout(Some(remaining_timeout(deadline)?))",
+            "set_read_timeout(Some(Duration::from_secs(1)))",
+            1,
+        )
+        with self.assertRaisesRegex(self.checker.ValidationError, "read remaining-time"):
+            self.checker.validate(mutated, self.lib, self.contract)
+
+    def test_direct_unbounded_read_bypass_is_rejected(self):
+        mutated = self.source.replace(
+            "read_exact_before_deadline(&mut stream, &mut response, deadline)?;",
+            "stream.read_exact(&mut response).map_err(map_io_error)?;",
+            1,
+        )
+        with self.assertRaisesRegex(
+            self.checker.ValidationError, "response body read|direct read_exact"
+        ):
+            self.checker.validate(mutated, self.lib, self.contract)
+
+    def test_wrapper_substitution_is_rejected(self):
+        mutated = self.source.replace(
+            "read_exact_before_deadline(&mut stream, &mut response, deadline)?;",
+            "read_body_before_deadline(&mut stream, &mut response, deadline)?;",
+            1,
+        )
+        with self.assertRaisesRegex(self.checker.ValidationError, "response body read"):
+            self.checker.validate(mutated, self.lib, self.contract)
+
+    def test_dead_comment_and_string_markers_do_not_satisfy_call_graph(self):
+        production_call = (
+            "read_exact_before_deadline(&mut stream, &mut response, deadline)?;"
+        )
+        mutated = self.source.replace(
+            production_call,
+            "stream.read(&mut response).map_err(map_io_error)?;",
+            1,
+        )
+        dead = (
+            "// read_exact_before_deadline remaining_timeout\n"
+            'const DEAD_DEADLINE_MARKERS: &str = "read_exact_before_deadline remaining_timeout";\n'
+        )
+        mutated = mutated.replace("#[cfg(test)]", dead + "#[cfg(test)]", 1)
+        with self.assertRaisesRegex(self.checker.ValidationError, "response body read"):
+            self.checker.validate(mutated, self.lib, self.contract)
+
+    def test_connect_wait_must_derive_from_same_deadline(self):
+        mutated = self.source.replace(
+            "receiver.recv_timeout(remaining_timeout(deadline)?)",
+            "receiver.recv_timeout(Duration::from_secs(1))",
+            1,
+        )
+        with self.assertRaisesRegex(self.checker.ValidationError, "connect remaining-time"):
+            self.checker.validate(mutated, self.lib, self.contract)
 
     def test_unix_module_and_export_gates_fail_closed(self):
         ungated_module = self.lib.replace(
