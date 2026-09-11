@@ -88,10 +88,7 @@ fn reserve_connect_slot() -> Result<PendingConnectSlot, RemoteMacError> {
         .map_err(|_| RemoteMacError::TransportUnavailable)
 }
 
-fn connect_before_deadline(
-    path: &Path,
-    deadline: Instant,
-) -> Result<UnixStream, RemoteMacError> {
+fn connect_before_deadline(path: &Path, deadline: Instant) -> Result<UnixStream, RemoteMacError> {
     let slot = reserve_connect_slot()?;
     let path = path.to_owned();
     let (sender, receiver) = mpsc::sync_channel(1);
@@ -148,10 +145,7 @@ fn write_all_before_deadline(
     Ok(())
 }
 
-fn flush_before_deadline(
-    stream: &mut UnixStream,
-    deadline: Instant,
-) -> Result<(), RemoteMacError> {
+fn flush_before_deadline(stream: &mut UnixStream, deadline: Instant) -> Result<(), RemoteMacError> {
     stream
         .set_write_timeout(Some(remaining_timeout(deadline)?))
         .map_err(map_io_error)?;
