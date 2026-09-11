@@ -1,0 +1,425 @@
+name: plan-v32-database-endurance-campaign-20260911-v3
+
+on:
+  push:
+    branches:
+      - ops/game-exact-source-snapshot-20260910
+      - evidence/plan-v32-endurance-driver-postgresql
+      - evidence/plan-v32-endurance-driver-cockroachdb
+    paths:
+      - .github/workflows/plan-v32-database-endurance-campaign-20260911-v3.yml
+      - .plan-v32-endurance-campaign.json
+      - .plan-v32-endurance-trigger
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: read
+
+jobs:
+  endurance-segment:
+    if: ${{ github.ref_name == 'ops/game-exact-source-snapshot-20260910' || github.ref_name == format('evidence/plan-v32-endurance-driver-{0}', matrix.profile) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [postgresql, cockroachdb]
+    concurrency:
+      group: plan-v32-db-endurance-v3-${{ matrix.profile }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DATABASE_PROFILE: ${{ matrix.profile }}
+      DRIVER_BRANCH: evidence/plan-v32-endurance-driver-${{ matrix.profile }}
+      UPLOADER_SHA: 425ee015d53800f3e2c2936f97ded9cdbacf7f14
+      DEFAULT_TARGET_SECONDS: '604800'
+      SEGMENT_SECONDS: '18000'
+      TRNM_ENDURANCE_SEGMENT_SECONDS: '18000'
+      ENDURANCE_SEGMENT_SECONDS: '18000'
+      DURATION_SECONDS: '18000'
+    steps:
+      - id: resolve
+        name: Resolve immutable campaign source and fetch exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=''
+          tree=''
+          pr=''
+          target="$DEFAULT_TARGET_SECONDS"
+          campaign_source='current-ops-security-pr'
+
+          if [[ "$GITHUB_REF_NAME" == "$DRIVER_BRANCH" ]]; then
+            driver_read="$RUNNER_TEMP/driver-read"
+            git init "$driver_read"
+            git -C "$driver_read" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+            git -C "$driver_read" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+            git -C "$driver_read" checkout --detach FETCH_HEAD
+            test "$(git -C "$driver_read" rev-parse HEAD)" = "$GITHUB_SHA"
+            config="$driver_read/.plan-v32-endurance-campaign.json"
+            test -s "$config"
+            jq -e \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg profile "$DATABASE_PROFILE" \
+              '.schema == "trillionnium.database-endurance-driver.v1" and
+               .repository == $repository and
+               .profile == $profile and
+               (.source_sha | test("^[0-9a-f]{40}$")) and
+               (.source_tree | test("^[0-9a-f]{40}$")) and
+               (.target_seconds | type == "number") and
+               .target_seconds >= 604800 and
+               .accepted_evidence == false and
+               .production_ready == false' "$config" >/dev/null
+            sha=$(jq -r '.source_sha' "$config")
+            tree=$(jq -r '.source_tree' "$config")
+            pr=$(jq -r '.candidate_pr' "$config")
+            target=$(jq -r '.target_seconds' "$config")
+            campaign_source="driver@$GITHUB_SHA"
+          else
+            deadline=$((SECONDS + 7200))
+            while (( SECONDS < deadline )); do
+              candidate=$(gh api \
+                "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
+                --jq '[.[] | select(.head.ref | startswith("feature/plan-v32-ops-security-current-"))] | sort_by(.created_at) | last // empty')
+              if [[ -n "$candidate" ]]; then
+                sha=$(jq -r '.head.sha' <<<"$candidate")
+                pr=$(jq -r '.number' <<<"$candidate")
+                break
+              fi
+              sleep 30
+            done
+          fi
+
+          test -n "$sha"
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$sha"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$sha"
+          observed_tree=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD^{tree})
+          if [[ -n "$tree" ]]; then
+            test "$observed_tree" = "$tree"
+          else
+            tree="$observed_tree"
+          fi
+          test -s "$GITHUB_WORKSPACE/scripts/ci-database-endurance-segment.sh"
+          {
+            printf 'sha=%s\n' "$sha"
+            printf 'tree=%s\n' "$tree"
+            printf 'pr=%s\n' "$pr"
+            printf 'target=%s\n' "$target"
+            printf 'campaign_source=%s\n' "$campaign_source"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install exact Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy
+          rustup override set 1.85.1 --path "$GITHUB_WORKSPACE"
+
+      - name: Fetch immutable artifact uploader into workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          helper="$RUNNER_TEMP/uploader"
+          git init "$helper"
+          git -C "$helper" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$helper" fetch --no-tags --depth=1 origin "$UPLOADER_SHA"
+          git -C "$helper" checkout --detach FETCH_HEAD
+          test "$(git -C "$helper" rev-parse HEAD)" = "$UPLOADER_SHA"
+          rm -rf "$GITHUB_WORKSPACE/.github/actions/upload-evidence"
+          mkdir -p "$GITHUB_WORKSPACE/.github/actions" "$GITHUB_WORKSPACE/scripts"
+          cp -R "$helper/.github/actions/upload-evidence" "$GITHUB_WORKSPACE/.github/actions/"
+          cp "$helper/scripts/upload-actions-artifact.py" "$GITHUB_WORKSPACE/scripts/"
+
+      - id: ledger-before
+        name: Read source-bound monotonic campaign ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha='${{ steps.resolve.outputs.sha }}'
+          tree='${{ steps.resolve.outputs.tree }}'
+          target='${{ steps.resolve.outputs.target }}'
+          ledger_branch="evidence/plan-v32-endurance-v3-${DATABASE_PROFILE}-${sha:0:12}"
+          ledger_repo="$RUNNER_TEMP/ledger"
+          git init "$ledger_repo"
+          git -C "$ledger_repo" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads origin "refs/heads/$ledger_branch" >/dev/null 2>&1; then
+            git -C "$ledger_repo" fetch --no-tags origin \
+              "refs/heads/$ledger_branch:refs/remotes/origin/$ledger_branch"
+            git -C "$ledger_repo" checkout -B "$ledger_branch" "origin/$ledger_branch"
+          else
+            git -C "$ledger_repo" fetch --no-tags --depth=1 origin "$sha"
+            git -C "$ledger_repo" checkout --orphan "$ledger_branch" FETCH_HEAD
+            git -C "$ledger_repo" rm -rf . >/dev/null 2>&1 || true
+          fi
+          ledger="$ledger_repo/ledger.json"
+          if [[ -s "$ledger" ]]; then
+            jq -e \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg profile "$DATABASE_PROFILE" \
+              --arg sha "$sha" \
+              --arg tree "$tree" \
+              --argjson target "$target" \
+              '.schema == "trillionnium.database-endurance-ledger.v1" and
+               .repository == $repository and
+               .profile == $profile and
+               .source_sha == $sha and
+               .source_tree == $tree and
+               .target_seconds == $target and
+               (.accumulated_seconds | type == "number") and
+               .accumulated_seconds >= 0 and
+               (.segments | type == "array") and
+               .accepted_evidence == false and
+               .production_ready == false' "$ledger" >/dev/null
+            accumulated=$(jq -r '.accumulated_seconds' "$ledger")
+            segment_index=$(jq -r '.segments | length' "$ledger")
+          else
+            accumulated=0
+            segment_index=0
+            jq -n \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg profile "$DATABASE_PROFILE" \
+              --arg sha "$sha" \
+              --arg tree "$tree" \
+              --argjson target "$target" \
+              '{
+                schema:"trillionnium.database-endurance-ledger.v1",
+                repository:$repository,
+                profile:$profile,
+                source_sha:$sha,
+                source_tree:$tree,
+                target_seconds:$target,
+                accumulated_seconds:0,
+                milestone_24h:false,
+                milestone_72h:false,
+                milestone_7d:false,
+                segments:[],
+                accepted_evidence:false,
+                independently_accepted:false,
+                production_ready:false
+              }' > "$ledger"
+          fi
+          test "$accumulated" -lt "$target"
+          {
+            printf 'branch=%s\n' "$ledger_branch"
+            printf 'repo=%s\n' "$ledger_repo"
+            printf 'ledger=%s\n' "$ledger"
+            printf 'accumulated=%s\n' "$accumulated"
+            printf 'segment_index=%s\n' "$segment_index"
+          } >> "$GITHUB_OUTPUT"
+
+      - id: execute
+        name: Execute one real five-hour-bounded endurance segment
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/endurance-${DATABASE_PROFILE}-${{ steps.ledger-before.outputs.segment_index }}"
+          mkdir -p "$evidence"
+          export EVIDENCE_DIR="$evidence"
+          export TRNM_EVIDENCE_DIR="$evidence"
+          export SOURCE_COMMIT='${{ steps.resolve.outputs.sha }}'
+          export SOURCE_TREE='${{ steps.resolve.outputs.tree }}'
+          export TRNM_DATABASE_PROFILE="$DATABASE_PROFILE"
+          export DATABASE_PROFILE
+          start_epoch=$(date +%s)
+          {
+            printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'profile=%s\n' "$DATABASE_PROFILE"
+            printf 'source_sha=%s\n' "$SOURCE_COMMIT"
+            printf 'source_tree=%s\n' "$SOURCE_TREE"
+            printf 'segment_index=%s\n' '${{ steps.ledger-before.outputs.segment_index }}'
+            printf 'previous_accumulated_seconds=%s\n' '${{ steps.ledger-before.outputs.accumulated }}'
+            printf 'requested_segment_seconds=%s\n' "$SEGMENT_SECONDS"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'campaign_source=%s\n' '${{ steps.resolve.outputs.campaign_source }}'
+            printf 'accepted_evidence=false\n'
+            printf 'production_ready=false\n'
+          } > "$evidence/identity.txt"
+          cd "$GITHUB_WORKSPACE"
+          set +e
+          timeout 330m bash scripts/ci-database-endurance-segment.sh \
+            > >(tee "$evidence/stdout.log") \
+            2> >(tee "$evidence/stderr.log" >&2)
+          status=$?
+          set -e
+          end_epoch=$(date +%s)
+          elapsed=$((end_epoch - start_epoch))
+          {
+            printf 'start_epoch=%s\n' "$start_epoch"
+            printf 'end_epoch=%s\n' "$end_epoch"
+            printf 'elapsed_seconds=%s\n' "$elapsed"
+            printf 'exit_status=%s\n' "$status"
+          } > "$evidence/result.txt"
+          find "$evidence" -maxdepth 5 -type f -print0 | sort -z | \
+            xargs -0 sha256sum > "$evidence/SHA256SUMS"
+          {
+            printf 'path=%s\n' "$evidence"
+            printf 'start_epoch=%s\n' "$start_epoch"
+            printf 'end_epoch=%s\n' "$end_epoch"
+            printf 'elapsed=%s\n' "$elapsed"
+            printf 'status=%s\n' "$status"
+          } >> "$GITHUB_OUTPUT"
+          test "$status" -eq 0
+          test "$elapsed" -ge 300
+
+      - id: retained
+        name: Retain exact segment evidence
+        if: always()
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: plan-v32-db-endurance-v3-${{ matrix.profile }}-${{ steps.resolve.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.execute.outputs.path }}
+          mime_type: application/octet-stream
+
+      - id: ledger-after
+        name: Append only a terminal-success segment receipt
+        if: ${{ steps.execute.outcome == 'success' && steps.retained.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ledger='${{ steps.ledger-before.outputs.ledger }}'
+          repo='${{ steps.ledger-before.outputs.repo }}'
+          branch='${{ steps.ledger-before.outputs.branch }}'
+          previous='${{ steps.ledger-before.outputs.accumulated }}'
+          elapsed='${{ steps.execute.outputs.elapsed }}'
+          target='${{ steps.resolve.outputs.target }}'
+          next=$((previous + elapsed))
+          test "$next" -gt "$previous"
+          tmp="$ledger.tmp"
+          jq \
+            --argjson index '${{ steps.ledger-before.outputs.segment_index }}' \
+            --argjson start '${{ steps.execute.outputs.start_epoch }}' \
+            --argjson end '${{ steps.execute.outputs.end_epoch }}' \
+            --argjson elapsed "$elapsed" \
+            --argjson next "$next" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg artifact_id '${{ steps.retained.outputs.artifact_id }}' \
+            --arg artifact_sha256 '${{ steps.retained.outputs.sha256 }}' \
+            --arg artifact_size '${{ steps.retained.outputs.size_bytes }}' \
+            '.accumulated_seconds = $next |
+             .milestone_24h = ($next >= 86400) |
+             .milestone_72h = ($next >= 259200) |
+             .milestone_7d = ($next >= 604800) |
+             .segments += [{
+               index:$index,
+               start_epoch:$start,
+               end_epoch:$end,
+               elapsed_seconds:$elapsed,
+               run_id:$run_id,
+               run_attempt:$run_attempt,
+               artifact_id:$artifact_id,
+               artifact_sha256:$artifact_sha256,
+               artifact_size_bytes:$artifact_size,
+               terminal_success:true,
+               accepted_evidence:false
+             }]' "$ledger" > "$tmp"
+          mv "$tmp" "$ledger"
+          git -C "$repo" config user.name 'Plan v3.2 endurance ledger'
+          git -C "$repo" config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git -C "$repo" add ledger.json
+          git -C "$repo" commit -m "evidence: append ${DATABASE_PROFILE} endurance segment ${{ steps.ledger-before.outputs.segment_index }}" \
+            -m "Bind exact source ${{ steps.resolve.outputs.sha }} tree ${{ steps.resolve.outputs.tree }}, real elapsed ${elapsed}s and retained artifact ${{ steps.retained.outputs.artifact_id }}. Acceptance and production claims remain false."
+          git -C "$repo" push origin "HEAD:refs/heads/$branch"
+          {
+            printf 'next=%s\n' "$next"
+            printf 'target=%s\n' "$target"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Advance profile-specific driver branch when target remains
+        if: ${{ steps.ledger-after.outcome == 'success' && fromJSON(steps.ledger-after.outputs.next) < fromJSON(steps.ledger-after.outputs.target) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          driver="$RUNNER_TEMP/driver-write"
+          git init "$driver"
+          git -C "$driver" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads origin "refs/heads/$DRIVER_BRANCH" >/dev/null 2>&1; then
+            git -C "$driver" fetch --no-tags origin \
+              "refs/heads/$DRIVER_BRANCH:refs/remotes/origin/$DRIVER_BRANCH"
+            git -C "$driver" checkout -B "$DRIVER_BRANCH" "origin/$DRIVER_BRANCH"
+          else
+            # Seed the driver with the exact workflow definition that executed this segment.
+            git -C "$driver" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+            git -C "$driver" checkout -B "$DRIVER_BRANCH" FETCH_HEAD
+          fi
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg profile "$DATABASE_PROFILE" \
+            --arg source_sha '${{ steps.resolve.outputs.sha }}' \
+            --arg source_tree '${{ steps.resolve.outputs.tree }}' \
+            --arg candidate_pr '${{ steps.resolve.outputs.pr }}' \
+            --argjson target '${{ steps.resolve.outputs.target }}' \
+            --argjson cumulative '${{ steps.ledger-after.outputs.next }}' \
+            '{
+              schema:"trillionnium.database-endurance-driver.v1",
+              repository:$repository,
+              profile:$profile,
+              source_sha:$source_sha,
+              source_tree:$source_tree,
+              candidate_pr:$candidate_pr,
+              target_seconds:$target,
+              last_cumulative_seconds:$cumulative,
+              accepted_evidence:false,
+              independently_accepted:false,
+              production_ready:false
+            }' > "$driver/.plan-v32-endurance-campaign.json"
+          printf '%s\n' "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/${{ steps.ledger-after.outputs.next }}" \
+            > "$driver/.plan-v32-endurance-trigger"
+          git -C "$driver" config user.name 'Plan v3.2 endurance driver'
+          git -C "$driver" config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git -C "$driver" add \
+            .plan-v32-endurance-campaign.json \
+            .plan-v32-endurance-trigger
+          git -C "$driver" commit -m "ci: advance ${DATABASE_PROFILE} endurance campaign" \
+            -m "Continue exact source ${{ steps.resolve.outputs.sha }} after cumulative ${{ steps.ledger-after.outputs.next }} seconds. No evidence acceptance or production authority is granted."
+          git -C "$driver" push origin "HEAD:refs/heads/$DRIVER_BRANCH"
+
+      - name: Publish profile campaign readback
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker="<!-- plan-v32-endurance-v3-${DATABASE_PROFILE}-${{ steps.resolve.outputs.sha }} -->"
+          body=$(cat <<EOF
+          ${marker}
+          ## Plan v3.2 ${DATABASE_PROFILE} endurance campaign v3
+
+          ```text
+          source_sha=${{ steps.resolve.outputs.sha }}
+          source_tree=${{ steps.resolve.outputs.tree }}
+          driver_branch=${DRIVER_BRANCH}
+          ledger_branch=${{ steps.ledger-before.outputs.branch }}
+          prior_seconds=${{ steps.ledger-before.outputs.accumulated }}
+          segment_status=${{ steps.execute.outputs.status }}
+          segment_seconds=${{ steps.execute.outputs.elapsed }}
+          cumulative_seconds=${{ steps.ledger-after.outputs.next }}
+          target_seconds=${{ steps.resolve.outputs.target }}
+          artifact_id=${{ steps.retained.outputs.artifact_id }}
+          artifact_sha256=${{ steps.retained.outputs.sha256 }}
+          accepted_evidence=false
+          independently_accepted=false
+          production_ready=false
+          ```
+          EOF
+          )
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/129/comments?per_page=100" \
+            --jq ".[] | select(.body | contains(\"${marker}\")) | .id" | head -n1)
+          if [[ -n "$existing" ]]; then
+            jq -n --arg body "$body" '{body:$body}' | \
+              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" --input - >/dev/null
+          else
+            jq -n --arg body "$body" '{body:$body}' | \
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/129/comments" --input - >/dev/null
+          fi
+          printf '%s\n' "$body" >> "$GITHUB_STEP_SUMMARY"
