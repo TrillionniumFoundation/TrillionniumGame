@@ -1,7 +1,7 @@
 # Architecture
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-03
+Revision: 2026-09-12
 
 ## 1. Current runtime reality
 
@@ -15,14 +15,13 @@ client/operator
        -> compatibility fixtures where configured
 ```
 
-The Go runtime is a migration input and behavior oracle, not target-production evidence. Rust contains substantial source candidates, including a database-backed HTTP/WebSocket/session/outbox slice in `crates/trnm-persistence-pg` and a smaller standalone foundation executable in `crates/trnm-server`. Neither is a complete Nakama replacement.
+The Go runtime is a migration input and behavior oracle, not target-production evidence. Rust contains substantial source candidates but is not a complete Nakama replacement.
 
-The two server lines have different present purposes:
+`crates/trnm-server` is now the only default `trnm-server` composition root and assembles the database-backed HTTP, generated gRPC Healthcheck, WebSocket and session slice. It is not the earlier standalone in-memory foundation executable. `crates/trnm-persistence-pg/src/bin/trnm-server.rs` remains only as the feature-gated `trnm-pg-compat-server` diagnostic and compatibility harness.
 
-- `crates/trnm-server` is the only package allowed to publish the default `trnm-server` process and owns the canonical composition root;
-- `crates/trnm-persistence-pg/src/bin/trnm-server.rs` is retained only as the feature-gated `trnm-pg-compat-server` diagnostic and compatibility harness.
+Package-level authority has converged; layer-level separation is not finished. `crates/trnm-server/src/runtime/app.rs` still defines its repository trait using concrete adapter types imported from `trnm-persistence-pg` and also consumes HTTP request/response types. `runtime/auth.rs` re-exports authentication types from that adapter. The next architecture step is to extract transport-independent service and persistence contracts, not merely move another binary. No third production composition root is permitted.
 
-This temporary split is not the target architecture. New production behavior must not create a third composition root. Convergence must move the working vertical slice behind stable service and persistence interfaces into one `trnm-server` composition root.
+The current commands, application routes, configuration names and the narrower process-smoke boundary are specified in [`DEVELOPMENT.md`](DEVELOPMENT.md). Source-level composition does not grant durable, operational, compatibility or production acceptance.
 
 ## 2. Target topology
 
@@ -88,6 +87,8 @@ The final `trnm-server` process must:
 
 Supervised children include protocol listeners, authority/route leasing, outbox workers, schedulers, runtime hosts and telemetry exporters. Every child has inherited cancellation, bounded restart policy, startup result, shutdown deadline and stable failure classification. A mandatory child failure removes readiness and triggers drain when its approved restart budget is exhausted.
 
+These are target obligations. In particular, the current application's non-draining `/readyz` response must not be described as a complete dependency-health or supervisor proof.
+
 ## 5. Request context and command/query split
 
 Every public operation becomes a bounded internal context containing request/trace identity, project, optional user/session/connection identity, node, receive time, deadline, compatibility profile and redaction policy. Unvalidated header or claim strings cannot directly become database predicates.
@@ -100,6 +101,8 @@ QueryHandler<Q>   -> Result<R, DomainError>
 ```
 
 A command success contains the receipt identity needed to reconcile ambiguous responses. A query declares its consistency and staleness requirements; cache/search cannot silently replace an authoritative read.
+
+These signatures describe the target contract, not APIs already implemented by every crate. The concrete adapter must implement the shared contract; service contracts must not import their public request/result types from the PostgreSQL implementation.
 
 ## 6. Golden transaction path
 
@@ -131,6 +134,8 @@ Required invariants:
 - process death after commit does not lose acknowledged state;
 - stale workers cannot apply after re-lease;
 - no provider or network I/O occurs inside the transaction.
+
+This generic durable-command path is not automatically the refresh-token path. Consumed-token replay intentionally revokes a family even while returning an authentication error. Its separate durable transition and response-loss protocol must be specified; a blanket rollback-on-Err service adapter is incorrect.
 
 ## 7. Persistence boundary
 
@@ -166,7 +171,7 @@ pending
 
 Retry, reclaim and terminal exhaustion are atomic. Every mutation repeats owner and generation predicates. Repeating an identical apply receipt is idempotent; a different receipt for an applied intent is data loss. Value-moving effects require reconciliation/quarantine rather than blind retry.
 
-The current source includes a bounded worker and fault profiles for crash-before-publish and crash-after-publish. These candidates do not establish exactly-once external effects for all adapters and remain evidence/review scoped.
+The current source includes a bounded worker and fault profiles for crash-before-publish and crash-after-publish. These candidates do not establish exactly-once external effects for all adapters and remain evidence/review scoped. An effect that may already be visible but has no authenticated receipt must not be relabelled delivered merely because an attempt expired.
 
 ## 9. Protocol adapters
 
@@ -188,11 +193,13 @@ A production connection actor owns immutable connection identity, authenticated 
 
 Distributed routing uses generation-fenced ownership. Stale routes and revocation epochs are rejected. Required proof includes slow consumers, node drain, process death, partition, takeover, stale fanout, session-family revoke, reconnect storm and queue saturation.
 
+Finite admitted cardinality is a safety limit, not a capacity result. Full-state cloning, retained connection high-watermarks and quiescent namespace rollover require maximum-capacity/churn benchmarks and a rolling operational recovery design. Never evict still-needed replay fences just to free memory.
+
 ## 11. Runtime host
 
 Runtime modules receive explicit capabilities rather than server internals. Every invocation has immutable context, deadline/cancellation, memory/fuel/CPU/output budgets, controlled clock/random/provider inputs, bounded logging and no unrestricted secrets/network/filesystem access.
 
-Lua, JavaScript/TypeScript, WASM and Rust-native profiles have separate compatibility and security conclusions. A benchmark or engine spike cannot close Runtime parity.
+Lua, JavaScript/TypeScript, WASM and Rust-native profiles have separate compatibility and security conclusions. A benchmark or engine spike cannot close Runtime parity. Engine selection, ABI/value conversion, hooks, cancellation, module reload and durable service calls require concrete per-profile design before broad implementation.
 
 ## 12. Migration ownership
 
@@ -214,3 +221,19 @@ The same session family, party, ticket, match, scheduler, IAP transaction or dur
 Stop promotion and preserve the current authority on any duplicate writer, stale-authority acceptance, acknowledged-write loss, duplicate visible value, schema/adapter digest mismatch, unexplained identity/ACL/money/sequence/version/cursor/error divergence, unbounded resource, missing security/migration/restore evidence or non-current required check.
 
 Architecture completion is earned only by exact-head execution, accepted evidence and independent review; this document is not implementation proof.
+
+## 14. Next service-integration contracts
+
+The following are implementation obligations, not claims that the adapters already exist. Complete these as bounded vertical changes with native and differential tests; preserve the existing schema and public wire behavior unless a separately reviewed migration/profile decision changes them.
+
+| Boundary | Required design decision | Mandatory failure/recovery case |
+| --- | --- | --- |
+| Authentication to service | Construct trusted project/user/session/profile context only after credential verification; do not accept caller fingerprints as authenticated command identity. | Forged identity, wrong project/profile, disabled account and stale session generation cannot call a mutation. |
+| Refresh to persistence | Atomically persist rotation or replay-triggered revocation; separately bind a durable operation identity for approved response-loss recovery. | Crash after commit before credential response; simultaneous refresh; consumed-token retry; Err must not discard intentional revocation. |
+| Storage to wire | Authenticate the complete opaque cursor identity including actor, owner filter, collection, project/profile and key position; define concurrent-mutation semantics. | Tampering, cross-scope replay, deletion between pages, same-key owner ordering, ACL filtering before the limit sentinel. |
+| Service to repository | Shared typed commands/results and one total deadline; profile adapters own SQL, retries and receipt reconciliation. | Pool exhaustion, statement cancellation, stale authority and uncertain commit must not become fabricated success or blind retry. |
+| Outbox to provider | Stable idempotency key, immutable subject/payload, exact dispatch identity, authenticated outcome query and explicit quarantine. | Provider succeeds then response is lost; expired lease; stale owner publishes; terminal attempt with unknown visible effect. |
+| Revoke to realtime | Durable revocation generation drives bounded fanout and actual socket termination; restore checkpoints before accepting routes. | Node restart, delayed old-generation messages, reconnect storm, full revocation-history capacity. |
+| Process to operators | Distinguish liveness from mandatory dependency readiness; signal/drain propagation reaches all listeners/workers/pools. | Stop admission before drain acknowledgement; do not hang forever on a stalled synchronous child. |
+
+For each row retain the precise request/result types, sequence, state/error table, numerical budget, schema ownership, named test targets, upstream leaves and evidence output in the applicable existing module document. A table of intentions alone does not make the work Ready or Accepted.
