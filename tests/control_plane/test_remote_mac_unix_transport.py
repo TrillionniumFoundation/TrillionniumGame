@@ -108,6 +108,65 @@ class RemoteMacUnixTransportContractTests(unittest.TestCase):
         with self.assertRaisesRegex(self.checker.ValidationError, "connect remaining-time"):
             self.checker.validate(mutated, self.lib, self.contract)
 
+    def test_peer_uid_gid_and_post_connect_inode_checks_are_mandatory(self):
+        mutated = self.source.replace(
+            "socket_metadata.uid() != expected_peer_uid",
+            "false",
+            1,
+        )
+        with self.assertRaisesRegex(self.checker.ValidationError, "peer UID"):
+            self.checker.validate(mutated, self.lib, self.contract)
+
+        mutated = self.source.replace(
+            "socket_metadata.gid() != expected_peer_gid",
+            "false",
+            1,
+        )
+        with self.assertRaisesRegex(self.checker.ValidationError, "peer GID"):
+            self.checker.validate(mutated, self.lib, self.contract)
+
+        mutated = self.source.replace(
+            "let observed_endpoint =\n        inspect_socket_endpoint(path, expected_peer_uid, expected_peer_gid)?;",
+            "let observed_endpoint = expected_endpoint;",
+            1,
+        )
+        with self.assertRaisesRegex(self.checker.ValidationError, "endpoint recheck"):
+            self.checker.validate(mutated, self.lib, self.contract)
+
+        mutated = self.source.replace(
+            "if observed_endpoint != expected_endpoint {",
+            "if false {",
+            1,
+        )
+        with self.assertRaisesRegex(self.checker.ValidationError, "inode comparison"):
+            self.checker.validate(mutated, self.lib, self.contract)
+
+    def test_symlink_and_world_writable_parent_checks_are_mandatory(self):
+        mutated = self.source.replace(
+            "metadata.file_type().is_symlink() || !metadata.is_dir()",
+            "false",
+            1,
+        )
+        with self.assertRaisesRegex(self.checker.ValidationError, "symlink"):
+            self.checker.validate(mutated, self.lib, self.contract)
+
+        mutated = self.source.replace(
+            "&& mode & 0o002 == 0",
+            "&& true",
+            1,
+        )
+        with self.assertRaisesRegex(self.checker.ValidationError, "parent world-write"):
+            self.checker.validate(mutated, self.lib, self.contract)
+
+    def test_transport_debug_must_redact_socket_path(self):
+        mutated = self.source.replace(
+            "impl fmt::Debug for UnixSocketRemoteMacTransport",
+            "impl fmt::Display for UnixSocketRemoteMacTransport",
+            1,
+        )
+        with self.assertRaisesRegex(self.checker.ValidationError, "redacted transport Debug"):
+            self.checker.validate(mutated, self.lib, self.contract)
+
     def test_unix_module_and_export_gates_fail_closed(self):
         ungated_module = self.lib.replace(
             "#[cfg(unix)]\nmod remote_unix;", "mod remote_unix;", 1
@@ -122,7 +181,7 @@ class RemoteMacUnixTransportContractTests(unittest.TestCase):
         with self.assertRaisesRegex(self.checker.ValidationError, "export not gated"):
             self.checker.validate(self.source, ungated_export, self.contract)
 
-    def test_timeout_contract_mutation_is_rejected(self):
+    def test_timeout_and_peer_contract_mutations_are_rejected(self):
         changed = json.loads(json.dumps(self.contract))
         changed["timeout_semantics"] = "per syscall"
         with self.assertRaisesRegex(self.checker.ValidationError, "total timeout"):
@@ -131,6 +190,12 @@ class RemoteMacUnixTransportContractTests(unittest.TestCase):
         changed["maximum_pending_connects"] = 0
         with self.assertRaisesRegex(self.checker.ValidationError, "connect budget"):
             self.checker.validate(self.source, self.lib, changed)
+        for key in changed["unix_peer_authentication"]:
+            with self.subTest(key=key):
+                current = json.loads(json.dumps(self.contract))
+                current["unix_peer_authentication"][key] = False
+                with self.assertRaisesRegex(self.checker.ValidationError, key):
+                    self.checker.validate(self.source, self.lib, current)
 
     def test_cli_passes(self):
         result = subprocess.run(

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Validate an untrusted denominator-family decision as a proposal only.
 
-This command deliberately has no authority-materialization path.  Local JSON,
-reviewer login strings, attestations, digests and opaque evidence identifiers
-cannot create an independently accepted decision.  A future authority adapter
-must consume externally authenticated, replay-protected receipts and accepted
-evidence; until then every output remains non-creditable.
+Local JSON, reviewer login strings, attestations, digests and opaque evidence
+identifiers cannot create an independently accepted decision. Output retains
+only allowlisted reviewer fields; a future authority adapter must authenticate
+immutable, replay-protected receipts and admitted evidence.
 """
 from __future__ import annotations
 
@@ -55,7 +54,13 @@ def require(value: bool, message: str) -> None:
 
 def canonical(value: Any) -> bytes:
     return (
-        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
         + "\n"
     ).encode()
 
@@ -66,6 +71,18 @@ def digest_bytes(value: bytes) -> str:
 
 def sha(path: Path) -> str:
     return digest_bytes(path.read_bytes())
+
+
+def canonical_text(value: Any, label: str, maximum: int = 4096) -> str:
+    require(
+        isinstance(value, str)
+        and value.strip() == value
+        and bool(value)
+        and len(value.encode("utf-8")) <= maximum
+        and not any(ord(character) < 32 or ord(character) == 127 for character in value),
+        label,
+    )
+    return value
 
 
 def validate_binding(value: Any) -> dict[str, str]:
@@ -91,14 +108,15 @@ def validate_evidence_ids(value: Any, leaf_id: str, *, required: bool) -> list[s
             isinstance(item, str)
             and item.strip() == item
             and bool(item)
-            and len(item) <= 256
+            and len(item.encode("utf-8")) <= 256
+            and not any(ord(character) < 32 or ord(character) == 127 for character in item)
             for item in value
         ),
         f"{leaf_id}: invalid evidence ID",
     )
     require(len(value) == len(set(value)), f"{leaf_id}: duplicate evidence ID")
     require(not required or bool(value), f"{leaf_id}: evidence reference required")
-    return value
+    return list(value)
 
 
 def finalize(packet_path: Path, decision_path: Path, output: Path) -> dict[str, Any]:
@@ -132,62 +150,63 @@ def finalize(packet_path: Path, decision_path: Path, output: Path) -> dict[str, 
 
     binding = validate_binding(decision.get("candidate_binding"))
     binding_sha256 = digest_bytes(canonical(binding))
-    candidate_author = decision.get("candidate_author")
-    require(
-        isinstance(candidate_author, str)
-        and candidate_author.strip() == candidate_author
-        and bool(candidate_author),
-        "candidate author",
+    candidate_author = canonical_text(
+        decision.get("candidate_author"), "candidate author", 256
     )
     reviewer = decision.get("reviewer", {})
     require(isinstance(reviewer, dict), "claimed reviewer")
-    require(
-        isinstance(reviewer.get("login"), str) and reviewer["login"],
-        "reviewer login",
-    )
-    require(
-        isinstance(reviewer.get("role"), str) and reviewer["role"],
-        "reviewer role",
-    )
+    reviewer_login = canonical_text(reviewer.get("login"), "reviewer login", 256)
+    reviewer_role = canonical_text(reviewer.get("role"), "reviewer role", 256)
     require(
         reviewer.get("conflict_free_attestation") is True,
         "conflict-free attestation",
     )
     require(
-        reviewer.get("login") != candidate_author,
+        reviewer_login != candidate_author,
         "candidate author cannot self-attest",
     )
     require(
         reviewer.get("reviewed_binding_sha256") == binding_sha256,
         "reviewer candidate binding digest",
     )
+    claimed_reviewer = {
+        "login": reviewer_login,
+        "role": reviewer_role,
+        "conflict_free_attestation": True,
+        "reviewed_binding_sha256": binding_sha256,
+    }
 
     supplied = decision.get("leaves")
     require(isinstance(supplied, list), "leaf decisions")
     by_id = {row.get("leaf_id"): row for row in supplied if isinstance(row, dict)}
     require(len(by_id) == len(supplied), "duplicate or invalid leaf decisions")
-    expected_ids = {row["leaf_id"] for row in packet["leaves"]}
+    packet_leaves = packet.get("leaves")
+    require(isinstance(packet_leaves, list), "packet leaves")
+    expected_ids = {row["leaf_id"] for row in packet_leaves}
     require(set(by_id) == expected_ids, "leaf denominator changed or incomplete")
 
     blockers = 0
     proposal_rows = []
     referenced_evidence: set[str] = set()
-    for leaf in packet["leaves"]:
-        row = by_id[leaf["leaf_id"]]
+    for leaf in packet_leaves:
+        leaf_id = canonical_text(leaf.get("leaf_id"), "packet leaf ID", 512)
+        source_leaf_sha256 = leaf.get("source_leaf_sha256")
         require(
-            row.get("source_leaf_sha256") == leaf["source_leaf_sha256"],
-            f"{leaf['leaf_id']}: source hash",
+            isinstance(source_leaf_sha256, str)
+            and HEX64.fullmatch(source_leaf_sha256) is not None,
+            f"{leaf_id}: source leaf hash",
+        )
+        row = by_id[leaf_id]
+        require(
+            row.get("source_leaf_sha256") == source_leaf_sha256,
+            f"{leaf_id}: source hash",
         )
         classification = row.get("classification")
-        require(classification in ALLOWED, f"{leaf['leaf_id']}: classification")
-        rationale = row.get("rationale")
-        require(
-            isinstance(rationale, str) and bool(rationale.strip()),
-            f"{leaf['leaf_id']}: rationale",
-        )
+        require(classification in ALLOWED, f"{leaf_id}: classification")
+        rationale = canonical_text(row.get("rationale"), f"{leaf_id}: rationale")
         evidence = validate_evidence_ids(
             row.get("evidence_ids"),
-            leaf["leaf_id"],
+            leaf_id,
             required=classification in EVIDENCE_REQUIRED,
         )
         referenced_evidence.update(evidence)
@@ -198,10 +217,10 @@ def finalize(packet_path: Path, decision_path: Path, output: Path) -> dict[str, 
             blockers += 1
         proposal_rows.append(
             {
-                "leaf_id": leaf["leaf_id"],
-                "source_leaf_sha256": leaf["source_leaf_sha256"],
+                "leaf_id": leaf_id,
+                "source_leaf_sha256": source_leaf_sha256,
                 "classification": classification,
-                "rationale": rationale.strip(),
+                "rationale": rationale,
                 "evidence_ids": evidence,
             }
         )
@@ -217,7 +236,7 @@ def finalize(packet_path: Path, decision_path: Path, output: Path) -> dict[str, 
         "candidate_author": candidate_author,
         "candidate_binding": binding,
         "candidate_binding_sha256": binding_sha256,
-        "claimed_reviewer": reviewer,
+        "claimed_reviewer": claimed_reviewer,
         "untrusted_decision_source_sha256": sha(decision_path),
         "leaf_count": len(proposal_rows),
         "blocker_count": blockers,

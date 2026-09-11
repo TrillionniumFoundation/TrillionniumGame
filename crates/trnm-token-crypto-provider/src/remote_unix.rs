@@ -1,6 +1,9 @@
+use std::fmt;
+use std::fs::{self, Metadata};
 use std::io::{self, Read, Write};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
@@ -17,24 +20,56 @@ const MAX_SOCKET_PATH_BYTES: usize = 100;
 const MAX_REQUEST_FRAME_BYTES: usize = 1024 * 1024 + 512;
 const MAX_RESPONSE_FRAME_BYTES: usize = 64;
 const MAX_PENDING_CONNECTS: usize = 8;
+const REDACTED_SOCKET_PATH: &str = "<redacted-socket-path>";
 
 static PENDING_CONNECTS: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct UnixSocketRemoteMacTransport {
     socket_path: PathBuf,
+    expected_peer_uid: u32,
+    expected_peer_gid: u32,
+}
+
+impl fmt::Debug for UnixSocketRemoteMacTransport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UnixSocketRemoteMacTransport")
+            .field("socket_path", &REDACTED_SOCKET_PATH)
+            .field("expected_peer_uid", &self.expected_peer_uid)
+            .field("expected_peer_gid", &self.expected_peer_gid)
+            .finish()
+    }
 }
 
 impl UnixSocketRemoteMacTransport {
-    pub fn new(socket_path: impl Into<PathBuf>) -> Result<Self, RemoteMacError> {
+    pub fn new(
+        socket_path: impl Into<PathBuf>,
+        expected_peer_uid: u32,
+        expected_peer_gid: u32,
+    ) -> Result<Self, RemoteMacError> {
         let socket_path = socket_path.into();
         validate_socket_path(&socket_path)?;
-        Ok(Self { socket_path })
+        Ok(Self {
+            socket_path,
+            expected_peer_uid,
+            expected_peer_gid,
+        })
     }
 
     #[must_use]
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+
+    #[must_use]
+    pub const fn expected_peer_uid(&self) -> u32 {
+        self.expected_peer_uid
+    }
+
+    #[must_use]
+    pub const fn expected_peer_gid(&self) -> u32 {
+        self.expected_peer_gid
     }
 }
 
@@ -51,7 +86,18 @@ impl RemoteMacTransport for UnixSocketRemoteMacTransport {
             .checked_add(timeout)
             .ok_or(RemoteMacError::InvalidRequest)?;
         let frame = encode_request(request)?;
-        let mut stream = connect_before_deadline(&self.socket_path, deadline)?;
+        let expected_endpoint = inspect_socket_endpoint(
+            &self.socket_path,
+            self.expected_peer_uid,
+            self.expected_peer_gid,
+        )?;
+        let mut stream = connect_before_deadline(
+            &self.socket_path,
+            self.expected_peer_uid,
+            self.expected_peer_gid,
+            expected_endpoint,
+            deadline,
+        )?;
         let length = u32::try_from(frame.len())
             .map_err(|_| RemoteMacError::InvalidRequest)?
             .to_be_bytes();
@@ -71,6 +117,35 @@ impl RemoteMacTransport for UnixSocketRemoteMacTransport {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+    mode: u32,
+    links: u64,
+    uid: u32,
+    gid: u32,
+}
+
+impl FileIdentity {
+    fn from_metadata(metadata: &Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            mode: metadata.mode(),
+            links: metadata.nlink(),
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SocketEndpointIdentity {
+    socket: FileIdentity,
+    parent: FileIdentity,
+}
+
 struct PendingConnectSlot;
 
 impl Drop for PendingConnectSlot {
@@ -88,7 +163,13 @@ fn reserve_connect_slot() -> Result<PendingConnectSlot, RemoteMacError> {
         .map_err(|_| RemoteMacError::TransportUnavailable)
 }
 
-fn connect_before_deadline(path: &Path, deadline: Instant) -> Result<UnixStream, RemoteMacError> {
+fn connect_before_deadline(
+    path: &Path,
+    expected_peer_uid: u32,
+    expected_peer_gid: u32,
+    expected_endpoint: SocketEndpointIdentity,
+    deadline: Instant,
+) -> Result<UnixStream, RemoteMacError> {
     let slot = reserve_connect_slot()?;
     let path = path.to_owned();
     let (sender, receiver) = mpsc::sync_channel(1);
@@ -96,27 +177,43 @@ fn connect_before_deadline(path: &Path, deadline: Instant) -> Result<UnixStream,
         .name("trnm-remote-mac-connect".to_owned())
         .spawn(move || {
             let _slot = slot;
-            let result = connect_unix(&path);
+            let result = connect_unix(
+                &path,
+                expected_peer_uid,
+                expected_peer_gid,
+                expected_endpoint,
+            );
             let _ = sender.send(result);
         })
         .map_err(|_| RemoteMacError::TransportUnavailable)?;
     drop(connector);
 
     match receiver.recv_timeout(remaining_timeout(deadline)?) {
-        Ok(Ok(stream)) => Ok(stream),
-        Ok(Err(error)) => Err(map_io_error(error)),
+        Ok(result) => result,
         Err(RecvTimeoutError::Timeout) => Err(RemoteMacError::Timeout),
         Err(RecvTimeoutError::Disconnected) => Err(RemoteMacError::TransportUnavailable),
     }
 }
 
-fn connect_unix(path: &Path) -> io::Result<UnixStream> {
-    loop {
+fn connect_unix(
+    path: &Path,
+    expected_peer_uid: u32,
+    expected_peer_gid: u32,
+    expected_endpoint: SocketEndpointIdentity,
+) -> Result<UnixStream, RemoteMacError> {
+    let stream = loop {
         match UnixStream::connect(path) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => return result,
+            Err(error) => return Err(map_io_error(error)),
+            Ok(stream) => break stream,
         }
+    };
+    let observed_endpoint =
+        inspect_socket_endpoint(path, expected_peer_uid, expected_peer_gid)?;
+    if observed_endpoint != expected_endpoint {
+        return Err(RemoteMacError::ProtocolViolation);
     }
+    Ok(stream)
 }
 
 fn remaining_timeout(deadline: Instant) -> Result<Duration, RemoteMacError> {
@@ -177,13 +274,79 @@ fn read_exact_before_deadline(
 fn validate_socket_path(path: &Path) -> Result<(), RemoteMacError> {
     let value = path.as_os_str().as_encoded_bytes();
     if !path.is_absolute()
+        || path.file_name().is_none()
         || value.is_empty()
         || value.len() > MAX_SOCKET_PATH_BYTES
         || value.contains(&0)
+        || path.components().any(|component| {
+            matches!(component, Component::CurDir | Component::ParentDir | Component::Prefix(_))
+        })
     {
         return Err(RemoteMacError::InvalidConfiguration);
     }
     Ok(())
+}
+
+fn inspect_socket_endpoint(
+    path: &Path,
+    expected_peer_uid: u32,
+    expected_peer_gid: u32,
+) -> Result<SocketEndpointIdentity, RemoteMacError> {
+    validate_no_symlink_directories(path)?;
+    let parent = path.parent().ok_or(RemoteMacError::InvalidConfiguration)?;
+    let parent_metadata = fs::symlink_metadata(parent).map_err(|_| RemoteMacError::ProtocolViolation)?;
+    if !parent_metadata.is_dir()
+        || parent_metadata.file_type().is_symlink()
+        || !secure_parent_directory(&parent_metadata, expected_peer_uid, expected_peer_gid)
+    {
+        return Err(RemoteMacError::ProtocolViolation);
+    }
+
+    let socket_metadata =
+        fs::symlink_metadata(path).map_err(|_| RemoteMacError::TransportUnavailable)?;
+    if !socket_metadata.file_type().is_socket()
+        || socket_metadata.file_type().is_symlink()
+        || socket_metadata.uid() != expected_peer_uid
+        || socket_metadata.gid() != expected_peer_gid
+        || socket_metadata.nlink() != 1
+        || socket_metadata.mode() & 0o002 != 0
+        || (socket_metadata.mode() & 0o020 != 0
+            && socket_metadata.gid() != expected_peer_gid)
+    {
+        return Err(RemoteMacError::ProtocolViolation);
+    }
+
+    Ok(SocketEndpointIdentity {
+        socket: FileIdentity::from_metadata(&socket_metadata),
+        parent: FileIdentity::from_metadata(&parent_metadata),
+    })
+}
+
+fn validate_no_symlink_directories(path: &Path) -> Result<(), RemoteMacError> {
+    let parent = path.parent().ok_or(RemoteMacError::InvalidConfiguration)?;
+    let mut current = PathBuf::new();
+    for component in parent.components() {
+        match component {
+            Component::RootDir => current.push(Path::new("/")),
+            Component::Normal(value) => current.push(value),
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
+                return Err(RemoteMacError::InvalidConfiguration)
+            }
+        }
+        let metadata =
+            fs::symlink_metadata(&current).map_err(|_| RemoteMacError::ProtocolViolation)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(RemoteMacError::ProtocolViolation);
+        }
+    }
+    Ok(())
+}
+
+fn secure_parent_directory(metadata: &Metadata, expected_uid: u32, expected_gid: u32) -> bool {
+    let mode = metadata.permissions().mode();
+    (metadata.uid() == 0 || metadata.uid() == expected_uid)
+        && mode & 0o002 == 0
+        && (mode & 0o020 == 0 || metadata.gid() == expected_gid)
 }
 
 fn encode_request(request: &RemoteMacRequest) -> Result<Vec<u8>, RemoteMacError> {
@@ -266,30 +429,50 @@ fn map_io_error(error: io::Error) -> RemoteMacError {
 mod tests {
     use super::*;
     use crate::remote::RemoteHs256Provider;
-    use std::fs;
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
 
     static NEXT_SOCKET: AtomicU64 = AtomicU64::new(1);
 
-    struct SocketGuard(PathBuf);
+    struct SocketGuard {
+        socket: PathBuf,
+        directory: PathBuf,
+    }
 
     impl Drop for SocketGuard {
         fn drop(&mut self) {
-            let _ = fs::remove_file(&self.0);
+            let _ = fs::remove_file(&self.socket);
+            let _ = fs::remove_dir(&self.directory);
         }
     }
 
     fn socket_path() -> (PathBuf, SocketGuard) {
-        let path = std::env::temp_dir().join(format!(
-            "trnm-mac-{}-{}.sock",
+        let directory = std::env::temp_dir().join(format!(
+            "trnm-mac-{}-{}",
             std::process::id(),
             NEXT_SOCKET.fetch_add(1, Ordering::Relaxed)
         ));
-        let _ = fs::remove_file(&path);
-        let guard = SocketGuard(path.clone());
-        (path, guard)
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = directory.join("provider.sock");
+        let guard = SocketGuard {
+            socket: socket.clone(),
+            directory,
+        };
+        (socket, guard)
+    }
+
+    fn bind_secure_listener(path: &Path) -> UnixListener {
+        let listener = UnixListener::bind(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        listener
+    }
+
+    fn transport(path: PathBuf) -> UnixSocketRemoteMacTransport {
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        UnixSocketRemoteMacTransport::new(path, metadata.uid(), metadata.gid()).unwrap()
     }
 
     fn read_request(mut stream: &UnixStream) -> Vec<u8> {
@@ -311,7 +494,7 @@ mod tests {
     #[test]
     fn sign_round_trip_uses_bounded_opaque_frame() {
         let (path, _guard) = socket_path();
-        let listener = UnixListener::bind(&path).unwrap();
+        let listener = bind_secure_listener(&path);
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let request = read_request(&stream);
@@ -330,10 +513,12 @@ mod tests {
             response.extend_from_slice(&[9; 32]);
             write_response(&stream, &response);
         });
-        let transport = UnixSocketRemoteMacTransport::new(path).unwrap();
-        let provider =
-            RemoteHs256Provider::new(transport, "kms://tenant/key-7", Duration::from_secs(1))
-                .unwrap();
+        let provider = RemoteHs256Provider::new(
+            transport(path),
+            "kms://tenant/key-7",
+            Duration::from_secs(1),
+        )
+        .unwrap();
         assert_eq!(
             provider
                 .sign([7; 16], RemoteMacPurpose::AccessToken, b"header.payload")
@@ -346,7 +531,7 @@ mod tests {
     #[test]
     fn verify_false_and_mismatched_response_are_fail_closed() {
         let (path, _guard) = socket_path();
-        let listener = UnixListener::bind(&path).unwrap();
+        let listener = bind_secure_listener(&path);
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let request = read_request(&stream);
@@ -358,10 +543,12 @@ mod tests {
             response.extend_from_slice(&[8; 16]);
             write_response(&stream, &response);
         });
-        let transport = UnixSocketRemoteMacTransport::new(path).unwrap();
-        let provider =
-            RemoteHs256Provider::new(transport, "hsm:partition/key", Duration::from_secs(1))
-                .unwrap();
+        let provider = RemoteHs256Provider::new(
+            transport(path),
+            "hsm:partition/key",
+            Duration::from_secs(1),
+        )
+        .unwrap();
         assert_eq!(
             provider
                 .verify([8; 16], RemoteMacPurpose::AccessToken, b"message", &[3; 32],)
@@ -374,7 +561,7 @@ mod tests {
     #[test]
     fn slow_drip_response_cannot_extend_total_deadline() {
         let (path, _guard) = socket_path();
-        let listener = UnixListener::bind(&path).unwrap();
+        let listener = bind_secure_listener(&path);
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let _ = read_request(&stream);
@@ -397,9 +584,8 @@ mod tests {
                 thread::sleep(Duration::from_millis(15));
             }
         });
-        let transport = UnixSocketRemoteMacTransport::new(path).unwrap();
         let provider = RemoteHs256Provider::new(
-            transport,
+            transport(path),
             "kms://tenant/deadline-key",
             Duration::from_millis(80),
         )
@@ -418,20 +604,23 @@ mod tests {
     #[test]
     fn oversized_truncated_and_relative_paths_are_rejected() {
         assert_eq!(
-            UnixSocketRemoteMacTransport::new("relative.sock").unwrap_err(),
+            UnixSocketRemoteMacTransport::new("relative.sock", 1, 1).unwrap_err(),
             RemoteMacError::InvalidConfiguration
         );
         let (path, _guard) = socket_path();
-        let listener = UnixListener::bind(&path).unwrap();
+        let listener = bind_secure_listener(&path);
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let _ = read_request(&stream);
             stream.write_all(&32_u32.to_be_bytes()).unwrap();
             stream.write_all(b"short").unwrap();
         });
-        let transport = UnixSocketRemoteMacTransport::new(path).unwrap();
-        let provider =
-            RemoteHs256Provider::new(transport, "kms:key", Duration::from_secs(1)).unwrap();
+        let provider = RemoteHs256Provider::new(
+            transport(path),
+            "kms:key",
+            Duration::from_secs(1),
+        )
+        .unwrap();
         assert_eq!(
             provider
                 .sign([1; 16], RemoteMacPurpose::AccessToken, b"message")
@@ -439,5 +628,54 @@ mod tests {
             RemoteMacError::ProtocolViolation
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn wrong_peer_identity_and_insecure_parent_fail_closed() {
+        let (path, guard) = socket_path();
+        let _listener = bind_secure_listener(&path);
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        let wrong_uid = if metadata.uid() == 0 {
+            1
+        } else {
+            metadata.uid() - 1
+        };
+        let provider = RemoteHs256Provider::new(
+            UnixSocketRemoteMacTransport::new(path.clone(), wrong_uid, metadata.gid()).unwrap(),
+            "kms:key",
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        assert_eq!(
+            provider
+                .sign([1; 16], RemoteMacPurpose::AccessToken, b"message")
+                .unwrap_err(),
+            RemoteMacError::ProtocolViolation
+        );
+
+        fs::set_permissions(&guard.directory, fs::Permissions::from_mode(0o707)).unwrap();
+        let provider = RemoteHs256Provider::new(
+            UnixSocketRemoteMacTransport::new(path, metadata.uid(), metadata.gid()).unwrap(),
+            "kms:key",
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        assert_eq!(
+            provider
+                .sign([2; 16], RemoteMacPurpose::AccessToken, b"message")
+                .unwrap_err(),
+            RemoteMacError::ProtocolViolation
+        );
+    }
+
+    #[test]
+    fn transport_debug_redacts_socket_path() {
+        let (path, _guard) = socket_path();
+        let listener = bind_secure_listener(&path);
+        let transport = transport(path.clone());
+        let debug = format!("{transport:?}");
+        assert!(!debug.contains(path.to_string_lossy().as_ref()));
+        assert!(debug.contains(REDACTED_SOCKET_PATH));
+        drop(listener);
     }
 }

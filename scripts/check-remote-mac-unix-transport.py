@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Validate the Unix remote MAC transport boundary.
 
-The validator intentionally checks executable production structure rather than
-identifier presence. Test-only code, comments and string literals cannot pay
-for production deadline call-graph obligations; focused runtime regression
-functions are separately required from the test module.
+The validator checks executable production structure rather than identifier
+presence. Test-only code, comments and string literals cannot pay for deadline
+or peer-identity obligations. The transport remains a local-service source
+candidate: filesystem UID/GID and stable inode checks narrow endpoint
+substitution but do not replace a production KMS/HSM trust decision.
 """
 from __future__ import annotations
 
@@ -155,6 +156,28 @@ def validate(source: str, lib: str, contract: dict) -> None:
         "total timeout contract",
     )
     require(contract.get("maximum_pending_connects") == 8, "connect budget contract")
+    require(
+        contract.get("unix_transport_profile") == "local-service-source-candidate",
+        "Unix transport profile",
+    )
+    peer = contract.get("unix_peer_authentication")
+    require(isinstance(peer, dict), "Unix peer-authentication contract")
+    for key in (
+        "expected_uid_required",
+        "expected_gid_required",
+        "socket_inode_rechecked_after_connect",
+        "symlink_directory_components_rejected",
+        "direct_parent_world_writable_rejected",
+        "socket_world_writable_rejected",
+        "socket_path_redacted_from_debug",
+        "same_uid_or_trusted_group_compromise_remains_out_of_scope",
+    ):
+        require(peer.get(key) is True, f"Unix peer-authentication contract {key}")
+    claims = contract.get("claim_boundary")
+    require(
+        isinstance(claims, dict) and claims and not any(claims.values()),
+        "positive Unix transport claim",
+    )
 
     code = compact(strip_comments_and_literals(production))
     test_code = compact(strip_comments_and_literals(tests))
@@ -166,8 +189,13 @@ def validate(source: str, lib: str, contract: dict) -> None:
     )
     require_once(
         code,
-        "letmutstream=connect_before_deadline(&self.socket_path,deadline)?;",
-        "deadline-bound connect edge",
+        "letexpected_endpoint=inspect_socket_endpoint(&self.socket_path,self.expected_peer_uid,self.expected_peer_gid)?;",
+        "pre-connect endpoint identity",
+    )
+    require_once(
+        code,
+        "letmutstream=connect_before_deadline(&self.socket_path,self.expected_peer_uid,self.expected_peer_gid,expected_endpoint,deadline)?;",
+        "deadline and identity-bound connect edge",
     )
     require_once(
         code,
@@ -216,9 +244,56 @@ def validate(source: str, lib: str, contract: dict) -> None:
         "monotonic remaining-time calculation",
     )
 
-    # The behavioral slow-peer regression is a separate obligation. It is
-    # checked as executable test syntax after comments/literals are removed, so
-    # a dead marker cannot satisfy the contract.
+    require_once(
+        code,
+        "letobserved_endpoint=inspect_socket_endpoint(path,expected_peer_uid,expected_peer_gid)?;",
+        "post-connect endpoint recheck",
+    )
+    require_once(
+        code,
+        "ifobserved_endpoint!=expected_endpoint{returnErr(RemoteMacError::ProtocolViolation);}",
+        "stable socket inode comparison",
+    )
+    require_once(
+        code,
+        "socket_metadata.uid()!=expected_peer_uid",
+        "peer UID comparison",
+    )
+    require_once(
+        code,
+        "socket_metadata.gid()!=expected_peer_gid",
+        "peer GID comparison",
+    )
+    require_once(code, "socket_metadata.nlink()!=1", "socket link-count check")
+    require_once(
+        code,
+        "socket_metadata.mode()&0o002!=0",
+        "socket world-write rejection",
+    )
+    require_once(
+        code,
+        "mode&0o002==0",
+        "direct-parent world-write rejection",
+    )
+    require_once(
+        code,
+        "metadata.file_type().is_symlink()||!metadata.is_dir()",
+        "symlink directory rejection",
+    )
+    require(
+        code.count("fs::symlink_metadata(") >= 3,
+        "descriptor path identity must use symlink_metadata",
+    )
+    require_once(
+        code,
+        "implfmt::DebugforUnixSocketRemoteMacTransport",
+        "redacted transport Debug",
+    )
+    require(
+        "<redacted-socket-path>" in production,
+        "socket path redaction marker",
+    )
+
     require_once(
         test_code,
         "fnslow_drip_response_cannot_extend_total_deadline(){",
@@ -228,6 +303,16 @@ def validate(source: str, lib: str, contract: dict) -> None:
         test_code,
         "fnsign_round_trip_uses_bounded_opaque_frame(){",
         "bounded opaque-frame regression",
+    )
+    require_once(
+        test_code,
+        "fnwrong_peer_identity_and_insecure_parent_fail_closed(){",
+        "peer-identity hostile regression",
+    )
+    require_once(
+        test_code,
+        "fntransport_debug_redacts_socket_path(){",
+        "transport path redaction regression",
     )
 
 

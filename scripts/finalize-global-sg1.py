@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Assemble fourteen untrusted family proposals into a non-authoritative SG1 proposal.
 
-No local file can materialize family or global SG1 acceptance.  This source
-candidate intentionally lacks a trusted receipt verifier and durable replay
-store, so all authority claims remain false regardless of supplied reviewer
-names, attestations, digests or requested decisions.
+No local file can materialize family or global SG1 acceptance. Inputs reject
+duplicate keys/non-finite numbers and outputs retain only allowlisted reviewer
+fields. A future authority service must verify immutable receipts, evidence,
+principal qualification, expiry, nonce and durable anti-replay state.
 """
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ BINDING_KEYS = (
     "prospective_merge",
     "prospective_merge_tree",
 )
+MAX_JSON_BYTES = 8 * 1024 * 1024
 
 
 class GlobalDecisionError(RuntimeError):
@@ -35,9 +36,46 @@ def require(value: bool, message: str) -> None:
         raise GlobalDecisionError(message)
 
 
+def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        require(key not in result, f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def reject_non_finite(value: str) -> None:
+    raise GlobalDecisionError(f"non-finite JSON number: {value}")
+
+
+def load_object(path: Path) -> dict[str, Any]:
+    data = path.read_bytes()
+    require(len(data) <= MAX_JSON_BYTES, f"JSON document too large: {path}")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise GlobalDecisionError(f"JSON document is not UTF-8: {path}") from error
+    try:
+        value = json.loads(
+            text,
+            object_pairs_hook=unique_object,
+            parse_constant=reject_non_finite,
+        )
+    except json.JSONDecodeError as error:
+        raise GlobalDecisionError(f"invalid JSON: {path}") from error
+    require(isinstance(value, dict), f"top-level JSON object required: {path}")
+    return value
+
+
 def canonical(value: Any) -> bytes:
     return (
-        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
         + "\n"
     ).encode()
 
@@ -48,6 +86,18 @@ def digest_bytes(value: bytes) -> str:
 
 def sha(path: Path) -> str:
     return digest_bytes(path.read_bytes())
+
+
+def canonical_text(value: Any, label: str, maximum: int = 256) -> str:
+    require(
+        isinstance(value, str)
+        and value.strip() == value
+        and bool(value)
+        and len(value.encode("utf-8")) <= maximum
+        and not any(ord(character) < 32 or ord(character) == 127 for character in value),
+        label,
+    )
+    return value
 
 
 def validate_binding(value: Any) -> dict[str, str]:
@@ -65,14 +115,39 @@ def validate_binding(value: Any) -> dict[str, str]:
     return binding  # type: ignore[return-value]
 
 
+def sanitized_reviewer(
+    value: Any,
+    *,
+    binding_sha256: str,
+    label: str,
+) -> dict[str, Any]:
+    require(isinstance(value, dict), label)
+    login = canonical_text(value.get("login"), f"{label} login")
+    role = canonical_text(value.get("role"), f"{label} role")
+    require(
+        value.get("conflict_free_attestation") is True,
+        f"{label} conflict-free attestation",
+    )
+    require(
+        value.get("reviewed_binding_sha256") == binding_sha256,
+        f"{label} candidate binding digest",
+    )
+    return {
+        "login": login,
+        "role": role,
+        "conflict_free_attestation": True,
+        "reviewed_binding_sha256": binding_sha256,
+    }
+
+
 def finalize(
     index_path: Path,
     decisions: list[Path],
     global_input: Path,
     output: Path,
 ) -> dict[str, Any]:
-    index = json.loads(index_path.read_text(encoding="utf-8"))
-    global_proposal = json.loads(global_input.read_text(encoding="utf-8"))
+    index = load_object(index_path)
+    global_proposal = load_object(global_input)
     require(
         index.get("schema") == "trillionnium.denominator-family-review-index.v1",
         "index schema",
@@ -81,15 +156,35 @@ def finalize(
         index.get("family_count") == 14 and index.get("leaf_count") == 10173,
         "denominator authority",
     )
+    index_family_rows = index.get("families")
+    require(isinstance(index_family_rows, list), "index family rows")
+    index_rows = {
+        row.get("family_id"): row
+        for row in index_family_rows
+        if isinstance(row, dict) and isinstance(row.get("family_id"), str)
+    }
+    require(
+        len(index_rows) == len(index_family_rows) == 14,
+        "duplicate or invalid index family",
+    )
+    require(
+        sum(
+            row.get("leaf_count", -1)
+            for row in index_family_rows
+            if isinstance(row.get("leaf_count"), int)
+            and not isinstance(row.get("leaf_count"), bool)
+        )
+        == 10173,
+        "index family leaf total",
+    )
     require(len(decisions) == 14, "exactly 14 family proposal files required")
 
-    rows = [json.loads(path.read_text(encoding="utf-8")) for path in decisions]
+    rows = [load_object(path) for path in decisions]
     family_ids = [row.get("family_id") for row in rows]
     require(len(family_ids) == len(set(family_ids)), "duplicate family proposal")
     by_family = {
         row.get("family_id"): (path, row) for path, row in zip(decisions, rows)
     }
-    index_rows = {row["family_id"]: row for row in index["families"]}
     expected = set(index_rows)
     require(set(by_family) == expected, "family proposal set incomplete or changed")
 
@@ -98,6 +193,7 @@ def finalize(
     candidate_author: str | None = None
     family_records = []
     total_blockers = 0
+    total_leaves = 0
     claimed_reviewers = []
     for family in sorted(expected):
         path, row = by_family[family]
@@ -129,10 +225,15 @@ def finalize(
             == authority.get("source_manifest_sha256"),
             f"{family}: source manifest digest drift",
         )
+        leaf_count = row.get("leaf_count")
         require(
-            row.get("leaf_count") == authority.get("leaf_count"),
+            isinstance(leaf_count, int)
+            and not isinstance(leaf_count, bool)
+            and leaf_count >= 0
+            and leaf_count == authority.get("leaf_count"),
             f"{family}: leaf count drift",
         )
+        total_leaves += leaf_count
         require(
             isinstance(row.get("packet_sha256"), str)
             and HEX64.fullmatch(row["packet_sha256"]) is not None,
@@ -153,10 +254,8 @@ def finalize(
         binding = current
         binding_sha256 = current_sha256
 
-        current_author = row.get("candidate_author")
-        require(
-            isinstance(current_author, str) and current_author,
-            f"{family}: candidate author",
+        current_author = canonical_text(
+            row.get("candidate_author"), f"{family}: candidate author"
         )
         require(
             candidate_author is None or current_author == candidate_author,
@@ -164,25 +263,33 @@ def finalize(
         )
         candidate_author = current_author
 
-        claimed_reviewer = row.get("claimed_reviewer", {})
-        login = claimed_reviewer.get("login")
-        require(isinstance(login, str) and login, f"{family}: claimed reviewer")
-        claimed_reviewers.append(login)
+        reviewer = sanitized_reviewer(
+            row.get("claimed_reviewer"),
+            binding_sha256=current_sha256,
+            label=f"{family}: claimed reviewer",
+        )
+        claimed_reviewers.append(reviewer["login"])
         blockers = row.get("blocker_count")
-        require(isinstance(blockers, int) and blockers >= 0, f"{family}: blockers")
+        require(
+            isinstance(blockers, int)
+            and not isinstance(blockers, bool)
+            and blockers >= 0,
+            f"{family}: blockers",
+        )
         total_blockers += blockers
         family_records.append(
             {
                 "family_id": family,
                 "proposal_sha256": sha(path),
                 "packet_sha256": row["packet_sha256"],
-                "claimed_reviewer_login": login,
+                "claimed_reviewer": reviewer,
                 "blocker_count": blockers,
                 "requested_family_decision": row.get("requested_family_decision"),
                 "accepted": False,
             }
         )
 
+    require(total_leaves == 10173, "family proposal leaf total")
     assert binding is not None
     assert binding_sha256 is not None
     assert candidate_author is not None
@@ -217,11 +324,14 @@ def finalize(
         global_proposal.get("candidate_author") == candidate_author,
         "global candidate author",
     )
-    claimed_global_reviewer = global_proposal.get("reviewer", {})
+    claimed_global_reviewer = sanitized_reviewer(
+        global_proposal.get("reviewer"),
+        binding_sha256=binding_sha256,
+        label="claimed global reviewer",
+    )
     require(
-        isinstance(claimed_global_reviewer.get("login"), str)
-        and claimed_global_reviewer["login"],
-        "claimed global reviewer login",
+        claimed_global_reviewer["login"] != candidate_author,
+        "candidate author cannot self-attest global proposal",
     )
     require(
         global_proposal.get("decision") in {"accept", "reject"},
@@ -253,9 +363,7 @@ def finalize(
             "expiry_and_nonce_verified": False,
             "replay_protection_verified": False,
             "global_sg1_accepted": False,
-            "reason": (
-                "local proposal files cannot create family or global SG1 authority"
-            ),
+            "reason": "local proposal files cannot create family or global SG1 authority",
         },
         "global_sg1_accepted": False,
         "claim_boundary": {
