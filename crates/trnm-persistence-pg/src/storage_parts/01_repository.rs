@@ -25,12 +25,13 @@ impl PgRepository {
 
     /// List one bounded storage page using a typed keyset cursor.
     ///
-    /// Ordering is stable by `(object_key, user_id)` inside one collection. The
-    /// optional owner narrows the page to one exact storage owner. ACL filtering
-    /// is performed by the database before the limit is applied, so inaccessible
-    /// rows neither consume page capacity nor become cursors. The returned cursor
-    /// is the last visible object in the page and is present only when one bounded
-    /// sentinel row proves that another visible object exists.
+    /// Ordering is stable by canonical UTF-8 key bytes followed by `user_id`
+    /// inside one collection. The optional owner narrows the page to one exact
+    /// storage owner. ACL filtering is performed by the database before the
+    /// limit is applied, so inaccessible rows neither consume page capacity nor
+    /// become cursors. The returned cursor is the last visible object in the
+    /// page and is present only when one bounded sentinel row proves that
+    /// another visible object exists.
     pub fn list_storage_objects(
         &mut self,
         actor: Actor,
@@ -63,16 +64,7 @@ impl PgRepository {
         let rows = self
             .client
             .query(
-                "SELECT object_key, user_id, value_bytes, version_digest, \
-                        read_permission, write_permission \
-                 FROM trnm_storage_objects \
-                 WHERE collection = $1 \
-                   AND ($2::bytea IS NULL OR user_id = $2) \
-                   AND (object_key > $3 OR (object_key = $3 AND user_id > $4)) \
-                   AND ($5::bytea IS NULL OR read_permission = 2 \
-                        OR (user_id = $5 AND read_permission = 1)) \
-                 ORDER BY object_key ASC, user_id ASC \
-                 LIMIT $6",
+                storage_list_query(self.profile),
                 &[
                     &collection,
                     &owner_bytes,
