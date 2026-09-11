@@ -105,11 +105,7 @@ impl fmt::Debug for UnixSocketRemoteMacTransport {
 }
 
 impl RemoteMacTransport for UnixSocketRemoteMacTransport {
-    fn sign(
-        &self,
-        request: &MacRequest,
-        timeout: Duration,
-    ) -> Result<MacResponse, RemoteMacError> {
+    fn sign(&self, request: &MacRequest, timeout: Duration) -> Result<MacResponse, RemoteMacError> {
         decode_sign_response(self.exchange(1, request, timeout)?, request)
     }
 
@@ -364,9 +360,8 @@ fn encode_request(operation: u8, request: &MacRequest) -> Result<Vec<u8>, Remote
     let domain = request.domain().as_str().as_bytes();
     let handle = request.key_handle().as_str().as_bytes();
     let payload = request.payload();
-    let mut frame = Vec::with_capacity(
-        1 + 1 + 2 + domain.len() + 2 + handle.len() + 4 + payload.len(),
-    );
+    let mut frame =
+        Vec::with_capacity(1 + 1 + 2 + domain.len() + 2 + handle.len() + 4 + payload.len());
     frame.push(operation);
     frame.push(algorithm_code(request.algorithm()));
     push_bounded_bytes(&mut frame, domain)?;
@@ -404,10 +399,7 @@ fn decode_sign_response(
     MacResponse::new(request.request_id(), response[1..].to_vec())
 }
 
-fn decode_verify_response(
-    response: Vec<u8>,
-    request: &MacRequest,
-) -> Result<bool, RemoteMacError> {
+fn decode_verify_response(response: Vec<u8>, request: &MacRequest) -> Result<bool, RemoteMacError> {
     let width = request.algorithm().output_len();
     if response.len() != width + 2 || response[0] != 2 {
         return Err(RemoteMacError::ProtocolViolation);
@@ -445,11 +437,9 @@ mod tests {
     }
 
     fn transport(path: &Path) -> UnixSocketRemoteMacTransport {
-        UnixSocketRemoteMacTransport::new(
-            path,
-            unsafe { libc::geteuid() },
-            unsafe { libc::getegid() },
-        )
+        UnixSocketRemoteMacTransport::new(path, unsafe { libc::geteuid() }, unsafe {
+            libc::getegid()
+        })
         .unwrap()
     }
 
@@ -510,7 +500,10 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
         let worker = serve_once(listener, vec![1]);
         let error = transport(&socket)
-            .sign(&request(&vec![1; MAX_MAC_PAYLOAD_BYTES + 1]), Duration::from_secs(1))
+            .sign(
+                &request(&vec![1; MAX_MAC_PAYLOAD_BYTES + 1]),
+                Duration::from_secs(1),
+            )
             .unwrap_err();
         assert_eq!(error, RemoteMacError::InvalidRequest);
         worker.join().unwrap();
@@ -572,7 +565,8 @@ mod tests {
 
     #[test]
     fn transport_debug_redacts_socket_path() {
-        let value = UnixSocketRemoteMacTransport::new("/private/provider/mac.sock", 501, 20).unwrap();
+        let value =
+            UnixSocketRemoteMacTransport::new("/private/provider/mac.sock", 501, 20).unwrap();
         let debug = format!("{value:?}");
         assert!(debug.contains("<redacted-socket-path>"));
         assert!(!debug.contains("/private/provider/mac.sock"));
