@@ -11,13 +11,25 @@ pub enum RemoteMacPurpose {
     RefreshCredential,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum RemoteMacRequestKind {
     Sign,
     Verify { tag: [u8; REMOTE_HS256_TAG_BYTES] },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl fmt::Debug for RemoteMacRequestKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sign => formatter.write_str("Sign"),
+            Self::Verify { .. } => formatter
+                .debug_struct("Verify")
+                .field("tag", &"<redacted-tag>")
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
 pub struct RemoteMacRequest {
     pub request_id: [u8; 16],
     pub key_reference: String,
@@ -26,7 +38,20 @@ pub struct RemoteMacRequest {
     pub kind: RemoteMacRequestKind,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl fmt::Debug for RemoteMacRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RemoteMacRequest")
+            .field("request_id", &self.request_id)
+            .field("key_reference", &"<opaque-key-reference>")
+            .field("purpose", &self.purpose)
+            .field("message_bytes", &self.message.len())
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
 pub enum RemoteMacResponse {
     Signed {
         request_id: [u8; 16],
@@ -36,6 +61,23 @@ pub enum RemoteMacResponse {
         request_id: [u8; 16],
         valid: bool,
     },
+}
+
+impl fmt::Debug for RemoteMacResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Signed { request_id, .. } => formatter
+                .debug_struct("Signed")
+                .field("request_id", request_id)
+                .field("tag", &"<redacted-tag>")
+                .finish(),
+            Self::Verified { request_id, valid } => formatter
+                .debug_struct("Verified")
+                .field("request_id", request_id)
+                .field("valid", valid)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -347,5 +389,31 @@ mod tests {
                 .unwrap_err(),
             RemoteMacError::InvalidRequest
         );
+    }
+
+    #[test]
+    fn request_kind_and_response_debug_never_expose_sensitive_bytes() {
+        let request = RemoteMacRequest {
+            request_id: request_id(9),
+            key_reference: "kms://tenant/private-key-reference".to_owned(),
+            purpose: RemoteMacPurpose::RefreshCredential,
+            message: b"private-refresh-signing-input".to_vec(),
+            kind: RemoteMacRequestKind::Verify { tag: [90; 32] },
+        };
+        let request_debug = format!("{request:?}");
+        assert!(!request_debug.contains("private-key-reference"));
+        assert!(!request_debug.contains("private-refresh-signing-input"));
+        assert!(!request_debug.contains("90, 90"));
+        assert!(request_debug.contains("message_bytes: 29"));
+        assert!(request_debug.contains("<opaque-key-reference>"));
+        assert!(request_debug.contains("<redacted-tag>"));
+
+        let response = RemoteMacResponse::Signed {
+            request_id: request_id(9),
+            tag: [90; 32],
+        };
+        let response_debug = format!("{response:?}");
+        assert!(!response_debug.contains("90, 90"));
+        assert!(response_debug.contains("<redacted-tag>"));
     }
 }
