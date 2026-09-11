@@ -1,0 +1,59 @@
+name: integration-v10-exact-qualification
+
+on:
+  push:
+    branches:
+      - ops/integration-v10-exact-qualification-20260911
+  pull_request:
+    paths:
+      - .github/workflows/integration-v10-exact-qualification-20260911.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-v10-exact-qualification
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    name: integration-v10/exact-head-and-merge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      INTEGRATION_REPOSITORY: TrillionniumFoundation/Trillionnium-Integration
+      INTEGRATION_PR: '8'
+    steps:
+      - name: Resolve and qualify exact Integration head and merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote="https://github.com/${INTEGRATION_REPOSITORY}.git"
+          for target in head merge; do
+            dir="$RUNNER_TEMP/integration-${target}"
+            git init -q "$dir"
+            git -C "$dir" remote add origin "$remote"
+            git -C "$dir" fetch -q --no-tags --depth=2 origin "refs/pull/${INTEGRATION_PR}/${target}"
+            git -C "$dir" checkout -q --detach FETCH_HEAD
+            sha="$(git -C "$dir" rev-parse HEAD)"
+            tree="$(git -C "$dir" rev-parse 'HEAD^{tree}')"
+            printf '%s_sha=%s\n' "$target" "$sha"
+            printf '%s_tree=%s\n' "$target" "$tree"
+            python3 -m json.tool "$dir/components.lock.json" >/dev/null
+            python3 -m py_compile "$dir/scripts/check-components-lock.py" "$dir/scripts/test-components-lock-negative.py"
+            (
+              cd "$dir"
+              python3 scripts/check-components-lock.py
+              python3 scripts/test-components-lock-negative.py
+              git diff --exit-code
+            )
+          done
+          head_sha="$(git -C "$RUNNER_TEMP/integration-head" rev-parse HEAD)"
+          merge_sha="$(git -C "$RUNNER_TEMP/integration-merge" rev-parse HEAD)"
+          merge_parent_count="$(git -C "$RUNNER_TEMP/integration-merge" rev-list --parents -n1 HEAD | awk '{print NF-1}')"
+          test "$merge_parent_count" -eq 2
+          merge_second_parent="$(git -C "$RUNNER_TEMP/integration-merge" rev-parse HEAD^2)"
+          test "$merge_second_parent" = "$head_sha"
+          printf 'integration_exact_qualification=PASS\n'
+          printf 'head=%s\nmerge=%s\nproduction_authorization=not_granted\n' "$head_sha" "$merge_sha"
