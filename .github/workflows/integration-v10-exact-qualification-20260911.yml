@@ -26,6 +26,8 @@ jobs:
       INTEGRATION_PR: '8'
     steps:
       - name: Resolve and qualify exact Integration head and merge
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -34,7 +36,8 @@ jobs:
             dir="$RUNNER_TEMP/integration-${target}"
             git init -q "$dir"
             git -C "$dir" remote add origin "$remote"
-            git -C "$dir" fetch -q --no-tags --depth=2 origin "refs/pull/${INTEGRATION_PR}/${target}"
+            git -C "$dir" -c http.extraHeader="Authorization: Bearer ${GITHUB_TOKEN}" \
+              fetch -q --no-tags --depth=2 origin "refs/pull/${INTEGRATION_PR}/${target}"
             git -C "$dir" checkout -q --detach FETCH_HEAD
             sha="$(git -C "$dir" rev-parse HEAD)"
             tree="$(git -C "$dir" rev-parse 'HEAD^{tree}')"
