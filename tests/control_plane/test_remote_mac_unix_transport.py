@@ -28,12 +28,19 @@ class RemoteMacUnixTransportContractTests(unittest.TestCase):
         cls.lib = cls.checker.LIB.read_text(encoding="utf-8")
         cls.contract = json.loads(cls.checker.CONTRACT.read_text(encoding="utf-8"))
 
+    def inject_before_tests(self, payload: str) -> str:
+        return self.source.replace("#[cfg(test)]", payload + "\n#[cfg(test)]", 1)
+
     def test_real_contract_passes(self):
         self.checker.validate(self.source, self.lib, self.contract)
 
     def test_raw_key_or_total_deadline_removal_rejected(self):
         with self.assertRaisesRegex(self.checker.ValidationError, "forbidden"):
-            self.checker.validate(self.source + "raw_key", self.lib, self.contract)
+            self.checker.validate(
+                self.inject_before_tests("fn forbidden_raw_key_marker() { let raw_key = 1; }"),
+                self.lib,
+                self.contract,
+            )
         for marker in (
             "recv_timeout",
             "remaining_timeout",
