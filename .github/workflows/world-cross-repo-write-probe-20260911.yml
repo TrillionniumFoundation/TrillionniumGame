@@ -1,0 +1,40 @@
+name: world-cross-repo-write-probe-20260911
+
+on:
+  push:
+    branches:
+      - ops/world-cross-repo-write-probe-20260911
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    name: world-cross-repo-write-probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Test unreferenced World blob creation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/response.json"
+          status="$(curl --silent --show-error --output "$body" --write-out '%{http_code}' \
+            --request POST \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/repos/TrillionniumFoundation/Trillionnium-World/git/blobs \
+            --data '{"content":"cross-repository-write-probe; unreferenced object only\n","encoding":"utf-8"}')"
+          printf 'http_status=%s\n' "$status"
+          cat "$body"
+          printf '\n'
+          case "$status" in
+            201) printf 'WORLD_CROSS_REPO_WRITE_CAPABLE=true\n' ;;
+            401|403|404) printf 'WORLD_CROSS_REPO_WRITE_CAPABLE=false\n' ;;
+            *) exit 1 ;;
+          esac
+          printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
