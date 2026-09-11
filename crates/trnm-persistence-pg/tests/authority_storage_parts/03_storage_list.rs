@@ -1,3 +1,5 @@
+// This profile-neutral live regression is part of the exact server source-checker
+// authority set; omission or include-order substitution is rejected by control-plane tests.
 #[test]
 fn storage_listing_acl_owner_scope_and_cursor_are_stable() {
     let Some((database_url, profile)) = live_database_environment("storage listing contract")
