@@ -1,35 +1,43 @@
 {
   "schema": "trillionnium.durability-state-model.v1",
   "exploration_depth": 10,
+  "maximum_attempts": 2,
   "actions": [
     "commit current",
     "commit stale",
     "same replay",
     "conflicting replay",
     "authority takeover",
-    "claim",
+    "claim or expired-lease reclaim",
     "lease expire",
-    "publish",
-    "exact ack",
-    "stale ack",
-    "crash",
-    "final reaper"
+    "idempotent publish or observe existing effect",
+    "exact owner-and-generation acknowledgement",
+    "stale owner-or-generation acknowledgement",
+    "crash before or after publish",
+    "expired final-attempt reaper"
   ],
   "invariants": [
     "one revision per unique accepted command",
     "receipt and revision are atomic",
     "accepted command always has an outbox intent",
     "outbox never exists without an accepted command",
-    "leased state has one exact owner and generation",
-    "non-leased state has no owner",
-    "delivered state has a receipt and visible effect",
+    "claim attempts and lease generations are monotone and bounded",
+    "leased state retains one exact current owner and generation",
+    "non-leased state has no current owner",
+    "only leased state may be marked expired",
+    "delivered state has exactly one visible effect and a durable receipt",
+    "delivery acknowledgement matches the last claimed owner and generation",
     "dead state has no delivered receipt",
-    "stale authority and lease actions do not mutate durable state",
-    "one externally visible value per intent identity"
+    "idempotent retries never create a second externally visible value",
+    "stale authority and lease acknowledgements do not mutate durable completion state"
+  ],
+  "known_ambiguity_boundaries": [
+    "an expired final lease may be reaped dead after a crash that made one idempotent external value visible but did not persist the database acknowledgement",
+    "such a dead-with-visible-effect state is not classified as delivered and grants no production exactly-once claim"
   ],
   "hostile_mutants": [
     "duplicate visible effect on retry",
-    "stale owner or generation acknowledgement"
+    "stale owner or generation acknowledgement completes delivery"
   ],
   "implementation_differential_required": true,
   "claim_boundary": {
