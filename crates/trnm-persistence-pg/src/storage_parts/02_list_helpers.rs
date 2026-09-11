@@ -38,6 +38,46 @@ fn validate_actor_and_owner(actor: Actor, owner: Option<UserId>) -> Result<(), D
     Ok(())
 }
 
+/// Return the profile-specific query that implements one canonical ordering:
+/// lexicographic UTF-8 bytes, followed by the raw 16-byte user id.
+///
+/// Rust `String::cmp` is byte-equivalent for valid UTF-8. CockroachDB's plain
+/// STRING order is defined over UTF-8 bytes, but the explicit `::BYTES` cast
+/// keeps that contract visible at the keyset boundary. PostgreSQL text order is
+/// locale-dependent, so `convert_to(..., 'UTF8')` removes ambient collation from
+/// both the continuation predicate and ORDER BY.
+fn storage_list_query(profile: DatabaseProfile) -> &'static str {
+    match profile {
+        DatabaseProfile::PostgreSql => {
+            "SELECT object_key, user_id, value_bytes, version_digest, \
+                    read_permission, write_permission \
+             FROM trnm_storage_objects \
+             WHERE collection = $1 \
+               AND ($2::bytea IS NULL OR user_id = $2) \
+               AND (convert_to(object_key, 'UTF8') > convert_to($3, 'UTF8') \
+                    OR (convert_to(object_key, 'UTF8') = convert_to($3, 'UTF8') \
+                        AND user_id > $4)) \
+               AND ($5::bytea IS NULL OR read_permission = 2 \
+                    OR (user_id = $5 AND read_permission = 1)) \
+             ORDER BY convert_to(object_key, 'UTF8') ASC, user_id ASC \
+             LIMIT $6"
+        }
+        DatabaseProfile::CockroachDb => {
+            "SELECT object_key, user_id, value_bytes, version_digest, \
+                    read_permission, write_permission \
+             FROM trnm_storage_objects \
+             WHERE collection = $1 \
+               AND ($2::bytea IS NULL OR user_id = $2) \
+               AND (object_key::BYTES > $3::STRING::BYTES \
+                    OR (object_key::BYTES = $3::STRING::BYTES AND user_id > $4)) \
+               AND ($5::bytea IS NULL OR read_permission = 2 \
+                    OR (user_id = $5 AND read_permission = 1)) \
+             ORDER BY object_key::BYTES ASC, user_id ASC \
+             LIMIT $6"
+        }
+    }
+}
+
 fn finish_storage_page(
     mut objects: Vec<StorageObject>,
     actor: Actor,
