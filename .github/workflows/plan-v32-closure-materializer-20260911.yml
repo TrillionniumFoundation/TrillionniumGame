@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/plan-v32-closure-materializer-20260911.yml
       - tools/materialize_plan_v32_closure.py
+      - tools/run_plan_v32_closure_materializer.py
       - tools/repair_plan_v32_remote_unix.py
   workflow_dispatch:
 
@@ -18,7 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MATERIALIZER_REVISION: '9'
+  MATERIALIZER_REVISION: '10'
   TARGET_BASE_SHA: 'b99d412ed15870b253ac2a5f1d71f9a0bddf7a30'
   TARGET_BASE_TREE: '71b509e183d1513b4ee6a6b479f6f2ff8acb54e4'
   CONTROLLER_SHA: 'c78f20a02a475c2ddc1a376fd24b79930d3c7e29'
@@ -52,7 +53,12 @@ jobs:
           git -C "$driver" checkout --detach FETCH_HEAD
           test "$(git -C "$driver" rev-parse HEAD)" = "$GITHUB_SHA"
           test -s "$driver/tools/materialize_plan_v32_closure.py"
+          test -s "$driver/tools/run_plan_v32_closure_materializer.py"
           test -s "$driver/tools/repair_plan_v32_remote_unix.py"
+          python3 -m py_compile \
+            "$driver/tools/materialize_plan_v32_closure.py" \
+            "$driver/tools/run_plan_v32_closure_materializer.py" \
+            "$driver/tools/repair_plan_v32_remote_unix.py"
 
           git init "$target"
           git -C "$target" remote add origin "$remote"
@@ -75,9 +81,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 "$DRIVER_ROOT/tools/materialize_plan_v32_closure.py" \
+          python3 "$DRIVER_ROOT/tools/run_plan_v32_closure_materializer.py" \
             --root "$TARGET_ROOT" \
-            --controller "$CONTROLLER_ROOT"
+            --controller "$CONTROLLER_ROOT" \
+            --materializer "$DRIVER_ROOT/tools/materialize_plan_v32_closure.py"
           python3 "$DRIVER_ROOT/tools/repair_plan_v32_remote_unix.py" \
             --root "$TARGET_ROOT"
           (
