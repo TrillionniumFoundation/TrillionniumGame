@@ -1,4 +1,4 @@
-name: world-pr127-complete-ownership-v10
+name: world-pr127-complete-ownership-v11
 
 on:
   pull_request:
@@ -8,12 +8,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr127-complete-ownership-v10
+  group: world-pr127-complete-ownership-v11
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
-  WORLD_SOURCE_SHA: '778152b6b11e0d394e5abe4ea851cd10f46f3314'
+  WORLD_SOURCE_SHA: '6581d8b3750c74379308308ddb2c7200d6cd3678'
   COMMON_HELPER_SHA: 'b02fef9a86b77c8babd19a7dd469081095ea2e90'
   STACK_HELPER_SHA: '3aa075564891e4f7abba57c682dafc9f6b06c7b2'
   RUSTUP_TOOLCHAIN: '1.98.1'
@@ -25,7 +25,7 @@ env:
 
 jobs:
   qualify:
-    name: world-pr127/complete-ownership-v10
+    name: world-pr127/complete-ownership-v11
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
@@ -145,7 +145,7 @@ jobs:
               'refactor(world): complete active Rust ownership modules'
           test -z "$(git -C "$world" status --porcelain=v1 --untracked-files=no)"
 
-          packet="$RUNNER_TEMP/world-complete-ownership-v10"
+          packet="$RUNNER_TEMP/world-complete-ownership-v11"
           mkdir -p "$packet"
           git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" \
             > "$packet/candidate.patch"
@@ -177,14 +177,14 @@ jobs:
             changed-status.txt identity.txt > SHA256SUMS)
           tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
             --owner=0 --group=0 --numeric-owner \
-            -czf "$RUNNER_TEMP/world-complete-ownership-v10.tar.gz" \
-            -C "$RUNNER_TEMP" world-complete-ownership-v10
+            -czf "$RUNNER_TEMP/world-complete-ownership-v11.tar.gz" \
+            -C "$RUNNER_TEMP" world-complete-ownership-v11
 
       - name: Retain exact unqualified candidate
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-complete-ownership-v10-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-complete-ownership-v10.tar.gz
+          name: world-complete-ownership-v11-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-complete-ownership-v11.tar.gz
           mime_type: application/gzip
 
       - name: Run format tests and strict Clippy
@@ -192,7 +192,7 @@ jobs:
         run: |
           set -uo pipefail
           world="$RUNNER_TEMP/world"
-          diagnostics="$RUNNER_TEMP/world-complete-ownership-v10-diagnostics"
+          diagnostics="$RUNNER_TEMP/world-complete-ownership-v11-diagnostics"
           mkdir -p "$diagnostics"
           set +e
           cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" \
@@ -222,7 +222,7 @@ jobs:
         run: |
           set -euo pipefail
           world="$RUNNER_TEMP/world"
-          diagnostics="$RUNNER_TEMP/world-complete-ownership-v10-diagnostics"
+          diagnostics="$RUNNER_TEMP/world-complete-ownership-v11-diagnostics"
           cd "$world"
           {
             boundary="$(python3 scripts/check-trnm-world-include-boundaries.py)"
@@ -233,7 +233,7 @@ jobs:
             bash scripts/run-trnm-world-v6-qualification-v2.sh truth
             bash scripts/run-trnm-world-v6-qualification-v2.sh source
             test -z "$(git status --porcelain=v1 --untracked-files=no)"
-            printf 'WORLD_COMPLETE_OWNERSHIP_V10=PASS\n'
+            printf 'WORLD_COMPLETE_OWNERSHIP_V11=PASS\n'
             printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
           } 2>&1 | tee "$diagnostics/qualification.log"
           printf 'qualification_status=0\n' > "$diagnostics/qualification-status.txt"
@@ -243,7 +243,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          diagnostics="$RUNNER_TEMP/world-complete-ownership-v10-diagnostics"
+          diagnostics="$RUNNER_TEMP/world-complete-ownership-v11-diagnostics"
           mkdir -p "$diagnostics"
           test -s "$diagnostics/status.txt" || \
             printf 'state=failed_before_test_status\n' > "$diagnostics/status.txt"
@@ -260,13 +260,13 @@ jobs:
             -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
           tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
             --owner=0 --group=0 --numeric-owner \
-            -czf "$RUNNER_TEMP/world-complete-ownership-v10-diagnostics.tar.gz" \
-            -C "$RUNNER_TEMP" world-complete-ownership-v10-diagnostics
+            -czf "$RUNNER_TEMP/world-complete-ownership-v11-diagnostics.tar.gz" \
+            -C "$RUNNER_TEMP" world-complete-ownership-v11-diagnostics
 
       - name: Upload qualification diagnostics
         if: always()
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-complete-ownership-v10-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-complete-ownership-v10-diagnostics.tar.gz
+          name: world-complete-ownership-v11-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-complete-ownership-v11-diagnostics.tar.gz
           mime_type: application/gzip
