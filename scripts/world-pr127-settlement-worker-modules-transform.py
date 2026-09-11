@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Close final settlement seams and deterministic contract-documentation gaps."""
+"""Close the final settlement seams without rewriting already-compliant docs."""
 from __future__ import annotations
 
 import argparse
@@ -29,44 +29,6 @@ mod runtime_v2;
 pub use runtime_v2::run_v2;
 
 '''
-
-AUDIT_TRACE_OLD = (
-    "Primary source is `contracts/audit-events/src/`. The workspace boundary and honest "
-    "status are defined by `contracts/README.md` and this index. Tests must cover "
-    "deterministic round trips, stable spellings, duplicate/oversized/unsupported values, "
-    "secret-like field rejection where supported, exact duplicate identity and cross-crate "
-    "fixture emission. Future sink conformance requires golden bytes, database/outbox fault "
-    "tests and independent review."
-)
-AUDIT_TRACE_NEW = (
-    "Primary source is `contracts/audit-events/src/`. The local contract is bound by "
-    "`contracts/audit-events/README.md`; the maintained documentation surfaces are "
-    "`docs/modules/contracts/audit-events-design.md` and "
-    "`docs/modules/contracts/README.md`. Executable traceability is carried by the inline "
-    "Rust test modules and by `scripts/check-trnm-world-contract-module-documentation.py` "
-    "plus its hostile fixture suite. Tests must cover deterministic round trips, stable "
-    "spellings, duplicate/oversized/unsupported values, secret-like field rejection where "
-    "supported, exact duplicate identity and cross-crate fixture emission. Future sink "
-    "conformance requires golden bytes, database/outbox fault tests and independent review."
-)
-GOVERNANCE_TRACE_OLD = (
-    "Primary source is `contracts/governance-guard/src/`; current scope is defined by "
-    "`contracts/README.md`. Tests cover schedule/execute/cancel, too-early and expired "
-    "execution, action/version drift, exact/altered duplicate, pause/resume role/state "
-    "behavior, overflow/bounds, state preservation and audit normalization. Host time, "
-    "signatures/quorum, durable execution and live governance probes remain absent."
-)
-GOVERNANCE_TRACE_NEW = (
-    "Primary source is `contracts/governance-guard/src/`; the local contract is "
-    "`contracts/governance-guard/README.md`, and the maintained documentation surfaces are "
-    "`docs/modules/contracts/governance-guard-design.md` and "
-    "`docs/modules/contracts/README.md`. Executable traceability is carried by the inline "
-    "Rust test modules and by `scripts/check-trnm-world-contract-module-documentation.py` "
-    "plus its hostile fixture suite. Tests cover schedule/execute/cancel, too-early and "
-    "expired execution, action/version drift, exact/altered duplicate, pause/resume "
-    "role/state behavior, overflow/bounds, state preservation and audit normalization. Host "
-    "time, signatures/quorum, durable execution and live governance probes remain absent."
-)
 
 TEST_LINK_MUTATOR_OLD = '''            lambda text: text.replace(
                 "../../docs/modules/contracts/audit-events-design.md",
@@ -134,39 +96,65 @@ def clone_and_mutate(mutator) -> None:
         run(clone, expect_success=False)
 '''
 
+DOC_MARKERS = {
+    "audit-events": (
+        "contracts/audit-events/src/",
+        "docs/modules/contracts/audit-events-design.md",
+        "scripts/check-trnm-world-contract-module-documentation.py",
+        "scripts/test-trnm-world-contract-module-documentation.py",
+    ),
+    "bridge-relay": (
+        "contracts/bridge-relay/src/",
+        "docs/modules/contracts/bridge-relay-design.md",
+        "scripts/check-trnm-world-contract-module-documentation.py",
+        "scripts/test-trnm-world-contract-module-documentation.py",
+    ),
+    "governance-guard": (
+        "contracts/governance-guard/src/",
+        "docs/modules/contracts/governance-guard-design.md",
+        "scripts/check-trnm-world-contract-module-documentation.py",
+        "scripts/test-trnm-world-contract-module-documentation.py",
+    ),
+    "settlement-vault": (
+        "contracts/settlement-vault/src/",
+        "docs/modules/contracts/settlement-vault-design.md",
+        "scripts/check-trnm-world-contract-module-documentation.py",
+        "scripts/test-trnm-world-contract-module-documentation.py",
+    ),
+}
 
-def replace_once(path: Path, old: str, new: str, label: str) -> None:
+
+def replace_once_or_present(path: Path, old: str, new: str, label: str) -> None:
     if not path.is_file() or path.is_symlink():
         raise RuntimeError(f"{label} is unavailable: {path}")
     text = path.read_text(encoding="utf-8", errors="strict")
+    if new in text:
+        return
     if text.count(old) != 1:
         raise RuntimeError(f"{label} boundary drift")
-    if new in text:
-        raise RuntimeError(f"{label} repair already present")
     path.write_text(text.replace(old, new), encoding="utf-8")
 
 
-def repair_contract_documentation(root: Path) -> None:
-    replace_once(
-        root / "docs/modules/contracts/audit-events-design.md",
-        AUDIT_TRACE_OLD,
-        AUDIT_TRACE_NEW,
-        "audit-events design traceability",
-    )
-    replace_once(
-        root / "docs/modules/contracts/governance-guard-design.md",
-        GOVERNANCE_TRACE_OLD,
-        GOVERNANCE_TRACE_NEW,
-        "governance-guard design traceability",
-    )
+def validate_contract_documentation(root: Path) -> None:
+    for module, markers in DOC_MARKERS.items():
+        path = root / f"docs/modules/contracts/{module}-design.md"
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError(f"missing contract design: {path}")
+        text = path.read_text(encoding="utf-8", errors="strict")
+        missing = [marker for marker in markers if marker not in text]
+        if missing:
+            raise RuntimeError(f"{module} design traceability missing {missing}")
+
+
+def repair_contract_fixture(root: Path) -> None:
     test_path = root / "scripts/test-trnm-world-contract-module-documentation.py"
-    replace_once(
+    replace_once_or_present(
         test_path,
         TEST_LINK_MUTATOR_OLD,
         TEST_LINK_MUTATOR_NEW,
         "contract-documentation link hostile fixture",
     )
-    replace_once(
+    replace_once_or_present(
         test_path,
         TEST_FIXTURE_OLD,
         TEST_FIXTURE_NEW,
@@ -192,27 +180,30 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError(f"settlement source is unavailable: {path}")
 
     wrapper_text = wrapper.read_text(encoding="utf-8", errors="strict")
-    if wrapper_text.count(WRAPPER_OLD) != 1:
-        raise RuntimeError("settlement wrapper include boundary drift")
-    wrapper_text = wrapper_text.replace(WRAPPER_OLD, WRAPPER_NEW)
+    if WRAPPER_NEW in wrapper_text:
+        pass
+    elif wrapper_text.count(WRAPPER_OLD) == 1:
+        wrapper_text = wrapper_text.replace(WRAPPER_OLD, WRAPPER_NEW)
+        wrapper.write_text(wrapper_text, encoding="utf-8")
+    else:
+        raise RuntimeError("settlement wrapper module boundary drift")
     if "include!(\"settlement_worker_legacy.rs\")" in wrapper_text or "include!(\"settlement_worker_runtime_v2.rs\")" in wrapper_text:
         raise RuntimeError("settlement wrapper retained a textual include")
-    wrapper.write_text(wrapper_text, encoding="utf-8")
 
     legacy_text = legacy.read_text(encoding="utf-8", errors="strict")
-    if legacy_text.count(LEGACY_ANCHOR) != 1:
+    if LEGACY_MODULE in legacy_text:
+        pass
+    elif legacy_text.count(LEGACY_ANCHOR) == 1:
+        legacy.write_text(
+            legacy_text.replace(LEGACY_ANCHOR, LEGACY_ANCHOR + LEGACY_MODULE),
+            encoding="utf-8",
+        )
+    else:
         raise RuntimeError("settlement legacy module insertion anchor drift")
-    if "mod runtime_v2;" in legacy_text or "pub use runtime_v2::run_v2;" in legacy_text:
-        raise RuntimeError("settlement runtime module already declared")
-    legacy.write_text(
-        legacy_text.replace(LEGACY_ANCHOR, LEGACY_ANCHOR + LEGACY_MODULE),
-        encoding="utf-8",
-    )
 
     runtime_text = runtime.read_text(encoding="utf-8", errors="strict")
-    if runtime_text.startswith("use super::*;\n"):
-        raise RuntimeError("settlement runtime already imports its parent module")
-    runtime.write_text("use super::*;\n\n" + runtime_text, encoding="utf-8")
+    if not runtime_text.startswith("use super::*;\n"):
+        runtime.write_text("use super::*;\n\n" + runtime_text, encoding="utf-8")
 
     ledger_path = root / "scripts/contracts/trnm-world-include-migrations-v1.json"
     ledger = json.loads(ledger_path.read_text(encoding="utf-8", errors="strict"))
@@ -244,18 +235,25 @@ def main(argv: list[str] | None = None) -> int:
             "completed_commit": args.completed_commit,
         },
     )
-    existing = {(item.get("path"), item.get("expression")) for item in completed if isinstance(item, dict)}
+    existing = {
+        (item.get("path"), item.get("expression"))
+        for item in completed
+        if isinstance(item, dict)
+    }
+    changed = False
     for record in records:
         key = (record["path"], record["expression"])
-        if key in existing:
-            raise RuntimeError(f"settlement include migration already completed: {key}")
-        completed.append(record)
-        existing.add(key)
-    ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
+        if key not in existing:
+            completed.append(record)
+            existing.add(key)
+            changed = True
+    if changed:
+        ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
 
-    repair_contract_documentation(root)
+    validate_contract_documentation(root)
+    repair_contract_fixture(root)
     print("WORLD_PR127_SETTLEMENT_WORKER_MODULE_TRANSFORM=PASS seams=2")
-    print("WORLD_PR127_CONTRACT_DOCUMENTATION_TRACEABILITY=PASS designs=2 fixtures=12")
+    print("WORLD_PR127_CONTRACT_DOCUMENTATION_TRACEABILITY=PASS designs=4 fixtures=12")
     return 0
 
 
