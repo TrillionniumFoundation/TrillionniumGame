@@ -586,9 +586,10 @@ mod tests {
         );
         worker.join().unwrap();
 
-        let listener = UnixListener::bind(&socket).unwrap();
+        let mismatch_socket = directory.path().join("mac-mismatch.sock");
+        let listener = UnixListener::bind(&mismatch_socket).unwrap();
         let worker = serve_once(listener, signed_response([8; 16], 0xA5));
-        let error = transport(&socket)
+        let error = transport(&mismatch_socket)
             .exchange(&request(RemoteMacRequestKind::Sign), Duration::from_secs(1))
             .unwrap_err();
         assert_eq!(error, RemoteMacError::ProtocolViolation);
