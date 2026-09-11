@@ -15,6 +15,16 @@ class RemoteMacProviderContractTests(unittest.TestCase):
     for marker in ("raw_key","SoftwareHs256Provider"):
       with self.subTest(marker=marker):
         with self.assertRaisesRegex(self.checker.ValidationError,"forbidden"): self.checker.validate(self.source+marker,self.contract)
+  def test_debug_redaction_markers_are_mandatory(self):
+    for marker in (
+      "impl fmt::Debug for RemoteMacRequest",
+      "impl fmt::Debug for RemoteMacResponse",
+      "<redacted-tag>",
+      "request_kind_and_response_debug_never_expose_sensitive_bytes",
+    ):
+      with self.subTest(marker=marker):
+        mutated=self.source.replace(marker,"removed-redaction-marker")
+        with self.assertRaisesRegex(self.checker.ValidationError,"missing"): self.checker.validate(mutated,self.contract)
   def test_positive_claim_rejected(self):
     value=json.loads(json.dumps(self.contract)); value["claim_boundary"]["production_ready"]=True
     with self.assertRaisesRegex(self.checker.ValidationError,"positive"): self.checker.validate(self.source,value)
