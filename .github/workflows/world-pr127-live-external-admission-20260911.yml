@@ -1,0 +1,172 @@
+name: world-pr127-live-external-admission
+
+on:
+  push:
+    branches:
+      - ops/world-pr104-game-server-runtime-modules-20260910
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-pr127-live-external-admission
+  cancel-in-progress: true
+
+env:
+  WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
+  WORLD_PULL_REQUEST: '127'
+  RUSTUP_TOOLCHAIN: '1.98.1'
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+  RUST_BACKTRACE: '1'
+  RUST_TEST_THREADS: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+  POSTGRES_REQUIRED_VERSION_NUM: '160004'
+
+jobs:
+  qualify:
+    name: world-pr127/live-external-admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    services:
+      postgres:
+        image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
+    steps:
+      - name: Resolve and materialize exact World objects
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${WORLD_REPOSITORY}/pulls/${WORLD_PULL_REQUEST}" \
+            > "$RUNNER_TEMP/world-pr.json"
+          python3 - "$RUNNER_TEMP/world-pr.json" "$GITHUB_ENV" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+          v=json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          fields={'WORLD_HEAD_SHA':v['head']['sha'],'WORLD_BASE_SHA':v['base']['sha'],'WORLD_MERGE_SHA':v['merge_commit_sha']}
+          if v['state']!='open' or v['merged']:
+              raise SystemExit('World PR is not open and unmerged')
+          for key,value in fields.items():
+              if not re.fullmatch(r'[0-9a-f]{40}',value or ''):
+                  raise SystemExit(f'invalid {key}: {value!r}')
+          with Path(sys.argv[2]).open('a',encoding='utf-8') as f:
+              for key,value in fields.items(): f.write(f'{key}={value}\n')
+          PY
+
+          git init -q "$RUNNER_TEMP/world-git"
+          git -C "$RUNNER_TEMP/world-git" remote add origin \
+            "https://github.com/${WORLD_REPOSITORY}.git"
+          head=$(python3 -c 'import json; print(json.load(open("'"$RUNNER_TEMP/world-pr.json"'"))["head"]["sha"])')
+          base=$(python3 -c 'import json; print(json.load(open("'"$RUNNER_TEMP/world-pr.json"'"))["base"]["sha"])')
+          merge=$(python3 -c 'import json; print(json.load(open("'"$RUNNER_TEMP/world-pr.json"'"))["merge_commit_sha"])')
+          git -C "$RUNNER_TEMP/world-git" fetch -q --no-tags origin \
+            "$head" "$base" "+refs/pull/${WORLD_PULL_REQUEST}/merge:refs/world/merge"
+          test "$(git -C "$RUNNER_TEMP/world-git" rev-parse refs/world/merge)" = "$merge"
+          test "$(git -C "$RUNNER_TEMP/world-git" rev-parse "${merge}^1")" = "$base"
+          test "$(git -C "$RUNNER_TEMP/world-git" rev-parse "${merge}^2")" = "$head"
+          git -C "$RUNNER_TEMP/world-git" worktree add -q --detach "$RUNNER_TEMP/world-head" "$head"
+          git -C "$RUNNER_TEMP/world-git" worktree add -q --detach "$RUNNER_TEMP/world-merge" "$merge"
+          for checkout in "$RUNNER_TEMP/world-head" "$RUNNER_TEMP/world-merge"; do
+            test -z "$(git -C "$checkout" status --porcelain=v1)"
+          done
+
+      - name: Install qualification dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" \
+            --profile minimal --component rustfmt,clippy
+          rustup default "$RUSTUP_TOOLCHAIN"
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.list.save
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libudev-dev libx11-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev pkg-config postgresql-client
+          test "$(rustc --version | awk '{print $2}')" = "$RUSTUP_TOOLCHAIN"
+          test "$(PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'show server_version_num')" = "$POSTGRES_REQUIRED_VERSION_NUM"
+          PGPASSWORD=postgres createdb -h 127.0.0.1 -U postgres world_head
+          PGPASSWORD=postgres createdb -h 127.0.0.1 -U postgres world_merge
+
+      - name: Qualify exact head and actual prospective merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/world-pr127-live-admission"
+          mkdir -p "$evidence"
+          for object in head merge; do
+            checkout="$RUNNER_TEMP/world-$object"
+            cd "$checkout"
+            export PYTHONPATH="$checkout/scripts"
+            bash scripts/run-trnm-world-v6-qualification-v2.sh truth \
+              2>&1 | tee "$evidence/$object-truth.log"
+            bash scripts/run-trnm-world-v6-qualification-v2.sh source \
+              2>&1 | tee "$evidence/$object-source.log"
+            export DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/world_${object}"
+            export TRNM_SETTLEMENT_TEST_DATABASE_URL="$DATABASE_URL"
+            export PGPASSWORD=postgres
+            bash scripts/run-trnm-world-v6-qualification-v2.sh postgres \
+              2>&1 | tee "$evidence/$object-postgres.log"
+            bash scripts/run-trnm-world-v6-qualification-v2.sh package \
+              2>&1 | tee "$evidence/$object-package.log"
+            test -z "$(git status --porcelain=v1 --untracked-files=no)"
+          done
+          {
+            printf 'repository=%s\n' "$WORLD_REPOSITORY"
+            printf 'pull_request=%s\n' "$WORLD_PULL_REQUEST"
+            printf 'head=%s\n' "$WORLD_HEAD_SHA"
+            printf 'base=%s\n' "$WORLD_BASE_SHA"
+            printf 'prospective_merge=%s\n' "$WORLD_MERGE_SHA"
+            printf 'postgres_server_version_num=%s\n' "$POSTGRES_REQUIRED_VERSION_NUM"
+            printf 'qualification=qualified\n'
+            printf 'production_authorization=not_granted\n'
+          } > "$evidence/identity.txt"
+          (cd "$evidence" && find . -type f ! -name SHA256SUMS \
+            -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
+          tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf "$RUNNER_TEMP/world-pr127-live-admission.tar.gz" \
+            -C "$RUNNER_TEMP" world-pr127-live-admission
+
+      - name: Install retained evidence uploader
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init -q "$RUNNER_TEMP/game-helper"
+          git -C "$RUNNER_TEMP/game-helper" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$RUNNER_TEMP/game-helper" fetch -q --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$RUNNER_TEMP/game-helper" checkout -q --detach FETCH_HEAD
+          rm -rf "$GITHUB_WORKSPACE/.github/actions/upload-evidence"
+          mkdir -p "$GITHUB_WORKSPACE/.github/actions" "$GITHUB_WORKSPACE/scripts"
+          cp -R "$RUNNER_TEMP/game-helper/.github/actions/upload-evidence" \
+            "$GITHUB_WORKSPACE/.github/actions/"
+          cp "$RUNNER_TEMP/game-helper/scripts/upload-actions-artifact.py" \
+            "$GITHUB_WORKSPACE/scripts/"
+
+      - name: Upload exact qualification evidence
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr127-live-admission-${{ env.WORLD_HEAD_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-pr127-live-admission.tar.gz
+          mime_type: application/gzip
