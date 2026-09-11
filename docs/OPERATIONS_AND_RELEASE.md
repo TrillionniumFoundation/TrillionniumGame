@@ -1,7 +1,7 @@
 # Operations and release
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-01
+Revision: 2026-09-11
 
 ## 1. Operational status
 
@@ -88,7 +88,7 @@ Production acceptance additionally requires:
 
 ## 7. Outbox operations
 
-Workers use bounded batches, concurrency and provider deadlines. Every lease and transition is owner/generation fenced. Operational views distinguish pending, leased, applied, dead-letter, retry/reclaim and reconciliation states.
+Workers use bounded batches, concurrency and provider deadlines. Every command transition, lease, publish attempt and acknowledgement is owner-, lease-generation- and authority-generation-fenced. Operational views distinguish pending, leased, applied, dead-letter, retry/reclaim and reconciliation states.
 
 Crash-before-publish and crash-after-publish are separate failure boundaries. An ambiguous provider result is quarantined/reconciled; it is not blindly retried when duplicate value is possible. Dead-letter is a terminal state with a stable reason, not a stranded lease.
 
@@ -240,8 +240,10 @@ Measured recovery intervals are evidence values, not approved RTOs. The lane doe
 
 PostgreSQL evidence is not inherited. This packet does not establish node or leaseholder failover, approved RPO/RTO, independent acceptance, production readiness, cutover or retirement.
 
-## Cutover and retirement state machine
+## Cutover and retirement proposal validator
 
-`scripts/cutover-state-machine.py` permits only the ordered sequence planning → shadow → exclusive canary → production → retirement pending → retired. Every edge binds the exact source/merge identity, zero open P0/P1 gaps, accepted evidence, independent review, complete governance read-back, ordinary protected admission and an accepted rollback packet. Production additionally requires accepted 24h/72h/7d endurance and approved RPO/RTO; retirement requires complete Nakama compatibility, global SG1 and a distinct explicit retirement reviewer.
+`scripts/cutover-state-machine.py` validates only that an untrusted request describes the ordered sequence planning → shadow → exclusive canary → production → retirement pending → retired and carries the expected candidate, gate, blocker, rollback and claimed-review fields. It does not advance the authoritative state. The output preserves the current state and history, adds a `pending_proposal`, and keeps `public_online`, `cutover_authorized` and `nakama_retired` false.
 
-`scripts/derive-cutover-blocker-packet.py` derives the current blocked state directly from the gap register. Source code, CI success or administrator power cannot skip a state or manufacture an approval.
+The repository currently has no trusted cutover-authority receipt verifier or durable nonce/replay store. `materialize_transition` therefore fails closed. Reviewer logins, conflict attestations, local signatures, blocker booleans, claimed protected admission, matching digests, administrator power and replayed proposal files cannot authorize shadow, canary, production or retirement.
+
+`scripts/derive-cutover-blocker-packet.py` derives a diagnostic blocker packet from the gap register and marks it `may_authorize_transition=false`. Real transition authority requires an externally authenticated stable principal, qualified role and conflict decision, exact candidate/evidence binding, issued-at/expiry, unique nonce, durable anti-replay verification, platform-native protected-admission readback and the applicable operational decision. Source code or CI success cannot manufacture those facts.

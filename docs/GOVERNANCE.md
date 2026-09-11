@@ -1,7 +1,7 @@
 # Governance
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-10
+Revision: 2026-09-11
 
 ## 1. Integration authority
 
@@ -192,8 +192,10 @@ It cannot be used to grant C/SG, production, public-online, replacement or retir
 
 Until accepted readback and independent ownership exist, the governance gaps remain open or externally blocked. The repository must not infer enforcement from a protected-branch boolean alone, and reviewers must bind decisions to the current exact candidate.
 
-## Denominator family review packets
+## Denominator family review proposals
 
-`scripts/generate-denominator-review-packets.py` deterministically converts all fourteen pinned candidate manifests into 10,173 leaf-complete review packets. Every leaf binds its source hash and starts unclassified. `scripts/accept-denominator-family.py` rejects missing, duplicated, hash-changed or unrationalized decisions and rejects candidate-author self-approval. A family cannot be accepted while an unimplemented or restricted-material blocker remains.
+`scripts/generate-denominator-review-packets.py` deterministically converts all fourteen pinned candidate manifests into 10,173 leaf-complete review packets. Every leaf binds its source hash and starts unclassified. `scripts/accept-denominator-family.py` validates the structural completeness, exact source hashes, rationales, classifications, candidate binding and evidence-reference shape of an untrusted human-decision input, but emits only `trillionnium.denominator-family-decision-proposal.v1`. It never sets `accepted=true` and cannot authenticate reviewer identity, qualification, independence, evidence admission, expiry, nonce or replay state.
 
-`scripts/finalize-global-sg1.py` requires all fourteen exact family decisions with one candidate identity and then a distinct, conflict-free global reviewer. Generating packets does not classify or accept any leaf; legal, compatibility and domain judgments remain human decisions.
+`scripts/finalize-global-sg1.py` requires exactly fourteen non-authoritative family proposals with one candidate identity and rejects any family file that claims accepted authority. Its output is only `trillionnium.global-sg1-proposal.v1`; `global_sg1_accepted` remains false. A reviewer login, role, conflict attestation, local signature field, arbitrary evidence ID or matching digest is input data rather than authority.
+
+Real family and global SG1 acceptance requires externally authenticated, immutable, candidate-and-evidence-bound decisions from qualified stable principals, including issued-at/expiry, unique nonce, durable anti-replay state and verification of protected admission where applicable. The repository currently has no local materializer for those facts. Generating, validating or bundling proposals grants no denominator lock, compatibility, production, cutover or retirement credit.
