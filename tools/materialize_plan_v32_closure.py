@@ -258,26 +258,8 @@ def repair_generated_tests(root: Path) -> None:
 
 
 def repair_schema_authority_guards(root: Path) -> None:
-    """Derive quarantined roots from current authority without source literals."""
+    """Replace one hardcoded quarantine guard at its semantic location."""
 
-    loader = '''\
-def non_authoritative_schema_paths() -> tuple[str, ...]:
-    import json
-
-    authority_path = ROOT / "docs/development/SCHEMA_AUTHORITY.json"
-    document = json.loads(authority_path.read_text(encoding="utf-8"))
-    rows = document.get("non_authoritative")
-    require(isinstance(rows, list) and rows, "schema quarantine registry missing")
-    result: list[str] = []
-    for row in rows:
-        require(isinstance(row, dict), "schema quarantine row invalid")
-        value = row.get("path")
-        require(isinstance(value, str) and value, "schema quarantine path invalid")
-        result.append(value)
-    require(len(result) == len(set(result)), "duplicate schema quarantine path")
-    return tuple(result)
-
-'''
     guard_pattern = re.compile(
         r'''(?mx)
         ^(?P<indent>[ \t]*)
@@ -288,7 +270,6 @@ def non_authoritative_schema_paths() -> tuple[str, ...]:
         \)\s*$
         '''
     )
-    validate_pattern = re.compile(r"(?m)^def validate_text\([^\n]*\):\n")
 
     for relative in SCHEMA_AUTHORITY_NEGATIVE_CHECKERS:
         path = root / relative
@@ -298,18 +279,20 @@ def non_authoritative_schema_paths() -> tuple[str, ...]:
             raise RuntimeError(
                 f"{relative}: expected one hardcoded quarantine guard, found {len(guards)}"
             )
-        entries = list(validate_pattern.finditer(text))
-        if len(entries) != 1:
-            raise RuntimeError(
-                f"{relative}: expected one validate_text entrypoint, found {len(entries)}"
+        indent = guards[0].group("indent")
+        replacement = "\n".join(
+            (
+                f'{indent}authority_path = ROOT / "docs/development/SCHEMA_AUTHORITY.json"',
+                f'{indent}authority = __import__("json").loads(authority_path.read_text(encoding="utf-8"))',
+                f'{indent}quarantines = authority.get("non_authoritative")',
+                f'{indent}require(isinstance(quarantines, list) and quarantines, "schema quarantine registry missing")',
+                f'{indent}for quarantine in quarantines:',
+                f'{indent}    require(isinstance(quarantine, dict), "schema quarantine row invalid")',
+                f'{indent}    quarantine_path = quarantine.get("path")',
+                f'{indent}    require(isinstance(quarantine_path, str) and quarantine_path, "schema quarantine path invalid")',
+                f'{indent}    require(quarantine_path not in text, "non-authoritative schema referenced")',
             )
-        guard = guards[0]
-        indent = guard.group("indent")
-        replacement = (
-            f"{indent}for path in non_authoritative_schema_paths():\n"
-            f'{indent}    require(path not in text, "non-authoritative schema referenced")'
         )
-        text = text[: entries[0].start()] + loader + text[entries[0].start() :]
         text, substitutions = guard_pattern.subn(replacement, text, count=1)
         if substitutions != 1:
             raise RuntimeError(f"{relative}: quarantine guard replacement failed")
