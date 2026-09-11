@@ -82,6 +82,16 @@ CHECKERS = (
     "scripts/check-cutover-state-machine.py",
 )
 
+SCHEMA_AUTHORITY_NEGATIVE_CHECKERS = (
+    "scripts/check-postgresql-connection-faults.py",
+    "scripts/check-postgresql-pitr.py",
+    "scripts/check-postgresql-primary-failover.py",
+    "scripts/check-postgresql-recovery-barrier.py",
+    "scripts/check-postgresql-semantic-recovery.py",
+    "scripts/check-cockroachdb-node-failover.py",
+    "scripts/check-cockroachdb-semantic-recovery.py",
+)
+
 TEST_MODULES = (
     "tests.control_plane.test_remote_mac_provider_contract",
     "tests.control_plane.test_remote_mac_unix_transport",
@@ -246,6 +256,54 @@ def repair_generated_tests(root: Path) -> None:
         path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
 
 
+def repair_schema_authority_guards(root: Path) -> None:
+    """Read quarantined roots from the current authority instead of hardcoding one.
+
+    Production and CI consumers must not contain the quarantined design-history
+    path as a literal. These source checkers still reject a harness that consumes
+    any registered non-authoritative root, but derive the closed set from the
+    authoritative machine document.
+    """
+
+    loader = '''\
+def non_authoritative_schema_paths() -> tuple[str, ...]:
+    import json
+
+    authority_path = ROOT / "docs/development/SCHEMA_AUTHORITY.json"
+    document = json.loads(authority_path.read_text(encoding="utf-8"))
+    rows = document.get("non_authoritative")
+    require(isinstance(rows, list) and rows, "schema quarantine registry missing")
+    result: list[str] = []
+    for row in rows:
+        require(isinstance(row, dict), "schema quarantine row invalid")
+        value = row.get("path")
+        require(isinstance(value, str) and value, "schema quarantine path invalid")
+        result.append(value)
+    require(len(result) == len(set(result)), "duplicate schema quarantine path")
+    return tuple(result)
+
+'''
+    old_guard = '    require("database/schema/v2" not in text, "non-authoritative schema referenced")\n'
+    new_guard = '''\
+    for path in non_authoritative_schema_paths():
+        require(path not in text, "non-authoritative schema referenced")
+'''
+    marker = "def validate_text(text: str) -> None:\n"
+
+    for relative in SCHEMA_AUTHORITY_NEGATIVE_CHECKERS:
+        path = root / relative
+        text = path.read_text(encoding="utf-8")
+        if text.count(old_guard) != 1:
+            raise RuntimeError(f"{relative}: expected one hardcoded quarantine guard")
+        if text.count(marker) != 1:
+            raise RuntimeError(f"{relative}: expected one validate_text entrypoint")
+        text = text.replace(marker, loader + marker, 1)
+        text = text.replace(old_guard, new_guard, 1)
+        if "database/schema/v2" in text:
+            raise RuntimeError(f"{relative}: hardcoded quarantined schema root remains")
+        path.write_text(text, encoding="utf-8")
+
+
 def validate_python(root: Path) -> None:
     for relative in BROKEN_PYTHON_OUTPUTS:
         py_compile.compile(str(root / relative), doraise=True)
@@ -267,6 +325,7 @@ def materialize(root: Path, controller: Path) -> None:
     repair_harness_claim_spacing(root)
     repair_durability_model(root)
     repair_generated_tests(root)
+    repair_schema_authority_guards(root)
 
     run(["python3", "scripts/generate-denominator-review-packets.py"], root)
     validate_python(root)
