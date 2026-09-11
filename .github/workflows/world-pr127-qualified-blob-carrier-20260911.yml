@@ -28,7 +28,6 @@ env:
 
 jobs:
   materialize:
-    if: ${{ github.event.head_commit.message != 'chore(world): materialize qualified candidate blobs [carrier]' }}
     name: world-pr127/qualified-blob-carrier
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -168,6 +167,10 @@ jobs:
           git config user.name 'World qualified blob carrier'
           git config user.email 'world-qualified-blob-carrier@invalid'
           git add world-candidate
+          if git diff --cached --quiet; then
+            printf 'WORLD_QUALIFIED_BLOB_CARRIER=ALREADY_CURRENT\n'
+            exit 0
+          fi
           git commit -m 'chore(world): materialize qualified candidate blobs [carrier]'
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           git -c "http.extraHeader=AUTHORIZATION: basic ${auth}" \
