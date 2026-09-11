@@ -9,6 +9,8 @@ import re
 import sys
 
 
+WORLD_CONTRACT_DOCS = "docs/modules/contracts"
+
 WRAPPER_OLD = '''#[allow(dead_code, clippy::items_after_test_module)]
 mod implementation {
     include!("settlement_worker_legacy.rs");
@@ -30,14 +32,14 @@ pub use runtime_v2::run_v2;
 
 '''
 
-TEST_LINK_MUTATOR_OLD = '''            lambda text: text.replace(
-                "../../docs/modules/contracts/audit-events-design.md",
-                "../../docs/modules/contracts/missing-design.md",
+TEST_LINK_MUTATOR_OLD = f'''            lambda text: text.replace(
+                "../../{WORLD_CONTRACT_DOCS}/audit-events-design.md",
+                "../../{WORLD_CONTRACT_DOCS}/missing-design.md",
                 1,
             ),'''
-TEST_LINK_MUTATOR_NEW = '''            lambda text: text.replace(
-                "../../docs/modules/contracts/audit-events-design.md",
-                "../../docs/modules/contracts/missing-design.md",
+TEST_LINK_MUTATOR_NEW = f'''            lambda text: text.replace(
+                "../../{WORLD_CONTRACT_DOCS}/audit-events-design.md",
+                "../../{WORLD_CONTRACT_DOCS}/missing-design.md",
             ),'''
 TEST_FIXTURE_OLD = '''def clone_and_mutate(mutator) -> None:
     with tempfile.TemporaryDirectory(prefix="trnm-contract-doc-") as temporary:
@@ -50,7 +52,7 @@ TEST_FIXTURE_OLD = '''def clone_and_mutate(mutator) -> None:
         mutator(clone)
         run(clone, expect_success=False)
 '''
-TEST_FIXTURE_NEW = '''MODULES = ("audit-events", "bridge-relay", "governance-guard", "settlement-vault")
+TEST_FIXTURE_NEW = f'''MODULES = ("audit-events", "bridge-relay", "governance-guard", "settlement-vault")
 FIXTURE_FILES = (
     CHECKER,
     Path("scripts/trnm_world_strict_json.py"),
@@ -58,7 +60,7 @@ FIXTURE_FILES = (
     Path("contracts/README.md"),
     DOCUMENT_CATALOG,
     COMPONENT_CATALOG,
-    Path("docs/modules/contracts/README.md"),
+    Path("{WORLD_CONTRACT_DOCS}/README.md"),
 )
 
 
@@ -75,15 +77,15 @@ def materialize_fixture(clone: Path) -> None:
         copy_fixture_file(clone, relative)
     for module in MODULES:
         for relative in (
-            Path(f"contracts/{module}/Cargo.toml"),
-            Path(f"contracts/{module}/README.md"),
-            Path(f"docs/modules/contracts/{module}-design.md"),
+            Path(f"contracts/{{module}}/Cargo.toml"),
+            Path(f"contracts/{{module}}/README.md"),
+            Path(f"{WORLD_CONTRACT_DOCS}/{{module}}-design.md"),
         ):
             copy_fixture_file(clone, relative)
         source_root = ROOT / "contracts" / module / "src"
         sources = sorted(source_root.glob("*.rs"))
         if not sources:
-            raise AssertionError(f"missing fixture source for {module}")
+            raise AssertionError(f"missing fixture source for {{module}}")
         for source in sources:
             copy_fixture_file(clone, source.relative_to(ROOT))
 
@@ -99,25 +101,25 @@ def clone_and_mutate(mutator) -> None:
 DOC_MARKERS = {
     "audit-events": (
         "contracts/audit-events/src/",
-        "docs/modules/contracts/audit-events-design.md",
+        f"{WORLD_CONTRACT_DOCS}/audit-events-design.md",
         "scripts/check-trnm-world-contract-module-documentation.py",
         "scripts/test-trnm-world-contract-module-documentation.py",
     ),
     "bridge-relay": (
         "contracts/bridge-relay/src/",
-        "docs/modules/contracts/bridge-relay-design.md",
+        f"{WORLD_CONTRACT_DOCS}/bridge-relay-design.md",
         "scripts/check-trnm-world-contract-module-documentation.py",
         "scripts/test-trnm-world-contract-module-documentation.py",
     ),
     "governance-guard": (
         "contracts/governance-guard/src/",
-        "docs/modules/contracts/governance-guard-design.md",
+        f"{WORLD_CONTRACT_DOCS}/governance-guard-design.md",
         "scripts/check-trnm-world-contract-module-documentation.py",
         "scripts/test-trnm-world-contract-module-documentation.py",
     ),
     "settlement-vault": (
         "contracts/settlement-vault/src/",
-        "docs/modules/contracts/settlement-vault-design.md",
+        f"{WORLD_CONTRACT_DOCS}/settlement-vault-design.md",
         "scripts/check-trnm-world-contract-module-documentation.py",
         "scripts/test-trnm-world-contract-module-documentation.py",
     ),
@@ -137,7 +139,7 @@ def replace_once_or_present(path: Path, old: str, new: str, label: str) -> None:
 
 def validate_contract_documentation(root: Path) -> None:
     for module, markers in DOC_MARKERS.items():
-        path = root / f"docs/modules/contracts/{module}-design.md"
+        path = root / WORLD_CONTRACT_DOCS / f"{module}-design.md"
         if not path.is_file() or path.is_symlink():
             raise RuntimeError(f"missing contract design: {path}")
         text = path.read_text(encoding="utf-8", errors="strict")
