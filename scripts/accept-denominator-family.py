@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Bind a human-supplied leaf-complete family decision without self-approval."""
+"""Validate an untrusted denominator-family decision as a proposal only.
+
+This command deliberately has no authority-materialization path.  Local JSON,
+reviewer login strings, attestations, digests and opaque evidence identifiers
+cannot create an independently accepted decision.  A future authority adapter
+must consume externally authenticated, replay-protected receipts and accepted
+evidence; until then every output remains non-creditable.
+"""
 from __future__ import annotations
 
 import argparse
@@ -30,6 +37,10 @@ BINDING_KEYS = (
     "source_tree",
     "prospective_merge",
     "prospective_merge_tree",
+)
+UNTRUSTED_AUTHORITY_REASON = (
+    "local decision JSON cannot authenticate reviewer identity, role, "
+    "independence, evidence admission, expiry, nonce or replay state"
 )
 
 
@@ -73,6 +84,7 @@ def validate_binding(value: Any) -> dict[str, str]:
 
 
 def validate_evidence_ids(value: Any, leaf_id: str, *, required: bool) -> list[str]:
+    """Validate proposal references without treating them as admitted evidence."""
     require(isinstance(value, list), f"{leaf_id}: evidence IDs")
     require(
         all(
@@ -85,7 +97,7 @@ def validate_evidence_ids(value: Any, leaf_id: str, *, required: bool) -> list[s
         f"{leaf_id}: invalid evidence ID",
     )
     require(len(value) == len(set(value)), f"{leaf_id}: duplicate evidence ID")
-    require(not required or bool(value), f"{leaf_id}: evidence required")
+    require(not required or bool(value), f"{leaf_id}: evidence reference required")
     return value
 
 
@@ -128,6 +140,7 @@ def finalize(packet_path: Path, decision_path: Path, output: Path) -> dict[str, 
         "candidate author",
     )
     reviewer = decision.get("reviewer", {})
+    require(isinstance(reviewer, dict), "claimed reviewer")
     require(
         isinstance(reviewer.get("login"), str) and reviewer["login"],
         "reviewer login",
@@ -142,7 +155,7 @@ def finalize(packet_path: Path, decision_path: Path, output: Path) -> dict[str, 
     )
     require(
         reviewer.get("login") != candidate_author,
-        "candidate author cannot self-approve",
+        "candidate author cannot self-attest",
     )
     require(
         reviewer.get("reviewed_binding_sha256") == binding_sha256,
@@ -157,7 +170,8 @@ def finalize(packet_path: Path, decision_path: Path, output: Path) -> dict[str, 
     require(set(by_id) == expected_ids, "leaf denominator changed or incomplete")
 
     blockers = 0
-    accepted_rows = []
+    proposal_rows = []
+    referenced_evidence: set[str] = set()
     for leaf in packet["leaves"]:
         row = by_id[leaf["leaf_id"]]
         require(
@@ -168,7 +182,7 @@ def finalize(packet_path: Path, decision_path: Path, output: Path) -> dict[str, 
         require(classification in ALLOWED, f"{leaf['leaf_id']}: classification")
         rationale = row.get("rationale")
         require(
-            isinstance(rationale, str) and rationale.strip(),
+            isinstance(rationale, str) and bool(rationale.strip()),
             f"{leaf['leaf_id']}: rationale",
         )
         evidence = validate_evidence_ids(
@@ -176,12 +190,13 @@ def finalize(packet_path: Path, decision_path: Path, output: Path) -> dict[str, 
             leaf["leaf_id"],
             required=classification in EVIDENCE_REQUIRED,
         )
+        referenced_evidence.update(evidence)
         if classification in {
             "restricted-material-blocker",
             "unimplemented-blocker",
         }:
             blockers += 1
-        accepted_rows.append(
+        proposal_rows.append(
             {
                 "leaf_id": leaf["leaf_id"],
                 "source_leaf_sha256": leaf["source_leaf_sha256"],
@@ -191,13 +206,10 @@ def finalize(packet_path: Path, decision_path: Path, output: Path) -> dict[str, 
             }
         )
 
-    require(
-        decision.get("family_decision") in {"accept", "reject"},
-        "family decision",
-    )
-    accepted = decision["family_decision"] == "accept" and blockers == 0
+    requested_decision = decision.get("family_decision")
+    require(requested_decision in {"accept", "reject"}, "family decision")
     result = {
-        "schema": "trillionnium.denominator-family-decision.v1",
+        "schema": "trillionnium.denominator-family-decision-proposal.v1",
         "family_id": packet["family_id"],
         "packet_sha256": packet_sha256,
         "source_manifest": packet["source_manifest"],
@@ -205,14 +217,28 @@ def finalize(packet_path: Path, decision_path: Path, output: Path) -> dict[str, 
         "candidate_author": candidate_author,
         "candidate_binding": binding,
         "candidate_binding_sha256": binding_sha256,
-        "reviewer": reviewer,
-        "decision_source_sha256": sha(decision_path),
-        "leaf_count": len(accepted_rows),
+        "claimed_reviewer": reviewer,
+        "untrusted_decision_source_sha256": sha(decision_path),
+        "leaf_count": len(proposal_rows),
         "blocker_count": blockers,
-        "family_decision": decision["family_decision"],
-        "accepted": accepted,
-        "leaves": accepted_rows,
+        "requested_family_decision": requested_decision,
+        "proposal_complete": True,
+        "referenced_evidence_ids": sorted(referenced_evidence),
+        "authority": {
+            "materialization_supported": False,
+            "reviewer_identity_verified": False,
+            "reviewer_role_verified": False,
+            "reviewer_independence_verified": False,
+            "evidence_admission_verified": False,
+            "expiry_and_nonce_verified": False,
+            "replay_protection_verified": False,
+            "accepted": False,
+            "reason": UNTRUSTED_AUTHORITY_REASON,
+        },
+        "accepted": False,
+        "leaves": proposal_rows,
         "claim_boundary": {
+            "family_acceptance": False,
             "global_sg1_accepted": False,
             "complete_nakama_compatibility": False,
             "production_ready": False,
@@ -233,8 +259,10 @@ def main() -> int:
         json.dumps(
             {
                 "family": report["family_id"],
+                "proposal_complete": report["proposal_complete"],
                 "accepted": report["accepted"],
                 "blockers": report["blocker_count"],
+                "authority_materialization_supported": False,
             },
             sort_keys=True,
         )

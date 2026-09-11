@@ -3,33 +3,38 @@
   "exploration_depth": 10,
   "maximum_attempts": 2,
   "actions": [
-    "commit current",
-    "commit stale",
-    "same replay",
-    "conflicting replay",
+    "commit through one generation-validating command transition",
+    "same-fingerprint replay through the same transition",
+    "conflicting replay through the same transition",
     "authority takeover",
-    "claim or expired-lease reclaim",
-    "lease expire",
-    "idempotent publish or observe existing effect",
-    "exact owner-and-generation acknowledgement",
-    "stale owner-or-generation acknowledgement",
+    "claim or expired-lease reclaim bound to the current authority generation",
+    "lease expiry",
+    "publish through one owner, lease-generation and authority-generation token transition",
+    "acknowledge through the same exact lease token transition",
+    "stale command generation rejection",
+    "stale owner or lease-generation publish and acknowledgement rejection",
+    "stale authority-generation publish and acknowledgement rejection",
     "crash before or after publish",
     "expired final-attempt reaper"
   ],
   "invariants": [
     "one revision per unique accepted command",
-    "receipt and revision are atomic",
+    "receipt, revision and command authority generation are atomic",
     "accepted command always has an outbox intent",
     "outbox never exists without an accepted command",
     "claim attempts and lease generations are monotone and bounded",
-    "leased state retains one exact current owner and generation",
-    "non-leased state has no current owner",
+    "every lease records the exact authority generation at acquisition",
+    "leased state retains one exact owner, lease generation and authority generation",
+    "non-leased state has no current lease token",
     "only leased state may be marked expired",
+    "a takeover makes an older lease authority generation stale",
+    "stale command, publish and acknowledgement tokens leave durable completion state unchanged",
+    "a fresh reclaim after takeover binds the new authority generation",
     "delivered state has exactly one visible effect and a durable receipt",
-    "delivery acknowledgement matches the last claimed owner and generation",
+    "delivery acknowledgement matches the last claimed owner, lease generation and authority generation",
     "dead state has no delivered receipt",
     "idempotent retries never create a second externally visible value",
-    "stale authority and lease acknowledgements do not mutate durable completion state"
+    "no stale authority mutation is accepted"
   ],
   "known_ambiguity_boundaries": [
     "an expired final lease may be reaped dead after a crash that made one idempotent external value visible but did not persist the database acknowledgement",
@@ -37,7 +42,9 @@
   ],
   "hostile_mutants": [
     "duplicate visible effect on retry",
-    "stale owner or generation acknowledgement completes delivery"
+    "stale owner or generation acknowledgement completes delivery",
+    "stale authority generation publishes after takeover",
+    "stale authority generation acknowledges after takeover"
   ],
   "implementation_differential_required": true,
   "claim_boundary": {

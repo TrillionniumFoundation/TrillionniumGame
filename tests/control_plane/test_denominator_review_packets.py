@@ -92,7 +92,7 @@ class DenominatorReviewPacketTests(unittest.TestCase):
             "candidate_author": "author",
             "candidate_binding": candidate,
             "reviewer": {
-                "login": "reviewer",
+                "login": "claimed-reviewer",
                 "role": "compatibility",
                 "conflict_free_attestation": True,
                 "reviewed_binding_sha256": binding_digest(candidate),
@@ -104,7 +104,7 @@ class DenominatorReviewPacketTests(unittest.TestCase):
                     "source_leaf_sha256": "2" * 64,
                     "classification": "implemented-compatible",
                     "rationale": "wire and durable effects matched the exact oracle",
-                    "evidence_ids": ["EVIDENCE-A"],
+                    "evidence_ids": ["FAKE-OR-UNRESOLVED-EVIDENCE-A"],
                 },
                 {
                     "leaf_id": "leaf-b",
@@ -118,7 +118,7 @@ class DenominatorReviewPacketTests(unittest.TestCase):
 
     def finalize_decision(self, packet_path: Path, decision: dict, directory: Path):
         source = directory / "decision.json"
-        output = directory / "accepted.json"
+        output = directory / "proposal.json"
         source.write_text(json.dumps(decision), encoding="utf-8")
         return self.accept.finalize(packet_path, source, output), output
 
@@ -131,14 +131,14 @@ class DenominatorReviewPacketTests(unittest.TestCase):
             with self.assertRaisesRegex(self.accept.DecisionError, "leaf denominator"):
                 self.finalize_decision(packet_path, decision, directory)
 
-    def test_self_approval_is_rejected_before_leaf_processing(self):
+    def test_obvious_self_attestation_is_rejected_before_leaf_processing(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             packet_path = self.write_packet(directory)
             decision = self.valid_decision(packet_path)
             decision["reviewer"]["login"] = "author"
             decision["leaves"] = []
-            with self.assertRaisesRegex(self.accept.DecisionError, "self-approve"):
+            with self.assertRaisesRegex(self.accept.DecisionError, "self-attest"):
                 self.finalize_decision(packet_path, decision, directory)
 
     def test_packet_manifest_and_exact_tuple_substitution_are_rejected(self):
@@ -165,34 +165,65 @@ class DenominatorReviewPacketTests(unittest.TestCase):
             with self.assertRaisesRegex(self.accept.DecisionError, "binding digest"):
                 self.finalize_decision(packet_path, decision, directory)
 
-    def test_positive_compatibility_classification_requires_evidence(self):
+    def test_positive_classification_requires_reference_but_not_credit(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             packet_path = self.write_packet(directory)
             decision = self.valid_decision(packet_path)
             decision["leaves"][0]["evidence_ids"] = []
-            with self.assertRaisesRegex(self.accept.DecisionError, "evidence required"):
+            with self.assertRaisesRegex(
+                self.accept.DecisionError, "evidence reference required"
+            ):
                 self.finalize_decision(packet_path, decision, directory)
 
-    def test_valid_family_decision_is_exactly_bound(self):
+    def test_valid_local_decision_is_only_a_non_authoritative_proposal(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             packet_path = self.write_packet(directory)
             decision = self.valid_decision(packet_path)
-            result, output = self.finalize_decision(packet_path, decision, directory)
-            self.assertTrue(result["accepted"])
+            result, output = self.finalize_decision(
+                packet_path, decision, directory
+            )
+            self.assertEqual(
+                result["schema"],
+                "trillionnium.denominator-family-decision-proposal.v1",
+            )
+            self.assertTrue(result["proposal_complete"])
+            self.assertFalse(result["accepted"])
+            self.assertFalse(result["authority"]["materialization_supported"])
+            self.assertFalse(result["authority"]["reviewer_identity_verified"])
+            self.assertFalse(result["authority"]["evidence_admission_verified"])
             self.assertEqual(result["packet_sha256"], digest(packet_path.read_bytes()))
             self.assertEqual(
                 result["candidate_binding_sha256"], binding_digest(binding())
             )
             self.assertEqual(json.loads(output.read_text()), result)
 
+    def test_fake_receipt_alias_expiry_and_nonce_fields_cannot_create_acceptance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            packet_path = self.write_packet(directory)
+            decision = self.valid_decision(packet_path)
+            decision["reviewer"]["login"] = "same-person-alias-2"
+            decision["authority_receipt"] = {
+                "verified": True,
+                "signature": "attacker-controlled",
+                "issued_at": "2026-09-11T00:00:00Z",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "nonce": "replayed",
+            }
+            decision["accepted"] = True
+            result, _ = self.finalize_decision(packet_path, decision, directory)
+            self.assertFalse(result["accepted"])
+            self.assertFalse(result["authority"]["expiry_and_nonce_verified"])
+            self.assertFalse(result["authority"]["replay_protection_verified"])
+
     def write_global_fixture(self, directory: Path):
         candidate = binding()
         candidate_digest = binding_digest(candidate)
         author = "author"
         families = []
-        decision_paths = []
+        proposal_paths = []
         for index in range(14):
             family = f"family-{index:02d}"
             packet_digest = f"{index + 1:064x}"
@@ -208,8 +239,8 @@ class DenominatorReviewPacketTests(unittest.TestCase):
                     "leaf_count": leaf_count,
                 }
             )
-            decision = {
-                "schema": "trillionnium.denominator-family-decision.v1",
+            proposal = {
+                "schema": "trillionnium.denominator-family-decision-proposal.v1",
                 "family_id": family,
                 "packet_sha256": packet_digest,
                 "source_manifest": f"manifests/{family}.json",
@@ -217,20 +248,25 @@ class DenominatorReviewPacketTests(unittest.TestCase):
                 "candidate_author": author,
                 "candidate_binding": candidate,
                 "candidate_binding_sha256": candidate_digest,
-                "reviewer": {
-                    "login": "family-reviewer",
+                "claimed_reviewer": {
+                    "login": "same-claimed-family-reviewer",
                     "role": "compatibility",
                     "conflict_free_attestation": True,
                     "reviewed_binding_sha256": candidate_digest,
                 },
                 "leaf_count": leaf_count,
                 "blocker_count": 0,
-                "family_decision": "accept",
-                "accepted": True,
+                "requested_family_decision": "accept",
+                "proposal_complete": True,
+                "authority": {
+                    "materialization_supported": False,
+                    "accepted": False,
+                },
+                "accepted": False,
             }
-            path = directory / f"{family}.decision.json"
-            path.write_bytes(canonical(decision))
-            decision_paths.append(path)
+            path = directory / f"{family}.proposal.json"
+            path.write_bytes(canonical(proposal))
+            proposal_paths.append(path)
 
         index_value = {
             "schema": "trillionnium.denominator-family-review-index.v1",
@@ -251,31 +287,46 @@ class DenominatorReviewPacketTests(unittest.TestCase):
                     "family_id": json.loads(path.read_text())["family_id"],
                     "decision_sha256": digest(path.read_bytes()),
                 }
-                for path in decision_paths
+                for path in proposal_paths
             ],
             "reviewer": {
-                "login": "global-reviewer",
+                "login": "same-claimed-family-reviewer",
                 "role": "global-compatibility",
                 "conflict_free_attestation": True,
                 "reviewed_binding_sha256": candidate_digest,
             },
             "decision": "accept",
+            "authority_receipt": {
+                "verified": True,
+                "signature": "attacker-controlled",
+                "nonce": "replayed",
+            },
         }
         global_path = directory / "global.json"
         global_path.write_bytes(canonical(global_value))
-        return index_path, decision_paths, global_path
+        return index_path, proposal_paths, global_path
 
-    def test_global_sg1_rejects_digest_substitution_duplicates_and_reviewer_reuse(self):
+    def test_global_bundle_never_materializes_sg1_from_local_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            index_path, decisions, global_path = self.write_global_fixture(directory)
+            index_path, proposals, global_path = self.write_global_fixture(directory)
             output = directory / "result.json"
             result = self.global_finalize.finalize(
-                index_path, decisions, global_path, output
+                index_path, proposals, global_path, output
             )
-            self.assertTrue(result["global_sg1_accepted"])
+            self.assertTrue(result["proposal_bundle_complete"])
+            self.assertFalse(result["global_sg1_accepted"])
+            self.assertFalse(result["authority"]["materialization_supported"])
+            self.assertFalse(result["authority"]["principal_separation_verified"])
+            self.assertFalse(result["authority"]["replay_protection_verified"])
 
-            duplicate = decisions[:-1] + [decisions[0]]
+    def test_global_rejects_duplicate_drift_and_forged_accepted_family(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            index_path, proposals, global_path = self.write_global_fixture(directory)
+            output = directory / "result.json"
+
+            duplicate = proposals[:-1] + [proposals[0]]
             with self.assertRaisesRegex(
                 self.global_finalize.GlobalDecisionError, "duplicate family"
             ):
@@ -283,25 +334,27 @@ class DenominatorReviewPacketTests(unittest.TestCase):
                     index_path, duplicate, global_path, output
                 )
 
-            first = json.loads(decisions[0].read_text())
+            index_path, proposals, global_path = self.write_global_fixture(directory)
+            first = json.loads(proposals[0].read_text())
             first["packet_sha256"] = "f" * 64
-            decisions[0].write_bytes(canonical(first))
+            proposals[0].write_bytes(canonical(first))
             with self.assertRaisesRegex(
                 self.global_finalize.GlobalDecisionError, "packet digest drift"
             ):
                 self.global_finalize.finalize(
-                    index_path, decisions, global_path, output
+                    index_path, proposals, global_path, output
                 )
 
-            index_path, decisions, global_path = self.write_global_fixture(directory)
-            changed_global = json.loads(global_path.read_text())
-            changed_global["reviewer"]["login"] = "family-reviewer"
-            global_path.write_bytes(canonical(changed_global))
+            index_path, proposals, global_path = self.write_global_fixture(directory)
+            first = json.loads(proposals[0].read_text())
+            first["accepted"] = True
+            first["authority"]["accepted"] = True
+            proposals[0].write_bytes(canonical(first))
             with self.assertRaisesRegex(
-                self.global_finalize.GlobalDecisionError, "must be distinct"
+                self.global_finalize.GlobalDecisionError, "forged accepted flag"
             ):
                 self.global_finalize.finalize(
-                    index_path, decisions, global_path, output
+                    index_path, proposals, global_path, output
                 )
 
 
