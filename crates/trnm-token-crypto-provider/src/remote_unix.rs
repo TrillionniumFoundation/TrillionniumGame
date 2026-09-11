@@ -1,11 +1,14 @@
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::remote::{
     RemoteMacError, RemoteMacPurpose, RemoteMacRequest, RemoteMacRequestKind, RemoteMacResponse,
-    RemoteMacTransport, REMOTE_HS256_TAG_BYTES,
+    RemoteMacTransport, MAX_REMOTE_MAC_TIMEOUT, REMOTE_HS256_TAG_BYTES,
 };
 
 const REQUEST_MAGIC: &[u8; 8] = b"TRNMHMC1";
@@ -13,6 +16,9 @@ const RESPONSE_MAGIC: &[u8; 8] = b"TRNMRMC1";
 const MAX_SOCKET_PATH_BYTES: usize = 100;
 const MAX_REQUEST_FRAME_BYTES: usize = 1024 * 1024 + 512;
 const MAX_RESPONSE_FRAME_BYTES: usize = 64;
+const MAX_PENDING_CONNECTS: usize = 8;
+
+static PENDING_CONNECTS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Debug)]
 pub struct UnixSocketRemoteMacTransport {
@@ -38,33 +44,140 @@ impl RemoteMacTransport for UnixSocketRemoteMacTransport {
         request: &RemoteMacRequest,
         timeout: Duration,
     ) -> Result<RemoteMacResponse, RemoteMacError> {
+        if timeout.is_zero() || timeout > MAX_REMOTE_MAC_TIMEOUT {
+            return Err(RemoteMacError::InvalidRequest);
+        }
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or(RemoteMacError::InvalidRequest)?;
         let frame = encode_request(request)?;
-        let mut stream = UnixStream::connect(&self.socket_path).map_err(map_io_error)?;
-        stream
-            .set_read_timeout(Some(timeout))
-            .map_err(map_io_error)?;
-        stream
-            .set_write_timeout(Some(timeout))
-            .map_err(map_io_error)?;
+        let mut stream = connect_before_deadline(&self.socket_path, deadline)?;
         let length = u32::try_from(frame.len())
             .map_err(|_| RemoteMacError::InvalidRequest)?
             .to_be_bytes();
-        stream.write_all(&length).map_err(map_io_error)?;
-        stream.write_all(&frame).map_err(map_io_error)?;
-        stream.flush().map_err(map_io_error)?;
+        write_all_before_deadline(&mut stream, &length, deadline)?;
+        write_all_before_deadline(&mut stream, &frame, deadline)?;
+        flush_before_deadline(&mut stream, deadline)?;
 
         let mut response_length = [0_u8; 4];
-        stream
-            .read_exact(&mut response_length)
-            .map_err(map_io_error)?;
+        read_exact_before_deadline(&mut stream, &mut response_length, deadline)?;
         let response_length = u32::from_be_bytes(response_length) as usize;
         if response_length == 0 || response_length > MAX_RESPONSE_FRAME_BYTES {
             return Err(RemoteMacError::ProtocolViolation);
         }
         let mut response = vec![0_u8; response_length];
-        stream.read_exact(&mut response).map_err(map_io_error)?;
+        read_exact_before_deadline(&mut stream, &mut response, deadline)?;
         decode_response(&response)
     }
+}
+
+struct PendingConnectSlot;
+
+impl Drop for PendingConnectSlot {
+    fn drop(&mut self) {
+        PENDING_CONNECTS.fetch_sub(1, Ordering::Release);
+    }
+}
+
+fn reserve_connect_slot() -> Result<PendingConnectSlot, RemoteMacError> {
+    PENDING_CONNECTS
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            (current < MAX_PENDING_CONNECTS).then_some(current + 1)
+        })
+        .map(|_| PendingConnectSlot)
+        .map_err(|_| RemoteMacError::TransportUnavailable)
+}
+
+fn connect_before_deadline(
+    path: &Path,
+    deadline: Instant,
+) -> Result<UnixStream, RemoteMacError> {
+    let slot = reserve_connect_slot()?;
+    let path = path.to_owned();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let connector = thread::Builder::new()
+        .name("trnm-remote-mac-connect".to_owned())
+        .spawn(move || {
+            let _slot = slot;
+            let result = connect_unix(&path);
+            let _ = sender.send(result);
+        })
+        .map_err(|_| RemoteMacError::TransportUnavailable)?;
+    drop(connector);
+
+    match receiver.recv_timeout(remaining_timeout(deadline)?) {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(error)) => Err(map_io_error(error)),
+        Err(RecvTimeoutError::Timeout) => Err(RemoteMacError::Timeout),
+        Err(RecvTimeoutError::Disconnected) => Err(RemoteMacError::TransportUnavailable),
+    }
+}
+
+fn connect_unix(path: &Path) -> io::Result<UnixStream> {
+    loop {
+        match UnixStream::connect(path) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => return result,
+        }
+    }
+}
+
+fn remaining_timeout(deadline: Instant) -> Result<Duration, RemoteMacError> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(RemoteMacError::Timeout)
+}
+
+fn write_all_before_deadline(
+    stream: &mut UnixStream,
+    mut input: &[u8],
+    deadline: Instant,
+) -> Result<(), RemoteMacError> {
+    while !input.is_empty() {
+        stream
+            .set_write_timeout(Some(remaining_timeout(deadline)?))
+            .map_err(map_io_error)?;
+        match stream.write(input) {
+            Ok(0) => return Err(RemoteMacError::TransportUnavailable),
+            Ok(written) => input = &input[written..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(map_io_error(error)),
+        }
+    }
+    Ok(())
+}
+
+fn flush_before_deadline(
+    stream: &mut UnixStream,
+    deadline: Instant,
+) -> Result<(), RemoteMacError> {
+    stream
+        .set_write_timeout(Some(remaining_timeout(deadline)?))
+        .map_err(map_io_error)?;
+    stream.flush().map_err(map_io_error)
+}
+
+fn read_exact_before_deadline(
+    stream: &mut UnixStream,
+    mut output: &mut [u8],
+    deadline: Instant,
+) -> Result<(), RemoteMacError> {
+    while !output.is_empty() {
+        stream
+            .set_read_timeout(Some(remaining_timeout(deadline)?))
+            .map_err(map_io_error)?;
+        match stream.read(output) {
+            Ok(0) => return Err(RemoteMacError::ProtocolViolation),
+            Ok(read) => {
+                let (_, remaining) = output.split_at_mut(read);
+                output = remaining;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(map_io_error(error)),
+        }
+    }
+    Ok(())
 }
 
 fn validate_socket_path(path: &Path) -> Result<(), RemoteMacError> {
@@ -261,6 +374,50 @@ mod tests {
                 .unwrap_err(),
             RemoteMacError::VerificationRejected
         );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn slow_drip_response_cannot_extend_total_deadline() {
+        let (path, _guard) = socket_path();
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_request(&stream);
+            let mut response = Vec::new();
+            response.extend_from_slice(RESPONSE_MAGIC);
+            response.push(1);
+            response.push(0);
+            response.extend_from_slice(&[6; 16]);
+            response.extend_from_slice(&[4; 32]);
+            if stream
+                .write_all(&u32::try_from(response.len()).unwrap().to_be_bytes())
+                .is_err()
+            {
+                return;
+            }
+            for byte in response {
+                if stream.write_all(&[byte]).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(15));
+            }
+        });
+        let transport = UnixSocketRemoteMacTransport::new(path).unwrap();
+        let provider = RemoteHs256Provider::new(
+            transport,
+            "kms://tenant/deadline-key",
+            Duration::from_millis(80),
+        )
+        .unwrap();
+        let started = Instant::now();
+        assert_eq!(
+            provider
+                .sign([6; 16], RemoteMacPurpose::AccessToken, b"deadline-message")
+                .unwrap_err(),
+            RemoteMacError::Timeout
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
         server.join().unwrap();
     }
 

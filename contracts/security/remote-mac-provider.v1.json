@@ -8,6 +8,8 @@
   "message_maximum_bytes": 1048576,
   "tag_bytes": 32,
   "maximum_timeout_ms": 5000,
+  "timeout_semantics": "one monotonic total deadline covers connect, request write, response length and response body",
+  "maximum_pending_connects": 8,
   "required_production_adapters": [
     "approved cloud KMS HMAC service",
     "approved HSM or secret-manager MAC service"
@@ -15,6 +17,8 @@
   "required_live_evidence": [
     "credential and IAM denial",
     "timeout and transport loss",
+    "slow-drip response cannot extend the total deadline",
+    "bounded pending-connect exhaustion fails closed",
     "wrong key version and disabled key",
     "rotation and revoke",
     "audit log correlation",
