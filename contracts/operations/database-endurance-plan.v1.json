@@ -1,0 +1,33 @@
+{
+  "schema": "trillionnium.database-endurance-plan.v1",
+  "profiles": [
+    "postgresql",
+    "cockroachdb"
+  ],
+  "workload": "scripts/database-capacity-workload.sql",
+  "targets_hours": [
+    24,
+    72,
+    168
+  ],
+  "maximum_segment_seconds": 21600,
+  "required_segment_properties": [
+    "same exact commit and tree",
+    "same workload digest",
+    "contiguous zero-based index",
+    "SHA-256 previous-segment chain",
+    "zero failed transactions",
+    "positive transactions and latency",
+    "observed duration at least requested target"
+  ],
+  "thresholds_must_be_independently_approved": true,
+  "claim_boundary": {
+    "capacity_complete": false,
+    "endurance_24h_complete": false,
+    "endurance_72h_complete": false,
+    "endurance_7d_complete": false,
+    "performance_accepted": false,
+    "independently_accepted": false,
+    "production_ready": false
+  }
+}

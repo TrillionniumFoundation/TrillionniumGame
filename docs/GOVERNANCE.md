@@ -191,3 +191,9 @@ It cannot be used to grant C/SG, production, public-online, replacement or retir
 ## 13. Current governance blockers
 
 Until accepted readback and independent ownership exist, the governance gaps remain open or externally blocked. The repository must not infer enforcement from a protected-branch boolean alone, and reviewers must bind decisions to the current exact candidate.
+
+## Denominator family review packets
+
+`scripts/generate-denominator-review-packets.py` deterministically converts all fourteen pinned candidate manifests into 10,173 leaf-complete review packets. Every leaf binds its source hash and starts unclassified. `scripts/accept-denominator-family.py` rejects missing, duplicated, hash-changed or unrationalized decisions and rejects candidate-author self-approval. A family cannot be accepted while an unimplemented or restricted-material blocker remains.
+
+`scripts/finalize-global-sg1.py` requires all fourteen exact family decisions with one candidate identity and then a distinct, conflict-free global reviewer. Generating packets does not classify or accept any leaf; legal, compatibility and domain judgments remain human decisions.

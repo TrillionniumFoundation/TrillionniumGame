@@ -12,8 +12,18 @@
 //! consistent with activation and the checkpoint time high-water.
 
 mod lifecycle;
+mod remote;
+#[cfg(unix)]
+mod remote_unix;
 mod software;
 
+pub use remote::{
+    RemoteHs256Provider, RemoteMacError, RemoteMacPurpose, RemoteMacRequest, RemoteMacRequestKind,
+    RemoteMacResponse, RemoteMacTransport, MAX_REMOTE_MAC_MESSAGE_BYTES, MAX_REMOTE_MAC_TIMEOUT,
+    REMOTE_HS256_TAG_BYTES,
+};
+#[cfg(unix)]
+pub use remote_unix::UnixSocketRemoteMacTransport;
 pub use software::{SecretKeyMaterial, SoftwareHs256Provider};
 
 use core::fmt;

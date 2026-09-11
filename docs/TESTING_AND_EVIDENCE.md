@@ -532,3 +532,9 @@ cross-gap credit path and verifies that correcting the explicit mapping is the o
 way the same retained fixture can qualify. The real gap-register consumer has a
 separate regression, so a downstream wrapper cannot silently weaken the shared
 rule. Synthetic fixtures do not constitute real gap acceptance.
+
+## Exhaustive durability state model
+
+`scripts/durability-state-model.py` exhaustively explores a bounded state graph containing command commit/replay/conflict, authority takeover, outbox claim/expiry/publish/ack, stale owner/generation actions, crash ambiguity and the final-attempt reaper. It rejects revision/receipt divergence, lost outbox intents, invalid lease ownership, delivery without a visible effect, stale mutation and duplicate external value. Hostile mutants prove the duplicate-effect and stale-ack boundaries are observable.
+
+This model is a specification and test-vector source. Exact implementation differential, live database packets and independent data-integrity acceptance remain required.

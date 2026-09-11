@@ -43,7 +43,104 @@
     ],
     "metadata_table": "trnm_schema_metadata",
     "schema_version": 1,
-    "identity_rule": "Every build, migration, adapter test, backup and restore artifact must record the complete ordered migration-chain SHA-256 and candidate commit/tree."
+    "identity_rule": "Every build, migration, adapter test, backup and restore artifact must record the complete ordered migration-chain SHA-256 and candidate commit/tree.",
+    "postgresql_connection_fault_source_candidate": {
+      "harness": "scripts/ci-postgresql-connection-faults.sh",
+      "source_contract": "python3 scripts/check-postgresql-connection-faults.py",
+      "covers": [
+        "eighty fresh connection churn cycles",
+        "role-level connection exhaustion rejection",
+        "active transaction query cancellation rollback",
+        "active transaction backend termination rollback",
+        "statement timeout",
+        "fresh connection after all injected faults"
+      ],
+      "accepted": false
+    },
+    "postgresql_pitr_source_candidate": {
+      "harness": "scripts/ci-postgresql-pitr.sh",
+      "source_contract": "python3 scripts/check-postgresql-pitr.py",
+      "semantics": [
+        "continuous WAL archive configuration",
+        "physical base backup",
+        "exact recovery target LSN",
+        "target commit included",
+        "later commit excluded",
+        "automatic promotion at recovery target",
+        "canonical target/restored state equality"
+      ],
+      "accepted": false
+    },
+    "postgresql_primary_failover_source_candidate": {
+      "harness": "scripts/ci-postgresql-primary-failover.sh",
+      "source_contract": "python3 scripts/check-postgresql-primary-failover.py",
+      "semantics": [
+        "streaming physical standby from pg_basebackup",
+        "synchronous remote_apply acknowledged command",
+        "standby replay covers acknowledged WAL LSN",
+        "primary stopped before promotion",
+        "canonical state equal after promotion",
+        "post-promotion write succeeds"
+      ],
+      "accepted": false
+    },
+    "postgresql_recovery_barrier_source_candidate": {
+      "quarantine_transaction": "scripts/postgresql-recovery-quarantine.sql",
+      "harness": "scripts/ci-postgresql-recovery-barrier.sh",
+      "source_contract": "python3 scripts/check-postgresql-recovery-barrier.py",
+      "semantics": [
+        "active leases reject quarantine",
+        "ready intents exported while an exclusive table lock is held",
+        "ready intents atomically become terminal quarantine records",
+        "new runtime-role sessions default to read-only",
+        "runtime reads remain available for verification"
+      ],
+      "accepted": false
+    },
+    "postgresql_semantic_recovery_source_candidate": {
+      "harness": "scripts/ci-postgresql-semantic-recovery.sh",
+      "data_snapshot": "scripts/postgresql-semantic-snapshot.sql",
+      "catalog_snapshot": "scripts/postgresql-catalog-snapshot.sql",
+      "source_contract": "python3 scripts/check-postgresql-semantic-recovery.py",
+      "covers": [
+        "repeat migration rejection without catalog drift",
+        "ten critical negative-constraint probes",
+        "custom-format logical backup",
+        "empty-database restore",
+        "exact canonical data comparison",
+        "column constraint and index semantic comparison",
+        "migration-lock and artifact digests"
+      ],
+      "accepted": false
+    },
+    "cockroachdb_node_failover_source_candidate": {
+      "harness": "scripts/ci-cockroachdb-node-failover.sh",
+      "source_contract": "python3 scripts/check-cockroachdb-node-failover.py",
+      "semantics": [
+        "three-node cluster and three voting replicas",
+        "known range lease relocated to node one",
+        "leaseholder network isolation with acknowledged-state equality",
+        "quorum write during leaseholder isolation",
+        "separate non-leaseholder node stop and write",
+        "isolated and stopped nodes rejoin and observe committed writes"
+      ],
+      "accepted": false
+    },
+    "cockroachdb_semantic_recovery_source_candidate": {
+      "harness": "scripts/ci-cockroachdb-semantic-recovery.sh",
+      "data_snapshot": "scripts/cockroachdb-semantic-snapshot.sql",
+      "source_contract": "python3 scripts/check-cockroachdb-semantic-recovery.py",
+      "covers": [
+        "repeat migration rejection without catalog drift",
+        "ten critical negative-constraint probes",
+        "CockroachDB native BACKUP to nodelocal",
+        "empty-database RESTORE under a new database name",
+        "exact canonical data comparison",
+        "SHOW CREATE ALL TABLES semantic comparison",
+        "migration-lock backup-tree and image digests"
+      ],
+      "accepted": false
+    }
   },
   "non_authoritative": [
     {
@@ -139,6 +236,13 @@
     "ha_proven": false,
     "sg4_complete": false,
     "production_ready": false,
-    "adapter_table_surface_source_candidate": true
+    "adapter_table_surface_source_candidate": true,
+    "postgresql_connection_fault_source_candidate": true,
+    "postgresql_pitr_source_candidate": true,
+    "postgresql_primary_failover_source_candidate": true,
+    "postgresql_recovery_barrier_source_candidate": true,
+    "postgresql_semantic_restore_source_candidate": true,
+    "cockroachdb_node_failover_source_candidate": true,
+    "cockroachdb_semantic_restore_source_candidate": true
   }
 }

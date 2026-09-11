@@ -1,0 +1,30 @@
+{
+  "schema": "trillionnium.remote-mac-provider.v1",
+  "operation_family": "HS256 sign and verify",
+  "raw_key_bytes_enter_application_process": false,
+  "local_software_fallback_allowed": false,
+  "request_correlation_required": true,
+  "key_reference_maximum_bytes": 256,
+  "message_maximum_bytes": 1048576,
+  "tag_bytes": 32,
+  "maximum_timeout_ms": 5000,
+  "required_production_adapters": [
+    "approved cloud KMS HMAC service",
+    "approved HSM or secret-manager MAC service"
+  ],
+  "required_live_evidence": [
+    "credential and IAM denial",
+    "timeout and transport loss",
+    "wrong key version and disabled key",
+    "rotation and revoke",
+    "audit log correlation",
+    "throughput and tail latency",
+    "independent cryptography and security acceptance"
+  ],
+  "claim_boundary": {
+    "production_adapter_implemented": false,
+    "live_kms_hsm_verified": false,
+    "independently_accepted": false,
+    "production_ready": false
+  }
+}
