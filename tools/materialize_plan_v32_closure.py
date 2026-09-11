@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import py_compile
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -257,13 +258,7 @@ def repair_generated_tests(root: Path) -> None:
 
 
 def repair_schema_authority_guards(root: Path) -> None:
-    """Read quarantined roots from the current authority instead of hardcoding one.
-
-    Production and CI consumers must not contain the quarantined design-history
-    path as a literal. These source checkers still reject a harness that consumes
-    any registered non-authoritative root, but derive the closed set from the
-    authoritative machine document.
-    """
+    """Derive quarantined roots from current authority without source literals."""
 
     loader = '''\
 def non_authoritative_schema_paths() -> tuple[str, ...]:
@@ -283,22 +278,41 @@ def non_authoritative_schema_paths() -> tuple[str, ...]:
     return tuple(result)
 
 '''
-    old_guard = '    require("database/schema/v2" not in text, "non-authoritative schema referenced")\n'
-    new_guard = '''\
-    for path in non_authoritative_schema_paths():
-        require(path not in text, "non-authoritative schema referenced")
-'''
-    marker = "def validate_text(text: str) -> None:\n"
+    guard_pattern = re.compile(
+        r'''(?mx)
+        ^(?P<indent>[ \t]*)
+        require\(
+          ["']database/schema/v2["']
+          \s+not\s+in\s+text\s*,\s*
+          ["']non-authoritative\ schema\ referenced["']
+        \)\s*$
+        '''
+    )
+    validate_pattern = re.compile(r"(?m)^def validate_text\([^\n]*\):\n")
 
     for relative in SCHEMA_AUTHORITY_NEGATIVE_CHECKERS:
         path = root / relative
         text = path.read_text(encoding="utf-8")
-        if text.count(old_guard) != 1:
-            raise RuntimeError(f"{relative}: expected one hardcoded quarantine guard")
-        if text.count(marker) != 1:
-            raise RuntimeError(f"{relative}: expected one validate_text entrypoint")
-        text = text.replace(marker, loader + marker, 1)
-        text = text.replace(old_guard, new_guard, 1)
+        guards = list(guard_pattern.finditer(text))
+        if len(guards) != 1:
+            raise RuntimeError(
+                f"{relative}: expected one hardcoded quarantine guard, found {len(guards)}"
+            )
+        entries = list(validate_pattern.finditer(text))
+        if len(entries) != 1:
+            raise RuntimeError(
+                f"{relative}: expected one validate_text entrypoint, found {len(entries)}"
+            )
+        guard = guards[0]
+        indent = guard.group("indent")
+        replacement = (
+            f"{indent}for path in non_authoritative_schema_paths():\n"
+            f'{indent}    require(path not in text, "non-authoritative schema referenced")'
+        )
+        text = text[: entries[0].start()] + loader + text[entries[0].start() :]
+        text, substitutions = guard_pattern.subn(replacement, text, count=1)
+        if substitutions != 1:
+            raise RuntimeError(f"{relative}: quarantine guard replacement failed")
         if "database/schema/v2" in text:
             raise RuntimeError(f"{relative}: hardcoded quarantined schema root remains")
         path.write_text(text, encoding="utf-8")
