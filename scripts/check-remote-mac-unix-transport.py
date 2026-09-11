@@ -46,6 +46,26 @@ def source_parts(source: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def _is_rust_lifetime(source: str, index: int) -> bool:
+    """Distinguish a Rust lifetime such as `'_` or `'static` from a char literal.
+
+    The previous scanner treated the apostrophe in `fmt::Formatter<'_>` as the
+    start of a character literal and blanked production code until a later
+    apostrophe. That made the validator reject valid source before reaching the
+    intended structural checks. A lifetime begins with an identifier character
+    or underscore and has no immediate closing apostrophe; simple character
+    literals such as `'a'` and `'_'` keep their immediate closing apostrophe.
+    Escaped character literals start with a backslash and remain handled by the
+    normal character-literal scanner below.
+    """
+    if index + 1 >= len(source):
+        return False
+    first = source[index + 1]
+    if not (first == "_" or first.isalpha()):
+        return False
+    return index + 2 >= len(source) or source[index + 2] != "'"
+
+
 def strip_comments_and_literals(source: str) -> str:
     """Return Rust-like executable text with comments/string/char literals blanked."""
     out: list[str] = []
@@ -105,6 +125,10 @@ def strip_comments_and_literals(source: str) -> str:
                     escaped = c == "\\" and not escaped
                     if c != "\\":
                         escaped = False
+            continue
+        if ch == "'" and _is_rust_lifetime(source, i):
+            out.append(ch)
+            i += 1
             continue
         if ch == "'" and i + 2 < len(source):
             end = i + 1
