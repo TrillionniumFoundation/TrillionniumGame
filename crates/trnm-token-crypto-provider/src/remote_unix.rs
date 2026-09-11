@@ -208,8 +208,7 @@ fn connect_unix(
             Ok(stream) => break stream,
         }
     };
-    let observed_endpoint =
-        inspect_socket_endpoint(path, expected_peer_uid, expected_peer_gid)?;
+    let observed_endpoint = inspect_socket_endpoint(path, expected_peer_uid, expected_peer_gid)?;
     if observed_endpoint != expected_endpoint {
         return Err(RemoteMacError::ProtocolViolation);
     }
@@ -279,7 +278,10 @@ fn validate_socket_path(path: &Path) -> Result<(), RemoteMacError> {
         || value.len() > MAX_SOCKET_PATH_BYTES
         || value.contains(&0)
         || path.components().any(|component| {
-            matches!(component, Component::CurDir | Component::ParentDir | Component::Prefix(_))
+            matches!(
+                component,
+                Component::CurDir | Component::ParentDir | Component::Prefix(_)
+            )
         })
     {
         return Err(RemoteMacError::InvalidConfiguration);
@@ -294,7 +296,8 @@ fn inspect_socket_endpoint(
 ) -> Result<SocketEndpointIdentity, RemoteMacError> {
     validate_no_symlink_directories(path)?;
     let parent = path.parent().ok_or(RemoteMacError::InvalidConfiguration)?;
-    let parent_metadata = fs::symlink_metadata(parent).map_err(|_| RemoteMacError::ProtocolViolation)?;
+    let parent_metadata =
+        fs::symlink_metadata(parent).map_err(|_| RemoteMacError::ProtocolViolation)?;
     if !parent_metadata.is_dir()
         || parent_metadata.file_type().is_symlink()
         || !secure_parent_directory(&parent_metadata, expected_peer_uid, expected_peer_gid)
@@ -310,8 +313,7 @@ fn inspect_socket_endpoint(
         || socket_metadata.gid() != expected_peer_gid
         || socket_metadata.nlink() != 1
         || socket_metadata.mode() & 0o002 != 0
-        || (socket_metadata.mode() & 0o020 != 0
-            && socket_metadata.gid() != expected_peer_gid)
+        || (socket_metadata.mode() & 0o020 != 0 && socket_metadata.gid() != expected_peer_gid)
     {
         return Err(RemoteMacError::ProtocolViolation);
     }
@@ -543,12 +545,9 @@ mod tests {
             response.extend_from_slice(&[8; 16]);
             write_response(&stream, &response);
         });
-        let provider = RemoteHs256Provider::new(
-            transport(path),
-            "hsm:partition/key",
-            Duration::from_secs(1),
-        )
-        .unwrap();
+        let provider =
+            RemoteHs256Provider::new(transport(path), "hsm:partition/key", Duration::from_secs(1))
+                .unwrap();
         assert_eq!(
             provider
                 .verify([8; 16], RemoteMacPurpose::AccessToken, b"message", &[3; 32],)
@@ -615,12 +614,8 @@ mod tests {
             stream.write_all(&32_u32.to_be_bytes()).unwrap();
             stream.write_all(b"short").unwrap();
         });
-        let provider = RemoteHs256Provider::new(
-            transport(path),
-            "kms:key",
-            Duration::from_secs(1),
-        )
-        .unwrap();
+        let provider =
+            RemoteHs256Provider::new(transport(path), "kms:key", Duration::from_secs(1)).unwrap();
         assert_eq!(
             provider
                 .sign([1; 16], RemoteMacPurpose::AccessToken, b"message")
