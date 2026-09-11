@@ -49,14 +49,10 @@ def source_parts(source: str) -> tuple[str, str]:
 def _is_rust_lifetime(source: str, index: int) -> bool:
     """Distinguish a Rust lifetime such as `'_` or `'static` from a char literal.
 
-    The previous scanner treated the apostrophe in `fmt::Formatter<'_>` as the
-    start of a character literal and blanked production code until a later
-    apostrophe. That made the validator reject valid source before reaching the
-    intended structural checks. A lifetime begins with an identifier character
-    or underscore and has no immediate closing apostrophe; simple character
-    literals such as `'a'` and `'_'` keep their immediate closing apostrophe.
-    Escaped character literals start with a backslash and remain handled by the
-    normal character-literal scanner below.
+    A lifetime begins with an identifier character or underscore and has no
+    immediate closing apostrophe; simple character literals such as `'a'` and
+    `'_'` keep their immediate closing apostrophe. Escaped character literals
+    start with a backslash and remain handled by the character-literal scanner.
     """
     if index + 1 >= len(source):
         return False
@@ -153,7 +149,14 @@ def strip_comments_and_literals(source: str) -> str:
 
 
 def compact(code: str) -> str:
-    return re.sub(r"\s+", "", code)
+    """Canonicalize only layout tokens that Rust treats as semantically inert.
+
+    Rustfmt preserves a trailing comma for multiline calls. Structural checker
+    patterns deliberately ignore that separator so formatting cannot change the
+    security verdict; argument tokens, call edges and operators remain intact.
+    """
+    compacted = re.sub(r"\s+", "", code)
+    return re.sub(r",(?=[)\]}])", "", compacted)
 
 
 def require_once(code: str, needle: str, label: str) -> None:
