@@ -6,6 +6,8 @@ on:
       - ops/game-exact-source-snapshot-20260910
     paths:
       - .github/workflows/plan-v32-closure-materializer-20260911.yml
+      - tools/materialize_plan_v32_closure.py
+      - tools/repair_plan_v32_remote_unix.py
   workflow_dispatch:
 
 permissions:
@@ -16,7 +18,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MATERIALIZER_REVISION: '8'
+  MATERIALIZER_REVISION: '9'
   TARGET_BASE_SHA: 'b99d412ed15870b253ac2a5f1d71f9a0bddf7a30'
   TARGET_BASE_TREE: '71b509e183d1513b4ee6a6b479f6f2ff8acb54e4'
   CONTROLLER_SHA: 'c78f20a02a475c2ddc1a376fd24b79930d3c7e29'
