@@ -41,7 +41,11 @@ class RemoteMacUnixTransportContractTests(unittest.TestCase):
             "slow_drip_response_cannot_extend_total_deadline",
         ):
             with self.subTest(marker=marker):
-                mutated = self.source.replace(marker, "removed-deadline-marker", 1)
+                # Remove every occurrence. Several deadline helpers are intentionally
+                # referenced by both production code and focused tests, so replacing
+                # only the first occurrence does not model marker removal.
+                mutated = self.source.replace(marker, "removed-deadline-marker")
+                self.assertNotIn(marker, mutated)
                 with self.assertRaisesRegex(self.checker.ValidationError, "missing"):
                     self.checker.validate(mutated, self.lib, self.contract)
 
