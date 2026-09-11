@@ -125,8 +125,13 @@ class RemoteMacUnixTransportContractTests(unittest.TestCase):
         with self.assertRaisesRegex(self.checker.ValidationError, "peer GID"):
             self.checker.validate(mutated, self.lib, self.contract)
 
+        observed_endpoint_call = (
+            "let observed_endpoint = "
+            "inspect_socket_endpoint(path, expected_peer_uid, expected_peer_gid)?;"
+        )
+        self.assertIn(observed_endpoint_call, self.source)
         mutated = self.source.replace(
-            "let observed_endpoint =\n        inspect_socket_endpoint(path, expected_peer_uid, expected_peer_gid)?;",
+            observed_endpoint_call,
             "let observed_endpoint = expected_endpoint;",
             1,
         )
