@@ -1,0 +1,101 @@
+name: surface3-storage-order-repair-20260911
+
+on:
+  push:
+    branches:
+      - ops/game-exact-source-snapshot-20260910
+    paths:
+      - .github/workflows/surface3-storage-order-repair-20260911.yml
+      - tools/apply_surface3_storage_order_repair.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: surface3-storage-order-repair-20260911
+  cancel-in-progress: false
+
+env:
+  REPAIR_REVISION: '1'
+  TARGET_BRANCH: feature/plan-v32-storage-api-core-20260910
+  EXPECTED_HEAD: b99d412ed15870b253ac2a5f1d71f9a0bddf7a30
+  EXPECTED_TREE: 71b509e183d1513b4ee6a6b479f6f2ff8acb54e4
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Fetch exact driver and Surface 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          driver="$RUNNER_TEMP/driver"
+          target="$RUNNER_TEMP/surface3"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          git init "$driver"
+          git -C "$driver" remote add origin "$remote"
+          git -C "$driver" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C "$driver" checkout --detach FETCH_HEAD
+          test "$(git -C "$driver" rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 -m py_compile "$driver/tools/apply_surface3_storage_order_repair.py"
+
+          git init "$target"
+          git -C "$target" remote add origin "$remote"
+          git -C "$target" fetch --no-tags origin "refs/heads/${TARGET_BRANCH}"
+          git -C "$target" checkout -B "$TARGET_BRANCH" FETCH_HEAD
+          test "$(git -C "$target" rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git -C "$target" rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+
+          printf 'DRIVER_ROOT=%s\nTARGET_ROOT=%s\n' "$driver" "$target" >> "$GITHUB_ENV"
+
+      - name: Apply canonical UTF-8 byte-order repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$DRIVER_ROOT/tools/apply_surface3_storage_order_repair.py" --root "$TARGET_ROOT"
+          cd "$TARGET_ROOT"
+          python3 scripts/check-storage-list-order.py
+          python3 scripts/check-migration-lock.py
+          python3 scripts/check-schema-authority.py
+          python3 -m unittest tests.control_plane.test_storage_list_order_contract -v
+          python3 scripts/check-trnm-server.py
+          git diff --check
+
+      - name: Verify focused Rust packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1 --path "$TARGET_ROOT"
+          cd "$TARGET_ROOT"
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --package trnm-storage-core --all-targets --locked
+          cargo test --package trnm-persistence-pg --all-targets --locked
+          cargo clippy --package trnm-storage-core --all-targets --locked -- -D warnings
+          cargo clippy --package trnm-persistence-pg --all-targets --locked -- -D warnings
+
+      - name: Commit and fast-forward Surface 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$TARGET_ROOT"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git config user.name 'Plan v3.2 storage order repair'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git add --all
+          test -n "$(git diff --cached --name-only)"
+          git commit -m 'fix(storage): canonicalize cross-profile listing order' \
+            -m 'Bind StorageObjectKey, PostgreSQL C-collated schema/index/predicates, CockroachDB ordinary UTF-8 STRING order, byte limits and hostile multi-page vectors to one exact UTF-8 byte order. Rebind the migration lock and preserve all wire, compatibility, evidence and production exclusions.'
+          new_head=$(git rev-parse HEAD)
+          new_tree=$(git rev-parse HEAD^{tree})
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          printf 'repair_revision=%s\nold_head=%s\nnew_head=%s\nnew_tree=%s\nhistory_rewritten=false\n' \
+            "$REPAIR_REVISION" "$EXPECTED_HEAD" "$new_head" "$new_tree" | tee "$GITHUB_STEP_SUMMARY"
