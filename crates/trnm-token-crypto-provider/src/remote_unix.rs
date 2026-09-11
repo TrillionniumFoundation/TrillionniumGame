@@ -2,7 +2,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::{
     RemoteMacError, RemoteMacPurpose, RemoteMacRequest, RemoteMacRequestKind, RemoteMacResponse,
-    RemoteMacTransport, MAX_REMOTE_MAC_MESSAGE_BYTES, MAX_REMOTE_MAC_TIMEOUT, REMOTE_HS256_TAG_BYTES,
+    RemoteMacTransport, MAX_REMOTE_MAC_MESSAGE_BYTES, MAX_REMOTE_MAC_TIMEOUT,
+    REMOTE_HS256_TAG_BYTES,
 };
 
 const MAX_SOCKET_PATH_BYTES: usize = 4096;
@@ -354,7 +355,7 @@ fn validate_remote_request(
         || key_reference.len() > MAX_KEY_REFERENCE_BYTES
         || !key_reference.iter().all(|byte| {
             matches!(
-                byte,
+                *byte,
                 b'a'..=b'z'
                     | b'A'..=b'Z'
                     | b'0'..=b'9'
@@ -379,14 +380,14 @@ fn validate_remote_request(
 fn encode_request(request: &RemoteMacRequest) -> Result<Vec<u8>, RemoteMacError> {
     let key_reference = request.key_reference.as_bytes();
     let message = request.message.as_slice();
-    let tag_bytes = match request.kind {
+    let tag_bytes = match &request.kind {
         RemoteMacRequestKind::Sign => 0,
         RemoteMacRequestKind::Verify { .. } => REMOTE_HS256_TAG_BYTES,
     };
     let mut frame = Vec::with_capacity(
         1 + 1 + request.request_id.len() + 2 + key_reference.len() + 4 + message.len() + tag_bytes,
     );
-    frame.push(match request.kind {
+    frame.push(match &request.kind {
         RemoteMacRequestKind::Sign => 1,
         RemoteMacRequestKind::Verify { .. } => 2,
     });
@@ -419,7 +420,7 @@ fn decode_response(
     response: Vec<u8>,
     request: &RemoteMacRequest,
 ) -> Result<RemoteMacResponse, RemoteMacError> {
-    match request.kind {
+    match &request.kind {
         RemoteMacRequestKind::Sign => {
             if response.len() != 1 + 16 + REMOTE_HS256_TAG_BYTES || response[0] != 1 {
                 return Err(RemoteMacError::ProtocolViolation);
@@ -468,6 +469,7 @@ mod tests {
     use super::*;
     use std::fs::Permissions;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
     use std::process;
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
