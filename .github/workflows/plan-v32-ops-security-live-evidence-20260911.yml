@@ -1,0 +1,264 @@
+name: plan-v32-ops-security-live-evidence-20260911
+
+on:
+  push:
+    branches:
+      - ops/game-exact-source-snapshot-20260910
+    paths:
+      - .github/workflows/plan-v32-ops-security-live-evidence-20260911.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: plan-v32-ops-security-live-evidence-20260911
+  cancel-in-progress: false
+
+env:
+  UPLOADER_SHA: 425ee015d53800f3e2c2936f97ded9cdbacf7f14
+
+jobs:
+  resolve-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 130
+    outputs:
+      branch: ${{ steps.resolve.outputs.branch }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      tree: ${{ steps.resolve.outputs.tree }}
+      pr: ${{ steps.resolve.outputs.pr }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - id: resolve
+        name: Resolve one current-main candidate exact object
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 7200))
+          while (( SECONDS < deadline )); do
+            candidate=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
+              --jq '[.[] | select(.head.ref | startswith("feature/plan-v32-ops-security-current-"))] | sort_by(.created_at) | last // empty')
+            if [[ -n "$candidate" ]]; then
+              branch=$(jq -r '.head.ref' <<<"$candidate")
+              sha=$(jq -r '.head.sha' <<<"$candidate")
+              pr=$(jq -r '.number' <<<"$candidate")
+              tmp="$RUNNER_TEMP/candidate"
+              git init "$tmp"
+              git -C "$tmp" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+              git -C "$tmp" fetch --no-tags --depth=1 origin "$sha"
+              git -C "$tmp" checkout --detach FETCH_HEAD
+              test "$(git -C "$tmp" rev-parse HEAD)" = "$sha"
+              tree=$(git -C "$tmp" rev-parse HEAD^{tree})
+              {
+                printf 'branch=%s\n' "$branch"
+                printf 'sha=%s\n' "$sha"
+                printf 'tree=%s\n' "$tree"
+                printf 'pr=%s\n' "$pr"
+              } >> "$GITHUB_OUTPUT"
+              printf 'Resolved PR #%s %s@%s tree %s\n' "$pr" "$branch" "$sha" "$tree"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo 'No current-main operations/security candidate appeared before bounded deadline' >&2
+          exit 1
+
+  execute-live-evidence:
+    needs: resolve-candidate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: postgresql-connection-faults
+            script: scripts/ci-postgresql-connection-faults.sh
+            minutes: 55
+          - id: postgresql-pitr
+            script: scripts/ci-postgresql-pitr.sh
+            minutes: 70
+          - id: postgresql-primary-failover
+            script: scripts/ci-postgresql-primary-failover.sh
+            minutes: 70
+          - id: postgresql-recovery-barrier
+            script: scripts/ci-postgresql-recovery-barrier.sh
+            minutes: 55
+          - id: postgresql-semantic-recovery
+            script: scripts/ci-postgresql-semantic-recovery.sh
+            minutes: 70
+          - id: cockroachdb-node-failover
+            script: scripts/ci-cockroachdb-node-failover.sh
+            minutes: 70
+          - id: cockroachdb-semantic-recovery
+            script: scripts/ci-cockroachdb-semantic-recovery.sh
+            minutes: 70
+          - id: database-capacity-smoke
+            script: scripts/ci-database-capacity-smoke.sh
+            minutes: 70
+          - id: database-endurance-segment
+            script: scripts/ci-database-endurance-segment.sh
+            minutes: 70
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CANDIDATE_BRANCH: ${{ needs.resolve-candidate.outputs.branch }}
+      CANDIDATE_SHA: ${{ needs.resolve-candidate.outputs.sha }}
+      CANDIDATE_TREE: ${{ needs.resolve-candidate.outputs.tree }}
+      CANDIDATE_PR: ${{ needs.resolve-candidate.outputs.pr }}
+      EVIDENCE_ID: ${{ matrix.id }}
+      EVIDENCE_SCRIPT: ${{ matrix.script }}
+      EVIDENCE_TIMEOUT_MINUTES: ${{ matrix.minutes }}
+    steps:
+      - name: Fetch exact candidate and immutable uploader
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$CANDIDATE_SHA"
+          git -C "$GITHUB_WORKSPACE" checkout --detach FETCH_HEAD
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD^{tree})" = "$CANDIDATE_TREE"
+          test -s "$GITHUB_WORKSPACE/$EVIDENCE_SCRIPT"
+
+          helper="$RUNNER_TEMP/uploader"
+          git init "$helper"
+          git -C "$helper" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$helper" fetch --no-tags --depth=1 origin "$UPLOADER_SHA"
+          git -C "$helper" checkout --detach FETCH_HEAD
+          test "$(git -C "$helper" rev-parse HEAD)" = "$UPLOADER_SHA"
+          rm -rf "$GITHUB_WORKSPACE/.github/actions/upload-evidence"
+          mkdir -p "$GITHUB_WORKSPACE/.github/actions" "$GITHUB_WORKSPACE/scripts"
+          cp -R "$helper/.github/actions/upload-evidence" "$GITHUB_WORKSPACE/.github/actions/"
+          cp "$helper/scripts/upload-actions-artifact.py" "$GITHUB_WORKSPACE/scripts/"
+
+      - name: Install exact Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy
+          rustup override set 1.85.1
+
+      - name: Execute exact live harness
+        id: harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence-$EVIDENCE_ID"
+          mkdir -p "$evidence"
+          export EVIDENCE_DIR="$evidence"
+          export TRNM_EVIDENCE_DIR="$evidence"
+          export SOURCE_COMMIT="$CANDIDATE_SHA"
+          export SOURCE_TREE="$CANDIDATE_TREE"
+          {
+            printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'candidate_pr=%s\n' "$CANDIDATE_PR"
+            printf 'candidate_branch=%s\n' "$CANDIDATE_BRANCH"
+            printf 'candidate_sha=%s\n' "$CANDIDATE_SHA"
+            printf 'candidate_tree=%s\n' "$CANDIDATE_TREE"
+            printf 'harness=%s\n' "$EVIDENCE_ID"
+            printf 'script=%s\n' "$EVIDENCE_SCRIPT"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'accepted_evidence=false\n'
+            printf 'independently_accepted=false\n'
+            printf 'production_ready=false\n'
+          } > "$evidence/identity.txt"
+          set +e
+          timeout "${EVIDENCE_TIMEOUT_MINUTES}m" bash "$EVIDENCE_SCRIPT" \
+            > >(tee "$evidence/stdout.log") \
+            2> >(tee "$evidence/stderr.log" >&2)
+          status=$?
+          set -e
+          printf 'exit_status=%s\n' "$status" > "$evidence/result.txt"
+          find "$evidence" -type f -maxdepth 4 -print0 | sort -z | \
+            xargs -0 sha256sum > "$evidence/SHA256SUMS"
+          printf 'EVIDENCE_PATH=%s\n' "$evidence" >> "$GITHUB_ENV"
+          exit "$status"
+
+      - name: Retain exact harness packet
+        if: always()
+        id: retained
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: plan-v32-${{ matrix.id }}-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.EVIDENCE_PATH }}
+          mime_type: application/octet-stream
+
+      - name: Emit retained identity
+        if: always()
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.retained.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.retained.outputs.sha256 }}
+          ARTIFACT_SIZE: ${{ steps.retained.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          {
+            printf 'harness=%s\n' "$EVIDENCE_ID"
+            printf 'candidate_sha=%s\n' "$CANDIDATE_SHA"
+            printf 'candidate_tree=%s\n' "$CANDIDATE_TREE"
+            printf 'artifact_id=%s\n' "$ARTIFACT_ID"
+            printf 'artifact_sha256=%s\n' "$ARTIFACT_SHA256"
+            printf 'artifact_size=%s\n' "$ARTIFACT_SIZE"
+            printf 'accepted_evidence=false\n'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  aggregate:
+    if: always()
+    needs:
+      - resolve-candidate
+      - execute-live-evidence
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RESOLVE_RESULT: ${{ needs.resolve-candidate.result }}
+      MATRIX_RESULT: ${{ needs.execute-live-evidence.result }}
+      CANDIDATE_SHA: ${{ needs.resolve-candidate.outputs.sha }}
+      CANDIDATE_TREE: ${{ needs.resolve-candidate.outputs.tree }}
+      CANDIDATE_PR: ${{ needs.resolve-candidate.outputs.pr }}
+    steps:
+      - name: Publish fail-closed aggregate readback
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker='<!-- plan-v32-ops-security-live-evidence -->'
+          body=$(cat <<EOF
+          ${marker}
+          ## Plan v3.2 operations/security live evidence
+
+          ```text
+          candidate_pr=${CANDIDATE_PR}
+          candidate_sha=${CANDIDATE_SHA}
+          candidate_tree=${CANDIDATE_TREE}
+          resolve_result=${RESOLVE_RESULT}
+          matrix_result=${MATRIX_RESULT}
+          accepted_evidence=false
+          independently_accepted=false
+          production_ready=false
+          ```
+
+          Every matrix job retains its own exact-head packet. A failed, skipped,
+          cancelled, timed-out or empty matrix result receives no acceptance credit.
+          EOF
+          )
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/129/comments?per_page=100" \
+            --jq ".[] | select(.body | contains(\"${marker}\")) | .id" | head -n1)
+          if [[ -n "$existing" ]]; then
+            jq -n --arg body "$body" '{body:$body}' | \
+              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" --input - >/dev/null
+          else
+            jq -n --arg body "$body" '{body:$body}' | \
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/129/comments" --input - >/dev/null
+          fi
+          printf '%s\n' "$body" >> "$GITHUB_STEP_SUMMARY"
+          test "$RESOLVE_RESULT" = success
+          test "$MATRIX_RESULT" = success
