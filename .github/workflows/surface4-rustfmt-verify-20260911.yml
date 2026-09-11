@@ -1,0 +1,89 @@
+name: surface4-rustfmt-verify-20260911
+
+on:
+  push:
+    branches:
+      - ops/game-exact-source-snapshot-20260910
+    paths:
+      - .github/workflows/surface4-rustfmt-verify-20260911.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: surface4-rustfmt-verify-20260911
+  cancel-in-progress: false
+
+env:
+  TARGET_BRANCH: feature/plan-v32-ops-security-closure-20260911
+  EXPECTED_HEAD: cf900ab512ebd8098e9dd64d07ae0f79a5d26472
+  EXPECTED_TREE: 1aadc9feda16960ccd1b66c8b45853c54ca20b27
+
+jobs:
+  format-verify-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Fetch exact current candidate without rewriting history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$RUNNER_TEMP/surface4"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git init "$target"
+          git -C "$target" remote add origin "$remote"
+          git -C "$target" fetch --no-tags origin "refs/heads/${TARGET_BRANCH}"
+          git -C "$target" checkout -B "$TARGET_BRANCH" FETCH_HEAD
+          test "$(git -C "$target" rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git -C "$target" rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          printf 'TARGET_ROOT=%s\n' "$target" >> "$GITHUB_ENV"
+
+      - name: Install exact Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.85.1 --path "$TARGET_ROOT"
+          (cd "$TARGET_ROOT" && rustc --version --verbose && cargo --version --verbose)
+
+      - name: Format and verify the complete exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$TARGET_ROOT"
+          cargo fmt --all
+          test "$(git status --porcelain)" = ' M crates/trnm-token-crypto-provider/src/remote_unix.rs'
+          cargo fmt --all -- --check
+          cargo test --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          timeout 45m python3 -m unittest discover -s tests/control_plane -p 'test_*.py' -v
+          python3 scripts/check-plan.py
+          python3 scripts/derive-gates.py
+          python3 scripts/check-status-transitions.py
+          python3 scripts/check-schema-authority.py
+          git diff --check
+
+      - name: Publish one ordinary fast-forward formatting commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$TARGET_ROOT"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          remote_head=$(git ls-remote "$remote" "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')
+          test "$remote_head" = "$EXPECTED_HEAD"
+          git config user.name 'Plan v3.2 exact formatter'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git add crates/trnm-token-crypto-provider/src/remote_unix.rs
+          test "$(git diff --cached --name-only)" = 'crates/trnm-token-crypto-provider/src/remote_unix.rs'
+          git commit -m 'style(security): format Unix MAC peer hardening' \
+            -m 'Apply pinned Rust 1.85.1 formatting to the peer-identity hardening after the complete workspace, strict Clippy and control-plane corpus pass. No semantic, evidence, compatibility or production claim is changed.'
+          new_head=$(git rev-parse HEAD)
+          new_tree=$(git rev-parse HEAD^{tree})
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          printf 'old_head=%s\nnew_head=%s\nnew_tree=%s\nhistory_rewritten=false\n' \
+            "$EXPECTED_HEAD" "$new_head" "$new_tree" | tee "$GITHUB_STEP_SUMMARY"
