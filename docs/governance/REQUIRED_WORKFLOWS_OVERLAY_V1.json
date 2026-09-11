@@ -35,7 +35,7 @@
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
-  "overlay_sha256": "45231f91227ded9f8b992addcc6e7fd4231cd5f7168a2f760f49896294136d1e",
+  "overlay_sha256": "da4f28aa8bf33fbfe4617f8464cc4cc557a3c55cdf6252c00d36aca61674e9ee",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -362,7 +362,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "935be6868a86770115556b4ed2d17bcede4ee7ae",
+      "git_blob_sha1": "3a737294007972b74f2d44aa8daf26a6da344d9e",
       "minimum_successful_execution_jobs": 1,
       "name": "rust-server-process-smoke",
       "path": ".github/workflows/rust-server-process-smoke.yml",
