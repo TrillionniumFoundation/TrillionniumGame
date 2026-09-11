@@ -1,4 +1,4 @@
-name: world-pr127-complete-ownership-v11
+name: world-pr127-complete-ownership-v12-retry
 
 on:
   pull_request:
@@ -8,12 +8,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: world-pr127-complete-ownership-v11
+  group: world-pr127-complete-ownership-v12-retry
   cancel-in-progress: true
 
 env:
   WORLD_REPOSITORY: TrillionniumFoundation/Trillionnium-World
-  WORLD_SOURCE_SHA: '6581d8b3750c74379308308ddb2c7200d6cd3678'
+  WORLD_SOURCE_SHA: 'ad1d1ea3b08090e1d4335b75ec3e036878715491'
   COMMON_HELPER_SHA: 'b02fef9a86b77c8babd19a7dd469081095ea2e90'
   STACK_HELPER_SHA: '3aa075564891e4f7abba57c682dafc9f6b06c7b2'
   RUSTUP_TOOLCHAIN: '1.98.1'
@@ -25,11 +25,11 @@ env:
 
 jobs:
   qualify:
-    name: world-pr127/complete-ownership-v11
+    name: world-pr127/complete-ownership-v12-retry
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
-      - name: Fetch exact sources and install local evidence action
+      - name: Fetch exact sources and evidence helper
         shell: bash
         run: |
           set -euo pipefail
@@ -79,7 +79,7 @@ jobs:
             libxkbcommon-dev libwayland-dev pkg-config
           test "$(rustc --version | awk '{print $2}')" = "$RUSTUP_TOOLCHAIN"
 
-      - name: Transform every active ownership seam and materialize exact candidate
+      - name: Materialize exact candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -96,7 +96,6 @@ jobs:
             --completed-commit "$WORLD_SOURCE_SHA"
           python3 "$driver/world-pr127-settlement-worker-modules-transform.py" \
             "$world" --completed-commit "$WORLD_SOURCE_SHA"
-
           cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" --all
           python3 - "$world" <<'PY'
           from pathlib import Path
@@ -105,12 +104,11 @@ jobs:
           import sys
 
           root = Path(sys.argv[1])
-          manifests = (
+          for manifest_path in (
               root / 'trillionnium/crates/trnm-campaign-core/src/lib_parts/manifest.json',
               root / 'trillionnium/crates/trnm-rts-sim/src/lib_parts/manifest.json',
               root / 'trillionnium/crates/trnm-game-server/src/lib_parts/manifest.json',
-          )
-          for manifest_path in manifests:
+          ):
               value = json.loads(manifest_path.read_text(encoding='utf-8'))
               source_root = manifest_path.parent.parent
               seen = 0
@@ -119,34 +117,69 @@ jobs:
                   if not isinstance(records, list):
                       raise SystemExit(f'{manifest_path}: {field} is not a list')
                   for record in records:
-                      target = source_root / record['path']
-                      payload = target.read_bytes()
+                      payload = (source_root / record['path']).read_bytes()
                       record['bytes'] = len(payload)
                       record['sha256'] = hashlib.sha256(payload).hexdigest()
                       seen += 1
               if seen == 0:
-                  raise SystemExit(f'empty manifest: {manifest_path}')
-              manifest_path.write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
+                  raise SystemExit(f'empty direct-source manifest: {manifest_path}')
+              manifest_path.write_text(
+                  json.dumps(value, indent=2) + '\n', encoding='utf-8'
+              )
           PY
-
           boundary="$(cd "$world" && python3 scripts/check-trnm-world-include-boundaries.py)"
           printf '%s\n' "$boundary"
           grep -F 'active_migration=0' <<<"$boundary"
           grep -F 'completed_migration=54' <<<"$boundary"
           grep -F 'frozen_legacy=11' <<<"$boundary"
-
           git -C "$world" config user.name 'World qualification'
           git -C "$world" config user.email 'world-qualification@invalid'
           git -C "$world" add -A
           test -n "$(git -C "$world" diff --cached --name-only)"
           GIT_AUTHOR_DATE='2026-09-11T00:00:00Z' \
           GIT_COMMITTER_DATE='2026-09-11T00:00:00Z' \
-            git -C "$world" commit -m \
+            git -C "$world" commit -q -m \
               'refactor(world): complete active Rust ownership modules'
           test -z "$(git -C "$world" status --porcelain=v1 --untracked-files=no)"
+          candidate_tree="$(git -C "$world" rev-parse 'HEAD^{tree}')"
+          printf 'candidate_tree=%s\n' "$candidate_tree"
 
-          packet="$RUNNER_TEMP/world-complete-ownership-v11"
-          mkdir -p "$packet"
+      - name: Run complete format test lint truth and source qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          diagnostics="$RUNNER_TEMP/world-complete-ownership-v12-retry-diagnostics"
+          mkdir -p "$diagnostics"
+          cd "$world"
+          {
+            cargo fmt --manifest-path trillionnium/Cargo.toml --all --check
+            cargo test --manifest-path trillionnium/Cargo.toml \
+              -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
+              --all-targets --locked
+            cargo clippy --manifest-path trillionnium/Cargo.toml \
+              -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
+              --all-targets --locked -- -D warnings
+            boundary="$(python3 scripts/check-trnm-world-include-boundaries.py)"
+            printf '%s\n' "$boundary"
+            grep -F 'active_migration=0' <<<"$boundary"
+            grep -F 'completed_migration=54' <<<"$boundary"
+            grep -F 'frozen_legacy=11' <<<"$boundary"
+            bash scripts/run-trnm-world-v6-qualification-v2.sh truth
+            bash scripts/run-trnm-world-v6-qualification-v2.sh source
+            test -z "$(git status --porcelain=v1 --untracked-files=no)"
+            printf 'WORLD_COMPLETE_OWNERSHIP_V12_RETRY=PASS\n'
+            printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
+          } 2>&1 | tee "$diagnostics/qualification.log"
+
+      - name: Package qualified candidate and diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          world="$RUNNER_TEMP/world"
+          packet="$RUNNER_TEMP/world-complete-ownership-v12-retry"
+          diagnostics="$RUNNER_TEMP/world-complete-ownership-v12-retry-diagnostics"
+          mkdir -p "$packet" "$diagnostics"
           git -C "$world" diff --binary "$WORLD_SOURCE_SHA..HEAD" \
             > "$packet/candidate.patch"
           git -C "$world" diff --name-only "$WORLD_SOURCE_SHA..HEAD" \
@@ -165,108 +198,38 @@ jobs:
             printf 'world_source=%s\n' "$WORLD_SOURCE_SHA"
             printf 'candidate_commit=%s\n' "$(git -C "$world" rev-parse HEAD)"
             printf 'candidate_tree=%s\n' "$(git -C "$world" rev-parse 'HEAD^{tree}')"
-            printf 'candidate_newly_completed_seams=46\n'
             printf 'completed_migration_total=54\n'
             printf 'remaining_active_seams=0\n'
             printf 'frozen_legacy_seams=11\n'
-            printf 'qualification=pending\n'
+            printf 'qualification=success\n'
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
             printf 'production_authorization=not_granted\n'
           } > "$packet/identity.txt"
           (cd "$packet" && sha256sum \
             candidate.patch candidate-files.tar.gz changed-paths.txt \
             changed-status.txt identity.txt > SHA256SUMS)
-          tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
-            --owner=0 --group=0 --numeric-owner \
-            -czf "$RUNNER_TEMP/world-complete-ownership-v11.tar.gz" \
-            -C "$RUNNER_TEMP" world-complete-ownership-v11
-
-      - name: Retain exact unqualified candidate
-        uses: ./.github/actions/upload-evidence
-        with:
-          name: world-complete-ownership-v11-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-complete-ownership-v11.tar.gz
-          mime_type: application/gzip
-
-      - name: Run format tests and strict Clippy
-        shell: bash
-        run: |
-          set -uo pipefail
-          world="$RUNNER_TEMP/world"
-          diagnostics="$RUNNER_TEMP/world-complete-ownership-v11-diagnostics"
-          mkdir -p "$diagnostics"
-          set +e
-          cargo fmt --manifest-path "$world/trillionnium/Cargo.toml" \
-            --all --check 2>&1 | tee "$diagnostics/fmt.log"
-          fmt_status=${PIPESTATUS[0]}
-          cargo test --manifest-path "$world/trillionnium/Cargo.toml" \
-            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
-            --all-targets --locked 2>&1 | tee "$diagnostics/test.log"
-          test_status=${PIPESTATUS[0]}
-          cargo clippy --manifest-path "$world/trillionnium/Cargo.toml" \
-            -p trnm-campaign-core -p trnm-rts-sim -p trnm-game-server \
-            --all-targets --locked -- -D warnings \
-            2>&1 | tee "$diagnostics/clippy.log"
-          clippy_status=${PIPESTATUS[0]}
-          set -e
-          {
-            printf 'fmt_status=%s\n' "$fmt_status"
-            printf 'test_status=%s\n' "$test_status"
-            printf 'clippy_status=%s\n' "$clippy_status"
-          } > "$diagnostics/status.txt"
-          test "$fmt_status" -eq 0
-          test "$test_status" -eq 0
-          test "$clippy_status" -eq 0
-
-      - name: Run complete World truth and source qualification
-        shell: bash
-        run: |
-          set -euo pipefail
-          world="$RUNNER_TEMP/world"
-          diagnostics="$RUNNER_TEMP/world-complete-ownership-v11-diagnostics"
-          cd "$world"
-          {
-            boundary="$(python3 scripts/check-trnm-world-include-boundaries.py)"
-            printf '%s\n' "$boundary"
-            grep -F 'active_migration=0' <<<"$boundary"
-            grep -F 'completed_migration=54' <<<"$boundary"
-            grep -F 'frozen_legacy=11' <<<"$boundary"
-            bash scripts/run-trnm-world-v6-qualification-v2.sh truth
-            bash scripts/run-trnm-world-v6-qualification-v2.sh source
-            test -z "$(git status --porcelain=v1 --untracked-files=no)"
-            printf 'WORLD_COMPLETE_OWNERSHIP_V11=PASS\n'
-            printf 'PRODUCTION_AUTHORIZATION=not_granted\n'
-          } 2>&1 | tee "$diagnostics/qualification.log"
-          printf 'qualification_status=0\n' > "$diagnostics/qualification-status.txt"
-
-      - name: Package qualification diagnostics
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          diagnostics="$RUNNER_TEMP/world-complete-ownership-v11-diagnostics"
-          mkdir -p "$diagnostics"
-          test -s "$diagnostics/status.txt" || \
-            printf 'state=failed_before_test_status\n' > "$diagnostics/status.txt"
-          test -s "$diagnostics/qualification-status.txt" || \
-            printf 'qualification_status=failed_or_incomplete\n' \
-              > "$diagnostics/qualification-status.txt"
-          {
-            printf 'world_source=%s\n' "$WORLD_SOURCE_SHA"
-            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
-            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
-            printf 'production_authorization=not_granted\n'
-          } > "$diagnostics/run.txt"
           (cd "$diagnostics" && find . -type f ! -name SHA256SUMS \
             -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
           tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
             --owner=0 --group=0 --numeric-owner \
-            -czf "$RUNNER_TEMP/world-complete-ownership-v11-diagnostics.tar.gz" \
-            -C "$RUNNER_TEMP" world-complete-ownership-v11-diagnostics
+            -czf "$RUNNER_TEMP/world-complete-ownership-v12-retry.tar.gz" \
+            -C "$RUNNER_TEMP" world-complete-ownership-v12-retry
+          tar --sort=name --format=gnu --mtime='UTC 2026-09-11' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf "$RUNNER_TEMP/world-complete-ownership-v12-retry-diagnostics.tar.gz" \
+            -C "$RUNNER_TEMP" world-complete-ownership-v12-retry-diagnostics
 
-      - name: Upload qualification diagnostics
-        if: always()
+      - name: Upload qualified candidate
         uses: ./.github/actions/upload-evidence
         with:
-          name: world-complete-ownership-v11-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/world-complete-ownership-v11-diagnostics.tar.gz
+          name: world-complete-ownership-v12-retry-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-complete-ownership-v12-retry.tar.gz
+          mime_type: application/gzip
+
+      - name: Upload qualification diagnostics
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-complete-ownership-v12-retry-diagnostics-${{ env.WORLD_SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-complete-ownership-v12-retry-diagnostics.tar.gz
           mime_type: application/gzip
