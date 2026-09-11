@@ -158,6 +158,45 @@ class ServerDependencyContractTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "reviewed persistence dependency boundary"):
                 self.server.main()
 
+    def test_authority_storage_include_authority_is_exact_and_ordered(self):
+        expected = "\n".join(
+            f'include!("authority_storage_parts/{part.name}");'
+            for part in self.server.AUTHORITY_STORAGE_PARTS
+        ) + "\n"
+        self.assertEqual(self.server.AUTHORITY_STORAGE_ROOT.read_text(encoding="utf-8"), expected)
+
+        original = Path.read_text
+        mutations = (
+            expected.replace('include!("authority_storage_parts/03_storage_list.rs");\n', ""),
+            expected.replace(
+                'include!("authority_storage_parts/01_authority.rs");\n'
+                'include!("authority_storage_parts/02_storage_batch.rs");\n',
+                'include!("authority_storage_parts/02_storage_batch.rs");\n'
+                'include!("authority_storage_parts/01_authority.rs");\n',
+            ),
+            expected + 'include!("authority_storage_parts/99_unreviewed.rs");\n',
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                def replaced(path, *args, **kwargs):
+                    if path == self.server.AUTHORITY_STORAGE_ROOT:
+                        return mutation
+                    return original(path, *args, **kwargs)
+
+                with patch.object(Path, "read_text", replaced):
+                    with self.assertRaisesRegex(SystemExit, "exact four-part include authority"):
+                        self.server.main()
+
+    def test_authority_storage_parts_are_required_source_inputs(self):
+        expected = {
+            "00_helpers.rs",
+            "01_authority.rs",
+            "02_storage_batch.rs",
+            "03_storage_list.rs",
+        }
+        self.assertEqual({path.name for path in self.server.AUTHORITY_STORAGE_PARTS}, expected)
+        self.assertTrue(set(self.server.AUTHORITY_STORAGE_PARTS) <= self.server.REQUIRED_FILES)
+
     def test_real_main_still_rejects_missing_required_source(self):
         missing = ROOT / "crates/trnm-persistence-pg/src/absent-contract-fixture.rs"
         self.assertFalse(missing.exists())
