@@ -31,12 +31,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
           git clone --quiet --no-checkout --single-branch --branch "$WORLD_BRANCH" \
             https://github.com/TrillionniumFoundation/Trillionnium-World.git "$RUNNER_TEMP/world"
           git -C "$RUNNER_TEMP/world" checkout --quiet --detach "$WORLD_HEAD"
           test "$(git -C "$RUNNER_TEMP/world" rev-parse HEAD)" = "$WORLD_HEAD"
           test "$(git -C "$RUNNER_TEMP/world" rev-parse 'HEAD^{tree}')" = "$WORLD_TREE"
           test -z "$(git -C "$RUNNER_TEMP/world" status --porcelain=v1 --untracked-files=no)"
+          {
+            printf 'world_head=%s\n' "$WORLD_HEAD"
+            printf 'world_tree=%s\n' "$WORLD_TREE"
+            printf 'repository_native_admission=false\n'
+            printf 'production_authorization=%s\n' "$PRODUCTION_AUTHORIZATION"
+          } > "$GITHUB_WORKSPACE/evidence/identity.txt"
 
       - name: Install exact Rust toolchain
         shell: bash
@@ -47,8 +54,8 @@ jobs:
             pkg-config libasound2-dev libudev-dev libx11-dev libxi-dev libxkbcommon-dev libwayland-dev
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
           test "$(rustc --version | awk '{print $2}')" = "$RUSTUP_TOOLCHAIN"
-          rustc --version --verbose
-          cargo --version --verbose
+          rustc --version --verbose | tee "$GITHUB_WORKSPACE/evidence/rustc.txt"
+          cargo --version --verbose | tee "$GITHUB_WORKSPACE/evidence/cargo.txt"
 
       - name: Run source-policy regressions
         shell: bash
@@ -57,35 +64,68 @@ jobs:
           cd "$RUNNER_TEMP/world"
           python3 -B -m unittest \
             scripts.test_trnm_world_priority_contracts \
-            scripts.test_trnm_world_priority_preflight -v
+            scripts.test_trnm_world_priority_preflight -v 2>&1 \
+            | tee "$GITHUB_WORKSPACE/evidence/python-source-policy.log"
 
-      - name: Check Rust formatting
+      - name: Materialize deterministic rustfmt patch
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/world"
+          cargo fmt --manifest-path trillionnium/crates/world-authority/Cargo.toml --all
+          git diff --check
+          git diff --binary -- trillionnium/crates/world-authority \
+            > "$GITHUB_WORKSPACE/evidence/rustfmt.patch"
+          test -s "$GITHUB_WORKSPACE/evidence/rustfmt.patch"
+          sha256sum "$GITHUB_WORKSPACE/evidence/rustfmt.patch" \
+            > "$GITHUB_WORKSPACE/evidence/rustfmt.patch.sha256"
           cargo fmt --manifest-path trillionnium/crates/world-authority/Cargo.toml --all -- --check
 
-      - name: Run all World authority targets
+      - name: Run all World authority targets after deterministic rustfmt
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/world"
           cargo test --manifest-path trillionnium/crates/world-authority/Cargo.toml \
-            --workspace --all-targets --locked
+            --workspace --all-targets --locked 2>&1 \
+            | tee "$GITHUB_WORKSPACE/evidence/rust-test.log"
 
-      - name: Run strict Clippy
+      - name: Run strict Clippy after deterministic rustfmt
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/world"
           cargo clippy --manifest-path trillionnium/crates/world-authority/Cargo.toml \
-            --workspace --all-targets --locked -- -D warnings
+            --workspace --all-targets --locked -- -D warnings 2>&1 \
+            | tee "$GITHUB_WORKSPACE/evidence/clippy.log"
 
-      - name: Mark diagnostic scope
+      - name: Record formatted working-tree diff
         if: always()
         shell: bash
         run: |
-          printf 'repository_native_admission=false\n'
-          printf 'independent_acceptance=false\n'
-          printf 'production_authorization=%s\n' "$PRODUCTION_AUTHORIZATION"
+          set -euo pipefail
+          if test -d "$RUNNER_TEMP/world/.git"; then
+            git -C "$RUNNER_TEMP/world" status --short \
+              > "$GITHUB_WORKSPACE/evidence/formatted-status.txt"
+            git -C "$RUNNER_TEMP/world" diff --stat \
+              > "$GITHUB_WORKSPACE/evidence/formatted-diff-stat.txt"
+          fi
+          printf 'repository_native_admission=false\n' >> "$GITHUB_WORKSPACE/evidence/identity.txt"
+          printf 'independent_acceptance=false\n' >> "$GITHUB_WORKSPACE/evidence/identity.txt"
+
+      - name: Hash retained diagnostic evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find evidence -type f ! -name MANIFEST.sha256 -print0 \
+            | sort -z | xargs -0 -r sha256sum > evidence/MANIFEST.sha256
+
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: world-pr138-priority-candidate-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: evidence/**
+          if-no-files-found: error
+          retention-days: 14
