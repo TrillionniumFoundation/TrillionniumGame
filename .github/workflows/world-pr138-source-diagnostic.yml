@@ -15,6 +15,7 @@ concurrency:
 env:
   WORLD_HEAD: 544cbc94b409de77722c9d354aec91c19c0d6f58
   WORLD_TREE: 56c88f3b3e33e46d5f3300fc46fbdcfbb23bad10
+  COMMON_HELPER_SHA: b02fef9a86b77c8babd19a7dd469081095ea2e90
   RUSTUP_TOOLCHAIN: 1.98.1
   CARGO_INCREMENTAL: '0'
   CARGO_TERM_COLOR: never
@@ -50,7 +51,14 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = TrillionniumFoundation/TrillionniumGame
-          mkdir -p inputs evidence
+          mkdir -p inputs evidence .github/actions scripts
+          git init -q "$RUNNER_TEMP/common"
+          git -C "$RUNNER_TEMP/common" remote add origin https://github.com/TrillionniumFoundation/TrillionniumGame.git
+          git -C "$RUNNER_TEMP/common" fetch -q --no-tags --depth=1 origin "$COMMON_HELPER_SHA"
+          git -C "$RUNNER_TEMP/common" checkout -q --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/common" rev-parse HEAD)" = "$COMMON_HELPER_SHA"
+          cp -R "$RUNNER_TEMP/common/.github/actions/upload-evidence" .github/actions/
+          cp "$RUNNER_TEMP/common/scripts/upload-actions-artifact.py" scripts/
           git clone --quiet --no-checkout --single-branch \
             --branch fix/world-priority-execution-20260912 \
             https://github.com/TrillionniumFoundation/Trillionnium-World.git "$RUNNER_TEMP/world"
@@ -70,15 +78,15 @@ jobs:
           Path('inputs/identity.json').write_text(json.dumps(item, indent=2)+'\n')
           PY
           sha256sum inputs/world-source.bundle inputs/identity.json > inputs/SHA256SUMS
+          tar -czf source-inputs.tar.gz inputs
+          test "$(stat -c %s source-inputs.tar.gz)" -le 67108864
 
       - name: Retain source input independently of later test outcomes
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: ./.github/actions/upload-evidence
         with:
           name: world-pr138-input-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
-          path: inputs/**
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
+          path: source-inputs.tar.gz
+          mime_type: application/gzip
 
       - name: Install exact diagnostic toolchain
         id: tools
@@ -156,6 +164,7 @@ jobs:
             --timeout-seconds 600 -- bash scripts/run-trnm-world-authority-postgres-check.sh
 
       - name: Retain portable public Rust diagnostic inputs
+        id: sdk
         if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
         shell: bash
         run: |
@@ -177,16 +186,151 @@ jobs:
           fi
           cp evidence/rustc.txt evidence/cargo.txt sdk-inputs/
           sha256sum sdk-inputs/* > sdk-inputs/SHA256SUMS
+          tar -cf "$RUNNER_TEMP/sdk-inputs.tar" sdk-inputs
+          test "$(stat -c %s "$RUNNER_TEMP/sdk-inputs.tar")" -le 805306368
+          split -b 48M -d -a 2 "$RUNNER_TEMP/sdk-inputs.tar" sdk-inputs/sdk.part-
+          python3 - <<'PYSDK'
+          import hashlib, json, os
+          from pathlib import Path
+          parts = sorted(Path('sdk-inputs').glob('sdk.part-*'))
+          assert 1 <= len(parts) <= 16
+          records = []
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for index, path in enumerate(parts):
+                  data = path.read_bytes()
+                  assert 0 < len(data) <= 48 * 1024 * 1024
+                  records.append(dict(name=path.name, size_bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
+                  output.write(f'part_{index:02}=true\n')
+          Path('evidence/sdk-parts.json').write_text(json.dumps(records, indent=2)+'\n')
+          PYSDK
 
-      - name: Retain diagnostic tool inputs, not qualification or credentials
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: Retain bounded public tool input part 00
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_00 == 'true' }}
+        uses: ./.github/actions/upload-evidence
         with:
-          name: world-pr138-tool-inputs-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
-          path: sdk-inputs/**
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
+          name: world-pr138-sdk-00-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-00
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 01
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_01 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-01-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-01
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 02
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_02 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-02-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-02
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 03
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_03 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-03-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-03
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 04
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_04 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-04-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-04
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 05
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_05 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-05-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-05
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 06
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_06 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-06-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-06
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 07
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_07 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-07-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-07
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 08
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_08 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-08-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-08
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 09
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_09 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-09-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-09
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 10
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_10 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-10-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-10
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 11
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_11 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-11-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-11
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 12
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_12 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-12-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-12
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 13
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_13 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-13-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-13
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 14
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_14 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-14-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-14
+          mime_type: application/octet-stream
+
+      - name: Retain bounded public tool input part 15
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.sdk.outputs.part_15 == 'true' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-pr138-sdk-15-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
+          path: sdk-inputs/sdk.part-15
+          mime_type: application/octet-stream
 
       - name: Seal available diagnostic records on every outcome
         if: always()
@@ -196,12 +340,13 @@ jobs:
           mkdir -p evidence
           printf 'production_authorization=not_granted\nrepository_native_admission=false\nindependent_acceptance=false\n' > evidence/limitations.txt
           find evidence -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 -r sha256sum > evidence/SHA256SUMS
+          tar -czf diagnostics.tar.gz evidence
+          test "$(stat -c %s diagnostics.tar.gz)" -le 67108864
 
       - name: Upload success and failure diagnostics
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: ./.github/actions/upload-evidence
         with:
           name: world-pr138-diagnostics-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
-          path: evidence/**
-          if-no-files-found: error
-          retention-days: 14
+          path: diagnostics.tar.gz
+          mime_type: application/gzip
