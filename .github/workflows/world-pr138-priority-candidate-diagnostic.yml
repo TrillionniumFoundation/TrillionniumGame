@@ -1,4 +1,4 @@
-name: World PR138 priority candidate diagnostic
+name: World PR138 priority candidate rustfmt extractor
 
 on:
   push:
@@ -7,25 +7,18 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: world-pr138-priority-candidate-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   WORLD_BRANCH: qualification/world-pr138-priority-candidate-20260912-a
   WORLD_HEAD: c23dcb1649c7f75abcabb7fbb17ae9c043be1777
   WORLD_TREE: 143651373b7c50c23be114ee39a60c1e780174cb
   RUSTUP_TOOLCHAIN: '1.98.1'
-  CARGO_INCREMENTAL: '0'
-  CARGO_TERM_COLOR: never
-  PYTHONDONTWRITEBYTECODE: '1'
   PRODUCTION_AUTHORIZATION: not_granted
 
 jobs:
-  qualify-candidate:
-    name: world-pr138-priority-candidate-diagnostic-not-admission
+  extract-rustfmt:
+    name: world-pr138-rustfmt-bytes-not-admission
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
       - name: Materialize exact World candidate
         shell: bash
@@ -36,68 +29,28 @@ jobs:
           git -C "$RUNNER_TEMP/world" checkout --quiet --detach "$WORLD_HEAD"
           test "$(git -C "$RUNNER_TEMP/world" rev-parse HEAD)" = "$WORLD_HEAD"
           test "$(git -C "$RUNNER_TEMP/world" rev-parse 'HEAD^{tree}')" = "$WORLD_TREE"
-          test -z "$(git -C "$RUNNER_TEMP/world" status --porcelain=v1 --untracked-files=no)"
 
-      - name: Install exact Rust toolchain
+      - name: Install rustfmt 1.98.1
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config libasound2-dev libudev-dev libx11-dev libxi-dev libxkbcommon-dev libwayland-dev
-          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt >/dev/null
           test "$(rustc --version | awk '{print $2}')" = "$RUSTUP_TOOLCHAIN"
-          rustc --version --verbose
-          cargo --version --verbose
 
-      - name: Run source-policy regressions
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/world"
-          python3 -B -m unittest \
-            scripts.test_trnm_world_priority_contracts \
-            scripts.test_trnm_world_priority_preflight -v
-
-      - name: Materialize deterministic rustfmt patch
+      - name: Emit deterministic formatted files
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/world"
           cargo fmt --manifest-path trillionnium/crates/world-authority/Cargo.toml --all
           git diff --check
-          git diff --binary -- trillionnium/crates/world-authority > "$RUNNER_TEMP/rustfmt.patch"
-          test -s "$RUNNER_TEMP/rustfmt.patch"
-          sha256sum "$RUNNER_TEMP/rustfmt.patch"
-          printf 'RUSTFMT_PATCH_BASE64_BEGIN\n'
-          base64 -w0 "$RUNNER_TEMP/rustfmt.patch"
-          printf '\nRUSTFMT_PATCH_BASE64_END\n'
-          cargo fmt --manifest-path trillionnium/crates/world-authority/Cargo.toml --all -- --check
-
-      - name: Run all World authority targets after deterministic rustfmt
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/world"
-          cargo test --manifest-path trillionnium/crates/world-authority/Cargo.toml \
-            --workspace --all-targets --locked
-
-      - name: Run strict Clippy after deterministic rustfmt
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/world"
-          cargo clippy --manifest-path trillionnium/crates/world-authority/Cargo.toml \
-            --workspace --all-targets --locked -- -D warnings
-
-      - name: Report formatted diff and diagnostic scope
-        if: always()
-        shell: bash
-        run: |
-          if test -d "$RUNNER_TEMP/world/.git"; then
-            git -C "$RUNNER_TEMP/world" status --short || true
-            git -C "$RUNNER_TEMP/world" diff --stat || true
-          fi
-          printf 'repository_native_admission=false\n'
-          printf 'independent_acceptance=false\n'
-          printf 'production_authorization=%s\n' "$PRODUCTION_AUTHORIZATION"
+          mapfile -t files < <(git diff --name-only -- trillionnium/crates/world-authority)
+          test "${#files[@]}" -gt 0
+          printf 'FORMATTED_FILE_COUNT=%s\n' "${#files[@]}"
+          for file in "${files[@]}"; do
+            test -f "$file"
+            printf 'FORMATTED_FILE_BEGIN path=%s sha256=%s\n' "$file" "$(sha256sum "$file" | awk '{print $1}')"
+            base64 -w0 "$file"
+            printf '\nFORMATTED_FILE_END path=%s\n' "$file"
+          done
+          printf 'repository_native_admission=false\nproduction_authorization=%s\n' "$PRODUCTION_AUTHORIZATION"
