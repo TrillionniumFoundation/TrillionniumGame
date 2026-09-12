@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: pr190-rustfmt-export-${{ github.ref }}
@@ -15,6 +15,7 @@ env:
   TARGET_REPOSITORY: TrillionniumFoundation/TrillionniumGame
   TARGET_BRANCH: codex/engineering-contract-remediation-20260912
   TARGET_SHA: 74dfa6acc4cf8536a42b7875ec8c9e89916d393a
+  STAGING_BRANCH: tooling/pr190-rustfmt-staged-74dfa6
 
 jobs:
   rustfmt-export:
@@ -49,6 +50,25 @@ jobs:
           cargo fmt --all --
           cargo fmt --all -- --check
           git diff --check
+
+      - name: Publish exact formatted bytes to staging ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            crates/trnm-server/src/runtime/app.rs \
+            crates/trnm-persistence-pg/src/bin/trnm_server/app.rs
+          if git diff --cached --quiet; then
+            echo "rustfmt produced no source change" >&2
+            exit 1
+          fi
+          git commit -m "tooling: stage exact rustfmt bytes for PR190"
+          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" \
+            push origin HEAD:"refs/heads/${STAGING_BRANCH}"
 
       - name: Build deterministic formatting packet
         shell: bash
