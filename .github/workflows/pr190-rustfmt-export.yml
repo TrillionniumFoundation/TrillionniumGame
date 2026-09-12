@@ -67,7 +67,8 @@ jobs:
             exit 1
           fi
           git commit -m "tooling: stage exact rustfmt bytes for PR190"
-          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" \
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="AUTHORIZATION: basic ${auth}" \
             push origin HEAD:"refs/heads/${STAGING_BRANCH}"
 
       - name: Build deterministic formatting packet
