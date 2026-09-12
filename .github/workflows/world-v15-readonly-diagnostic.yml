@@ -13,9 +13,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  WORLD_SHA: '0759720a4523e2f80174560883eed6e8aeb4b486'
-  WORLD_TREE: 'cd367ca79c1a05e42e3c589276b56528007596a3'
-  WORLD_AUTHORITY_TREE: 'd6b4dfef71b9a81ce852030e6f55de648bc2831a'
+  WORLD_SHA: 'bfafb6a88fd422b4fa28108348a2f7f3bdde88a7'
+  WORLD_TREE: '30aaf3c0c3b33375a6cdf0df62a3708a17f971d6'
+  WORLD_ORIGIN_SHA: 'd44d8930c917b55da7b23eb19e9645feb8f4ee59'
   RUSTUP_TOOLCHAIN: '1.98.1'
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: '0'
@@ -46,10 +46,10 @@ jobs:
           clone_exact "$GITHUB_WORKSPACE" "https://github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_SHA"
           clone_exact "$RUNNER_TEMP/world" "https://github.com/TrillionniumFoundation/Trillionnium-World.git" "$WORLD_SHA"
           test "$(git -C "$RUNNER_TEMP/world" rev-parse 'HEAD^{tree}')" = "$WORLD_TREE"
-          test "$(git -C "$RUNNER_TEMP/world" rev-parse HEAD:trillionnium/crates/world-authority)" = "$WORLD_AUTHORITY_TREE"
           printf 'CARGO_TARGET_DIR=%s\n' "$RUNNER_TEMP/world-target" >> "$GITHUB_ENV"
           {
-            printf 'world_commit=%s\nworld_tree=%s\nauthority_tree=%s\n' "$WORLD_SHA" "$WORLD_TREE" "$WORLD_AUTHORITY_TREE"
+            printf 'world_commit=%s\nworld_tree=%s\n' "$WORLD_SHA" "$WORLD_TREE"
+            printf 'authority_tree=%s\n' "$(git -C "$RUNNER_TEMP/world" rev-parse HEAD:trillionnium/crates/world-authority)"
             printf 'driver_commit=%s\nrun_id=%s\nrun_attempt=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
             printf 'scope=diagnostic_only\nworld_native_admission=false\nindependent_acceptance=false\nproduction_authorization=not_granted\n'
             uname -a
@@ -115,6 +115,19 @@ jobs:
           printf '%s\n' "${codes[*]}" > "$RUNNER_TEMP/evidence/clippy.exit"
           test "${codes[0]}" = 0 && test "${codes[1]}" = 0 || exit 1
           test "$(wc -c < "$RUNNER_TEMP/evidence/clippy.log")" -lt 8388608
+
+      - name: Export exact public source objects for offline diagnostic verification
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C "$RUNNER_TEMP/world" archive --format=tar.gz HEAD > "$RUNNER_TEMP/evidence/world-source.tar.gz"
+          timeout 300s git -C "$RUNNER_TEMP/world" fetch -q --unshallow --no-tags origin "$WORLD_SHA"
+          timeout 300s git -C "$RUNNER_TEMP/world" fetch -q --no-tags origin "$WORLD_ORIGIN_SHA"
+          test "$(git -C "$RUNNER_TEMP/world" rev-parse HEAD)" = "$WORLD_SHA"
+          test "$(git -C "$RUNNER_TEMP/world" rev-parse FETCH_HEAD)" = "$WORLD_ORIGIN_SHA"
+          git -C "$RUNNER_TEMP/world" bundle create "$RUNNER_TEMP/evidence/world-source.bundle" HEAD FETCH_HEAD
+          git -C "$RUNNER_TEMP/world" bundle verify "$RUNNER_TEMP/evidence/world-source.bundle" > "$RUNNER_TEMP/evidence/bundle-verify.txt" 2>&1
 
       - name: Verify source stayed unchanged and retain diagnostic packet
         if: always()
