@@ -123,3 +123,18 @@ production_ready=false
 public_online=false
 nakama_retired=false
 ```
+
+### Operator diagnostic and drain boundary
+
+Both the canonical `runtime/app.rs` and the feature-gated diagnostic application's `App<R>` use a manual non-traversing `Debug` implementation. It emits only a redacted administrator-token field and a non-exhaustive marker; ordinary, pretty and nested formatting must not inspect repository or session internals. The implementation has no `R: Debug` requirement, preventing a future repository field from implicitly expanding this secret-bearing surface. This is output redaction, not zeroization, production secret custody or proof that every other type is redacted.
+
+After bounded HTTP framing, the drain handler authenticates before checking its business body. Missing or wrong credentials return 401 regardless of an empty or nonempty body, without changing drain state or incrementing body-validation failures. An authenticated nonempty body returns 400 without draining. An authenticated empty body returns 200 and sets the shared drain fence. This changes the candidate operator endpoint's unauthenticated error precedence, not a Nakama compatibility claim; framing/size rejection may still happen before application authentication.
+
+Each application path retains five native regressions: `app_debug_redacts_normal_pretty_and_nested_output`, `app_debug_does_not_require_repository_debug`, `app_debug_does_not_traverse_repository`, `drain_authentication_precedes_body_validation`, and `authenticated_invalid_drain_does_not_change_shared_state`. Synthetic credentials and a deliberately trapping repository formatter exercise the forbidden diagnostic path. Execute both targets, not only the default binary:
+
+```bash
+cargo test -p trnm-server --all-targets --locked
+cargo test -p trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server --locked
+```
+
+The existing dependency pins, CLI, application route names, migration chain, session state transitions, receipt identity and token-comparison implementations are unchanged by this repair. Exact-object format/test/strict-lint, required live lanes and qualified non-author review remain necessary. Reverting either boundary would reintroduce the diagnostic leak or authentication-order regression; a source revert does not authorize a production rollback.

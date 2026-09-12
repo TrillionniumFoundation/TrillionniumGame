@@ -138,5 +138,27 @@
     "runtime_behavior_changed": false
   },
   "composition_package": "crates/trnm-server",
-  "diagnostic_package": "crates/trnm-persistence-pg"
+  "diagnostic_package": "crates/trnm-persistence-pg",
+  "operator_boundary_source_candidate": {
+    "source_paths": [
+      "crates/trnm-server/src/runtime/app.rs",
+      "crates/trnm-persistence-pg/src/bin/trnm_server/app.rs"
+    ],
+    "documentation": "crates/trnm-server/README.md",
+    "scope": "Non-traversing App Debug redaction and application drain authentication before business-body validation in both canonical and diagnostic paths.",
+    "native_regressions_per_path": 5,
+    "native_test_names": [
+      "app_debug_redacts_normal_pretty_and_nested_output",
+      "app_debug_does_not_require_repository_debug",
+      "app_debug_does_not_traverse_repository",
+      "drain_authentication_precedes_body_validation",
+      "authenticated_invalid_drain_does_not_change_shared_state"
+    ],
+    "source_regression": "tests/control_plane/test_optimization_execution_contract.py",
+    "runtime_behavior_changed": true,
+    "schema_changed": false,
+    "native_verified": false,
+    "accepted": false,
+    "gap_closed": false
+  }
 }
