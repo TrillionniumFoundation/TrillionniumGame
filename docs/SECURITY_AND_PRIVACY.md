@@ -173,3 +173,15 @@ Security gaps close only when implementation choice, vectors/fuzz, key provider,
 ### Active access-token provider boundary
 
 The active database-backed access-token verifier authenticates the exact encoded JWT signing input through `trnm-token-jwt-provider-adapter` and the opaque `Hs256Provider` contract. The compatibility constructor may instantiate `SoftwareHs256Provider` for development and migration tests, but production approval requires a separately accepted KMS/HSM or approved secret-manager implementation. Persistence, protocol and session handlers do not implement HMAC or compare authenticators directly.
+
+## Opaque remote MAC provider boundary
+
+`RemoteHs256Provider` sends only a bounded request identifier, opaque key reference, purpose, message bytes and—when verifying—an exact 32-byte tag through a caller-supplied transport. The application process has no constructor or field for raw key bytes. Responses must match the request identifier, transport failures are returned directly, and no local software fallback exists. Debug output redacts both transport and key reference.
+
+This establishes a production-provider interface, not a production KMS/HSM implementation. Promotion still requires an approved vendor adapter, IAM and audit evidence, timeout/rotation/revocation fault packets, performance evidence and independent cryptographic review.
+
+## Unix sidecar transport for remote MAC
+
+On Unix targets, `UnixSocketRemoteMacTransport` provides a bounded one-request-per-connection protocol to an external MAC sidecar. Request and response frames have independent hard limits, fixed magic/version bytes, exact request IDs, I/O deadlines and strict response shapes. Truncation, invalid status, oversized frames, relative socket paths and transport failure all fail closed. The frame contains an opaque key reference but no raw key material.
+
+This transport makes the application-side boundary executable; the sidecar's KMS/HSM implementation, socket ownership and peer credentials, IAM/audit records, rotation/revoke behavior and independent security acceptance remain separate production facts.

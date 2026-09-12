@@ -180,8 +180,8 @@ class GapRegisterScopeLockTests(unittest.TestCase):
 
     def test_baseline_byte_identity_is_not_editable_with_the_register(self):
         changed = self.baseline_payload.replace(
-            b'"generated_at":"2026-09-02"',
-            b'"generated_at":"2026-09-03"',
+            b'"generated_at":"2026-09-12"',
+            b'"generated_at":"2026-09-13"',
             1,
         )
         self.assertNotEqual(changed, self.baseline_payload)

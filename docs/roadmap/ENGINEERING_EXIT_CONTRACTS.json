@@ -1,0 +1,363 @@
+{
+  "schema": "trillionnium.engineering-exit-detail.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "authority": "Implementation detail under CURRENT_PLAN.md and the existing roadmap; not an alternate queue, accepted decision or reduced proof obligation.",
+  "claim_credit": false,
+  "selection_rule": "Use NEXT_MILESTONE dependency readiness and the approved architecture overlay. Priority is advisory within those constraints; no external gate is bypassed.",
+  "gap_details": [
+    {
+      "id": "GAP-P0-CI-001",
+      "priority_band": 0,
+      "implementation_steps": [
+        "Freeze one exact source/head/tree and actual prospective merge tuple.",
+        "Collect the complete registered workflow set and nonempty jobs; classify deterministic failures before rerun.",
+        "Download and hash every required artifact; record producer run/attempt/job and revalidate after metadata edits."
+      ],
+      "required_checks": [
+        "Exact-head and prospective-merge gates; stale/empty/skipped/failure negative cases."
+      ],
+      "external_obligations": [
+        "Independent program-governance acceptance of the exact retained packet."
+      ]
+    },
+    {
+      "id": "GAP-P0-GOV-001",
+      "priority_band": 0,
+      "implementation_steps": [
+        "Read effective branch protection and rulesets with administrator-scoped access.",
+        "Compare direct/force/delete, aggregate freshness, CODEOWNER/latest-push/conversation and bypass configuration with desired policy.",
+        "Run an approved harmless negative admission rehearsal; preserve before/after responses."
+      ],
+      "required_checks": [
+        "Missing-check and missing-review candidates must be blocked."
+      ],
+      "external_obligations": [
+        "Actual administration capability and independent no-bypass acceptance; repository metadata admin=true is insufficient."
+      ]
+    },
+    {
+      "id": "GAP-P0-PR-001",
+      "priority_band": 0,
+      "implementation_steps": [
+        "Keep the current main-target integration line singular; stack focused development children without force-updating others.",
+        "Replace stale PR-body source/tree/merge/failure summaries with current API observations.",
+        "Reconcile historical PR #63-specific acceptance semantics through a reviewed plan change rather than a status-only override."
+      ],
+      "required_checks": [
+        "PR metadata contract on the current body and actual merge parents/tree."
+      ],
+      "external_obligations": [
+        "Fresh non-author approval and ordinary protected admission."
+      ]
+    },
+    {
+      "id": "GAP-P0-PLAN-001",
+      "priority_band": 0,
+      "implementation_steps": [
+        "Preserve full scope, immutable backlog and accepted-evidence gate semantics.",
+        "Make source observations, mutable status, proposed design depth and independent acceptance separate fields.",
+        "Rebind obsolete candidate-specific milestone semantics and their digest in one explicitly reviewed change; do not merely relabel old evidence."
+      ],
+      "required_checks": [
+        "Plan, status-transition, scope-shrink and documentation regression tests."
+      ],
+      "external_obligations": [
+        "Independent governance acceptance; a locally consistent JSON snapshot is not a real-world fact."
+      ]
+    },
+    {
+      "id": "GAP-P0-EVIDENCE-001",
+      "priority_band": 0,
+      "implementation_steps": [
+        "Complete one small end-to-end retained evidence admission before expanding control machinery.",
+        "Stage real artifact bytes in the existing custody model; bind exact source/tree/run/job/attempt and explicit gap/task/gate IDs.",
+        "Run the shared evidence_admission consumers; retain limitations, expiry and review provenance."
+      ],
+      "required_checks": [
+        "Missing/tampered/unrelated/mixed-target/expired artifacts and false acceptance must reject."
+      ],
+      "external_obligations": [
+        "Authenticated conflict-free acceptance outside candidate-controlled writes."
+      ]
+    },
+    {
+      "id": "GAP-P0-DATA-001",
+      "priority_band": 1,
+      "implementation_steps": [
+        "Publish the authoritative migration table/column/constraint/index dictionary and adapter ownership mapping.",
+        "Verify both database catalogs against the same declared logical invariants with profile-specific SQL.",
+        "Rehearse fresh-target restore, receipt/event/outbox integrity, migration resume and rollback barriers."
+      ],
+      "required_checks": [
+        "Separate PostgreSQL/CockroachDB catalog, negative constraints, fault and backup-restore packets."
+      ],
+      "external_obligations": [
+        "Independent database/data-integrity acceptance and measured recovery objectives."
+      ]
+    },
+    {
+      "id": "GAP-P0-SERVER-001",
+      "priority_band": 1,
+      "implementation_steps": [
+        "Move service request/result and repository contracts out of the concrete PostgreSQL adapter; keep one composition root.",
+        "Close a PostgreSQL-first official-client authentication/session/storage vertical slice without counting custom authority endpoints as Nakama parity.",
+        "Bind one deadline/cancellation tree through ingress, service, transaction, receipt and outbox; specify readiness and bounded signal/drain behavior.",
+        "Repeat the accepted bounded slice on CockroachDB before granting that profile or full-foundation closure."
+      ],
+      "required_checks": [
+        "Official consumer, wire/database differential, response loss, restart/reconnect and cancellation/fault tests."
+      ],
+      "external_obligations": [
+        "Protocol, database, security and SRE review; both-profile obligations in the existing gap remain unchanged."
+      ]
+    },
+    {
+      "id": "GAP-P0-CRYPTO-001",
+      "priority_band": 1,
+      "implementation_steps": [
+        "Trace all key copies from configuration to provider/cache/drop; document zeroization, crash-dump and secret-provider limitations.",
+        "Keep strict JWT format/policy separate from cryptographic operations and real provider outcome authentication.",
+        "Implement and test durable key rotation/revoke propagation, unknown-epoch refusal and response-loss reconciliation."
+      ],
+      "required_checks": [
+        "Native vectors, malformed/fuzz/timing corpus, domain confusion and provider failure/rotation tests."
+      ],
+      "external_obligations": [
+        "Qualified independent security/cryptography review and real production provider/custody evidence."
+      ]
+    },
+    {
+      "id": "GAP-P1-CRYPTO-002",
+      "priority_band": 1,
+      "implementation_steps": [
+        "Preserve full-width signature-length checks and strict 32-byte HS256 acceptance.",
+        "Keep both argument orders and 256-byte deltas in the hostile corpus.",
+        "Distinguish retained compatibility code from the actual active provider call path."
+      ],
+      "required_checks": [
+        "Exact-source and merge Rust tests and security review."
+      ],
+      "external_obligations": [
+        "Independent security acceptance; removal of a private primitive alone is not closure."
+      ]
+    },
+    {
+      "id": "GAP-P1-OUTBOX-001",
+      "priority_band": 1,
+      "implementation_steps": [
+        "Specify pending/leased/applied/dead-letter/indeterminate transitions and mutation-on-error behavior.",
+        "Bind every apply/reclaim/ack to exact owner, lease generation and authority generation.",
+        "Give every external effect adapter a stable idempotency key, outcome query, quarantine and reconciliation contract.",
+        "Rehearse crash-before-publish and crash-after-publish without relabelling unknown effects delivered."
+      ],
+      "required_checks": [
+        "Native/property/model tests plus both-profile transaction and provider-ambiguity fault packets."
+      ],
+      "external_obligations": [
+        "Independent data-integrity review and real adapter outcome evidence."
+      ]
+    },
+    {
+      "id": "GAP-P1-IDENTITY-001",
+      "priority_band": 0,
+      "implementation_steps": [
+        "Maintain repository identity consistently in active Go module, source and document references.",
+        "Classify historical names as immutable history only.",
+        "Document each Go package responsibility and its Rust migration/rollback destination."
+      ],
+      "required_checks": [
+        "Go module resolution, test/race/vet and active-reference checks."
+      ],
+      "external_obligations": [
+        "Independent governance acceptance of identity boundaries."
+      ]
+    },
+    {
+      "id": "GAP-P1-TEST-001",
+      "priority_band": 0,
+      "implementation_steps": [
+        "Preserve explicit required-live flags and fail on absent URL, image, profile or zero discovered cases.",
+        "Keep developer opt-outs no-credit and visibly separate from mandatory CI.",
+        "Bind both profile results to source and prospective objects with nonempty assertions."
+      ],
+      "required_checks": [
+        "Missing-environment and zero-test negative cases; actual PostgreSQL/CockroachDB runs."
+      ],
+      "external_obligations": [
+        "Independent compatibility-QA acceptance of retained results."
+      ]
+    },
+    {
+      "id": "GAP-P1-STORAGE-001",
+      "priority_band": 1,
+      "implementation_steps": [
+        "Complete the ACL/OCC/batch error-precedence matrix and exact value-byte/public-version contract.",
+        "Add public HTTP/gRPC mapping and an authenticated opaque cursor with actor/owner/collection/project/profile binding.",
+        "Specify pagination under concurrent updates/deletes and preserve canonical byte ordering and ACL-before-limit.",
+        "Keep SHA-256 corruption detection distinct from MD5 public OCC and from authenticity."
+      ],
+      "required_checks": [
+        "Oracle and official-client wire/database differentials; tampered and cross-scope cursors; concurrent batches."
+      ],
+      "external_obligations": [
+        "Independent storage/protocol/security review and both-profile evidence."
+      ]
+    },
+    {
+      "id": "GAP-P1-PG-001",
+      "priority_band": 1,
+      "implementation_steps": [
+        "Measure total elapsed request budget across pool acquire, lock/statement, retry delay and cancellation transport.",
+        "Preserve cancelled-backend retirement and exact receipt reconciliation for ambiguous commits.",
+        "Prove certificate rotation/reload and profile-specific serializable retry, churn and failover.",
+        "Measure saturation, tail latency, connection/memory growth and recovery on declared hardware/workload."
+      ],
+      "required_checks": [
+        "Live TLS negatives, deadline/cancellation, retry, fault, performance and recovery packets per profile."
+      ],
+      "external_obligations": [
+        "Independent database/security/SRE acceptance; parser bounds do not prove stalled-I/O bounds."
+      ]
+    },
+    {
+      "id": "GAP-P0-SCOPE-001",
+      "priority_band": 2,
+      "implementation_steps": [
+        "Reproduce and classify every leaf in all fourteen fixed-source denominator families; retain manual blockers.",
+        "Bind owner/task/test/profile and classify native hardening differences without shrinking mandatory scope.",
+        "Use family/global files as proposals until externally authenticated decision receipts are accepted.",
+        "Implement all eleven domain packages below, including complete wire, runtime and operational behavior."
+      ],
+      "required_checks": [
+        "Reproducible manifests, leaf coverage, immutable/instrumented oracle and official consumer matrix."
+      ],
+      "external_obligations": [
+        "Distinct qualified family decisions plus separate global SG1 acceptance."
+      ]
+    },
+    {
+      "id": "GAP-P1-DOCS-001",
+      "priority_band": 0,
+      "implementation_steps": [
+        "Correct canonical CLI/routes/config and process-smoke descriptions.",
+        "Separate document existence from module engineering depth and evidence acceptance across all Rust and cross-language components.",
+        "Fill eight design dimensions in existing module documents and add executable examples/contract-test links.",
+        "Keep historical snapshots out of current authority and repair active references without erasing history."
+      ],
+      "required_checks": [
+        "Documentation authority, source/document drift, missing-module/component and negative-depth-credit tests."
+      ],
+      "external_obligations": [
+        "Independent governance/design review; fixed headings and line counts are not design completion."
+      ]
+    },
+    {
+      "id": "GAP-P1-BRANCH-001",
+      "priority_band": 2,
+      "implementation_steps": [
+        "Classify every non-main ref with exact tip/tree, PR relationship and reachability.",
+        "Preserve active heads, evidence archives and sole unmerged work.",
+        "Execute only approved reachable cleanup after retaining immutable before-state, then compare after-state."
+      ],
+      "required_checks": [
+        "Branch inventory and disposition safety checks."
+      ],
+      "external_obligations": [
+        "Explicit branch-disposition approval and independent after-state acceptance."
+      ]
+    },
+    {
+      "id": "GAP-P1-REVIEW-001",
+      "priority_band": 0,
+      "implementation_steps": [
+        "Refresh reviewer conflicts and qualification against the actual current candidate, not predecessor PR #63.",
+        "Separate source-defect re-review from specialist evidence acceptance.",
+        "Provision qualified conflict-free domain reviewers and bind exact-object decisions, expiry and replay identity."
+      ],
+      "required_checks": [
+        "Role/alias/conflict/expiry/head-change negatives and native policy readback."
+      ],
+      "external_obligations": [
+        "Real qualified principals and enforced repository policy; account names or self-attestations are insufficient."
+      ]
+    }
+  ],
+  "domain_details": [
+    {
+      "issue": 137,
+      "domain": "identity",
+      "required_design": "Provider-specific verification, normalization/collision, account status/link/unlink, wallet/metadata ownership and durable session integration.",
+      "definition_of_ready": "Specify the eight design dimensions, upstream leaves, numerical budgets, fixtures, owner/reviewer roles and retained evidence output before broad implementation."
+    },
+    {
+      "issue": 138,
+      "domain": "social",
+      "required_design": "Friends/blocks, group roles, direct/group/room chat, durable notifications, history/privacy and distributed delivery.",
+      "definition_of_ready": "Specify the eight design dimensions, upstream leaves, numerical budgets, fixtures, owner/reviewer roles and retained evidence output before broad implementation."
+    },
+    {
+      "issue": 139,
+      "domain": "storage",
+      "required_design": "Public API, ACL/OCC/batches, authenticated cursor and mutation semantics, search/index rebuild and compatibility vectors.",
+      "definition_of_ready": "Specify the eight design dimensions, upstream leaves, numerical budgets, fixtures, owner/reviewer roles and retained evidence output before broad implementation."
+    },
+    {
+      "issue": 140,
+      "domain": "competition-and-scheduling",
+      "required_design": "Rank/tie ordering, tournament lifecycle, timezone/reset rules, scheduler ownership, duplicate triggers and reward transactions.",
+      "definition_of_ready": "Specify the eight design dimensions, upstream leaves, numerical budgets, fixtures, owner/reviewer roles and retained evidence output before broad implementation."
+    },
+    {
+      "issue": 141,
+      "domain": "party-matchmaker-multiplayer",
+      "required_design": "Grammar, fairness/starvation, cancellation races, atomic party matching, relayed routing, tick/placement/snapshot/failover contracts.",
+      "definition_of_ready": "Specify the eight design dimensions, upstream leaves, numerical budgets, fixtures, owner/reviewer roles and retained evidence output before broad implementation."
+    },
+    {
+      "issue": 142,
+      "domain": "http-grpc",
+      "required_design": "Generated full API/gateway bindings, scalar/default/header/error mappings, ingress/TLS/resource policy and official clients.",
+      "definition_of_ready": "Specify the eight design dimensions, upstream leaves, numerical budgets, fixtures, owner/reviewer roles and retained evidence output before broad implementation."
+    },
+    {
+      "issue": 143,
+      "domain": "realtime",
+      "required_design": "Complete JSON/protobuf RTAPI, CID/error/close mapping, connection/route authority, backpressure, reconnect and revocation.",
+      "definition_of_ready": "Specify the eight design dimensions, upstream leaves, numerical budgets, fixtures, owner/reviewer roles and retained evidence output before broad implementation."
+    },
+    {
+      "issue": 144,
+      "domain": "runtime",
+      "required_design": "Engine/ABI decisions, value/context mappings, initializer/hook ordering, capability isolation, fuel/memory/stack/cancel and hot reload.",
+      "definition_of_ready": "Specify the eight design dimensions, upstream leaves, numerical budgets, fixtures, owner/reviewer roles and retained evidence output before broad implementation."
+    },
+    {
+      "issue": 145,
+      "domain": "console",
+      "required_design": "Operator API/UI workflows, RBAC matrix, MFA, audit, dangerous-action approval, accessibility and recovery.",
+      "definition_of_ready": "Specify the eight design dimensions, upstream leaves, numerical budgets, fixtures, owner/reviewer roles and retained evidence output before broad implementation."
+    },
+    {
+      "issue": 146,
+      "domain": "providers-wallet-iap",
+      "required_design": "Provider state machines, signed callback verification, duplicate/out-of-order handling, refund/renewal, ledger ownership and reconciliation.",
+      "definition_of_ready": "Specify the eight design dimensions, upstream leaves, numerical budgets, fixtures, owner/reviewer roles and retained evidence output before broad implementation."
+    },
+    {
+      "issue": 147,
+      "domain": "migration-and-retirement",
+      "required_design": "Go source/state mapping, snapshot/backfill/CDC, checkpoints/comparison, write fencing, reverse disposition and retirement proof.",
+      "definition_of_ready": "Specify the eight design dimensions, upstream leaves, numerical budgets, fixtures, owner/reviewer roles and retained evidence output before broad implementation."
+    }
+  ],
+  "operational_exit_detail": [
+    "Measure full-state clone costs and lock/allocation/tail-latency behavior under maximum admitted cardinality.",
+    "Bound refresh history, revocation high-water, receipts and audit retention without forgetting still-valid replay protection.",
+    "Prove namespace/epoch/checkpoint rollover under realistic churn using rolling cohorts rather than assuming all production connections can stop at once.",
+    "Execute fresh-target backup/PITR, multi-node authority/route/outbox fencing, rolling upgrade and measured RPO/RTO.",
+    "Run actual 24h/72h/7d profiles; no synthetic or segmented metadata may replace missing elapsed execution.",
+    "Shadow without effects, use exclusive canary ownership, preserve rollback barriers and obtain release/support/cutover/retirement acceptance."
+  ],
+  "closure_rule": "Only existing gap/evidence/gate validators and independently accepted exact-object facts can close gaps. This detail file creates no statuses, credentials, reviewer identities or product claims."
+}

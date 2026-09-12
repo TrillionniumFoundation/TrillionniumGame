@@ -1,0 +1,47 @@
+{
+  "schema": "trillionnium.remote-mac-provider.v1",
+  "operation_family": "HS256 sign and verify",
+  "raw_key_bytes_enter_application_process": false,
+  "local_software_fallback_allowed": false,
+  "request_correlation_required": true,
+  "key_reference_maximum_bytes": 256,
+  "message_maximum_bytes": 1048576,
+  "tag_bytes": 32,
+  "maximum_timeout_ms": 5000,
+  "timeout_semantics": "one monotonic total deadline covers connect, request write, response length and response body",
+  "maximum_pending_connects": 8,
+  "unix_transport_profile": "local-service-source-candidate",
+  "unix_peer_authentication": {
+    "expected_uid_required": true,
+    "expected_gid_required": true,
+    "socket_inode_rechecked_after_connect": true,
+    "symlink_directory_components_rejected": true,
+    "direct_parent_world_writable_rejected": true,
+    "socket_world_writable_rejected": true,
+    "socket_path_redacted_from_debug": true,
+    "same_uid_or_trusted_group_compromise_remains_out_of_scope": true
+  },
+  "required_production_adapters": [
+    "approved cloud KMS HMAC service",
+    "approved HSM or secret-manager MAC service"
+  ],
+  "required_live_evidence": [
+    "credential and IAM denial",
+    "timeout and transport loss",
+    "slow-drip response cannot extend the total deadline",
+    "bounded pending-connect exhaustion fails closed",
+    "wrong key version and disabled key",
+    "rotation and revoke",
+    "audit log correlation",
+    "Unix socket wrong UID GID symlink insecure-directory and replacement rejection where that profile is used",
+    "throughput and tail latency",
+    "independent cryptography and security acceptance"
+  ],
+  "claim_boundary": {
+    "production_adapter_implemented": false,
+    "live_kms_hsm_verified": false,
+    "unix_peer_credential_kernel_binding_verified": false,
+    "independently_accepted": false,
+    "production_ready": false
+  }
+}

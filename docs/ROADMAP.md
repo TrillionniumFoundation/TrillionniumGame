@@ -1,7 +1,7 @@
 # Roadmap
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-01
+Revision: 2026-09-12
 
 The machine execution queue is `docs/roadmap/NEXT_MILESTONE.json`. The blocker-first architecture overlay is `docs/roadmap/ARCHITECTURE_CLOSURE.json`. This document explains sequencing and team boundaries; it does not override machine status.
 
@@ -88,7 +88,7 @@ official SDK request
 Exit criteria:
 
 - one production `trnm-server` composition root and one supervised cancellation/drain tree;
-- the temporary database-backed binary is removed in the same accepted change that transfers authority;
+- only the canonical package owns the default server; the explicit feature-gated diagnostic compatibility binary may remain until equivalent test/migration coverage and a separate reviewed retirement packet are accepted; it never owns production authority;
 - adapters do not access repositories directly and handwritten socket/HTTP parsers cannot expand beyond explicitly bounded compatibility fixtures;
 - PostgreSQL catalog, transaction, cancellation, backup/PITR, rollback and capacity evidence is accepted for the declared profile;
 - protocol, database, security and SRE reviewers accept the exact evidence.
@@ -191,3 +191,23 @@ Re-estimate after SG1 and SG3 using actual leaf count, accepted throughput, defe
 ## 8. Completion boundary
 
 The roadmap ends only after all mandatory leaves, migration, operations, support and retirement conditions in [`../CURRENT_PLAN.md`](../CURRENT_PLAN.md) are accepted. A locally runnable Rust server or a green foundation PR is an important milestone, not project completion.
+
+## 9. Five-priority optimization execution contract
+
+[`optimization-execution-v1.json`](../contracts/development/optimization-execution-v1.json) expands the existing milestone and engineering exit detail into five priorities, seven integration seams, eleven full-surface work packages, all 23 Rust module follow-ups and nine cross-language component follow-ups. It is a proposed engineering contract, not another execution queue or an acceptance registry. The existing dependency order, fourteen denominator families, independent-review duties and product gates remain mandatory.
+
+| Priority | Concrete delivery | Required boundary |
+| --- | --- | --- |
+| 1 | Non-traversing App diagnostics, authenticate-before-parse drain and current-candidate reference consistency | Native regression execution and current-object review, not a status toggle. |
+| 2 | Transport-independent service/persistence contracts; refresh, cursor, outbox, revoke and lifecycle recovery | Specify exact state, errors, durable side effects, resource budgets and named tests before changing semantics. |
+| 3 | Official-client authentication/session/storage vertical slice | Reuse existing bounded adapters; bind official leaves and immutable-oracle wire/database evidence. Custom authority routes do not count as Nakama parity. |
+| 4 | Complete design and implementation of issues 137 through 147 | Eight engineering dimensions per domain; design requirements are not implemented or accepted APIs. |
+| 5 | Approved capacity, recovery, HA, upgrade, endurance and controlled cutover profiles | Actual execution, retained bytes and qualified decisions; no invented SLO, RPO/RTO or compressed-duration credit. |
+
+Current integration selection is read from `docs/status/CURRENT_STATE.json#/authority`. The milestone, integration gap and pending current-head evidence requirement reference that same selector instead of fixing an obsolete pull-request number. The selector is not an acceptance target: qualification must still resolve live repository/base/head/tree/prospective objects, and every accepted record binds immutable identities. Child development pull requests retain separate qualification and cannot replace the singular main-target integration line. Historical evidence and issue references are not rewritten or transferred.
+
+This reference repair preserves all twelve milestone item identities, statuses, priorities, owners, dependencies, gap mappings and required evidence types. The semantic roadmap digest changes together with the explicit requirement text; the status validator still rejects arbitrary scope edits. Independent review of this requirement revision remains necessary. Evidence production and source repairs do not require pretending that specialist acceptance already exists; no task is marked accepted before its unchanged dependency and evidence contract is satisfied.
+
+The current repository already has bounded database refresh replay and response-loss candidate tests. The session-core model's narrower recovery boundary must not be confused with absence of every adapter implementation. Close remaining official profile semantics and exact-object evidence by reusing and testing those adapters, not by adding a second writer or weakening consumed-token replay revocation.
+
+`tests/control_plane/test_optimization_execution_contract.py` checks scope coverage, shared selectors, roadmap digest binding and App source regression markers. Its complete-repository case cross-checks the live module/component registries. These are structural checks, not Rust execution, API compatibility, review provenance or a production decision. Native Rust tests in both application paths separately cover ordinary/pretty/nested diagnostic output, non-traversal and authenticated drain error ordering.

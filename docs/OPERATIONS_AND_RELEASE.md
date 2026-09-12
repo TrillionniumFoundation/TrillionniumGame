@@ -1,7 +1,7 @@
 # Operations and release
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-01
+Revision: 2026-09-11
 
 ## 1. Operational status
 
@@ -88,7 +88,7 @@ Production acceptance additionally requires:
 
 ## 7. Outbox operations
 
-Workers use bounded batches, concurrency and provider deadlines. Every lease and transition is owner/generation fenced. Operational views distinguish pending, leased, applied, dead-letter, retry/reclaim and reconciliation states.
+Workers use bounded batches, concurrency and provider deadlines. Every command transition, lease, publish attempt and acknowledgement is owner-, lease-generation- and authority-generation-fenced. Operational views distinguish pending, leased, applied, dead-letter, retry/reclaim and reconciliation states.
 
 Crash-before-publish and crash-after-publish are separate failure boundaries. An ambiguous provider result is quarantined/reconciled; it is not blindly retried when duplicate value is possible. Dead-letter is a terminal state with a stable reason, not a stranded lease.
 
@@ -191,3 +191,59 @@ Deleting a process, branch or Go source before these conditions does not constit
 ## 16. Incident boundary
 
 An incident change may contain active harm using the smallest auditable change, retained refs and tests. Normal gates are restored immediately afterward and an independent post-incident review is required. Emergency bypass cannot promote compatibility, production or retirement claims.
+
+## Database capacity and segmented endurance candidate
+
+`scripts/ci-database-capacity-smoke.sh` runs one identical transactional storage upsert/read workload through `pgbench` against either PostgreSQL or CockroachDB and retains transaction count, failed transaction count, average latency, throughput, exact workload digest and candidate identity. `scripts/ci-database-endurance-segment.sh` converts the same execution into a hash-chained segment; `scripts/finalize-database-endurance-ledger.py` accepts only contiguous, same-candidate, same-workload, zero-failure ledgers totaling 24h, 72h or 7d.
+
+A short qualification run proves the workload and evidence machinery, not capacity or endurance. Numerical throughput/latency thresholds and production sizing require independent approval; incomplete or short ledgers receive no duration credit.
+
+## PostgreSQL connection fault candidate
+
+`scripts/ci-postgresql-connection-faults.sh` opens eighty fresh runtime connections, fills an exact role connection limit and proves the next connection is rejected, cancels and terminates separate in-flight transactions and verifies both updates roll back, exercises `statement_timeout`, then requires a new connection to succeed. Evidence binds the image, migration chain and error/output digests.
+
+Role-level exhaustion is not automatically application-pool acceptance. Multi-node failover, capacity targets, performance acceptance, independent review and production readiness remain separate facts.
+
+## PostgreSQL point-in-time recovery candidate
+
+`scripts/ci-postgresql-pitr.sh` enables WAL archiving, takes a physical base backup, records an exact target LSN after an included write, archives later WAL containing an excluded write, then restores into a new data directory with `recovery.signal` and automatic promotion. The restored state must contain the target write, omit the later write and match the canonical target snapshot byte-for-byte.
+
+The measured recovery interval and WAL archive digest are retained. This does not approve RPO/RTO, prove continuous production archive monitoring or regional restore, provide independent acceptance or authorize production promotion.
+
+## PostgreSQL synchronous primary failover candidate
+
+`scripts/ci-postgresql-primary-failover.sh` creates a physical standby with `pg_basebackup`, requires streaming state, changes acknowledgement to `synchronous_commit=remote_apply`, commits the authoritative command/event/outbox transaction, and proves the standby replay LSN covers that acknowledgement. It then stops the primary, promotes the standby, compares canonical state byte-for-byte and writes successfully after promotion.
+
+The measured failover interval is retained, not declared an approved RTO. The packet does not prove automatic failback, production fencing or split-brain controls, repeated regional failure, independent acceptance or production readiness.
+
+## PostgreSQL recovery write fence and outbox quarantine
+
+`scripts/postgresql-recovery-quarantine.sql` runs under an exclusive outbox table lock. It refuses to proceed while any lease is active, streams every ready intent to the retained quarantine artifact, atomically converts those rows to a terminal recovery-quarantine state, and changes new `trnm_runtime` sessions to read-only. The live harness proves that runtime reads remain possible while a new mutation fails.
+
+This is a database-layer source/evidence candidate. Production rollback still requires an upstream routing fence, draining or terminating every existing runtime connection, a conflict-free operator decision, accepted backup/restore evidence and explicit authorization before any write capability is restored.
+
+## PostgreSQL semantic recovery candidate
+
+`scripts/ci-postgresql-semantic-recovery.sh` applies only the authoritative `migrations/postgresql` chain, proves that a repeat application fails without catalog drift, executes ten malformed-row/constraint probes, creates a custom-format logical backup, restores into an empty database, and compares canonical data plus columns, constraints and indexes. The retained manifest binds the database image ID, migration-lock digest, backup digest and source/restored semantic digests.
+
+This packet is a repository-controlled recovery source candidate. It does not establish PITR, approved RPO/RTO, primary failover, multi-node durability, independent acceptance, production readiness, cutover or rollback authorization.
+
+## CockroachDB leaseholder and node failover candidate
+
+`scripts/ci-cockroachdb-node-failover.sh` starts three CockroachDB nodes and waits for three voting replicas. It relocates the authoritative entity range lease to node 1, isolates that leaseholder from the cluster, proves acknowledged state is unchanged and writes through the surviving quorum. It then reconnects node 1, stops a non-leaseholder node, writes again, restarts the node and requires it to observe both commits.
+
+Measured recovery intervals are evidence values, not approved RTOs. The lane does not prove regional or long-duration partitions, production topology, independent acceptance or production readiness.
+
+## CockroachDB semantic recovery candidate
+
+`scripts/ci-cockroachdb-semantic-recovery.sh` is a distinct CockroachDB profile. It applies only `migrations/cockroachdb`, proves repeat application rejection without catalog drift, executes ten malformed-row/constraint probes, performs native `BACKUP DATABASE` and `RESTORE DATABASE` through `nodelocal`, and compares canonical data plus `SHOW CREATE ALL TABLES` output. Its manifest binds the database image ID, migration lock, backup-directory digest and source/restored semantic digests.
+
+PostgreSQL evidence is not inherited. This packet does not establish node or leaseholder failover, approved RPO/RTO, independent acceptance, production readiness, cutover or retirement.
+
+## Cutover and retirement proposal validator
+
+`scripts/cutover-state-machine.py` validates only that an untrusted request describes the ordered sequence planning → shadow → exclusive canary → production → retirement pending → retired and carries the expected candidate, gate, blocker, rollback and claimed-review fields. It does not advance the authoritative state. The output preserves the current state and history, adds a `pending_proposal`, and keeps `public_online`, `cutover_authorized` and `nakama_retired` false.
+
+The repository currently has no trusted cutover-authority receipt verifier or durable nonce/replay store. `materialize_transition` therefore fails closed. Reviewer logins, conflict attestations, local signatures, blocker booleans, claimed protected admission, matching digests, administrator power and replayed proposal files cannot authorize shadow, canary, production or retirement.
+
+`scripts/derive-cutover-blocker-packet.py` derives a diagnostic blocker packet from the gap register and marks it `may_authorize_transition=false`. Real transition authority requires an externally authenticated stable principal, qualified role and conflict decision, exact candidate/evidence binding, issued-at/expiry, unique nonce, durable anti-replay verification, platform-native protected-admission readback and the applicable operational decision. Source code or CI success cannot manufacture those facts.
