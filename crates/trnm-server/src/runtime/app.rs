@@ -1173,7 +1173,10 @@ mod tests {
     fn app_debug_does_not_require_repository_debug() {
         struct NoDebug;
         let app = debug_fixture(NoDebug, token());
-        assert_eq!(format!("{app:?}"), "App { admin_token: \"[REDACTED]\", .. }");
+        assert_eq!(
+            format!("{app:?}"),
+            "App { admin_token: \"[REDACTED]\", .. }"
+        );
     }
 
     #[test]
