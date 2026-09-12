@@ -1,0 +1,142 @@
+name: world-v15-readonly-rust-diagnostic
+
+on:
+  push:
+    branches: [ops/world-v15-rust-diagnostic-20260912]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-v15-readonly-rust-diagnostic
+  cancel-in-progress: true
+
+env:
+  WORLD_SHA: '0759720a4523e2f80174560883eed6e8aeb4b486'
+  WORLD_TREE: 'cd367ca79c1a05e42e3c589276b56528007596a3'
+  WORLD_AUTHORITY_TREE: 'd6b4dfef71b9a81ce852030e6f55de648bc2831a'
+  RUSTUP_TOOLCHAIN: '1.98.1'
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: '0'
+  RUST_BACKTRACE: '1'
+  RUST_TEST_THREADS: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  diagnostic:
+    name: world-v15/diagnostic-not-admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Fetch exact driver and immutable World candidate
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          clone_exact() {
+            local target="$1" remote="$2" expected="$3"
+            git init -q "$target"
+            git -C "$target" remote add origin "$remote"
+            git -C "$target" fetch -q --no-tags --depth=1 origin "$expected"
+            git -C "$target" checkout -q --detach FETCH_HEAD
+            test "$(git -C "$target" rev-parse HEAD)" = "$expected"
+          }
+          clone_exact "$GITHUB_WORKSPACE" "https://github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_SHA"
+          clone_exact "$RUNNER_TEMP/world" "https://github.com/TrillionniumFoundation/Trillionnium-World.git" "$WORLD_SHA"
+          test "$(git -C "$RUNNER_TEMP/world" rev-parse 'HEAD^{tree}')" = "$WORLD_TREE"
+          test "$(git -C "$RUNNER_TEMP/world" rev-parse HEAD:trillionnium/crates/world-authority)" = "$WORLD_AUTHORITY_TREE"
+          printf 'CARGO_TARGET_DIR=%s\n' "$RUNNER_TEMP/world-target" >> "$GITHUB_ENV"
+          {
+            printf 'world_commit=%s\nworld_tree=%s\nauthority_tree=%s\n' "$WORLD_SHA" "$WORLD_TREE" "$WORLD_AUTHORITY_TREE"
+            printf 'driver_commit=%s\nrun_id=%s\nrun_attempt=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            printf 'scope=diagnostic_only\nworld_native_admission=false\nindependent_acceptance=false\nproduction_authorization=not_granted\n'
+            uname -a
+          } > "$RUNNER_TEMP/evidence/identity.txt"
+
+      - name: Install and verify exact Rust toolchain
+        id: toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+          test "$(rustc --version | awk '{print $2}')" = "$RUSTUP_TOOLCHAIN"
+          rustc --version --verbose > "$RUNNER_TEMP/evidence/rustc.txt"
+          cargo --version --verbose > "$RUNNER_TEMP/evidence/cargo.txt"
+
+      - name: Check Rust formatting without modifying source
+        if: ${{ !cancelled() && steps.source.outcome == 'success' && steps.toolchain.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          timeout --signal=TERM --kill-after=10s 180s cargo fmt \
+            --manifest-path "$RUNNER_TEMP/world/trillionnium/crates/world-authority/Cargo.toml" \
+            --all -- --check 2>&1 | head -c 8388608 > "$RUNNER_TEMP/evidence/fmt.log"
+          codes=("${PIPESTATUS[@]}")
+          printf '%s\n' "${codes[*]}" > "$RUNNER_TEMP/evidence/fmt.exit"
+          test "${codes[0]}" = 0 && test "${codes[1]}" = 0 || exit 1
+          test "$(wc -c < "$RUNNER_TEMP/evidence/fmt.log")" -lt 8388608
+
+      - name: Execute all authority Rust tests and require new regression assertions
+        if: ${{ !cancelled() && steps.source.outcome == 'success' && steps.toolchain.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          timeout --signal=TERM --kill-after=10s 1050s cargo test \
+            --manifest-path "$RUNNER_TEMP/world/trillionnium/crates/world-authority/Cargo.toml" \
+            --workspace --all-targets --locked \
+            2>&1 | head -c 8388608 > "$RUNNER_TEMP/evidence/tests.log"
+          codes=("${PIPESTATUS[@]}")
+          printf '%s\n' "${codes[*]}" > "$RUNNER_TEMP/evidence/tests.exit"
+          test "${codes[0]}" = 0 && test "${codes[1]}" = 0 || exit 1
+          test "$(wc -c < "$RUNNER_TEMP/evidence/tests.log")" -lt 8388608 || exit 1
+          python3 - "$RUNNER_TEMP/evidence/tests.log" > "$RUNNER_TEMP/evidence/new-regressions.txt" <<'PY'
+          import re, sys
+          from pathlib import Path
+          text = Path(sys.argv[1]).read_text()
+          publication = re.findall(r'^test publication_tests::[^\r\n]+ \.\.\. ok$', text, re.M)
+          preflight = re.findall(r'^test production_preflight::tests::[^\r\n]+ \.\.\. ok$', text, re.M)
+          if len(publication) != 8 or len(preflight) != 5:
+              raise SystemExit(f'missing new regression executions: publication={len(publication)} preflight={len(preflight)}')
+          print(f'new executed regressions: publication={len(publication)} preflight={len(preflight)}')
+          PY
+
+      - name: Check strict Clippy without modifying source
+        if: ${{ !cancelled() && steps.source.outcome == 'success' && steps.toolchain.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          timeout --signal=TERM --kill-after=10s 600s cargo clippy \
+            --manifest-path "$RUNNER_TEMP/world/trillionnium/crates/world-authority/Cargo.toml" \
+            --workspace --all-targets --locked -- -D warnings \
+            2>&1 | head -c 8388608 > "$RUNNER_TEMP/evidence/clippy.log"
+          codes=("${PIPESTATUS[@]}")
+          printf '%s\n' "${codes[*]}" > "$RUNNER_TEMP/evidence/clippy.exit"
+          test "${codes[0]}" = 0 && test "${codes[1]}" = 0 || exit 1
+          test "$(wc -c < "$RUNNER_TEMP/evidence/clippy.log")" -lt 8388608
+
+      - name: Verify source stayed unchanged and retain diagnostic packet
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          if test -d "$RUNNER_TEMP/world/.git"; then
+            git -C "$RUNNER_TEMP/world" status --porcelain=v1 --untracked-files=all > "$RUNNER_TEMP/evidence/source-status.txt"
+            test "$(git -C "$RUNNER_TEMP/world" rev-parse HEAD)" = "$WORLD_SHA"
+            test "$(git -C "$RUNNER_TEMP/world" rev-parse 'HEAD^{tree}')" = "$WORLD_TREE"
+          fi
+          find "$RUNNER_TEMP/evidence" -type f ! -name SHA256SUMS -print0 \
+            | sort -z | xargs -0 -r sha256sum > "$RUNNER_TEMP/evidence/SHA256SUMS"
+          tar -czf "$RUNNER_TEMP/world-v15-diagnostic.tar.gz" -C "$RUNNER_TEMP" evidence
+          if test -f "$RUNNER_TEMP/evidence/source-status.txt"; then
+            test ! -s "$RUNNER_TEMP/evidence/source-status.txt"
+          fi
+
+      - name: Upload scoped diagnostic evidence with repository-native transport
+        if: ${{ always() && steps.source.outcome == 'success' }}
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: world-v15-diagnostic-${{ env.WORLD_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/world-v15-diagnostic.tar.gz
