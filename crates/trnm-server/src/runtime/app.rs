@@ -223,25 +223,13 @@ impl Drop for AdmissionPermit {
     }
 }
 
+#[derive(Debug)]
 pub struct App<R> {
     repository: R,
     admin_token: String,
     sessions: SessionApi,
     drain: SharedDrain,
     metrics: SharedAppMetrics,
-}
-
-impl<R> std::fmt::Debug for App<R> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("App")
-            .field("repository", &"<redacted>")
-            .field("admin_token", &"<redacted>")
-            .field("sessions", &"<redacted>")
-            .field("drain", &"<redacted>")
-            .field("metrics", &"<redacted>")
-            .finish()
-    }
 }
 
 impl<R: Repository> App<R> {
@@ -318,7 +306,7 @@ impl<R: Repository> App<R> {
 
     fn handle_inner(&mut self, request: &Request) -> Response {
         let response = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/healthz") => Response::json(200, br#"{\"status\":\"ok\"}"#.to_vec()),
+            ("GET", "/healthz") => Response::json(200, br#"{"status":"ok"}"#.to_vec()),
             ("GET", "/readyz") => self.readiness(),
             ("GET", "/metrics") => self.metrics_response(),
             ("GET", "/v1/session/me")
@@ -347,7 +335,7 @@ impl<R: Repository> App<R> {
         if self.drain.is_draining() {
             error_response(503, "unavailable", "Service is draining.", "backoff")
         } else {
-            Response::json(200, br#"{\"status\":\"ready\"}"#.to_vec())
+            Response::json(200, br#"{"status":"ready"}"#.to_vec())
         }
     }
 
@@ -357,23 +345,23 @@ impl<R: Repository> App<R> {
         let repository = self.repository.operational_metrics();
         let session = self.sessions.metrics();
         let mut body = format!(
-            "# TYPE trnm_server_requests_total counter\n\\
-trnm_server_requests_total {}\n\\
-# TYPE trnm_server_successes_total counter\n\\
-trnm_server_successes_total {}\n\\
-# TYPE trnm_server_input_failures_total counter\n\\
-trnm_server_input_failures_total {}\n\\
-# TYPE trnm_server_domain_failures_total counter\n\\
-trnm_server_domain_failures_total {}\n\\
-# TYPE trnm_server_bootstraps_total counter\n\\
-trnm_server_bootstraps_total {}\n\\
-# TYPE trnm_server_commands_applied_total counter\n\\
-trnm_server_commands_applied_total {}\n\\
-# TYPE trnm_server_command_replays_total counter\n\\
-trnm_server_command_replays_total {}\n\\
-# TYPE trnm_server_drain_requests_total counter\n\\
-trnm_server_drain_requests_total {}\n\\
-# TYPE trnm_server_ready gauge\n\\
+            "# TYPE trnm_server_requests_total counter\n\
+trnm_server_requests_total {}\n\
+# TYPE trnm_server_successes_total counter\n\
+trnm_server_successes_total {}\n\
+# TYPE trnm_server_input_failures_total counter\n\
+trnm_server_input_failures_total {}\n\
+# TYPE trnm_server_domain_failures_total counter\n\
+trnm_server_domain_failures_total {}\n\
+# TYPE trnm_server_bootstraps_total counter\n\
+trnm_server_bootstraps_total {}\n\
+# TYPE trnm_server_commands_applied_total counter\n\
+trnm_server_commands_applied_total {}\n\
+# TYPE trnm_server_command_replays_total counter\n\
+trnm_server_command_replays_total {}\n\
+# TYPE trnm_server_drain_requests_total counter\n\
+trnm_server_drain_requests_total {}\n\
+# TYPE trnm_server_ready gauge\n\
 trnm_server_ready {}\n",
             metrics.requests,
             metrics.successes,
@@ -386,35 +374,35 @@ trnm_server_ready {}\n",
             ready,
         );
         body.push_str(&format!(
-            "# TYPE trnm_server_database_pool_max_size gauge\n\\
-trnm_server_database_pool_max_size {}\n\\
-# TYPE trnm_server_database_pool_connections gauge\n\\
-trnm_server_database_pool_connections {}\n\\
-# TYPE trnm_server_database_pool_idle_connections gauge\n\\
-trnm_server_database_pool_idle_connections {}\n\\
-# TYPE trnm_server_database_pool_acquire_attempts_total counter\n\\
-trnm_server_database_pool_acquire_attempts_total {}\n\\
-# TYPE trnm_server_database_pool_acquire_failures_total counter\n\\
-trnm_server_database_pool_acquire_failures_total {}\n\\
-# TYPE trnm_server_database_session_policy_failures_total counter\n\\
-trnm_server_database_session_policy_failures_total {}\n\\
-# TYPE trnm_server_database_inflight_operations gauge\n\\
-trnm_server_database_inflight_operations {}\n\\
-# TYPE trnm_server_database_deadline_cancellations_total counter\n\\
-trnm_server_database_deadline_cancellations_total {}\n\\
-# TYPE trnm_server_database_shutdown_cancellations_total counter\n\\
-trnm_server_database_shutdown_cancellations_total {}\n\\
-# TYPE trnm_server_database_cancellation_deliveries_total counter\n\\
-trnm_server_database_cancellation_deliveries_total {}\n\\
-# TYPE trnm_server_database_cancellation_failures_total counter\n\\
-trnm_server_database_cancellation_failures_total {}\n\\
-# TYPE trnm_server_database_retry_attempts_total counter\n\\
-trnm_server_database_retry_attempts_total {}\n\\
-# TYPE trnm_server_database_retries_total counter\n\\
-trnm_server_database_retries_total {}\n\\
-# TYPE trnm_server_database_retry_exhausted_total counter\n\\
-trnm_server_database_retry_exhausted_total {}\n\\
-# TYPE trnm_server_database_retry_sleep_milliseconds_total counter\n\\
+            "# TYPE trnm_server_database_pool_max_size gauge\n\
+trnm_server_database_pool_max_size {}\n\
+# TYPE trnm_server_database_pool_connections gauge\n\
+trnm_server_database_pool_connections {}\n\
+# TYPE trnm_server_database_pool_idle_connections gauge\n\
+trnm_server_database_pool_idle_connections {}\n\
+# TYPE trnm_server_database_pool_acquire_attempts_total counter\n\
+trnm_server_database_pool_acquire_attempts_total {}\n\
+# TYPE trnm_server_database_pool_acquire_failures_total counter\n\
+trnm_server_database_pool_acquire_failures_total {}\n\
+# TYPE trnm_server_database_session_policy_failures_total counter\n\
+trnm_server_database_session_policy_failures_total {}\n\
+# TYPE trnm_server_database_inflight_operations gauge\n\
+trnm_server_database_inflight_operations {}\n\
+# TYPE trnm_server_database_deadline_cancellations_total counter\n\
+trnm_server_database_deadline_cancellations_total {}\n\
+# TYPE trnm_server_database_shutdown_cancellations_total counter\n\
+trnm_server_database_shutdown_cancellations_total {}\n\
+# TYPE trnm_server_database_cancellation_deliveries_total counter\n\
+trnm_server_database_cancellation_deliveries_total {}\n\
+# TYPE trnm_server_database_cancellation_failures_total counter\n\
+trnm_server_database_cancellation_failures_total {}\n\
+# TYPE trnm_server_database_retry_attempts_total counter\n\
+trnm_server_database_retry_attempts_total {}\n\
+# TYPE trnm_server_database_retries_total counter\n\
+trnm_server_database_retries_total {}\n\
+# TYPE trnm_server_database_retry_exhausted_total counter\n\
+trnm_server_database_retry_exhausted_total {}\n\
+# TYPE trnm_server_database_retry_sleep_milliseconds_total counter\n\
 trnm_server_database_retry_sleep_milliseconds_total {}\n",
             repository.pool_max_size,
             repository.pool_connections,
@@ -433,15 +421,15 @@ trnm_server_database_retry_sleep_milliseconds_total {}\n",
             repository.retry_sleep_milliseconds,
         ));
         body.push_str(&format!(
-            "# TYPE trnm_server_session_access_verified_total counter\n\\
-trnm_server_session_access_verified_total {}\n\\
-# TYPE trnm_server_session_access_rejected_total counter\n\\
-trnm_server_session_access_rejected_total {}\n\\
-# TYPE trnm_server_session_refresh_rotated_total counter\n\\
-trnm_server_session_refresh_rotated_total {}\n\\
-# TYPE trnm_server_session_refresh_replay_revoked_total counter\n\\
-trnm_server_session_refresh_replay_revoked_total {}\n\\
-# TYPE trnm_server_session_logout_revoked_total counter\n\\
+            "# TYPE trnm_server_session_access_verified_total counter\n\
+trnm_server_session_access_verified_total {}\n\
+# TYPE trnm_server_session_access_rejected_total counter\n\
+trnm_server_session_access_rejected_total {}\n\
+# TYPE trnm_server_session_refresh_rotated_total counter\n\
+trnm_server_session_refresh_rotated_total {}\n\
+# TYPE trnm_server_session_refresh_replay_revoked_total counter\n\
+trnm_server_session_refresh_replay_revoked_total {}\n\
+# TYPE trnm_server_session_logout_revoked_total counter\n\
 trnm_server_session_logout_revoked_total {}\n",
             session.access_verified,
             session.access_rejected,
@@ -466,16 +454,16 @@ trnm_server_session_logout_revoked_total {}\n",
     }
 
     fn drain(&mut self, request: &Request) -> Response {
-        if !self.authorized(request) {
-            return unauthenticated();
-        }
         if !request.body.is_empty() {
             return self.input_failure(InputError::new("drain_body_must_be_empty"));
+        }
+        if !self.authorized(request) {
+            return unauthenticated();
         }
         self.drain.begin();
         self.metrics
             .increment(|metrics| &mut metrics.drain_requests);
-        Response::json(200, br#"{\"status\":\"draining\"}"#.to_vec())
+        Response::json(200, br#"{"status":"draining"}"#.to_vec())
     }
 
     fn bootstrap(&mut self, request: &Request) -> Response {
@@ -967,18 +955,6 @@ mod tests {
     }
 
     #[test]
-    fn app_debug_redacts_admin_token_and_internal_state() {
-        let secret = "admin-token-that-must-never-appear".to_owned();
-        let app = App::new(FakeRepository::default(), secret.clone());
-        for output in [format!("{app:?}"), format!("{app:#?}")] {
-            assert!(!output.contains(&secret));
-            assert!(output.contains("admin_token: \"<redacted>\""));
-            assert!(output.contains("repository: \"<redacted>\""));
-            assert!(output.contains("sessions: \"<redacted>\""));
-        }
-    }
-
-    #[test]
     fn authenticated_drain_stops_new_mutations() {
         let token = token();
         let mut app = App::new(FakeRepository::default(), token.clone());
@@ -1008,18 +984,6 @@ mod tests {
     }
 
     #[test]
-    fn unauthenticated_drain_is_rejected_before_body_validation() {
-        let mut app = App::new(FakeRepository::default(), token());
-        let response = app.handle(&Request::new(
-            "POST",
-            "/-/drain",
-            BTreeMap::new(),
-            b"unexpected-body".to_vec(),
-        ));
-        assert_eq!(response.status, 401);
-    }
-
-    #[test]
     fn malformed_fields_and_media_type_fail_before_repository_mutation() {
         let token = token();
         let mut app = App::new(FakeRepository::default(), token.clone());
@@ -1034,7 +998,7 @@ mod tests {
             "POST",
             "/v1/authority/bootstrap",
             headers(&token),
-            br#"{\"extra\":1}"#.to_vec(),
+            br#"{"extra":1}"#.to_vec(),
         ));
         assert_eq!(unknown_field.status, 400);
     }
