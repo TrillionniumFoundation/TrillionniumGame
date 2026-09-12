@@ -5,12 +5,13 @@
   "revision": "2026-09-01",
   "document_revisions": {
     "docs/README.md": "2026-09-03",
-    "docs/ARCHITECTURE.md": "2026-09-03",
-    "docs/DEVELOPMENT.md": "2026-09-03",
+    "docs/ARCHITECTURE.md": "2026-09-12",
+    "docs/DEVELOPMENT.md": "2026-09-12",
     "docs/GOVERNANCE.md": "2026-09-11",
     "docs/OPERATIONS_AND_RELEASE.md": "2026-09-11",
     "docs/TESTING_AND_EVIDENCE.md": "2026-09-05",
-    "docs/SECURITY_AND_PRIVACY.md": "2026-09-05"
+    "docs/SECURITY_AND_PRIVACY.md": "2026-09-05",
+    "docs/ROADMAP.md": "2026-09-12"
   },
   "policy": {
     "single_current_human_document_per_topic": true,
@@ -88,7 +89,10 @@
     "docs/governance/REQUIRED_CHECKS.json",
     "docs/governance/REQUIRED_WORKFLOWS_OVERLAY_V1.json",
     "docs/governance/REQUIRED_WORKFLOWS_V1.json",
-    "docs/governance/RULESET_DESIRED_ACTIVE_REQUEST.json"
+    "docs/governance/RULESET_DESIRED_ACTIVE_REQUEST.json",
+    "docs/status/DOCUMENTATION_DEPTH.json",
+    "docs/roadmap/ENGINEERING_EXIT_CONTRACTS.json",
+    "contracts/development/optimization-execution-v1.json"
   ],
   "machine_record_roots": [
     "docs/evidence",

@@ -1,0 +1,588 @@
+{
+  "schema": "trillionnium.optimization-execution-contract.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "authority": "Subordinate implementation requirements under CURRENT_PLAN.md, NEXT_MILESTONE.json and ENGINEERING_EXIT_CONTRACTS.json; not another queue, evidence registry or acceptance authority.",
+  "candidate_authority_ref": "docs/status/CURRENT_STATE.json#/authority",
+  "claim_credit": false,
+  "all_priorities_completed": false,
+  "design_kind": "proposed-engineering-contract",
+  "change_rule": "Each implementation updates the existing owning module/topic, actual tests and source/evidence mapping. This file does not make proposed APIs, tests or budgets implemented, Ready or Accepted.",
+  "preserved_denominator_families": 14,
+  "priorities": [
+    {
+      "priority": 1,
+      "title": "Security defects and current authority",
+      "milestone_items": [
+        "TG-V3-001",
+        "TG-V3-002",
+        "TG-V3-003",
+        "TG-V3-004",
+        "TG-V3-005",
+        "TG-V3-008"
+      ],
+      "owner_roles": [
+        "security",
+        "program-governance"
+      ],
+      "implementation_steps": [
+        "Apply explicit non-traversing App Debug to canonical and diagnostic processes; preserve credential handling and wire behavior except approved drain authentication precedence.",
+        "Add native normal/pretty/nested redaction and drain authorization-negative regressions in both targets.",
+        "Rebind current milestone, integration gap and evidence pending requirement through the existing CURRENT_STATE authority; update only the reviewed roadmap scope pin, not evidence eligibility.",
+        "Retain old evidence and all required task/gap/test/reviewer obligations. Verify the new exact head and actual prospective merge before ordinary protected admission."
+      ],
+      "acceptance_outputs": [
+        "native unit tests and strict lint",
+        "current identity/reference and scope-conservation regressions",
+        "complete exact-head/prospective nonempty workflow set",
+        "independent source/governance acceptance and post-merge retained bytes"
+      ]
+    },
+    {
+      "priority": 2,
+      "title": "Service, persistence and recovery contracts",
+      "milestone_items": [
+        "TG-V3-006",
+        "TG-V3-009",
+        "TG-V3-010"
+      ],
+      "owner_roles": [
+        "platform",
+        "database",
+        "security",
+        "realtime"
+      ],
+      "implementation_steps": [
+        "Extract shared typed service/repository commands and results without importing concrete PG or wire types into domain contracts; retain the one default composition root.",
+        "For each of the seven integration seams record exact inputs/results, error effects, transaction boundaries, total deadline, recovery and named failure tests.",
+        "Reuse and qualify existing durable refresh, cursor, cancellation and outbox source; new abstractions must preserve all existing regression cases.",
+        "Publish the authoritative data dictionary and separate PostgreSQL/CockroachDB behavior before schema changes."
+      ],
+      "acceptance_outputs": [
+        "cross-module contract tests",
+        "both-profile live transaction and fault packets",
+        "no wire or schema change without approved compatibility/migration decision",
+        "specialist review"
+      ]
+    },
+    {
+      "priority": 3,
+      "title": "One accepted official-client vertical slice",
+      "milestone_items": [
+        "TG-V3-002",
+        "TG-V3-004",
+        "TG-V3-006",
+        "TG-V3-007",
+        "TG-V3-009",
+        "TG-V3-010"
+      ],
+      "owner_roles": [
+        "protocol",
+        "compatibility-qa",
+        "database",
+        "security"
+      ],
+      "implementation_steps": [
+        "Choose exact mandatory authentication/session/storage leaves and a supported official client; freeze immutable oracle, fixtures and profile.",
+        "Run client -> official adapter -> trusted service -> durable transaction -> receipt/outbox -> retry/restart/reconnect on PostgreSQL first.",
+        "Observe raw wire and database effects; do not use custom authority endpoints or mock verifiers as official compatibility proof.",
+        "Retain complete artifact bytes and obtain independent acceptance for this limited scope; repeat separately on CockroachDB without transferring credit."
+      ],
+      "acceptance_outputs": [
+        "official SDK and immutable-oracle differential",
+        "response-loss and restart/reconnect assertions",
+        "accepted narrow-scope evidence through existing admission",
+        "separate CockroachDB profile before its claim"
+      ]
+    },
+    {
+      "priority": 4,
+      "title": "Full domain detailed design and implementation",
+      "milestone_items": [
+        "TG-V3-007",
+        "TG-V3-010",
+        "TG-V3-011"
+      ],
+      "owner_roles": [
+        "domain-owners",
+        "runtime",
+        "console",
+        "compatibility-qa"
+      ],
+      "implementation_steps": [
+        "Complete the eight design dimensions for all eleven existing domain work packages and the module follow-ups below.",
+        "Bind every interface to actual upstream leaves, owners, fixtures and resource budgets; satisfy CURRENT_PLAN Definition of Ready before broad implementation.",
+        "Implement bounded vertical changes per domain, including errors, durable effects, official consumers and recovery, not merely in-memory success paths.",
+        "Preserve the complete Nakama denominator and separate native hardening/extensions from exact compatibility."
+      ],
+      "acceptance_outputs": [
+        "all eleven domain specifications",
+        "all 23 module follow-ups resolved in existing module docs",
+        "official wire/runtime/SDK and database differential per scope",
+        "independent domain acceptance"
+      ]
+    },
+    {
+      "priority": 5,
+      "title": "Capacity, recovery and production qualification",
+      "milestone_items": [
+        "TG-V3-009",
+        "TG-V3-012"
+      ],
+      "owner_roles": [
+        "sre",
+        "database",
+        "security",
+        "release"
+      ],
+      "implementation_steps": [
+        "Approve numerical workload/hardware/topology, tail-latency/error/cost, memory/queue/pool, RPO and RTO objectives before measuring a passing capacity claim.",
+        "Reuse existing recovery/failover/endurance harnesses; add application-level authority/route/outbox fencing during failures and test clone/history/high-water costs under maximum churn.",
+        "Execute actual 24h/72h/7d durations with continuous correctness assertions; segments cannot hide gaps, restarts, source changes or missing elapsed execution.",
+        "Perform no-effect shadow, exclusive canary and rollback rehearsal; production, cutover and retirement require separately authenticated decisions and durable anti-replay."
+      ],
+      "acceptance_outputs": [
+        "separate measured PostgreSQL/CockroachDB recovery and HA",
+        "full-duration endurance on approved workload",
+        "real provider/custody and specialist acceptance",
+        "authorized canary/rollback/cutover and support/retirement decisions"
+      ]
+    }
+  ],
+  "required_design_dimensions": [
+    "scope-and-dependencies",
+    "public-api-and-examples",
+    "state-and-data",
+    "errors-and-side-effects",
+    "concurrency-and-recovery",
+    "security-and-budgets",
+    "tests-and-compatibility",
+    "operations-and-change"
+  ],
+  "integration_seams": [
+    {
+      "id": "authentication-service",
+      "contract": "Authenticate issuer/provider/project/user/session before constructing trusted service context. Fingerprints derive from complete canonical operation data, never caller assertions.",
+      "required_failure_cases": "Forged or disabled identity; wrong project/profile; stale session; no mutation."
+    },
+    {
+      "id": "refresh-persistence",
+      "contract": "Separate security-transition commit from public error. Reuse exact durable successor replay only under its existing authenticated identity and profile contract.",
+      "required_failure_cases": "Simultaneous refresh/logout; commit-before-response crash; changed successor; revocation survives authentication Err."
+    },
+    {
+      "id": "storage-wire",
+      "contract": "Authenticate full cursor scope and position; define concurrent mutation semantics and preserve exact public MD5/integrity separation.",
+      "required_failure_cases": "Cross-actor/project/profile cursor, tamper, page deletion/insertion, ACL-before-limit, same-key owner ordering."
+    },
+    {
+      "id": "service-repository",
+      "contract": "Shared typed commands/results and one deadline; adapters own SQL/retry/receipt reconciliation.",
+      "required_failure_cases": "Pool saturation, stale generation, cancellation and uncertain commit; no fabricated success or blind retry."
+    },
+    {
+      "id": "outbox-provider",
+      "contract": "Immutable payload and stable idempotency identity; authenticated outcome queries and explicit indeterminate/quarantine states.",
+      "required_failure_cases": "Provider success with lost response; dead last lease; stale owner; repeated receipt without duplicate visible effect."
+    },
+    {
+      "id": "revocation-realtime",
+      "contract": "Persist revocation generation and checkpoint before admitting routes; bounded fanout reaches actual sockets.",
+      "required_failure_cases": "Restart, delayed old namespace, reconnect storm and full retained high-water capacity."
+    },
+    {
+      "id": "process-operations",
+      "contract": "Supervise mandatory children and separate liveness from dependency readiness; one cancellation/drain tree.",
+      "required_failure_cases": "Stop admission before drain acknowledgement; worker death; stalled synchronous child; bounded recovery."
+    }
+  ],
+  "domain_work_packages": [
+    {
+      "issue": 137,
+      "domain": "identity",
+      "owner_role": "identity-security",
+      "delivery_kind": "required-design-and-implementation",
+      "design_deliverables": {
+        "scope-and-dependencies": "Own provider assertion verification, account lifecycle, link/unlink and session issuance through a trusted service context. Reuse identity/session cores; never let provider identifiers stand in for authentication.",
+        "public-api-and-examples": "Bind create/no-create, authenticate, update, link, unlink, disable and delete to exact pinned API leaves. Retain valid, collision, wrong-audience and inactive-account request/response examples; document provider-specific case and normalization rules.",
+        "state-and-data": "Define account/provider uniqueness, retirement tombstones, revision, receipt operation identity and session-family rows. Specify the durable write set and reverse-index constraints before proposing any migration.",
+        "errors-and-side-effects": "Enumerate validation/authorization/collision/revision precedence. Separate no-mutation errors from replay-triggered revocation that must commit despite an authentication error. Never expose account-existence diagnostics publicly.",
+        "concurrency-and-recovery": "Reuse and verify the existing durable refresh response-loss implementation before changing it. Specify authenticated exact-operation replay, conflicting successor revocation, simultaneous refresh/logout, crash-after-commit and multi-node ownership fencing.",
+        "security-and-budgets": "Bind issuer, audience, provider app, nonce, project and profile. Declare provider timeout, per-actor admission, payload/receipt/history limits and safe expiry; do not evict still-replayable identities to free capacity.",
+        "tests-and-compatibility": "Require provider hostile fixtures, disabled-account replay, cross-operation receipt reuse, refresh response-loss/replay/logout races and official-client wire/database differential on both profiles.",
+        "operations-and-change": "Publish provider degradation, rotation/revoke and recovery procedures; define export/deletion/tombstone retention and audit visibility. Preserve one session-family writer through migration."
+      },
+      "compatibility_credit": false
+    },
+    {
+      "issue": 138,
+      "domain": "social",
+      "owner_role": "social-realtime",
+      "delivery_kind": "required-design-and-implementation",
+      "design_deliverables": {
+        "scope-and-dependencies": "Own friends/blocks, groups, direct/group/room chat and notifications. Authenticate user status/project before calling bounded social core; separate persistence from fanout and push providers.",
+        "public-api-and-examples": "For every operation retain exact generated request/response examples, permission and cursor scope. Distinguish open join, approval join, role changes, last-superadmin rules and all three chat kinds.",
+        "state-and-data": "Define relationship/reverse-index, membership/pending/ban, message sequence, receipt and immutable delivery-payload ownership. Commit domain state, receipt and outbox intents together.",
+        "errors-and-side-effects": "Publish a role-by-action authorization matrix and error precedence. Blocking removes incompatible relationships atomically; retries of exact commands cannot duplicate message or notification effects.",
+        "concurrency-and-recovery": "Define simultaneous accept/block, leave/demotion, duplicate chat, notify-then-delete and crash-before/after-delivery cases. Workers consume original committed payloads, not reconstructed mutable state.",
+        "security-and-budgets": "Declare per-group membership, payload, history, outbox, fanout and receipt budgets. Authenticate cursor owner/group/project; redact message text and preserve private-history visibility after status changes.",
+        "tests-and-compatibility": "Require cross-actor and cross-operation replay negatives, ACL history queries, identical outbox payload replay, per-profile transaction faults, official RTAPI/SDK differences and node-reconnect scenarios.",
+        "operations-and-change": "Define moderation/export/deletion, retention and replay catch-up. Alert on sequence gaps, delivery ambiguity and saturated queues; document quarantine and safe replay without duplicate user-visible effects."
+      },
+      "compatibility_credit": false
+    },
+    {
+      "issue": 139,
+      "domain": "storage",
+      "owner_role": "storage-protocol",
+      "delivery_kind": "required-design-and-implementation",
+      "design_deliverables": {
+        "scope-and-dependencies": "Own exact-value storage, ACL/OCC/batch/list/search services. Keep public MD5 ContentVersion separate from internal SHA-256 corruption detection and from authenticated cursor protection.",
+        "public-api-and-examples": "Publish field and byte limits, owner/server actor rules, blind/create-only/exact-version conditions, error precedence and full authenticated cursor format. Preserve exact upstream encoding through oracle review.",
+        "state-and-data": "Describe authoritative columns/constraints/indexes and key ordering for collection, object key and user. Define search-index ownership/rebuild lag and explicit query consistency.",
+        "errors-and-side-effects": "List the complete actor x read/write ACL x OCC x existing/missing matrix. One invalid batch item rolls back the batch; an integrity mismatch never returns an authorized object.",
+        "concurrency-and-recovery": "Define list behavior under inserts, updates and deletes, same-key different-owner ordering, cursor expiry and transaction isolation. Preserve ACL-before-limit and use deterministic mutation lock order.",
+        "security-and-budgets": "Authenticate actor, owner filter, collection, project/profile and last position. Bound page, batch, value bytes and query cost; define cursor key rotation and reject tampering and cross-scope replay.",
+        "tests-and-compatibility": "Require exact-byte version vectors, malformed/wildcard precedence, ACL and atomic batch oracle differential, cursor tamper/scope tests, concurrent pagination and both-profile fault/restart tests.",
+        "operations-and-change": "Define corruption alarm, index rebuild and restore validation. Publish conflict/latency/storage-growth metrics with bounded labels; schema changes require reviewed migration and rollback."
+      },
+      "compatibility_credit": false
+    },
+    {
+      "issue": 140,
+      "domain": "competition-and-scheduling",
+      "owner_role": "competition-runtime",
+      "delivery_kind": "required-design-and-implementation",
+      "design_deliverables": {
+        "scope-and-dependencies": "Own leaderboard definitions/records/ranks, tournament lifecycle and reset/end scheduling. Separate scheduler ownership from reward delivery and prohibit competing active reset owners.",
+        "public-api-and-examples": "Document write modes, tie-break order, rank windows, list/cursor forms and period boundaries from pinned API/runtime leaves. Provide equal-score, end-boundary and deleted-record examples.",
+        "state-and-data": "Define period identity, deterministic score ordering, rank index, tournament membership, scheduler epoch and event/reward receipt. Archive prior periods without mutating historical winners.",
+        "errors-and-side-effects": "Specify closed/expired/full tournament and invalid-score precedence. A repeated reset/end trigger returns the same result; reward intent creation is transactionally tied to its unique period event.",
+        "concurrency-and-recovery": "Use a fenced scheduler lease and period-event uniqueness. Cover late timers, duplicate triggers, clock shifts, leader death and retry after reward commit before response.",
+        "security-and-budgets": "Declare rank-query, batch-write, participants-per-event and reward-fanout limits; check numeric overflow and authorization. Timezone/DST/reset semantics are profile decisions, not local-time assumptions.",
+        "tests-and-compatibility": "Require tie/cursor differential, exact reset/end boundaries, duplicate reward prevention, scheduler takeover, restore/replay and PostgreSQL/CockroachDB conflict tests.",
+        "operations-and-change": "Provide missed-trigger catch-up and audit/reconciliation procedures, scheduler lag alerts, bounded history cleanup and a migration plan preserving period and reward identities."
+      },
+      "compatibility_credit": false
+    },
+    {
+      "issue": 141,
+      "domain": "party-matchmaker-multiplayer",
+      "owner_role": "realtime-runtime",
+      "delivery_kind": "required-design-and-implementation",
+      "design_deliverables": {
+        "scope-and-dependencies": "Own parties, matchmaker tickets and relayed/authoritative matches with explicit per-entity ownership. Keep query core a parser subset until grammar and scoring are independently classified.",
+        "public-api-and-examples": "Define ticket add/remove, party roles, party-atomic matching, match join/leave/data and authoritative callback contracts. Give cancellation-vs-match and invalid-admission examples.",
+        "state-and-data": "Describe ticket and party membership states, match ownership generation, participant sequence, fixed-tick input queue and snapshot identity. Keep admission and assignment records restartable.",
+        "errors-and-side-effects": "Define terminal cancellation, no-match, stale-generation, capacity and callback failure outcomes. Matching or party admission cannot partially succeed or issue duplicate assignment effects.",
+        "concurrency-and-recovery": "Define fairness/starvation policy, ticket cancellation linearization, duplicate assignment rejection, match placement/fencing, overrun policy and snapshot recovery under node loss or partition.",
+        "security-and-budgets": "Budget tickets, query complexity, party size, matches/node, tick CPU, input/output queues and payloads; trusted session context binds every participant and rejects stale routes.",
+        "tests-and-compatibility": "Require grammar/scoring oracle tests, fairness load cases, atomic party matching, cancellation races, stale-owner rejection, tick overrun, node takeover and replayed-snapshot tests.",
+        "operations-and-change": "Document drain/rebalance, match disposition, stuck-ticket recovery and snapshot compatibility. Prove capacity under churn and preserve single-writer ownership through canary/rollback."
+      },
+      "compatibility_credit": false
+    },
+    {
+      "issue": 142,
+      "domain": "http-grpc",
+      "owner_role": "protocol-platform",
+      "delivery_kind": "required-design-and-implementation",
+      "design_deliverables": {
+        "scope-and-dependencies": "Own HTTP/JSON, gRPC and gateway mapping only. Services own domain transitions; wire adapters must not import concrete database request/result contracts or execute SQL directly.",
+        "public-api-and-examples": "Generate bindings from pinned descriptors and enumerate routes/methods/messages/defaults/int64/null/enums/headers/status/details. Current custom authority endpoints never count as official API parity.",
+        "state-and-data": "Define trusted RequestContext and typed commands/results independently of HTTP or PG. One request deadline spans admission, authentication, service, repository and response handling.",
+        "errors-and-side-effects": "Publish complete domain-to-wire error and retry metadata tables. Authenticate privileged operations before business parsing; exact public precedence changes require profile/oracle classification.",
+        "concurrency-and-recovery": "Specify cancellation, partial response, deadline expiration around commit and receipt reconciliation. The listener never fabricates success from an abandoned or ambiguous transaction.",
+        "security-and-budgets": "Use maintained ingress/TLS/framing boundaries; specify header/body/connections/worker/queue limits, slow-client defense, admin/public isolation and debug/log secret redaction.",
+        "tests-and-compatibility": "Require generated-schema drift, official SDK black-box, malformed/slow request fuzz, status/header/body differential and response-loss/restart across both database profiles.",
+        "operations-and-change": "Supervise listeners and distinguish health/readiness. Document build/config/schema identity, graceful shutdown, certificate reload and how diagnostics avoid traversing credential-bearing objects."
+      },
+      "compatibility_credit": false
+    },
+    {
+      "issue": 143,
+      "domain": "realtime",
+      "owner_role": "realtime-distributed",
+      "delivery_kind": "required-design-and-implementation",
+      "design_deliverables": {
+        "scope-and-dependencies": "Own full JSON/protobuf RTAPI adapters and distributed connection/route lifecycle. Reuse bounded actor/router/journal candidates but do not confuse in-process transitions with socket or cluster execution.",
+        "public-api-and-examples": "Catalog every opcode/message/CID/error/close mapping and exact JSON/protobuf conversions. Give reconnect, unknown-field, duplicate-CID and generation-mismatch examples.",
+        "state-and-data": "Define connection/session/project ownership, subscriptions, producer epoch, durable revocation checkpoint and reconnect journal. Track active capacity separately from retained identity high-water state.",
+        "errors-and-side-effects": "Specify slow-consumer outcomes, dropped/expired frames and indeterminate disconnect effects. An accepted verifier interface is not by itself proof a transport action occurred.",
+        "concurrency-and-recovery": "Define restore-before-admission, delayed callbacks, stale fanout, reconnect storms, producer barriers and rolling namespace recovery. Never assume all production connections can be quiesced simultaneously.",
+        "security-and-budgets": "Budget active/tracked identities, per-session fanout, frame bytes, queued payload memory and pending requests. Authenticate the complete reconnect cursor and bind project/session generations.",
+        "tests-and-compatibility": "Require stale handle/CID reuse, full-capacity takeover, actual socket revoke, checkpoint restart, partition/failover, slow consumers and official RTAPI/SDK differential.",
+        "operations-and-change": "Publish saturation/ghost-route/revocation-lag alerts, rolling drain and checkpoint recovery. Benchmark full-state clone costs and forbid eviction of replay fences without a verified retirement barrier."
+      },
+      "compatibility_credit": false
+    },
+    {
+      "issue": 144,
+      "domain": "runtime",
+      "owner_role": "runtime-sandbox",
+      "delivery_kind": "required-design-and-implementation",
+      "design_deliverables": {
+        "scope-and-dependencies": "Own per-profile Lua, JavaScript/TypeScript, WASM and Rust SDK hosts, RPC/hooks/jobs and Go source migration. Select engines through explicit capability, compatibility and isolation decisions.",
+        "public-api-and-examples": "Define initializer/module order, immutable context, null/number/string/byte/value conversion, callback results, service capabilities and error mapping for each engine ABI.",
+        "state-and-data": "Define module/version identity, per-invocation state, scheduler/job receipt and durable service boundary. Runtime memory is not authoritative persisted game state.",
+        "errors-and-side-effects": "Specify panic/trap, fuel exhaustion, timeout, host-call failure and hook rejection. Record which effects committed before failure and prohibit blind replay of effectful host calls.",
+        "concurrency-and-recovery": "Define cancellation across host calls, non-cooperative code containment, hot reload version pinning, callback ordering, deterministic clock/random injection and restart recovery.",
+        "security-and-budgets": "Bound memory, stack, fuel/CPU, wall time, output, logging and service-call quotas. Expose no unrestricted filesystem, network or raw secrets; native and sandbox profiles have separate conclusions.",
+        "tests-and-compatibility": "Require real Lua/JS engine observations, value/ABI differential, hook-order corpus, malicious resource programs, cancel/reload races and durable host-call response-loss tests.",
+        "operations-and-change": "Document module quarantine, safe reload/rollback, artifact provenance and Go capability-by-capability migration. Separate engine spike throughput from full Runtime compatibility acceptance."
+      },
+      "compatibility_credit": false
+    },
+    {
+      "issue": 145,
+      "domain": "console",
+      "owner_role": "console-appsec",
+      "delivery_kind": "required-design-and-implementation",
+      "design_deliverables": {
+        "scope-and-dependencies": "Own Console API and Rust/WASM UI workflows separately from public game traffic. Operator identities and authorization are not supplied by the candidate static administrator token.",
+        "public-api-and-examples": "Define the role x resource x action matrix, MFA/session flows, confirmations, export/drain/migrate/key actions and exact API/UI error states with examples.",
+        "state-and-data": "Define operator sessions, role assignments, approval requests and immutable audit events. Approval binds exact action parameters, target and expiry rather than reusable blanket permission.",
+        "errors-and-side-effects": "Authentication and authorization precede business validation. Dangerous action rejection leaves state unchanged; completed action with lost response reconciles by its durable receipt.",
+        "concurrency-and-recovery": "Specify concurrent role revocation, action-vs-approval changes, MFA replay, session invalidation, duplicate export and interrupted operator action recovery.",
+        "security-and-budgets": "Isolate bind/TLS/service identity; bound operator sessions, export size, audit and request budgets. Prevent CSRF/XSS and credential/PII leakage; require independent security review.",
+        "tests-and-compatibility": "Require denied-action matrices, stale/forged approvals, MFA replay, redaction, audit completeness, accessibility workflows and Console oracle/consumer differential.",
+        "operations-and-change": "Document break-glass containment without acceptance bypass, audit retention/export/deletion, operator recovery, rolling UI/API compatibility and key compromise response."
+      },
+      "compatibility_credit": false
+    },
+    {
+      "issue": 146,
+      "domain": "providers-wallet-iap",
+      "owner_role": "value-security",
+      "delivery_kind": "required-design-and-implementation",
+      "design_deliverables": {
+        "scope-and-dependencies": "Own provider adapters, wallet/metadata ownership, purchases/subscriptions/refunds and reconciliation. Keep CEX/Chain ledgers outside this repository and explicitly define only in-scope game-value ownership.",
+        "public-api-and-examples": "Define provider verification/callback contracts, exact account/product/environment binding, pending/approved/refunded/renewed/void states and duplicate/out-of-order examples.",
+        "state-and-data": "Define provider transaction identity, immutable event/receipt, subscription period and internal value-effect record. A provider transaction must not credit more than one account.",
+        "errors-and-side-effects": "Distinguish rejected, pending, committed, externally-applied and indeterminate outcomes. Never infer nonexecution from timeout or terminal lease expiry; no blind retry of uncertain value effects.",
+        "concurrency-and-recovery": "Use stable idempotency keys, authority-fenced outbox dispatch, authenticated result query, quarantine and reconciliation. Cover callback-before-request and refund-vs-renewal races.",
+        "security-and-budgets": "Verify callback signatures, audience/app/environment and freshness; separate provider keys. Bound retries, payloads, reconciliation batches and retention without losing transaction replay protection.",
+        "tests-and-compatibility": "Require vendor sandbox/hostile fixtures, replay and cross-account credit negatives, duplicate/late refunds, response-loss effects, per-profile transaction faults and official API/runtime differential.",
+        "operations-and-change": "Publish reconciliation backlog alerts, provider outage/revoke procedures, manual quarantine handling with dual review, receipt retention and migration/rollback disposition for unresolved transactions."
+      },
+      "compatibility_credit": false
+    },
+    {
+      "issue": 147,
+      "domain": "migration-and-retirement",
+      "owner_role": "data-sre-release",
+      "delivery_kind": "required-design-and-implementation",
+      "design_deliverables": {
+        "scope-and-dependencies": "Own Go capability/state mapping, snapshot/backfill/CDC, semantic comparison, exclusive writer transfer and final retirement. No synchronous dual-write handler or premature deletion of Go authority.",
+        "public-api-and-examples": "Define resumable prepare/snapshot/apply/checkpoint/compare/fence/canary/rollback operator contracts. Each operation names exact source/target/profile/schema identities and an explicit cohort.",
+        "state-and-data": "Define snapshot boundary, CDC position, idempotent apply receipt, ownership epoch, rollback barrier and active entity disposition for sessions, parties, tickets, matches, jobs and purchases.",
+        "errors-and-side-effects": "Classify schema mismatch, corrupt checkpoint, divergent value/ACL/order, missing effect and irreversible action. Failure preserves current authority; a cutover proposal is not an authorization receipt.",
+        "concurrency-and-recovery": "Specify crash-resume at every boundary, write fencing for existing and new sessions, split-brain prevention, reverse export and reconciliation of externally visible effects before rollback.",
+        "security-and-budgets": "Use least-privilege identities and synthetic rehearsal data; bound batch size, checkpoint interval, CDC lag and retention. Real production changes require authenticated independent authorization and anti-replay.",
+        "tests-and-compatibility": "Require clean-target restore/PITR, complete data dictionary and invariant negatives, both-profile fault/failover, canary abort/rollback, full-duration endurance and independently accepted retirement evidence.",
+        "operations-and-change": "Publish measured RPO/RTO, upgrade/failback and support ownership. Retire Nakama only after no traffic/writer/key/job remains, final backups and evidence are retained, and C5/retention obligations are satisfied."
+      },
+      "compatibility_credit": false
+    }
+  ],
+  "module_followups": [
+    {
+      "id": "trnm-contracts",
+      "owning_document": "crates/trnm-contracts/README.md",
+      "required_deliverable": "Publish every exported identifier/code/retry/receipt type with bounds, serialization examples and consumers."
+    },
+    {
+      "id": "trnm-authority-core",
+      "owning_document": "crates/trnm-authority-core/README.md",
+      "required_deliverable": "Publish generation/revision/lease transition and error-precedence tables, clock assumptions and adapter fencing."
+    },
+    {
+      "id": "trnm-session-core",
+      "owning_document": "crates/trnm-session-core/README.md",
+      "required_deliverable": "Map bounded core rotation to the existing durable response-loss/revocation path; specify history retention and socket fanout."
+    },
+    {
+      "id": "trnm-identity-core",
+      "owning_document": "crates/trnm-identity-core/README.md",
+      "required_deliverable": "Specify provider normalization, trust verification, account collision and exact durable/wire adapters."
+    },
+    {
+      "id": "trnm-social-core",
+      "owning_document": "crates/trnm-social-core/README.md",
+      "required_deliverable": "Specify all durable social/chat/notification transactions and complete committed-effect delivery."
+    },
+    {
+      "id": "trnm-storage-core",
+      "owning_document": "crates/trnm-storage-core/README.md",
+      "required_deliverable": "Publish ACL/OCC/batch precedence and limits plus concurrent cursor semantics."
+    },
+    {
+      "id": "trnm-persistence-core",
+      "owning_document": "crates/trnm-persistence-core/README.md",
+      "required_deliverable": "Publish complete repository commands/results, atomic transaction and outbox ambiguous-outcome tables."
+    },
+    {
+      "id": "trnm-persistence-pg",
+      "owning_document": "crates/trnm-persistence-pg/README.md",
+      "required_deliverable": "Publish the ten-table data dictionary, every SQL ownership boundary, profile differences and recovery steps."
+    },
+    {
+      "id": "trnm-canonical-core",
+      "owning_document": "crates/trnm-canonical-core/README.md",
+      "required_deliverable": "Publish normative byte grammar, length/order/escaping rules and exact API-to-vector mappings."
+    },
+    {
+      "id": "trnm-transport-core",
+      "owning_document": "crates/trnm-transport-core/README.md",
+      "required_deliverable": "Publish full HTTP/gRPC/RT error, details, retry and close-code mapping."
+    },
+    {
+      "id": "trnm-token-core",
+      "owning_document": "crates/trnm-token-core/README.md",
+      "required_deliverable": "Publish claim schema, validation precedence and per-profile epoch/domain/time constraints."
+    },
+    {
+      "id": "trnm-presence-core",
+      "owning_document": "crates/trnm-presence-core/README.md",
+      "required_deliverable": "Publish visibility/lifecycle/error matrices and split responsibility with the route registry."
+    },
+    {
+      "id": "trnm-query-core",
+      "owning_document": "crates/trnm-query-core/README.md",
+      "required_deliverable": "Publish supported grammar, precedence/type/missing-value semantics and complexity limits."
+    },
+    {
+      "id": "trnm-token-jwt-adapter",
+      "owning_document": "crates/trnm-token-jwt-adapter/README.md",
+      "required_deliverable": "Publish full API and profile/error precedence; classify strictness differences with immutable oracle."
+    },
+    {
+      "id": "trnm-token-jwt-adapter-gate",
+      "owning_document": "crates/trnm-token-jwt-adapter-gate/README.md",
+      "required_deliverable": "Inventory unique vectors, prove equivalent replacement coverage and define reviewed retirement."
+    },
+    {
+      "id": "trnm-token-jwt-adapter-gate-v2",
+      "owning_document": "crates/trnm-token-jwt-adapter-gate-v2/README.md",
+      "required_deliverable": "Inventory incremental hostile cases and prove coverage equivalence before gate removal."
+    },
+    {
+      "id": "trnm-presence-router-v2",
+      "owning_document": "crates/trnm-presence-router-v2/README.md",
+      "required_deliverable": "Specify durable checkpoints, real result verification, cross-node protocol and rolling full-capacity recovery."
+    },
+    {
+      "id": "trnm-server",
+      "owning_document": "crates/trnm-server/README.md",
+      "required_deliverable": "Extract transport-independent service contracts, full dependency readiness, signal/drain supervision and official adapters."
+    },
+    {
+      "id": "trnm-persistence-runtime-policy",
+      "owning_document": "crates/trnm-persistence-runtime-policy/README.md",
+      "required_deliverable": "Publish defaults/ranges/inter-field constraints and end-to-end elapsed retry/deadline calculations."
+    },
+    {
+      "id": "trnm-realtime-wire",
+      "owning_document": "crates/trnm-realtime-wire/README.md",
+      "required_deliverable": "Publish complete message/opcode/CID and JSON/protobuf mappings with official leaf vectors."
+    },
+    {
+      "id": "trnm-storage-nakama-version",
+      "owning_document": "crates/trnm-storage-nakama-version/README.md",
+      "required_deliverable": "Publish public API/byte examples and malformed/wildcard/exact-condition precedence."
+    },
+    {
+      "id": "trnm-token-crypto-provider",
+      "owning_document": "crates/trnm-token-crypto-provider/README.md",
+      "required_deliverable": "Implement authenticated real provider/custody, durable lifecycle/replay/checkpoint and cross-node revoke."
+    },
+    {
+      "id": "trnm-token-jwt-provider-adapter",
+      "owning_document": "crates/trnm-token-jwt-provider-adapter/README.md",
+      "required_deliverable": "Specify full format/policy/provider sequence, failure propagation and cache/revoke convergence."
+    }
+  ],
+  "component_followups": [
+    {
+      "id": "COMPONENT-RUST-PACKAGES",
+      "required_deliverable": "Resolve all module depth gaps and dependency boundaries with specialist design review."
+    },
+    {
+      "id": "COMPONENT-GO-RUNTIME-MIGRATION",
+      "required_deliverable": "Map every Go package capability/state to a Rust target and a rollback owner."
+    },
+    {
+      "id": "COMPONENT-DATABASE-MIGRATIONS",
+      "required_deliverable": "Complete authoritative catalog, invariant-negative matrix and profile-specific recovery."
+    },
+    {
+      "id": "COMPONENT-PROTOCOL-CONTRACTS",
+      "required_deliverable": "Complete consumer/version/deprecation and generated-binding lifecycle."
+    },
+    {
+      "id": "COMPONENT-ORACLE-DIFFERENTIAL",
+      "required_deliverable": "Reproduce immutable/instrumented and real engine observations with reviewed normalizers."
+    },
+    {
+      "id": "COMPONENT-CONTROL-PLANE",
+      "required_deliverable": "Document tool inputs/outputs and troubleshooting; reuse validators rather than invent parallel acceptance."
+    },
+    {
+      "id": "COMPONENT-CI-GOVERNANCE",
+      "required_deliverable": "Maintain workflow-family runbooks, actual no-bypass readback and qualified review availability."
+    },
+    {
+      "id": "COMPONENT-DEPLOYMENT-OPERATIONS",
+      "required_deliverable": "Complete production topology, secrets, rolling upgrade, measured RPO/RTO and endurance."
+    },
+    {
+      "id": "COMPONENT-EVIDENCE-REVIEW",
+      "required_deliverable": "Complete retained-byte custody, authenticated review provenance and one accepted evidence cycle."
+    }
+  ],
+  "capacity_and_recovery": {
+    "objective_status": "requires-independent-approval",
+    "required_profile_fields": [
+      "hardware",
+      "topology",
+      "workload_mix",
+      "concurrent_users",
+      "request_rate",
+      "active_matches",
+      "storage_cardinality",
+      "p95_latency_ms",
+      "p99_latency_ms",
+      "maximum_error_ratio",
+      "memory_budget_bytes",
+      "queue_budget_bytes",
+      "cost_budget",
+      "rpo_ms",
+      "rto_ms",
+      "recovery_abort_thresholds"
+    ],
+    "resource_accounting": "Record steady state plus in-flight temporary clones, retained histories, checkpoints and fanout amplification. Use checked arithmetic and measure peak memory/tail latency under maximum admitted cardinality and sustained churn.",
+    "endurance_seconds": [
+      86400,
+      259200,
+      604800
+    ],
+    "continuous_invariants": [
+      "acknowledged_write_loss=0",
+      "duplicate_visible_value_effect=0",
+      "accepted_stale_writer=0",
+      "partial_command_event_outbox_commit=0"
+    ],
+    "mandatory_scenarios": [
+      "PostgreSQL physical PITR and application write fencing",
+      "PostgreSQL primary loss and stale-primary exclusion",
+      "CockroachDB leaseholder loss and quorum behavior",
+      "actual socket revoke and route takeover",
+      "provider ambiguity and outbox reconciliation",
+      "rolling upgrade and checkpoint compatibility",
+      "full-capacity history and namespace recovery",
+      "shadow without effects and exclusive-canary rollback"
+    ],
+    "execution_boundary": "Harness presence, short runs, synthetic receipts and segmented metadata do not satisfy duration, RPO/RTO, custody or production acceptance."
+  },
+  "completion_rule": "Use only the existing exact-source/prospective, retained-evidence, gap, gate and independent-review contracts. Missing production resources or reviews remain unmet obligations; never toggle them complete."
+}

@@ -77,7 +77,7 @@ PRODUCT_GATE_SCOPE_KEYS = (
     "blocked_claims",
 )
 PRODUCT_GATE_SCOPE_SHA256 = "6393058c799a5efd24309aaedc5fa84f25ae972fab3d3cced61ce0c080eba7eb"
-ROADMAP_SCOPE_SHA256 = "dc7af646e78d3beb976b78e2a7a8787b8f4a5139d65c996b296dfef0e9060678"
+ROADMAP_SCOPE_SHA256 = "0ff02640e58137d16125e317efa31ac9d87f990fa41b46bb475868b3939e9e58"
 ROADMAP_MUTABLE_ROOT_FIELDS = {"status", "updated_at", "items", "acceptance_target"}
 ROADMAP_MUTABLE_ITEM_FIELDS = {"status", "evidence_ids", "acceptance_target"}
 

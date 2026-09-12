@@ -22,7 +22,7 @@ from typing import Any
 
 CURRENT_RELATIVE = "docs/status/GAP_REGISTER.json"
 BASELINE_RELATIVE = "scripts/control_baselines/gap-register.v1.json"
-BASELINE_GIT_BLOB_SHA1 = "577cfb3a97b6b6b98b8ecd3182991910f3645296"
+BASELINE_GIT_BLOB_SHA1 = "95d904ee2753ab5da5e14f02c1d332de8cf82131"
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MUTABLE_ROOT_FIELDS = frozenset({"generated_at", "summary"})
 MUTABLE_GAP_FIELDS = frozenset({"status", "evidence_ids", "external_dependency"})
