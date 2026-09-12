@@ -36,7 +36,7 @@ jobs:
           POSTGRES_DB: postgres
         ports: ['5432:5432']
         options: >-
-          --health-cmd 'pg_isready -U postgres -d postgres'
+          --health-cmd "pg_isready -U postgres -d postgres"
           --health-interval 5s --health-timeout 5s --health-retries 30
     env:
       PGHOST: 127.0.0.1
@@ -344,7 +344,7 @@ jobs:
           test "$(stat -c %s diagnostics.tar.gz)" -le 67108864
 
       - name: Upload success and failure diagnostics
-        if: always()
+        if: ${{ always() && steps.source.outcome == 'success' }}
         uses: ./.github/actions/upload-evidence
         with:
           name: world-pr138-diagnostics-${{ env.WORLD_HEAD }}-${{ github.run_attempt }}
