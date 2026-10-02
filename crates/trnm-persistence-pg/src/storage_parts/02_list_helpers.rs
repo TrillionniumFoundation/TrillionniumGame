@@ -52,7 +52,7 @@ fn storage_list_query(profile: DatabaseProfile) -> String {
         DatabaseProfile::PostgreSql => (
             "pg_catalog.convert_to(collection, 'UTF8') = pg_catalog.convert_to($1, 'UTF8') \
              AND ($2::bytea IS NULL OR user_id = $2) \
-             AND (pg_catalog.convert_to(object_key, 'UTF8') > pg_catalog.convert_to($3, 'UTF8') \
+             AND (NOT $7::BOOL OR pg_catalog.convert_to(object_key, 'UTF8') > pg_catalog.convert_to($3, 'UTF8') \
                   OR (pg_catalog.convert_to(object_key, 'UTF8') = pg_catalog.convert_to($3, 'UTF8') AND user_id > $4)) \
              AND ($5::bytea IS NULL OR read_permission = 2 OR (user_id = $5 AND read_permission = 1))",
             "pg_catalog.convert_to(object_key, 'UTF8') ASC, user_id ASC",
@@ -60,7 +60,7 @@ fn storage_list_query(profile: DatabaseProfile) -> String {
         DatabaseProfile::CockroachDb => (
             "collection::BYTES = $1::STRING::BYTES \
              AND ($2::bytea IS NULL OR user_id = $2) \
-             AND (object_key::BYTES > $3::STRING::BYTES \
+             AND (NOT $7::BOOL OR object_key::BYTES > $3::STRING::BYTES \
                   OR (object_key::BYTES = $3::STRING::BYTES AND user_id > $4)) \
              AND ($5::bytea IS NULL OR read_permission = 2 OR (user_id = $5 AND read_permission = 1))",
             "object_key::BYTES ASC, user_id ASC",
@@ -130,7 +130,7 @@ fn validate_client_list_request(
 fn storage_client_list_public_query(profile: DatabaseProfile) -> String {
     storage_paged_query(
         profile,
-        "collection = $1 AND read_permission = 2 \
+        "collection = $1 AND read_permission >= 2 \
          AND ($2::TEXT IS NULL OR (collection, read_permission, object_key, user_id) > ($1, 2, $2, $3))",
         "read_permission ASC, object_key ASC, user_id ASC",
         4,
@@ -169,11 +169,7 @@ fn finish_stored_client_storage_page(
         StorageListPosition {
             key: object.key.key().to_owned(),
             user_id: object.key.user_id(),
-            read: match object.read_permission {
-                ReadPermission::None => 0,
-                ReadPermission::Owner => 1,
-                ReadPermission::Public => 2,
-            },
+            read: object.read_permission.as_i32(),
         }
     });
     StoredStorageClientListPage { objects, next }

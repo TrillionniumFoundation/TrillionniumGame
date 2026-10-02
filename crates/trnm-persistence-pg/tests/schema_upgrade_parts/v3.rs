@@ -1,5 +1,5 @@
 // Historical fixture construction uses the immutable v1/v2 SQL and exact
-// two-file chain digest. Only the real current runner performs the v3 cutover.
+// two-file chain digest. Only the real current runner performs the v3 cutover and appends v4.
 // These tests grant no import, compatibility, race-CAS or acceptance credit.
 const V3_SHAPE_CASES: usize = 8;
 const V3_ILLEGAL_CASES: usize = 9;
@@ -10,7 +10,7 @@ const V3_OPAQUE_CASES: usize = 6;
 
 fn historical_v2_digest(profile: DatabaseProfile) -> &'static str {
     // Source control checks recompute these prefixes from the first two Git
-    // blobs in MIGRATION_CHAIN.lock.json; the v3 digest is never rebound as v2.
+    // blobs in MIGRATION_CHAIN.lock.json; later full-chain digests are never rebound as v2.
     match profile {
         DatabaseProfile::PostgreSql => {
             "b063c33fce9a7c3c506f82c0204b545d8a5ef915b0ff234680fca15057c4a9df"
@@ -93,7 +93,9 @@ fn entire_database_snapshot(client: &mut Client) -> EntireDatabaseSnapshot {
          WHERE n.nspname='public' AND left(t.relname,5)='trnm_' ORDER BY t.relname,c.conname",
     );
     let mut data = Vec::new();
-    for table in TABLES {
+    // Current tables are inspected only when present: pre-v3 failures must
+    // not query either future journal or nonexistent publisher columns.
+    for table in CURRENT_TABLES {
         let columns: Vec<(String, String)> = client
             .query(
                 "SELECT column_name::TEXT,udt_name::TEXT FROM information_schema.columns \
@@ -104,6 +106,9 @@ fn entire_database_snapshot(client: &mut Client) -> EntireDatabaseSnapshot {
             .into_iter()
             .map(|row| (row.get(0), row.get(1)))
             .collect();
+        if columns.is_empty() {
+            continue;
+        }
         // Everything is cast by the database, including raw binary and exact
         // timestamp text. This snapshot is never an original-request export.
         let projections = columns
@@ -178,12 +183,14 @@ fn assert_published_v3(
     profile: DatabaseProfile,
 ) {
     assert!(report.migration_applied);
-    assert_eq!(report.applied_steps, 1);
-    assert_eq!(report.identity.schema_version, 3);
-    assert_eq!(report.identity.storage_writer_epoch, 3);
+    assert_eq!(report.applied_steps, 2);
+    assert_eq!(report.identity.schema_version, 4);
+    assert_eq!(report.identity.storage_writer_epoch, 4);
     assert_eq!(report.identity.source_commit, ORIGINAL_SOURCE);
     assert_eq!(report.identity.upgrade_source_commit, UPGRADE_SOURCE);
     assert_eq!(report.identity.v2_apply_source_commit, V2_PUBLISHER_SOURCE);
+    assert_eq!(report.identity.v3_apply_source_commit, UPGRADE_SOURCE);
+    assert_eq!(report.table_count, CURRENT_TABLES.len());
     assert_eq!(
         report.identity.chain_digest,
         authoritative_chain_digest(profile)
@@ -241,6 +248,7 @@ fn v3_preserves_native_legacy_shapes_and_v2_history(environment: &LiveEnvironmen
         let metadata = metadata_snapshot(&mut inspector);
         assert_eq!(metadata.3, 17);
         assert_eq!(metadata.8, V2_PUBLISHER_SOURCE);
+        assert_eq!(metadata.9, UPGRADE_SOURCE);
         let mut different_render_md5 = false;
         for (index, raw) in shapes.iter().enumerate() {
             let raw_text = std::str::from_utf8(raw).unwrap();

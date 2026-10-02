@@ -375,7 +375,7 @@ manifest = {
     "migration_chain_validation": json.loads((root / "migration-chain-validation.json").read_text()),
     "run_id": source["run_id"],
     "assertions": {
-        "table_count": 10,
+        "table_count": 12,
         "exact_duplicate_receipt": True,
         "changed_fingerprint_rejected": True,
         "stale_revision_rejected": True,

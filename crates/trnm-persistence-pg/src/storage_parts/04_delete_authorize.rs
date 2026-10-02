@@ -9,7 +9,11 @@ fn apply_delete(
         .cloned()
         .ok_or_else(|| data_loss("storage_batch_lock_missing"))?
         .ok_or_else(storage_not_found)?;
-    authorize_write(actor, &operation.key, Some(&previous.object))?;
+    authorize_delete_permission(
+        actor,
+        &operation.key,
+        Some(previous.object.write_permission),
+    )?;
     if operation
         .expected_version
         .as_ref()
@@ -42,7 +46,7 @@ fn apply_delete(
     })
 }
 
-fn verify_storage_writer_epoch(
+pub(crate) fn verify_storage_writer_epoch(
     transaction: &mut Transaction<'_>,
     profile: DatabaseProfile,
 ) -> Result<(), DomainError> {
@@ -96,6 +100,7 @@ fn verify_storage_writer_epoch(
     {
         return Err(data_loss("storage_schema_identity_mismatch"));
     }
+    crate::storage_import::verify_storage_import_serving(transaction)?;
     Ok(())
 }
 
@@ -134,10 +139,9 @@ fn validate_version(
 fn authorize_read(actor: Actor, object: &StorageObject) -> Result<(), DomainError> {
     let allowed = match actor {
         Actor::Server => true,
-        Actor::User(user) => {
-            object.read_permission == ReadPermission::Public
-                || (user == object.key.user_id() && object.read_permission == ReadPermission::Owner)
-        }
+        Actor::User(user) => object
+            .read_permission
+            .allows_batch_read(user == object.key.user_id()),
     };
     if allowed {
         Ok(())
@@ -169,7 +173,26 @@ fn authorize_write_permission(
             if user.is_zero() || user != key.user_id() {
                 return Err(write_permission_error());
             }
-            if existing.is_some_and(|permission| permission != WritePermission::Owner) {
+            if existing.is_some_and(|permission| !permission.allows_client_write()) {
+                return Err(write_permission_error());
+            }
+            Ok(())
+        }
+    }
+}
+
+fn authorize_delete_permission(
+    actor: Actor,
+    key: &StorageObjectKey,
+    existing: Option<WritePermission>,
+) -> Result<(), DomainError> {
+    match actor {
+        Actor::Server => Ok(()),
+        Actor::User(user) => {
+            if user.is_zero() || user != key.user_id() {
+                return Err(write_permission_error());
+            }
+            if existing.is_some_and(|permission| !permission.allows_client_delete()) {
                 return Err(write_permission_error());
             }
             Ok(())

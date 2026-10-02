@@ -14,6 +14,7 @@ on:
       - 'crates/trnm-persistence-pg/**'
       - 'migrations/**'
       - 'scripts/check-trnm-server.py'
+      - 'scripts/materialize-pinned-storage-upstream.py'
       - 'scripts/ci-trnm-server-live.sh'
       - 'scripts/print-server-live-failure.py'
       - 'scripts/trnm-server-live-client.py'
@@ -139,7 +140,7 @@ jobs:
               'storage_timestamps',
               'schema_upgrade',
               'storage_jsonb_v3_projection',
-              'storage_native_jsonb',
+              'storage_native_jsonb', 'storage_v4_acl', 'storage_v4_import',
               'health_ready',
               'unauthenticated_mutation_rejected',
               'http_bootstrap_commit_duplicate_conflict',
@@ -156,7 +157,7 @@ jobs:
           }
           assert all(type(value) is int for value in summary['schema_v3_case_families'].values())
           for field in ('schema_version', 'storage_writer_epoch', 'authoritative_migrations_count'):
-              assert type(summary[field]) is int and summary[field] == 3
+              assert type(summary[field]) is int and summary[field] == 4
           assert summary['entity_revision'] == 3
           assert summary['event_sequence'] == 3
           assert summary['command_receipts'] == 3

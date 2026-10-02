@@ -223,12 +223,14 @@ retain uppercase, nonhexadecimal, Unicode and long strings through the API and
 repository. They must reach ordinary OCC and permission evaluation rather than
 an early MD5-format rejection. Write empty/star mapping differs from delete,
 where `*` is an exact condition. Prefixes and suffixes must not be truncated or
-normalized. These tests do not qualify NUL handling by native SQL or historical
-opaque stored versions. Mock repositories and the real storage state model provide local
+normalized. The native JSONB path also retains historical opaque stored versions and checks
+profile-specific NUL behavior; these source regressions do not qualify the
+immutable Nakama differential. Mock repositories and the real storage state model provide local
 feedback; live database and immutable-oracle evidence remain separate. Read
 `contracts/storage/nakama-http-storage-v1.json` and the open
 `DIV-STORAGE-HTTP-*` records before changing these endpoints. Schema v2 appends nullable storage timestamps and a shared migration engine.
-Original v1 times stay unknown. Reverting API source does not authorize reverting
+Original v1 times stay unknown unless separately carried by a source-verified
+transfer; schema 4 does not invent a timestamp backfill. Reverting API source does not authorize reverting
 the writer epoch, schema or storage privilege barrier.
 
 The last command requires `TRNM_DATABASE_URL`, `TRNM_DATABASE_PROFILE` and
@@ -241,8 +243,9 @@ legacy update time while an exact-version write still refreshes it. The live har
 profile, retaining its log and rejecting empty or skipped execution. It checks
 insert-only version conflicts separately from blind/exact permission rejection,
 prior-write rollback and unchanged persisted values, ACLs and both timestamps.
-The timestamp fixtures also check persisted database times; historical NULL
-timestamps and the immutable upstream differential remain explicit gaps.
+The timestamp fixtures also check persisted database times; populated historical
+NULL recovery, trusted source custody and the immutable upstream differential
+remain explicit gaps.
 This exercises the HTTP application and repository together; TCP ingress,
 pooled deadlines, SDK and immutable Nakama differential remain separate checks.
 
@@ -251,8 +254,9 @@ through the live list matcher. The read-only engineering inventory extracts that
 constant and the guarded dispatcher when the production list module is integrated;
 unreachable literal arms and test-only constants do not establish routes.
 List limits default to one and accept 1–100. Omitted owner lists public objects
-across owners; own owner lists read permissions 1 and 2; foreign or explicit zero
-owner lists permission 2. One readonly serializable SQL query applies ACL before
+across owners with read >= 2; own owner lists read >= 1; foreign or explicit zero
+owner lists read == 2. Batch read separately permits read == 2 or owner/read == 1;
+client write requires write == 1 while client delete accepts write > 0. One readonly serializable SQL query applies ACL before
 its `limit + 1` sentinel and uses database text ordering. It decodes returned rows
 only, so hidden and sentinel integrity failures do not affect earlier pages.
 
@@ -263,8 +267,8 @@ the principal, and SQL applies its ACL independently of the offset. Cursor field
 ignored by each upstream mode supply no authorization. The candidate accepts
 arbitrary int32 read offsets and empty keys under a 4096-byte key budget.
 Collection queries accept empty/dot/control text up to 4096 UTF-8 bytes. Returned
-rows use a separate Nakama key projection matching the authoritative 1–128 Unicode
-character constraints, including dot/control text; the old typed API keeps its
+rows use a separate Nakama stored-key projection matching the authoritative 0–128 Unicode
+character constraints, including empty/dot/control text; the old typed API keeps its
 byte bounds. Request targets, gob streams, types, fields, nesting and container
 work have explicit budgets in the storage contract. Exact gateway alias behavior,
 non-UTF8 Go strings, unsupported gob descriptors, collation, concurrent-page
@@ -275,6 +279,26 @@ The repository list fixture requires the live environment above and emits
 scoped cleanup. It independently seeds Unicode/dot/control rows and damages
 visible, hidden and sentinel digests. Source presence and local execution do not
 admit a live packet or establish compatibility.
+
+### Storage transfer development
+
+The current chain is 0001/0002/0003/0004 per profile, schema 4/writer epoch 4 and twelve authoritative tables. Keep historical SQL and the existing six schema-upgrade regressions plus the 41 v3 observations across shapes, illegal legacy data, catalog drift, partial resume, metadata validation and opaque history. V4 source/import tests extend this coverage; they cannot replace those families or turn a source-DDL fixture into an immutable Nakama oracle.
+
+The operational binaries are `trnm-storage-export` and `trnm-storage-import`; their shared argument/environment parser is `crates/trnm-persistence-pg/src/bin/storage_transfer.rs`. Export accepts `snapshot PACKET_DIRECTORY --candidate-plaintext` and requires a new directory. Import accepts `verify-packet`, `preflight`, `begin`, `apply-page`, `apply`, `resume`, `verify-applied` or `finish`, followed by the packet directory. Only `verify-packet` is offline and takes no plaintext flag; database modes require `--candidate-plaintext`. `apply` registers or reconciles the proven prefix, applies remaining pages and finalizes. `resume` and `verify-applied` are read-only; `finish` cannot complete missing pages. Refer to the binary's `--help` for the exact current argument contract.
+
+| Environment group | Required inputs |
+| --- | --- |
+| Database modes | `TRNM_DATABASE_URL`, `TRNM_DATABASE_PROFILE` (`postgresql` or `cockroachdb`). |
+| Producer/custody identity | `TRNM_STORAGE_PRODUCER_COMMIT`, `TRNM_STORAGE_PRODUCER_TREE`, `TRNM_STORAGE_PRODUCER_SOURCE_SHA256`, `TRNM_STORAGE_PRODUCER_BINARY_SHA256`, `TRNM_STORAGE_EXECUTION_ID`. |
+| Export snapshot | `TRNM_STORAGE_EXPORT_PAGE_ROWS`, `TRNM_STORAGE_SOURCE_EXECUTION_CLASS`, `TRNM_STORAGE_PRODUCER_SOURCE_FILE`, `TRNM_STORAGE_UPSTREAM_DIRECTORY`. |
+| Every import mode | Independent `TRNM_STORAGE_EXPECTED_MANIFEST_SHA256` and `TRNM_STORAGE_EXPECTED_RECEIPT_SHA256`, plus producer/custody identity above. |
+| Import database modes | `TRNM_STORAGE_IMPORT_AUDIT_AT_MS`, `TRNM_STORAGE_LEGACY_WRITER_ROLE`, independent `TRNM_STORAGE_EXPECTED_TARGET_SCOPE_SHA256`. |
+
+Producer commit/tree must be lowercase nonzero 40-hex identities and the source/binary anchors are SHA256. The exporter reads actual `exporter.rs` and the executing image, plus the exact pinned initial SQL/core-storage/LICENSE bytes. Do not derive trust inputs from untrusted packet fields. Values are native JSONB text in separate files, not reserialized serde/f64 payloads, and the packet's manifest and external receipt are independently anchored. Linux held descriptors reject symlink substitution during packet verification. Candidate plaintext transport and local source-DDL execution do not implement production issuer/signature trust or prove a clean Git build.
+
+Keep separate budgets: 256 MiB packet, 10,000 rows, at most 100 pages/100 rows per page, 16 MiB value, 32 MiB summed native-value bytes per page and 2 MiB manifest; row metadata is capped at 16 MiB. The export snapshot and database import sequence have a 300-second operation budget with statements capped at five seconds/remaining time. Source/target collation bindings must match: PostgreSQL supports UTF8/libc and actual deterministic default key collations, CockroachDB uncollated keys. Its target identity classification explicitly reports unobserved physical cluster identity. Native roundtrips must preserve time precision, public versions, all lawful JSONB shapes and stored 0–128 Unicode keys/nonnegative SMALLINT ACLs. New request validation is a separate boundary. SQL materialization memory and stalled synchronous I/O remain unresolved resource limits.
+
+Read `docs/OPERATIONS_AND_RELEASE.md` before running any mutable transfer against an existing target. Tests must cover whole preflight rejection without job/data changes, page rollback, restart/exact resume, conflicting receipts, final inventory and incomplete-import admission. Preserve the full denominator, all existing gates and false compatibility/production/replacement flags.
 
 [`roadmap/ENGINEERING_EXIT_CONTRACTS.json`](roadmap/ENGINEERING_EXIT_CONTRACTS.json) supplies concrete implementation steps, checks and external obligations for every registered gap, plus the full eleven domain work packages. It is subordinate engineering detail, not an alternate queue or a reduced proof obligation. `NEXT_MILESTONE.json` and the approved architecture overlay still control dependency readiness. No advisory priority can bypass their acceptance conditions. The read-only inventory rejects a missing gap or omitted work package.
 
@@ -393,11 +417,11 @@ The timestamp schema lifecycle fixtures run with `cargo test -p trnm-persistence
 
 The embedded registry records each reviewed revision's migration-prefix digest,
 explicit writer epoch and half-open range in the append-only action inventory.
-Historical v1 and v2 digests remain distinct and immutable; unknown revisions
+Historical v1, v2 and v3 digests remain distinct and immutable; unknown revisions
 are rejected. Publication compares all previous metadata fields with NULL-safe
 predicates, preserves foundation provenance and counts the revisions actually
-published. A historical digest does not grant current serve readiness. The engine supports the locked three-file v1-to-v2-to-v3 chain and typed bounded native JSONB conversion. Historical Nakama import remains separate work, and an older revision is not ready to serve.
+published. A historical digest does not grant current serve readiness. The engine supports the locked four-file v1-to-v2-to-v3-to-v4 chain, typed bounded native JSONB conversion and source-transfer journal schema. Historical opaque versions and exported times now have a connected bounded transfer path; production source custody and populated NULL-history repair remain separate work. An older revision is not ready to serve.
 
 Backup/restore and Cockroach retry CI retain actual execution packets through the repository's local upload action. Packets bind the source commit/tree, workflow/run/attempt/job/profile, complete profile SQL chain and real schema reports; retry captures its fresh and read-only reports before deleting its owned test database. Shared archive checks enforce 512 retained entries, 32 MiB payload and 2 MiB compressed/per-file diagnostic limits, then the workflow verifies the uploaded artifact ID, byte count and SHA. These bounded CI fixtures do not qualify production backup volume, multi-node recovery or independent acceptance.
 
-The storage v3 regression targets include `trnm-storage-core` projected model tests, `trnm-persistence-pg --test storage_jsonb`, existing authority/timestamp fixtures, the six isolated schema lifecycle tests and the canonical application fixture. The model's default projector is explicitly identity bytes; only actual native profile runs establish JSONB projection. Preserve existing execution markers and condition matrices, then require the independent `storage_jsonb_v3_live_executed` application marker. All three profile SQL files, exact native schema reports and actual prior-v2 provenance belong in source/prospective, backup, restore, retry and producer archive identity checks.
+The storage v3 regression targets include `trnm-storage-core` projected model tests, `trnm-persistence-pg --test storage_jsonb`, existing authority/timestamp fixtures, the six isolated schema lifecycle tests and the canonical application fixture. The model's default projector is explicitly identity bytes; only actual native profile runs establish JSONB projection. Preserve existing execution markers and condition matrices, then require the independent `storage_jsonb_v3_live_executed` application marker. All four current profile SQL files, exact native schema 4/epoch 4 reports and actual prior-v2/prior-v3 publisher provenance belong in source/prospective, backup, restore, retry and producer archive identity checks. The six original upgrade regressions and 41 v3 observations remain separate required coverage; no new transfer fixture substitutes for them.

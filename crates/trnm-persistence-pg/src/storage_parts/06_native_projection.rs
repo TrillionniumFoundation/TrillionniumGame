@@ -184,14 +184,11 @@ fn lock_storage_access(
                     .map_err(|_| data_loss("invalid_storage_public_version"))?,
             )
             .map_err(|_| data_loss("invalid_storage_public_version"))?;
-            let write = match row
-                .try_get::<_, i16>(1)
-                .map_err(|_| data_loss("invalid_storage_write_permission"))?
-            {
-                0 => WritePermission::None,
-                1 => WritePermission::Owner,
-                _ => return Err(data_loss("invalid_storage_write_permission")),
-            };
+            let write = WritePermission::from_stored(
+                row.try_get::<_, i16>(1)
+                    .map_err(|_| data_loss("invalid_storage_write_permission"))?,
+            )
+            .map_err(|_| data_loss("invalid_storage_write_permission"))?;
             Ok(LockedStorageAccess { version, write })
         })
         .transpose()
@@ -235,7 +232,7 @@ fn validate_locked_operation(
             }
         }
         BatchOperation::Delete(delete) => {
-            authorize_write_permission(actor, &delete.key, access.map(|row| row.write))?;
+            authorize_delete_permission(actor, &delete.key, access.map(|row| row.write))?;
             validate_native_condition(
                 transaction,
                 delete.expected_version.as_ref().map(|token| token.as_str()),

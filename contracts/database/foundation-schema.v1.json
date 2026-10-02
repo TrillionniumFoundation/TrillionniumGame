@@ -50,8 +50,8 @@
     "sg4_complete": false,
     "production_ready": false
   },
-  "schema_version": 3,
-  "storage_writer_epoch": 3,
+  "schema_version": 4,
+  "storage_writer_epoch": 4,
   "migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
   "digest_algorithm": "ordered-path-git-blob-sha256.v1",
   "migration_runner": "crates/trnm-persistence-pg::PgRepository::migrate_authoritative_schema",
@@ -78,6 +78,31 @@
     "unknown_request_origin": "nakama-export-unknown-request",
     "unknown_raw_witness": "SQL NULL value_bytes/version_digest pair with an independent nonzero 32-byte source_manifest_digest",
     "catalog_semantic_scope": "Exact reviewed column typmod, named validated CHECK and primary-key order for this ABI; no general constraint or schema equivalence credit",
+    "runtime_execution_credit": false
+  },
+  "current_authoritative_table_count": 12,
+  "storage_source_import": {
+    "migration": "0004_storage_source_import_up.sql",
+    "stored_key_domain": "0..128 Unicode characters including empty, dot and control text admitted by the native profile",
+    "stored_permissions": "native checked SMALLINT 0..32767; no shared enum authorization predicate",
+    "acl_predicates": {
+      "batch_read": "read==2 OR (read==1 AND owner==caller)",
+      "public_all_list": "read>=2",
+      "own_owner_list": "read>=1",
+      "foreign_global_list": "read==2",
+      "client_write": "write==1",
+      "client_delete": "write>0"
+    },
+    "journal_tables": [
+      "trnm_storage_import_jobs",
+      "trnm_storage_import_pages"
+    ],
+    "history_publishers": [
+      "v2_apply_source_commit",
+      "v3_apply_source_commit"
+    ],
+    "original_request_bytes": "unknown source-native export retains NULL raw witness pair; no source text is original request",
+    "completion": "single manifest-bound journal; applying prefix blocked by per-transaction and startup readiness admission",
     "runtime_execution_credit": false
   }
 }

@@ -183,9 +183,9 @@ jobs:
                                     table_count=table_count, mode='fresh', source_commit=actual_head)
           schemas.validate_identity(restored, profile=profile, chains=chains, schema_version=version,
                                     table_count=table_count, mode='verify')
-          assert all(restored[key] == fresh[key] == identity[key] for key in ('source_commit', 'upgrade_source_commit', 'v2_apply_source_commit'))
+          assert all(restored[key] == fresh[key] == identity[key] for key in ('source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'))
           assert all(fresh[key] == identity[key] for key in ('schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm'))
-          assert fresh['schema_version'] == 3 and fresh['storage_writer_epoch'] == 3
+          assert fresh['schema_version'] == 4 and fresh['storage_writer_epoch'] == 4
           source_v3 = projection.validate_storage_snapshot_bytes(files['source-storage-v3.txt'], profile, fresh, 'restore')
           restored_v3 = projection.validate_storage_snapshot_bytes(files['restored-storage-v3.txt'], profile, restored, 'restore')
           assert source_v3 == restored_v3 == schemas.decode_identity_document(files['storage-v3-snapshot-check.json'])
@@ -200,10 +200,10 @@ jobs:
           assert summary['schema'] == 'trillionnium.backup-restore.v1' and summary['profile'] == profile
           assert all(summary[key] is True for key in ('backup_created', 'empty_restore', 'semantic_snapshot_equal'))
           assert all(summary[key] is False for key in ('production_pitr', 'multi_node_restore'))
-          assert summary['schema_version'] == summary['storage_writer_epoch'] == summary['authoritative_migration_file_count'] == 3
+          assert summary['schema_version'] == summary['storage_writer_epoch'] == summary['authoritative_migration_file_count'] == 4
           assert summary['storage_v3_fixture_count'] == source_v3['storage_fixture_count'] == 4
           lock = migrations.load_lock()
-          assert len(lock['profiles'][profile]['ordered_files']) == 3
+          assert len(lock['profiles'][profile]['ordered_files']) == 4
           assert files['migration-lock.json'] == Path('migrations/MIGRATION_CHAIN.lock.json').read_bytes()
           checker.verify_migration_files(files, lock['profiles'][profile]['ordered_files'])
           validation = migrations.validate()
@@ -277,7 +277,7 @@ jobs:
                      'workflow': identity['workflow'], 'job': identity['job'], 'profile': profile,
                      'workflow_repository': identity['workflow_repository'], 'workflow_ref': identity['workflow_ref'],
                      'workflow_sha': identity['workflow_sha'], 'job_name': identity['job_name'],
-                     'source_commit': identity['source_commit'], 'upgrade_source_commit': identity['upgrade_source_commit'], 'v2_apply_source_commit': identity['v2_apply_source_commit'],
+                     'source_commit': identity['source_commit'], 'upgrade_source_commit': identity['upgrade_source_commit'], 'v2_apply_source_commit': identity['v2_apply_source_commit'], 'v3_apply_source_commit': identity['v3_apply_source_commit'],
                      'schema_version': identity['schema_version'], 'storage_writer_epoch': identity['storage_writer_epoch'],
                      'chain_digest': identity['chain_digest'], 'digest_algorithm': identity['digest_algorithm'],
                      'compatibility_credit': False, 'accepted_evidence': False, 'production_ready': False}

@@ -96,8 +96,8 @@ fn apply_write(
     let request_digest = IntegrityDigest::from_value(&operation.value).get();
     let request_text =
         std::str::from_utf8(&operation.value).map_err(|_| invalid("invalid_storage_value_utf8"))?;
-    let read_permission = operation.read_permission as i16;
-    let write_permission = operation.write_permission as i16;
+    let read_permission = operation.read_permission.get();
+    let write_permission = operation.write_permission.get();
     let columns = storage_row_columns(profile, "TRUE");
     let query = if previous.is_some() {
         format!(

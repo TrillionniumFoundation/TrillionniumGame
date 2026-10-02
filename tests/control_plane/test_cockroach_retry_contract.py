@@ -61,11 +61,11 @@ class CockroachRetryContractTests(unittest.TestCase):
                    "GITHUB_WORKFLOW_REF": "Fixture/Workflow/.github/workflows/cockroach-serialization-retry.yml@refs/pull/151/merge",
                    "GITHUB_WORKFLOW_SHA": WORKFLOW_SHA, "COCKROACH_IMAGE": self.image}
             applied = {"schema": "trillionnium.authoritative-schema-report.v1", "profile": "cockroachdb",
-                       "schema_version": self.version, "storage_writer_epoch": 3,
+                       "schema_version": self.version, "storage_writer_epoch": 4,
                        "chain_digest": self.chains["cockroachdb"]["chain_sha256"],
                        "digest_algorithm": "ordered-path-git-blob-sha256.v1", "table_count": self.tables,
-                       "source_commit": COMMIT, "upgrade_source_commit": COMMIT, "v2_apply_source_commit": COMMIT,
-                       "migration_applied": True, "applied_steps": 3, "compatibility_credit": False}
+                       "source_commit": COMMIT, "upgrade_source_commit": COMMIT, "v2_apply_source_commit": COMMIT, "v3_apply_source_commit": COMMIT,
+                       "migration_applied": True, "applied_steps": 4, "compatibility_credit": False}
             verified = {**applied, "migration_applied": False, "applied_steps": 0}
             identity = {"repository": "Fixture/Retry", "commit": COMMIT, "tree": TREE,
                         "run_id": "123456789", "run_attempt": "2", "workflow": "cockroach-serialization-retry",
@@ -74,10 +74,10 @@ class CockroachRetryContractTests(unittest.TestCase):
                         "workflow_sha": WORKFLOW_SHA, "profile": "cockroachdb", "image": self.image,
                         "fault_mode": "cockroach_session_commit_error_injection", "network_response_loss_injected": False,
                         "compatibility_credit": False, "accepted_evidence": False, "production_ready": False,
-                        "schema_version": self.version, "storage_writer_epoch": 3,
+                        "schema_version": self.version, "storage_writer_epoch": 4,
                         "chain_digest": applied["chain_digest"], "digest_algorithm": applied["digest_algorithm"],
-                        "source_commit": COMMIT, "upgrade_source_commit": COMMIT, "v2_apply_source_commit": COMMIT,
-                        "authoritative_migration_file_count": 3}
+                        "source_commit": COMMIT, "upgrade_source_commit": COMMIT, "v2_apply_source_commit": COMMIT, "v3_apply_source_commit": COMMIT,
+                        "authoritative_migration_file_count": 4}
             files = {"migration-chain.lock.json": (ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_bytes(),
                      "execution.log": b"synthetic retry execution; no live SQL credit\n"}
             for entry in self.lock["profiles"]["cockroachdb"]["ordered_files"]:
@@ -166,7 +166,7 @@ class CockroachRetryContractTests(unittest.TestCase):
 
     def test_consistent_old_packet_cannot_self_authorize_fresh_publishers(self):
         with self.packet_fixture() as (root, env, files):
-            provenance = dict.fromkeys(("source_commit", "upgrade_source_commit", "v2_apply_source_commit"), "d" * 40)
+            provenance = dict.fromkeys(("source_commit", "upgrade_source_commit", "v2_apply_source_commit", "v3_apply_source_commit"), "d" * 40)
             for name in ("schema-apply.json", "schema-verify.json", "identity.json"):
                 self.mutate_report(files, name, provenance)
             self.mutate_report(files, "identity.json", {"commit": "d" * 40, "tree": "e" * 40, "run_attempt": "1"})
@@ -176,7 +176,7 @@ class CockroachRetryContractTests(unittest.TestCase):
 
     def test_archive_provenance_cannot_replace_actual_fresh_apply_commit(self):
         with self.packet_fixture() as (root, env, files):
-            provenance = dict.fromkeys(("source_commit", "upgrade_source_commit", "v2_apply_source_commit"), "d" * 40)
+            provenance = dict.fromkeys(("source_commit", "upgrade_source_commit", "v2_apply_source_commit", "v3_apply_source_commit"), "d" * 40)
             for name in ("schema-apply.json", "schema-verify.json", "identity.json"):
                 self.mutate_report(files, name, provenance)
             self.write_archive(root, files)
@@ -215,7 +215,7 @@ class CockroachRetryContractTests(unittest.TestCase):
                     self.execute_guard("PY_RETRY_ARCHIVE", root, env)
 
     def test_readonly_schema_report_cannot_claim_mutation_or_changed_history(self):
-        for changes in ({"migration_applied": True, "applied_steps": 3}, {"v2_apply_source_commit": "d" * 40}):
+        for changes in ({"migration_applied": True, "applied_steps": 4}, {"v2_apply_source_commit": "d" * 40}):
             with self.subTest(changes=changes), self.packet_fixture() as (root, env, files):
                 self.mutate_report(files, "schema-verify.json", changes)
                 self.write_archive(root, files)

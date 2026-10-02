@@ -91,14 +91,15 @@ class StorageIntegrityContractTests(unittest.TestCase):
         self.assertEqual(result["source_files"], list(checker.SOURCE_FILES))
         self.assertEqual(result["auxiliary_source_files"], list(checker.AUXILIARY_SOURCE_FILES))
         self.assertEqual(result["projection_tests"], 11)
-        self.assertEqual(result["rust_tests"], 30)
+        self.assertEqual(result["rust_tests"], 37)
+        self.assertEqual(result["stored_domain_tests"], 7)
         self.assertEqual(result["vector_cases"], 15)
         self.assertFalse(result["cargo_executed_locally"])
         self.assertFalse(result["compatibility_credit"])
 
     def test_projection_modules_cannot_be_missing_unwired_or_uninventoried(self) -> None:
         checker = load_core_checker()
-        for mutation in ("missing_module", "missing_tests", "unwired_module", "unwired_tests", "extra_module"):
+        for mutation in ("missing_module", "missing_tests", "unwired_module", "unwired_tests", "extra_module", "missing_stored_domain", "missing_stored_tests", "unwired_stored_domain", "unwired_stored_tests"):
             root = self.copy_core_contract()
             lib = root / checker.SOURCE_FILES[0]
             if mutation == "missing_module":
@@ -109,6 +110,14 @@ class StorageIntegrityContractTests(unittest.TestCase):
                 lib.write_text(lib.read_text().replace("mod projection;", ""))
             elif mutation == "unwired_tests":
                 lib.write_text(lib.read_text().replace("mod projection_tests;", ""))
+            elif mutation == "missing_stored_domain":
+                (root / checker.SOURCE_FILES[3]).unlink()
+            elif mutation == "missing_stored_tests":
+                (root / checker.SOURCE_FILES[4]).unlink()
+            elif mutation == "unwired_stored_domain":
+                lib.write_text(lib.read_text().replace("mod stored_domain;", ""))
+            elif mutation == "unwired_stored_tests":
+                lib.write_text(lib.read_text().replace("mod stored_domain_tests;", ""))
             else:
                 (root / "crates/trnm-storage-core/src/unreviewed.rs").write_text("// unlisted source\n")
             with self.subTest(mutation=mutation), self.assertRaises(checker.ValidationError):

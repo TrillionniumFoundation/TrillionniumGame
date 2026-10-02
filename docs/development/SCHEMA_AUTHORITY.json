@@ -42,7 +42,7 @@
       }
     ],
     "metadata_table": "trnm_schema_metadata",
-    "schema_version": 3,
+    "schema_version": 4,
     "identity_rule": "Every build, migration, adapter test, backup and restore artifact must record the complete ordered migration-chain SHA-256 and candidate commit/tree.",
     "postgresql_connection_fault_source_candidate": {
       "harness": "scripts/ci-postgresql-connection-faults.sh",
@@ -175,6 +175,23 @@
       "accepted": false,
       "compatibility_credit": false,
       "migration_compatible": false
+    },
+    "storage_source_import_upgrade_source_candidate": {
+      "adr": "NAKAMA-STORAGE-SOURCE-IMPORT-V4",
+      "migration": "0004_storage_source_import_up.sql",
+      "schema_version": 4,
+      "storage_writer_epoch": 4,
+      "engine": "crates/trnm-persistence-pg/src/schema.rs",
+      "packet": "crates/trnm-persistence-pg/src/storage_import.rs",
+      "row_abi": "Stored collection/key permit0..128 Unicode characters. Checked native SMALLINT permissions preserve0..32767. Batch read, own list, foreign/global list, public-all list, client write and client delete remain distinct predicates.",
+      "custody": "Complete bounded offline inventory and externally supplied manifest/receipt/producer identity anchors precede mutable target transactions. Native exported text is never original request bytes. Whole source capture/signature trust require separate qualification.",
+      "journal": "Single target authority trnm_storage_objects, manifest-bound import jobs/pages, atomic page receipt and prefix, completion gate blocks normal storage transactions while any import is incomplete. Candidate source wiring requires actual native resume/tamper/readiness proof before evidence credit.",
+      "history": "Original source_commit/applied_at_ms remain unchanged; actual previousv2 and previousv3 publishers are preserved in v2_apply_source_commit and v3_apply_source_commit; upgrade_source_commit is the current revision publisher.",
+      "rollback": "Forward repair under exclusive writer barrier only; no schema3 writer rollback, destructive down migration or second payload authority.",
+      "accepted": false,
+      "compatibility_credit": false,
+      "migration_compatible": false,
+      "production_ready": false
     }
   },
   "non_authoritative": [
@@ -210,7 +227,9 @@
       "trnm_authority_leases",
       "trnm_session_families",
       "trnm_refresh_tokens",
-      "trnm_storage_objects"
+      "trnm_storage_objects",
+      "trnm_storage_import_jobs",
+      "trnm_storage_import_pages"
     ],
     "required_semantics": [
       "entity revision compare-and-swap",
@@ -238,7 +257,10 @@
       "crates/trnm-persistence-pg/src/schema.rs",
       "crates/trnm-persistence-pg/src/storage_metadata.rs",
       "crates/trnm-persistence-pg/src/schema_parts/jsonb_backfill.rs",
-      "crates/trnm-persistence-pg/src/storage_parts/06_native_projection.rs"
+      "crates/trnm-persistence-pg/src/storage_parts/06_native_projection.rs",
+      "crates/trnm-persistence-pg/src/storage_import.rs",
+      "crates/trnm-persistence-pg/src/storage_import_parts/packet.rs",
+      "crates/trnm-persistence-pg/src/storage_import_parts/repository.rs"
     ],
     "source_coverage_candidate": {
       "all_required_tables_referenced": true,
@@ -251,13 +273,14 @@
     "storage_client_list_projection_source_candidate": {
       "table": "trnm_storage_objects",
       "method": "PgRepository::list_storage_objects_nakama",
-      "schema_changed": false,
-      "row_identifier_constraint": "Existing collection/object_key length 1..128 Unicode characters; separate Nakama decode factory permits valid dot/control text.",
+      "schema_changed": true,
+      "row_identifier_constraint": "Append-only v4 stored collection/object_key length0..128 Unicode characters; stored decoder preserves legal empty, dot and control text. Internal/client request admission remains a separate policy.",
       "query_semantics": [
         "nonzero authenticated user actor; optional zero owner remains global",
         "ACL before bounded limit+1 sentinel",
         "SQL text ordering for public-all, own and foreign/global owner modes",
-        "readonly serializable query; decode returned rows only; no automatic retry"
+        "readonly serializable query; decode returned rows only; no automatic retry",
+        "Raw stored permission predicates: public-all>=2; own>=1; foreign/global==2; public continuation retains pinned constant read2 and literal cursor equality handling."
       ],
       "accepted": false,
       "compatibility_credit": false

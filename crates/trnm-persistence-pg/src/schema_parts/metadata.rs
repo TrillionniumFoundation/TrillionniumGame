@@ -9,6 +9,7 @@ struct RecordedMetadata {
     storage_writer_epoch: Option<i64>,
     upgrade_source_commit: Option<String>,
     v2_apply_source_commit: Option<String>,
+    v3_apply_source_commit: Option<String>,
 }
 
 fn validate_source_commit(value: &str) -> Result<(), DomainError> {
@@ -41,13 +42,14 @@ fn read_metadata(
     let rows = client
         .query(
             &format!(
-                "SELECT singleton, schema_version, profile, source_commit, applied_at_ms, {}, {}, {}, {}, {} \
-                 FROM public.trnm_schema_metadata",
+                "SELECT singleton, schema_version, profile, source_commit, applied_at_ms, {}, {}, {}, {}, {}, {} \
+                 FROM public.trnm_schema_metadata LIMIT 2",
                 optional("chain_digest", "text"),
                 optional("digest_algorithm", "text"),
                 optional("storage_writer_epoch", "bigint"),
                 optional("upgrade_source_commit", "text"),
-                optional("v2_apply_source_commit", "text")
+                optional("v2_apply_source_commit", "text"),
+                optional("v3_apply_source_commit", "text")
             ),
             &[],
         )
@@ -71,6 +73,7 @@ fn read_metadata(
         storage_writer_epoch: row.try_get(7).map_err(map_postgres_error)?,
         upgrade_source_commit: row.try_get(8).map_err(map_postgres_error)?,
         v2_apply_source_commit: row.try_get(9).map_err(map_postgres_error)?,
+        v3_apply_source_commit: row.try_get(10).map_err(map_postgres_error)?,
     }))
 }
 
@@ -95,13 +98,24 @@ fn validate_recorded_revision(
     if descriptor.version < 3 && recorded.v2_apply_source_commit.is_some() {
         return Err(failed_precondition("schema_unpublished_metadata_drift"));
     }
-    if descriptor.version == 3
+    if descriptor.version >= 3
         && recorded
             .v2_apply_source_commit
             .as_deref()
             .is_none_or(|value| validate_source_commit(value).is_err())
     {
         return Err(failed_precondition("schema_v2_apply_provenance_invalid"));
+    }
+    if descriptor.version < 4 && recorded.v3_apply_source_commit.is_some() {
+        return Err(failed_precondition("schema_unpublished_metadata_drift"));
+    }
+    if descriptor.version >= 4
+        && recorded
+            .v3_apply_source_commit
+            .as_deref()
+            .is_none_or(|value| validate_source_commit(value).is_err())
+    {
+        return Err(failed_precondition("schema_v3_apply_provenance_invalid"));
     }
     let foundation = revisions(profile)
         .first()
@@ -167,6 +181,10 @@ fn verify_ready_metadata(
             .v2_apply_source_commit
             .clone()
             .ok_or_else(|| failed_precondition("schema_v2_apply_provenance_invalid"))?,
+        v3_apply_source_commit: recorded
+            .v3_apply_source_commit
+            .clone()
+            .ok_or_else(|| failed_precondition("schema_v3_apply_provenance_invalid"))?,
     })
 }
 
@@ -242,7 +260,12 @@ fn metadata_for_transition(
         v2_apply_source_commit: if target.version == 3 {
             original.upgrade_source_commit.clone()
         } else {
-            None
+            original.v2_apply_source_commit.clone()
+        },
+        v3_apply_source_commit: if target.version == 4 {
+            original.upgrade_source_commit.clone()
+        } else {
+            original.v3_apply_source_commit.clone()
         },
     };
     validate_recorded_revision(&next, profile)?;
@@ -259,41 +282,62 @@ fn publish_metadata(
     let next = metadata_for_transition(profile, original, target, source_commit)?;
     // Compare every persisted field of the old singleton, including NULLs.
     // Keep the foundation source/time; only the adjacent revision is published.
-    let (sql, params): (&str, Vec<&(dyn postgres::types::ToSql + Sync)>) = if target.version == 3 {
-        ("UPDATE public.trnm_schema_metadata SET schema_version=$1, chain_digest=$2, digest_algorithm=$3, storage_writer_epoch=$4, upgrade_source_commit=$5, v2_apply_source_commit=$14 \
-         WHERE singleton=1 AND schema_version=$6 AND profile=$7 AND source_commit=$8 AND applied_at_ms=$9 AND chain_digest IS NOT DISTINCT FROM $10 \
-         AND digest_algorithm IS NOT DISTINCT FROM $11 AND storage_writer_epoch IS NOT DISTINCT FROM $12 AND upgrade_source_commit IS NOT DISTINCT FROM $13 AND v2_apply_source_commit IS NOT DISTINCT FROM $15",
-         vec![&next.version,&next.chain_digest,&next.digest_algorithm,&next.storage_writer_epoch,&next.upgrade_source_commit,&original.version,&original.profile,&original.source_commit,&original.applied_at_ms,&original.chain_digest,&original.digest_algorithm,&original.storage_writer_epoch,&original.upgrade_source_commit,&next.v2_apply_source_commit,&original.v2_apply_source_commit])
-    } else {
-        (
-            "UPDATE public.trnm_schema_metadata SET schema_version = $1, chain_digest = $2, \
-              digest_algorithm = $3, storage_writer_epoch = $4, upgrade_source_commit = $5 \
-             WHERE singleton = 1 AND schema_version = $6 AND profile = $7 AND source_commit = $8 \
-               AND applied_at_ms = $9 AND chain_digest IS NOT DISTINCT FROM $10 \
-               AND digest_algorithm IS NOT DISTINCT FROM $11 \
-               AND storage_writer_epoch IS NOT DISTINCT FROM $12 \
-               AND upgrade_source_commit IS NOT DISTINCT FROM $13",
-            vec![
-                &next.version,
-                &next.chain_digest,
-                &next.digest_algorithm,
-                &next.storage_writer_epoch,
-                &next.upgrade_source_commit,
-                &original.version,
-                &original.profile,
-                &original.source_commit,
-                &original.applied_at_ms,
-                &original.chain_digest,
-                &original.digest_algorithm,
-                &original.storage_writer_epoch,
-                &original.upgrade_source_commit,
-            ],
-        )
-    };
-    let count = client.execute(sql, &params).map_err(map_postgres_error)?;
+    let mut sql = String::from("UPDATE public.trnm_schema_metadata SET schema_version=$1,chain_digest=$2,digest_algorithm=$3,storage_writer_epoch=$4,upgrade_source_commit=$5");
+    let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
+        &next.version,
+        &next.chain_digest,
+        &next.digest_algorithm,
+        &next.storage_writer_epoch,
+        &next.upgrade_source_commit,
+        &original.version,
+        &original.profile,
+        &original.source_commit,
+        &original.applied_at_ms,
+        &original.chain_digest,
+        &original.digest_algorithm,
+        &original.storage_writer_epoch,
+        &original.upgrade_source_commit,
+    ];
+    match target.version {
+        2 => {}
+        3 => {
+            sql.push_str(",v2_apply_source_commit=$14");
+            params.push(&next.v2_apply_source_commit);
+        }
+        4 => {
+            sql.push_str(",v2_apply_source_commit=$14,v3_apply_source_commit=$15");
+            params.push(&next.v2_apply_source_commit);
+            params.push(&next.v3_apply_source_commit);
+        }
+        _ => {
+            return Err(failed_precondition(
+                "schema_metadata_transition_not_adjacent",
+            ))
+        }
+    }
+    sql.push_str(" WHERE singleton=1 AND schema_version=$6 AND profile=$7 AND source_commit=$8 AND applied_at_ms=$9 AND chain_digest IS NOT DISTINCT FROM $10 AND digest_algorithm IS NOT DISTINCT FROM $11 AND storage_writer_epoch IS NOT DISTINCT FROM $12 AND upgrade_source_commit IS NOT DISTINCT FROM $13");
+    if target.version >= 3 {
+        params.push(&original.v2_apply_source_commit);
+        sql.push_str(&format!(
+            " AND v2_apply_source_commit IS NOT DISTINCT FROM ${}",
+            params.len()
+        ));
+    }
+    if target.version == 4 {
+        params.push(&original.v3_apply_source_commit);
+        sql.push_str(&format!(
+            " AND v3_apply_source_commit IS NOT DISTINCT FROM ${}",
+            params.len()
+        ));
+    }
+    let count = client.execute(&sql, &params).map_err(map_postgres_error)?;
     if count != 1 {
         return Err(failed_precondition("schema_metadata_publish_conflict"));
     }
+    let catalog = read_catalog(client)?;
+    let observed = read_metadata(client, &catalog)?
+        .ok_or_else(|| failed_precondition("schema_metadata_missing"))?;
+    ensure_metadata_unchanged(&next, &observed)?;
     Ok(next)
 }
 
@@ -335,6 +379,7 @@ mod metadata_tests {
             storage_writer_epoch: None,
             upgrade_source_commit: None,
             v2_apply_source_commit: None,
+            v3_apply_source_commit: None,
         }
     }
 
@@ -372,7 +417,16 @@ mod metadata_tests {
                 &"c".repeat(40),
             )
             .unwrap();
-            let ready = verify_ready_metadata(&native, profile).unwrap();
+            assert!(verify_ready_metadata(&native, profile).is_err());
+            let imported = metadata_for_transition(
+                profile,
+                &native,
+                revision(profile, 4).unwrap(),
+                &"d".repeat(40),
+            )
+            .unwrap();
+            let ready = verify_ready_metadata(&imported, profile).unwrap();
+            assert_eq!(ready.v3_apply_source_commit, "c".repeat(40));
             assert_eq!(ready.source_commit, old.source_commit);
             assert_eq!(
                 ready.v2_apply_source_commit,
@@ -400,7 +454,7 @@ mod metadata_tests {
     fn recorded_metadata_rejects_unknown_revisions_and_invented_provenance() {
         for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
             let current = timestamps(profile);
-            for version in [-1, 0, 4, i64::MAX] {
+            for version in [-1, 0, 5, i64::MAX] {
                 let mut invalid = current.clone();
                 invalid.version = version;
                 assert!(validate_recorded_revision(&invalid, profile).is_err());
@@ -475,7 +529,7 @@ mod metadata_tests {
             assert!(
                 next_revision_for_prefix(&published, profile, native.action_range.end)
                     .unwrap()
-                    .is_none()
+                    .is_some_and(|next| next.version == 4)
             );
             for prefix in [
                 0,
@@ -520,6 +574,9 @@ mod metadata_tests {
             changes.push(changed);
             let mut changed = original.clone();
             changed.v2_apply_source_commit = Some("d".repeat(40));
+            changes.push(changed);
+            let mut changed = original.clone();
+            changed.v3_apply_source_commit = Some("e".repeat(40));
             changes.push(changed);
             for changed in changes {
                 assert_eq!(
@@ -582,11 +639,179 @@ mod metadata_tests {
             for bad in [None, Some("z".repeat(40)), Some("a".repeat(39))] {
                 let mut corrupted = new.clone();
                 corrupted.v2_apply_source_commit = bad;
-                assert!(verify_ready_metadata(&corrupted, profile).is_err());
+                assert!(validate_recorded_revision(&corrupted, profile).is_err());
             }
             let mut early = old;
             early.v2_apply_source_commit = Some("c".repeat(40));
             assert!(validate_recorded_revision(&early, profile).is_err());
         }
+    }
+    #[test]
+    fn v4_preserves_all_actual_publishers_and_rejects_prepublished_v3_history() {
+        for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
+            let v2 = timestamps(profile);
+            let v3 = metadata_for_transition(
+                profile,
+                &v2,
+                revision(profile, 3).unwrap(),
+                &"C".repeat(40),
+            )
+            .unwrap();
+            let v4 = metadata_for_transition(
+                profile,
+                &v3,
+                revision(profile, 4).unwrap(),
+                &"d".repeat(40),
+            )
+            .unwrap();
+            let ready = verify_ready_metadata(&v4, profile).unwrap();
+            assert_eq!(ready.source_commit, "a".repeat(40));
+            assert_eq!(ready.v2_apply_source_commit, "b".repeat(40));
+            assert_eq!(ready.v3_apply_source_commit, "C".repeat(40));
+            assert_eq!(ready.upgrade_source_commit, "d".repeat(40));
+            assert_eq!(v4.applied_at_ms, 17);
+            let mut early = v3.clone();
+            early.v3_apply_source_commit = Some("C".repeat(40));
+            assert_eq!(
+                validate_recorded_revision(&early, profile)
+                    .unwrap_err()
+                    .reason(),
+                "schema_unpublished_metadata_drift"
+            );
+            for history in [None, Some(String::new()), Some("g".repeat(40))] {
+                let mut corrupt = v4.clone();
+                corrupt.v3_apply_source_commit = history;
+                assert!(verify_ready_metadata(&corrupt, profile).is_err());
+            }
+            let mut empty = v3;
+            empty.v3_apply_source_commit = Some(String::new());
+            assert!(ensure_metadata_unchanged(&early, &empty).is_err());
+        }
+    }
+}
+
+/// Mutable importer guard reuses the authoritative metadata/catalog identity.
+/// Import completion/admission is a separate journal predicate, never a second
+/// schema authority. Physical target custody is appended by the importer.
+pub(crate) fn storage_import_schema_guard(
+    transaction: &mut postgres::Transaction<'_>,
+    profile: DatabaseProfile,
+    lock_metadata: bool,
+) -> Result<IntegrityDigest, DomainError> {
+    let sql = if lock_metadata {
+        "SELECT singleton FROM public.trnm_schema_metadata WHERE singleton=1 FOR UPDATE"
+    } else {
+        "SELECT singleton FROM public.trnm_schema_metadata WHERE singleton=1"
+    };
+    transaction
+        .query_one(sql, &[])
+        .map_err(map_postgres_error)?;
+    let catalog = read_catalog(transaction)?;
+    let prefix = catalog_prefix(&catalog, profile)?;
+    let recorded = read_metadata(transaction, &catalog)?
+        .ok_or_else(|| failed_precondition("schema_metadata_missing"))?;
+    if next_revision_for_prefix(&recorded, profile, prefix)?.is_some() {
+        return Err(failed_precondition(
+            "authoritative_schema_upgrade_incomplete",
+        ));
+    }
+    verify_ready_metadata(&recorded, profile)?;
+    Ok(recorded_metadata_guard_digest(&recorded))
+}
+
+fn recorded_metadata_guard_digest(recorded: &RecordedMetadata) -> IntegrityDigest {
+    let mut framed = b"trillionnium.storage-import.schema-guard.v1\0".to_vec();
+    let mut field = |value: Option<&[u8]>| match value {
+        None => framed.push(0),
+        Some(bytes) => {
+            framed.push(1);
+            framed.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+            framed.extend_from_slice(bytes);
+        }
+    };
+    field(Some(&1_i16.to_be_bytes()));
+    field(Some(&recorded.version.to_be_bytes()));
+    field(Some(recorded.profile.as_bytes()));
+    field(Some(recorded.source_commit.as_bytes()));
+    field(Some(&recorded.applied_at_ms.to_be_bytes()));
+    field(recorded.chain_digest.as_deref().map(str::as_bytes));
+    field(recorded.digest_algorithm.as_deref().map(str::as_bytes));
+    let epoch = recorded.storage_writer_epoch.map(i64::to_be_bytes);
+    field(epoch.as_ref().map(|bytes| bytes.as_slice()));
+    field(recorded.upgrade_source_commit.as_deref().map(str::as_bytes));
+    field(
+        recorded
+            .v2_apply_source_commit
+            .as_deref()
+            .map(str::as_bytes),
+    );
+    field(
+        recorded
+            .v3_apply_source_commit
+            .as_deref()
+            .map(str::as_bytes),
+    );
+    IntegrityDigest::from_value(&framed)
+}
+
+#[cfg(test)]
+mod import_schema_guard_tests {
+    use super::*;
+
+    #[test]
+    fn schema_guard_distinguishes_every_history_null_empty_and_literal_case() {
+        let original = RecordedMetadata {
+            version: 4,
+            profile: "postgresql".to_owned(),
+            source_commit: "a".repeat(40),
+            applied_at_ms: 17,
+            chain_digest: Some("b".repeat(64)),
+            digest_algorithm: Some(AUTHORITATIVE_CHAIN_DIGEST_ALGORITHM.to_owned()),
+            storage_writer_epoch: Some(4),
+            upgrade_source_commit: Some("c".repeat(40)),
+            v2_apply_source_commit: Some("d".repeat(40)),
+            v3_apply_source_commit: Some("E".repeat(40)),
+        };
+        let digest = recorded_metadata_guard_digest(&original);
+        let mut variants = Vec::new();
+        let mut changed = original.clone();
+        changed.version = 3;
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.profile = "cockroachdb".to_owned();
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.source_commit = "b".repeat(40);
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.applied_at_ms = 18;
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.chain_digest = None;
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.digest_algorithm = None;
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.storage_writer_epoch = None;
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.upgrade_source_commit = None;
+        variants.push(changed);
+        let mut changed = original.clone();
+        changed.v2_apply_source_commit = None;
+        variants.push(changed);
+        for history in [None, Some(String::new()), Some("e".repeat(40))] {
+            let mut changed = original.clone();
+            changed.v3_apply_source_commit = history;
+            variants.push(changed);
+        }
+        for changed in &variants {
+            assert_ne!(digest, recorded_metadata_guard_digest(changed));
+        }
+        assert_ne!(
+            recorded_metadata_guard_digest(&variants[9]),
+            recorded_metadata_guard_digest(&variants[10])
+        );
     }
 }

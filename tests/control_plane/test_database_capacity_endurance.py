@@ -54,6 +54,7 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
         clients: int = 4,
         threads: int = 2,
         v2_apply_source_commit: str = "3" * 40,
+        v3_apply_source_commit: str = "4" * 40,
     ) -> dict:
         observed = requested if observed is None else observed
         start = 1_800_000_000 + index * 21_600 if start is None else start
@@ -71,13 +72,14 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
             "migration_lock_sha256": hashlib.sha256((ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_bytes()).hexdigest(),
             "schema_identity": {
                 "schema": "trillionnium.authoritative-schema-report.v1", "profile": schema_profile,
-                "schema_version": version, "storage_writer_epoch": 3,
+                "schema_version": version, "storage_writer_epoch": 4,
                 "chain_digest": chains[schema_profile]["chain_sha256"],
                 "digest_algorithm": "ordered-path-git-blob-sha256.v1",
                 "source_commit": "1" * 40, "upgrade_source_commit": "2" * 40,
                 # An explicit synthetic previous-revision publisher, independent
                 # of the candidate that only performs read-only verification.
                 "v2_apply_source_commit": v2_apply_source_commit,
+                "v3_apply_source_commit": v3_apply_source_commit,
                 "migration_applied": False, "applied_steps": 0, "table_count": tables,
                 "compatibility_credit": False,
             },
@@ -146,6 +148,7 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
             self.assertEqual(report["maximum_segment_gap_seconds"], 0)
             self.assertEqual(report["schema_identity"], self.capacity(index=0)["schema_identity"])
             self.assertEqual(report["schema_identity"]["v2_apply_source_commit"], "3" * 40)
+            self.assertEqual(report["schema_identity"]["v3_apply_source_commit"], "4" * 40)
             self.assertNotEqual(report["schema_identity"]["v2_apply_source_commit"], report["candidate_commit"])
             self.assertFalse(any(report["claim_boundary"].values()))
 
@@ -248,7 +251,7 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
         self.assertIn("capacity/endurance source contract: OK", result.stdout)
 
     def test_mixed_or_missing_schema_identity_cannot_form_an_endurance_ledger(self):
-        for mutation in ("missing", "old_epoch", "missing_prior", "invalid_prior", "changed_prior", "wrong_chain", "wrong_algorithm", "mutation_claim", "changed_provenance", "wrong_lock"):
+        for mutation in ("missing", "old_epoch", "missing_prior", "invalid_prior", "changed_prior", "missing_v3_prior", "invalid_v3_prior", "changed_v3_prior", "wrong_chain", "wrong_algorithm", "mutation_claim", "changed_provenance", "wrong_lock"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 paths = self.four_segment_ledger(root)
@@ -264,6 +267,12 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
                     schema["v2_apply_source_commit"] = "short"
                 elif mutation == "changed_prior":
                     schema["v2_apply_source_commit"] = "4" * 40
+                elif mutation == "missing_v3_prior":
+                    schema.pop("v3_apply_source_commit")
+                elif mutation == "invalid_v3_prior":
+                    schema["v3_apply_source_commit"] = "short"
+                elif mutation == "changed_v3_prior":
+                    schema["v3_apply_source_commit"] = "5" * 40
                 elif mutation == "wrong_chain":
                     schema["chain_digest"] = "e" * 64
                 elif mutation == "wrong_algorithm":
@@ -304,7 +313,7 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.four_segment_ledger(Path(temporary))
             value = paths[0].read_text()
-            ambiguous = value.replace('"storage_writer_epoch":3', '"storage_writer_epoch":2,"storage_writer_epoch":3')
+            ambiguous = value.replace('"storage_writer_epoch":4', '"storage_writer_epoch":3,"storage_writer_epoch":4')
             self.assertNotEqual(value, ambiguous)
             paths[0].write_text(ambiguous)
             with self.assertRaisesRegex(self.finalizer.ValidationError, "duplicate JSON key storage_writer_epoch"):
@@ -323,7 +332,7 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
                     capacity = self.capacity(index=0, profile=profile)
                     identity = capacity["schema_identity"]
                     if context == "fresh":
-                        for publisher in ("source_commit", "upgrade_source_commit", "v2_apply_source_commit"):
+                        for publisher in ("source_commit", "upgrade_source_commit", "v2_apply_source_commit", "v3_apply_source_commit"):
                             identity[publisher] = capacity["candidate_commit"]
                     (evidence / "schema-identity.json").write_bytes(canonical(identity))
                     (evidence / "pgbench.stdout").write_text(
@@ -344,7 +353,7 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
                     self.assertEqual(completed.returncode, 0, completed.stderr)
                     produced = json.loads((evidence / "manifest.json").read_text(encoding="utf-8"))
                     self.assertEqual(produced["schema_identity"], identity)
-                    self.assertEqual(produced["schema_identity"]["storage_writer_epoch"], 3)
+                    self.assertEqual(produced["schema_identity"]["storage_writer_epoch"], 4)
                     self.assertEqual(produced["schema_identity"]["v2_apply_source_commit"], identity["v2_apply_source_commit"])
                     self.assertEqual(produced["migration_lock_sha256"], capacity["migration_lock_sha256"])
                     self.finalizer.validate_capacity_manifest(produced, evidence / "manifest.json")

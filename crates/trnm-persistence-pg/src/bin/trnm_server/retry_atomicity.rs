@@ -31,9 +31,9 @@ fn emit_schema_report(marker: &str, report: &SchemaMigrationReport) {
     }
     // Profile/algorithm are static names, provenance is checked hexadecimal
     // and the digest is hexadecimal: no unescaped external text enters JSON.
-    println!("\n{marker}={{\"schema\":\"trillionnium.authoritative-schema-report.v1\",\"profile\":\"{}\",\"schema_version\":{},\"chain_digest\":\"{}\",\"digest_algorithm\":\"{}\",\"storage_writer_epoch\":{},\"source_commit\":\"{}\",\"upgrade_source_commit\":\"{}\",\"v2_apply_source_commit\":\"{}\",\"migration_applied\":{},\"table_count\":{},\"applied_steps\":{},\"compatibility_credit\":false}}",
+    println!("\n{marker}={{\"schema\":\"trillionnium.authoritative-schema-report.v1\",\"profile\":\"{}\",\"schema_version\":{},\"chain_digest\":\"{}\",\"digest_algorithm\":\"{}\",\"storage_writer_epoch\":{},\"source_commit\":\"{}\",\"upgrade_source_commit\":\"{}\",\"v2_apply_source_commit\":\"{}\",\"v3_apply_source_commit\":\"{}\",\"migration_applied\":{},\"table_count\":{},\"applied_steps\":{},\"compatibility_credit\":false}}",
         report.identity.profile.metadata_value(), report.identity.schema_version, digest, report.identity.digest_algorithm,
-        report.identity.storage_writer_epoch, report.identity.source_commit, report.identity.upgrade_source_commit, report.identity.v2_apply_source_commit,
+        report.identity.storage_writer_epoch, report.identity.source_commit, report.identity.upgrade_source_commit, report.identity.v2_apply_source_commit, report.identity.v3_apply_source_commit,
         report.migration_applied, report.table_count, report.applied_steps);
 }
 struct InjectedRepository {
@@ -311,7 +311,7 @@ pub fn prove(database_url: &str) {
         .unwrap()
         .get(0);
     let table_count = usize::try_from(table_count).unwrap();
-    assert_eq!(table_count, 10);
+    assert_eq!(table_count, 12);
     emit_schema_report(
         "retry_schema_verify_report",
         &SchemaMigrationReport {

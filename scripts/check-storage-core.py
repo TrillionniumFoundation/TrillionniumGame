@@ -42,10 +42,13 @@ PROJECTION_TESTS = {
     "projection_integrity_and_witness_corruption_fail_before_no_op_or_delete",
     "projection_seam_keeps_permission_and_create_only_occ_precedence",
 }
+STORED_DOMAIN_TESTS = {'stored_permission_wrappers_preserve_full_nonnegative_smallint_domain', 'blind_raw_acl_no_op_and_acl_change_preserve_or_replace_unknown_witness', 'stored_acl_predicates_keep_read_list_write_and_delete_distinct', 'historical_acl_batch_failure_preserves_values_versions_witnesses_and_all_rows', 'historical_raw_acl_write_delete_and_occ_precedence_are_distinct', 'historical_raw_acl_read_visibility_uses_authenticated_owner_and_exact_read_values', 'stored_nakama_identifiers_preserve_empty_unicode_control_and_owner_cells'}
 SOURCE_FILES = (
     "crates/trnm-storage-core/src/lib.rs",
     "crates/trnm-storage-core/src/projection.rs",
     "crates/trnm-storage-core/src/projection_tests.rs",
+    "crates/trnm-storage-core/src/stored_domain.rs",
+    "crates/trnm-storage-core/src/stored_domain_tests.rs",
 )
 AUXILIARY_SOURCE_FILES = ("crates/trnm-storage-core/src/bin/trnm-storage-version.rs",)
 REQUIRED_VECTOR_CASES = {
@@ -76,7 +79,9 @@ def validate(root: Path = ROOT) -> dict:
     if inventory != sorted(SOURCE_FILES + AUXILIARY_SOURCE_FILES):
         fail("pure storage source inventory drifted")
     sources = {path: (root / path).read_text(encoding="utf-8") for path in SOURCE_FILES}
-    source, projection, tests = (sources[path] for path in SOURCE_FILES)
+    source = sources["crates/trnm-storage-core/src/lib.rs"]
+    projection = sources["crates/trnm-storage-core/src/projection.rs"]
+    tests = sources["crates/trnm-storage-core/src/projection_tests.rs"]
     combined = "\n".join(sources.values())
     for path in AUXILIARY_SOURCE_FILES:
         auxiliary_source = (root / path).read_text(encoding="utf-8")
@@ -146,6 +151,13 @@ def validate(root: Path = ROOT) -> dict:
     if PROJECTION_TESTS - projection_names:
         fail(f"missing Rust projection tests: {sorted(PROJECTION_TESTS - projection_names)}")
 
+    stored_tests = sources["crates/trnm-storage-core/src/stored_domain_tests.rs"]
+    stored_names = set(re.findall(r"#\[test\]\s*fn\s+([a-z0-9_]+)\s*\(\)\s*\{", stored_tests))
+    if stored_names != STORED_DOMAIN_TESTS:
+        fail("stored Nakama domains and operation-specific ACL regressions drifted")
+    if "mod stored_domain;" not in source or "mod stored_domain_tests;" not in source:
+        fail("stored Nakama domain implementation or tests are unwired")
+
     vectors = json.loads((root / "contracts/storage/storage-vectors.json").read_text())
     if vectors.get("schema") != "trillionnium.storage-core-vectors.v2":
         fail("storage vector schema is not v2")
@@ -204,7 +216,8 @@ def validate(root: Path = ROOT) -> dict:
             fail(f"storage projection candidate overclaims {field}")
     return {
         "status": "storage-core-static-contract-passed",
-        "rust_tests": len(names) + len(projection_names),
+        "rust_tests": len(names) + len(projection_names) + len(stored_names),
+        "stored_domain_tests": len(stored_names),
         "source_files": list(SOURCE_FILES),
         "auxiliary_source_files": list(AUXILIARY_SOURCE_FILES),
         "projection_tests": len(projection_names),

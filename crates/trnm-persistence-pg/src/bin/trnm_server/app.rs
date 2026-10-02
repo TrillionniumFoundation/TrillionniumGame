@@ -38,6 +38,14 @@ pub struct RepositoryOperationalMetrics {
 }
 
 pub trait Repository: std::fmt::Debug {
+    fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
+        Err(DomainError::new(
+            StableCode::FailedPrecondition,
+            "storage_import_admission_unavailable",
+            RetryClass::Never,
+        ))
+    }
+
     fn bootstrap_entity(
         &mut self,
         entity: EntityId,
@@ -83,6 +91,10 @@ pub trait Repository: std::fmt::Debug {
 }
 
 impl Repository for PgRepository {
+    fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
+        PgRepository::verify_storage_import_serving(self)
+    }
+
     fn bootstrap_entity(
         &mut self,
         entity: EntityId,
@@ -342,16 +354,25 @@ impl<R: Repository> App<R> {
         response
     }
 
-    fn readiness(&self) -> Response {
+    fn readiness(&mut self) -> Response {
         if self.drain.is_draining() {
             error_response(503, "unavailable", "Service is draining.", "backoff")
+        } else if self.repository.verify_storage_import_serving().is_err() {
+            error_response(
+                503,
+                "unavailable",
+                "Storage import admission is unavailable.",
+                "backoff",
+            )
         } else {
             Response::json(200, br#"{"status":"ready"}"#.to_vec())
         }
     }
 
-    fn metrics_response(&self) -> Response {
-        let ready = u8::from(!self.drain.is_draining());
+    fn metrics_response(&mut self) -> Response {
+        let ready = u8::from(
+            !self.drain.is_draining() && self.repository.verify_storage_import_serving().is_ok(),
+        );
         let metrics = self.metrics.snapshot();
         let repository = self.repository.operational_metrics();
         let session = self.sessions.metrics();
@@ -811,13 +832,80 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn readiness_observes_import_started_after_process_start_and_later_completion() {
+        let mut app = App::new(FakeRepository::default(), token());
+        let request = Request::new("GET", "/readyz", BTreeMap::new(), Vec::new());
+        let metrics = Request::new("GET", "/metrics", BTreeMap::new(), Vec::new());
+        for (incomplete, status, expected_metric) in [
+            (false, 200, "trnm_server_ready 1"),
+            (true, 503, "trnm_server_ready 0"),
+            (false, 200, "trnm_server_ready 1"),
+        ] {
+            app.repository.import_incomplete = incomplete;
+            assert_eq!(app.handle(&request).status, status);
+            let response = app.handle(&metrics);
+            assert_eq!(response.status, 200);
+            assert!(String::from_utf8(response.body)
+                .unwrap()
+                .lines()
+                .any(|line| line == expected_metric));
+        }
+        app.drain.begin();
+        assert_eq!(app.handle(&request).status, 503);
+        assert!(String::from_utf8(app.handle(&metrics).body)
+            .unwrap()
+            .lines()
+            .any(|line| line == "trnm_server_ready 0"));
+
+        // Leaving admission uninstalled uses the trait's fail-closed default,
+        // rather than a permissive fake implementation.
+        #[derive(Debug)]
+        struct RepositoryWithoutAdmission;
+        impl Repository for RepositoryWithoutAdmission {
+            fn bootstrap_entity(
+                &mut self,
+                _: EntityId,
+                _: u64,
+                _: Digest32,
+                _: u64,
+            ) -> Result<EntityHead, DomainError> {
+                unreachable!("control endpoints must not bootstrap authority")
+            }
+            fn commit_command(&mut self, _: &CommitRequest) -> Result<CommitOutcome, DomainError> {
+                unreachable!("control endpoints must not commit commands")
+            }
+        }
+        let mut uninstalled = App::new(RepositoryWithoutAdmission, token());
+        assert_eq!(uninstalled.handle(&request).status, 503);
+        let response = uninstalled.handle(&metrics);
+        assert_eq!(response.status, 200);
+        assert!(String::from_utf8(response.body)
+            .unwrap()
+            .lines()
+            .any(|line| line == "trnm_server_ready 0"));
+    }
+
     #[derive(Debug, Default)]
     struct FakeRepository {
         failure: Option<DomainError>,
         operational_metrics: RepositoryOperationalMetrics,
+        import_incomplete: bool,
     }
 
     impl Repository for FakeRepository {
+        fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
+            if self.import_incomplete {
+                Err(DomainError::new(
+                    StableCode::FailedPrecondition,
+                    "storage_import_incomplete",
+                    RetryClass::Never,
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
         fn bootstrap_entity(
             &mut self,
             entity: EntityId,

@@ -17,19 +17,19 @@ fn storage_listing_acl_owner_scope_and_cursor_are_stable() {
     let mut repository = PgRepository::connect(&database_url, profile).unwrap();
 
     let writes = [
-        (&key_a, ReadPermission::Owner, br#""a-private""#.as_slice()),
+        (&key_a, ReadPermission::OWNER, br#""a-private""#.as_slice()),
         (
             &key_b_a,
-            ReadPermission::Public,
+            ReadPermission::PUBLIC,
             br#""b-a-public""#.as_slice(),
         ),
         (
             &key_b_b,
-            ReadPermission::Public,
+            ReadPermission::PUBLIC,
             br#""b-b-public""#.as_slice(),
         ),
-        (&key_c, ReadPermission::Owner, br#""c-private""#.as_slice()),
-        (&key_d, ReadPermission::Public, br#""d-public""#.as_slice()),
+        (&key_c, ReadPermission::OWNER, br#""c-private""#.as_slice()),
+        (&key_d, ReadPermission::PUBLIC, br#""d-public""#.as_slice()),
     ]
     .into_iter()
     .map(|(key, read_permission, value)| {
@@ -38,7 +38,7 @@ fn storage_listing_acl_owner_scope_and_cursor_are_stable() {
             value: value.to_vec(),
             expected: VersionCheck::MustNotExist,
             read_permission,
-            write_permission: WritePermission::Owner,
+            write_permission: WritePermission::OWNER,
         })
     })
     .collect::<Vec<_>>();
@@ -244,8 +244,8 @@ fn storage_listing_unicode_order_matches_canonical_utf8_bytes() {
                 key: key.clone(),
                 value: format!(r#""canonical-byte-order-{index}""#).into_bytes(),
                 expected: VersionCheck::MustNotExist,
-                read_permission: ReadPermission::Public,
-                write_permission: WritePermission::Owner,
+                read_permission: ReadPermission::PUBLIC,
+                write_permission: WritePermission::OWNER,
             })
         })
         .collect::<Vec<_>>();
@@ -354,14 +354,14 @@ fn nakama_client_listing_modes_cursors_and_integrity_are_database_projected() {
         let global_public = key("g-global", global);
         let global_private = key("00-global-private", global);
         let entries = [
-            (&own_private, ReadPermission::Owner),
-            (&own_public, ReadPermission::Public),
-            (&own_hidden, ReadPermission::None),
-            (&other_public, ReadPermission::Public),
-            (&other_last, ReadPermission::Public),
-            (&other_private, ReadPermission::Owner),
-            (&global_public, ReadPermission::Public),
-            (&global_private, ReadPermission::Owner),
+            (&own_private, ReadPermission::OWNER),
+            (&own_public, ReadPermission::PUBLIC),
+            (&own_hidden, ReadPermission::NONE),
+            (&other_public, ReadPermission::PUBLIC),
+            (&other_last, ReadPermission::PUBLIC),
+            (&other_private, ReadPermission::OWNER),
+            (&global_public, ReadPermission::PUBLIC),
+            (&global_private, ReadPermission::OWNER),
         ];
         let value = br#"{"list":true}"#;
         let writes = entries
@@ -372,7 +372,7 @@ fn nakama_client_listing_modes_cursors_and_integrity_are_database_projected() {
                     value: value.to_vec(),
                     expected: VersionCheck::MustNotExist,
                     read_permission: *read_permission,
-                    write_permission: WritePermission::Owner,
+                    write_permission: WritePermission::OWNER,
                 })
             })
             .collect::<Vec<_>>();
@@ -667,8 +667,8 @@ fn nakama_client_listing_modes_cursors_and_integrity_are_database_projected() {
                     key: StorageObjectKey::new(text_collection, name, other).unwrap(),
                     value: value.to_vec(),
                     expected: VersionCheck::MustNotExist,
-                    read_permission: ReadPermission::Public,
-                    write_permission: WritePermission::Owner,
+                    read_permission: ReadPermission::PUBLIC,
+                    write_permission: WritePermission::OWNER,
                 })
             })
             .collect::<Vec<_>>();

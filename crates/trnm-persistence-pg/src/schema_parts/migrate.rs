@@ -100,6 +100,16 @@ impl PgRepository {
             verify_legacy_writer_barrier(&mut *self.client, role, profile)?;
         }
         if recorded.is_none() {
+            if prefix
+                > revision(profile, 2)
+                    .expect("locked revision2")
+                    .action_range
+                    .end
+            {
+                return Err(failed_precondition(
+                    "unbound_schema_revision_prefix_rejected",
+                ));
+            }
             if !business_data_empty(&mut *self.client)? {
                 return Err(failed_precondition("unbound_populated_schema_rejected"));
             }
@@ -110,7 +120,12 @@ impl PgRepository {
         validate_recorded_revision(&original, profile)?;
         // Reject all illegal raw legacy data before any revision DDL. This also
         // protects a v1 -> v2 -> v3 invocation from partially upgrading v1.
-        preflight_native_storage(&mut *self.client, profile, false)?;
+        if original.version < 3 {
+            preflight_native_storage(&mut *self.client, profile, false)?;
+        } else {
+            preflight_v3_storage(&mut *self.client)?;
+            require_empty_import_journals(&mut *self.client, &catalog)?;
+        }
         loop {
             let catalog = read_catalog(&mut *self.client)?;
             let prefix = catalog_prefix(&catalog, profile)?;
@@ -151,13 +166,18 @@ impl PgRepository {
                     if locked_target.version != target.version {
                         return Err(failed_precondition("schema_metadata_publish_conflict"));
                     }
-                    if target.version == 3 {
+                    if target.version >= 3 {
                         transaction
                             .batch_execute(
                                 "LOCK TABLE public.trnm_storage_objects IN ACCESS EXCLUSIVE MODE",
                             )
                             .map_err(map_postgres_error)?;
-                        preflight_native_storage(&mut transaction, profile, false)?;
+                        if target.version == 3 {
+                            preflight_native_storage(&mut transaction, profile, false)?;
+                        } else {
+                            preflight_v3_storage(&mut transaction)?;
+                            require_empty_import_journals(&mut transaction, &locked_catalog)?;
+                        }
                     }
                     let mut next = locked_prefix;
                     while next < target.action_range.end {
@@ -172,19 +192,27 @@ impl PgRepository {
                         }
                         let catalog = read_catalog(&mut transaction)?;
                         let advanced = catalog_prefix(&catalog, profile)?;
-                        if advanced <= next || advanced > target.action_range.end {
+                        if advanced <= next
+                            || advanced > target.action_range.end
+                            || (target.version == 4 && advanced != next + 1)
+                        {
                             return Err(failed_precondition("schema_action_catalog_not_ready"));
                         }
                         next = advanced;
                     }
                     if target.version == 3 {
                         preflight_native_storage(&mut transaction, profile, true)?;
+                    } else if target.version == 4 {
+                        preflight_v3_storage(&mut transaction)?;
                     }
                     let complete = read_catalog(&mut transaction)?;
                     if catalog_prefix(&complete, profile)? != target.action_range.end {
                         return Err(failed_precondition(
                             "authoritative_schema_upgrade_incomplete",
                         ));
+                    }
+                    if target.version == 4 {
+                        require_empty_import_journals(&mut transaction, &complete)?;
                     }
                     let published = publish_metadata(
                         &mut transaction,
@@ -203,6 +231,9 @@ impl PgRepository {
                     // DDL can fail this attempt; it is not silently repaired.
                     if target.version == 3 {
                         preflight_native_storage(&mut *self.client, profile, false)?;
+                    } else if target.version == 4 {
+                        preflight_v3_storage(&mut *self.client)?;
+                        require_empty_import_journals(&mut *self.client, &catalog)?;
                     }
                     let mut index = prefix;
                     while index < target.action_range.end {
@@ -213,6 +244,10 @@ impl PgRepository {
                         let current = read_metadata(&mut *self.client, &before)?
                             .ok_or_else(|| failed_precondition("schema_metadata_missing"))?;
                         ensure_metadata_unchanged(&original, &current)?;
+                        if target.version == 4 {
+                            preflight_v3_storage(&mut *self.client)?;
+                            require_empty_import_journals(&mut *self.client, &before)?;
+                        }
                         if !fresh {
                             verify_legacy_writer_barrier(
                                 &mut *self.client,
@@ -234,8 +269,17 @@ impl PgRepository {
                         }
                         let updated = read_catalog(&mut *self.client)?;
                         let advanced = catalog_prefix(&updated, profile)?;
-                        if advanced <= index || advanced > target.action_range.end {
+                        if advanced <= index
+                            || advanced > target.action_range.end
+                            || (target.version == 4 && advanced != index + 1)
+                        {
                             return Err(failed_precondition("schema_action_catalog_not_ready"));
+                        }
+                        let after_metadata = read_metadata(&mut *self.client, &updated)?
+                            .ok_or_else(|| failed_precondition("schema_metadata_missing"))?;
+                        ensure_metadata_unchanged(&original, &after_metadata)?;
+                        if target.version == 4 {
+                            require_empty_import_journals(&mut *self.client, &updated)?;
                         }
                         index = advanced;
                     }
@@ -245,6 +289,7 @@ impl PgRepository {
                         .isolation_level(IsolationLevel::Serializable)
                         .start()
                         .map_err(map_postgres_error)?;
+                    transaction.query_one("SELECT singleton FROM public.trnm_schema_metadata WHERE singleton=1 FOR UPDATE",&[]).map_err(map_postgres_error)?;
                     if !fresh {
                         verify_legacy_writer_barrier(
                             &mut transaction,
@@ -264,6 +309,9 @@ impl PgRepository {
                     validate_recorded_revision(&current, profile)?;
                     if target.version == 3 {
                         preflight_native_storage(&mut transaction, profile, true)?;
+                    } else if target.version == 4 {
+                        preflight_v3_storage(&mut transaction)?;
+                        require_empty_import_journals(&mut transaction, &complete)?;
                     }
                     let published = publish_metadata(
                         &mut transaction,

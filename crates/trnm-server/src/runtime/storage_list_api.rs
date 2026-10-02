@@ -4,9 +4,7 @@
 use std::collections::BTreeSet;
 
 use trnm_contracts::{StableCode, UserId};
-use trnm_persistence_pg::{
-    ReadPermission, StorageActor, StorageListPosition, StoredStorageClientListPage,
-};
+use trnm_persistence_pg::{StorageActor, StorageListPosition, StoredStorageClientListPage};
 
 use super::app::{Repository, STORAGE_LIST_ROUTES};
 use super::http::{Request, Response};
@@ -81,12 +79,12 @@ fn encode_page(query: &ListQuery, user: UserId, page: StoredStorageClientListPag
     for stored in &page.objects {
         let object = &stored.object;
         let visible = match query.owner {
-            None => object.read_permission == ReadPermission::Public,
+            None => object.read_permission.allows_public_listing(),
             Some(owner) if owner == user => {
-                object.key.user_id() == owner && object.read_permission != ReadPermission::None
+                object.key.user_id() == owner && object.read_permission.allows_owner_listing()
             }
             Some(owner) => {
-                object.key.user_id() == owner && object.read_permission == ReadPermission::Public
+                object.key.user_id() == owner && object.read_permission.allows_foreign_listing()
             }
         };
         if !visible
@@ -116,7 +114,7 @@ fn encode_page(query: &ListQuery, user: UserId, page: StoredStorageClientListPag
                 next != StorageListPosition {
                     key: object.key.key().to_owned(),
                     user_id: object.key.user_id(),
-                    read: i32::from(object.read_permission as u8),
+                    read: object.read_permission.as_i32(),
                 }
             })
         {

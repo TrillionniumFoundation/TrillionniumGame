@@ -98,7 +98,7 @@ fn object(key: &str, owner: UserId, read: ReadPermission) -> StorageObject {
         integrity_digest: IntegrityDigest::from_value(&value),
         value,
         read_permission: read,
-        write_permission: WritePermission::Owner,
+        write_permission: WritePermission::OWNER,
     }
 }
 
@@ -109,8 +109,8 @@ fn historical_object(key: &str, native: &str, version: &str) -> StorageObject {
         version: PublicVersion::new(version).unwrap(),
         integrity_digest: IntegrityDigest::from_value(native.as_bytes()),
         collision_witness: None,
-        read_permission: ReadPermission::Public,
-        write_permission: WritePermission::Owner,
+        read_permission: ReadPermission::PUBLIC,
+        write_permission: WritePermission::OWNER,
     }
 }
 
@@ -191,7 +191,7 @@ fn position(object: &StorageObject) -> StorageListPosition {
     StorageListPosition {
         key: object.key.key().to_owned(),
         user_id: object.key.user_id(),
-        read: i32::from(object.read_permission as u8),
+        read: object.read_permission.as_i32(),
     }
 }
 fn json(response: &Response) -> serde_json::Value {
@@ -200,7 +200,7 @@ fn json(response: &Response) -> serde_json::Value {
 
 #[test]
 fn storage_list_default_page_and_original_gob_continuation_are_bounded() {
-    let first = object("sword", OTHER, ReadPermission::Public);
+    let first = object("sword", OTHER, ReadPermission::PUBLIC);
     let next = position(&first);
     let mut repo = repository(vec![first], Some(next.clone()));
     let response = handle(&mut repo, &request("/v2/storage/inventory"), USER);
@@ -291,7 +291,7 @@ fn storage_list_validation_rejects_before_repository_and_redacts_failures() {
 
 #[test]
 fn storage_list_response_defends_against_acl_scope_and_integrity_violations() {
-    let public = object("sword", USER, ReadPermission::Public);
+    let public = object("sword", USER, ReadPermission::PUBLIC);
     let mut broken = public.clone();
     broken.value.push(b' ');
     let wrong_collection = StorageObject {
@@ -301,15 +301,15 @@ fn storage_list_response_defends_against_acl_scope_and_integrity_violations() {
     let cases = [
         (
             "/v2/storage/inventory",
-            vec![object("sword", USER, ReadPermission::Owner)],
+            vec![object("sword", USER, ReadPermission::OWNER)],
         ),
         (
             "/v2/storage/inventory/02020202-0202-0202-0202-020202020202",
-            vec![object("sword", OTHER, ReadPermission::Owner)],
+            vec![object("sword", OTHER, ReadPermission::OWNER)],
         ),
         (
             "/v2/storage/inventory/01010101-0101-0101-0101-010101010101",
-            vec![object("sword", USER, ReadPermission::None)],
+            vec![object("sword", USER, ReadPermission::NONE)],
         ),
         ("/v2/storage/inventory", vec![broken]),
         ("/v2/storage/inventory", vec![wrong_collection]),
@@ -321,7 +321,7 @@ fn storage_list_response_defends_against_acl_scope_and_integrity_violations() {
             "/v2/storage/inventory",
             vec![
                 public.clone(),
-                object("shield", OTHER, ReadPermission::Public),
+                object("shield", OTHER, ReadPermission::PUBLIC),
             ],
         ),
     ];
@@ -371,7 +371,7 @@ fn storage_list_projects_fraction_to_seconds_omits_unknown_and_rejects_invalid_t
             update: known.update,
         },
     ] {
-        let mut repo = repository(vec![object("sword", USER, ReadPermission::Public)], None);
+        let mut repo = repository(vec![object("sword", USER, ReadPermission::PUBLIC)], None);
         repo.page.as_mut().unwrap().objects[0].times = times;
         let response = handle(&mut repo, &request("/v2/storage/inventory"), USER);
         assert_eq!(response.status, 200);
@@ -420,7 +420,7 @@ fn storage_list_projects_fraction_to_seconds_omits_unknown_and_rejects_invalid_t
                 update: Some(bad),
             },
         ] {
-            let mut repo = repository(vec![object("sword", USER, ReadPermission::Public)], None);
+            let mut repo = repository(vec![object("sword", USER, ReadPermission::PUBLIC)], None);
             repo.page.as_mut().unwrap().objects[0].times = times;
             let response = handle(&mut repo, &request("/v2/storage/inventory"), USER);
             assert_eq!(response.status, 500);
@@ -436,7 +436,7 @@ fn storage_list_projects_fraction_to_seconds_omits_unknown_and_rejects_invalid_t
 
 #[test]
 fn storage_list_visibility_and_equal_literal_cursor_guard_match_projection() {
-    let own = object("sword", USER, ReadPermission::Owner);
+    let own = object("sword", USER, ReadPermission::OWNER);
     let next = position(&own);
     let cursor = encode_cursor(&next).unwrap();
     let mut repo = repository(vec![own], Some(next));
@@ -453,7 +453,7 @@ fn storage_list_visibility_and_equal_literal_cursor_guard_match_projection() {
         vec![object(
             "system",
             UserId::new([0; 16]),
-            ReadPermission::Public,
+            ReadPermission::PUBLIC,
         )],
         None,
     );

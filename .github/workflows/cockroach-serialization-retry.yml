@@ -200,7 +200,7 @@ jobs:
               (Path('run/cockroach-retry') / ('schema-' + label + '.json')).write_bytes(raw + b'\n')
               reports[label] = report
           for field in ['profile', 'schema_version', 'chain_digest', 'digest_algorithm',
-                        'storage_writer_epoch', 'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit']:
+                        'storage_writer_epoch', 'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit']:
               assert reports['apply'][field] == reports['verify'][field], ('schema changed during retry', field)
           PY
       - name: Seal exact execution receipt in immutable job log
@@ -231,14 +231,14 @@ jobs:
           tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
           assert commit == os.environ['CANDIDATE_SHA']
           lock = json.loads((root / 'migration-chain.lock.json').read_text())
-          assert len(lock['profiles']['cockroachdb']['ordered_files']) == 3
+          assert len(lock['profiles']['cockroachdb']['ordered_files']) == 4
           applied = json.loads((root / 'schema-apply.json').read_text())
           verified = json.loads((root / 'schema-verify.json').read_text())
-          assert applied['schema_version'] == applied['storage_writer_epoch'] == 3
+          assert applied['schema_version'] == applied['storage_writer_epoch'] == 4
           for field in ('profile', 'schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm',
-                        'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit'):
+                        'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'):
               assert applied[field] == verified[field]
-          for field in ('source_commit', 'upgrade_source_commit', 'v2_apply_source_commit'):
+          for field in ('source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'):
               assert applied[field] == commit
           for entry in lock['profiles']['cockroachdb']['ordered_files']:
               source = Path(entry['path'])
@@ -256,7 +256,7 @@ jobs:
                       'fault_mode': 'cockroach_session_commit_error_injection', 'network_response_loss_injected': False,
                       'compatibility_credit': False, 'production_ready': False}
           for field in ('schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm',
-                        'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit'):
+                        'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'):
               identity[field] = applied[field]
           identity['authoritative_migration_file_count'] = len(lock['profiles']['cockroachdb']['ordered_files'])
           identity['accepted_evidence'] = False
@@ -309,7 +309,7 @@ jobs:
           checker.verify_file_manifest(files)
           lock = checker.strict_object(files['migration-chain.lock.json'], 'retained migration lock')
           assert files['migration-chain.lock.json'] == Path('migrations/MIGRATION_CHAIN.lock.json').read_bytes()
-          assert len(lock['profiles']['cockroachdb']['ordered_files']) == 3
+          assert len(lock['profiles']['cockroachdb']['ordered_files']) == 4
           checker.verify_migration_files(files, lock['profiles']['cockroachdb']['ordered_files'])
           spec = importlib.util.spec_from_file_location('retry_archive_schema', 'scripts/check-authoritative-schema-identity.py')
           schemas = importlib.util.module_from_spec(spec)
@@ -325,9 +325,9 @@ jobs:
                                     table_count=tables, mode='fresh', source_commit=commit)
           schemas.validate_identity(verified, profile='cockroachdb', chains=chains, schema_version=version,
                                     table_count=tables, mode='verify')
-          assert identity['schema_version'] == identity['storage_writer_epoch'] == identity['authoritative_migration_file_count'] == 3
+          assert identity['schema_version'] == identity['storage_writer_epoch'] == identity['authoritative_migration_file_count'] == 4
           for field in ('schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm',
-                        'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit'):
+                        'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'):
               assert applied[field] == verified[field] == identity[field]
           for flag in ('compatibility_credit', 'accepted_evidence', 'production_ready'):
               assert identity[flag] is False

@@ -14,7 +14,8 @@ WITH rows AS (
            'digest_algorithm', digest_algorithm,
            'storage_writer_epoch', storage_writer_epoch,
            'upgrade_source_commit', upgrade_source_commit,
-           'v2_apply_source_commit', v2_apply_source_commit
+           'v2_apply_source_commit', v2_apply_source_commit,
+           'v3_apply_source_commit', v3_apply_source_commit
          ) AS value
   FROM trnm_schema_metadata
   UNION ALL
@@ -129,6 +130,35 @@ WITH rows AS (
            'update_epoch', extract(epoch FROM update_time)
          )
   FROM trnm_storage_objects
+  UNION ALL
+  SELECT 'trnm_storage_import_jobs', jsonb_build_object(
+           'singleton', singleton,
+           'manifest_digest', encode(manifest_digest, 'hex'),
+           'custody_digest', encode(custody_digest, 'hex'),
+           'source_inventory_digest', encode(source_inventory_digest, 'hex'),
+           'target_schema_guard_digest', encode(target_schema_guard_digest, 'hex'),
+           'prefix_digest', encode(prefix_digest, 'hex'),
+           'source_profile', source_profile,
+           'source_snapshot', source_snapshot,
+           'audit_at_ms', audit_at_ms,
+           'total_rows', total_rows,
+           'total_pages', total_pages,
+           'next_page', next_page,
+           'committed_rows', committed_rows,
+           'status', status
+         )
+  FROM trnm_storage_import_jobs
+  UNION ALL
+  SELECT 'trnm_storage_import_pages', jsonb_build_object(
+           'manifest_digest', encode(manifest_digest, 'hex'),
+           'page_index', page_index,
+           'first_ordinal', first_ordinal,
+           'row_count', row_count,
+           'page_digest', encode(page_digest, 'hex'),
+           'prefix_digest', encode(prefix_digest, 'hex'),
+           'audit_at_ms', audit_at_ms
+         )
+  FROM trnm_storage_import_pages
 )
 SELECT table_name || '|' || value::text AS snapshot_row
 FROM rows

@@ -11,17 +11,48 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "migrations/MIGRATION_CHAIN.lock.json"
 EXPECTED_PROFILES = {"postgresql", "cockroachdb"}
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DIGEST_ALGORITHM = "ordered-path-git-blob-sha256.v1"
 FROZEN_BASE = "326e670cb008a990247e31a63c0c4b0e338df62f"
-# Adding a revision must never rewrite either reviewed historical revision,
+# Adding a revision must never rewrite any reviewed historical revision,
 # even if an edited lock also advertises the new blob.
 FROZEN_HISTORICAL_BLOBS = {
     "migrations/postgresql/0001_foundation_up.sql": "07f5f4923d884cc63bf53074096b8d1e04215096",
     "migrations/postgresql/0002_storage_timestamps_up.sql": "e36cc2d743eb863af93774a24615f3c5ec1c3443",
     "migrations/cockroachdb/0001_foundation_up.sql": "b836b8a2f025ef22525e9e5f089db01ab5f06fe6",
     "migrations/cockroachdb/0002_storage_timestamps_up.sql": "700cdb460b9211370777928b980b10e37ae21ae9",
+    "migrations/postgresql/0003_storage_jsonb_up.sql": "4eb39d906f8ed3444cee7dd7a550ce21dad5e00c",
+    "migrations/cockroachdb/0003_storage_jsonb_up.sql": "4eb39d906f8ed3444cee7dd7a550ce21dad5e00c",
 }
+
+
+def reviewed_storage_import_actions(profile: str) -> tuple[tuple[str, str], ...]:
+    """Reviewed v4 ABI only; marker blocks are never a general SQL parser."""
+    common = (
+        ('storage_import_jobs', "CREATE TABLE trnm_storage_import_jobs (\nsingleton SMALLINT NOT NULL,\nmanifest_digest BYTEA NOT NULL,\ncustody_digest BYTEA NOT NULL,\nsource_inventory_digest BYTEA NOT NULL,\ntarget_schema_guard_digest BYTEA NOT NULL,\nprefix_digest BYTEA NOT NULL,\nsource_profile TEXT NOT NULL,\nsource_snapshot TEXT NOT NULL,\naudit_at_ms BIGINT NOT NULL,\ntotal_rows BIGINT NOT NULL,\ntotal_pages BIGINT NOT NULL,\nnext_page BIGINT NOT NULL,\ncommitted_rows BIGINT NOT NULL,\nstatus SMALLINT NOT NULL,\nCONSTRAINT storage_import_jobs_pk PRIMARY KEY (singleton),\nCONSTRAINT storage_import_jobs_manifest_key UNIQUE (manifest_digest),\nCONSTRAINT storage_import_jobs_singleton CHECK (singleton = 1),\nCONSTRAINT storage_import_jobs_digests CHECK (octet_length(manifest_digest) = 32 AND octet_length(custody_digest) = 32 AND octet_length(source_inventory_digest) = 32 AND octet_length(target_schema_guard_digest) = 32 AND octet_length(prefix_digest) = 32 AND manifest_digest <> decode(repeat('0', 64), 'hex') AND custody_digest <> decode(repeat('0', 64), 'hex') AND source_inventory_digest <> decode(repeat('0', 64), 'hex') AND target_schema_guard_digest <> decode(repeat('0', 64), 'hex') AND prefix_digest <> decode(repeat('0', 64), 'hex')),\nCONSTRAINT storage_import_jobs_source CHECK ((source_profile = 'postgresql' OR source_profile = 'cockroachdb') AND length(source_snapshot) BETWEEN 1 AND 256 AND source_snapshot !~ '[[:cntrl:]]'),\nCONSTRAINT storage_import_jobs_audit CHECK (audit_at_ms >= 0),\nCONSTRAINT storage_import_jobs_counts CHECK (total_rows BETWEEN 0 AND 10000 AND total_pages BETWEEN 0 AND 100 AND next_page BETWEEN 0 AND total_pages AND committed_rows BETWEEN 0 AND total_rows AND ((total_rows = 0 AND total_pages = 0) OR (total_pages > 0 AND total_pages <= total_rows AND total_rows <= 100 * total_pages)) AND committed_rows BETWEEN next_page AND 100 * next_page),\nCONSTRAINT storage_import_jobs_status CHECK (status IN (0, 1) AND (status <> 1 OR (next_page = total_pages AND committed_rows = total_rows)))\n);"),
+        ('storage_import_pages', "CREATE TABLE trnm_storage_import_pages (\nmanifest_digest BYTEA NOT NULL,\npage_index BIGINT NOT NULL,\nfirst_ordinal BIGINT NOT NULL,\nrow_count BIGINT NOT NULL,\npage_digest BYTEA NOT NULL,\nprefix_digest BYTEA NOT NULL,\naudit_at_ms BIGINT NOT NULL,\nCONSTRAINT storage_import_pages_pk PRIMARY KEY (manifest_digest, page_index),\nCONSTRAINT storage_import_pages_job_fk FOREIGN KEY (manifest_digest) REFERENCES trnm_storage_import_jobs (manifest_digest) ON UPDATE NO ACTION ON DELETE RESTRICT,\nCONSTRAINT storage_import_pages_digests CHECK (octet_length(manifest_digest) = 32 AND octet_length(page_digest) = 32 AND octet_length(prefix_digest) = 32 AND manifest_digest <> decode(repeat('0', 64), 'hex') AND page_digest <> decode(repeat('0', 64), 'hex') AND prefix_digest <> decode(repeat('0', 64), 'hex')),\nCONSTRAINT storage_import_pages_bounds CHECK (page_index BETWEEN 0 AND 99 AND first_ordinal BETWEEN 0 AND 9999 AND row_count BETWEEN 1 AND 100 AND first_ordinal + row_count <= 10000),\nCONSTRAINT storage_import_pages_audit CHECK (audit_at_ms >= 0)\n);"),
+        ('metadata_v3_history', 'ALTER TABLE trnm_schema_metadata ADD CONSTRAINT metadata_v3_history CHECK (schema_version < 4 OR (v3_apply_source_commit IS NOT NULL AND length(v3_apply_source_commit) = 40));'),
+    )
+    if profile == "postgresql":
+        return (
+            ('metadata_v3_apply_source_commit', 'ALTER TABLE trnm_schema_metadata ADD COLUMN v3_apply_source_commit TEXT;'),
+            ('storage_collection_check_v4', 'ALTER TABLE trnm_storage_objects DROP CONSTRAINT trnm_storage_objects_collection_check, ADD CONSTRAINT trnm_storage_objects_collection_check CHECK (length(collection) BETWEEN 0 AND 128);'),
+            ('storage_object_key_check_v4', 'ALTER TABLE trnm_storage_objects DROP CONSTRAINT trnm_storage_objects_object_key_check, ADD CONSTRAINT trnm_storage_objects_object_key_check CHECK (length(object_key) BETWEEN 0 AND 128);'),
+            ('storage_read_permission_check_v4', 'ALTER TABLE trnm_storage_objects DROP CONSTRAINT trnm_storage_objects_read_permission_check, ADD CONSTRAINT trnm_storage_objects_read_permission_check CHECK (read_permission >= 0);'),
+            ('storage_write_permission_check_v4', 'ALTER TABLE trnm_storage_objects DROP CONSTRAINT trnm_storage_objects_write_permission_check, ADD CONSTRAINT trnm_storage_objects_write_permission_check CHECK (write_permission >= 0);'),
+        ) + common
+    require(profile == "cockroachdb", "unknown import action profile")
+    return (
+        ('metadata_v3_apply_source_commit', 'ALTER TABLE trnm_schema_metadata ADD COLUMN v3_apply_source_commit TEXT;'),
+        ('storage_collection_check_v3_remove', 'ALTER TABLE trnm_storage_objects DROP CONSTRAINT check_collection;'),
+        ('storage_collection_check_v4_add', 'ALTER TABLE trnm_storage_objects ADD CONSTRAINT check_collection CHECK (length(collection) BETWEEN 0 AND 128);'),
+        ('storage_object_key_check_v3_remove', 'ALTER TABLE trnm_storage_objects DROP CONSTRAINT check_object_key;'),
+        ('storage_object_key_check_v4_add', 'ALTER TABLE trnm_storage_objects ADD CONSTRAINT check_object_key CHECK (length(object_key) BETWEEN 0 AND 128);'),
+        ('storage_read_permission_check_v3_remove', 'ALTER TABLE trnm_storage_objects DROP CONSTRAINT check_read_permission;'),
+        ('storage_read_permission_check_v4_add', 'ALTER TABLE trnm_storage_objects ADD CONSTRAINT check_read_permission CHECK (read_permission >= 0);'),
+        ('storage_write_permission_check_v3_remove', 'ALTER TABLE trnm_storage_objects DROP CONSTRAINT check_write_permission;'),
+        ('storage_write_permission_check_v4_add', 'ALTER TABLE trnm_storage_objects ADD CONSTRAINT check_write_permission CHECK (write_permission >= 0);'),
+    ) + common
 
 
 def reviewed_actions(profile: str, revision: int) -> tuple[tuple[str, str], ...]:
@@ -37,6 +68,8 @@ def reviewed_actions(profile: str, revision: int) -> tuple[tuple[str, str], ...]
             ("storage_create_time", "ALTER TABLE trnm_storage_objects ADD COLUMN create_time TIMESTAMPTZ;"),
             ("storage_update_time", "ALTER TABLE trnm_storage_objects ADD COLUMN update_time TIMESTAMPTZ;"),
         )
+    if revision == 4:
+        return reviewed_storage_import_actions(profile)
     require(revision == 3, "unknown action revision")
     return (
         ("metadata_v2_apply_source_commit", "ALTER TABLE trnm_schema_metadata ADD COLUMN v2_apply_source_commit TEXT;"),
@@ -63,11 +96,12 @@ def validate_action_source(data: bytes, profile: str, revision: int) -> list[str
     declarations = reviewed_actions(profile, revision)
     # BEGIN/COMMIT are historical PostgreSQL v2 wrappers, not v3 actions.
     expected = []
-    if profile == "postgresql" and revision == 2:
+    if (profile == "postgresql" and revision == 2) or revision == 4:
         expected.append("BEGIN;")
     for action, statement in declarations:
-        expected.extend((f"-- trnm:action {action}", statement))
-    if profile == "postgresql" and revision == 2:
+        expected.append(f"-- trnm:action {action}")
+        expected.extend(statement.splitlines())
+    if (profile == "postgresql" and revision == 2) or revision == 4:
         expected.append("COMMIT;")
     actual = []
     for line in data.decode("utf-8").splitlines():
@@ -161,15 +195,15 @@ def validate_source_document(
             data = read_source(path_value)
             actual_blob = git_blob_sha1(data)
             require(actual_blob == expected_blob, f"{path_value}: blob identity drift")
-            if position < 2:
-                require(FROZEN_HISTORICAL_BLOBS.get(path_value) == actual_blob,
-                        f"{path_value}: frozen historical identity drift")
             if position > 0:
                 revision = position + 1
                 ids = validate_action_source(data, profile, revision)
                 require(not set(ids).intersection(action_ids), f"{profile}: duplicate action identity")
                 action_ids.extend(ids)
                 revision_actions[str(revision)] = len(ids)
+            if position < 3:
+                require(FROZEN_HISTORICAL_BLOBS.get(path_value) == actual_blob,
+                        f"{path_value}: frozen historical identity drift")
             chain_entries.append((path_value, actual_blob))
         require(listed_paths == actual_sql, f"{profile}: unlisted, missing or unordered SQL migration")
         report[profile] = {

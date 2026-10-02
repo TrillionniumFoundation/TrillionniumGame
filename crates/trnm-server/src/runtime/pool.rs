@@ -37,7 +37,10 @@ impl PooledRepository {
         operation: impl FnOnce(&mut trnm_persistence_pg::PgRepository) -> Result<T, DomainError>,
     ) -> Result<T, DomainError> {
         self.pool
-            .run_with_deadline(self.operation_budget, operation)
+            .run_with_deadline(self.operation_budget, |repository| {
+                repository.verify_storage_import_serving()?;
+                operation(repository)
+            })
     }
 
     fn run_with_budget<T>(
@@ -46,11 +49,21 @@ impl PooledRepository {
         operation: impl FnOnce(&mut trnm_persistence_pg::PgRepository) -> Result<T, DomainError>,
     ) -> Result<T, DomainError> {
         self.pool
-            .run_with_deadline(operation_budget.min(self.operation_budget), operation)
+            .run_with_deadline(operation_budget.min(self.operation_budget), |repository| {
+                repository.verify_storage_import_serving()?;
+                operation(repository)
+            })
     }
 }
 
 impl Repository for PooledRepository {
+    fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
+        self.pool
+            .run_with_deadline(self.operation_budget, |repository| {
+                repository.verify_storage_import_serving()
+            })
+    }
+
     fn bootstrap_entity(
         &mut self,
         entity: EntityId,

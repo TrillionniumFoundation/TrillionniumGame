@@ -67,6 +67,8 @@ REQUIRED_TABLES = {
     "trnm_session_families",
     "trnm_refresh_tokens",
     "trnm_storage_objects",
+    "trnm_storage_import_jobs",
+    "trnm_storage_import_pages",
 }
 
 
@@ -151,7 +153,8 @@ def validate_schema_consumer(harness: str, profile: str | None, *, mode: str = "
 
 
 def validate_storage_snapshot(data: str) -> None:
-    for name in ("chain_digest", "digest_algorithm", "storage_writer_epoch", "upgrade_source_commit"):
+    for name in ("chain_digest", "digest_algorithm", "storage_writer_epoch", "upgrade_source_commit",
+                 "v2_apply_source_commit", "v3_apply_source_commit"):
         require(re.search(r"['\"]" + name + r"['\"]\s*,\s*" + name + r"\b", data) is not None,
                 f"semantic snapshot omits schema identity field {name}")
     for name in ("create_time", "update_time"):
@@ -203,6 +206,10 @@ def validate_semantic_negative_probes(harness: str, profile: str) -> None:
         row = expected[label]
         require((state, constraint) == (row[0], row[1 if profile == "postgresql" else 2]),
                 f"{label}: SQLSTATE/constraint target differs")
+    require("SELECT repeat('x',129), 'bad', user_id, value_bytes" in harness,
+            "current storage collection probe must reject129 characters; empty is legal in schema4")
+    require("SELECT '', 'bad', user_id, value_bytes" not in harness,
+            "empty stored collection is lawful and cannot be a negative probe")
     require("--sqlstate 42P07" in harness, "raw immutable foundation replay must assert duplicate-table SQLSTATE")
     require("repeat-schema-identity.json" in harness and
             re.search(r"\[['\"]migration_applied['\"]\]\s+is\s+False", harness) is not None and
@@ -341,8 +348,8 @@ def validate_schema_upgrade_fixtures(source: str, extension: str) -> None:
     require('include!("schema_upgrade_parts/v3.rs")' in source,
             "native v3 schema scenarios are not registered")
     for field in ("schema_version", "storage_writer_epoch"):
-        require(re.search(r'assert_eq!\(identity\.' + field + r',\s*3\)', source) is not None,
-                f"native schema fixture must require current {field} 3")
+        require(re.search(r'assert_eq!\(identity\.' + field + r',\s*4\)', source) is not None,
+                f"native schema fixture must require current {field} 4")
     for marker in ("schema_writer_destructive_barrier_executed",
                    "schema_writer_set_only_barrier_executed", "schema_writer_admin_barrier_executed"):
         require(marker in source, f"native writer barrier marker removed: {marker}")

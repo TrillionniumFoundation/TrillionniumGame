@@ -348,7 +348,7 @@ jobs:
               'http_bootstrap_commit_duplicate_conflict',
               'websocket_json_commit', 'response_loss_exact_receipt_replay',
               'authenticated_drain', 'process_restart_exact_receipt_replay',
-              'schema_upgrade', 'storage_jsonb_v3_projection', 'storage_native_jsonb',
+              'schema_upgrade', 'storage_jsonb_v3_projection', 'storage_native_jsonb', 'storage_v4_acl', 'storage_v4_import',
           ):
               assert summary[field] is True, (field, summary[field])
           assert type(summary['schema_v3_extra_cases']) is int and summary['schema_v3_extra_cases'] == 41
@@ -358,7 +358,7 @@ jobs:
           }
           assert all(type(value) is int for value in summary['schema_v3_case_families'].values())
           for field in ('schema_version', 'storage_writer_epoch', 'authoritative_migrations_count'):
-              assert type(summary[field]) is int and summary[field] == 3
+              assert type(summary[field]) is int and summary[field] == 4
           assert summary['wire_compatible'] is False
           assert summary['production_ready'] is False
 

@@ -91,8 +91,10 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
         rows = {table: [{"synthetic": True}] for table in CHECKER.EXPECTED_TABLES}
         rows["trnm_schema_metadata"] = [{key: identity[key] for key in
             ("profile", "schema_version", "storage_writer_epoch", "chain_digest", "digest_algorithm",
-             "source_commit", "upgrade_source_commit", "v2_apply_source_commit")}]
+             "source_commit", "upgrade_source_commit", "v2_apply_source_commit", "v3_apply_source_commit")}]
         rows["trnm_storage_objects"] = [known, timestamped, unknown, array]
+        for table in CHECKER.EMPTY_ALLOWED_TABLES:
+            rows[table] = []
         return rows
 
     def snapshot_bytes(self, rows, profile):
@@ -107,10 +109,10 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
         return stream.getvalue().encode()
 
     def snapshot_identity(self, profile):
-        return {"profile": profile, "schema_version": 3, "storage_writer_epoch": 3,
+        return {"profile": profile, "schema_version": 4, "storage_writer_epoch": 4,
                 "chain_digest": "d" * 64, "digest_algorithm": "ordered-path-git-blob-sha256.v1",
                 "source_commit": "a" * 40, "upgrade_source_commit": "b" * 40,
-                "v2_apply_source_commit": "c" * 40}
+                "v2_apply_source_commit": "c" * 40, "v3_apply_source_commit": "e" * 40}
 
     @contextmanager
     def evidence_fixture(self, profile="postgresql"):
@@ -142,11 +144,11 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
             validation = subprocess.check_output(["python3", "scripts/check-migration-lock.py"], cwd=root)
             (retained / "migration-chain-validation.json").write_bytes(validation)
             fresh = {"schema": "trillionnium.authoritative-schema-report.v1", "profile": profile,
-                     "schema_version": version, "storage_writer_epoch": 3,
+                     "schema_version": version, "storage_writer_epoch": 4,
                      "chain_digest": chains[profile]["chain_sha256"],
                      "digest_algorithm": "ordered-path-git-blob-sha256.v1", "table_count": tables,
-                     "source_commit": commit, "upgrade_source_commit": commit, "v2_apply_source_commit": commit,
-                     "compatibility_credit": False, "migration_applied": True, "applied_steps": 3}
+                     "source_commit": commit, "upgrade_source_commit": commit, "v2_apply_source_commit": commit, "v3_apply_source_commit": commit,
+                     "compatibility_credit": False, "migration_applied": True, "applied_steps": 4}
             (retained / "schema-identity.json").write_text(json.dumps(fresh))
             restored = {**fresh, "migration_applied": False, "applied_steps": 0}
             (retained / "restored-schema-identity.json").write_text(json.dumps(restored))
@@ -158,7 +160,7 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
             (retained / "summary.json").write_text(json.dumps({"schema": "trillionnium.backup-restore.v1",
                 "profile": profile, "backup_created": True, "empty_restore": True,
                 "semantic_snapshot_equal": True, "production_pitr": False, "multi_node_restore": False,
-                "schema_version": 3, "storage_writer_epoch": 3, "authoritative_migration_file_count": 3,
+                "schema_version": 4, "storage_writer_epoch": 4, "authoritative_migration_file_count": 4,
                 "storage_v3_fixture_count": 4}))
             for name in ("source.csv", "restored.csv"):
                 (retained / name).write_text("synthetic semantic snapshot\n")
@@ -302,7 +304,7 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
             identity = self.snapshot_identity(profile)
             for fault in ("projection", "public-from-render", "request-native", "unknown-request",
                           "manifest-zero", "known-null-request", "missing-column", "invented-time",
-                          "lost-microseconds", "lost-native-time", "lost-empty-token", "prior-v2", "stale-epoch"):
+                          "lost-microseconds", "lost-native-time", "lost-empty-token", "prior-v2", "prior-v3", "missing-prior-v3", "stale-epoch"):
                 rows = self.snapshot_rows(identity)
                 storage = rows["trnm_storage_objects"]
                 if fault == "projection":
@@ -379,14 +381,14 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
     def test_native_v3_packet_guards_require_new_columns_actual_snapshot_and_complete_chain(self):
         for marker in ("validate_storage_snapshot_bytes", "source-storage-v3.txt", "value_jsonb",
                        "public_version", "value_projection_digest", "source_manifest_digest",
-                       "unknown-empty", "unknown-unicode", "len(ordered) == 3"):
+                       "unknown-empty", "unknown-unicode", "len(ordered) == 4"):
             with self.subTest(marker=marker), self.assertRaises(SystemExit):
                 CHECKER.validate_text(self.script.replace(marker, "removed"), self.images)
-        for marker in ("validate_storage_snapshot_bytes", "source-storage-v3.txt", "v2_apply_source_commit",
-                       "storage_v3_fixture_count", "ordered_files']) == 3"):
+        for marker in ("validate_storage_snapshot_bytes", "source-storage-v3.txt", "v2_apply_source_commit", "v3_apply_source_commit",
+                       "storage_v3_fixture_count", "ordered_files']) == 4"):
             self.assertIn(marker, self.workflow_python("PY_BACKUP_ARCHIVE"))
 
-    def test_semantic_manifest_builder_retains_actual_three_sql_bytes_and_restored_metadata(self):
+    def test_semantic_manifest_builder_retains_actual_four_sql_bytes_and_restored_metadata(self):
         for profile in ("postgresql", "cockroachdb"):
             harness = (ROOT / f"scripts/ci-{profile}-semantic-recovery.sh").read_text()
             matches = re.findall(r"<<'PY'\n(.*?)^PY$", harness, re.MULTILINE | re.DOTALL)
@@ -394,7 +396,7 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
             with self.subTest(profile=profile), tempfile.TemporaryDirectory() as directory:
                 evidence = Path(directory)
                 identity = self.snapshot_identity(profile)
-                identity["upgrade_source_commit"] = identity["v2_apply_source_commit"] = identity["source_commit"]
+                identity["upgrade_source_commit"] = identity["v2_apply_source_commit"] = identity["v3_apply_source_commit"] = identity["source_commit"]
                 for name in ("schema-identity.json", "repeat-schema-identity.json", "restored-schema-identity.json"):
                     (evidence / name).write_text(json.dumps(identity))
                 for name in ("source-data.txt", "restored-data.txt"):
@@ -414,7 +416,7 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
                 manifest = json.loads((evidence / "manifest.json").read_text())
                 self.assertEqual(manifest["negative_constraint_probe_count"], 10)
                 self.assertEqual(manifest["storage_v3_constraint_probe_count"], 9)
-                self.assertEqual(manifest["authoritative_migration_file_count"], 3)
+                self.assertEqual(manifest["authoritative_migration_file_count"], 4)
                 self.assertEqual(manifest["restored_schema_identity"]["v2_apply_source_commit"], identity["v2_apply_source_commit"])
                 for entry in manifest["authoritative_migrations"]:
                     content = (ROOT / entry["path"]).read_bytes()
@@ -438,11 +440,12 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
                 self.assertEqual(identity["source_commit"], commit)
                 self.assertEqual(identity["upgrade_source_commit"], commit)
                 self.assertEqual(identity["v2_apply_source_commit"], commit)
-                self.assertEqual(identity["schema_version"], 3)
+                self.assertEqual(identity["schema_version"], 4)
                 self.assertFalse(identity["accepted_evidence"])
                 sql = sorted(path.relative_to(retained).as_posix() for path in (retained / "migrations").rglob("*.sql"))
                 self.assertEqual(sql, [f"migrations/{profile}/0001_foundation_up.sql", f"migrations/{profile}/0002_storage_timestamps_up.sql",
-                                       f"migrations/{profile}/0003_storage_jsonb_up.sql"])
+                                       f"migrations/{profile}/0003_storage_jsonb_up.sql",
+                                       f"migrations/{profile}/0004_storage_source_import_up.sql"])
                 manifest = (retained / "SHA256SUMS").read_text()
                 self.assertNotIn(str(root), manifest)
                 self.assertIn("  ./container.log\n", manifest)
@@ -464,13 +467,13 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
                 self.assertTrue((root / f"run/backup-restore-{profile}-retention-receipt.json").is_file())
 
     def test_sealing_rejects_wrong_source_provenance_run_and_migration_identity(self):
-        for fault in ("fresh-provenance", "restored-provenance", "prior-v2-provenance", "run-attempt", "candidate-head", "migration-source"):
+        for fault in ("fresh-provenance", "restored-provenance", "prior-v2-provenance", "prior-v3-provenance", "run-attempt", "candidate-head", "migration-source"):
             with self.subTest(fault=fault), self.evidence_fixture() as fixture:
                 root, retained, _, _, env = fixture
-                if fault in ("fresh-provenance", "restored-provenance", "prior-v2-provenance"):
+                if fault in ("fresh-provenance", "restored-provenance", "prior-v2-provenance", "prior-v3-provenance"):
                     path = retained / ("schema-identity.json" if fault == "fresh-provenance" else "restored-schema-identity.json")
                     document = json.loads(path.read_text())
-                    document["v2_apply_source_commit" if fault == "prior-v2-provenance" else "upgrade_source_commit"] = "f" * 40
+                    document[{"prior-v2-provenance":"v2_apply_source_commit", "prior-v3-provenance":"v3_apply_source_commit"}.get(fault, "upgrade_source_commit")] = "f" * 40
                     path.write_text(json.dumps(document))
                 elif fault == "run-attempt":
                     env["GITHUB_RUN_ATTEMPT"] = "0"
@@ -482,9 +485,10 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
                 result = self.seal_fixture(fixture)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn("syntax error", result.stderr)
-                expected = {"fresh-provenance": "fresh foundation/v2/current apply provenance mismatch",
+                expected = {"fresh-provenance": "fresh foundation/v2/v3/current apply provenance mismatch",
                             "restored-provenance": "restored backup schema provenance differs",
                             "prior-v2-provenance": "restored backup schema provenance differs",
+                            "prior-v3-provenance": "restored backup schema provenance differs",
                             "run-attempt": "backup run context is missing or invalid",
                             "candidate-head": "backup candidate commit mismatch",
                             "migration-source": "blob identity drift"}[fault]
@@ -493,7 +497,7 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
 
     def test_archive_rejects_missing_checksum_bad_payload_and_forged_producer_or_sql(self):
         for fault in ("missing-checksum", "bad-payload", "forged-producer", "forged-sql",
-                      "forged-native", "forged-prior-v2", "missing-v3-sql", "traversal", "symlink"):
+                      "forged-native", "forged-prior-v2", "forged-prior-v3", "missing-v3-sql", "missing-v4-sql", "traversal", "symlink"):
             with self.subTest(fault=fault), self.evidence_fixture() as fixture:
                 _, retained, _, _, _ = fixture
                 sealed = self.seal_fixture(fixture)
@@ -519,14 +523,14 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
                     path.write_bytes(data)
                     (retained / "restored-storage-v3.txt").write_bytes(data)
                     self.rewrite_manifest(retained)
-                elif fault == "forged-prior-v2":
+                elif fault in ("forged-prior-v2", "forged-prior-v3"):
                     path = retained / "restored-schema-identity.json"
                     document = json.loads(path.read_text())
-                    document["v2_apply_source_commit"] = "f" * 40
+                    document["v2_apply_source_commit" if fault == "forged-prior-v2" else "v3_apply_source_commit"] = "f" * 40
                     path.write_text(json.dumps(document))
                     self.rewrite_manifest(retained)
-                elif fault == "missing-v3-sql":
-                    (retained / "migrations/postgresql/0003_storage_jsonb_up.sql").unlink()
+                elif fault in ("missing-v3-sql", "missing-v4-sql"):
+                    (retained / "migrations/postgresql" / ("0003_storage_jsonb_up.sql" if fault == "missing-v3-sql" else "0004_storage_source_import_up.sql")).unlink()
                     self.rewrite_manifest(retained)
                 else:
                     extra = tarfile.TarInfo("../escape" if fault == "traversal" else "link")

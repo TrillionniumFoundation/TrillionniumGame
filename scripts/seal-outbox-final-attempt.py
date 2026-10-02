@@ -103,7 +103,7 @@ def source_binding(profile: str) -> tuple[dict[str, Any], bytes, dict[str, Any],
     row = validation["profiles"][profile]
     binding = {"migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
                "migration_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
-               "schema_version": str(lock["schema_version"]), "storage_writer_epoch": "3",
+               "schema_version": str(lock["schema_version"]), "storage_writer_epoch": "4",
                "chain_digest": row["chain_sha256"], "digest_algorithm": validation["digest_algorithm"],
                "ordered_files": ordered, "image": image}
     return validation, lock_bytes, lock, binding
@@ -122,7 +122,7 @@ def seal_profile(root: Path, *, profile: str, commit: str, tree: str,
     require(report == validation, "retained complete migration validation differs from candidate source")
     schema = SCHEMAS.decode_identity_document((root / "schema-identity.json").read_bytes())
     SCHEMAS.validate_identity(schema, profile=profile, chains=validation["profiles"],
-                              schema_version=lock["schema_version"], table_count=10,
+                              schema_version=lock["schema_version"], table_count=12,
                               mode="fresh", source_commit=commit)
     result = VERIFIER.parse_env((root / "result.env").read_bytes(), "profile result")
     require(result == {"status": "passed", "profile": profile, "commit": commit},

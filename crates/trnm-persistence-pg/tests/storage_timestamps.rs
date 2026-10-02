@@ -60,7 +60,7 @@ fn write(
 }
 
 fn owner_write(key: &StorageObjectKey, expected: VersionCheck) -> StorageBatchOperation {
-    write(key, expected, ReadPermission::Owner, WritePermission::Owner)
+    write(key, expected, ReadPermission::OWNER, WritePermission::OWNER)
 }
 
 fn physical_row(control: &mut Client, key: &StorageObjectKey) -> (StorageTimes, i64) {
@@ -229,8 +229,8 @@ fn shadow_namespace_cannot_replace_public_storage_or_clock(
                 &[write(
                     &public_key,
                     VersionCheck::MustNotExist,
-                    ReadPermission::Public,
-                    WritePermission::Owner,
+                    ReadPermission::PUBLIC,
+                    WritePermission::OWNER,
                 )],
                 30,
             )
@@ -369,8 +369,8 @@ fn shadow_namespace_cannot_replace_public_storage_or_clock(
                 &[write(
                     &public_key,
                     VersionCheck::Exact(version.into()),
-                    ReadPermission::Public,
-                    WritePermission::Owner,
+                    ReadPermission::PUBLIC,
+                    WritePermission::OWNER,
                 )],
                 32,
             )
@@ -381,7 +381,7 @@ fn shadow_namespace_cannot_replace_public_storage_or_clock(
         // Ready shadow metadata must not conceal a faulted public epoch.
         control
             .batch_execute(&format!(
-                "UPDATE {name}.trnm_schema_metadata SET storage_writer_epoch = 3"
+                "UPDATE {name}.trnm_schema_metadata SET storage_writer_epoch = 4"
             ))
             .unwrap();
         let mut bad = metadata.clone();
@@ -392,8 +392,8 @@ fn shadow_namespace_cannot_replace_public_storage_or_clock(
             write(
                 &public_key,
                 VersionCheck::Any,
-                ReadPermission::Public,
-                WritePermission::Owner,
+                ReadPermission::PUBLIC,
+                WritePermission::OWNER,
             ),
             owner_write(&missing, VersionCheck::MustNotExist),
             StorageBatchOperation::Delete(StorageDeleteOperation {
@@ -471,8 +471,8 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
     let mut control = Client::connect(&database_url, NoTls)
         .unwrap_or_else(|_| panic!("timestamp fixture control connection failed"));
     let metadata = Metadata::read(&mut control);
-    assert_eq!(metadata.version, 3);
-    assert_eq!(metadata.epoch, Some(3));
+    assert_eq!(metadata.version, 4);
+    assert_eq!(metadata.epoch, Some(4));
     assert_eq!(metadata.profile, profile.metadata_value());
     cleanup(&mut control, &metadata);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -585,8 +585,8 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
                 &[write(
                     &first,
                     VersionCheck::Any,
-                    ReadPermission::Public,
-                    WritePermission::Owner,
+                    ReadPermission::PUBLIC,
+                    WritePermission::OWNER,
                 )],
                 10,
             )
@@ -611,8 +611,8 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
                     key: second.clone(),
                     value: changed_value.to_vec(),
                     expected: VersionCheck::Any,
-                    read_permission: ReadPermission::Owner,
-                    write_permission: WritePermission::Owner,
+                    read_permission: ReadPermission::OWNER,
+                    write_permission: WritePermission::OWNER,
                 })],
                 19,
             )
@@ -729,8 +729,8 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
                 &[write(
                     &guarded,
                     VersionCheck::MustNotExist,
-                    ReadPermission::Owner,
-                    WritePermission::None,
+                    ReadPermission::OWNER,
+                    WritePermission::NONE,
                 )],
                 20,
             )
@@ -741,8 +741,8 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
                 &[write(
                     &guarded,
                     VersionCheck::Any,
-                    ReadPermission::Owner,
-                    WritePermission::None,
+                    ReadPermission::OWNER,
+                    WritePermission::NONE,
                 )],
                 21,
             )
@@ -787,10 +787,10 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
             let mut bad = metadata.clone();
             match fault {
                 0 => bad.epoch = Some(1),
-                1 => bad.epoch = Some(4),
+                1 => bad.epoch = Some(5),
                 2 => bad.epoch = None,
                 3 => bad.version = 1,
-                4 => bad.version = 4,
+                4 => bad.version = 5,
                 5 => bad.digest = Some("0".repeat(64)),
                 6 => bad.algorithm = Some("wrong-algorithm".to_owned()),
                 // Immutable per-profile DDL rejects a different metadata
@@ -802,8 +802,8 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
                 write(
                     &first,
                     VersionCheck::Any,
-                    ReadPermission::Public,
-                    WritePermission::Owner,
+                    ReadPermission::PUBLIC,
+                    WritePermission::OWNER,
                 ),
                 owner_write(&missing, VersionCheck::MustNotExist),
                 StorageBatchOperation::Delete(StorageDeleteOperation {

@@ -174,7 +174,7 @@
     "maximum_encoded_response_bytes": 33554432
   },
   "durability": "Construct mutation success only after atomic committed receipts; construct read/list success after the bounded readonly repository transaction completes. Do not retry storage mutations or this client-list projection through the generic command supervisor.",
-  "migration_impact": "Append-only 0002 retains nullable TIMESTAMPTZ without defaults or historical backfill. Append-only 0003 publishes schema/writer epoch3 and separates sole native JSONB payload, independent public_version, projection SHA-256 and known/unknown request provenance. Existing v1/v2 upgrade barriers, creator source_commit and genuine prior v2_apply_source_commit remain separately verified; fresh database v2 publication uses its actual candidate SHA. HTTP never substitutes raw witness bytes for native payload. Original timestamp import, rolling production upgrade and independent rollback acceptance remain open.",
+  "migration_impact": "Append-only 0002 retains nullable TIMESTAMPTZ without defaults or historical backfill. Append-only 0003 publishes schema/writer epoch3 and separates sole native JSONB payload, independent public_version, projection SHA-256 and known/unknown request provenance. Existing v1/v2 upgrade barriers, creator source_commit and genuine prior v2_apply_source_commit remain separately verified; fresh database v2 publication uses its actual candidate SHA. HTTP never substitutes raw witness bytes for native payload. Original timestamp import, rolling production upgrade and independent rollback acceptance remain open. Append-only0004 publishes schema4/epoch4, preserves actual v3_apply_source_commit separately, admits historical empty Unicode keys/raw nonnegative SMALLINT ACLs and registers manifest-bound jobs/pages. Native import custody/resume/readiness and full replacement remain unqualified until exact execution evidence.",
   "rollback": "Schema v3 is a forward-fix boundary: prior byte-only writers are fenced and cannot interpret the new independent public tokens and unknown-request provenance. Reverting route/codec/bridge source alone is not an accepted rollback. Preserve native payload, public token, witness/manifest and times while applying an independently reviewed forward fix; no drop-based production rollback is authorized.",
   "limitations": [
     "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
@@ -210,7 +210,7 @@
     "client_list_repository_test": "crates/trnm-persistence-pg/tests/authority_storage_parts/03_storage_list.rs::nakama_client_listing_modes_cursors_and_integrity_are_database_projected",
     "client_list_execution_required": "The same live harness requires TRNM_REQUIRE_LIVE_DATABASE=1, one exact authority_storage repository test with zero failed/ignored, matching nakama_client_list_projection_executed profile marker, explicit skip rejection and a sealed nakama-client-list-projection.log. Source checks and local results do not admit exact-object live or independent evidence.",
     "jsonb_v3_fixture": "crates/trnm-server/src/runtime/storage_api_v3_live.rs::prove_storage_jsonb_v3_app",
-    "jsonb_v3_execution_required": "The same single canonical App test must emit an exact profile marker with history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3, plus exactly one actual native-input accepted/rejected observation with compatibility_credit=false. Preserve the previous write_cases=15/delete_cases=18/batch_cases=2 marker. Retained packet validation checks the actual three profile SQL bytes, sizes and hashes, schema3/epoch3 and fresh prior-v2 publisher; source and local tests grant no acceptance."
+    "jsonb_v3_execution_required": "The same single canonical App test must emit an exact profile marker with history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3, plus exactly one actual native-input accepted/rejected observation with compatibility_credit=false. Preserve the previous write_cases=15/delete_cases=18/batch_cases=2 marker. Retained packet validation checks the actual four profile SQL bytes, sizes and hashes, schema4/epoch4 and fresh prior-v2/prior-v3 publishers; source and local tests grant no acceptance."
   },
   "mutation_repository": "Authorization, native TEXT input binding, OCC and stored projection/witness integrity checks precede no-op selection. Native incoming JSONB admission also precedes a blind no-op; an unknown matching token cannot bypass a native JSONB rejection. A blind write with stored public token equal to generated request MD5 and equal ACLs preserves native payload, provenance and times; known request fingerprints must match, while unknown original requests are not fabricated. Exact writes always project request bytes through the actual database JSONB cast, update known request witness and transaction update_time, preserving nullable original creation. Atomic batch commit still precedes ACK. Insert-only binds actor to owner and rejects an existing valid row as a version conflict regardless of its write ACL; blind/exact retain permission-first rejection. Profile SQL/NUL behavior remains distinct from immutable Nakama compatibility.",
   "list_repository": {
@@ -237,8 +237,8 @@
     "accepted": false
   },
   "jsonb_v3_projection_source_candidate": {
-    "schema_version": 3,
-    "storage_writer_epoch": 3,
+    "schema_version": 4,
+    "storage_writer_epoch": 4,
     "source": "crates/trnm-server/src/runtime/storage_api.rs",
     "tests": "crates/trnm-server/src/runtime/storage_api_projection_tests.rs",
     "live_fixture": "crates/trnm-server/src/runtime/storage_api_v3_live.rs",
@@ -252,7 +252,8 @@
     "accepted": false,
     "compatibility_credit": false,
     "gap_closed": false,
-    "production_ready": false
+    "production_ready": false,
+    "source_import_contract": "contracts/database/foundation-schema.v1.json#storage_source_import"
   },
   "native_resource_boundary": "Projection16MiB/aggregate32MiB/encodedHTTP32MiB guards constrain returned/application bytes. They observe lengths after native SQL materialization and do not prove a database backend memory ceiling; actual database-side memory containment remains unqualified."
 }

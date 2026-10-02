@@ -80,23 +80,16 @@ fn decode_storage_object_at(
     )?)
     .map_err(|_| data_loss("invalid_storage_integrity_digest"))?;
     verify_storage_integrity(&value, integrity_digest)?;
-    let read_permission = match row
-        .try_get::<_, i16>(offset + 4)
-        .map_err(|_| data_loss("invalid_storage_read_permission"))?
-    {
-        0 => ReadPermission::None,
-        1 => ReadPermission::Owner,
-        2 => ReadPermission::Public,
-        _ => return Err(data_loss("invalid_storage_read_permission")),
-    };
-    let write_permission = match row
-        .try_get::<_, i16>(offset + 5)
-        .map_err(|_| data_loss("invalid_storage_write_permission"))?
-    {
-        0 => WritePermission::None,
-        1 => WritePermission::Owner,
-        _ => return Err(data_loss("invalid_storage_write_permission")),
-    };
+    let read_permission = ReadPermission::from_stored(
+        row.try_get::<_, i16>(offset + 4)
+            .map_err(|_| data_loss("invalid_storage_read_permission"))?,
+    )
+    .map_err(|_| data_loss("invalid_storage_read_permission"))?;
+    let write_permission = WritePermission::from_stored(
+        row.try_get::<_, i16>(offset + 5)
+            .map_err(|_| data_loss("invalid_storage_write_permission"))?,
+    )
+    .map_err(|_| data_loss("invalid_storage_write_permission"))?;
     let origin: String = row
         .try_get(offset + 6)
         .map_err(|_| data_loss("invalid_storage_value_origin"))?;
@@ -187,7 +180,7 @@ fn decode_storage_key(
     user_bytes: Vec<u8>,
 ) -> Result<StorageObjectKey, DomainError> {
     let user = decode_id16(user_bytes, UserId::new, "invalid_storage_user_id")?;
-    StorageObjectKey::new(collection, object_key, user)
+    StorageObjectKey::new_nakama(collection, object_key, user)
         .map_err(|_| data_loss("invalid_storage_key_material"))
 }
 

@@ -40,13 +40,14 @@ STORAGE_NATIVE_JSONB = {
     "catalog_semantic_scope": "Exact reviewed column typmod, named validated CHECK and primary-key order for this ABI; no general constraint or schema equivalence credit",
     "runtime_execution_credit": False,
 }
+STORAGE_SOURCE_IMPORT = {'migration': '0004_storage_source_import_up.sql', 'stored_key_domain': '0..128 Unicode characters including empty, dot and control text admitted by the native profile', 'stored_permissions': 'native checked SMALLINT 0..32767; no shared enum authorization predicate', 'acl_predicates': {'batch_read': 'read==2 OR (read==1 AND owner==caller)', 'public_all_list': 'read>=2', 'own_owner_list': 'read>=1', 'foreign_global_list': 'read==2', 'client_write': 'write==1', 'client_delete': 'write>0'}, 'journal_tables': ['trnm_storage_import_jobs', 'trnm_storage_import_pages'], 'history_publishers': ['v2_apply_source_commit', 'v3_apply_source_commit'], 'original_request_bytes': 'unknown source-native export retains NULL raw witness pair; no source text is original request', 'completion': 'single manifest-bound journal; applying prefix blocked by per-transaction and startup readiness admission', 'runtime_execution_credit': False}
 PG_FALSE_CLAIMS = {
     "live_postgresql_executed", "restart_duplicate_replay_verified", "cockroachdb_executed",
     "nakama_wire_compatible", "sg4_complete", "production_ready",
 }
 PG_REQUIRED_SCENARIOS = [
     "fresh migration apply",
-    "complete ordered chain with schema v3 and storage writer epoch 3",
+    "complete ordered chain with schema v4 and storage writer epoch 4",
     "entity bootstrap",
     "first command commit",
     "one receipt, event, outbox and command-outbox link",
@@ -184,13 +185,16 @@ def validate_current_contracts(
     # Shared lock validation owns every v3 action and its immutable source
     # identity. The six-action parser above is only the historical v2 layer.
     authority = json.loads((root / "docs/development/SCHEMA_AUTHORITY.json").read_text())["authority"]
-    current = authority["storage_jsonb_upgrade_source_candidate"]
+    current = authority["storage_source_import_upgrade_source_candidate"]
+    historical_native = authority["storage_jsonb_upgrade_source_candidate"]
+    if type(historical_native["schema_version"]) is not int or historical_native["schema_version"] != 3 or type(historical_native["storage_writer_epoch"]) is not int or historical_native["storage_writer_epoch"] != 3:
+        raise SchemaError("historical v3 native JSONB authority must retain its exact revision")
     version = chain["schema_version"]
     epoch = current["storage_writer_epoch"]
-    if type(version) is not int or version != 3 or type(authority["schema_version"]) is not int or authority["schema_version"] != version or type(current["schema_version"]) is not int or current["schema_version"] != version:
+    if type(version) is not int or version != 4 or type(authority["schema_version"]) is not int or authority["schema_version"] != version or type(current["schema_version"]) is not int or current["schema_version"] != version:
         raise SchemaError("current schema authority differs from the complete shared chain")
-    if type(epoch) is not int or epoch != 3:
-        raise SchemaError("current storage writer epoch differs from reviewed native JSONB revision")
+    if type(epoch) is not int or epoch != 4:
+        raise SchemaError("current storage writer epoch differs from reviewed source-import revision")
     if type(contract.get("schema_version")) is not int or contract["schema_version"] != version:
         raise SchemaError("foundation current schema version differs from the complete shared chain")
     if type(contract.get("storage_writer_epoch")) is not int or contract["storage_writer_epoch"] != epoch:
@@ -199,6 +203,11 @@ def validate_current_contracts(
         raise SchemaError("historical v2 timestamp contract differs from its six-action scope")
     if json.dumps(contract.get("storage_native_jsonb"), sort_keys=True) != json.dumps(STORAGE_NATIVE_JSONB, sort_keys=True):
         raise SchemaError("native JSONB/public-version/witness reviewed ABI contract differs")
+
+    if json.dumps(contract.get("storage_source_import"), sort_keys=True) != json.dumps(STORAGE_SOURCE_IMPORT, sort_keys=True):
+        raise SchemaError("storage source-import/key/raw-ACL/journal reviewed ABI contract differs")
+    if type(contract.get("current_authoritative_table_count")) is not int or contract["current_authoritative_table_count"] != 12:
+        raise SchemaError("current authoritative table count must include both import journal tables")
 
     pg = json.loads((root / PG_CONTRACT.relative_to(ROOT)).read_text())
     if pg.get("schema") != "trillionnium.pg-server-vertical-slice.v1" or pg.get("status") != "source-candidate":
@@ -213,6 +222,8 @@ def validate_current_contracts(
         raise SchemaError("PG source contract runner/verifier differs from the shared engine")
     if pg.get("storage_native_jsonb_contract") != "contracts/database/foundation-schema.v1.json#storage_native_jsonb":
         raise SchemaError("PG source contract must consume the reviewed native JSONB ABI")
+    if pg.get("storage_source_import_contract") != "contracts/database/foundation-schema.v1.json#storage_source_import":
+        raise SchemaError("PG source contract must consume reviewed source-import ABI")
     if pg.get("required_scenarios") != PG_REQUIRED_SCENARIOS:
         raise SchemaError("PG source contract omits the complete current schema scenario")
     claims = pg.get("claims")
@@ -281,6 +292,8 @@ def validate(root: Path = ROOT) -> dict[str, object]:
         "schema_version": contract["schema_version"],
         "storage_writer_epoch": contract["storage_writer_epoch"],
         "pg_source_contract_connected": True,
+        "current_authoritative_table_count": 12,
+        "foundation_inspection_scope": "immutable0001 ten-table foundation; current full chain includes both import journal tables",
         "profiles": profiles,
         "rollback_authority": "docs/OPERATIONS_AND_RELEASE.md",
         "runtime_execution_verified": False,

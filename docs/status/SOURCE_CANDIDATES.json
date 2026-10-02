@@ -157,7 +157,9 @@
         "crates/trnm-storage-core/src/projection_tests.rs",
         "contracts/storage/storage-vectors.json",
         "scripts/check-storage-core.py",
-        "tests/control_plane/test_storage_integrity_contract.py"
+        "tests/control_plane/test_storage_integrity_contract.py",
+        "crates/trnm-storage-core/src/stored_domain.rs",
+        "crates/trnm-storage-core/src/stored_domain_tests.rs"
       ],
       "status": "source-candidate",
       "required_next": [
@@ -272,6 +274,40 @@
       ],
       "accepted": false,
       "gap_closed": false
+    },
+    {
+      "id": "SRC-STORAGE-NATIVE-SNAPSHOT-IMPORT-V4",
+      "gap_ids": [
+        "GAP-P1-STORAGE-001",
+        "GAP-P0-DATA-001",
+        "GAP-P0-SERVER-001"
+      ],
+      "paths": [
+        "crates/trnm-persistence-pg/src/storage_import.rs",
+        "crates/trnm-persistence-pg/src/storage_import_parts/packet.rs",
+        "crates/trnm-persistence-pg/src/storage_import_parts/exporter.rs",
+        "crates/trnm-persistence-pg/src/storage_import_parts/repository.rs",
+        "crates/trnm-persistence-pg/src/bin/storage_transfer.rs",
+        "crates/trnm-persistence-pg/src/bin/trnm-storage-export.rs",
+        "crates/trnm-persistence-pg/src/bin/trnm-storage-import.rs",
+        "crates/trnm-persistence-pg/tests/storage_import_v4.rs",
+        "crates/trnm-persistence-pg/tests/storage_permissions_v4.rs",
+        "migrations/MIGRATION_CHAIN.lock.json",
+        "contracts/database/foundation-schema.v1.json",
+        "scripts/materialize-pinned-storage-upstream.py",
+        "scripts/ci-trnm-server-live.sh"
+      ],
+      "status": "source-candidate",
+      "required_next": [
+        "clean exact-head and actual prospective merge format/test/strict Clippy/native packet qualification",
+        "all native source rows/pages/journal and restore/upgrade interruption evidence per profile",
+        "production issuer/source/target and complete writer custody with native physical target identity",
+        "immutable Nakama and official SDK lossless differential including unsupported profiles and resource budgets",
+        "independent database protocol security and operations acceptance"
+      ],
+      "accepted": false,
+      "gap_closed": false,
+      "compatibility_credit": false
     }
   ],
   "claims": {

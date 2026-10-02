@@ -7,6 +7,7 @@ mod pool;
 mod schema;
 mod session;
 mod storage;
+mod storage_import;
 mod storage_metadata;
 
 pub use auth::{
@@ -27,6 +28,11 @@ pub use session::{
     SessionFamilyRecord,
 };
 pub use storage::{StorageClientListPage, StorageListPosition};
+pub use storage_import::{
+    verify_storage_export, CheckedStorageImport, StorageExportOptions, StorageExportSummary,
+    StorageImportCustody, StorageImportOptions, StorageImportPacketSummary,
+    StorageImportPageReceipt, StorageImportProgress, VerifiedStorageExport,
+};
 pub use storage_metadata::{
     StorageTimes, StorageTimestamp, StoredStorageClientListPage, StoredStorageMutationReceipt,
     StoredStorageObject,
@@ -258,35 +264,27 @@ impl PgRepository {
         }
         let authority_generation = to_i64(authority_generation)?;
         let updated_at_ms = to_i64(updated_at_ms)?;
-        let inserted = self
+        let mut transaction = self
             .client
-            .execute(
-                "INSERT INTO trnm_entity_heads \
-                 (entity_id, revision, last_event_sequence, authority_generation, \
-                  state_digest, updated_at_ms) \
-                 VALUES ($1, 0, 0, $2, $3, $4) ON CONFLICT (entity_id) DO NOTHING",
-                &[
-                    &entity.as_bytes().as_slice(),
-                    &authority_generation,
-                    &state.as_bytes().as_slice(),
-                    &updated_at_ms,
-                ],
-            )
+            .build_transaction()
+            .isolation_level(IsolationLevel::Serializable)
+            .start()
             .map_err(map_postgres_error)?;
-        if inserted != 1 {
-            return Err(error(
-                StableCode::AlreadyExists,
-                "entity_already_exists",
-                RetryClass::Never,
-            ));
-        }
-        self.load_head(entity)?.ok_or_else(|| {
-            error(
-                StableCode::DataLoss,
-                "entity_bootstrap_lost",
-                RetryClass::Never,
-            )
-        })
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
+        let row = transaction.query_opt(
+            "INSERT INTO public.trnm_entity_heads \
+             (entity_id, revision, last_event_sequence, authority_generation, state_digest, updated_at_ms) \
+             VALUES ($1, 0, 0, $2, $3, $4) ON CONFLICT (entity_id) DO NOTHING \
+             RETURNING revision, last_event_sequence, authority_generation, state_digest, updated_at_ms",
+            &[&entity.as_bytes().as_slice(), &authority_generation, &state.as_bytes().as_slice(), &updated_at_ms],
+        ).map_err(map_postgres_error)?.ok_or_else(|| error(
+            StableCode::AlreadyExists, "entity_already_exists", RetryClass::Never))?;
+        let head = decode_head(entity, &row)?;
+        transaction.commit().map_err(map_postgres_error)?;
+        Ok(head)
     }
 
     pub fn load_head(&mut self, entity: EntityId) -> Result<Option<EntityHead>, DomainError> {
@@ -297,7 +295,7 @@ impl PgRepository {
             .client
             .query_opt(
                 "SELECT revision, last_event_sequence, authority_generation, \
-                 state_digest, updated_at_ms FROM trnm_entity_heads WHERE entity_id = $1",
+                 state_digest, updated_at_ms FROM public.trnm_entity_heads WHERE entity_id = $1",
                 &[&entity.as_bytes().as_slice()],
             )
             .map_err(map_postgres_error)?;
@@ -315,6 +313,10 @@ impl PgRepository {
             .isolation_level(IsolationLevel::Serializable)
             .start()
             .map_err(map_postgres_error)?;
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
 
         if let Some(receipt) = load_receipt(&mut transaction, request.entity, request.command)? {
             if receipt.fingerprint == request.fingerprint {
@@ -331,7 +333,7 @@ impl PgRepository {
         let head_row = transaction
             .query_opt(
                 "SELECT revision, last_event_sequence, authority_generation \
-                 FROM trnm_entity_heads WHERE entity_id = $1 FOR UPDATE",
+                 FROM public.trnm_entity_heads WHERE entity_id = $1 FOR UPDATE",
                 &[&request.entity.as_bytes().as_slice()],
             )
             .map_err(map_postgres_error)?
@@ -376,7 +378,7 @@ impl PgRepository {
         let committed_at_ms_i64 = to_i64(request.committed_at_ms)?;
         let updated = transaction
             .execute(
-                "UPDATE trnm_entity_heads SET revision = $2, last_event_sequence = $3, \
+                "UPDATE public.trnm_entity_heads SET revision = $2, last_event_sequence = $3, \
                  state_digest = $4, updated_at_ms = $5 \
                  WHERE entity_id = $1 AND revision = $6 AND authority_generation = $7",
                 &[
@@ -403,7 +405,7 @@ impl PgRepository {
             i32::try_from(request.events.len()).map_err(|_| counter_overflow())?;
         transaction
             .execute(
-                "INSERT INTO trnm_command_receipts \
+                "INSERT INTO public.trnm_command_receipts \
                  (entity_id, command_id, fingerprint, revision, state_digest, \
                   first_event_sequence, last_event_sequence, event_count, committed_at_ms) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
@@ -427,7 +429,7 @@ impl PgRepository {
             let sequence_i64 = to_i64(sequence)?;
             transaction
                 .execute(
-                    "INSERT INTO trnm_events \
+                    "INSERT INTO public.trnm_events \
                      (entity_id, sequence, event_id, command_id, payload_digest, created_at_ms) \
                      VALUES ($1, $2, $3, $4, $5, $6)",
                     &[
@@ -446,7 +448,7 @@ impl PgRepository {
             let available_at_ms = to_i64(intent.available_at_ms)?;
             transaction
                 .execute(
-                    "INSERT INTO trnm_outbox \
+                    "INSERT INTO public.trnm_outbox \
                      (intent_id, entity_id, command_id, kind, payload_digest, \
                       attempt, lease_generation, state, owner_node, receipt_digest, \
                       dead_reason_digest, available_at_ms, updated_at_ms) \
@@ -465,7 +467,7 @@ impl PgRepository {
             let position = i32::try_from(position).map_err(|_| counter_overflow())?;
             transaction
                 .execute(
-                    "INSERT INTO trnm_command_outbox \
+                    "INSERT INTO public.trnm_command_outbox \
                      (entity_id, command_id, position, intent_id) VALUES ($1, $2, $3, $4)",
                     &[
                         &request.entity.as_bytes().as_slice(),
@@ -500,7 +502,7 @@ fn load_receipt(
     let row = transaction
         .query_opt(
             "SELECT fingerprint, revision, state_digest, first_event_sequence, \
-             last_event_sequence, event_count FROM trnm_command_receipts \
+             last_event_sequence, event_count FROM public.trnm_command_receipts \
              WHERE entity_id = $1 AND command_id = $2",
             &[
                 &entity.as_bytes().as_slice(),
@@ -513,7 +515,7 @@ fn load_receipt(
     };
     let outbox_rows = transaction
         .query(
-            "SELECT intent_id FROM trnm_command_outbox \
+            "SELECT intent_id FROM public.trnm_command_outbox \
              WHERE entity_id = $1 AND command_id = $2 ORDER BY position",
             &[
                 &entity.as_bytes().as_slice(),

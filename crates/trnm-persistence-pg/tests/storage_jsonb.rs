@@ -50,8 +50,8 @@ fn write(key: &StorageObjectKey, request: &[u8], expected: VersionCheck) -> Stor
         key: key.clone(),
         value: request.to_vec(),
         expected,
-        read_permission: ReadPermission::Public,
-        write_permission: WritePermission::Owner,
+        read_permission: ReadPermission::PUBLIC,
+        write_permission: WritePermission::OWNER,
     })
 }
 

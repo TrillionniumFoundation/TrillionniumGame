@@ -7,8 +7,8 @@ fn permission_and_version_contract_matches_storage_core() {
         version: ContentVersion::from_value(b"v1").into(),
         collision_witness: None,
         integrity_digest: IntegrityDigest::from_value(b"v1"),
-        read_permission: ReadPermission::Owner,
-        write_permission: WritePermission::Owner,
+        read_permission: ReadPermission::OWNER,
+        write_permission: WritePermission::OWNER,
     };
     authorize_read(Actor::User(owner), &object).unwrap();
     assert_eq!(
@@ -70,6 +70,71 @@ fn database_permission_decoders_are_total() {
             .user_id(),
         UserId::new([1; 16])
     );
+}
+
+#[test]
+fn raw_write_and_delete_permissions_keep_distinct_authority_and_owner_binding() {
+    let owner = UserId::new([1; 16]);
+    let foreign = UserId::new([2; 16]);
+    let key = key(1);
+    for raw in [0, 1, 2, 32767] {
+        let permission = WritePermission::from_stored(raw).unwrap();
+        assert_eq!(
+            authorize_write_permission(Actor::User(owner), &key, Some(permission)).is_ok(),
+            raw == 1,
+        );
+        assert_eq!(
+            authorize_delete_permission(Actor::User(owner), &key, Some(permission)).is_ok(),
+            raw > 0,
+        );
+        for actor in [Actor::User(foreign), Actor::User(UserId::new([0; 16]))] {
+            assert_eq!(
+                authorize_write_permission(actor, &key, Some(permission))
+                    .unwrap_err()
+                    .code(),
+                StableCode::PermissionDenied,
+            );
+            assert_eq!(
+                authorize_delete_permission(actor, &key, Some(permission))
+                    .unwrap_err()
+                    .code(),
+                StableCode::PermissionDenied,
+            );
+        }
+        authorize_write_permission(Actor::Server, &key, Some(permission)).unwrap();
+        authorize_delete_permission(Actor::Server, &key, Some(permission)).unwrap();
+    }
+}
+
+#[test]
+fn lawful_raw_list_permission_is_not_a_batch_read_permission() {
+    let owner = UserId::new([1; 16]);
+    for raw in [3, 32767] {
+        let mut object = object(1);
+        object.read_permission = ReadPermission::from_stored(raw).unwrap();
+        assert_eq!(
+            authorize_read(Actor::User(owner), &object)
+                .unwrap_err()
+                .code(),
+            StableCode::PermissionDenied,
+        );
+        authorize_read(Actor::Server, &object).unwrap();
+        let page = finish_stored_client_storage_page(vec![StoredStorageObject::from(object)], true);
+        assert_eq!(page.next.unwrap().read, i32::from(raw));
+    }
+}
+
+#[test]
+fn database_stored_key_decoder_preserves_empty_and_unicode_domains() {
+    for (collection, object_key) in [
+        (String::new(), String::new()),
+        (".\n".to_owned(), "界".repeat(128)),
+    ] {
+        let key = decode_storage_key(collection.clone(), object_key.clone(), vec![0; 16]).unwrap();
+        assert_eq!(key.collection(), collection);
+        assert_eq!(key.key(), object_key);
+        assert!(key.user_id().is_zero());
+    }
 }
 
 #[test]

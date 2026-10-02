@@ -176,13 +176,15 @@ impl PgRepository {
             .map_err(map_postgres_error)?;
         verify_storage_writer_epoch(&mut transaction, self.profile)?;
         let query = storage_list_query(self.profile);
-        let parameters: [&(dyn ToSql + Sync); 6] = [
+        let has_after = after.is_some();
+        let parameters: [&(dyn ToSql + Sync); 7] = [
             &collection,
             &owner_bytes,
             &after_key,
             &after_user,
             &actor_bytes,
             &fetch_limit,
+            &has_after,
         ];
         let mut rows = transaction
             .query_raw(&query, parameters)
@@ -325,7 +327,10 @@ impl PgRepository {
             .isolation_level(IsolationLevel::Serializable)
             .start()
             .map_err(map_postgres_error)?;
-        verify_storage_writer_epoch(&mut transaction, self.profile)?;
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
 
         let mut locked = BTreeMap::new();
         for key in sorted_keys(operations) {

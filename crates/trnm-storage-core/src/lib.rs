@@ -7,9 +7,11 @@ use sha2::{Digest as _, Sha256};
 use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode, UserId};
 
 mod projection;
+mod stored_domain;
 pub use projection::{
     CollisionWitness, PublicVersion, MAX_PROJECTION_VALUE_BYTES, MAX_REQUEST_VALUE_BYTES,
 };
+pub use stored_domain::{ReadPermission, WritePermission};
 
 const MAX_COLLECTION_BYTES: usize = 128;
 const MAX_KEY_BYTES: usize = 128;
@@ -96,21 +98,6 @@ const MD5_CONSTANTS: [u32; 64] = [
 pub enum Actor {
     Server,
     User(UserId),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum ReadPermission {
-    None = 0,
-    Owner = 1,
-    Public = 2,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum WritePermission {
-    None = 0,
-    Owner = 1,
 }
 
 /// Generated write-request version: lowercase hexadecimal MD5 of the exact
@@ -274,9 +261,11 @@ impl StorageObjectKey {
         })
     }
 
-    /// Decode an authoritative Nakama-profile row using the immutable schema's
-    /// Unicode character bounds. The internal constructor retains its stricter
-    /// byte and identifier policy; this projection accepts dot/control names.
+    /// Decode a stored Nakama-profile row, preserving its exact zero-to-128
+    /// Unicode-character collection and key. Empty and dot/control names are
+    /// legal at this pure boundary; adapters check native text validity.
+    /// This is not new HTTP request admission. `new` retains the stricter
+    /// internal byte and identifier policy, and HTTP validates required fields.
     pub fn new_nakama(
         collection: impl Into<String>,
         key: impl Into<String>,
@@ -289,7 +278,7 @@ impl StorageObjectKey {
             (&key, "invalid_storage_key"),
         ] {
             let count = value.chars().take(129).count();
-            if !(1..=128).contains(&count) {
+            if count > 128 {
                 return Err(error(
                     StableCode::InvalidArgument,
                     reason,
@@ -535,7 +524,7 @@ fn apply_delete(
             RetryClass::Never,
         )
     })?;
-    validate_write_actor(actor, &operation.key, Some(&previous))?;
+    validate_delete_actor(actor, &operation.key, &previous)?;
     if let Some(expected) = operation.expected_version.as_ref() {
         if previous.version.as_str() != expected.as_str() {
             return Err(version_error());
@@ -609,18 +598,34 @@ fn validate_write_actor(
     key: &StorageObjectKey,
     existing: Option<&StorageObject>,
 ) -> Result<(), DomainError> {
-    match actor {
-        Actor::Server => Ok(()),
-        Actor::User(user_id) => {
-            if user_id.is_zero() || user_id != key.user_id {
-                return Err(permission_error());
-            }
-            if existing.is_some_and(|object| object.write_permission != WritePermission::Owner) {
-                return Err(permission_error());
-            }
-            Ok(())
+    validate_owner_actor(actor, key)?;
+    if matches!(actor, Actor::User(_))
+        && existing.is_some_and(|object| !object.write_permission.allows_client_write())
+    {
+        return Err(permission_error());
+    }
+    Ok(())
+}
+
+fn validate_delete_actor(
+    actor: Actor,
+    key: &StorageObjectKey,
+    existing: &StorageObject,
+) -> Result<(), DomainError> {
+    validate_owner_actor(actor, key)?;
+    if matches!(actor, Actor::User(_)) && !existing.write_permission.allows_client_delete() {
+        return Err(permission_error());
+    }
+    Ok(())
+}
+
+fn validate_owner_actor(actor: Actor, key: &StorageObjectKey) -> Result<(), DomainError> {
+    if let Actor::User(user_id) = actor {
+        if user_id.is_zero() || user_id != key.user_id {
+            return Err(permission_error());
         }
     }
+    Ok(())
 }
 
 fn validate_version_check(
@@ -646,9 +651,10 @@ fn can_read(actor: Actor, object: &StorageObject) -> bool {
     match actor {
         Actor::Server => true,
         Actor::User(user_id) => {
-            object.read_permission == ReadPermission::Public
-                || (user_id == object.key.user_id
-                    && object.read_permission == ReadPermission::Owner)
+            !user_id.is_zero()
+                && object
+                    .read_permission
+                    .allows_batch_read(user_id == object.key.user_id)
         }
     }
 }
@@ -746,6 +752,9 @@ const fn error(code: StableCode, reason: &'static str, retry: RetryClass) -> Dom
 mod projection_tests;
 
 #[cfg(test)]
+mod stored_domain_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -756,10 +765,12 @@ mod tests {
         assert!(StorageObjectKey::new_nakama(&name, &name, owner).is_ok());
         assert!(StorageObjectKey::new(&name, "key", owner).is_err());
         assert!(StorageObjectKey::new_nakama(".a\u{1}", ".key\u{2}", owner).is_ok());
-        for name in [String::new(), "中".repeat(129)] {
-            assert!(StorageObjectKey::new_nakama(&name, "key", owner).is_err());
-            assert!(StorageObjectKey::new_nakama("collection", &name, owner).is_err());
-        }
+        assert!(StorageObjectKey::new_nakama("", "", owner).is_ok());
+        assert!(StorageObjectKey::new("", "key", owner).is_err());
+        assert!(StorageObjectKey::new("collection", "", owner).is_err());
+        let too_long = "中".repeat(129);
+        assert!(StorageObjectKey::new_nakama(&too_long, "key", owner).is_err());
+        assert!(StorageObjectKey::new_nakama("collection", &too_long, owner).is_err());
     }
 
     fn user(value: u8) -> UserId {
@@ -881,7 +892,7 @@ mod tests {
 
     #[test]
     fn opaque_write_tokens_are_exact_and_keep_permission_precedence() {
-        for acl in [WritePermission::None, WritePermission::Owner] {
+        for acl in [WritePermission::NONE, WritePermission::OWNER] {
             let mut seeded = StorageState::default();
             seeded
                 .apply_batch(
@@ -891,7 +902,7 @@ mod tests {
                         "main",
                         b"v1",
                         VersionCheck::Any,
-                        ReadPermission::Owner,
+                        ReadPermission::OWNER,
                         acl,
                     )],
                 )
@@ -905,14 +916,14 @@ mod tests {
                         "main",
                         b"v2",
                         check.clone(),
-                        ReadPermission::Public,
-                        WritePermission::Owner,
+                        ReadPermission::PUBLIC,
+                        WritePermission::OWNER,
                     );
                     let error = state
                         .apply_batch(actor, std::slice::from_ref(&operation))
                         .unwrap_err();
                     let (code, reason) =
-                        if actor == Actor::User(user(1)) && acl == WritePermission::None {
+                        if actor == Actor::User(user(1)) && acl == WritePermission::NONE {
                             (
                                 StableCode::PermissionDenied,
                                 "storage_write_permission_denied",
@@ -944,8 +955,8 @@ mod tests {
                             "missing",
                             b"v2",
                             VersionCheck::Exact(raw.into()),
-                            ReadPermission::Owner,
-                            WritePermission::Owner,
+                            ReadPermission::OWNER,
+                            WritePermission::OWNER,
                         )],
                     )
                     .unwrap_err();
@@ -962,8 +973,8 @@ mod tests {
                     "main",
                     b"v1",
                     VersionCheck::MustNotExist,
-                    ReadPermission::Owner,
-                    WritePermission::Owner,
+                    ReadPermission::OWNER,
+                    WritePermission::OWNER,
                 )],
             )
             .unwrap();
@@ -981,8 +992,8 @@ mod tests {
                     "main",
                     b"v2",
                     VersionCheck::Exact(raw.into()),
-                    ReadPermission::Public,
-                    WritePermission::Owner,
+                    ReadPermission::PUBLIC,
+                    WritePermission::OWNER,
                 )],
             )
             .unwrap()
@@ -1002,7 +1013,7 @@ mod tests {
 
     #[test]
     fn opaque_delete_tokens_are_literal_and_keep_permission_precedence() {
-        for acl in [WritePermission::None, WritePermission::Owner] {
+        for acl in [WritePermission::NONE, WritePermission::OWNER] {
             let mut seeded = StorageState::default();
             seeded
                 .apply_batch(
@@ -1012,7 +1023,7 @@ mod tests {
                         "main",
                         b"v1",
                         VersionCheck::Any,
-                        ReadPermission::Owner,
+                        ReadPermission::OWNER,
                         acl,
                     )],
                 )
@@ -1028,7 +1039,7 @@ mod tests {
                         .apply_batch(actor, std::slice::from_ref(&operation))
                         .unwrap_err();
                     let (code, reason) =
-                        if actor == Actor::User(user(1)) && acl == WritePermission::None {
+                        if actor == Actor::User(user(1)) && acl == WritePermission::NONE {
                             (
                                 StableCode::PermissionDenied,
                                 "storage_write_permission_denied",
@@ -1055,8 +1066,8 @@ mod tests {
                     "main",
                     b"v1",
                     VersionCheck::Any,
-                    ReadPermission::Owner,
-                    WritePermission::Owner,
+                    ReadPermission::OWNER,
+                    WritePermission::OWNER,
                 )],
             )
             .unwrap();
@@ -1101,16 +1112,16 @@ mod tests {
                         "foreign",
                         b"v1",
                         VersionCheck::Any,
-                        ReadPermission::Public,
-                        WritePermission::Owner,
+                        ReadPermission::PUBLIC,
+                        WritePermission::OWNER,
                     ),
                     write(
                         0,
                         "global",
                         b"v1",
                         VersionCheck::Any,
-                        ReadPermission::Public,
-                        WritePermission::Owner,
+                        ReadPermission::PUBLIC,
+                        WritePermission::OWNER,
                     ),
                 ],
             )
@@ -1124,8 +1135,8 @@ mod tests {
                             name,
                             b"v2",
                             VersionCheck::Exact(raw.as_str().into()),
-                            ReadPermission::Public,
-                            WritePermission::Owner,
+                            ReadPermission::PUBLIC,
+                            WritePermission::OWNER,
                         ),
                         BatchOperation::Delete(DeleteOperation {
                             key: key(owner, name),
@@ -1156,16 +1167,16 @@ mod tests {
                         "main",
                         b"v1",
                         VersionCheck::Any,
-                        ReadPermission::Owner,
-                        WritePermission::Owner,
+                        ReadPermission::OWNER,
+                        WritePermission::OWNER,
                     ),
                     write(
                         1,
                         "prior_delete",
                         b"keep",
                         VersionCheck::Any,
-                        ReadPermission::Public,
-                        WritePermission::Owner,
+                        ReadPermission::PUBLIC,
+                        WritePermission::OWNER,
                     ),
                 ],
             )
@@ -1177,8 +1188,8 @@ mod tests {
                     "main",
                     b"v2",
                     VersionCheck::Exact(raw.as_str().into()),
-                    ReadPermission::Public,
-                    WritePermission::None,
+                    ReadPermission::PUBLIC,
+                    WritePermission::NONE,
                 ),
                 BatchOperation::Delete(DeleteOperation {
                     key: key(1, "main"),
@@ -1196,8 +1207,8 @@ mod tests {
                         "staged",
                         b"new",
                         VersionCheck::MustNotExist,
-                        ReadPermission::Owner,
-                        WritePermission::Owner,
+                        ReadPermission::OWNER,
+                        WritePermission::OWNER,
                     ),
                     failed,
                 ];
@@ -1224,8 +1235,8 @@ mod tests {
                     "main",
                     b"v1",
                     VersionCheck::MustNotExist,
-                    ReadPermission::Owner,
-                    WritePermission::Owner,
+                    ReadPermission::OWNER,
+                    WritePermission::OWNER,
                 )],
             )
             .unwrap()
@@ -1255,16 +1266,16 @@ mod tests {
                         "public",
                         b"p",
                         VersionCheck::Any,
-                        ReadPermission::Public,
-                        WritePermission::Owner,
+                        ReadPermission::PUBLIC,
+                        WritePermission::OWNER,
                     ),
                     write(
                         1,
                         "private",
                         b"s",
                         VersionCheck::Any,
-                        ReadPermission::None,
-                        WritePermission::Owner,
+                        ReadPermission::NONE,
+                        WritePermission::OWNER,
                     ),
                 ],
             )
@@ -1296,8 +1307,8 @@ mod tests {
                     "main",
                     b"v1",
                     VersionCheck::Any,
-                    ReadPermission::Owner,
-                    WritePermission::Owner,
+                    ReadPermission::OWNER,
+                    WritePermission::OWNER,
                 )],
             )
             .unwrap();
@@ -1309,8 +1320,8 @@ mod tests {
                     "main",
                     b"v2",
                     VersionCheck::Exact(ContentVersion::from_value(b"stale").into()),
-                    ReadPermission::Owner,
-                    WritePermission::Owner,
+                    ReadPermission::OWNER,
+                    WritePermission::OWNER,
                 )],
             )
             .unwrap_err();
@@ -1332,8 +1343,8 @@ mod tests {
                     "existing",
                     b"v1",
                     VersionCheck::Any,
-                    ReadPermission::Owner,
-                    WritePermission::Owner,
+                    ReadPermission::OWNER,
+                    WritePermission::OWNER,
                 )],
             )
             .unwrap();
@@ -1344,16 +1355,16 @@ mod tests {
                 "new",
                 b"new",
                 VersionCheck::MustNotExist,
-                ReadPermission::Owner,
-                WritePermission::Owner,
+                ReadPermission::OWNER,
+                WritePermission::OWNER,
             ),
             write(
                 1,
                 "existing",
                 b"bad",
                 VersionCheck::Exact(ContentVersion::from_value(b"stale").into()),
-                ReadPermission::Owner,
-                WritePermission::Owner,
+                ReadPermission::OWNER,
+                WritePermission::OWNER,
             ),
         ];
         assert!(state
@@ -1371,16 +1382,16 @@ mod tests {
                 "same",
                 b"v1",
                 VersionCheck::Any,
-                ReadPermission::Owner,
-                WritePermission::Owner,
+                ReadPermission::OWNER,
+                WritePermission::OWNER,
             ),
             write(
                 1,
                 "same",
                 b"v2",
                 VersionCheck::Any,
-                ReadPermission::Owner,
-                WritePermission::Owner,
+                ReadPermission::OWNER,
+                WritePermission::OWNER,
             ),
         ];
         assert_eq!(
@@ -1403,8 +1414,8 @@ mod tests {
                     key: server_key.clone(),
                     value: b"v1".to_vec(),
                     expected: VersionCheck::MustNotExist,
-                    read_permission: ReadPermission::Public,
-                    write_permission: WritePermission::None,
+                    read_permission: ReadPermission::PUBLIC,
+                    write_permission: WritePermission::NONE,
                 })],
             )
             .unwrap();
@@ -1412,8 +1423,8 @@ mod tests {
             key: server_key,
             value: b"v2".to_vec(),
             expected: VersionCheck::Exact(ContentVersion::from_value(b"v1").into()),
-            read_permission: ReadPermission::Public,
-            write_permission: WritePermission::None,
+            read_permission: ReadPermission::PUBLIC,
+            write_permission: WritePermission::NONE,
         });
         assert_eq!(
             state
@@ -1435,8 +1446,8 @@ mod tests {
                     "main",
                     b"v1",
                     VersionCheck::Any,
-                    ReadPermission::Owner,
-                    WritePermission::Owner,
+                    ReadPermission::OWNER,
+                    WritePermission::OWNER,
                 )],
             )
             .unwrap();
@@ -1466,8 +1477,8 @@ mod tests {
                 version: ContentVersion::from_value(b"v1").into(),
                 integrity_digest: integrity(b"corrupt-different-value"),
                 collision_witness: Some(CollisionWitness::from_request(b"v1", b"v1").unwrap()),
-                read_permission: ReadPermission::Owner,
-                write_permission: WritePermission::Owner,
+                read_permission: ReadPermission::OWNER,
+                write_permission: WritePermission::OWNER,
             },
         );
         let error = state
@@ -1478,8 +1489,8 @@ mod tests {
                     "main",
                     b"v1",
                     VersionCheck::Any,
-                    ReadPermission::Owner,
-                    WritePermission::Owner,
+                    ReadPermission::OWNER,
+                    WritePermission::OWNER,
                 )],
             )
             .unwrap_err();
@@ -1497,8 +1508,8 @@ mod tests {
                     "main",
                     b"v1",
                     VersionCheck::Any,
-                    ReadPermission::Owner,
-                    WritePermission::Owner,
+                    ReadPermission::OWNER,
+                    WritePermission::OWNER,
                 )],
             )
             .unwrap();
@@ -1511,8 +1522,8 @@ mod tests {
                         "main",
                         b"v2",
                         VersionCheck::MustNotExist,
-                        ReadPermission::Owner,
-                        WritePermission::Owner,
+                        ReadPermission::OWNER,
+                        WritePermission::OWNER,
                     )]
                 )
                 .unwrap_err()
@@ -1525,7 +1536,7 @@ mod tests {
     fn create_only_occ_precedence_preserves_owner_authority_and_batch_state() {
         let current = ContentVersion::from_value(b"v1");
         let stale = ContentVersion::from_value(b"stale");
-        for acl in [WritePermission::None, WritePermission::Owner] {
+        for acl in [WritePermission::NONE, WritePermission::OWNER] {
             let mut seeded = StorageState::default();
             seeded
                 .apply_batch(
@@ -1535,7 +1546,7 @@ mod tests {
                         "main",
                         b"v1",
                         VersionCheck::Any,
-                        ReadPermission::Owner,
+                        ReadPermission::OWNER,
                         acl,
                     )],
                 )
@@ -1553,7 +1564,7 @@ mod tests {
                 (
                     Actor::User(user(1)),
                     VersionCheck::Any,
-                    if acl == WritePermission::None {
+                    if acl == WritePermission::NONE {
                         denied
                     } else {
                         None
@@ -1562,7 +1573,7 @@ mod tests {
                 (
                     Actor::User(user(1)),
                     VersionCheck::Exact(current.into()),
-                    if acl == WritePermission::None {
+                    if acl == WritePermission::NONE {
                         denied
                     } else {
                         None
@@ -1571,7 +1582,7 @@ mod tests {
                 (
                     Actor::User(user(1)),
                     VersionCheck::Exact(stale.into()),
-                    if acl == WritePermission::None {
+                    if acl == WritePermission::NONE {
                         denied
                     } else {
                         stale_error
@@ -1591,8 +1602,8 @@ mod tests {
                     "main",
                     b"v2",
                     expected,
-                    ReadPermission::Public,
-                    WritePermission::Owner,
+                    ReadPermission::PUBLIC,
+                    WritePermission::OWNER,
                 );
                 let outcome = state.apply_batch(actor, std::slice::from_ref(&attempted));
                 if let Some((code, reason)) = failure {
@@ -1609,8 +1620,8 @@ mod tests {
                                     "staged",
                                     b"new",
                                     VersionCheck::MustNotExist,
-                                    ReadPermission::Owner,
-                                    WritePermission::Owner,
+                                    ReadPermission::OWNER,
+                                    WritePermission::OWNER,
                                 ),
                                 attempted,
                             ],
@@ -1627,8 +1638,8 @@ mod tests {
                     );
                     let object = state.read(Actor::Server, &key(1, "main")).unwrap();
                     assert_eq!(object.value, b"v2");
-                    assert_eq!(object.read_permission, ReadPermission::Public);
-                    assert_eq!(object.write_permission, WritePermission::Owner);
+                    assert_eq!(object.read_permission, ReadPermission::PUBLIC);
+                    assert_eq!(object.write_permission, WritePermission::OWNER);
                 }
             }
             for actor in [Actor::User(user(2)), Actor::User(user(0))] {
@@ -1648,8 +1659,8 @@ mod tests {
                                     name,
                                     b"v2",
                                     expected.clone(),
-                                    ReadPermission::Public,
-                                    WritePermission::Owner,
+                                    ReadPermission::PUBLIC,
+                                    WritePermission::OWNER,
                                 )],
                             )
                             .unwrap_err();
@@ -1670,8 +1681,8 @@ mod tests {
                     "global",
                     b"v1",
                     VersionCheck::MustNotExist,
-                    ReadPermission::Public,
-                    WritePermission::None,
+                    ReadPermission::PUBLIC,
+                    WritePermission::NONE,
                 )],
             )
             .unwrap();
@@ -1686,8 +1697,8 @@ mod tests {
                             name,
                             b"v2",
                             VersionCheck::MustNotExist,
-                            ReadPermission::Public,
-                            WritePermission::Owner,
+                            ReadPermission::PUBLIC,
+                            WritePermission::OWNER,
                         )],
                     )
                     .unwrap_err();
@@ -1703,8 +1714,8 @@ mod tests {
                     "global",
                     b"v2",
                     VersionCheck::MustNotExist,
-                    ReadPermission::Public,
-                    WritePermission::Owner,
+                    ReadPermission::PUBLIC,
+                    WritePermission::OWNER,
                 )],
             )
             .unwrap_err();

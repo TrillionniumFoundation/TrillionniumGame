@@ -61,7 +61,7 @@ impl StorageRepository {
                     value: value.as_bytes().to_vec(),
                     expected: VersionCheck::MustNotExist,
                     read_permission,
-                    write_permission: WritePermission::Owner,
+                    write_permission: WritePermission::OWNER,
                 })],
             )
             .unwrap();
@@ -313,6 +313,120 @@ fn write_body() -> &'static str {
     r#"{"objects":[{"collection":"inventory","key":"sword","value":"{\"level\":1}","version":"*"}]}"#
 }
 
+#[test]
+fn signed_storage_http_reads_and_deletes_history_without_relaxing_new_write_admission() {
+    for (collection, name, strict_key) in [
+        ("雪".repeat(128), "🔑".repeat(128), false),
+        (
+            ".legacy.collection".to_owned(),
+            ".legacy.key".to_owned(),
+            false,
+        ),
+        (
+            "legacy\ncollection".to_owned(),
+            "legacy\tkey".to_owned(),
+            false,
+        ),
+        ("inventory".to_owned(), "legacy".to_owned(), true),
+    ] {
+        let (mut app, repository) = app();
+        let credential = bearer(GENERATION);
+        let stored_key = StorageObjectKey::new_nakama(&collection, &name, USER).unwrap();
+        let value = br#"{"history":true}"#;
+        let receipts = repository
+            .state()
+            .storage
+            .apply_batch(
+                StorageActor::Server,
+                &[StorageBatchOperation::Write(StorageWriteOperation {
+                    key: stored_key.clone(),
+                    value: value.to_vec(),
+                    expected: VersionCheck::MustNotExist,
+                    read_permission: ReadPermission::PUBLIC,
+                    write_permission: WritePermission::from_stored(32767).unwrap(),
+                })],
+            )
+            .unwrap();
+        let version = receipts[0].current_version.unwrap();
+        let read = serde_json::json!({"object_ids":[{
+            "collection": collection, "key": name,
+            "user_id": "11111111-1111-1111-1111-111111111111",
+        }]})
+        .to_string();
+        let response = app.handle(&read_request("/v2/storage", Some(&credential), &read));
+        assert_eq!(response.status, 200);
+        let objects = json(&response);
+        assert_eq!(objects["objects"][0]["collection"], collection);
+        assert_eq!(objects["objects"][0]["key"], name);
+        assert_eq!(
+            objects["objects"][0]["value"],
+            std::str::from_utf8(value).unwrap()
+        );
+        assert_eq!(objects["objects"][0]["version"], version.as_str());
+        assert_eq!(objects["objects"][0]["permission_write"], 32767);
+        let write = serde_json::json!({"objects":[{
+            "collection": collection, "key": name, "value":"{}",
+        }]})
+        .to_string();
+        let response = app.handle(&request("/v2/storage", Some(&credential), &write));
+        assert_eq!(response.status, 400);
+        assert_eq!(json(&response)["code"], 3);
+        assert_eq!(
+            json(&response)["message"],
+            if strict_key {
+                "Storage write rejected - permission denied."
+            } else {
+                "Invalid collection or key value supplied. They must be set."
+            }
+        );
+        {
+            let state = repository.state();
+            let unchanged = state
+                .storage
+                .read(StorageActor::Server, &stored_key)
+                .unwrap();
+            assert_eq!(unchanged.value, value);
+            assert_eq!(unchanged.version.as_str(), version.as_str());
+            assert_eq!(unchanged.write_permission.get(), 32767);
+        }
+        let delete = serde_json::json!({"object_ids":[{
+            "collection": collection, "key": name, "version": version.as_str(),
+            "user_id":"99999999-9999-9999-9999-999999999999",
+        }]})
+        .to_string();
+        let response = app.handle(&request("/v2/storage/delete", Some(&credential), &delete));
+        assert_eq!(response.status, 200);
+        assert_eq!(json(&response), serde_json::json!({}));
+        let state = repository.state();
+        assert_eq!(state.verified_sessions, 3);
+        assert_eq!(state.storage_reads, 1);
+        assert_eq!(state.storage_batches, if strict_key { 2 } else { 1 });
+        assert_eq!(state.last_read_keys, [stored_key]);
+        assert_eq!(state.last_actor, Some(StorageActor::User(USER)));
+        assert_eq!(state.storage.object_count(), 0);
+    }
+    for (collection, name) in [("", "key"), ("collection", "")] {
+        let (mut app, repository) = app();
+        let credential = bearer(GENERATION);
+        let body = serde_json::json!({"object_ids":[{
+            "collection":collection, "key":name,
+        }]})
+        .to_string();
+        for request in [
+            read_request("/v2/storage", Some(&credential), &body),
+            request("/v2/storage/delete", Some(&credential), &body),
+        ] {
+            let response = app.handle(&request);
+            assert_eq!(response.status, 400);
+            assert_eq!(json(&response)["code"], 3);
+        }
+        let state = repository.state();
+        assert_eq!(state.verified_sessions, 2);
+        assert_eq!(state.storage_reads, 0);
+        assert_eq!(state.storage_batches, 0);
+    }
+}
+
 fn opaque_condition_tokens(value: &[u8]) -> [String; 5] {
     let stored = ContentVersion::from_value(value);
     let upper = stored.as_str().to_ascii_uppercase();
@@ -497,8 +611,8 @@ fn opaque_write_conditions_reach_storage_occ_and_acl_after_authentication() {
     for token in opaque_condition_tokens(b"{}") {
         for permission in [
             None,
-            Some(WritePermission::Owner),
-            Some(WritePermission::None),
+            Some(WritePermission::OWNER),
+            Some(WritePermission::NONE),
         ] {
             let (mut app, repository) = app();
             if let Some(permission) = permission {
@@ -511,7 +625,7 @@ fn opaque_write_conditions_reach_storage_occ_and_acl_after_authentication() {
                             key: key("opaque"),
                             value: b"{}".to_vec(),
                             expected: VersionCheck::MustNotExist,
-                            read_permission: ReadPermission::Public,
+                            read_permission: ReadPermission::PUBLIC,
                             write_permission: permission,
                         })],
                     )
@@ -528,7 +642,7 @@ fn opaque_write_conditions_reach_storage_occ_and_acl_after_authentication() {
             assert_eq!(json(&response)["code"], 3);
             assert_eq!(
                 json(&response)["message"],
-                if permission == Some(WritePermission::None) {
+                if permission == Some(WritePermission::NONE) {
                     "Storage write rejected - permission denied."
                 } else {
                     "Storage write rejected - version check failed."
@@ -551,8 +665,8 @@ fn opaque_delete_conditions_including_star_are_literal_and_reach_storage() {
     {
         for permission in [
             None,
-            Some(WritePermission::Owner),
-            Some(WritePermission::None),
+            Some(WritePermission::OWNER),
+            Some(WritePermission::NONE),
         ] {
             let (mut app, repository) = app();
             if let Some(permission) = permission {
@@ -565,7 +679,7 @@ fn opaque_delete_conditions_including_star_are_literal_and_reach_storage() {
                             key: key("opaque"),
                             value: b"{}".to_vec(),
                             expected: VersionCheck::MustNotExist,
-                            read_permission: ReadPermission::Public,
+                            read_permission: ReadPermission::PUBLIC,
                             write_permission: permission,
                         })],
                     )
@@ -606,7 +720,7 @@ fn absent_null_and_empty_conditions_keep_unconditional_write_and_delete_semantic
         Some(serde_json::json!("")),
     ] {
         let (mut app, repository) = app();
-        repository.seed("opaque", USER, ReadPermission::Public, "{}");
+        repository.seed("opaque", USER, ReadPermission::PUBLIC, "{}");
         let mut write =
             serde_json::json!({"collection":"inventory","key":"opaque","value":"{\"new\":true}"});
         let mut delete = serde_json::json!({"collection":"inventory","key":"opaque"});
@@ -823,14 +937,14 @@ fn read_returns_visible_owner_and_public_objects_and_omits_the_rest() {
     let other_value = r#"{"origin":"other"}"#;
     let global_value = r#"{"origin":"global"}"#;
     for (name, owner, read_permission, value) in [
-        ("shared", USER, ReadPermission::Owner, own_value),
-        ("shared", other, ReadPermission::Public, other_value),
-        ("shared", global, ReadPermission::Public, global_value),
-        ("own-hidden", USER, ReadPermission::None, "{}"),
-        ("other-private", other, ReadPermission::Owner, "{}"),
-        ("other-hidden", other, ReadPermission::None, "{}"),
-        ("global-private", global, ReadPermission::Owner, "{}"),
-        ("global-hidden", global, ReadPermission::None, "{}"),
+        ("shared", USER, ReadPermission::OWNER, own_value),
+        ("shared", other, ReadPermission::PUBLIC, other_value),
+        ("shared", global, ReadPermission::PUBLIC, global_value),
+        ("own-hidden", USER, ReadPermission::NONE, "{}"),
+        ("other-private", other, ReadPermission::OWNER, "{}"),
+        ("other-hidden", other, ReadPermission::NONE, "{}"),
+        ("global-private", global, ReadPermission::OWNER, "{}"),
+        ("global-hidden", global, ReadPermission::NONE, "{}"),
     ] {
         repository.seed(name, owner, read_permission, value);
     }
@@ -903,7 +1017,7 @@ fn read_returns_visible_owner_and_public_objects_and_omits_the_rest() {
 #[test]
 fn read_projects_valid_fraction_to_seconds_omits_unknown_and_rejects_invalid_times() {
     let (mut app, repository) = app();
-    repository.seed("sword", USER, ReadPermission::Owner, "{}");
+    repository.seed("sword", USER, ReadPermission::OWNER, "{}");
     let body = r#"{"object_ids":[{"collection":"inventory","key":"sword","user_id":"11111111-1111-1111-1111-111111111111"}]}"#;
     let request = read_request("/v2/storage", Some(&bearer(GENERATION)), body);
     let known = StorageTimes {
@@ -995,13 +1109,13 @@ fn missing_empty_and_null_read_owner_select_global_objects() {
         repository.seed(
             "shared",
             USER,
-            ReadPermission::Owner,
+            ReadPermission::OWNER,
             r#"{"owner":"caller"}"#,
         );
         repository.seed(
             "shared",
             UserId::new([0; 16]),
-            ReadPermission::Public,
+            ReadPermission::PUBLIC,
             r#"{"owner":"global"}"#,
         );
         let body = format!(
@@ -1088,13 +1202,13 @@ fn read_query_parameters_do_not_replace_body_owner_or_change_routing() {
         repository.seed(
             "shared",
             USER,
-            ReadPermission::Owner,
+            ReadPermission::OWNER,
             r#"{"owner":"caller"}"#,
         );
         repository.seed(
             "shared",
             UserId::new([0; 16]),
-            ReadPermission::Public,
+            ReadPermission::PUBLIC,
             r#"{"owner":"global"}"#,
         );
         let response = app.handle(&read_request(
@@ -1120,7 +1234,7 @@ fn draining_allows_authenticated_storage_reads_and_still_enforces_authentication
     repository.seed(
         "shared",
         UserId::new([0; 16]),
-        ReadPermission::Public,
+        ReadPermission::PUBLIC,
         r#"{"owner":"global"}"#,
     );
     let drain = app.handle(&Request::new(
@@ -1401,36 +1515,36 @@ fn canonical_storage_api_live_database() {
             (
                 "other-public",
                 LIVE_OTHER,
-                ReadPermission::Public,
+                ReadPermission::PUBLIC,
                 r#"{"owner":"other-public"}"#,
             ),
             (
                 "other-private",
                 LIVE_OTHER,
-                ReadPermission::Owner,
+                ReadPermission::OWNER,
                 r#"{"owner":"other-private"}"#,
             ),
-            ("other-hidden", LIVE_OTHER, ReadPermission::None, "{}"),
-            ("own-hidden", LIVE_USER, ReadPermission::None, "{}"),
-            ("a-own-public", LIVE_USER, ReadPermission::Public, "{}"),
-            ("z-own-private", LIVE_USER, ReadPermission::Owner, "{}"),
-            ("other-public-2", LIVE_OTHER, ReadPermission::Public, "{}"),
+            ("other-hidden", LIVE_OTHER, ReadPermission::NONE, "{}"),
+            ("own-hidden", LIVE_USER, ReadPermission::NONE, "{}"),
+            ("a-own-public", LIVE_USER, ReadPermission::PUBLIC, "{}"),
+            ("z-own-private", LIVE_USER, ReadPermission::OWNER, "{}"),
+            ("other-public-2", LIVE_OTHER, ReadPermission::PUBLIC, "{}"),
             (
                 "global-public",
                 UserId::new([0; 16]),
-                ReadPermission::Public,
+                ReadPermission::PUBLIC,
                 r#"{"owner":"global"}"#,
             ),
             (
                 "global-private",
                 UserId::new([0; 16]),
-                ReadPermission::Owner,
+                ReadPermission::OWNER,
                 "{}",
             ),
             (
                 "global-public-2",
                 UserId::new([0; 16]),
-                ReadPermission::Public,
+                ReadPermission::PUBLIC,
                 "{}",
             ),
         ] {

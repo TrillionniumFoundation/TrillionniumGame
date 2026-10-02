@@ -84,7 +84,7 @@ TRNM_DATABASE_URL="postgresql://root@127.0.0.1:${SQL_PORT}/trnm_source?sslmode=d
 python3 - "$EVIDENCE_DIR/repeat-schema-identity.json" <<'PY_REPEAT'
 import json,sys
 report=json.load(open(sys.argv[1]))
-assert report['schema_version']==3 and report['storage_writer_epoch']==3
+assert report['schema_version']==4 and report['storage_writer_epoch']==4
 assert report['migration_applied'] is False and report['applied_steps']==0
 PY_REPEAT
 
@@ -176,7 +176,7 @@ negative_constraint session-state-shape 23514 "check_revoked_reason_active_token
 negative_constraint refresh-consumed-shape 23514 "check_state_consumed_at_ms_state_consumed_at_ms_consumed_at_ms_issued_at_ms" \
   "INSERT INTO trnm_refresh_tokens VALUES (decode(repeat('66',16),'hex'),decode(repeat('8a',16),'hex'),decode(repeat('8b',32),'hex'),1,1,10,NULL)"
 negative_constraint storage-collection 23514 "check_collection" \
-  "INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, value_jsonb, public_version, value_projection_digest, value_origin, source_manifest_digest, read_permission, write_permission, updated_at_ms) SELECT '', 'bad', user_id, value_bytes, version_digest, value_jsonb, public_version, value_projection_digest, value_origin, source_manifest_digest, read_permission, write_permission, updated_at_ms FROM trnm_storage_objects WHERE collection='recovery' AND object_key='fixture'"
+  "INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, value_jsonb, public_version, value_projection_digest, value_origin, source_manifest_digest, read_permission, write_permission, updated_at_ms) SELECT repeat('x',129), 'bad', user_id, value_bytes, version_digest, value_jsonb, public_version, value_projection_digest, value_origin, source_manifest_digest, read_permission, write_permission, updated_at_ms FROM trnm_storage_objects WHERE collection='recovery' AND object_key='fixture'"
 
 # Keep the original ten foundation probes and separately inspect schema-v3 structure.
 storage_v3_constraint() {
@@ -257,11 +257,11 @@ fresh=json.loads((evidence/'schema-identity.json').read_text())
 restored=json.loads((evidence/'restored-schema-identity.json').read_text())
 repeat=json.loads((evidence/'repeat-schema-identity.json').read_text())
 for report in (fresh,restored,repeat):
-    assert report['schema_version']==3 and report['storage_writer_epoch']==3
+    assert report['schema_version']==4 and report['storage_writer_epoch']==4
 for field in ('profile','schema_version','storage_writer_epoch','chain_digest','digest_algorithm',
-              'source_commit','upgrade_source_commit','v2_apply_source_commit'):
+              'source_commit','upgrade_source_commit','v2_apply_source_commit', 'v3_apply_source_commit'):
     assert fresh[field]==restored[field]==repeat[field], 'restored schema provenance differs'
-for field in ('source_commit','upgrade_source_commit','v2_apply_source_commit'):
+for field in ('source_commit','upgrade_source_commit','v2_apply_source_commit', 'v3_apply_source_commit'):
     assert fresh[field]==fresh['source_commit'], 'fresh schema publisher differs'
 source_v3=projection.validate_storage_snapshot_bytes((evidence/'source-data.txt').read_bytes(),profile,fresh,'recovery')
 restored_v3=projection.validate_storage_snapshot_bytes((evidence/'restored-data.txt').read_bytes(),profile,restored,'recovery')
@@ -269,7 +269,7 @@ assert source_v3==restored_v3
 (evidence/'storage-v3-snapshot-check.json').write_text(json.dumps(source_v3,sort_keys=True)+'\n')
 lock=json.loads((evidence/'migration-lock.json').read_text())
 ordered=lock['profiles'][profile]['ordered_files']
-assert len(ordered)==3
+assert len(ordered)==4
 archived_migrations=[]
 for entry in ordered:
     source=root/entry['path']

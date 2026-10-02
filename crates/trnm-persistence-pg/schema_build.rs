@@ -17,7 +17,7 @@ pub fn generate() {
             .expect("migration lock JSON");
     assert_eq!(lock["schema"], "trillionnium.migration-chain-lock.v1");
     assert_eq!(lock["project_id"], "trillionnium-game");
-    assert_eq!(lock["schema_version"], 3);
+    assert_eq!(lock["schema_version"], 4);
     let profiles = lock["profiles"].as_object().expect("profile object");
     assert_eq!(profiles.len(), 2);
     let mut generated = String::new();
@@ -32,8 +32,8 @@ pub fn generate() {
         // A new schema version must deliberately extend the engine's state machine.
         assert_eq!(
             ordered.len(),
-            3,
-            "engine supports the locked v1 -> v2 -> v3 chain"
+            4,
+            "engine supports the locked v1 -> v2 -> v3 -> v4 chain"
         );
         let mut inventory = Vec::new();
         collect_sql(&root, &root.join(&directory), &mut inventory);
@@ -62,6 +62,7 @@ pub fn generate() {
                         0 => "0001_foundation_up.sql",
                         1 => "0002_storage_timestamps_up.sql",
                         2 => "0003_storage_jsonb_up.sql",
+                        3 => "0004_storage_source_import_up.sql",
                         _ => unreachable!(),
                     }
                 )
@@ -92,7 +93,13 @@ pub fn generate() {
                 let (declared, count) = declared_actions(sql, &mut action_ids, profile, index);
                 assert_eq!(
                     count,
-                    if index == 1 { 6 } else { 16 },
+                    match index {
+                        1 => 6,
+                        2 => 16,
+                        3 if profile == "postgresql" => 8,
+                        3 => 12,
+                        _ => unreachable!(),
+                    },
                     "locked typed action inventory"
                 );
                 actions.push_str(&declared);
@@ -109,6 +116,7 @@ pub fn generate() {
                 0 => None,
                 1 => Some(2_u64),
                 2 => Some(3_u64),
+                3 => Some(4_u64),
                 _ => panic!("unreviewed authoritative writer epoch"),
             };
             writeln!(revisions, "RevisionDescriptor {{ version: {}, chain_digest: {prefix:?}, storage_writer_epoch: {storage_writer_epoch:?}, action_range: {action_start}..{action_count} }},", index + 1).unwrap();
@@ -235,6 +243,9 @@ fn declared_actions(
     profile: &str,
     revision: usize,
 ) -> (String, usize) {
+    if revision == 3 {
+        return declared_import_actions(sql, names, profile);
+    }
     let mut pending = None;
     let mut output = String::new();
     let previous_count = names.len();
@@ -247,7 +258,7 @@ fn declared_actions(
             assert_eq!(revision, 2);
             let id = pending.take().expect("marked typed backfill");
             assert_eq!(id, "storage_native_backfill");
-            writeln!(output, "MigrationAction {{ id: {id:?}, kind: MigrationActionKind::BackfillStorageJsonbV3, column: ColumnDescriptor {{ table: \"trnm_storage_objects\", name: \"@backfill\", kind: \"backfilled\", nullable: false, default_zero: false, character_maximum_length: None }}, sql: \"\" }},").unwrap();
+            writeln!(output, "MigrationAction {{ id: {id:?}, kind: MigrationActionKind::BackfillStorageJsonbV3, descriptor: ActionDescriptor::Column(ColumnDescriptor {{ table: \"trnm_storage_objects\", name: \"@backfill\", kind: \"backfilled\", nullable: false, default_zero: false, character_maximum_length: None }}), sql: \"\" }},").unwrap();
         } else if line.starts_with("--") || line.is_empty() || matches!(line, "BEGIN;" | "COMMIT;")
         {
             assert!(!line.starts_with("-- trnm:"), "unknown runner directive");
@@ -315,7 +326,7 @@ fn declared_actions(
                     None,
                 )
             };
-            writeln!(output, "MigrationAction {{ id: {id:?}, kind: MigrationActionKind::{action_kind}, column: ColumnDescriptor {{ table: {table:?}, name: {name:?}, kind: {kind:?}, nullable: {nullable}, default_zero: false, character_maximum_length: {max_len:?} }}, sql: {line:?} }},").unwrap();
+            writeln!(output, "MigrationAction {{ id: {id:?}, kind: MigrationActionKind::{action_kind}, descriptor: ActionDescriptor::Column(ColumnDescriptor {{ table: {table:?}, name: {name:?}, kind: {kind:?}, nullable: {nullable}, default_zero: false, character_maximum_length: {max_len:?} }}), sql: {line:?} }},").unwrap();
         }
     }
     assert!(pending.is_none());
@@ -366,4 +377,224 @@ fn hex(bytes: &[u8]) -> String {
         write!(value, "{byte:02x}").unwrap();
     }
     value
+}
+
+// v4 extends the reviewed marker grammar with complete named table creations
+// and explicit CHECK transitions. A marker owns a whole statement; semicolons
+// in arbitrary SQL/literals or unmarked statements are never split/adopted.
+fn declared_import_actions(
+    sql: &str,
+    names: &mut BTreeSet<String>,
+    profile: &str,
+) -> (String, usize) {
+    let mut statements = Vec::new();
+    let mut pending = None;
+    let mut body = Vec::new();
+    for line in sql.lines().map(str::trim) {
+        if let Some(id) = line.strip_prefix("-- trnm:action ") {
+            assert!(pending.is_none() && body.is_empty(), "incomplete v4 action");
+            assert!(names.insert(id.to_owned()), "duplicate action");
+            pending = Some(id.to_owned());
+        } else if line.is_empty() || line.starts_with("--") || matches!(line, "BEGIN;" | "COMMIT;")
+        {
+            assert!(!line.starts_with("-- trnm:"), "unknown runner directive");
+        } else {
+            assert!(pending.is_some(), "unmarked v4 statement");
+            assert!(!line.contains("IF EXISTS") && !line.contains("IF NOT EXISTS"));
+            body.push(line.to_owned());
+            if line.ends_with(';') {
+                let id = pending.take().unwrap();
+                statements.push((id, body.join("\n")));
+                body.clear();
+            }
+        }
+    }
+    assert!(
+        pending.is_none() && body.is_empty(),
+        "unterminated v4 action"
+    );
+    let mut expected = vec!["metadata_v3_apply_source_commit".to_owned()];
+    for column in [
+        "collection",
+        "object_key",
+        "read_permission",
+        "write_permission",
+    ] {
+        if profile == "postgresql" {
+            expected.push(format!("storage_{column}_check_v4"));
+        } else {
+            expected.push(format!("storage_{column}_check_v3_remove"));
+            expected.push(format!("storage_{column}_check_v4_add"));
+        }
+    }
+    expected.extend(
+        [
+            "storage_import_jobs",
+            "storage_import_pages",
+            "metadata_v3_history",
+        ]
+        .map(str::to_owned),
+    );
+    assert_eq!(
+        statements.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+        expected.iter().collect::<Vec<_>>()
+    );
+    let mut output = String::new();
+    for (id, statement) in &statements {
+        let (kind, descriptor) = if id == "metadata_v3_apply_source_commit" {
+            assert_eq!(
+                statement,
+                "ALTER TABLE trnm_schema_metadata ADD COLUMN v3_apply_source_commit TEXT;"
+            );
+            ("AddColumn", "ActionDescriptor::Column(ColumnDescriptor { table: \"trnm_schema_metadata\", name: \"v3_apply_source_commit\", kind: \"text\", nullable: true, default_zero: false, character_maximum_length: None })".to_owned())
+        } else if id == "metadata_v3_history" {
+            assert_eq!(statement, "ALTER TABLE trnm_schema_metadata ADD CONSTRAINT metadata_v3_history CHECK (schema_version < 4 OR (v3_apply_source_commit IS NOT NULL AND length(v3_apply_source_commit) = 40));");
+            let definition = "CHECK (((schema_version < 4) OR ((v3_apply_source_commit IS NOT NULL) AND (length(v3_apply_source_commit) = 40))))";
+            ("AddCheck", format!("ActionDescriptor::Column(ColumnDescriptor {{ table: \"trnm_schema_metadata\", name: \"@check:metadata_v3_history\", kind: {definition:?}, nullable: false, default_zero: false, character_maximum_length: None }})"))
+        } else if id == "storage_import_jobs" || id == "storage_import_pages" {
+            let table = format!("trnm_{id}");
+            assert!(
+                statement.starts_with(&format!("CREATE TABLE {table} (\n"))
+                    && statement.ends_with("\n);")
+            );
+            let columns = baseline_columns(statement);
+            let column_names = if id == "storage_import_jobs" {
+                vec![
+                    "singleton",
+                    "manifest_digest",
+                    "custody_digest",
+                    "source_inventory_digest",
+                    "target_schema_guard_digest",
+                    "prefix_digest",
+                    "source_profile",
+                    "source_snapshot",
+                    "audit_at_ms",
+                    "total_rows",
+                    "total_pages",
+                    "next_page",
+                    "committed_rows",
+                    "status",
+                ]
+            } else {
+                vec![
+                    "manifest_digest",
+                    "page_index",
+                    "first_ordinal",
+                    "row_count",
+                    "page_digest",
+                    "prefix_digest",
+                    "audit_at_ms",
+                ]
+            };
+            let actual: Vec<_> = statement
+                .lines()
+                .skip(1)
+                .filter(|line| !line.starts_with("CONSTRAINT") && *line != ");")
+                .map(|line| line.split_whitespace().next().unwrap())
+                .collect();
+            assert_eq!(actual, column_names, "closed journal column inventory");
+            assert!(
+                statement
+                    .lines()
+                    .skip(1)
+                    .take(column_names.len())
+                    .all(|line| line.ends_with("NOT NULL,")),
+                "no journal default/nullability changes"
+            );
+            for (name, line) in column_names.iter().zip(statement.lines().skip(1)) {
+                let kind = match *name {
+                    "singleton" | "status" => "SMALLINT",
+                    "manifest_digest"
+                    | "custody_digest"
+                    | "source_inventory_digest"
+                    | "target_schema_guard_digest"
+                    | "prefix_digest"
+                    | "page_digest" => "BYTEA",
+                    "source_profile" | "source_snapshot" => "TEXT",
+                    _ => "BIGINT",
+                };
+                assert_eq!(
+                    line,
+                    format!("{name} {kind} NOT NULL,"),
+                    "closed journal column type"
+                );
+            }
+            reviewed_import_constraints(id, statement);
+            ("CreateImportTable", format!("ActionDescriptor::ImportTable(ImportTableDescriptor {{ table: {table:?}, columns: &[{columns}] }})"))
+        } else {
+            let column = [
+                "collection",
+                "object_key",
+                "read_permission",
+                "write_permission",
+            ]
+            .into_iter()
+            .find(|column| id.starts_with(&format!("storage_{column}_check_v")))
+            .unwrap();
+            let name = if profile == "postgresql" {
+                format!("trnm_storage_objects_{column}_check")
+            } else {
+                format!("check_{column}")
+            };
+            let expression = match column {
+                "collection" | "object_key" => format!("length({column}) BETWEEN 0 AND 128"),
+                _ => format!("{column} >= 0"),
+            };
+            let (kind, expected_sql) = if id.ends_with("_remove") {
+                (
+                    "RemoveStorageCheck",
+                    format!("ALTER TABLE trnm_storage_objects DROP CONSTRAINT {name};"),
+                )
+            } else if id.ends_with("_add") {
+                ("AddStorageCheck", format!("ALTER TABLE trnm_storage_objects ADD CONSTRAINT {name} CHECK ({expression});"))
+            } else {
+                ("ReplaceStorageCheck", format!("ALTER TABLE trnm_storage_objects DROP CONSTRAINT {name}, ADD CONSTRAINT {name} CHECK ({expression});"))
+            };
+            assert_eq!(statement, &expected_sql, "closed storage domain action");
+            let definition = match (profile, column) {
+                ("postgresql", "collection") => {
+                    "CHECK (((length(collection) >= 0) AND (length(collection) <= 128)))"
+                }
+                ("postgresql", "object_key") => {
+                    "CHECK (((length(object_key) >= 0) AND (length(object_key) <= 128)))"
+                }
+                ("cockroachdb", "collection") => "CHECK ((length(collection) BETWEEN 0 AND 128))",
+                ("cockroachdb", "object_key") => "CHECK ((length(object_key) BETWEEN 0 AND 128))",
+                (_, "read_permission") => "CHECK ((read_permission >= 0))",
+                (_, "write_permission") => "CHECK ((write_permission >= 0))",
+                _ => unreachable!(),
+            };
+            (kind, format!("ActionDescriptor::StorageCheck(ColumnDescriptor {{ table: \"trnm_storage_objects\", name: {:?}, kind: {definition:?}, nullable: false, default_zero: false, character_maximum_length: None }})", format!("@check:{name}")))
+        };
+        writeln!(output, "MigrationAction {{ id: {id:?}, kind: MigrationActionKind::{kind}, descriptor: {descriptor}, sql: {statement:?} }},").unwrap();
+    }
+    (output, statements.len())
+}
+
+fn reviewed_import_constraints(id: &str, statement: &str) {
+    let expected: &[&str] = if id == "storage_import_jobs" {
+        &[
+            "CONSTRAINT storage_import_jobs_pk PRIMARY KEY (singleton),",
+            "CONSTRAINT storage_import_jobs_manifest_key UNIQUE (manifest_digest),",
+            "CONSTRAINT storage_import_jobs_singleton CHECK (singleton = 1),",
+            "CONSTRAINT storage_import_jobs_digests CHECK (octet_length(manifest_digest) = 32 AND octet_length(custody_digest) = 32 AND octet_length(source_inventory_digest) = 32 AND octet_length(target_schema_guard_digest) = 32 AND octet_length(prefix_digest) = 32 AND manifest_digest <> decode(repeat('0', 64), 'hex') AND custody_digest <> decode(repeat('0', 64), 'hex') AND source_inventory_digest <> decode(repeat('0', 64), 'hex') AND target_schema_guard_digest <> decode(repeat('0', 64), 'hex') AND prefix_digest <> decode(repeat('0', 64), 'hex')),",
+            "CONSTRAINT storage_import_jobs_source CHECK ((source_profile = 'postgresql' OR source_profile = 'cockroachdb') AND length(source_snapshot) BETWEEN 1 AND 256 AND source_snapshot !~ '[[:cntrl:]]'),",
+            "CONSTRAINT storage_import_jobs_audit CHECK (audit_at_ms >= 0),",
+            "CONSTRAINT storage_import_jobs_counts CHECK (total_rows BETWEEN 0 AND 10000 AND total_pages BETWEEN 0 AND 100 AND next_page BETWEEN 0 AND total_pages AND committed_rows BETWEEN 0 AND total_rows AND ((total_rows = 0 AND total_pages = 0) OR (total_pages > 0 AND total_pages <= total_rows AND total_rows <= 100 * total_pages)) AND committed_rows BETWEEN next_page AND 100 * next_page),",
+            "CONSTRAINT storage_import_jobs_status CHECK (status IN (0, 1) AND (status <> 1 OR (next_page = total_pages AND committed_rows = total_rows)))",
+        ]
+    } else {
+        &[
+            "CONSTRAINT storage_import_pages_pk PRIMARY KEY (manifest_digest, page_index),",
+            "CONSTRAINT storage_import_pages_job_fk FOREIGN KEY (manifest_digest) REFERENCES trnm_storage_import_jobs (manifest_digest) ON UPDATE NO ACTION ON DELETE RESTRICT,",
+            "CONSTRAINT storage_import_pages_digests CHECK (octet_length(manifest_digest) = 32 AND octet_length(page_digest) = 32 AND octet_length(prefix_digest) = 32 AND manifest_digest <> decode(repeat('0', 64), 'hex') AND page_digest <> decode(repeat('0', 64), 'hex') AND prefix_digest <> decode(repeat('0', 64), 'hex')),",
+            "CONSTRAINT storage_import_pages_bounds CHECK (page_index BETWEEN 0 AND 99 AND first_ordinal BETWEEN 0 AND 9999 AND row_count BETWEEN 1 AND 100 AND first_ordinal + row_count <= 10000),",
+            "CONSTRAINT storage_import_pages_audit CHECK (audit_at_ms >= 0)",
+        ]
+    };
+    let actual: Vec<_> = statement
+        .lines()
+        .filter(|line| line.starts_with("CONSTRAINT"))
+        .collect();
+    assert_eq!(actual, expected, "closed journal constraint inventory");
 }

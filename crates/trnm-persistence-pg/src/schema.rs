@@ -10,10 +10,10 @@ use trnm_contracts::{Digest32, DomainError};
 use crate::{data_loss, failed_precondition, invalid, map_postgres_error, to_i64};
 use crate::{DatabaseProfile, IntegrityDigest, PgRepository};
 
-pub const AUTHORITATIVE_SCHEMA_VERSION: u64 = 3;
-pub const AUTHORITATIVE_STORAGE_WRITER_EPOCH: u64 = 3;
+pub const AUTHORITATIVE_SCHEMA_VERSION: u64 = 4;
+pub const AUTHORITATIVE_STORAGE_WRITER_EPOCH: u64 = 4;
 pub const AUTHORITATIVE_CHAIN_DIGEST_ALGORITHM: &str = "ordered-path-git-blob-sha256.v1";
-const REQUIRED_TABLES: [&str; 10] = [
+const REQUIRED_TABLES: [&str; 12] = [
     "trnm_schema_metadata",
     "trnm_entity_heads",
     "trnm_command_receipts",
@@ -24,6 +24,8 @@ const REQUIRED_TABLES: [&str; 10] = [
     "trnm_session_families",
     "trnm_refresh_tokens",
     "trnm_storage_objects",
+    "trnm_storage_import_jobs",
+    "trnm_storage_import_pages",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,6 +40,8 @@ pub struct SchemaIdentity {
     pub upgrade_source_commit: String,
     /// Publisher of the historical v2 revision, preserved by the v3 cutover.
     pub v2_apply_source_commit: String,
+    /// Publisher of the historical v3 revision, preserved by the v4 cutover.
+    pub v3_apply_source_commit: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -73,13 +77,30 @@ enum MigrationActionKind {
     SetNullability,
     BackfillStorageJsonbV3,
     AddCheck,
+    ReplaceStorageCheck,
+    RemoveStorageCheck,
+    AddStorageCheck,
+    CreateImportTable,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ImportTableDescriptor {
+    table: &'static str,
+    columns: &'static [ColumnDescriptor],
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ActionDescriptor {
+    Column(ColumnDescriptor),
+    StorageCheck(ColumnDescriptor),
+    ImportTable(ImportTableDescriptor),
 }
 
 #[derive(Clone, Copy, Debug)]
 struct MigrationAction {
     id: &'static str,
     kind: MigrationActionKind,
-    column: ColumnDescriptor,
+    descriptor: ActionDescriptor,
     sql: &'static str,
 }
 
@@ -95,10 +116,12 @@ struct RevisionDescriptor {
 }
 
 include!(concat!(env!("OUT_DIR"), "/authoritative_schema.rs"));
+include!("schema_parts/import_catalog.rs");
 include!("schema_parts/catalog.rs");
 include!("schema_parts/metadata.rs");
 include!("schema_parts/migrate.rs");
 include!("schema_parts/jsonb_backfill.rs");
+include!("schema_parts/import_preflight.rs");
 
 fn steps(profile: DatabaseProfile) -> &'static [MigrationStep] {
     match profile {
@@ -202,16 +225,24 @@ mod tests {
                 Digest32::new(expected)
             );
             let chain = steps(profile);
-            assert_eq!(chain.len(), 3);
+            assert_eq!(chain.len(), 4);
             assert_eq!(chain[0].version, 1);
             assert_eq!(chain[1].version, 2);
-            assert_eq!(chain[2].version, AUTHORITATIVE_SCHEMA_VERSION);
+            assert_eq!(chain[2].version, 3);
+            assert_eq!(chain[3].version, AUTHORITATIVE_SCHEMA_VERSION);
             assert!(chain[0].sql.contains("BEGIN;"));
             assert!(chain[0].sql.contains("COMMIT;"));
             assert!(!chain
                 .iter()
                 .any(|step| step.path.contains("database/schema")));
-            assert_eq!(actions(profile).len(), 22);
+            assert_eq!(
+                actions(profile).len(),
+                if profile == DatabaseProfile::PostgreSql {
+                    30
+                } else {
+                    34
+                }
+            );
             // Nullable bare type declarations still belong to the baseline;
             // dropping their comma-suffixed type token rejected real v1 DBs.
             assert_eq!(baseline(profile).len(), 71);
@@ -227,8 +258,7 @@ mod tests {
                     && column.nullable));
             assert!(actions(profile)[..6]
                 .iter()
-                .all(|action| action.column.nullable
-                    && !action.column.default_zero
+                .all(|action| matches!(action.descriptor, ActionDescriptor::Column(column) if column.nullable && !column.default_zero)
                     && !action.sql.contains("DEFAULT")));
         }
     }
@@ -310,7 +340,7 @@ mod tests {
                 .map(|action| action.id)
                 .collect();
             assert_eq!(actual, expected_actions);
-            for unknown in [0, 4, u64::MAX] {
+            for unknown in [0, 5, u64::MAX] {
                 assert!(revision(profile, unknown).is_none());
                 assert!(chain_digest_at(profile, unknown).is_none());
             }

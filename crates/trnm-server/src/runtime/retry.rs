@@ -87,6 +87,10 @@ impl<R> RetryingRepository<R> {
 }
 
 impl<R: BudgetedRepository> Repository for RetryingRepository<R> {
+    fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
+        self.inner.verify_storage_import_serving()
+    }
+
     fn bootstrap_entity(
         &mut self,
         entity: EntityId,
@@ -404,8 +408,8 @@ mod tests {
                 key: key.clone(),
                 value: br#"{"score":1}"#.to_vec(),
                 expected: VersionCheck::MustNotExist,
-                read_permission: ReadPermission::Owner,
-                write_permission: WritePermission::Owner,
+                read_permission: ReadPermission::OWNER,
+                write_permission: WritePermission::OWNER,
             }),
             StorageBatchOperation::Delete(StorageDeleteOperation {
                 key,

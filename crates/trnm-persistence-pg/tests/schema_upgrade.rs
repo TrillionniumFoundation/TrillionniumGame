@@ -21,6 +21,7 @@ const LATER_BINARY_SOURCE: &str = "cccccccccccccccccccccccccccccccccccccccc";
 const V2_PUBLISHER_SOURCE: &str = "dddddddddddddddddddddddddddddddddddddddd";
 const ROLE_PASSWORD: &str = "isolated_schema_upgrade_fixture_only";
 const LEGACY_VALUE: &[u8] = b"{\"legacy\":true}";
+// Immutable v1 tables: role grants must not reference journals before0004.
 const TABLES: &[&str] = &[
     "trnm_schema_metadata",
     "trnm_entity_heads",
@@ -32,6 +33,21 @@ const TABLES: &[&str] = &[
     "trnm_session_families",
     "trnm_refresh_tokens",
     "trnm_storage_objects",
+];
+// Current readonly verification also needs visibility of both import journals.
+const CURRENT_TABLES: &[&str] = &[
+    "trnm_schema_metadata",
+    "trnm_entity_heads",
+    "trnm_command_receipts",
+    "trnm_events",
+    "trnm_outbox",
+    "trnm_command_outbox",
+    "trnm_authority_leases",
+    "trnm_session_families",
+    "trnm_refresh_tokens",
+    "trnm_storage_objects",
+    "trnm_storage_import_jobs",
+    "trnm_storage_import_pages",
 ];
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
 
@@ -241,6 +257,15 @@ impl IsolatedDatabase {
         }
     }
 
+    fn grant_current_reads(&self, role: &str) {
+        let mut client = self.client();
+        for table in CURRENT_TABLES {
+            client
+                .batch_execute(&format!("GRANT SELECT ON TABLE {table} TO {role}"))
+                .unwrap();
+        }
+    }
+
     fn legacy_writer(&mut self) -> String {
         let role = self.create_role("legacy");
         self.grant_reads(&role);
@@ -364,11 +389,12 @@ fn assert_identity(
     upgrade: &str,
 ) {
     assert_eq!(identity.profile, profile);
-    assert_eq!(identity.schema_version, 3);
-    assert_eq!(identity.storage_writer_epoch, 3);
+    assert_eq!(identity.schema_version, 4);
+    assert_eq!(identity.storage_writer_epoch, 4);
     assert_eq!(identity.source_commit, source);
     assert_eq!(identity.upgrade_source_commit, upgrade);
     assert_eq!(identity.v2_apply_source_commit, UPGRADE_SOURCE);
+    assert_eq!(identity.v3_apply_source_commit, UPGRADE_SOURCE);
     assert_eq!(identity.digest_algorithm, "ordered-path-git-blob-sha256.v1");
     assert_eq!(identity.chain_digest, authoritative_chain_digest(profile));
 }
@@ -385,11 +411,12 @@ fn metadata_snapshot(
     i64,
     String,
     String,
+    String,
 ) {
     let row = client
         .query_one(
             "SELECT schema_version, profile, source_commit, applied_at_ms, \
-             chain_digest, digest_algorithm, storage_writer_epoch, upgrade_source_commit, v2_apply_source_commit \
+             chain_digest, digest_algorithm, storage_writer_epoch, upgrade_source_commit, v2_apply_source_commit, v3_apply_source_commit \
              FROM trnm_schema_metadata WHERE singleton = 1",
             &[],
         )
@@ -404,6 +431,7 @@ fn metadata_snapshot(
         row.get(6),
         row.get(7),
         row.get(8),
+        row.get(9),
     )
 }
 
@@ -538,8 +566,8 @@ fn authoritative_fresh_repeat_and_readonly_verification() {
             .migrate_authoritative_schema(UPGRADE_SOURCE, 23, None)
             .unwrap();
         assert!(report.migration_applied);
-        assert_eq!(report.applied_steps, 3);
-        assert_eq!(report.table_count, TABLES.len());
+        assert_eq!(report.applied_steps, 4);
+        assert_eq!(report.table_count, CURRENT_TABLES.len());
         assert_identity(
             &report.identity,
             fixture.profile,
@@ -563,7 +591,7 @@ fn authoritative_fresh_repeat_and_readonly_verification() {
         assert_eq!(metadata_snapshot(&mut inspector), before);
 
         let reader = fixture.create_role("reader");
-        fixture.grant_reads(&reader);
+        fixture.grant_current_reads(&reader);
         let mut readonly_client = fixture.role_client(&reader);
         assert_permission_denied(readonly_client.execute(
             "UPDATE trnm_schema_metadata SET applied_at_ms = applied_at_ms WHERE singleton = 1",
@@ -613,7 +641,7 @@ fn authoritative_v1_preserves_history_and_observes_actual_legacy_writer_revocati
             .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
             .unwrap();
         assert!(report.migration_applied);
-        assert_eq!(report.applied_steps, 2);
+        assert_eq!(report.applied_steps, 3);
         assert_identity(
             &report.identity,
             fixture.profile,
@@ -855,7 +883,7 @@ fn authoritative_declared_partial_prefix_resumes_and_malformed_prefixes_reject()
             .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
             .unwrap();
         assert!(report.migration_applied);
-        assert_eq!(report.applied_steps, 2);
+        assert_eq!(report.applied_steps, 3);
         assert_identity(
             &report.identity,
             fixture.profile,
@@ -980,7 +1008,7 @@ fn authoritative_existing_empty_v1_requires_a_real_unprivileged_writer_barrier()
         let report = repository
             .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
             .unwrap();
-        assert_eq!(report.applied_steps, 2);
+        assert_eq!(report.applied_steps, 3);
         assert_identity(
             &report.identity,
             fixture.profile,
@@ -1093,7 +1121,7 @@ fn authoritative_inherited_storage_privileges_are_not_a_writer_barrier() {
             let report = repository
                 .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
                 .unwrap();
-            assert_eq!(report.applied_steps, 2);
+            assert_eq!(report.applied_steps, 3);
             assert_identity(
                 &report.identity,
                 fixture.profile,
@@ -1181,7 +1209,7 @@ fn authoritative_inherited_storage_privileges_are_not_a_writer_barrier() {
                 let report = repository
                     .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
                     .unwrap();
-                assert_eq!(report.applied_steps, 2);
+                assert_eq!(report.applied_steps, 3);
                 assert_identity(
                     &report.identity,
                     fixture.profile,
@@ -1339,7 +1367,7 @@ fn authoritative_inherited_storage_privileges_are_not_a_writer_barrier() {
                 let report = repository
                     .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
                     .unwrap();
-                assert_eq!(report.applied_steps, 2);
+                assert_eq!(report.applied_steps, 3);
                 assert_identity(
                     &report.identity,
                     fixture.profile,

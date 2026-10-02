@@ -256,7 +256,7 @@ fn decode_read_key(object: &JsonObject) -> Result<StorageObjectKey, ApiError> {
             .filter(|user| !user.is_zero())
             .ok_or(ApiError(INVALID_USER))?
     };
-    StorageObjectKey::new(collection, key, owner).map_err(|_| ApiError(INVALID_KEYS))
+    StorageObjectKey::new_nakama(collection, key, owner).map_err(|_| ApiError(INVALID_KEYS))
 }
 
 /// Independent implementation of the six text formats accepted by the pinned
@@ -321,8 +321,9 @@ fn read_response(
             return gateway_error(500, 13, "Error reading storage objects.");
         };
         *count -= 1;
-        let allowed = object.read_permission == ReadPermission::Public
-            || (object.read_permission == ReadPermission::Owner && object.key.user_id() == user);
+        let allowed = object
+            .read_permission
+            .allows_batch_read(object.key.user_id() == user);
         if !allowed {
             return gateway_error(500, 13, "Error reading storage objects.");
         }
@@ -444,17 +445,23 @@ pub(super) fn encode_storage_object(
         }
     })?;
     let value = std::str::from_utf8(&object.value).map_err(|_| StorageEncodingError::DataLoss)?;
-    let mut fields = vec![
-        format!(
+    let mut fields = Vec::new();
+    if !object.key.collection().is_empty() {
+        fields.push(format!(
             "\"collection\":{}",
             serde_json::Value::from(object.key.collection())
-        ),
-        format!("\"key\":{}", serde_json::Value::from(object.key.key())),
-        format!(
-            "\"user_id\":{}",
-            serde_json::Value::from(uuid_string(object.key.user_id()))
-        ),
-    ];
+        ));
+    }
+    if !object.key.key().is_empty() {
+        fields.push(format!(
+            "\"key\":{}",
+            serde_json::Value::from(object.key.key())
+        ));
+    }
+    fields.push(format!(
+        "\"user_id\":{}",
+        serde_json::Value::from(uuid_string(object.key.user_id()))
+    ));
     let mut output = StorageJsonEncoder::new();
     output.append("{")?;
     output.append(&fields.join(","))?;
@@ -469,16 +476,16 @@ pub(super) fn encode_storage_object(
             serde_json::Value::from(object.version.as_str())
         ));
     }
-    if object.read_permission != ReadPermission::None {
+    if object.read_permission != ReadPermission::NONE {
         fields.push(format!(
             "\"permission_read\":{}",
-            object.read_permission as u8
+            object.read_permission.as_i32()
         ));
     }
-    if object.write_permission != WritePermission::None {
+    if object.write_permission != WritePermission::NONE {
         fields.push(format!(
             "\"permission_write\":{}",
-            object.write_permission as u8
+            object.write_permission.as_i32()
         ));
     }
     // Pinned upstream read/list projection deliberately drops subsecond precision.
@@ -533,14 +540,14 @@ fn decode_write(object: &JsonObject, user: UserId) -> Result<ParsedWrite, ApiErr
         return Err(ApiError(INVALID_KEYS));
     }
     let read_permission = match permission_field(&fields, "permission_read")? {
-        0 => ReadPermission::None,
-        1 => ReadPermission::Owner,
-        2 => ReadPermission::Public,
+        0 => ReadPermission::NONE,
+        1 => ReadPermission::OWNER,
+        2 => ReadPermission::PUBLIC,
         _ => return Err(ApiError(INVALID_READ)),
     };
     let write_permission = match permission_field(&fields, "permission_write")? {
-        0 => WritePermission::None,
-        1 => WritePermission::Owner,
+        0 => WritePermission::NONE,
+        1 => WritePermission::OWNER,
         _ => return Err(ApiError(INVALID_WRITE)),
     };
     if value.len() > MAX_REQUEST_VALUE_BYTES {
@@ -572,7 +579,11 @@ fn decode_delete(object: &JsonObject, user: UserId) -> Result<BatchOperation, Ap
     let collection = string_field(&fields, "collection")?;
     let key = string_field(&fields, "key")?;
     let version = string_field(&fields, "version")?;
-    let key = StorageObjectKey::new(collection, key, user).map_err(|_| ApiError(INVALID_KEYS))?;
+    if collection.is_empty() || key.is_empty() {
+        return Err(ApiError(INVALID_KEYS));
+    }
+    let key =
+        StorageObjectKey::new_nakama(collection, key, user).map_err(|_| ApiError(INVALID_KEYS))?;
     let expected_version = if version.is_empty() {
         None
     } else {
@@ -728,18 +739,27 @@ fn write_response(operations: &[BatchOperation], receipts: &[MutationReceipt]) -
         {
             return gateway_error(500, 13, "Error writing storage objects.");
         }
-        let mut fields = vec![
-            format!(
+        let mut fields = Vec::new();
+        if !receipt.key.collection().is_empty() {
+            fields.push(format!(
                 "\"collection\":{}",
                 serde_json::Value::from(receipt.key.collection())
-            ),
-            format!("\"key\":{}", serde_json::Value::from(receipt.key.key())),
-            format!("\"version\":{}", serde_json::Value::from(version.as_str())),
-            format!(
-                "\"user_id\":{}",
-                serde_json::Value::from(uuid_string(receipt.key.user_id()))
-            ),
-        ];
+            ));
+        }
+        if !receipt.key.key().is_empty() {
+            fields.push(format!(
+                "\"key\":{}",
+                serde_json::Value::from(receipt.key.key())
+            ));
+        }
+        fields.push(format!(
+            "\"version\":{}",
+            serde_json::Value::from(version.as_str())
+        ));
+        fields.push(format!(
+            "\"user_id\":{}",
+            serde_json::Value::from(uuid_string(receipt.key.user_id()))
+        ));
         if append_storage_times(&mut fields, &stored.times, true).is_none()
             || (receipt.previous_version.is_none()
                 && (stored.times.create.is_none()
@@ -1170,8 +1190,8 @@ mod tests {
         };
         assert_eq!(operation.key.user_id(), user());
         assert_eq!(operation.value, value.as_bytes());
-        assert_eq!(operation.read_permission, ReadPermission::Owner);
-        assert_eq!(operation.write_permission, WritePermission::Owner);
+        assert_eq!(operation.read_permission, ReadPermission::OWNER);
+        assert_eq!(operation.write_permission, WritePermission::OWNER);
         assert_eq!(
             body(&response)["acks"][0]["version"],
             ContentVersion::from_value(value.as_bytes()).as_str()
@@ -1197,8 +1217,8 @@ mod tests {
         let BatchOperation::Write(operation) = &repository.operations[0] else {
             panic!()
         };
-        assert_eq!(operation.read_permission, ReadPermission::Public);
-        assert_eq!(operation.write_permission, WritePermission::Owner);
+        assert_eq!(operation.read_permission, ReadPermission::PUBLIC);
+        assert_eq!(operation.write_permission, WritePermission::OWNER);
         assert_eq!(operation.expected, VersionCheck::Any);
         assert_eq!(
             permission_field(&JsonObject(Vec::new()).known_fields(&[]).unwrap(), "x").unwrap(),
@@ -1669,8 +1689,8 @@ mod tests {
             user(),
             "k",
             value,
-            ReadPermission::Owner,
-            WritePermission::Owner,
+            ReadPermission::OWNER,
+            WritePermission::OWNER,
         );
         let input = serde_json::json!({"objectIds":[{
             "collection":"profile","key":"k","userId":uuid_string(user()),
@@ -1706,16 +1726,16 @@ mod tests {
             global,
             "k",
             b"{\"global\":1}",
-            ReadPermission::Public,
-            WritePermission::None,
+            ReadPermission::PUBLIC,
+            WritePermission::NONE,
         );
         seed_read_object(
             &mut repository,
             user(),
             "k",
             b"{\"private\":1}",
-            ReadPermission::Owner,
-            WritePermission::Owner,
+            ReadPermission::OWNER,
+            WritePermission::OWNER,
         );
         for owner in ["", ",\"user_id\":null", ",\"userId\":\"\""] {
             let input =
@@ -1743,24 +1763,24 @@ mod tests {
             other,
             "hidden",
             b"{}",
-            ReadPermission::Owner,
-            WritePermission::Owner,
+            ReadPermission::OWNER,
+            WritePermission::OWNER,
         );
         seed_read_object(
             &mut repository,
             user(),
             "none",
             b"{}",
-            ReadPermission::None,
-            WritePermission::Owner,
+            ReadPermission::NONE,
+            WritePermission::OWNER,
         );
         seed_read_object(
             &mut repository,
             other,
             "public",
             b"{}",
-            ReadPermission::Public,
-            WritePermission::Owner,
+            ReadPermission::PUBLIC,
+            WritePermission::OWNER,
         );
         let input = serde_json::json!({"object_ids":[
             {"collection":"profile","key":"hidden","user_id":uuid_string(other)},
@@ -1868,8 +1888,8 @@ mod tests {
             UserId::new([0; 16]),
             "k",
             b"{}",
-            ReadPermission::Public,
-            WritePermission::None,
+            ReadPermission::PUBLIC,
+            WritePermission::NONE,
         );
         let object = serde_json::json!({"collection":"profile","key":"k"});
         let input = serde_json::json!({"object_ids":vec![object.clone(); MAX_BATCH]}).to_string();
@@ -1896,8 +1916,8 @@ mod tests {
             user(),
             "k",
             b"{}",
-            ReadPermission::Owner,
-            WritePermission::Owner,
+            ReadPermission::OWNER,
+            WritePermission::OWNER,
         );
         let input = serde_json::json!({"object_ids":[{"collection":"profile","key":"k","user_id":uuid_string(user())}]}).to_string();
         let mut corrupt = Vec::new();
@@ -1905,7 +1925,7 @@ mod tests {
         changed.key = StorageObjectKey::new("profile", "other", user()).unwrap();
         corrupt.push(changed);
         let mut changed = object.clone();
-        changed.read_permission = ReadPermission::None;
+        changed.read_permission = ReadPermission::NONE;
         corrupt.push(changed);
         let mut changed = object.clone();
         changed.value = b"changed".to_vec();
@@ -1944,8 +1964,8 @@ mod tests {
             other,
             "k",
             b"{}",
-            ReadPermission::Owner,
-            WritePermission::Owner,
+            ReadPermission::OWNER,
+            WritePermission::OWNER,
         );
         repository.read_override = Some(vec![object]);
         let input = serde_json::json!({"object_ids":[{"collection":"profile","key":"k","user_id":uuid_string(other)}]}).to_string();

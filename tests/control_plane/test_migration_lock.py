@@ -37,12 +37,12 @@ class MigrationLockTests(unittest.TestCase):
         self.assertTrue(result["source_identity_verified"])
         self.assertFalse(result["runtime_execution_verified"])
         self.assertFalse(result["compatibility_credit"])
-        self.assertEqual(result["schema_version"], 3)
+        self.assertEqual(result["schema_version"], 4)
         self.assertEqual(result["digest_algorithm"], "ordered-path-git-blob-sha256.v1")
-        for row in result["profiles"].values():
-            self.assertEqual(row["file_count"], 3)
-            self.assertEqual(row["declared_action_count"], 22)
-            self.assertEqual(row["revision_action_counts"], {"2": 6, "3": 16})
+        for profile, row in result["profiles"].items():
+            self.assertEqual(row["file_count"], 4)
+            self.assertEqual(row["declared_action_count"], 30 if profile == "postgresql" else 34)
+            self.assertEqual(row["revision_action_counts"], {"2": 6, "3": 16, "4": 8 if profile == "postgresql" else 12})
             self.assertEqual(row["digest_algorithm"], result["digest_algorithm"])
         self.assertNotEqual(
             result["profiles"]["postgresql"]["chain_sha256"],
@@ -92,7 +92,7 @@ class MigrationLockTests(unittest.TestCase):
     def test_relocking_does_not_allow_rewriting_either_historical_revision(self) -> None:
         module = load_module()
         for profile in ("postgresql", "cockroachdb"):
-            for revision in (1, 2):
+            for revision in (1, 2, 3):
                 root = self.copy_migrations()
                 entry = module.load_lock(root)["profiles"][profile]["ordered_files"][revision - 1]
                 self.rewrite_and_relock(root, profile, revision, (root / entry["path"]).read_bytes() + b"-- rewritten history\n")
@@ -146,6 +146,34 @@ class MigrationLockTests(unittest.TestCase):
                 with self.subTest(profile=profile, mutation=mutation):
                     with self.assertRaisesRegex(module.ValidationError, "action grammar drift"):
                         module.validate(root)
+
+    def test_storage_import_actions_reject_relocked_abi_and_unclosed_journal_changes(self) -> None:
+        module = load_module()
+        replacements = (
+            ("length(collection) BETWEEN 0 AND 128", "length(collection) BETWEEN 1 AND 128"),
+            ("read_permission >= 0", "read_permission BETWEEN 0 AND 2"),
+            ("write_permission >= 0", "write_permission BETWEEN 0 AND 1"),
+            ("status IN (0, 1)", "status IN (0, 1, 2)"),
+            ("committed_rows = total_rows", "committed_rows <= total_rows"),
+            ("total_pages BETWEEN 0 AND 100", "total_pages BETWEEN 0 AND 10000"),
+            ("ON DELETE RESTRICT", "ON DELETE CASCADE"),
+            ("v3_apply_source_commit IS NOT NULL", "TRUE"),
+            ("first_ordinal + row_count <= 10000", "first_ordinal + row_count <= 1000000"),
+        )
+        for profile in ("postgresql", "cockroachdb"):
+            original = (ROOT / f"migrations/{profile}/0004_storage_source_import_up.sql").read_text()
+            for before, after in replacements:
+                self.assertIn(before, original)
+                root = self.copy_migrations()
+                self.rewrite_and_relock(root, profile, 4, original.replace(before, after).encode())
+                with self.subTest(profile=profile, changed=before), self.assertRaisesRegex(module.ValidationError, "action grammar drift"):
+                    module.validate(root)
+            first = "-- trnm:action metadata_v3_apply_source_commit\nALTER TABLE trnm_schema_metadata ADD COLUMN v3_apply_source_commit TEXT;"
+            for changed in (original.replace(first, ""), original + "\n" + first + "\n", original + "SELECT 1;\n"):
+                root = self.copy_migrations()
+                self.rewrite_and_relock(root, profile, 4, changed.encode())
+                with self.subTest(profile=profile, malformed=True), self.assertRaisesRegex(module.ValidationError, "action grammar drift"):
+                    module.validate(root)
 
     def test_frozen_base_rules_and_exact_profile_inventory_remain_required(self) -> None:
         module = load_module()

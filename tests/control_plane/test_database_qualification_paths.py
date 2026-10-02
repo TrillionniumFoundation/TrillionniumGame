@@ -48,7 +48,7 @@ class DatabaseQualificationPaths(unittest.TestCase):
                 self.assertEqual(implementation.count('println!("assertion='), 7)
         workflow = self.text('.github/workflows/cockroach-serialization-retry.yml')
         for marker in ("schemas.validate_identity(applied", "schemas.validate_identity(verified",
-                       "identity['authoritative_migration_file_count'] == 3", "v2_apply_source_commit",
+                       "identity['authoritative_migration_file_count'] == 4", "v2_apply_source_commit",
                        "files['migration-chain.lock.json'] == Path('migrations/MIGRATION_CHAIN.lock.json').read_bytes()"):
             self.assertIn(marker, workflow)
 

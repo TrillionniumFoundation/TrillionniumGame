@@ -12,8 +12,8 @@ fn write(value: u8) -> BatchOperation {
         key: key(value),
         value: vec![value],
         expected: VersionCheck::Any,
-        read_permission: ReadPermission::Owner,
-        write_permission: WritePermission::Owner,
+        read_permission: ReadPermission::OWNER,
+        write_permission: WritePermission::OWNER,
     })
 }
 
@@ -24,7 +24,7 @@ fn object(value: u8) -> StorageObject {
         version: ContentVersion::from_value(&[value]).into(),
         collision_witness: None,
         integrity_digest: IntegrityDigest::from_value(&[value]),
-        read_permission: ReadPermission::Owner,
-        write_permission: WritePermission::Owner,
+        read_permission: ReadPermission::OWNER,
+        write_permission: WritePermission::OWNER,
     }
 }

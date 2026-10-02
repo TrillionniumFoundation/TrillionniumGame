@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -95,6 +99,46 @@ NATIVE_JSONB = NATIVE_JSONB.replace(
     "if grep -Fq 'storage_native_jsonb_live_skipped'",
     NATIVE_JSONB_UNIQUE + "if grep -Fq 'storage_native_jsonb_live_skipped'",
 )
+V4_ACL = lane(
+    "trnm-persistence-pg", "--test storage_permissions_v4",
+    "storage_v4_raw_acl_domains_keys_and_operation_predicates_are_native",
+    "storage-v4-acl.log", "storage_v4_acl_test_count",
+    "storage_v4_acl_live_executed", "storage_v4_acl_live_skipped",
+)
+V4_ACL_UNIQUE = '''test "$(grep -Fxc "storage_v4_acl_live_executed profile=${profile}" "$evidence/storage-v4-acl.log")" -eq 1
+'''
+V4_ACL = V4_ACL.replace(
+    "if grep -Fq 'storage_v4_acl_live_skipped'",
+    V4_ACL_UNIQUE + "if grep -Fq 'storage_v4_acl_live_skipped'",
+)
+IMPORT_ANNEX = '''python3 scripts/materialize-pinned-storage-upstream.py \\
+  --destination "$evidence/storage-source-upstream" \\
+  > "$evidence/storage-v4-source-materialization.json"
+python3 scripts/check-trnm-server.py \\
+  --storage-import-source-archive "$evidence" --profile "$profile" \\
+  --commit "$candidate_sha" --tree "$candidate_tree" \\
+  > "$evidence/storage-v4-source-archive.log"
+'''
+IMPORT_ENVIRONMENT = ENVIRONMENT + '''TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL="$database_url" \\
+TRNM_STORAGE_PINNED_UPSTREAM_DIRECTORY="$evidence/storage-source-upstream" \\
+TRNM_STORAGE_TEST_PRODUCER_COMMIT="$candidate_sha" \\
+TRNM_STORAGE_TEST_PRODUCER_TREE="$candidate_tree" \\
+TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$evidence/storage-v4-import-packets" \\
+'''
+V4_IMPORT = lane(
+    "trnm-persistence-pg", "--test storage_import_v4",
+    "storage_v4_source_export_custody_resume_finish_and_tamper_are_native",
+    "storage-v4-import.log", "storage_v4_import_test_count",
+    "storage_v4_import_live_executed", "storage_v4_import_live_skipped",
+).replace(ENVIRONMENT, IMPORT_ENVIRONMENT)
+V4_IMPORT_UNIQUE = '''test "$(grep -Fxc "storage_v4_import_live_executed profile=${profile}" "$evidence/storage-v4-import.log")" -eq 1
+'''
+V4_IMPORT_TERMINAL = '''test "$(grep -Ec '^test result:' "$evidence/storage-v4-import.log")" -eq 1
+'''
+V4_IMPORT = V4_IMPORT.replace("if grep -Fq 'storage_v4_import_live_skipped'",
+                            V4_IMPORT_UNIQUE + "if grep -Fq 'storage_v4_import_live_skipped'")
+V4_IMPORT = V4_IMPORT.replace('grep -Fxq "storage_v4_import_live_executed',
+                            V4_IMPORT_TERMINAL + 'grep -Fxq "storage_v4_import_live_executed')
 SCHEMA_FAMILIES = {
     "shapes": 8, "illegal_legacy": 9, "catalog_drift": 6,
     "partial_resume": 3, "metadata_validation": 9, "opaque_history": 6,
@@ -142,12 +186,13 @@ ACTUAL_HARNESS = (ROOT / "scripts/ci-trnm-server-live.sh").read_text(encoding="u
 SCHEMA_V3 = ACTUAL_HARNESS[ACTUAL_HARNESS.index("schema_version=$(db_scalar"):
                            ACTUAL_HARNESS.index("begin_stage session-response-loss")]
 SUFFIX = '''cat > "$evidence/summary.json" <<EOF
-{"schema":"synthetic-only","nakama_client_list_projection":true,"storage_occ_precedence":true,"raw_version_conditions":true,"storage_jsonb_v3_projection":true,"storage_native_jsonb":true,"schema_v3_extra_cases":41,"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6},"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3},"schema_version":${schema_version},"storage_writer_epoch":${storage_writer_epoch},"authoritative_migrations_count":${authoritative_migrations_count},"wire_compatible":false,"compatibility_credit":false,"accepted":false,"production_ready":false}
+{"schema":"synthetic-only","nakama_client_list_projection":true,"storage_occ_precedence":true,"raw_version_conditions":true,"storage_jsonb_v3_projection":true,"storage_native_jsonb":true,"storage_v4_acl":true,"schema_v3_extra_cases":41,"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6},"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3},"schema_version":${schema_version},"storage_writer_epoch":${storage_writer_epoch},"authoritative_migrations_count":${authoritative_migrations_count},"wire_compatible":false,"compatibility_credit":false,"accepted":false,"production_ready":false}
 EOF
 find "$evidence" -type f ! -name SHA256SUMS -print0 \\
   | sort -z | xargs -0 sha256sum > "$evidence/SHA256SUMS"
 '''
-FIXTURE = PREFIX + CANONICAL + PROJECTION + OCC + TIMESTAMPS + NATIVE_JSONB + SCHEMA + SCHEMA_V3 + SUFFIX
+SUFFIX = SUFFIX.replace('"storage_v4_acl":true,', '"storage_v4_acl":true,"storage_v4_import":true,')
+FIXTURE = PREFIX + CANONICAL + PROJECTION + OCC + TIMESTAMPS + NATIVE_JSONB + V4_ACL + IMPORT_ANNEX + V4_IMPORT + SCHEMA + SCHEMA_V3 + SUFFIX
 
 
 class StorageListLiveContractTests(unittest.TestCase):
@@ -182,7 +227,7 @@ class StorageListLiveContractTests(unittest.TestCase):
 
     def test_zero_multiple_failed_or_ignored_results_cannot_be_counted(self) -> None:
         for counter in ["canonical_storage_test_count", "nakama_client_list_test_count",
-                        "storage_occ_test_count", "storage_timestamps_test_count", "storage_native_jsonb_test_count"]:
+                        "storage_occ_test_count", "storage_timestamps_test_count", "storage_native_jsonb_test_count", "storage_v4_acl_test_count"]:
             with self.subTest(counter=counter):
                 self.reject(FIXTURE.replace(f'test "${counter}" -eq 1', f'test "${counter}" -ge 0'))
                 self.reject(FIXTURE.replace(f'test "${counter}" -eq 1', f'test "${counter}" -ge 1'))
@@ -265,10 +310,10 @@ class StorageListLiveContractTests(unittest.TestCase):
 
     def test_real_schema_abi_and_three_archived_sql_files_are_required(self) -> None:
         for changed in (
-            FIXTURE.replace('test "$schema_version" = 3', 'test "$schema_version" = 2'),
-            FIXTURE.replace('test "$storage_writer_epoch" = 3', 'test "$storage_writer_epoch" = 2'),
+            FIXTURE.replace('test "$schema_version" = 4', 'test "$schema_version" = 2'),
+            FIXTURE.replace('test "$storage_writer_epoch" = 4', 'test "$storage_writer_epoch" = 2'),
             FIXTURE.replace('test "$v2_apply_source_commit" = "$candidate_sha"', "true"),
-            FIXTURE.replace('test "$authoritative_migrations_count" -eq 3', 'test "$authoritative_migrations_count" -ge 2'),
+            FIXTURE.replace('test "$authoritative_migrations_count" -eq 4', 'test "$authoritative_migrations_count" -ge 2'),
             FIXTURE.replace("target.write_bytes(data)", "target.write_text('synthetic SQL')"),
             FIXTURE.replace("assert target.read_bytes()==data", "pass"),
             FIXTURE.replace("'sha256':hashlib.sha256(data).hexdigest()", "'sha256':'guessed'"),
@@ -335,6 +380,33 @@ class StorageListLiveContractTests(unittest.TestCase):
                         MODULE.validate_storage_live_workflow(changed, prospective=prospective)
 
 
+    def test_v4_acl_lane_requires_exact_selector_unique_marker_and_closed_summary(self) -> None:
+        for changed in (
+            FIXTURE.replace(V4_ACL, ""), FIXTURE.replace(V4_ACL, V4_ACL + V4_ACL),
+            FIXTURE.replace("storage_v4_raw_acl_domains_keys_and_operation_predicates_are_native", "zero_test_selector"),
+            FIXTURE.replace(V4_ACL_UNIQUE, ""),
+            FIXTURE.replace("storage_v4_acl_live_skipped", "unchecked_skip"),
+            FIXTURE.replace('"storage_v4_acl":true', '"storage_v4_acl":false'),
+        ):
+            with self.subTest(changed=changed):
+                self.reject(changed)
+
+    def test_v4_import_requires_whole_source_materialization_and_exact_live_execution(self) -> None:
+        for changed in (
+            FIXTURE.replace(IMPORT_ANNEX, ""), FIXTURE.replace(V4_IMPORT, ""),
+            FIXTURE.replace(V4_IMPORT, V4_IMPORT + V4_IMPORT),
+            FIXTURE.replace("--test storage_import_v4", "--test storage_permissions_v4"),
+            FIXTURE.replace("storage_v4_source_export_custody_resume_finish_and_tamper_are_native", "zero_test_selector"),
+            FIXTURE.replace(V4_IMPORT_UNIQUE, ""), FIXTURE.replace(V4_IMPORT_TERMINAL, ""),
+            FIXTURE.replace("storage_v4_import_live_skipped", "unchecked_import_skip"),
+            FIXTURE.replace('"storage_v4_import":true', '"storage_v4_import":false'),
+            FIXTURE.replace('TRNM_STORAGE_TEST_PRODUCER_COMMIT="$candidate_sha"', 'TRNM_STORAGE_TEST_PRODUCER_COMMIT="$other_sha"'),
+            FIXTURE.replace('TRNM_STORAGE_TEST_PRODUCER_TREE="$candidate_tree"', 'TRNM_STORAGE_TEST_PRODUCER_TREE="$other_tree"'),
+            FIXTURE.replace('TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$evidence/storage-v4-import-packets"', 'TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$unretained"'),
+        ):
+            with self.subTest(changed=changed):
+                self.reject(changed)
+
 class ActualNativeLaneShellTests(unittest.TestCase):
     """Run production shell guards with mock Cargo logs, never a database."""
 
@@ -346,6 +418,8 @@ class ActualNativeLaneShellTests(unittest.TestCase):
 profile=postgresql
 evidence=$MOCK_ROOT
 database_url=synthetic-database-configuration
+candidate_sha=1111111111111111111111111111111111111111
+candidate_tree=2222222222222222222222222222222222222222
 begin_stage() { return 0; }
 cargo() { cat "$MOCK_ROOT/input.log"; return "$MOCK_CARGO_STATUS"; }
 '''
@@ -385,7 +459,7 @@ cargo() { cat "$MOCK_ROOT/input.log"; return "$MOCK_CARGO_STATUS"; }
 
     def test_real_native_jsonb_block_requires_exact_test_and_unique_execution(self) -> None:
         block = ACTUAL_HARNESS[ACTUAL_HARNESS.index("begin_stage storage-native-jsonb"):
-                               ACTUAL_HARNESS.index("begin_stage schema-upgrade")]
+                               ACTUAL_HARNESS.index("begin_stage storage-v4-acl")]
         marker = "storage_native_jsonb_live_executed profile=postgresql"
         lines = [marker, "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"]
         self.assertEqual(self.run_block(block, lines).returncode, 0)
@@ -397,6 +471,27 @@ cargo() { cat "$MOCK_ROOT/input.log"; return "$MOCK_CARGO_STATUS"; }
             result = self.run_block(block, changed)
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("synthetic-guards-passed-no-live-credit", result.stdout)
+
+    def test_real_import_block_rejects_empty_missing_duplicate_skip_wrong_profile_and_terminal(self) -> None:
+        block = ACTUAL_HARNESS[ACTUAL_HARNESS.index('begin_stage storage-v4-import "'):
+                               ACTUAL_HARNESS.index("begin_stage schema-upgrade")]
+        marker = "storage_v4_import_live_executed profile=postgresql"
+        lines = [marker, "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"]
+        self.assertEqual(self.run_block(block, lines).returncode, 0)
+        for changed in (
+            [], lines[1:], lines + [marker], lines + [lines[-1]],
+            lines + ["storage_v4_import_live_skipped"],
+            lines + ["test result: FAILED. 0 passed; 1 failed; 0 ignored;"],
+            [line.replace("1 passed", "0 passed") for line in lines],
+            [line.replace("0 ignored", "1 ignored") for line in lines],
+            [line.replace("profile=postgresql", "profile=cockroachdb") for line in lines],
+            ["test misleading-prefix ... " + marker, lines[-1]],
+        ):
+            with self.subTest(lines=changed):
+                result = self.run_block(block, changed)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("synthetic-guards-passed-no-live-credit", result.stdout)
+        self.assertEqual(self.run_block(block, lines, status=37).returncode, 37)
 
 
 class StorageV3LivePacketContractTests(unittest.TestCase):
@@ -417,15 +512,16 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
             **{field: True for field in (
                 "check_config", "fresh_migration", "nakama_client_list_projection", "storage_occ_precedence",
                 "raw_version_conditions", "storage_timestamps", "schema_upgrade", "storage_jsonb_v3_projection",
-                "storage_native_jsonb",
+                "storage_native_jsonb", "storage_v4_acl", "storage_v4_import",
                 "health_ready", "unauthenticated_mutation_rejected", "http_bootstrap_commit_duplicate_conflict",
                 "websocket_json_commit", "response_loss_exact_receipt_replay", "authenticated_drain",
                 "process_restart_exact_receipt_replay",
             )},
             **{field: 3 for field in (
-                "schema_version", "storage_writer_epoch", "authoritative_migrations_count", "entity_revision",
+                "entity_revision",
                 "event_sequence", "command_receipts", "events", "outbox_intents",
             )},
+            **{field: 4 for field in ("schema_version", "storage_writer_epoch", "authoritative_migrations_count")},
             "storage_jsonb_v3_cases": {"history": 6, "opaque_success": 4, "no_op": 2, "resource": 1, "native_input": 3},
             "schema_v3_extra_cases": 41, "schema_v3_case_families": SCHEMA_FAMILIES.copy(),
             **{field: False for field in (
@@ -434,12 +530,12 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
         }
         self.lock = json.loads((ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_text())
         self.identity = {"schema": "trillionnium.authoritative-schema-report.v1", "profile": self.profile,
-                         "schema_version": 3, "storage_writer_epoch": 3, "table_count": 10,
+                         "schema_version": 4, "storage_writer_epoch": 4, "table_count": 12,
                          "digest_algorithm": "ordered-path-git-blob-sha256.v1",
                          "chain_digest": self.chain_digest(self.profile),
                          "migration_applied": False, "applied_steps": 0,
                          "source_commit": self.COMMIT, "upgrade_source_commit": self.COMMIT,
-                         "v2_apply_source_commit": self.COMMIT, "compatibility_credit": False}
+                         "v2_apply_source_commit": self.COMMIT, "v3_apply_source_commit": self.COMMIT, "compatibility_credit": False}
         archived = self.root / "authoritative-migrations"
         archived.mkdir()
         files = []
@@ -451,7 +547,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
                           "git_blob_sha1": entry["git_blob_sha1"], "sha256": hashlib.sha256(data).hexdigest(),
                           "size_bytes": len(data)})
         self.manifest = {"schema": "trillionnium.server-live-schema-source.v1", "profile": self.profile,
-                         "schema_version": 3, "storage_writer_epoch": 3, "ordered_files": files,
+                         "schema_version": 4, "storage_writer_epoch": 4, "ordered_files": files,
                          "compatibility_credit": False}
         for name, value in (("summary.json", self.summary), ("schema-identity.json", self.identity),
                             ("migration-lock.json", self.lock), ("authoritative-migrations.json", self.manifest)):
@@ -472,6 +568,469 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
                              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"]
         self.write_named_log("schema-upgrade.log", self.schema_lines)
         self.write_named_log("storage-native-jsonb.log", self.native_lines)
+        self.v4_acl_lines = ["storage_v4_acl_live_executed profile=postgresql",
+                             "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"]
+        self.write_named_log("storage-v4-acl.log", self.v4_acl_lines)
+        self.v4_import_lines = ["storage_v4_import_live_executed profile=postgresql",
+                                "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"]
+        self.write_named_log("storage-v4-import.log", self.v4_import_lines)
+        # Synthetic authority bodies only exercise the real annex hash/path
+        # validator without network acquisition. Production has no override.
+        authority, exporter, query = MODULE.storage_import_source_authority()
+        annex = self.root / "storage-source-upstream"
+        annex.mkdir()
+        members = []
+        for name, source_path, _, _, _ in authority.MEMBERS:
+            data = ("synthetic source annex, no oracle credit: " + name).encode()
+            (annex / name).write_bytes(data)
+            members.append((name, source_path, len(data), hashlib.sha256(data).hexdigest(),
+                            hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()))
+        self.source_authority = SimpleNamespace(MEMBERS=tuple(members), COMMIT=authority.COMMIT,
+                                               TREE=authority.TREE, validate_bytes=authority.validate_bytes)
+        patcher = mock.patch.object(MODULE, "storage_import_source_authority",
+                                    return_value=(self.source_authority, exporter, query))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.import_source = MODULE.write_storage_import_source_archive(
+            self.root, profile=self.profile, commit=self.COMMIT, tree=self.TREE)
+        self.write_native_fixture()
+
+    def write_native_fixture(self, *, total: int = 8, page_rows: int = 2) -> None:
+        """Synthetic archived observations; this never executes or credits SQL.
+
+        Use the public packet/frame formats independently of the validator.
+        Fault tests below rewrite hashes too, so self-consistent JSON reports
+        cannot hide changed native tuples, journal state, or producer identity.
+        """
+        self.assertTrue(1 <= total <= 8 and 1 <= page_rows <= 100)
+        page_count = (total + page_rows - 1) // page_rows
+        native = self.root / "storage-v4-import-packets"
+        if native.exists():
+            shutil.rmtree(native)
+        packet = native / "packet"
+        for name in ("upstream", "producer-source", "values"):
+            (packet / name).mkdir(parents=True)
+        authority, exporter, query = MODULE.storage_import_source_authority()
+        for member in authority.MEMBERS:
+            (packet / "upstream" / member[0]).write_bytes((self.root / "storage-source-upstream" / member[0]).read_bytes())
+        (packet / "producer-source/exporter.rs").write_bytes(exporter)
+        (packet / "source-query.sql").write_bytes(query)
+        credit = {"compatibility_credit": False, "production_ready": False, "full_nakama_replacement": False}
+        source = {"repository": "heroiclabs/nakama", "commit": authority.COMMIT, "tree": authority.TREE,
+                  "profile": self.profile, "server_version": "synthetic-control-fixture",
+                  "database_identity": "owned_synthetic_source", "snapshot_identity": "synthetic-snapshot-no-live-credit",
+                  "isolation": "repeatable-read-read-only" if self.profile == "postgresql" else "serializable-read-only",
+                  "execution_class": "native-source-ddl-fixture", "whole_table": True, "owner_references_valid": True}
+        producer = {"repository": "TrillionniumFoundation/TrillionniumGame", "commit": self.COMMIT,
+                    "tree": self.TREE, "source_sha256": hashlib.sha256(exporter).hexdigest(),
+                    "binary_sha256": hashlib.sha256(b"synthetic executable, no build credit").hexdigest(),
+                    "execution_id": "synthetic-native-control-fixture"}
+        columns = [("collection", "varchar", 128, None), ("key", "varchar", 128, None),
+                   ("user_id", "uuid", None, None), ("value", "jsonb", None, "'{}'::jsonb" if self.profile == "postgresql" else "'{}'"),
+                   ("version", "varchar", 32, None), ("read", "int2", None, "1"), ("write", "int2", None, "1"),
+                   ("create_time", "timestamptz", None, "now()"), ("update_time", "timestamptz", None, "now()")]
+        constraints = []
+        definitions = [("storage_pkey", "p", "PRIMARY KEY (collection, key, user_id)" if self.profile == "postgresql"
+                        else "PRIMARY KEY (collection ASC, key ASC, user_id ASC)", [1, 2, 3]),
+                       ("storage_user_id_fkey", "f", "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE", [3]),
+                       ("storage_read_check" if self.profile == "postgresql" else "check_read", "c", "CHECK ((read >= 0))", [6]),
+                       ("storage_write_check" if self.profile == "postgresql" else "check_write", "c", "CHECK ((write >= 0))", [7])]
+        for name, kind, definition, indices in definitions:
+            constraints.append({"name": name, "kind": kind, "validated": True, "definition": definition, "columns": indices,
+                                "parent_columns": [1] if kind == "f" else None, "parent_schema": "public" if kind == "f" else None,
+                                "parent_table": "users" if kind == "f" else None, "delete_action": "c" if kind == "f" else " "})
+        self.write_native_json("packet/source-catalog.json", {
+            "schema": "trillionnium.nakama-storage-source-catalog.v1", "profile": self.profile,
+            "namespace": "public", "table": "storage", "table_type": "BASE TABLE", "table_kind": "r",
+            "snapshot_identity": source["snapshot_identity"], "columns": [
+                {"name": name, "udt": udt, "nullable": False, "character_maximum_length": size, "default_expression": default}
+                for name, udt, size, default in columns], "constraints": constraints,
+            "collation_binding": ["postgresql", "UTF8", "c", "C.UTF-8", "C.UTF-8", "default", "d", "true"]
+                if self.profile == "postgresql" else ["cockroachdb", "UTF8", "uncollated"],
+            "primary_key_columns": ["collection", "key", "user_id"], "owner_foreign_key_columns": ["user_id"],
+            "owner_foreign_key_table": "users", "owner_foreign_key_parent_schema": "public",
+            "owner_foreign_key_parent_columns": ["id"], "owner_foreign_key_delete_cascade": True,
+            "owner_foreign_key_validated": True, "read_nonnegative_check_validated": True, "write_nonnegative_check_validated": True})
+        # Already rendered native strings: never parse or normalize payloads.
+        values = ["null", '"source string"', "true", '[null, true, 1, {"x": 2}]', "1200",
+                  '{"a": 2, "b": 100}', '"escape 界 \\n"', "{}"]
+        tokens = ["", "UPPERCASE", "*", "界" * 32, "not-hex", "legacytoken", "opaque\tversion", "opaque"]
+        permissions = [0, 1, 2, 3, 32767, 2, 0, 32767]
+        rows = []
+        records = []
+        for index, (value, token) in enumerate(zip(values[:total], tokens[:total])):
+            row = {"collection": "" if index < 2 else "集合", "key": "" if index == 0 else f"key-{index}\n界",
+                   "user_id": "11111111-1111-1111-1111-111111111111", "native_text": value,
+                   "public_version": token, "read": permissions[index], "write": 32767 if index == 6 else index % 4,
+                   "create_time": {"seconds": -1, "nanos": 123456000},
+                   "update_time": {"seconds": 951827696, "nanos": 654321000}}
+            if index == 7:
+                row["create_time"], row["update_time"] = row["update_time"], row["create_time"]
+            rows.append(row)
+            data = value.encode()
+            path = f"values/{index:08}.json"
+            (packet / path).write_bytes(data)
+            records.append({"ordinal": index, **{key: item for key, item in row.items() if key != "native_text"},
+                            "value_path": path, "value_sha256": hashlib.sha256(data).hexdigest(), "value_bytes": len(data)})
+        (packet / "rows.ndjson").write_bytes(b"".join(self.json_bytes(record) + b"\n" for record in records))
+        members = [{"path": str(path.relative_to(packet)), "bytes": len(path.read_bytes()),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                   for path in sorted(packet.rglob("*")) if path.is_file()]
+        self.write_native_json("packet/manifest.json", {"schema": "trillionnium.nakama-storage-native-export.v1",
+            "project_id": "trillionnium-game", "completed": True, "source": source, "producer": producer,
+            "total_rows": total, "page_rows": page_rows, "members": members})
+        manifest = hashlib.sha256((packet / "manifest.json").read_bytes()).hexdigest()
+        self.write_native_json("packet/source-receipt.json", {"schema": "trillionnium.nakama-storage-source-receipt.v1",
+            "manifest_sha256": manifest, "producer": producer, "source": source, "row_count": total,
+            "completed": True, **credit})
+        custody = hashlib.sha256((packet / "source-receipt.json").read_bytes()).hexdigest()
+        self.write_native_json("custody-anchors.json", {"schema": "trillionnium.storage-import-native-custody-anchors.v1",
+            "profile": self.profile, "producer_commit": self.COMMIT, "producer_tree": self.TREE,
+            "producer_source_sha256": producer["source_sha256"], "producer_binary_sha256": producer["binary_sha256"],
+            "execution_id": producer["execution_id"], "manifest_sha256": manifest, "receipt_sha256": custody, **credit})
+        self.write_native_json("exporter-summary.json", {"schema": "trillionnium.storage-export-summary.v1",
+            "profile": self.profile, "row_count": total, "page_count": page_count, "manifest_sha256": manifest,
+            "receipt_sha256": custody, "producer_source_sha256": producer["source_sha256"],
+            "producer_binary_sha256": producer["binary_sha256"], "execution_class": source["execution_class"], **credit})
+        targets = [{**row, "projection_sha256": hashlib.sha256(row["native_text"].encode()).hexdigest(),
+                    "value_origin": "nakama-export-unknown-request", "source_manifest_sha256": manifest,
+                    "raw_value_is_null": True, "raw_digest_is_null": True, "updated_at_ms": 2468} for row in rows]
+        self.write_native_json("source-rows.json", rows)
+        self.write_native_json("target-rows.json", targets)
+        self.write_native_json("native-rows.json", {"schema": "trillionnium.storage-import-native-rows.v1",
+            "profile": self.profile, "source_path": "source-rows.json", "target_path": "target-rows.json",
+            "source_sha256": hashlib.sha256((native / "source-rows.json").read_bytes()).hexdigest(),
+            "target_sha256": hashlib.sha256((native / "target-rows.json").read_bytes()).hexdigest(),
+            "exact_source_projection_and_metadata_preserved": True, "unknown_request_witnesses": True, **credit})
+        def u64(value: int) -> bytes:
+            return value.to_bytes(8, "big")
+        def frame(value: str) -> bytes:
+            data = value.encode()
+            return u64(len(data)) + data
+        hashes = []
+        for record in records:
+            data = b"trillionnium.storage-import-row.v1\0" + u64(record["ordinal"])
+            data += b"".join(frame(record[field]) for field in ("collection", "key", "user_id", "public_version", "value_sha256"))
+            data += b"".join(record[field].to_bytes(2, "big", signed=True) for field in ("read", "write"))
+            for field in ("create_time", "update_time"):
+                data += record[field]["seconds"].to_bytes(8, "big", signed=True) + record[field]["nanos"].to_bytes(4, "big")
+            hashes.append(hashlib.sha256(data).digest())
+        inventory = hashlib.sha256(b"trillionnium.storage-import-inventory.v1\0" + b"".join(hashes)).digest()
+        guard = hashlib.sha256(b"synthetic separate target scope and schema/role binding").digest()
+        prefix = hashlib.sha256(b"trillionnium.storage-import-empty-prefix.v1\0" + bytes.fromhex(manifest)
+            + bytes.fromhex(custody) + inventory + guard + frame(self.profile) + frame(source["snapshot_identity"])
+            + (2468).to_bytes(8, "big", signed=True) + u64(total) + u64(page_count)).digest()
+        pages = []
+        for index in range(page_count):
+            first = index * page_rows
+            count = min(page_rows, total - first)
+            digest = hashlib.sha256(b"trillionnium.storage-import-page.v1\0" + bytes.fromhex(manifest)
+                + u64(index) + u64(count) + b"".join(u64(ordinal) + hashes[ordinal] for ordinal in range(first, first + count))).digest()
+            prefix = hashlib.sha256(b"trillionnium.storage-import-page-prefix.v1\0" + prefix + digest
+                + u64(index) + u64(first) + u64(count)).digest()
+            pages.append({"manifest_sha256": manifest, "page_index": index, "first_ordinal": first, "row_count": count,
+                          "page_sha256": digest.hex(), "prefix_sha256": prefix.hex(), "audit_at_ms": 2468})
+        job = {"singleton": 1, "manifest_sha256": manifest, "custody_sha256": custody,
+               "source_inventory_sha256": inventory.hex(), "target_schema_guard_sha256": guard.hex(),
+               "prefix_sha256": prefix.hex(), "source_profile": self.profile, "source_snapshot": source["snapshot_identity"],
+               "audit_at_ms": 2468, "total_rows": total, "total_pages": page_count, "next_page": page_count, "committed_rows": total, "status": 1}
+        self.write_native_json("import-journal.json", {"schema": "trillionnium.storage-import-native-journal.v1",
+            "profile": self.profile, "jobs": [job], "pages": pages, **credit})
+        def progress(next_page: int, completed: bool) -> dict:
+            return {"schema": "trillionnium.storage-import-progress.v1", "manifest_sha256": manifest,
+                    "next_page": next_page, "total_pages": page_count, "total_rows": total,
+                    "committed_rows": min(total, next_page * page_rows),
+                    "completed": completed, "target_identity_classification": "native-system-database-and-external-scope"
+                    if self.profile == "postgresql" else "namespace-and-external-scope-only", **credit}
+        receipts = [{"schema": "trillionnium.storage-import-page-receipt.v1",
+            **{key: value for key, value in page.items() if key not in ("manifest_sha256", "audit_at_ms")},
+            "progress": progress(index + 1, False)} for index, page in enumerate(pages)]
+        self.write_native_json("lifecycle.json", {"schema": "trillionnium.storage-import-native-lifecycle.v1",
+            "profile": self.profile, "begin": progress(0, False), "first_page": receipts[0], "resumed": progress(1, False),
+            "remaining_pages": receipts[1:], "finished": progress(page_count, True), "verified": progress(page_count, True), **credit})
+        for name, applied, steps in (("target-schema-migrate.json", True, 4), ("target-schema-verify.json", False, 0)):
+            self.write_native_json(name, {**self.identity, "profile": self.profile, "chain_digest": self.chain_digest(self.profile),
+                "migration_applied": applied, "applied_steps": steps})
+
+    @staticmethod
+    def json_bytes(value: object) -> bytes:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+
+    def write_native_json(self, name: str, value: object) -> None:
+        (self.root / "storage-v4-import-packets" / name).write_bytes(self.json_bytes(value))
+
+    def native_json(self, name: str) -> object:
+        return json.loads((self.root / "storage-v4-import-packets" / name).read_bytes())
+
+    def rehash_native_rows(self, name: str, value: object) -> None:
+        self.write_native_json(name, value)
+        report = self.native_json("native-rows.json")
+        field = "source_sha256" if name == "source-rows.json" else "target_sha256"
+        report[field] = hashlib.sha256((self.root / "storage-v4-import-packets" / name).read_bytes()).hexdigest()
+        self.write_native_json("native-rows.json", report)
+
+    def rehash_native_packet(self) -> None:
+        """Refresh attacker-controlled hashes, never change observed tuples.
+
+        Deliberately leave the journal/prefix observations unchanged. Packet
+        row/value/producer checks run before those, independently of hashes.
+        """
+        native = self.root / "storage-v4-import-packets"
+        manifest = self.native_json("packet/manifest.json")
+        for member in manifest["members"]:
+            data = (native / "packet" / member["path"]).read_bytes()
+            member.update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+        self.write_native_json("packet/manifest.json", manifest)
+        manifest_hash = hashlib.sha256((native / "packet/manifest.json").read_bytes()).hexdigest()
+        receipt = self.native_json("packet/source-receipt.json")
+        receipt["manifest_sha256"] = manifest_hash
+        self.write_native_json("packet/source-receipt.json", receipt)
+        receipt_hash = hashlib.sha256((native / "packet/source-receipt.json").read_bytes()).hexdigest()
+        for name in ("custody-anchors.json", "exporter-summary.json"):
+            value = self.native_json(name)
+            value.update(manifest_sha256=manifest_hash, receipt_sha256=receipt_hash)
+            self.write_native_json(name, value)
+        rows = self.native_json("target-rows.json")
+        for row in rows:
+            row["source_manifest_sha256"] = manifest_hash
+        self.rehash_native_rows("target-rows.json", rows)
+
+    def test_v4_import_main_packet_rejects_self_consistent_truncation_and_temporary_page_geometry(self) -> None:
+        for total, page_rows in ((1, 1), (6, 2), (8, 1), (8, 4)):
+            with self.subTest(total=total, page_rows=page_rows):
+                # Produce an entire mutually consistent packet, observations,
+                # hash anchors, journal and lifecycle. Changing only a count
+                # would fail an unrelated hash check and miss this regression.
+                self.write_native_fixture(total=total, page_rows=page_rows)
+                native = self.root / "storage-v4-import-packets"
+                manifest = self.native_json("packet/manifest.json")
+                anchors = self.native_json("custody-anchors.json")
+                self.assertEqual(anchors["manifest_sha256"], hashlib.sha256((native / "packet/manifest.json").read_bytes()).hexdigest())
+                self.assertEqual(anchors["receipt_sha256"], hashlib.sha256((native / "packet/source-receipt.json").read_bytes()).hexdigest())
+                for member in manifest["members"]:
+                    data = (native / "packet" / member["path"]).read_bytes()
+                    self.assertEqual((member["bytes"], member["sha256"]), (len(data), hashlib.sha256(data).hexdigest()))
+                journal = self.native_json("import-journal.json")
+                pages = (total + page_rows - 1) // page_rows
+                self.assertEqual(len(self.native_json("source-rows.json")), total)
+                self.assertEqual(len(self.native_json("target-rows.json")), total)
+                self.assertEqual(len(journal["pages"]), pages)
+                self.assertEqual(journal["jobs"][0]["committed_rows"], total)
+                self.assertEqual(journal["jobs"][0]["next_page"], pages)
+                self.assertEqual(journal["jobs"][0]["prefix_sha256"], journal["pages"][-1]["prefix_sha256"])
+                lifecycle = self.native_json("lifecycle.json")
+                self.assertEqual(len(lifecycle["remaining_pages"]), pages - 1)
+                self.assertEqual(lifecycle["verified"]["committed_rows"], total)
+                self.assertIs(lifecycle["verified"]["completed"], True)
+                with self.assertRaisesRegex(SystemExit, "exactly eight rows in four two-row pages"):
+                    self.validate()
+        self.write_native_fixture()
+        self.assertTrue(self.validate()["storage_v4_import"])
+
+    def test_v4_import_native_closed_inventory_requires_every_observation_and_preimage(self) -> None:
+        native = self.root / "storage-v4-import-packets"
+        members = [str(path.relative_to(native)) for path in native.rglob("*") if path.is_file()]
+        for name in members:
+            with self.subTest(missing=name):
+                path = native / name
+                data = path.read_bytes()
+                path.unlink()
+                self.reject()
+                path.write_bytes(data)
+        for name in ("unclaimed.json", "packet/values/extra.json"):
+            with self.subTest(extra=name):
+                (native / name).write_text("{}")
+                self.reject()
+                (native / name).unlink()
+        path = native / "target-rows.json"
+        data = path.read_bytes()
+        path.unlink()
+        path.symlink_to(native / "source-rows.json")
+        self.reject()
+        path.unlink()
+        path.write_bytes(data)
+        self.assertTrue(self.validate()["storage_v4_import"])
+
+    def test_v4_import_native_rejects_self_consistent_tuple_changes(self) -> None:
+        mutations = (("public_version", None), ("public_version", "not-the-empty-source-token"),
+                     ("native_text", " null "), ("read", True), ("read", 32767),
+                     ("write", 2), ("create_time", {"seconds": -1, "nanos": 123457000}),
+                     ("update_time", {"seconds": 951827696, "nanos": 654321001}),
+                     ("value_origin", "write-request-bytes"), ("raw_value_is_null", False),
+                     ("raw_digest_is_null", 1), ("source_manifest_sha256", "a" * 64),
+                     ("projection_sha256", "b" * 64), ("updated_at_ms", 2469))
+        for field, value in mutations:
+            with self.subTest(field=field, value=value):
+                rows = self.native_json("target-rows.json")
+                original = rows[0][field]
+                rows[0][field] = value
+                self.rehash_native_rows("target-rows.json", rows)
+                self.reject()
+                rows[0][field] = original
+                self.rehash_native_rows("target-rows.json", rows)
+        for changed in (self.native_json("target-rows.json")[:-1],
+                        self.native_json("target-rows.json") + self.native_json("target-rows.json")[:1],
+                        [self.native_json("target-rows.json")[0]] * 8):
+            with self.subTest(inventory=len(changed)):
+                self.rehash_native_rows("target-rows.json", changed)
+                self.reject()
+                self.write_native_fixture()
+
+    def test_v4_import_native_rejects_normalized_packet_payload_and_untyped_rows_after_rehash(self) -> None:
+        native = self.root / "storage-v4-import-packets"
+        for field, value in (("read", True), ("public_version", None), ("ordinal", False),
+                             ("value_bytes", True), ("collection", []),
+                             ("create_time", {"seconds": -1, "nanos": 123456001})):
+            with self.subTest(field=field):
+                records = [json.loads(line) for line in (native / "packet/rows.ndjson").read_bytes().splitlines()]
+                records[0][field] = value
+                (native / "packet/rows.ndjson").write_bytes(b"".join(self.json_bytes(row) + b"\n" for row in records))
+                self.rehash_native_packet()
+                self.reject()
+                self.write_native_fixture()
+        (native / "packet/values/00000005.json").write_text('{"b": 100, "a": 2}')
+        records = [json.loads(line) for line in (native / "packet/rows.ndjson").read_bytes().splitlines()]
+        data = (native / "packet/values/00000005.json").read_bytes()
+        records[5].update(value_bytes=len(data), value_sha256=hashlib.sha256(data).hexdigest())
+        (native / "packet/rows.ndjson").write_bytes(b"".join(self.json_bytes(row) + b"\n" for row in records))
+        self.rehash_native_packet()
+        self.reject()
+
+    def test_v4_import_native_custody_binds_actual_candidate_source_profile_and_packet(self) -> None:
+        for field, value in (("producer_commit", "3" * 40), ("producer_tree", "4" * 40),
+                             ("producer_source_sha256", "a" * 64), ("producer_binary_sha256", "b" * 64),
+                             ("execution_id", "different-native-run"), ("profile", "cockroachdb"),
+                             ("manifest_sha256", "c" * 64), ("receipt_sha256", "d" * 64),
+                             ("compatibility_credit", True), ("production_ready", 0)):
+            with self.subTest(field=field):
+                value_json = self.native_json("custody-anchors.json")
+                original = value_json[field]
+                value_json[field] = value
+                self.write_native_json("custody-anchors.json", value_json)
+                self.reject()
+                value_json[field] = original
+                self.write_native_json("custody-anchors.json", value_json)
+        native = self.root / "storage-v4-import-packets"
+        (native / "packet/producer-source/exporter.rs").write_bytes(b"changed producer implementation")
+        self.rehash_native_packet()
+        self.reject()
+
+    def test_v4_import_native_journal_validates_every_page_and_full_final_state(self) -> None:
+        mutations = (("custody_sha256", "a" * 64), ("source_inventory_sha256", "b" * 64),
+                     ("target_schema_guard_sha256", "c" * 64), ("prefix_sha256", "d" * 64),
+                     ("source_snapshot", "different-snapshot"), ("audit_at_ms", 2469),
+                     ("total_rows", 7), ("total_pages", 3), ("next_page", 3),
+                     ("committed_rows", 7), ("status", 0), ("singleton", True))
+        for field, value in mutations:
+            with self.subTest(job=field):
+                journal = self.native_json("import-journal.json")
+                original = journal["jobs"][0][field]
+                journal["jobs"][0][field] = value
+                self.write_native_json("import-journal.json", journal)
+                self.reject()
+                journal["jobs"][0][field] = original
+                self.write_native_json("import-journal.json", journal)
+        for field, value in (("page_index", 2), ("first_ordinal", 3), ("row_count", True),
+                             ("page_sha256", "e" * 64), ("prefix_sha256", "f" * 64), ("audit_at_ms", 2467)):
+            with self.subTest(page=field):
+                journal = self.native_json("import-journal.json")
+                original = journal["pages"][1][field]
+                journal["pages"][1][field] = value
+                self.write_native_json("import-journal.json", journal)
+                self.reject()
+                journal["pages"][1][field] = original
+                self.write_native_json("import-journal.json", journal)
+        for replacement in ([], self.native_json("import-journal.json")["pages"][:-1],
+                            list(reversed(self.native_json("import-journal.json")["pages"]))):
+            journal = self.native_json("import-journal.json")
+            original = journal["pages"]
+            journal["pages"] = replacement
+            self.write_native_json("import-journal.json", journal)
+            self.reject()
+            journal["pages"] = original
+            self.write_native_json("import-journal.json", journal)
+
+    def test_v4_import_native_lifecycle_rejects_early_completion_missing_receipts_and_forged_prefix(self) -> None:
+        for stage, field, value in (("begin", "completed", True), ("resumed", "next_page", 2),
+                                    ("finished", "completed", 1), ("verified", "committed_rows", 7),
+                                    ("verified", "target_identity_classification", "unobserved-physical-cluster")):
+            with self.subTest(stage=stage, field=field):
+                lifecycle = self.native_json("lifecycle.json")
+                original = lifecycle[stage][field]
+                lifecycle[stage][field] = value
+                self.write_native_json("lifecycle.json", lifecycle)
+                self.reject()
+                lifecycle[stage][field] = original
+                self.write_native_json("lifecycle.json", lifecycle)
+        for replacement in ([], [self.native_json("lifecycle.json")["first_page"]] * 3):
+            lifecycle = self.native_json("lifecycle.json")
+            original = lifecycle["remaining_pages"]
+            lifecycle["remaining_pages"] = replacement
+            self.write_native_json("lifecycle.json", lifecycle)
+            self.reject()
+            lifecycle["remaining_pages"] = original
+            self.write_native_json("lifecycle.json", lifecycle)
+        lifecycle = self.native_json("lifecycle.json")
+        lifecycle["first_page"]["prefix_sha256"] = "a" * 64
+        self.write_native_json("lifecycle.json", lifecycle)
+        self.reject()
+
+    def test_v4_import_target_schema_reports_require_fresh_full_chain_and_readonly_publisher_preservation(self) -> None:
+        for name in ("target-schema-migrate.json", "target-schema-verify.json"):
+            for field, value in (("schema_version", 3), ("storage_writer_epoch", 3), ("table_count", 10),
+                                 ("chain_digest", "a" * 64), ("source_commit", "3" * 40),
+                                 ("upgrade_source_commit", "4" * 40), ("v2_apply_source_commit", "5" * 40),
+                                 ("v3_apply_source_commit", "6" * 40), ("applied_steps", True),
+                                 ("migration_applied", 1), ("compatibility_credit", True)):
+                with self.subTest(file=name, field=field):
+                    report = self.native_json(name)
+                    original = report[field]
+                    report[field] = value
+                    self.write_native_json(name, report)
+                    self.reject()
+                    report[field] = original
+                    self.write_native_json(name, report)
+
+    def test_v4_import_native_archive_rejects_duplicate_json_fields_and_bounded_file_overflow(self) -> None:
+        path = self.root / "storage-v4-import-packets/custody-anchors.json"
+        original = path.read_bytes()
+        path.write_bytes(original[:-1] + b',"profile":"postgresql"}')
+        self.reject()
+        path.write_bytes(original)
+        path.write_bytes(b" " * (2 * 1024 * 1024 + 1))
+        self.reject()
+        path.write_bytes(original)
+        self.assertTrue(self.validate()["storage_v4_import"])
+
+    def test_v4_import_native_captured_catalog_is_closed_and_bound_to_supported_collation(self) -> None:
+        for field, value in (("snapshot_identity", "other-snapshot"), ("table_type", "VIEW"),
+                             ("collation_binding", ["postgresql", "UTF8", "i", "x", "x", "default", "d", "true"]),
+                             ("collation_binding", ["postgresql", "UTF8", "c", "C", "C", "default", "d", "false"]),
+                             ("owner_foreign_key_validated", 1), ("columns", []), ("constraints", [])):
+            with self.subTest(field=field):
+                catalog = self.native_json("packet/source-catalog.json")
+                catalog[field] = value
+                self.write_native_json("packet/source-catalog.json", catalog)
+                self.rehash_native_packet()
+                self.reject()
+                self.write_native_fixture()
+        catalog = self.native_json("packet/source-catalog.json")
+        catalog["unobserved_index_ready"] = True
+        self.write_native_json("packet/source-catalog.json", catalog)
+        self.rehash_native_packet()
+        self.reject()
+
+    def test_v4_import_native_archive_bounds_total_bytes_and_entry_count(self) -> None:
+        native = self.root / "storage-v4-import-packets"
+        # Every member is within the per-file bound; aggregate growth fails
+        # before trusting reports. These are synthetic bytes, never DB data.
+        for index in range(17):
+            (native / f"overflow-{index}.bin").write_bytes(b"x" * (2 * 1024 * 1024))
+        self.reject()
+        self.write_native_fixture()
+        for index in range(513):
+            (native / f"entry-{index}.bin").touch()
+        self.reject()
 
     def write_json(self, name: str, value: object) -> None:
         (self.root / name).write_text(json.dumps(value))
@@ -499,20 +1058,21 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
 
     def test_actual_validator_checks_profile_sql_bytes_and_never_grants_credit(self) -> None:
         result = self.validate()
-        self.assertEqual(result["authoritative_migrations_count"], 3)
+        self.assertEqual(result["authoritative_migrations_count"], 4)
         self.assertEqual(result["schema_v3_extra_cases"], 41)
         self.assertEqual(result["schema_v3_case_families"], SCHEMA_FAMILIES)
         self.assertIs(result["storage_native_jsonb"], True)
         self.assertIs(result["compatibility_credit"], False)
         self.assertIs(result["accepted"], False)
         self.assertIs(result["production_ready"], False)
-        command = [sys.executable, str(ROOT / "scripts/check-trnm-server.py"), "--live-packet", str(self.root),
-                   "--profile", self.profile, "--commit", self.COMMIT, "--tree", self.TREE]
-        executed = subprocess.run(command, text=True, capture_output=True, timeout=10)
-        self.assertEqual(executed.returncode, 0, executed.stderr)
-        self.assertEqual(json.loads(executed.stdout), result)
+        arguments = ["--live-packet", str(self.root), "--profile", self.profile,
+                     "--commit", self.COMMIT, "--tree", self.TREE]
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(MODULE.main(arguments), 0)
+        self.assertEqual(json.loads(output.getvalue()), result)
 
-    def test_actual_harness_archive_builder_retains_all_three_source_sql_bytes(self) -> None:
+    def test_actual_harness_archive_builder_retains_all_four_source_sql_bytes(self) -> None:
         script = ACTUAL_HARNESS.split("<<'PY_STORAGE_SCHEMA_V3'\n", 1)[1].split("\nPY_STORAGE_SCHEMA_V3", 1)[0]
         for path in (self.root / "authoritative-migrations").iterdir():
             path.unlink()
@@ -521,11 +1081,13 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
         executed = subprocess.run([sys.executable, "-", str(self.root), self.profile, self.COMMIT],
                                  input=script, text=True, capture_output=True, timeout=10, cwd=ROOT)
         self.assertEqual(executed.returncode, 0, executed.stderr)
-        self.assertEqual(self.validate()["authoritative_migrations_count"], 3)
+        self.assertEqual(self.validate()["authoritative_migrations_count"], 4)
 
     def test_cockroach_archive_uses_its_own_source_chain_and_observed_input_outcomes(self) -> None:
         self.profile = "cockroachdb"
+        self.write_native_fixture()
         self.write_json("summary.json", {**self.summary, "profile": self.profile})
+        self.write_json("storage-v4-import-source.json", {**self.import_source, "profile": self.profile})
         self.write_json("schema-identity.json", {**self.identity, "profile": self.profile,
                                                  "chain_digest": self.chain_digest(self.profile)})
         for path in (self.root / "authoritative-migrations").iterdir():
@@ -541,6 +1103,10 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
                                                    for line in self.schema_lines])
         self.write_named_log("storage-native-jsonb.log", [line.replace("profile=postgresql", "profile=cockroachdb")
                                                          for line in self.native_lines])
+        self.write_named_log("storage-v4-acl.log", [line.replace("profile=postgresql", "profile=cockroachdb")
+                                                   for line in self.v4_acl_lines])
+        self.write_named_log("storage-v4-import.log", [line.replace("profile=postgresql", "profile=cockroachdb")
+                                                      for line in self.v4_import_lines])
         for condition, payload in (("accepted", "accepted"), ("accepted", "rejected"),
                                    ("rejected", "accepted"), ("rejected", "rejected")):
             with self.subTest(condition=condition, payload=payload):
@@ -550,20 +1116,20 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
 
     def test_duplicate_json_fields_cannot_override_identity_or_claims(self) -> None:
         original = (self.root / "summary.json").read_text()
-        for prefix in ('"schema_version":3,', '"accepted":false,', '"compatibility_credit":false,'):
+        for prefix in ('"schema_version":4,', '"accepted":false,', '"compatibility_credit":false,'):
             with self.subTest(prefix=prefix):
                 (self.root / "summary.json").write_text("{" + prefix + original[1:])
                 self.reject()
 
     def test_metadata_abi_and_real_historical_v2_publisher_are_not_guessed(self) -> None:
         for field, value in (("schema_version", 2), ("storage_writer_epoch", 2),
-                             ("v2_apply_source_commit", "3" * 40), ("source_commit", "4" * 40)):
+                             ("v2_apply_source_commit", "3" * 40), ("v3_apply_source_commit", "5" * 40), ("source_commit", "4" * 40)):
             with self.subTest(field=field):
                 changed = {**self.identity, field: value}
                 self.write_json("schema-identity.json", changed)
                 self.reject()
         self.write_json("schema-identity.json", self.identity)
-        self.assertEqual(self.validate()["schema_version"], 3)
+        self.assertEqual(self.validate()["schema_version"], 4)
 
     def test_schema_verify_report_cannot_omit_the_shared_envelope_digest_or_execution_outcome(self) -> None:
         for field in ("schema", "digest_algorithm", "chain_digest", "table_count", "migration_applied", "applied_steps"):
@@ -572,7 +1138,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
                 self.write_json("schema-identity.json", changed)
                 self.reject()
         self.write_json("schema-identity.json", self.identity)
-        self.assertEqual(self.validate()["schema_version"], 3)
+        self.assertEqual(self.validate()["schema_version"], 4)
 
     def test_schema_packet_requires_the_complete_current_digest_and_exact_readonly_outcome(self) -> None:
         for changes in (
@@ -580,7 +1146,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
             {"chain_digest": "f" * 64}, {"chain_digest": "wrong"},
             {"chain_digest": self.chain_digest("cockroachdb")},
             {"digest_algorithm": "legacy-single-file-sha256"},
-            {"table_count": 9}, {"table_count": 11}, {"table_count": True},
+            {"table_count": 10}, {"table_count": 13}, {"table_count": True},
             {"migration_applied": True, "applied_steps": 3},
             {"migration_applied": True, "applied_steps": 0},
             {"migration_applied": False, "applied_steps": 1},
@@ -590,7 +1156,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
                 self.write_json("schema-identity.json", {**self.identity, **changes})
                 self.reject()
         self.write_json("schema-identity.json", self.identity)
-        self.assertEqual(self.validate()["schema_version"], 3)
+        self.assertEqual(self.validate()["schema_version"], 4)
 
     def test_schema_identity_shared_decoder_rejects_duplicate_fields_and_original_byte_overflow(self) -> None:
         original = json.dumps(self.identity)
@@ -603,7 +1169,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
         path.write_text(original + " " * (16 * 1024))
         self.reject()
         path.write_text(original)
-        self.assertEqual(self.validate()["schema_version"], 3)
+        self.assertEqual(self.validate()["schema_version"], 4)
 
     def test_missing_truncated_or_altered_sql_is_rejected_even_with_new_digest(self) -> None:
         entry = self.manifest["ordered_files"][2]
@@ -635,7 +1201,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
     def test_summary_case_counts_and_positive_credit_cannot_replace_execution(self) -> None:
         for field, value in (("schema_version", 2), ("storage_writer_epoch", 2), ("authoritative_migrations_count", 2),
                              ("storage_jsonb_v3_projection", False), ("compatibility_credit", True),
-                             ("storage_native_jsonb", False), ("schema_v3_extra_cases", 40),
+                             ("storage_native_jsonb", False), ("storage_v4_acl", False), ("schema_v3_extra_cases", 40),
                              ("schema_v3_extra_cases", True),
                              ("schema_v3_case_families", {**SCHEMA_FAMILIES, "metadata_validation": 8}),
                              ("schema_v3_case_families", {**SCHEMA_FAMILIES, "partial_resume": True}),
@@ -682,6 +1248,70 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
             self.write_named_log("storage-native-jsonb.log", lines)
             self.reject()
         (self.root / "storage-native-jsonb.log").unlink()
+        self.reject()
+
+    def test_v4_acl_summary_requires_a_real_single_required_fixture(self) -> None:
+        for lines in (
+            self.v4_acl_lines[1:], self.v4_acl_lines + [self.v4_acl_lines[0]],
+            self.v4_acl_lines + ["storage_v4_acl_live_skipped: optional database absent"],
+            [line.replace("1 passed", "0 passed") for line in self.v4_acl_lines],
+            [line.replace("0 ignored", "1 ignored") for line in self.v4_acl_lines],
+            [line.replace("profile=postgresql", "profile=cockroachdb") for line in self.v4_acl_lines],
+        ):
+            self.write_named_log("storage-v4-acl.log", lines)
+            self.reject()
+        (self.root / "storage-v4-acl.log").unlink()
+        self.reject()
+
+    def test_v4_import_requires_terminal_execution_and_all_materialized_source_bytes(self) -> None:
+        for lines in (
+            [], self.v4_import_lines[1:], self.v4_import_lines + [self.v4_import_lines[0]],
+            self.v4_import_lines + [self.v4_import_lines[-1]],
+            self.v4_import_lines + ["storage_v4_import_live_skipped"],
+            [line.replace("1 passed", "0 passed") for line in self.v4_import_lines],
+            [line.replace("0 ignored", "1 ignored") for line in self.v4_import_lines],
+            [line.replace("profile=postgresql", "profile=cockroachdb") for line in self.v4_import_lines],
+        ):
+            self.write_named_log("storage-v4-import.log", lines)
+            self.reject()
+        self.write_named_log("storage-v4-import.log", self.v4_import_lines)
+        for field, value in (("storage_v4_import", False), ("storage_v4_import", 1)):
+            self.write_json("summary.json", {**self.summary, field: value})
+            self.reject()
+        self.write_json("summary.json", self.summary)
+        for relative in [entry["archive_path"] for entry in self.import_source["members"]]:
+            path = self.root / relative
+            original = path.read_bytes()
+            path.write_bytes(original + b"tamper")
+            self.reject()
+            path.unlink()
+            self.reject()
+            path.write_bytes(original)
+        for field, value in (("commit", "3" * 40), ("tree", "3" * 40), ("profile", "cockroachdb"),
+                             ("compatibility_credit", True), ("accepted", True), ("scope", "native-proof")):
+            self.write_json("storage-v4-import-source.json", {**self.import_source, field: value})
+            self.reject()
+        self.write_json("storage-v4-import-source.json", self.import_source)
+        self.assertIs(self.validate()["storage_v4_import"], True)
+
+    def test_v4_import_source_inventory_rejects_extra_indirect_duplicate_and_relabelled_bytes(self) -> None:
+        for directory in ("storage-source-upstream", "storage-v4-import-source"):
+            extra = self.root / directory / "undeclared.sql"
+            extra.write_bytes(b"extra source bytes")
+            self.reject()
+            extra.unlink()
+        manifest = json.loads(json.dumps(self.import_source))
+        for members in (manifest["members"][:-1], manifest["members"] + [manifest["members"][0]],
+                        list(reversed(manifest["members"]))):
+            self.write_json("storage-v4-import-source.json", {**manifest, "members": members})
+            self.reject()
+        self.write_json("storage-v4-import-source.json", self.import_source)
+        path = self.root / "storage-v4-import-source/exporter.rs"
+        data = path.read_bytes()
+        path.unlink()
+        outside = self.root / "unsealed-exporter.rs"
+        outside.write_bytes(data)
+        path.symlink_to(outside)
         self.reject()
 
     def test_native_observations_and_exact_terminal_test_cannot_be_missing_or_duplicated(self) -> None:

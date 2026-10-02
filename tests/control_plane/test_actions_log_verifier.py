@@ -43,8 +43,8 @@ class ActionsLogVerifierTests(unittest.TestCase):
         return {
             "migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
             "migration_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
-            "schema_version": "3",
-            "storage_writer_epoch": "3",
+            "schema_version": "4",
+            "storage_writer_epoch": "4",
             "chain_digest": validation["profiles"][profile]["chain_sha256"],
             "digest_algorithm": validation["digest_algorithm"],
             "ordered_files": lock["profiles"][profile]["ordered_files"],
@@ -96,10 +96,10 @@ class ActionsLogVerifierTests(unittest.TestCase):
         result.update(result_overrides or {})
         schema = {
             "schema": "trillionnium.authoritative-schema-report.v1", "profile": profile,
-            "schema_version": 3, "storage_writer_epoch": 3,
+            "schema_version": 4, "storage_writer_epoch": 4,
             "chain_digest": binding["chain_digest"], "digest_algorithm": binding["digest_algorithm"],
-            "source_commit": HEAD, "upgrade_source_commit": HEAD, "v2_apply_source_commit": HEAD,
-            "migration_applied": True, "table_count": 10, "applied_steps": 3,
+            "source_commit": HEAD, "upgrade_source_commit": HEAD, "v2_apply_source_commit": HEAD, "v3_apply_source_commit": HEAD,
+            "migration_applied": True, "table_count": 12, "applied_steps": 4,
             "compatibility_credit": False,
         }
         schema.update(schema_overrides or {})
@@ -254,10 +254,10 @@ class ActionsLogVerifierTests(unittest.TestCase):
             )
             self.assertEqual(record["profile"], profile)
             self.assertEqual(record["head_tree"], TREE)
-            self.assertEqual(record["schema_version"], 3)
-            self.assertEqual(record["storage_writer_epoch"], 3)
+            self.assertEqual(record["schema_version"], 4)
+            self.assertEqual(record["storage_writer_epoch"], 4)
             self.assertEqual(record["v2_apply_source_commit"], HEAD)
-            self.assertEqual(len(record["ordered_files"]), 3)
+            self.assertEqual(len(record["ordered_files"]), 4)
             self.assertFalse(record["production_ready"])
             self.assertFalse(record["compatibility_credit"])
 
@@ -288,7 +288,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source_root, text=True).strip()
         tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=source_root, text=True).strip()
         files = self.module.archive_files(self.archive(
-            profile, schema_overrides={"source_commit": commit, "upgrade_source_commit": commit, "v2_apply_source_commit": commit},
+            profile, schema_overrides={"source_commit": commit, "upgrade_source_commit": commit, "v2_apply_source_commit": commit, "v3_apply_source_commit": commit},
             result_overrides={"commit": commit, "tree": tree},
         ))
         files["result.env"] = self.env_bytes({"status": "passed", "profile": profile, "commit": commit})
@@ -320,7 +320,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
                 output.addfile(member, io.BytesIO(payload))
         return archive
 
-    def test_actual_sealer_copies_all_three_locked_migrations_and_verifies_each_profile_archive(self) -> None:
+    def test_actual_sealer_copies_all_four_locked_migrations_and_verifies_each_profile_archive(self) -> None:
         for profile in self.module.PROFILES:
             with self.subTest(profile=profile):
                 root, identity = self.seal_fixture(profile)
@@ -328,7 +328,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
                 self.assertFalse(result["compatibility_credit"])
                 self.assertFalse(result["production_ready"])
                 binding = self.binding(profile)
-                self.assertEqual(len(binding["ordered_files"]), 3)
+                self.assertEqual(len(binding["ordered_files"]), 4)
                 for entry in binding["ordered_files"]:
                     self.assertEqual(self.module.git_blob_sha1((root / entry["path"]).read_bytes()), entry["git_blob_sha1"])
                 sealed = self.module.parse_env((root / "identity.env").read_bytes(), "sealed identity")
@@ -340,7 +340,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
 
     def test_actual_sealer_rejects_stale_incomplete_ambiguous_and_failed_evidence(self) -> None:
         for mutation in ("old_lock", "short_validation", "short_schema", "wrong_schema_profile",
-                         "wrong_apply_commit", "wrong_v2_apply_commit", "missing_v2_apply_commit", "duplicate_schema", "duplicate_result", "failed_result",
+                         "wrong_apply_commit", "wrong_v2_apply_commit", "missing_v2_apply_commit", "wrong_v3_apply_commit", "missing_v3_apply_commit", "duplicate_schema", "duplicate_result", "failed_result",
                          "extra_migration", "symlink", "oversized_file"):
             with self.subTest(mutation=mutation):
                 root, identity = self.seal_fixture("postgresql")
@@ -353,14 +353,16 @@ class ActionsLogVerifierTests(unittest.TestCase):
                     value = json.loads(path.read_bytes())
                     value["profiles"]["postgresql"]["file_count"] = 1
                     path.write_text(json.dumps(value))
-                elif mutation in {"short_schema", "wrong_schema_profile", "wrong_apply_commit", "wrong_v2_apply_commit", "missing_v2_apply_commit"}:
+                elif mutation in {"short_schema", "wrong_schema_profile", "wrong_apply_commit", "wrong_v2_apply_commit", "missing_v2_apply_commit", "wrong_v3_apply_commit", "missing_v3_apply_commit"}:
                     schema.update({"short_schema": {"applied_steps": 1},
                                    "wrong_schema_profile": {"profile": "cockroachdb"},
                                    "wrong_apply_commit": {"source_commit": "f" * 40},
                                    "wrong_v2_apply_commit": {"v2_apply_source_commit": "f" * 40},
-                                   "missing_v2_apply_commit": {}}[mutation])
-                    if mutation == "missing_v2_apply_commit":
-                        del schema["v2_apply_source_commit"]
+                                   "missing_v2_apply_commit": {},
+                                   "wrong_v3_apply_commit": {"v3_apply_source_commit": "f" * 40},
+                                   "missing_v3_apply_commit": {}}[mutation])
+                    if mutation in ("missing_v2_apply_commit", "missing_v3_apply_commit"):
+                        del schema["v2_apply_source_commit" if mutation == "missing_v2_apply_commit" else "v3_apply_source_commit"]
                     schema_path.write_text(json.dumps(schema))
                 elif mutation == "duplicate_schema":
                     schema_path.write_text('{"schema_version":1,' + json.dumps(schema)[1:])
@@ -675,7 +677,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
         source_root = self.sealer.SOURCE_ROOT
         lock_path = source_root / "migrations/MIGRATION_CHAIN.lock.json"
         lock = json.loads(lock_path.read_text())
-        entry = lock["profiles"]["postgresql"]["ordered_files"][2]
+        entry = lock["profiles"]["postgresql"]["ordered_files"][3]
         source = source_root / entry["path"]
         changed = source.read_bytes() + b"-- uncommitted candidate drift\n"
         source.write_bytes(changed)
@@ -710,9 +712,9 @@ class ActionsLogVerifierTests(unittest.TestCase):
             bindings = self.module.fetch_profile_bindings("fixture-token", REPOSITORY, HEAD, head_tree=TREE)
             for profile, binding in bindings.items():
                 self.assertEqual(binding["chain_digest"], self.binding(profile)["chain_digest"])
-                self.assertEqual(len(binding["ordered_files"]), 3)
-                self.assertEqual(binding["schema_version"], "3")
-                self.assertEqual(binding["storage_writer_epoch"], "3")
+                self.assertEqual(len(binding["ordered_files"]), 4)
+                self.assertEqual(binding["schema_version"], "4")
+                self.assertEqual(binding["storage_writer_epoch"], "4")
                 self.assertEqual(binding["digest_algorithm"], "ordered-path-git-blob-sha256.v1")
             for mutation in ("truncated", "unlisted", "symlink", "short_lock"):
                 candidate_tree = copy.deepcopy(tree)

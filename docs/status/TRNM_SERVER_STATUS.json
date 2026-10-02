@@ -289,5 +289,27 @@
     "accepted": false,
     "compatibility_credit": false,
     "native_oracle_qualified": false
+  },
+  "storage_source_import_source_candidate": {
+    "schema_version": 4,
+    "storage_writer_epoch": 4,
+    "current_authoritative_table_count": 12,
+    "contract": "contracts/database/foundation-schema.v1.json#storage_source_import",
+    "prior_native_jsonb_candidate": "storage_native_jsonb_source_candidate",
+    "prior_timestamp_candidate": "storage_timestamp_source_candidate",
+    "acl_fixture": "crates/trnm-persistence-pg/tests/storage_permissions_v4.rs",
+    "execution_policy": "Required exact profile fixture and checked whole-line execution marker; current source and local synthetic packets grant no native or accepted credit.",
+    "import_gate": "Every storage transaction checks import completion; startup, live readiness and pooled business/session operations reject a committed incomplete prefix. Completion requires exact native rows, complete page receipts, source inventory and target identity reconciliation.",
+    "accepted": false,
+    "gap_closed": false,
+    "compatibility_credit": false,
+    "production_ready": false,
+    "source": "crates/trnm-persistence-pg/src/storage_import.rs",
+    "exporter": "crates/trnm-persistence-pg/src/storage_import_parts/exporter.rs",
+    "importer": "crates/trnm-persistence-pg/src/storage_import_parts/repository.rs",
+    "native_fixture": "crates/trnm-persistence-pg/tests/storage_import_v4.rs",
+    "custody": "Independent expected manifest/receipt/source/binary/Git execution anchors; supplied matching hashes and source-DDL fixtures do not establish production issuer trust or running Nakama.",
+    "native_oracle_qualified": false,
+    "full_nakama_replacement": false
   }
 }

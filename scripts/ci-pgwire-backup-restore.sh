@@ -196,7 +196,7 @@ schemas.validate_identity(fresh, profile=profile, chains=chains, schema_version=
                           table_count=table_count, mode='fresh', source_commit=commit)
 schemas.validate_identity(restored, profile=profile, chains=chains, schema_version=version,
                           table_count=table_count, mode='verify')
-for field in ('source_commit', 'upgrade_source_commit', 'v2_apply_source_commit'):
+for field in ('source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'):
     require(restored[field] == fresh[field], 'restored backup schema provenance differs')
 check = {'schema': 'trillionnium.authoritative-schema-identity-check.v1', 'profile': profile,
          'schema_version': version, 'chain_digest': fresh['chain_digest'],
@@ -206,7 +206,7 @@ for name in ('schema-identity-check.json', 'restored-schema-identity-check.json'
             'retained backup schema check differs')
 
 ordered = lock['profiles'][profile]['ordered_files']
-require(len(ordered) == 3 and fresh['schema_version'] == 3 and fresh['storage_writer_epoch'] == 3,
+require(len(ordered) == 4 and fresh['schema_version'] == 4 and fresh['storage_writer_epoch'] == 4,
         'backup schema v3 complete-chain ABI differs')
 projection = load('backup_projection', 'scripts/check-pgwire-backup-restore.py')
 source_snapshot = projection.validate_storage_snapshot_bytes(
@@ -233,7 +233,7 @@ identity = {
     'job_identity_kind': 'workflow_job_key_and_matrix_profile',
     'schema_version': fresh['schema_version'], 'storage_writer_epoch': fresh['storage_writer_epoch'],
     'chain_digest': fresh['chain_digest'], 'digest_algorithm': fresh['digest_algorithm'],
-    'source_commit': fresh['source_commit'], 'upgrade_source_commit': fresh['upgrade_source_commit'], 'v2_apply_source_commit': fresh['v2_apply_source_commit'],
+    'source_commit': fresh['source_commit'], 'upgrade_source_commit': fresh['upgrade_source_commit'], 'v2_apply_source_commit': fresh['v2_apply_source_commit'], 'v3_apply_source_commit': fresh['v3_apply_source_commit'],
     'compatibility_credit': False, 'accepted_evidence': False, 'production_ready': False,
 }
 (retained / 'identity.json').write_text(json.dumps(identity, sort_keys=True, separators=(',', ':')) + '\n')
@@ -264,6 +264,8 @@ tables=(
   trnm_session_families
   trnm_refresh_tokens
   trnm_storage_objects
+  trnm_storage_import_jobs
+  trnm_storage_import_pages
 )
 orders=(
   singleton
@@ -548,7 +550,7 @@ begin_stage seal-evidence
 docker inspect "$container" > "$evidence/container-inspect.json"
 docker logs "$container" > "$evidence/container.log" 2>&1
 cat > "$evidence/summary.json" <<EOF
-{"schema":"trillionnium.backup-restore.v1","profile":"$profile","backup_created":true,"empty_restore":true,"semantic_snapshot_equal":true,"production_pitr":false,"multi_node_restore":false,"schema_version":3,"storage_writer_epoch":3,"authoritative_migration_file_count":3,"storage_v3_fixture_count":4}
+{"schema":"trillionnium.backup-restore.v1","profile":"$profile","backup_created":true,"empty_restore":true,"semantic_snapshot_equal":true,"production_pitr":false,"multi_node_restore":false,"schema_version":4,"storage_writer_epoch":4,"authoritative_migration_file_count":4,"storage_v3_fixture_count":4}
 EOF
 seal_backup_evidence
 printf 'backup/restore contract passed: profile=%s evidence=%s\n' \

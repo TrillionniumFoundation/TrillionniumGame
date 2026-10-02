@@ -16,6 +16,7 @@ pub struct MigrationReport {
     pub schema_version: u64,
     pub chain_digest: IntegrityDigest,
     pub v2_apply_source_commit: String,
+    pub v3_apply_source_commit: String,
     pub schema: SchemaIdentity,
 }
 
@@ -54,6 +55,7 @@ pub fn migrate(config: &ServerConfig) -> Result<MigrationReport, ServerError> {
         schema_version: report.identity.schema_version,
         chain_digest: report.identity.chain_digest,
         v2_apply_source_commit: report.identity.v2_apply_source_commit.clone(),
+        v3_apply_source_commit: report.identity.v3_apply_source_commit.clone(),
         schema: report.identity,
     })
 }
@@ -63,6 +65,7 @@ pub fn open_verified_repository(config: &ServerConfig) -> Result<PooledRepositor
     {
         let mut repository = pool.acquire()?;
         repository.verify_authoritative_schema()?;
+        repository.verify_storage_import_serving()?;
     }
     Ok(PooledRepository::new(pool))
 }
@@ -107,8 +110,8 @@ mod tests {
     use trnm_persistence_pg::{authoritative_chain_digest, AUTHORITATIVE_SCHEMA_VERSION};
 
     #[test]
-    fn both_authoritative_profiles_embed_the_ten_table_chain() {
-        assert_eq!(AUTHORITATIVE_SCHEMA_VERSION, 3);
+    fn both_authoritative_profiles_embed_the_twelve_table_chain() {
+        assert_eq!(AUTHORITATIVE_SCHEMA_VERSION, 4);
         for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
             assert!(!authoritative_chain_digest(profile).get().is_zero());
         }

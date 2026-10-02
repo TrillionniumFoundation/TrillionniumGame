@@ -9,8 +9,8 @@ fn write(name: &str, value: &[u8], expected: VersionCheck) -> BatchOperation {
         key: key(name),
         value: value.to_vec(),
         expected,
-        read_permission: ReadPermission::Owner,
-        write_permission: WritePermission::Owner,
+        read_permission: ReadPermission::OWNER,
+        write_permission: WritePermission::OWNER,
     })
 }
 
@@ -21,8 +21,8 @@ fn unknown(name: &str, version: PublicVersion, value: &[u8]) -> StorageObject {
         version,
         integrity_digest: IntegrityDigest::from_value(value),
         collision_witness: None,
-        read_permission: ReadPermission::Owner,
-        write_permission: WritePermission::Owner,
+        read_permission: ReadPermission::OWNER,
+        write_permission: WritePermission::OWNER,
     }
 }
 
@@ -250,7 +250,7 @@ fn blind_known_no_op_preserves_projection_and_witness_but_exact_and_acl_changes_
     let BatchOperation::Write(operation) = &mut acl_change else {
         unreachable!()
     };
-    operation.read_permission = ReadPermission::Public;
+    operation.read_permission = ReadPermission::PUBLIC;
     state
         .apply_batch_projected(Actor::Server, &[acl_change], |_| {
             calls += 1;
@@ -263,7 +263,7 @@ fn blind_known_no_op_preserves_projection_and_witness_but_exact_and_acl_changes_
             .read(Actor::Server, &key("main"))
             .unwrap()
             .read_permission,
-        ReadPermission::Public
+        ReadPermission::PUBLIC
     );
 }
 
@@ -587,7 +587,7 @@ fn projection_seam_keeps_permission_and_create_only_occ_precedence() {
     let BatchOperation::Write(write) = &mut operation else {
         unreachable!()
     };
-    write.write_permission = WritePermission::None;
+    write.write_permission = WritePermission::NONE;
     state.apply_batch(Actor::Server, &[operation]).unwrap();
     let before = state.clone();
     for (actor, expected, code) in [

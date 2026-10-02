@@ -336,6 +336,63 @@ if grep -Fq 'storage_native_jsonb_live_skipped' "$evidence/storage-native-jsonb.
   echo 'storage native JSONB database lane skipped instead of executing' >&2
   exit 1
 fi
+# Preserve stored raw ACLs and source-key domains through the real repository.
+begin_stage storage-v4-acl "$evidence/storage-v4-acl.log"
+CARGO_TERM_COLOR=never \
+TRNM_REQUIRE_LIVE_DATABASE=1 \
+TRNM_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE="$profile" \
+  cargo test -p trnm-persistence-pg --locked --test storage_permissions_v4 \
+    storage_v4_raw_acl_domains_keys_and_operation_predicates_are_native \
+    -- --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/storage-v4-acl.log"
+storage_v4_acl_test_count=$(
+  sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
+    "$evidence/storage-v4-acl.log"
+)
+[[ "$storage_v4_acl_test_count" =~ ^[0-9]+$ ]]
+test "$storage_v4_acl_test_count" -eq 1
+grep -Fxq "storage_v4_acl_live_executed profile=${profile}" "$evidence/storage-v4-acl.log"
+test "$(grep -Fxc "storage_v4_acl_live_executed profile=${profile}" "$evidence/storage-v4-acl.log")" -eq 1
+if grep -Fq 'storage_v4_acl_live_skipped' "$evidence/storage-v4-acl.log"; then
+  echo 'storage v4 ACL database lane skipped instead of executing' >&2
+  exit 1
+fi
+# Acquire the closed immutable source annex before any importer fixture write.
+begin_stage storage-v4-source-annex "$evidence/storage-v4-source-materialization.json"
+python3 scripts/materialize-pinned-storage-upstream.py \
+  --destination "$evidence/storage-source-upstream" \
+  > "$evidence/storage-v4-source-materialization.json"
+begin_stage storage-v4-import-source "$evidence/storage-v4-import-source.json"
+python3 scripts/check-trnm-server.py \
+  --storage-import-source-archive "$evidence" --profile "$profile" \
+  --commit "$candidate_sha" --tree "$candidate_tree" \
+  > "$evidence/storage-v4-source-archive.log"
+begin_stage storage-v4-import "$evidence/storage-v4-import.log"
+CARGO_TERM_COLOR=never \
+TRNM_REQUIRE_LIVE_DATABASE=1 \
+TRNM_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE="$profile" \
+TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL="$database_url" \
+TRNM_STORAGE_PINNED_UPSTREAM_DIRECTORY="$evidence/storage-source-upstream" \
+TRNM_STORAGE_TEST_PRODUCER_COMMIT="$candidate_sha" \
+TRNM_STORAGE_TEST_PRODUCER_TREE="$candidate_tree" \
+TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$evidence/storage-v4-import-packets" \
+  cargo test -p trnm-persistence-pg --locked --test storage_import_v4 \
+    storage_v4_source_export_custody_resume_finish_and_tamper_are_native \
+    -- --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/storage-v4-import.log"
+storage_v4_import_test_count=$(
+  sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
+    "$evidence/storage-v4-import.log"
+)
+[[ "$storage_v4_import_test_count" =~ ^[0-9]+$ ]]
+test "$storage_v4_import_test_count" -eq 1
+test "$(grep -Ec '^test result:' "$evidence/storage-v4-import.log")" -eq 1
+grep -Fxq "storage_v4_import_live_executed profile=${profile}" "$evidence/storage-v4-import.log"
+test "$(grep -Fxc "storage_v4_import_live_executed profile=${profile}" "$evidence/storage-v4-import.log")" -eq 1
+if grep -Fq 'storage_v4_import_live_skipped' "$evidence/storage-v4-import.log"; then
+  echo 'storage v4 import native fixture skipped instead of executing' >&2
+  exit 1
+fi
 begin_stage schema-upgrade "$evidence/schema-upgrade.log"
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
@@ -376,11 +433,13 @@ python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identit
 cp migrations/MIGRATION_CHAIN.lock.json "$evidence/migration-lock.json"
 python3 scripts/check-migration-lock.py > "$evidence/migration-chain-validation.json"
 schema_version=$(db_scalar 'SELECT schema_version FROM trnm_schema_metadata WHERE singleton = 1')
-test "$schema_version" = 3
+test "$schema_version" = 4
 storage_writer_epoch=$(db_scalar 'SELECT storage_writer_epoch FROM trnm_schema_metadata WHERE singleton = 1')
-test "$storage_writer_epoch" = 3
+test "$storage_writer_epoch" = 4
 v2_apply_source_commit=$(db_scalar 'SELECT v2_apply_source_commit FROM trnm_schema_metadata WHERE singleton = 1')
 test "$v2_apply_source_commit" = "$candidate_sha"
+v3_apply_source_commit=$(db_scalar 'SELECT v3_apply_source_commit FROM trnm_schema_metadata WHERE singleton = 1')
+test "$v3_apply_source_commit" = "$candidate_sha"
 python3 - "$evidence" "$profile" "$candidate_sha" <<'PY_STORAGE_SCHEMA_V3'
 import hashlib,json,sys
 from pathlib import Path
@@ -388,12 +447,12 @@ from pathlib import Path
 evidence,profile,candidate=Path(sys.argv[1]),sys.argv[2],sys.argv[3]
 identity=json.loads((evidence/'schema-identity.json').read_text())
 assert identity['profile']==profile
-assert identity['schema_version']==3 and identity['storage_writer_epoch']==3
-assert identity['source_commit']==identity['upgrade_source_commit']==identity['v2_apply_source_commit']==candidate
+assert identity['schema_version']==4 and identity['storage_writer_epoch']==4
+assert identity['source_commit']==identity['upgrade_source_commit']==identity['v2_apply_source_commit']==identity['v3_apply_source_commit']==candidate
 lock=json.loads((evidence/'migration-lock.json').read_text())
-assert lock['schema_version']==3
+assert lock['schema_version']==4
 files=lock['profiles'][profile]['ordered_files']
-names=('0001_foundation_up.sql','0002_storage_timestamps_up.sql','0003_storage_jsonb_up.sql')
+names=('0001_foundation_up.sql','0002_storage_timestamps_up.sql','0003_storage_jsonb_up.sql','0004_storage_source_import_up.sql')
 assert [entry['path'] for entry in files]==[f'migrations/{profile}/{name}' for name in names]
 archive=evidence/'authoritative-migrations'
 archive.mkdir()
@@ -413,7 +472,7 @@ manifest={'schema':'trillionnium.server-live-schema-source.v1','profile':profile
 (evidence/'authoritative-migrations.json').write_text(json.dumps(manifest,sort_keys=True,separators=(',',':'))+'\n')
 PY_STORAGE_SCHEMA_V3
 authoritative_migrations_count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["ordered_files"]))' "$evidence/authoritative-migrations.json")
-test "$authoritative_migrations_count" -eq 3
+test "$authoritative_migrations_count" -eq 4
 
 begin_stage session-response-loss "$evidence/session-response-loss.log"
 CARGO_TERM_COLOR=never \
@@ -572,7 +631,7 @@ printf 'diagnostic_total_refresh_tokens=%s\n' \
 
 begin_stage seal "$evidence/summary.json" "$evidence/database-assertions.txt"
 cat > "$evidence/summary.json" <<EOF
-{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"storage_timestamps":true,"storage_occ_precedence":true,"raw_version_conditions":true,"storage_jsonb_v3_projection":true,"storage_native_jsonb":true,"schema_v3_extra_cases":41,"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6},"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3},"schema_version":${schema_version},"storage_writer_epoch":${storage_writer_epoch},"authoritative_migrations_count":${authoritative_migrations_count},"schema_upgrade":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"compatibility_credit":false,"accepted":false,"production_ready":false}
+{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"storage_timestamps":true,"storage_occ_precedence":true,"raw_version_conditions":true,"storage_jsonb_v3_projection":true,"storage_native_jsonb":true,"storage_v4_acl":true,"storage_v4_import":true,"schema_v3_extra_cases":41,"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6},"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3},"schema_version":${schema_version},"storage_writer_epoch":${storage_writer_epoch},"authoritative_migrations_count":${authoritative_migrations_count},"schema_upgrade":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"compatibility_credit":false,"accepted":false,"production_ready":false}
 EOF
 python3 -m json.tool "$evidence/summary.json" >/dev/null
 find "$evidence" -type f ! -name SHA256SUMS -print0 \

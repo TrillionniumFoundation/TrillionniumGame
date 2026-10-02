@@ -72,8 +72,8 @@ def load_migration_checker() -> Any:
 
 
 MIGRATIONS = load_migration_checker()
-SCHEMA_VERSION = 3
-STORAGE_WRITER_EPOCH = 3
+SCHEMA_VERSION = 4
+STORAGE_WRITER_EPOCH = 4
 
 
 def strict_object(data: bytes, label: str) -> dict[str, Any]:
@@ -516,8 +516,8 @@ def validate_archive(
         "schema": "trillionnium.authoritative-schema-report.v1", "profile": profile,
         "schema_version": SCHEMA_VERSION, "storage_writer_epoch": STORAGE_WRITER_EPOCH,
         "chain_digest": binding["chain_digest"], "digest_algorithm": binding["digest_algorithm"],
-        "source_commit": head_sha, "upgrade_source_commit": head_sha, "v2_apply_source_commit": head_sha,
-        "table_count": 10, "applied_steps": len(binding["ordered_files"]),
+        "source_commit": head_sha, "upgrade_source_commit": head_sha, "v2_apply_source_commit": head_sha, "v3_apply_source_commit": head_sha,
+        "table_count": 12, "applied_steps": len(binding["ordered_files"]),
         "migration_applied": True, "compatibility_credit": False,
     }
     for key, value in expected_schema.items():
@@ -529,7 +529,8 @@ def validate_archive(
         "file_count": len(binding["ordered_files"]),
         "ordered_paths": [entry["path"] for entry in binding["ordered_files"]],
         "chain_sha256": binding["chain_digest"], "digest_algorithm": binding["digest_algorithm"],
-        "declared_action_count": 22, "revision_action_counts": {"2": 6, "3": 16},
+        "declared_action_count": sum(len(MIGRATIONS.reviewed_actions(profile, revision)) for revision in (2, 3, 4)),
+        "revision_action_counts": {str(revision): len(MIGRATIONS.reviewed_actions(profile, revision)) for revision in (2, 3, 4)},
     }
     if (type(validation.get("schema_version")) is not int or validation.get("schema_version") != SCHEMA_VERSION
             or validation.get("digest_algorithm") != binding["digest_algorithm"]
@@ -619,6 +620,7 @@ def validate_archive(
         "schema_version": SCHEMA_VERSION,
         "storage_writer_epoch": STORAGE_WRITER_EPOCH,
         "v2_apply_source_commit": schema["v2_apply_source_commit"],
+        "v3_apply_source_commit": schema["v3_apply_source_commit"],
         "chain_digest": binding["chain_digest"],
         "digest_algorithm": binding["digest_algorithm"],
         "ordered_files": binding["ordered_files"],

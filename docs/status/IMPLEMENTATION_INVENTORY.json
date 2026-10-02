@@ -194,7 +194,9 @@
       "source_files": [
         "crates/trnm-storage-core/src/lib.rs",
         "crates/trnm-storage-core/src/projection.rs",
-        "crates/trnm-storage-core/src/projection_tests.rs"
+        "crates/trnm-storage-core/src/projection_tests.rs",
+        "crates/trnm-storage-core/src/stored_domain.rs",
+        "crates/trnm-storage-core/src/stored_domain_tests.rs"
       ],
       "auxiliary_source_files": [
         "crates/trnm-storage-core/src/bin/trnm-storage-version.rs"
@@ -210,7 +212,9 @@
         "identity default model and an invoked adapter-supplied projection seam with atomic batch staging",
         "independent 1 MiB request and 16 MiB projection budgets",
         "11 additional Rust projection regressions inventoried as source, without execution or compatibility credit",
-        "pinned version vectors"
+        "pinned version vectors",
+        "stored 0..128 Unicode collection/key domain and nonnegative raw SMALLINT ACL wrappers",
+        "distinct upstream batch read, three list, write and delete permission predicates with seven stored-domain source regressions"
       ],
       "missing": [
         "native JSONB renderer is outside this pure core; profile adapter and schema cutover need exact-head qualification",
@@ -283,7 +287,10 @@
         "bounded pool TLS statement lock idle-transaction retry and cancellation source controls",
         "transactional event receipt and outbox persistence",
         "feature-gated trnm-pg-compat-server diagnostic harness",
-        "outbox worker and database fault/backup test entrypoints"
+        "outbox worker and database fault/backup test entrypoints",
+        "schema4/epoch4 append-only native catalog and genuine historical v2/v3 publisher preservation",
+        "source-bound native read-only storage snapshot exporter and closed custody packet verifier",
+        "bounded all-source preflight, atomic page/checkpoint import, exact prefix resume and full native reconciliation before service admission"
       ],
       "missing": [
         "accepted exact-head and prospective-merge database evidence for the current candidate",
@@ -359,7 +366,21 @@
       ],
       "evidence_ids": [],
       "claim_credit": false,
-      "storage_http_mutations": {"contract":"contracts/storage/nakama-http-storage-v1.json","source":"crates/trnm-server/src/runtime/storage_api.rs","tests":"crates/trnm-server/src/runtime/storage_api_tests.rs","projection_tests":"crates/trnm-server/src/runtime/storage_api_projection_tests.rs","live_projection_fixture":"crates/trnm-server/src/runtime/storage_api_v3_live.rs","status":"source-candidate","parity_ids":["TG-D1-2940D4CEAACA4051","TG-D1-7A7BFBFD85579A6A","TG-D1-46DC42DFD49DB606"],"accepted":false,"gap_closed":false}
+      "storage_http_mutations": {
+        "contract": "contracts/storage/nakama-http-storage-v1.json",
+        "source": "crates/trnm-server/src/runtime/storage_api.rs",
+        "tests": "crates/trnm-server/src/runtime/storage_api_tests.rs",
+        "projection_tests": "crates/trnm-server/src/runtime/storage_api_projection_tests.rs",
+        "live_projection_fixture": "crates/trnm-server/src/runtime/storage_api_v3_live.rs",
+        "status": "source-candidate",
+        "parity_ids": [
+          "TG-D1-2940D4CEAACA4051",
+          "TG-D1-7A7BFBFD85579A6A",
+          "TG-D1-46DC42DFD49DB606"
+        ],
+        "accepted": false,
+        "gap_closed": false
+      }
     },
     {
       "id": "COMP-CANONICAL",

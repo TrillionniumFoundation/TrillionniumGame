@@ -14,8 +14,8 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
                 key: key.clone(),
                 value: br#""v1""#.to_vec(),
                 expected: VersionCheck::MustNotExist,
-                read_permission: ReadPermission::Owner,
-                write_permission: WritePermission::Owner,
+                read_permission: ReadPermission::OWNER,
+                write_permission: WritePermission::OWNER,
             })],
             10,
         )
@@ -41,8 +41,8 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
                 key: key.clone(),
                 value: br#""v2""#.to_vec(),
                 expected: VersionCheck::Exact(version.into()),
-                read_permission: ReadPermission::Public,
-                write_permission: WritePermission::Owner,
+                read_permission: ReadPermission::PUBLIC,
+                write_permission: WritePermission::OWNER,
             })],
             20,
         )
@@ -60,8 +60,8 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
                 key: key.clone(),
                 value: br#""v3""#.to_vec(),
                 expected: VersionCheck::Exact(version.into()),
-                read_permission: ReadPermission::Owner,
-                write_permission: WritePermission::Owner,
+                read_permission: ReadPermission::OWNER,
+                write_permission: WritePermission::OWNER,
             })],
             30,
         )
@@ -114,10 +114,10 @@ fn storage_batch_reads_omit_missing_and_hidden_rows_and_fail_on_visible_corrupti
     let missing = StorageObjectKey::new("read-batch-contract", "missing", owner).unwrap();
     let mut repository = PgRepository::connect(&database_url, profile).unwrap();
     let writes = [
-        (owned.clone(), ReadPermission::Owner),
-        (private.clone(), ReadPermission::Owner),
-        (public.clone(), ReadPermission::Public),
-        (global.clone(), ReadPermission::Public),
+        (owned.clone(), ReadPermission::OWNER),
+        (private.clone(), ReadPermission::OWNER),
+        (public.clone(), ReadPermission::PUBLIC),
+        (global.clone(), ReadPermission::PUBLIC),
     ]
     .into_iter()
     .map(|(key, read_permission)| {
@@ -126,7 +126,7 @@ fn storage_batch_reads_omit_missing_and_hidden_rows_and_fail_on_visible_corrupti
             value: br#"{"value":1}"#.to_vec(),
             expected: VersionCheck::Any,
             read_permission,
-            write_permission: WritePermission::Owner,
+            write_permission: WritePermission::OWNER,
         })
     })
     .collect::<Vec<_>>();
@@ -278,8 +278,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                 &[write(
                     &key,
                     VersionCheck::MustNotExist,
-                    ReadPermission::Owner,
-                    WritePermission::Owner,
+                    ReadPermission::OWNER,
+                    WritePermission::OWNER,
                 )],
                 10,
             )
@@ -292,8 +292,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                 &[write(
                     &key,
                     VersionCheck::Any,
-                    ReadPermission::Owner,
-                    WritePermission::Owner,
+                    ReadPermission::OWNER,
+                    WritePermission::OWNER,
                 )],
                 20,
             )
@@ -310,8 +310,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                 &[write(
                     &key,
                     VersionCheck::Exact(version.into()),
-                    ReadPermission::Owner,
-                    WritePermission::Owner,
+                    ReadPermission::OWNER,
+                    WritePermission::OWNER,
                 )],
                 30,
             )
@@ -341,8 +341,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                     &[write(
                         &key,
                         expected,
-                        ReadPermission::Owner,
-                        WritePermission::Owner,
+                        ReadPermission::OWNER,
+                        WritePermission::OWNER,
                     )],
                     35,
                 )
@@ -367,8 +367,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                 let exact_write = write(
                     &key,
                     VersionCheck::Exact(token.clone().into()),
-                    ReadPermission::Public,
-                    WritePermission::None,
+                    ReadPermission::PUBLIC,
+                    WritePermission::NONE,
                 );
                 let conditional_delete = StorageBatchOperation::Delete(StorageDeleteOperation {
                     key: key.clone(),
@@ -381,8 +381,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                             operations.push(write(
                                 &staged_key,
                                 VersionCheck::MustNotExist,
-                                ReadPermission::Owner,
-                                WritePermission::Owner,
+                                ReadPermission::OWNER,
+                                WritePermission::OWNER,
                             ));
                         }
                         operations.push(rejected_operation.clone());
@@ -408,8 +408,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                     &[write(
                         &missing,
                         VersionCheck::Exact(token.clone().into()),
-                        ReadPermission::Owner,
-                        WritePermission::Owner,
+                        ReadPermission::OWNER,
+                        WritePermission::OWNER,
                     )],
                     37,
                 )
@@ -442,8 +442,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
         assert_eq!(snapshot(&mut control), before_opaque_rejection);
 
         for (updated_at_ms, read_permission, write_permission) in [
-            (40, ReadPermission::Public, WritePermission::Owner),
-            (60, ReadPermission::Public, WritePermission::None),
+            (40, ReadPermission::PUBLIC, WritePermission::OWNER),
+            (60, ReadPermission::PUBLIC, WritePermission::NONE),
         ] {
             repository
                 .apply_storage_batch(
@@ -513,8 +513,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                     &[write(
                         &key,
                         expected.clone(),
-                        ReadPermission::Owner,
-                        WritePermission::Owner,
+                        ReadPermission::OWNER,
+                        WritePermission::OWNER,
                     )],
                     70,
                 )
@@ -529,14 +529,14 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                             write(
                                 &staged_key,
                                 VersionCheck::MustNotExist,
-                                ReadPermission::Owner,
-                                WritePermission::Owner,
+                                ReadPermission::OWNER,
+                                WritePermission::OWNER,
                             ),
                             write(
                                 &key,
                                 expected,
-                                ReadPermission::Owner,
-                                WritePermission::Owner,
+                                ReadPermission::OWNER,
+                                WritePermission::OWNER,
                             ),
                         ],
                         75,
@@ -561,8 +561,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                         write(
                             &staged_key,
                             VersionCheck::MustNotExist,
-                            ReadPermission::Owner,
-                            WritePermission::Owner,
+                            ReadPermission::OWNER,
+                            WritePermission::OWNER,
                         ),
                         StorageBatchOperation::Delete(StorageDeleteOperation {
                             key: key.clone(),
@@ -598,8 +598,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                     rejected_operations.push(write(
                         &key,
                         VersionCheck::Exact(token.into()),
-                        ReadPermission::Owner,
-                        WritePermission::Owner,
+                        ReadPermission::OWNER,
+                        WritePermission::OWNER,
                     ));
                 }
                 rejected_operations.push(StorageBatchOperation::Delete(StorageDeleteOperation {
@@ -614,8 +614,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                                 write(
                                     &staged_key,
                                     VersionCheck::MustNotExist,
-                                    ReadPermission::Owner,
-                                    WritePermission::Owner,
+                                    ReadPermission::OWNER,
+                                    WritePermission::OWNER,
                                 ),
                                 rejected_operation,
                             ],
@@ -645,8 +645,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                         &[write(
                             target,
                             VersionCheck::MustNotExist,
-                            ReadPermission::Owner,
-                            WritePermission::Owner,
+                            ReadPermission::OWNER,
+                            WritePermission::OWNER,
                         )],
                         76,
                     )
@@ -668,8 +668,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                 &[write(
                     &key,
                     VersionCheck::Any,
-                    ReadPermission::Public,
-                    WritePermission::None,
+                    ReadPermission::PUBLIC,
+                    WritePermission::NONE,
                 )],
                 80,
             )
@@ -681,8 +681,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                 &[write(
                     &key,
                     VersionCheck::Exact(version.into()),
-                    ReadPermission::Public,
-                    WritePermission::None,
+                    ReadPermission::PUBLIC,
+                    WritePermission::NONE,
                 )],
                 90,
             )
@@ -696,20 +696,20 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                     write(
                         &key,
                         VersionCheck::Any,
-                        ReadPermission::Public,
-                        WritePermission::None,
+                        ReadPermission::PUBLIC,
+                        WritePermission::NONE,
                     ),
                     write(
                         &staged_key,
                         VersionCheck::Any,
-                        ReadPermission::Owner,
-                        WritePermission::Owner,
+                        ReadPermission::OWNER,
+                        WritePermission::OWNER,
                     ),
                     write(
                         &missing,
                         VersionCheck::Exact(version.into()),
-                        ReadPermission::Owner,
-                        WritePermission::Owner,
+                        ReadPermission::OWNER,
+                        WritePermission::OWNER,
                     ),
                 ],
                 100,
@@ -743,8 +743,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                     &[write(
                         &key,
                         expected.clone(),
-                        ReadPermission::Public,
-                        WritePermission::None,
+                        ReadPermission::PUBLIC,
+                        WritePermission::NONE,
                     )],
                     110,
                 )

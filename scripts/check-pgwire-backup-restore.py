@@ -22,7 +22,10 @@ EXPECTED_TABLES = {
     "trnm_session_families",
     "trnm_refresh_tokens",
     "trnm_storage_objects",
+    "trnm_storage_import_jobs",
+    "trnm_storage_import_pages",
 }
+EMPTY_ALLOWED_TABLES = {"trnm_storage_import_jobs", "trnm_storage_import_pages"}
 
 
 
@@ -64,11 +67,14 @@ def validate_v3_seed_source(script: str) -> None:
 
 
 def validate_v3_snapshot_source(data: str) -> None:
-    for field in (*V3_FIELDS, "v2_apply_source_commit", "create_time_text", "update_time_text"):
+    for field in (*V3_FIELDS, "v2_apply_source_commit", "v3_apply_source_commit", "create_time_text", "update_time_text"):
         if re.search(r"'" + field + r"'\s*,", data) is None:
             raise SystemExit(f"storage v3 snapshot omits {field}")
     if re.search(r"'value_jsonb_text'\s*,\s*value_jsonb::TEXT", data) is None:
         raise SystemExit("storage v3 snapshot must retain exact native JSONB text")
+    for table in EMPTY_ALLOWED_TABLES:
+        if "FROM " + table not in data:
+            raise SystemExit("storage snapshot omits import journal table: " + table)
     if "AS snapshot_row" not in data:
         raise SystemExit("storage v3 snapshot lacks an unambiguous result column")
 
@@ -80,8 +86,8 @@ def validate_v3_semantic_harness(harness: str) -> None:
     if len(observed) != len(V3_PROBES) or {label: (state, name) for label, state, name in observed} != V3_PROBES:
         raise SystemExit("storage v3 structural rejection set differs")
     for marker in ("apply-authoritative-schema.sh\" verify", "restored-schema-identity.json",
-                   "--mode verify", "report['schema_version']==3", "report['storage_writer_epoch']==3",
-                   "v2_apply_source_commit", "authoritative_migration_file_count", "len(ordered)==3",
+                   "--mode verify", "report['schema_version']==4", "report['storage_writer_epoch']==4",
+                   "v2_apply_source_commit", "v3_apply_source_commit", "authoritative_migration_file_count", "len(ordered)==4",
                    '"storage_v3_constraint_probe_count": 9', "validate_storage_snapshot_bytes"):
         if marker not in harness:
             raise SystemExit(f"storage v3 recovery assertion missing: {marker}")
@@ -124,14 +130,14 @@ def validate_storage_snapshot_bytes(data: bytes, profile: str, identity: dict,
         if not isinstance(value, dict):
             raise ValueError("native snapshot row is not an object")
         rows[table].append(value)
-    if any(not values for values in rows.values()) or len(rows["trnm_schema_metadata"]) != 1:
+    if any(not values for table, values in rows.items() if table not in EMPTY_ALLOWED_TABLES) or len(rows["trnm_schema_metadata"]) != 1:
         raise ValueError("native snapshot omits foundation data")
     metadata = rows["trnm_schema_metadata"][0]
     for field in ("profile", "schema_version", "storage_writer_epoch", "chain_digest", "digest_algorithm",
-                  "source_commit", "upgrade_source_commit", "v2_apply_source_commit"):
+                  "source_commit", "upgrade_source_commit", "v2_apply_source_commit", "v3_apply_source_commit"):
         if field not in metadata or metadata[field] != identity[field]:
             raise ValueError("native snapshot schema provenance differs")
-    if metadata["schema_version"] != 3 or metadata["storage_writer_epoch"] != 3:
+    if metadata["schema_version"] != 4 or metadata["storage_writer_epoch"] != 4:
         raise ValueError("native snapshot storage ABI differs")
     fixtures = {}
     for row in rows["trnm_storage_objects"]:
@@ -250,8 +256,8 @@ def validate_text(script: str, image_config: dict) -> None:
         raise SystemExit("both restored profiles must verify the retained complete schema identity")
     validate_v3_seed_source(script)
     for marker in ("validate_storage_snapshot_bytes", "source-storage-v3.txt", "restored-storage-v3.txt",
-                   "storage-v3-snapshot-check.json", "len(ordered) == 3", "fresh['schema_version'] == 3",
-                   "fresh['storage_writer_epoch'] == 3"):
+                   "storage-v3-snapshot-check.json", "len(ordered) == 4", "fresh['schema_version'] == 4",
+                   "fresh['storage_writer_epoch'] == 4"):
         if marker not in script:
             raise SystemExit(f"storage v3 backup assertion missing: {marker}")
 

@@ -1,6 +1,7 @@
 use std::error::Error;
 
-use postgres::types::{FromSql, Type};
+use bytes::BytesMut;
+use postgres::types::{to_sql_checked, FromSql, IsNull, ToSql, Type};
 use trnm_contracts::{DomainError, RetryClass, StableCode};
 use trnm_storage_core::{MutationReceipt, StorageObject};
 
@@ -54,7 +55,7 @@ impl StorageTimestamp {
 
 impl<'a> FromSql<'a> for StorageTimestamp {
     fn from_sql(kind: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn Error + Sync + Send>> {
-        if !Self::accepts(kind) {
+        if !<Self as FromSql>::accepts(kind) {
             return Err(Box::new(invalid_timestamp()));
         }
         let bytes: [u8; 8] = raw.try_into().map_err(|_| invalid_timestamp())?;
@@ -64,6 +65,33 @@ impl<'a> FromSql<'a> for StorageTimestamp {
     fn accepts(kind: &Type) -> bool {
         *kind == Type::TIMESTAMPTZ
     }
+}
+
+impl ToSql for StorageTimestamp {
+    fn to_sql(
+        &self,
+        kind: &Type,
+        output: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        self.validate()?;
+        if !<Self as ToSql>::accepts(kind) || self.nanos % 1000 != 0 {
+            return Err(Box::new(invalid_timestamp()));
+        }
+        let micros = self
+            .seconds
+            .checked_sub(POSTGRES_EPOCH_SECONDS)
+            .and_then(|seconds| seconds.checked_mul(MICROSECONDS_PER_SECOND))
+            .and_then(|micros| micros.checked_add(i64::from(self.nanos / 1000)))
+            .ok_or_else(invalid_timestamp)?;
+        output.extend_from_slice(&micros.to_be_bytes());
+        Ok(IsNull::No)
+    }
+
+    fn accepts(kind: &Type) -> bool {
+        *kind == Type::TIMESTAMPTZ
+    }
+
+    to_sql_checked!();
 }
 
 /// Historical NULL timestamps stay unknown until source-bound import or real update.
@@ -181,9 +209,9 @@ mod tests {
                 value
             );
         }
-        assert!(StorageTimestamp::accepts(&Type::TIMESTAMPTZ));
-        assert!(!StorageTimestamp::accepts(&Type::TIMESTAMP));
-        assert!(!StorageTimestamp::accepts(&Type::INT8));
+        assert!(<StorageTimestamp as FromSql>::accepts(&Type::TIMESTAMPTZ));
+        assert!(!<StorageTimestamp as FromSql>::accepts(&Type::TIMESTAMP));
+        assert!(!<StorageTimestamp as FromSql>::accepts(&Type::INT8));
         assert!(StorageTimestamp::from_sql(&Type::INT8, &[0; 8]).is_err());
     }
 
@@ -217,5 +245,50 @@ mod tests {
         }
         .validate()
         .unwrap();
+    }
+
+    #[test]
+    fn timestamp_import_codec_preserves_exact_signed_native_microseconds() {
+        for (seconds, nanos, expected) in [
+            (946_684_800, 0, 0_i64),
+            (946_684_799, 999_999_000, -1),
+            (-1, 123_456_000, -946_684_800_876_544),
+            (-62_135_596_800, 0, -63_082_281_600_000_000),
+            (253_402_300_799, 999_999_000, 252_455_615_999_999_999),
+        ] {
+            let value = StorageTimestamp::new(seconds, nanos).unwrap();
+            let mut encoded = BytesMut::new();
+            assert!(matches!(
+                value.to_sql(&Type::TIMESTAMPTZ, &mut encoded).unwrap(),
+                IsNull::No
+            ));
+            assert_eq!(encoded.as_ref(), expected.to_be_bytes());
+            assert_eq!(
+                StorageTimestamp::from_sql(&Type::TIMESTAMPTZ, &encoded).unwrap(),
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn timestamp_import_codec_never_rounds_precision_or_accepts_wrong_sql_type() {
+        for value in [
+            StorageTimestamp::new(0, 1).unwrap(),
+            StorageTimestamp::new(0, 999_999_999).unwrap(),
+            StorageTimestamp {
+                seconds: MAX_PROTOBUF_SECONDS + 1,
+                nanos: 0,
+            },
+        ] {
+            let mut output = BytesMut::new();
+            assert!(value.to_sql(&Type::TIMESTAMPTZ, &mut output).is_err());
+            assert!(output.is_empty());
+        }
+        let mut output = BytesMut::new();
+        assert!(StorageTimestamp::new(0, 0)
+            .unwrap()
+            .to_sql(&Type::TIMESTAMP, &mut output)
+            .is_err());
+        assert!(output.is_empty());
     }
 }

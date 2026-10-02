@@ -77,13 +77,13 @@ class PostgreSqlSemanticRecoveryContractTests(unittest.TestCase):
 
     def test_v3_native_snapshot_retains_independent_tokens_witness_and_prior_publisher(self):
         for field in ("value_jsonb_text", "public_version", "value_projection_digest", "value_origin",
-                      "source_manifest_digest", "request_native_text", "v2_apply_source_commit"):
+                      "source_manifest_digest", "request_native_text", "v2_apply_source_commit", "v3_apply_source_commit"):
             data = self.data.replace("'" + field + "'", "'removed'")
             with self.subTest(field=field), self.assertRaises(self.checker.ValidationError):
                 self.checker.validate_texts(data, self.catalog, self.harness)
 
     def test_v3_complete_chain_and_structural_probes_do_not_inherit_v2_proof(self):
-        for marker in ("report['schema_version']==3", "report['storage_writer_epoch']==3", "len(ordered)==3",
+        for marker in ("report['schema_version']==4", "report['storage_writer_epoch']==4", "len(ordered)==4",
                        "restored-schema-identity.json", "validate_storage_snapshot_bytes", "unknown-unicode",
                        'storage_v3_constraint missing-native 23502', 'storage_v3_constraint projection-width 23514',
                        'storage_v3_constraint unknown-zero-manifest 23514'):
@@ -99,7 +99,9 @@ class PostgreSqlSemanticRecoveryContractTests(unittest.TestCase):
             with self.subTest(marker=marker):
                 with self.assertRaises(self.checker.ValidationError):
                     self.checker.validate_texts(self.data, self.catalog, self.harness.replace(marker, "removed"))
-        for name in ("create_time", "update_time", "chain_digest", "storage_writer_epoch"):
+        for name in ("create_time", "update_time", "chain_digest", "storage_writer_epoch",
+                     "v2_apply_source_commit", "v3_apply_source_commit",
+                     "trnm_storage_import_jobs", "trnm_storage_import_pages"):
             with self.subTest(name=name):
                 with self.assertRaises(self.checker.ValidationError):
                     self.checker.validate_texts(self.data.replace(name, "removed"), self.catalog, self.harness)
@@ -107,6 +109,14 @@ class PostgreSqlSemanticRecoveryContractTests(unittest.TestCase):
             self.checker.validate_texts(self.data, self.catalog, self.harness.replace("['applied_steps']==0", "['applied_steps']==1"))
         with self.assertRaises(self.checker.ValidationError):
             self.checker.validate_texts(self.data, self.catalog, self.harness + "\nINSERT INTO trnm_storage_objects VALUES ('bad');\n")
+
+    def test_current_collection_probe_cannot_reject_a_lawful_empty_key_domain(self):
+        for changed in (
+            self.harness.replace("SELECT repeat('x',129), 'bad', user_id, value_bytes", "SELECT '', 'bad', user_id, value_bytes"),
+            self.harness.replace("SELECT repeat('x',129), 'bad', user_id, value_bytes", "SELECT repeat('x',128), 'bad', user_id, value_bytes"),
+        ):
+            with self.assertRaises(self.checker.ValidationError):
+                self.checker.validate_texts(self.data, self.catalog, changed)
 
 if __name__ == "__main__":
     unittest.main()

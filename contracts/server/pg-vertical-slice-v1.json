@@ -7,7 +7,7 @@
   "database_profile": "postgresql",
   "required_scenarios": [
     "fresh migration apply",
-    "complete ordered chain with schema v3 and storage writer epoch 3",
+    "complete ordered chain with schema v4 and storage writer epoch 4",
     "entity bootstrap",
     "first command commit",
     "one receipt, event, outbox and command-outbox link",
@@ -50,10 +50,11 @@
     "production_ready": false
   },
   "authoritative_migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
-  "authoritative_schema_version": 3,
-  "storage_writer_epoch": 3,
+  "authoritative_schema_version": 4,
+  "storage_writer_epoch": 4,
   "migration_digest_algorithm": "ordered-path-git-blob-sha256.v1",
   "migration_runner": "trnm-schema migrate --candidate-plaintext",
   "schema_verifier": "trnm-schema verify --candidate-plaintext",
-  "storage_native_jsonb_contract": "contracts/database/foundation-schema.v1.json#storage_native_jsonb"
+  "storage_native_jsonb_contract": "contracts/database/foundation-schema.v1.json#storage_native_jsonb",
+  "storage_source_import_contract": "contracts/database/foundation-schema.v1.json#storage_source_import"
 }

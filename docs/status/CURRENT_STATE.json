@@ -90,7 +90,8 @@
     "storage_client_list_sql_projection_source_candidate": true,
     "storage_unsigned_client_list_offset_source_candidate": true,
     "storage_jsonb_v3_source_candidate": true,
-    "storage_public_version_separated_from_request_digest": true
+    "storage_public_version_separated_from_request_digest": true,
+    "storage_source_snapshot_import_v4_source_candidate": true
   },
   "scope": {
     "baseline": "heroiclabs/nakama@v3.40.0",
@@ -164,6 +165,31 @@
     ],
     "accepted": false,
     "gap_closed": false,
+    "production_ready": false,
+    "full_replacement": false
+  },
+  "storage_source_snapshot_import_v4_source_candidate": {
+    "schema_version": 4,
+    "storage_writer_epoch": 4,
+    "table_count": 12,
+    "status": "connected-source-candidate",
+    "source": "crates/trnm-persistence-pg/src/storage_import.rs",
+    "packet": "closed pinned native snapshot with independently supplied manifest/receipt and actual source/binary hashes; original request bytes remain unknown",
+    "source_domain": "stored collection/key 0..128 Unicode and raw ACL 0..32767; operation-specific predicates",
+    "authority": "all-packet native preflight, dedicated empty target, serializable data/page/CAS checkpoint, exact prefix resume and whole native tuple reconciliation before completion",
+    "admission": "startup, live readiness, pooled business/session operations and every storage transaction fail closed while import is incomplete",
+    "remaining": [
+      "immutable Nakama server/oracle and official SDK differential",
+      "production authenticated issuer/source and complete source/target writer custody",
+      "CockroachDB physical target identity and cluster-wide writer session inventory",
+      "unsupported or different native key collation profiles",
+      "same-key staged batches and raw ACL cursor behavior",
+      "database internal JSONB conversion/render memory and maximum packet performance",
+      "independent database/security/operations acceptance"
+    ],
+    "accepted": false,
+    "gap_closed": false,
+    "compatibility_credit": false,
     "production_ready": false,
     "full_replacement": false
   }

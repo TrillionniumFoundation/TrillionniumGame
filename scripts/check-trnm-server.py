@@ -37,6 +37,10 @@ STORAGE_PARTS = tuple(
 )
 STORAGE_LIVE_HARNESS = ROOT / "scripts/ci-trnm-server-live.sh"
 LIVE_FAILURE_HELPER = ROOT / "scripts/print-server-live-failure.py"
+STORAGE_IMPORT_PARTS = tuple(
+    ROOT / "crates/trnm-persistence-pg/tests/storage_import_v4_parts" / name
+    for name in ("environment.rs", "packet.rs", "lifecycle.rs", "tamper.rs", "security.rs")
+)
 REQUIRED_FILES = {
     POOL_ROOT,
     *POOL_PARTS,
@@ -82,6 +86,17 @@ REQUIRED_FILES = {
     SERVER_ROOT / "trnm-schema.rs",
     ROOT / "crates/trnm-persistence-pg/tests/storage_timestamps.rs",
     ROOT / "crates/trnm-persistence-pg/tests/storage_jsonb.rs",
+    PERSISTENCE_ROOT / "storage_import.rs",
+    PERSISTENCE_ROOT / "storage_import_parts/packet.rs",
+    PERSISTENCE_ROOT / "storage_import_parts/repository.rs",
+    PERSISTENCE_ROOT / "storage_import_parts/exporter.rs",
+    SERVER_ROOT / "storage_transfer.rs",
+    SERVER_ROOT / "trnm-storage-export.rs",
+    SERVER_ROOT / "trnm-storage-import.rs",
+    ROOT / "crates/trnm-persistence-pg/tests/storage_import_v4.rs",
+    *STORAGE_IMPORT_PARTS,
+    ROOT / "scripts/materialize-pinned-storage-upstream.py",
+    ROOT / "crates/trnm-persistence-pg/tests/storage_permissions_v4.rs",
     ROOT / "crates/trnm-persistence-pg/tests/schema_upgrade.rs",
     ROOT / "crates/trnm-persistence-pg/tests/schema_upgrade_parts/v3.rs",
 }
@@ -89,7 +104,10 @@ SCHEMA_V3_CASE_FAMILIES = {
     "shapes": 8, "illegal_legacy": 9, "catalog_drift": 6,
     "partial_resume": 3, "metadata_validation": 9, "opaque_history": 6,
 }
+STORAGE_IMPORT_LOG = "storage-v4-import.log"
+STORAGE_IMPORT_SELECTOR = "storage_v4_source_export_custody_resume_finish_and_tamper_are_native"
 REQUIRED_TESTS = {
+    STORAGE_IMPORT_SELECTOR,
     "migration_diagnostic_unknown_reasons_and_other_variants_do_not_leak_secrets",
     "migration_diagnostic_never_reconstructs_sqlstate_from_domain_reason",
     "migration_sqlstate_projection_rejects_non_code_or_unsafe_driver_values",
@@ -116,6 +134,7 @@ REQUIRED_TESTS = {
     "storage_list_projects_fraction_to_seconds_omits_unknown_and_rejects_invalid_times",
     "storage_timestamps_database_clock_no_op_and_atomicity",
     "storage_native_jsonb_versions_provenance_and_atomicity",
+    "storage_v4_raw_acl_domains_keys_and_operation_predicates_are_native",
     "authoritative_fresh_repeat_and_readonly_verification",
     "authoritative_v1_preserves_history_and_observes_actual_legacy_writer_revocation",
     "authoritative_populated_unbound_and_catalog_drift_fail_closed",
@@ -152,7 +171,7 @@ REQUIRED_TESTS = {
     "verify_full_tls_is_secure_by_default_and_material_is_paired",
     "pool_and_timeout_bounds_fail_closed",
     "duplicate_chunked_pipelined_and_noncanonical_lengths_fail_closed",
-    "both_authoritative_profiles_embed_the_ten_table_chain",
+    "both_authoritative_profiles_embed_the_twelve_table_chain",
     "health_ready_bootstrap_and_commit_form_one_in_process_vertical_slice",
     "internal_domain_reason_is_never_exposed",
     "authenticated_drain_stops_new_mutations",
@@ -384,11 +403,42 @@ def validate_storage_live_harness(source: str) -> None:
             "storage-native-jsonb.log", "storage_native_jsonb_test_count",
             "storage_native_jsonb_live_executed", "storage_native_jsonb_live_skipped",
         ),
+        (
+            'cargo test -p trnm-persistence-pg --locked --test storage_permissions_v4 '
+            'storage_v4_raw_acl_domains_keys_and_operation_predicates_are_native',
+            "storage-v4-acl.log", "storage_v4_acl_test_count",
+            "storage_v4_acl_live_executed", "storage_v4_acl_live_skipped",
+        ),
+        (
+            'cargo test -p trnm-persistence-pg --locked --test storage_import_v4 '
+            + STORAGE_IMPORT_SELECTOR,
+            STORAGE_IMPORT_LOG, "storage_v4_import_test_count",
+            "storage_v4_import_live_executed", "storage_v4_import_live_skipped",
+        ),
     )
     previous_end = migration
     for cargo, logfile, counter, marker, skip in lanes:
+        environment = prefix
+        if logfile == STORAGE_IMPORT_LOG:
+            annex = once('python3 scripts/materialize-pinned-storage-upstream.py '
+                         '--destination "$evidence/storage-source-upstream" '
+                         '> "$evidence/storage-v4-source-materialization.json"')
+            archive = once('python3 scripts/check-trnm-server.py '
+                           '--storage-import-source-archive "$evidence" --profile "$profile" '
+                           '--commit "$candidate_sha" --tree "$candidate_tree" '
+                           '> "$evidence/storage-v4-source-archive.log"')
+            if not previous_end < annex < archive:
+                fail("storage import immutable upstream acquisition must precede source sealing and execution")
+            previous_end = archive
+            environment += (
+                'TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL="$database_url" '
+                'TRNM_STORAGE_PINNED_UPSTREAM_DIRECTORY="$evidence/storage-source-upstream" '
+                'TRNM_STORAGE_TEST_PRODUCER_COMMIT="$candidate_sha" '
+                'TRNM_STORAGE_TEST_PRODUCER_TREE="$candidate_tree" '
+                'TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$evidence/storage-v4-import-packets" '
+            )
         start = once(
-            prefix + cargo + ' -- --exact --nocapture --test-threads=1 2>&1 | '
+            environment + cargo + ' -- --exact --nocapture --test-threads=1 2>&1 | '
             f'tee "$evidence/{logfile}"'
         )
         assignment = once(counter + "=$(")
@@ -428,13 +478,18 @@ def validate_storage_live_harness(source: str) -> None:
             )
             if not opaque < jsonb < native_inputs < reject_skip:
                 fail("storage JSONB v3 markers must bind actual cases and SQL profile results to the canonical fixture")
-        if logfile == "storage-native-jsonb.log":
+        if logfile in ("storage-native-jsonb.log", "storage-v4-acl.log", STORAGE_IMPORT_LOG):
             unique_marker = once(
-                'test "$(grep -Fxc "storage_native_jsonb_live_executed profile=${profile}" '
-                '"$evidence/storage-native-jsonb.log")" -eq 1'
+                f'test "$(grep -Fxc "{marker} profile=${{profile}}" '
+                f'"$evidence/{logfile}")" -eq 1'
             )
             if not executed < unique_marker < reject_skip:
                 fail("native storage JSONB fixture marker must occur once in the executed fixture log")
+        if logfile == STORAGE_IMPORT_LOG:
+            terminal = once('test "$(grep -Ec \'^test result:\' '
+                            '"$evidence/storage-v4-import.log")" -eq 1')
+            if not exact < terminal < executed:
+                fail("storage import fixture must have one complete terminal result before its marker")
         previous_end = end
     schema_start = once(
         'CARGO_TERM_COLOR=never TRNM_REQUIRE_LIVE_DATABASE=1 '
@@ -481,14 +536,16 @@ def validate_storage_live_harness(source: str) -> None:
     previous_end = schema_end
     schema_guards = (
         "schema_version=$(db_scalar 'SELECT schema_version FROM trnm_schema_metadata WHERE singleton = 1')",
-        'test "$schema_version" = 3',
+        'test "$schema_version" = 4',
         "storage_writer_epoch=$(db_scalar 'SELECT storage_writer_epoch FROM trnm_schema_metadata WHERE singleton = 1')",
-        'test "$storage_writer_epoch" = 3',
+        'test "$storage_writer_epoch" = 4',
         "v2_apply_source_commit=$(db_scalar 'SELECT v2_apply_source_commit FROM trnm_schema_metadata WHERE singleton = 1')",
         'test "$v2_apply_source_commit" = "$candidate_sha"',
+        "v3_apply_source_commit=$(db_scalar 'SELECT v3_apply_source_commit FROM trnm_schema_metadata WHERE singleton = 1')",
+        'test "$v3_apply_source_commit" = "$candidate_sha"',
         "python3 - \"$evidence\" \"$profile\" \"$candidate_sha\" <<'PY_STORAGE_SCHEMA_V3'",
         'authoritative_migrations_count=$(python3 -c \'import json,sys; print(len(json.load(open(sys.argv[1]))["ordered_files"]))\' "$evidence/authoritative-migrations.json")',
-        'test "$authoritative_migrations_count" -eq 3',
+        'test "$authoritative_migrations_count" -eq 4',
     )
     for guard in schema_guards:
         position = once(guard)
@@ -496,10 +553,10 @@ def validate_storage_live_harness(source: str) -> None:
             fail("server schema v3 assertions must follow isolated lifecycle execution")
         previous_end = position
     require_markers("server schema v3 archived chain", source, (
-        "identity['schema_version']==3 and identity['storage_writer_epoch']==3",
-        "identity['source_commit']==identity['upgrade_source_commit']==identity['v2_apply_source_commit']==candidate",
-        "assert lock['schema_version']==3",
-        "names=('0001_foundation_up.sql','0002_storage_timestamps_up.sql','0003_storage_jsonb_up.sql')",
+        "identity['schema_version']==4 and identity['storage_writer_epoch']==4",
+        "identity['source_commit']==identity['upgrade_source_commit']==identity['v2_apply_source_commit']==identity['v3_apply_source_commit']==candidate",
+        "assert lock['schema_version']==4",
+        "names=('0001_foundation_up.sql','0002_storage_timestamps_up.sql','0003_storage_jsonb_up.sql','0004_storage_source_import_up.sql')",
         "assert [entry['path'] for entry in files]==[f'migrations/{profile}/{name}' for name in names]",
         "zip(files,names,strict=True)", "data=Path(entry['path']).read_bytes()",
         "entry['git_blob_sha1']", "target.write_bytes(data)", "assert target.read_bytes()==data",
@@ -516,7 +573,8 @@ def validate_storage_live_harness(source: str) -> None:
         fail("storage live summary must bind the checked original condition inputs")
     require_markers("storage v3 fixture summary", commands[summary[0]], (
         '"storage_jsonb_v3_projection":true',
-        '"storage_native_jsonb":true', '"schema_v3_extra_cases":41',
+        '"storage_native_jsonb":true', '"storage_v4_acl":true', '"schema_v3_extra_cases":41',
+        '"storage_v4_import":true',
         '"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6}',
         '"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3}',
         '"schema_version":${schema_version}', '"storage_writer_epoch":${storage_writer_epoch}',
@@ -579,15 +637,501 @@ def validate_storage_live_workflow(source: str, *, prospective: bool) -> None:
     if compact.count(command) != 1:
         fail("retained server packet must be validated once against its source or prospective object")
     require_markers("retained server schema v3 proof", live, (
-        "'storage_native_jsonb'", "'schema_upgrade'", "'storage_jsonb_v3_projection'",
+        "'storage_native_jsonb'", "'storage_v4_acl'", "'storage_v4_import'", "'schema_upgrade'", "'storage_jsonb_v3_projection'",
         "assert type(summary['schema_v3_extra_cases']) is int and summary['schema_v3_extra_cases'] == 41",
         "assert summary['schema_v3_case_families'] == {",
         "'shapes': 8, 'illegal_legacy': 9, 'catalog_drift': 6,",
         "'partial_resume': 3, 'metadata_validation': 9, 'opaque_history': 6,",
         "assert all(type(value) is int for value in summary['schema_v3_case_families'].values())",
         "for field in ('schema_version', 'storage_writer_epoch', 'authoritative_migrations_count'):",
-        "assert type(summary[field]) is int and summary[field] == 3",
+        "assert type(summary[field]) is int and summary[field] == 4",
     ))
+
+
+def storage_import_source_authority() -> tuple[object, bytes, bytes]:
+    """Read the current exporter/query and the sole pinned upstream authority."""
+    path = ROOT / "scripts/materialize-pinned-storage-upstream.py"
+    spec = importlib.util.spec_from_file_location("trnm_storage_source_annex", path)
+    if spec is None or spec.loader is None:
+        fail("storage import upstream source authority is unavailable")
+    authority = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(authority)
+    if len(authority.MEMBERS) != 3:
+        fail("storage import upstream source inventory must remain the closed three members")
+    exporter = (PERSISTENCE_ROOT / "storage_import_parts/exporter.rs").read_bytes()
+    packet = (PERSISTENCE_ROOT / "storage_import_parts/packet.rs").read_text(encoding="utf-8")
+    literals = re.findall(r'^const STORAGE_EXPORT_QUERY: &str = ("[^\n]*");$', packet, re.MULTILINE)
+    if len(literals) != 1:
+        fail("storage import native query has no single current source authority")
+    query = json.loads(literals[0]).encode("utf-8")
+    return authority, exporter, query
+
+
+def storage_import_source_file(root: Path, relative: str) -> bytes:
+    path = root
+    for component in Path(relative).parts:
+        if component in ("", ".", ".."):
+            fail("storage import source archive path is not closed")
+        path = path / component
+        if path.is_symlink():
+            fail("storage import source archive contains indirect bytes")
+    if root.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 2 * 1024 * 1024:
+        fail("storage import source archive file is absent, empty or oversized")
+    return path.read_bytes()
+
+
+def storage_import_source_entries(root: Path, *, write_current: bool = False) -> tuple[object, list[dict[str, object]]]:
+    authority, exporter, query = storage_import_source_authority()
+    archive = root / "storage-v4-import-source"
+    if write_current:
+        archive.mkdir(mode=0o700)
+        for name, data in (("exporter.rs", exporter), ("source-query.sql", query)):
+            with (archive / name).open("xb") as target:
+                target.write(data)
+    annex = root / "storage-source-upstream"
+    if archive.is_symlink() or annex.is_symlink() or not archive.is_dir() or not annex.is_dir() or (
+        {path.name for path in archive.iterdir()} != {"exporter.rs", "source-query.sql"}
+        or {path.name for path in annex.iterdir()} != {member[0] for member in authority.MEMBERS}
+    ):
+        fail("storage import source archive must contain exactly the current exporter/query and three pinned upstream files")
+    entries = []
+    expected = [
+        ("storage-v4-import-source/exporter.rs", "crates/trnm-persistence-pg/src/storage_import_parts/exporter.rs", exporter),
+        ("storage-v4-import-source/source-query.sql", "crates/trnm-persistence-pg/src/storage_import_parts/packet.rs#STORAGE_EXPORT_QUERY", query),
+    ]
+    for member in authority.MEMBERS:
+        relative = "storage-source-upstream/" + member[0]
+        data = storage_import_source_file(root, relative)
+        try:
+            authority.validate_bytes(data, member)
+        except ValueError:
+            fail("storage import pinned upstream source bytes differ")
+        expected.append((relative, "heroiclabs/nakama/" + member[1], data))
+    for relative, source, expected_bytes in expected:
+        actual = storage_import_source_file(root, relative)
+        if actual != expected_bytes:
+            fail("storage import source archive bytes differ from their actual authority")
+        entries.append({"archive_path": relative, "source_path": source, "size_bytes": len(actual),
+                        "sha256": hashlib.sha256(actual).hexdigest(),
+                        "git_blob_sha1": hashlib.sha1(f"blob {len(actual)}\0".encode() + actual).hexdigest()})
+    return authority, entries
+
+
+def write_storage_import_source_archive(root: Path, *, profile: str, commit: str, tree: str) -> dict[str, object]:
+    if profile not in {"postgresql", "cockroachdb"} or any(
+        re.fullmatch(r"[0-9a-f]{40}", value) is None for value in (commit, tree)
+    ):
+        fail("storage import source archive target identity is invalid")
+    authority, entries = storage_import_source_entries(root, write_current=True)
+    report = {"schema": "trillionnium.storage-import-source-archive.v1", "scope": "source-annex-only",
+              "repository": "TrillionniumFoundation/TrillionniumGame", "commit": commit, "tree": tree,
+              "profile": profile, "upstream_repository": "heroiclabs/nakama",
+              "upstream_commit": authority.COMMIT, "upstream_tree": authority.TREE, "members": entries,
+              "server_execution_credit": False, "compatibility_credit": False,
+              "accepted": False, "production_ready": False, "full_nakama_replacement": False}
+    with (root / "storage-v4-import-source.json").open("x", encoding="utf-8") as output:
+        json.dump(report, output, sort_keys=True, separators=(",", ":"))
+        output.write("\n")
+    return report
+
+
+def validate_storage_import_native_archive(root: Path, *, profile: str, commit: str, tree: str) -> None:
+    """Check retained native observations against actual packet/source bytes.
+
+    The execution log is checked independently. Custodian/source/binary hashes
+    are observed fixture identities, not signatures or accepted oracle proof.
+    """
+    native = root / "storage-v4-import-packets"
+    if native.is_symlink() or not native.is_dir():
+        fail("storage import native observations were not retained")
+    files: dict[str, bytes] = {}
+    entry_count = total_bytes = 0
+    for path in native.rglob("*"):
+        entry_count += 1
+        if entry_count > 512 or path.is_symlink() or (not path.is_dir() and not path.is_file()):
+            fail("storage import native archive inventory is indirect or exceeds its bound")
+        if path.is_file():
+            if not 0 <= path.stat().st_size <= 2 * 1024 * 1024:
+                fail("storage import native archive member exceeds its byte bound")
+            data = path.read_bytes()
+            total_bytes += len(data)
+            if total_bytes > 32 * 1024 * 1024:
+                fail("storage import native archive exceeds its total byte bound")
+            files[str(path.relative_to(native))] = data
+
+    def parsed(data: bytes) -> object:
+        def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            value: dict[str, object] = {}
+            for key, item in pairs:
+                if key in value:
+                    fail("storage import native JSON has duplicate fields")
+                value[key] = item
+            return value
+
+        try:
+            return json.loads(data, object_pairs_hook=unique,
+                              parse_constant=lambda _: fail("storage import native JSON has a nonfinite number"))
+        except (ValueError, RecursionError):
+            fail("storage import native JSON could not be decoded")
+
+    def decoded(name: str) -> object:
+        if name not in files:
+            fail("storage import native observation member is missing")
+        return parsed(files[name])
+
+    def obj(name: str, keys: set[str]) -> dict[str, object]:
+        value = decoded(name)
+        if not isinstance(value, dict) or set(value) != keys:
+            fail("storage import native observation fields are not closed")
+        return value
+
+    def hex_digest(value: object) -> str:
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None or value == "0" * 64:
+            fail("storage import native observation digest is invalid")
+        return value
+
+    def no_credit(value: dict[str, object]) -> None:
+        if any(value.get(field) is not False for field in (
+            "compatibility_credit", "production_ready", "full_nakama_replacement"
+        )):
+            fail("storage import native observations must retain no-credit claims")
+
+    credit = {"compatibility_credit", "production_ready", "full_nakama_replacement"}
+    anchor = obj("custody-anchors.json", {"schema", "profile", "producer_commit", "producer_tree",
+                 "producer_source_sha256", "producer_binary_sha256", "execution_id", "manifest_sha256",
+                 "receipt_sha256"} | credit)
+    no_credit(anchor)
+    if anchor["schema"] != "trillionnium.storage-import-native-custody-anchors.v1" or (
+        anchor["profile"] != profile or anchor["producer_commit"] != commit or anchor["producer_tree"] != tree
+    ):
+        fail("storage import native custody differs from the actual candidate/profile")
+    for field in ("producer_source_sha256", "producer_binary_sha256", "manifest_sha256", "receipt_sha256"):
+        hex_digest(anchor[field])
+    execution = anchor["execution_id"]
+    if not isinstance(execution, str) or not 0 < len(execution.encode()) <= 256 or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in execution):
+        fail("storage import native producer execution identity is invalid")
+    authority, exporter, query = storage_import_source_authority()
+    if anchor["producer_source_sha256"] != hashlib.sha256(exporter).hexdigest():
+        fail("storage import native producer source differs from the actual exporter")
+    for name, field in (("packet/manifest.json", "manifest_sha256"), ("packet/source-receipt.json", "receipt_sha256")):
+        if name not in files or hashlib.sha256(files[name]).hexdigest() != anchor[field]:
+            fail("storage import native packet differs from independent custody hashes")
+    manifest = obj("packet/manifest.json", {"schema", "project_id", "completed", "source", "producer",
+                   "total_rows", "page_rows", "members"})
+    receipt = obj("packet/source-receipt.json", {"schema", "manifest_sha256", "producer", "source",
+                  "row_count", "completed"} | credit)
+    no_credit(receipt)
+    producer = {"repository": "TrillionniumFoundation/TrillionniumGame", "commit": commit, "tree": tree,
+                "source_sha256": anchor["producer_source_sha256"], "binary_sha256": anchor["producer_binary_sha256"],
+                "execution_id": execution}
+    if manifest["schema"] != "trillionnium.nakama-storage-native-export.v1" or manifest["project_id"] != "trillionnium-game" or (
+        manifest["completed"] is not True or manifest["producer"] != producer
+        or receipt["schema"] != "trillionnium.nakama-storage-source-receipt.v1"
+        or receipt["completed"] is not True or receipt["producer"] != producer
+        or receipt["manifest_sha256"] != anchor["manifest_sha256"] or receipt["source"] != manifest["source"]
+    ):
+        fail("storage import native producer/manifest/receipt identity differs")
+    source = manifest["source"]
+    source_keys = {"repository", "commit", "tree", "profile", "server_version", "database_identity",
+                   "snapshot_identity", "isolation", "execution_class", "whole_table", "owner_references_valid"}
+    if not isinstance(source, dict) or set(source) != source_keys or any(source.get(field) != expected for field, expected in {
+        "repository": "heroiclabs/nakama", "commit": authority.COMMIT, "tree": authority.TREE, "profile": profile,
+        "isolation": "repeatable-read-read-only" if profile == "postgresql" else "serializable-read-only",
+        "execution_class": "native-source-ddl-fixture",
+    }.items()) or any(source.get(field) is not True for field in ("whole_table", "owner_references_valid")):
+        fail("storage import native source scope is not the closed required fixture")
+    for field in ("server_version", "database_identity", "snapshot_identity"):
+        value = source[field]
+        if not isinstance(value, str) or not 0 < len(value) <= 256 or "://" in value or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value):
+            fail("storage import native source identity is empty, oversized or unsafe")
+    total, page_rows = manifest["total_rows"], manifest["page_rows"]
+    # This exact CI selector retains its original main eight-row fixture.
+    # Generic exporter limits and temporary one-row pages belong to the Rust
+    # library/CLI; neither may silently shrink or replace this evidence lane.
+    if type(total) is not int or total != 8 or type(page_rows) is not int or page_rows != 2:
+        fail("storage import main native fixture requires exactly eight rows in four two-row pages")
+    if type(receipt["row_count"]) is not int or receipt["row_count"] != total:
+        fail("storage import native fixture row/page inventory is invalid")
+    packet_paths = {"upstream/" + member[0] for member in authority.MEMBERS} | {
+        "producer-source/exporter.rs", "source-catalog.json", "source-query.sql", "rows.ndjson"
+    } | {f"values/{index:08}.json" for index in range(total)}
+    members = manifest["members"]
+    if not isinstance(members, list) or len(members) != len(packet_paths):
+        fail("storage import native packet has an incomplete or duplicate inventory")
+    seen = set()
+    for member in members:
+        if not isinstance(member, dict) or set(member) != {"path", "bytes", "sha256"} or (
+            member.get("path") not in packet_paths or member["path"] in seen
+        ):
+            fail("storage import native packet member path is not closed")
+        seen.add(member["path"])
+        data = files.get("packet/" + member["path"])
+        if data is None or type(member["bytes"]) is not int or member["bytes"] != len(data) or (
+            hex_digest(member["sha256"]) != hashlib.sha256(data).hexdigest()
+        ):
+            fail("storage import native packet member bytes differ")
+    if seen != packet_paths:
+        fail("storage import native packet inventory is not complete")
+    for member in authority.MEMBERS:
+        try:
+            authority.validate_bytes(files["packet/upstream/" + member[0]], member)
+        except ValueError:
+            fail("storage import native packet upstream bytes differ")
+    if files["packet/producer-source/exporter.rs"] != exporter or files["packet/source-query.sql"] != query:
+        fail("storage import native packet source/query differs from the actual candidate")
+    catalog = obj("packet/source-catalog.json", {"schema", "profile", "namespace", "table", "table_type", "table_kind",
+                  "collation_binding", "snapshot_identity", "columns", "constraints", "primary_key_columns",
+                  "owner_foreign_key_columns", "owner_foreign_key_table", "owner_foreign_key_parent_schema",
+                  "owner_foreign_key_parent_columns", "owner_foreign_key_delete_cascade", "owner_foreign_key_validated",
+                  "read_nonnegative_check_validated", "write_nonnegative_check_validated"})
+    if any(catalog.get(field) != expected for field, expected in {
+        "schema": "trillionnium.nakama-storage-source-catalog.v1", "profile": profile,
+        "namespace": "public", "table": "storage", "table_type": "BASE TABLE", "table_kind": "r",
+        "snapshot_identity": source["snapshot_identity"], "primary_key_columns": ["collection", "key", "user_id"],
+        "owner_foreign_key_columns": ["user_id"], "owner_foreign_key_table": "users",
+        "owner_foreign_key_parent_schema": "public", "owner_foreign_key_parent_columns": ["id"],
+    }.items()):
+        fail("storage import native source catalog is disconnected from its actual snapshot")
+    if any(catalog[field] is not True for field in ("owner_foreign_key_delete_cascade", "owner_foreign_key_validated",
+                                                   "read_nonnegative_check_validated", "write_nonnegative_check_validated")):
+        fail("storage import native source catalog omits its captured source constraints")
+    binding = catalog["collation_binding"]
+    if profile == "cockroachdb":
+        valid_collation = binding == ["cockroachdb", "UTF8", "uncollated"]
+    else:
+        valid_collation = isinstance(binding, list) and len(binding) == 8 and binding[:3] == ["postgresql", "UTF8", "c"] and (
+            binding[5:] == ["default", "d", "true"] and all(isinstance(value, str) and 0 < len(value.encode()) <= 1024
+                and not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value) for value in binding[3:5]))
+    if not valid_collation:
+        fail("storage import native source collation is outside the supported captured policy")
+    for field, count, keys in (("columns", 9, {"name", "udt", "nullable", "character_maximum_length", "default_expression"}),
+                               ("constraints", 4, {"name", "kind", "validated", "definition", "columns", "parent_columns",
+                                    "parent_schema", "parent_table", "delete_action"})):
+        entries = catalog[field]
+        if not isinstance(entries, list) or len(entries) != count or any(not isinstance(entry, dict) or set(entry) != keys for entry in entries):
+            fail("storage import native source catalog inventory is not closed")
+
+    source_rows = decoded("source-rows.json")
+    target_rows = decoded("target-rows.json")
+    rows_report = obj("native-rows.json", {"schema", "profile", "source_path", "target_path",
+                      "source_sha256", "target_sha256", "exact_source_projection_and_metadata_preserved",
+                      "unknown_request_witnesses"} | credit)
+    no_credit(rows_report)
+    if rows_report["schema"] != "trillionnium.storage-import-native-rows.v1" or rows_report["profile"] != profile or (
+        rows_report["source_path"] != "source-rows.json" or rows_report["target_path"] != "target-rows.json"
+        or rows_report["exact_source_projection_and_metadata_preserved"] is not True
+        or rows_report["unknown_request_witnesses"] is not True
+    ):
+        fail("storage import native row observations have the wrong scope")
+    for name, field in (("source-rows.json", "source_sha256"), ("target-rows.json", "target_sha256")):
+        if hex_digest(rows_report[field]) != hashlib.sha256(files[name]).hexdigest():
+            fail("storage import native row preimage bytes differ from their actual digest")
+    if not isinstance(source_rows, list) or not isinstance(target_rows, list) or len(source_rows) != total or len(target_rows) != total:
+        fail("storage import native source/target row inventory is incomplete")
+    shared = {"collection", "key", "user_id", "native_text", "public_version", "read", "write", "create_time", "update_time"}
+    extras = {"projection_sha256", "value_origin", "source_manifest_sha256", "raw_value_is_null", "raw_digest_is_null", "updated_at_ms"}
+    def row_key(row: object, target: bool) -> tuple[str, str, str]:
+        if not isinstance(row, dict) or set(row) != shared | (extras if target else set()):
+            fail("storage import native row fields are not closed")
+        for field, maximum in (("collection", 128), ("key", 128), ("public_version", 32)):
+            if not isinstance(row[field], str) or len(row[field]) > maximum:
+                fail("storage import native key/token observation is invalid")
+        if not isinstance(row["user_id"], str) or re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", row["user_id"]) is None or not isinstance(row["native_text"], str):
+            fail("storage import native owner/value observation is invalid")
+        for field in ("read", "write"):
+            if type(row[field]) is not int or not 0 <= row[field] <= 32767:
+                fail("storage import native raw permission observation is invalid")
+        for field in ("create_time", "update_time"):
+            time = row[field]
+            if not isinstance(time, dict) or set(time) != {"seconds", "nanos"} or type(time["seconds"]) is not int or (
+                not -62135596800 <= time["seconds"] <= 253402300799 or type(time["nanos"]) is not int
+                or not 0 <= time["nanos"] < 1000000000 or time["nanos"] % 1000 != 0
+            ):
+                fail("storage import native exact timestamp observation is invalid")
+        return row["collection"], row["key"], row["user_id"]
+    source_by_key = {}
+    for row in source_rows:
+        key = row_key(row, False)
+        if key in source_by_key:
+            fail("storage import native source inventory duplicates a key")
+        source_by_key[key] = row
+    targets = set()
+    for row in target_rows:
+        key = row_key(row, True)
+        if key not in source_by_key or key in targets or {field: row[field] for field in shared} != source_by_key[key]:
+            fail("storage import native final tuple differs from its exact source observation")
+        targets.add(key)
+        if hex_digest(row["projection_sha256"]) != hashlib.sha256(row["native_text"].encode()).hexdigest() or (
+            row["value_origin"] != "nakama-export-unknown-request" or row["source_manifest_sha256"] != anchor["manifest_sha256"]
+            or row["raw_value_is_null"] is not True or row["raw_digest_is_null"] is not True
+            or type(row["updated_at_ms"]) is not int or row["updated_at_ms"] != 2468
+        ):
+            fail("storage import native witness/provenance/audit observation differs")
+    raw_rows = files["packet/rows.ndjson"]
+    if not raw_rows.endswith(b"\n") or len(raw_rows.splitlines()) != total:
+        fail("storage import native packet row framing is incomplete")
+    seen_rows = set()
+    records = []
+    for ordinal, raw in enumerate(raw_rows.splitlines()):
+        # Row metadata contains exact native text hashes, never JSONB content.
+        record = parsed(raw)
+        if not isinstance(record, dict) or set(record) != {"ordinal", "collection", "key", "user_id", "public_version",
+                    "read", "write", "create_time", "update_time", "value_path", "value_sha256", "value_bytes"} or (
+            type(record["ordinal"]) is not int or record["ordinal"] != ordinal
+            or record["value_path"] != f"values/{ordinal:08}.json"
+        ):
+            fail("storage import native packet row identity is invalid")
+        key = row_key({**{field: record[field] for field in shared - {"native_text"}},
+                       "native_text": ""}, False)
+        if key not in source_by_key or key in seen_rows:
+            fail("storage import native packet/source keys are not identical")
+        seen_rows.add(key)
+        native_row = source_by_key[key]
+        row_key({**{field: record[field] for field in shared - {"native_text"}},
+                 "native_text": native_row["native_text"]}, False)
+        value = files["packet/" + record["value_path"]]
+        if value != native_row["native_text"].encode() or type(record["value_bytes"]) is not int or record["value_bytes"] != len(value) or (
+            hex_digest(record["value_sha256"]) != hashlib.sha256(value).hexdigest()
+            or any(record[field] != native_row[field] for field in shared - {"native_text"})
+        ):
+            fail("storage import native packet value/token/ACL/time differs from actual source bytes")
+        records.append(record)
+
+    page_count = (total + page_rows - 1) // page_rows
+    summary = obj("exporter-summary.json", {"schema", "profile", "row_count", "page_count", "manifest_sha256",
+                  "receipt_sha256", "producer_source_sha256", "producer_binary_sha256", "execution_class"} | credit)
+    no_credit(summary)
+    expected_summary = {"schema": "trillionnium.storage-export-summary.v1", "profile": profile,
+                        "row_count": total, "page_count": page_count, "execution_class": "native-source-ddl-fixture",
+                        **{field: anchor[field] for field in ("manifest_sha256", "receipt_sha256",
+                           "producer_source_sha256", "producer_binary_sha256")},
+                        **{field: False for field in credit}}
+    if summary != expected_summary or any(type(summary[field]) is not int for field in ("row_count", "page_count")):
+        fail("storage import native exporter summary is not its actual source packet")
+    journal = obj("import-journal.json", {"schema", "profile", "jobs", "pages"} | credit)
+    no_credit(journal)
+    if journal["schema"] != "trillionnium.storage-import-native-journal.v1" or journal["profile"] != profile or (
+        not isinstance(journal["jobs"], list) or len(journal["jobs"]) != 1
+        or not isinstance(journal["pages"], list) or len(journal["pages"]) != page_count
+    ):
+        fail("storage import native custody journal has an incomplete inventory")
+    job = journal["jobs"][0]
+    job_keys = {"singleton", "manifest_sha256", "custody_sha256", "source_inventory_sha256", "target_schema_guard_sha256",
+                "prefix_sha256", "source_profile", "source_snapshot", "audit_at_ms", "total_rows", "total_pages",
+                "next_page", "committed_rows", "status"}
+    if not isinstance(job, dict) or set(job) != job_keys:
+        fail("storage import native job fields are not closed")
+    guard = bytes.fromhex(hex_digest(job["target_schema_guard_sha256"]))
+    def framed(raw: bytes) -> bytes:
+        return len(raw).to_bytes(8, "big") + raw
+    row_digests = []
+    for record in records:
+        preimage = b"trillionnium.storage-import-row.v1\0" + record["ordinal"].to_bytes(8, "big")
+        for field in ("collection", "key", "user_id", "public_version", "value_sha256"):
+            preimage += framed(record[field].encode())
+        for field in ("read", "write"):
+            preimage += record[field].to_bytes(2, "big", signed=True)
+        for field in ("create_time", "update_time"):
+            preimage += record[field]["seconds"].to_bytes(8, "big", signed=True) + record[field]["nanos"].to_bytes(4, "big")
+        row_digests.append(hashlib.sha256(preimage).digest())
+    inventory = hashlib.sha256(b"trillionnium.storage-import-inventory.v1\0" + b"".join(row_digests)).digest()
+    manifest_digest = bytes.fromhex(anchor["manifest_sha256"])
+    prefix = hashlib.sha256(
+        b"trillionnium.storage-import-empty-prefix.v1\0" + manifest_digest + bytes.fromhex(anchor["receipt_sha256"])
+        + inventory + guard + framed(profile.encode()) + framed(source["snapshot_identity"].encode())
+        + (2468).to_bytes(8, "big", signed=True) + total.to_bytes(8, "big") + page_count.to_bytes(8, "big")
+    ).digest()
+    pages = []
+    for index in range(page_count):
+        first = index * page_rows
+        count = min(page_rows, total - first)
+        preimage = b"trillionnium.storage-import-page.v1\0" + manifest_digest + index.to_bytes(8, "big") + count.to_bytes(8, "big")
+        for ordinal in range(first, first + count):
+            preimage += ordinal.to_bytes(8, "big") + row_digests[ordinal]
+        digest = hashlib.sha256(preimage).digest()
+        prefix = hashlib.sha256(b"trillionnium.storage-import-page-prefix.v1\0" + prefix + digest
+                                + index.to_bytes(8, "big") + first.to_bytes(8, "big") + count.to_bytes(8, "big")).digest()
+        page = {"manifest_sha256": anchor["manifest_sha256"], "page_index": index, "first_ordinal": first,
+                "row_count": count, "page_sha256": digest.hex(), "prefix_sha256": prefix.hex(), "audit_at_ms": 2468}
+        actual = journal["pages"][index]
+        if not isinstance(actual, dict) or actual != page or any(type(actual[field]) is not int for field in (
+            "page_index", "first_ordinal", "row_count", "audit_at_ms"
+        )):
+            fail("storage import native page receipt differs from the full-source prefix calculation")
+        pages.append(page)
+    expected_job = {"singleton": 1, "manifest_sha256": anchor["manifest_sha256"], "custody_sha256": anchor["receipt_sha256"],
+                    "source_inventory_sha256": inventory.hex(), "target_schema_guard_sha256": guard.hex(),
+                    "prefix_sha256": prefix.hex(), "source_profile": profile, "source_snapshot": source["snapshot_identity"],
+                    "audit_at_ms": 2468, "total_rows": total, "total_pages": page_count, "next_page": page_count,
+                    "committed_rows": total, "status": 1}
+    if job != expected_job or any(type(job[field]) is not int for field in (
+        "singleton", "audit_at_ms", "total_rows", "total_pages", "next_page", "committed_rows", "status"
+    )):
+        fail("storage import native completed job differs from the full packet/custody/inventory")
+    lifecycle = obj("lifecycle.json", {"schema", "profile", "begin", "first_page", "resumed", "remaining_pages",
+                    "finished", "verified"} | credit)
+    no_credit(lifecycle)
+    if lifecycle["schema"] != "trillionnium.storage-import-native-lifecycle.v1" or lifecycle["profile"] != profile:
+        fail("storage import native lifecycle scope differs")
+    def progress(value: object, next_page: int, completed: bool) -> None:
+        expected = {"schema": "trillionnium.storage-import-progress.v1", "manifest_sha256": anchor["manifest_sha256"],
+                    "next_page": next_page, "total_pages": page_count, "total_rows": total,
+                    "committed_rows": min(total, next_page * page_rows), "completed": completed,
+                    "target_identity_classification": "native-system-database-and-external-scope" if profile == "postgresql"
+                    else "namespace-and-external-scope-only", **{field: False for field in credit}}
+        if not isinstance(value, dict) or value != expected or value["completed"] is not completed or any(
+            type(value[field]) is not int for field in ("next_page", "total_pages", "total_rows", "committed_rows")
+        ):
+            fail("storage import native lifecycle progress differs from its actual committed prefix")
+        no_credit(value)
+    def page_receipt(value: object, index: int) -> None:
+        expected = {field: pages[index][field] for field in (
+            "page_index", "first_ordinal", "row_count", "page_sha256", "prefix_sha256"
+        )}
+        if not isinstance(value, dict) or set(value) != set(expected) | {"schema", "progress"} or any(
+            value[field] != expected[field] for field in expected
+        ) or value["schema"] != "trillionnium.storage-import-page-receipt.v1" or any(
+            type(value[field]) is not int for field in ("page_index", "first_ordinal", "row_count")
+        ):
+            fail("storage import native committed page acknowledgement differs from actual journal bytes")
+        progress(value["progress"], index + 1, False)
+    progress(lifecycle["begin"], 0, False)
+    page_receipt(lifecycle["first_page"], 0)
+    progress(lifecycle["resumed"], 1, False)
+    if not isinstance(lifecycle["remaining_pages"], list) or len(lifecycle["remaining_pages"]) != page_count - 1:
+        fail("storage import native lifecycle lost or duplicated a page acknowledgement")
+    for index, value in enumerate(lifecycle["remaining_pages"], 1):
+        page_receipt(value, index)
+    progress(lifecycle["finished"], page_count, True)
+    progress(lifecycle["verified"], page_count, True)
+    # These reports are actual observations of the dedicated import target,
+    # independently checked against the candidate's complete immutable chain.
+    lock = json.loads((ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_bytes())
+    chain = hashlib.sha256()
+    for position, entry in enumerate(lock["profiles"][profile]["ordered_files"]):
+        chain.update(position.to_bytes(8, "big"))
+        chain.update(entry["path"].encode() + b"\0")
+        chain.update(bytes.fromhex(entry["git_blob_sha1"]))
+    identity = {"schema": "trillionnium.authoritative-schema-report.v1", "profile": profile,
+                "schema_version": 4, "storage_writer_epoch": 4, "table_count": 12,
+                "digest_algorithm": "ordered-path-git-blob-sha256.v1", "chain_digest": chain.hexdigest(),
+                "source_commit": commit, "upgrade_source_commit": commit, "v2_apply_source_commit": commit,
+                "v3_apply_source_commit": commit, "compatibility_credit": False}
+    for name, applied, steps in (("target-schema-migrate.json", True, 4), ("target-schema-verify.json", False, 0)):
+        report = obj(name, set(identity) | {"migration_applied", "applied_steps"})
+        if report != {**identity, "migration_applied": applied, "applied_steps": steps} or (
+            report["migration_applied"] is not applied or report["compatibility_credit"] is not False
+            or any(type(report[field]) is not int for field in ("schema_version", "storage_writer_epoch", "table_count", "applied_steps"))
+        ):
+            fail("storage import target schema differs from the actual fresh migration/readonly observation")
+    expected_paths = {"packet/" + path for path in packet_paths} | {
+        "packet/manifest.json", "packet/source-receipt.json", "exporter-summary.json", "custody-anchors.json",
+        "lifecycle.json", "source-rows.json", "target-rows.json", "native-rows.json", "import-journal.json",
+        "target-schema-migrate.json", "target-schema-verify.json"
+    }
+    directories = {str(path.relative_to(native)) for path in native.rglob("*") if path.is_dir()}
+    if set(files) != expected_paths or directories != {"packet", "packet/upstream", "packet/producer-source", "packet/values"}:
+        fail("storage import native observation archive is not the complete closed inventory")
 
 
 def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree: str) -> dict[str, object]:
@@ -599,7 +1143,7 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
 
     def document(name: str) -> dict[str, object]:
         path = root / name
-        if not path.is_file() or path.stat().st_size > 1024 * 1024:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
             fail("server packet JSON document is missing or oversized")
         def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
             value = {}
@@ -624,7 +1168,7 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
     for field in (
         "check_config", "fresh_migration", "nakama_client_list_projection", "storage_occ_precedence",
         "raw_version_conditions", "storage_timestamps", "schema_upgrade", "storage_jsonb_v3_projection",
-        "storage_native_jsonb",
+        "storage_native_jsonb", "storage_v4_acl", "storage_v4_import",
         "health_ready", "unauthenticated_mutation_rejected", "http_bootstrap_commit_duplicate_conflict",
         "websocket_json_commit", "response_loss_exact_receipt_replay", "authenticated_drain",
         "process_restart_exact_receipt_replay",
@@ -633,7 +1177,7 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
             fail("server packet required execution field is absent or false: " + field)
     for field in ("schema_version", "storage_writer_epoch", "authoritative_migrations_count",
                   "entity_revision", "event_sequence", "command_receipts", "events", "outbox_intents"):
-        if type(summary.get(field)) is not int or summary[field] != 3:
+        if type(summary.get(field)) is not int or summary[field] != (4 if field in ("schema_version", "storage_writer_epoch", "authoritative_migrations_count") else 3):
             fail("server packet count or schema ABI differs: " + field)
     cases = {"history": 6, "opaque_success": 4, "no_op": 2, "resource": 1, "native_input": 3}
     observed = summary.get("storage_jsonb_v3_cases")
@@ -650,7 +1194,7 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
             fail("server packet must retain no-credit claim: " + field)
     # Reuse the same closed validator as native migration/restore consumers.
     # This packet retains a read-only verify report from the fresh main DB;
-    # applying all three revisions happened earlier in the actual harness.
+    # applying all four revisions happened earlier in the actual harness.
     script = Path(__file__).with_name("check-authoritative-schema-identity.py")
     spec = importlib.util.spec_from_file_location("trnm_server_schema_identity", script)
     if spec is None or spec.loader is None:
@@ -674,7 +1218,7 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
     # The shared verify policy permits historical apply provenance. The main
     # database of this fresh packet has the stronger actual-candidate context.
     if any(identity[field] != commit for field in (
-        "source_commit", "upgrade_source_commit", "v2_apply_source_commit"
+        "source_commit", "upgrade_source_commit", "v2_apply_source_commit", "v3_apply_source_commit"
     )):
         fail("fresh server packet schema apply provenance differs from the actual candidate")
 
@@ -683,18 +1227,18 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
         fail("server packet migration lock differs from the actual source")
     manifest = document("authoritative-migrations.json")
     if manifest.get("schema") != "trillionnium.server-live-schema-source.v1" or manifest.get("profile") != profile or any(
-        type(manifest.get(field)) is not int or manifest[field] != 3
+        type(manifest.get(field)) is not int or manifest[field] != 4
         for field in ("schema_version", "storage_writer_epoch")
     ) or manifest.get("compatibility_credit") is not False:
         fail("server packet SQL manifest identity or no-credit scope differs")
-    names = ("0001_foundation_up.sql", "0002_storage_timestamps_up.sql", "0003_storage_jsonb_up.sql")
+    names = ("0001_foundation_up.sql", "0002_storage_timestamps_up.sql", "0003_storage_jsonb_up.sql", "0004_storage_source_import_up.sql")
     archive = root / "authoritative-migrations"
     if not archive.is_dir() or {path.name for path in archive.iterdir()} != set(names):
-        fail("server packet SQL archive must contain exactly the three authoritative files")
+        fail("server packet SQL archive must contain exactly the four authoritative files")
     locked = lock["profiles"][profile]["ordered_files"]
     files = manifest.get("ordered_files")
-    if not isinstance(files, list) or len(files) != 3 or [entry["path"] for entry in locked] != [f"migrations/{profile}/{name}" for name in names]:
-        fail("server packet must retain the complete three-file profile chain")
+    if not isinstance(files, list) or len(files) != 4 or [entry["path"] for entry in locked] != [f"migrations/{profile}/{name}" for name in names]:
+        fail("server packet must retain the complete four-file profile chain")
     for entry, authority, name in zip(files, locked, names, strict=True):
         archive_path = f"authoritative-migrations/{name}"
         if not isinstance(entry, dict) or entry.get("path") != authority["path"] or entry.get("archive_path") != archive_path:
@@ -761,9 +1305,35 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
     native_markers = [line for line in native_lines if "storage_native_jsonb_live_executed " in line]
     if native_markers != [f"storage_native_jsonb_live_executed profile={profile}"]:
         fail("native storage JSONB fixture did not execute once for the packet profile")
+    acl_lines = execution_log("storage-v4-acl.log", 1, "storage_v4_acl_live_skipped")
+    acl_markers = [line for line in acl_lines if "storage_v4_acl_live_executed " in line]
+    if acl_markers != [f"storage_v4_acl_live_executed profile={profile}"]:
+        fail("native storage v4 ACL fixture did not execute once for the packet profile")
+    import_lines = execution_log(STORAGE_IMPORT_LOG, 1, "storage_v4_import_live_skipped")
+    import_markers = [line for line in import_lines if "storage_v4_import_live_executed " in line]
+    if import_markers != [f"storage_v4_import_live_executed profile={profile}"]:
+        fail("native storage v4 import fixture did not execute once for the packet profile")
+    authority, entries = storage_import_source_entries(root)
+    source_manifest = document("storage-v4-import-source.json")
+    expected_source_manifest = {
+        "schema": "trillionnium.storage-import-source-archive.v1", "scope": "source-annex-only",
+        "repository": "TrillionniumFoundation/TrillionniumGame", "commit": commit, "tree": tree,
+        "profile": profile, "upstream_repository": "heroiclabs/nakama",
+        "upstream_commit": authority.COMMIT, "upstream_tree": authority.TREE, "members": entries,
+        "server_execution_credit": False, "compatibility_credit": False,
+        "accepted": False, "production_ready": False, "full_nakama_replacement": False,
+    }
+    if source_manifest != expected_source_manifest or any(
+        type(member.get("size_bytes")) is not int for member in source_manifest.get("members", [])
+    ) or any(type(source_manifest.get(field)) is not bool for field in (
+        "server_execution_credit", "compatibility_credit", "accepted", "production_ready", "full_nakama_replacement"
+    )):
+        fail("storage import source archive identity, inventory or no-credit scope differs")
+    validate_storage_import_native_archive(root, profile=profile, commit=commit, tree=tree)
     return {"status": "trnm-server-live-packet-validated", "profile": profile,
-            "schema_version": 3, "storage_writer_epoch": 3, "authoritative_migrations_count": 3,
-            "storage_jsonb_v3_cases": cases, "storage_native_jsonb": True,
+            "schema_version": 4, "storage_writer_epoch": 4, "authoritative_migrations_count": 4,
+            "storage_jsonb_v3_cases": cases, "storage_native_jsonb": True, "storage_v4_acl": True,
+            "storage_v4_import": True,
             "schema_v3_extra_cases": 41, "schema_v3_case_families": SCHEMA_V3_CASE_FAMILIES.copy(),
             "compatibility_credit": False, "accepted": False,
             "production_ready": False}
@@ -811,13 +1381,19 @@ def validate_dependency_boundary(manifest: dict[str, object]) -> None:
 def main(arguments: list[str] | None = None) -> int:
     if arguments:
         parser = argparse.ArgumentParser(description=__doc__)
-        parser.add_argument("--live-packet", type=Path, required=True)
+        modes = parser.add_mutually_exclusive_group(required=True)
+        modes.add_argument("--live-packet", type=Path)
+        modes.add_argument("--storage-import-source-archive", type=Path)
         parser.add_argument("--profile", choices=("postgresql", "cockroachdb"), required=True)
         parser.add_argument("--commit", required=True)
         parser.add_argument("--tree", required=True)
         args = parser.parse_args(arguments)
         try:
-            report = validate_storage_live_packet(args.live_packet, profile=args.profile, commit=args.commit, tree=args.tree)
+            if args.storage_import_source_archive is not None:
+                report = write_storage_import_source_archive(args.storage_import_source_archive,
+                                                            profile=args.profile, commit=args.commit, tree=args.tree)
+            else:
+                report = validate_storage_live_packet(args.live_packet, profile=args.profile, commit=args.commit, tree=args.tree)
         except (OSError, ValueError, KeyError, TypeError):
             fail("server live packet could not be decoded or validated")
         print(json.dumps(report, sort_keys=True))
@@ -1240,10 +1816,10 @@ def main(arguments: list[str] | None = None) -> int:
     }.items()):
         fail("storage HTTP request/native/encoded response budgets differ")
     projection = storage_contract.get("jsonb_v3_projection_source_candidate", {})
-    if projection.get("schema_version") != 3 or projection.get("storage_writer_epoch") != 3 or any(
+    if projection.get("schema_version") != 4 or projection.get("storage_writer_epoch") != 4 or any(
         projection.get(field) is not False for field in ("accepted", "compatibility_credit", "gap_closed", "production_ready")
     ):
-        fail("storage HTTP JSONB projection must retain v3 ABI and no-credit claims")
+        fail("storage HTTP JSONB projection must retain current v4 ABI and no-credit claims")
     condition_state = status.get("storage_http_mutations", {}).get("condition_version")
     if condition_state != (
         "Original-string ExpectedVersion: write empty is blind, write star is insert-only, "
