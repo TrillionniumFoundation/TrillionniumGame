@@ -1650,7 +1650,7 @@ fn canonical_storage_api_live_database() {
             1
         );
         println!(
-            "storage_opaque_conditions_live_executed profile={} write_cases=15 delete_cases=18 batch_cases=2",
+            "\nstorage_opaque_conditions_live_executed profile={} write_cases=15 delete_cases=18 batch_cases=2",
             profile.metadata_value()
         );
 

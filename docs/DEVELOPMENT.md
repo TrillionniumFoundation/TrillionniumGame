@@ -235,7 +235,7 @@ The last command requires `TRNM_DATABASE_URL`, `TRNM_DATABASE_PROFILE` and
 `TRNM_REQUIRE_LIVE_DATABASE=1` to prove actual database execution. The existing
 live harness runs this canonical Rust application fixture for each database
 profile and rejects zero tests, optional skips and missing execution markers.
-It uses dedicated fixture rows and verifies persisted effects and revocation. The same fixture must emit its original-condition marker after all 15 write, 18 delete and two rollback cases have passed; the native harness checks the exact profile and counts before sealing the log.
+It uses dedicated fixture rows and verifies persisted effects and revocation. The same fixture must emit its original-condition marker after all 15 write, 18 delete and two rollback cases have passed; the native harness checks the exact profile and counts before sealing the log. The marker starts on its own line even when the single-threaded Rust test harness writes its test-name prefix first; local reproduction uses the same `--test-threads=1` and whole-line check as CI.
 Independent SQL sentinels verify that a blind unchanged value/ACL preserves
 legacy update time while an exact-version write still refreshes it. The live harness also requires the exact repository ACL/OCC fixture once per
 profile, retaining its log and rejecting empty or skipped execution. It checks
