@@ -84,7 +84,8 @@
     "denominator_acceptance_binding_source_candidate": true,
     "database_recovery_and_endurance_harness_source_candidate": true,
     "cutover_state_machine_source_candidate": true,
-    "storage_http_mutation_source_candidate": true
+    "storage_http_mutation_source_candidate": true,
+    "storage_http_read_source_candidate": true
   },
   "scope": {
     "baseline": "heroiclabs/nakama@v3.40.0",
@@ -124,7 +125,8 @@
       "native_execution_required": true,
       "scope": "Shared structural admission and retained-byte checks; not independent or administrative acceptance."
     },
-    "storage_http_mutation_evidence_accepted": false
+    "storage_http_mutation_evidence_accepted": false,
+    "storage_http_read_evidence_accepted": false
   },
   "active_priority": [
     "rebind and qualify Closure 4 on admitted Surface 3 main using one exact head and actual prospective merge object",

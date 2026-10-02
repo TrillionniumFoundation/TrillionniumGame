@@ -322,7 +322,7 @@
         "generated Nakama Healthcheck gRPC source",
         "bounded WebSocket JSON and narrow protobuf-envelope source",
         "bounded database pool retry deadline cancellation and physical-backend retirement composition",
-        "bounded session-bound HTTP storage write/delete adapter"
+        "bounded session-bound HTTP storage read/write/delete adapter"
       ],
       "missing": [
         "current rebind exact-head and prospective-merge execution and acceptance",
@@ -347,7 +347,7 @@
       ],
       "evidence_ids": [],
       "claim_credit": false,
-      "storage_http_mutations": {"contract":"contracts/storage/nakama-http-mutations-v1.json","source":"crates/trnm-server/src/runtime/storage_api.rs","tests":"crates/trnm-server/src/runtime/storage_api_tests.rs","status":"source-candidate","parity_ids":["TG-D1-2940D4CEAACA4051","TG-D1-7A7BFBFD85579A6A"],"accepted":false,"gap_closed":false}
+      "storage_http_mutations": {"contract":"contracts/storage/nakama-http-storage-v1.json","source":"crates/trnm-server/src/runtime/storage_api.rs","tests":"crates/trnm-server/src/runtime/storage_api_tests.rs","status":"source-candidate","parity_ids":["TG-D1-2940D4CEAACA4051","TG-D1-7A7BFBFD85579A6A","TG-D1-46DC42DFD49DB606"],"accepted":false,"gap_closed":false}
     },
     {
       "id": "COMP-CANONICAL",

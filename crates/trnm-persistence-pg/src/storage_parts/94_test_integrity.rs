@@ -50,3 +50,23 @@
             UserId::new([1; 16])
         );
     }
+
+    #[test]
+    fn read_batch_accepts_empty_and_bounded_server_owned_keys() {
+        let actor = Actor::User(UserId::new([1; 16]));
+        validate_read_batch(actor, &[]).unwrap();
+        let global = StorageObjectKey::new("system", "global", UserId::new([0; 16])).unwrap();
+        validate_read_batch(actor, &vec![global.clone(); MAX_BATCH_OPERATIONS]).unwrap();
+        validate_read_batch(Actor::Server, std::slice::from_ref(&global)).unwrap();
+        let error = validate_read_batch(actor, &vec![global; MAX_BATCH_OPERATIONS + 1])
+            .unwrap_err();
+        assert_eq!(error.code(), StableCode::InvalidArgument);
+        assert_eq!(error.reason(), "invalid_storage_batch_size");
+    }
+
+    #[test]
+    fn read_batch_rejects_zero_actor_before_empty_batch_shortcut() {
+        let error = validate_read_batch(Actor::User(UserId::new([0; 16])), &[]).unwrap_err();
+        assert_eq!(error.code(), StableCode::InvalidArgument);
+        assert_eq!(error.reason(), "invalid_storage_actor");
+    }

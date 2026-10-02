@@ -4,7 +4,7 @@ use trnm_contracts::{Digest32, DomainError, SessionFamilyId, UserId};
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, EntityHead, EntityId, PgPool, RefreshRotationOutcome,
     RotateRefreshToken, SessionFamilyRecord, StorageActor, StorageBatchOperation,
-    StorageMutationReceipt,
+    StorageMutationReceipt, StorageObject, StorageObjectKey,
 };
 use trnm_session_core::RevocationReason;
 
@@ -64,6 +64,14 @@ impl Repository for PooledRepository {
 
     fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError> {
         self.run(|repository| repository.commit_command(request))
+    }
+
+    fn read_storage_objects(
+        &mut self,
+        actor: StorageActor,
+        keys: &[StorageObjectKey],
+    ) -> Result<Vec<StorageObject>, DomainError> {
+        self.run(|repository| repository.read_storage_objects(actor, keys))
     }
 
     fn apply_storage_batch(

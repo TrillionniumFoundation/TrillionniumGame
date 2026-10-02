@@ -120,7 +120,7 @@
       "status": "source-candidate",
       "required_next": ["non-empty exact-head run", "artifact digest", "evidence-index registration"]
     },
-    {"id":"SRC-STORAGE-HTTP-MUTATIONS","gap_ids":["GAP-P1-STORAGE-001","GAP-P0-SERVER-001","GAP-P0-DATA-001"],"paths":["crates/trnm-server/src/runtime/storage_api.rs","crates/trnm-server/src/runtime/storage_api_tests.rs","contracts/storage/nakama-http-mutations-v1.json"],"status":"source-candidate","required_next":["exact-head build/test/Clippy and actual prospective merge","timestamp/receipt and remaining storage domain implementation","separate PostgreSQL and CockroachDB live packets","immutable Nakama wire/database differential","conflict-free protocol/database/security acceptance"]}
+    {"id":"SRC-STORAGE-HTTP-MUTATIONS","gap_ids":["GAP-P1-STORAGE-001","GAP-P0-SERVER-001","GAP-P0-DATA-001"],"paths":["crates/trnm-server/src/runtime/storage_api.rs","crates/trnm-server/src/runtime/storage_api_tests.rs","crates/trnm-persistence-pg/src/storage_parts/01_repository.rs","crates/trnm-persistence-pg/tests/authority_storage_parts/02_storage_batch.rs","contracts/storage/nakama-http-storage-v1.json"],"status":"source-candidate","required_next":["exact-head build/test/Clippy and actual prospective merge","timestamp/receipt and remaining storage domain implementation","separate PostgreSQL and CockroachDB live packets","immutable Nakama wire/database differential","conflict-free protocol/database/security acceptance"]}
   ],
   "claims": {
     "source_progress_recorded": true,

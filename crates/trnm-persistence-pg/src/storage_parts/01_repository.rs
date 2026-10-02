@@ -1,4 +1,53 @@
 impl PgRepository {
+    /// Read a bounded batch under one read-only serializable snapshot.
+    /// Missing and inaccessible rows are omitted before integrity decoding.
+    /// Caller order and repeated keys are retained by this source candidate;
+    /// the pinned upstream single-SELECT ordering/multiplicity is not implied.
+    pub fn read_storage_objects(
+        &mut self,
+        actor: Actor,
+        keys: &[StorageObjectKey],
+    ) -> Result<Vec<StorageObject>, DomainError> {
+        validate_read_batch(actor, keys)?;
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let actor_bytes = match actor {
+            Actor::Server => None,
+            Actor::User(user) => Some(user.as_bytes().to_vec()),
+        };
+        let mut transaction = self
+            .client
+            .build_transaction()
+            .isolation_level(IsolationLevel::Serializable)
+            .read_only(true)
+            .start()
+            .map_err(map_postgres_error)?;
+        let mut objects = Vec::with_capacity(keys.len());
+        for key in keys {
+            let row = transaction
+                .query_opt(
+                    "SELECT value_bytes, version_digest, read_permission, write_permission \
+                     FROM trnm_storage_objects \
+                     WHERE collection = $1 AND object_key = $2 AND user_id = $3 \
+                       AND ($4::bytea IS NULL OR read_permission = 2 \
+                            OR (user_id = $4 AND read_permission = 1))",
+                    &[
+                        &key.collection(),
+                        &key.key(),
+                        &key.user_id().as_bytes().as_slice(),
+                        &actor_bytes,
+                    ],
+                )
+                .map_err(map_postgres_error)?;
+            if let Some(row) = row {
+                objects.push(decode_storage_object(key.clone(), &row)?);
+            }
+        }
+        transaction.commit().map_err(map_postgres_error)?;
+        Ok(objects)
+    }
+
     pub fn read_storage_object(
         &mut self,
         actor: Actor,
@@ -119,4 +168,11 @@ impl PgRepository {
         transaction.commit().map_err(map_postgres_error)?;
         Ok(receipts)
     }
+}
+
+fn validate_read_batch(actor: Actor, keys: &[StorageObjectKey]) -> Result<(), DomainError> {
+    if keys.len() > MAX_BATCH_OPERATIONS {
+        return Err(invalid("invalid_storage_batch_size"));
+    }
+    validate_actor_and_owner(actor, None)
 }

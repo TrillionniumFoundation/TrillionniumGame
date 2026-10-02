@@ -133,6 +133,7 @@ This table documents the bounded HTTP application dispatcher in `crates/trnm-ser
 | `POST` | `/v1/authority/bootstrap` | Candidate administrator-authorized entity bootstrap. |
 | `POST` | `/v1/authority/commit` | Candidate administrator-authorized durable command/replay. |
 | `PUT` | `/v2/storage` | Bounded candidate-session storage write batch; timestamps and complete parity remain open. |
+| `POST` | `/v2/storage` | Bounded candidate-session read batch; missing/hidden objects omitted, timestamps remain open. |
 | `PUT` | `/v2/storage/delete` | Bounded candidate-session storage delete batch. |
 <!-- trnm-server-routes:end -->
 
@@ -199,7 +200,7 @@ The change does not alter DDL, receipt identity or public error codes. Reverting
 
 ## 6. Change workflow
 
-The canonical storage HTTP mutation candidate has native codec, application and
+The canonical storage HTTP API candidate has native codec, application and
 retry-wrapper regressions:
 
 ```bash
@@ -210,9 +211,10 @@ cargo test -p trnm-server --locked storage_write_and_delete_are_never_automatica
 They exercise original value bytes, default/zero permissions, duplicate known
 fields and aliases, exact integer parsing, empty batches, ownership, persisted
 revocation, authentication precedence, atomic failure, drain and retry
-suppression. Mock repositories and the real storage state model provide local
+suppression. Read regressions cover global/default owners, pinned UUID forms,
+hidden/missing objects and defensive response validation. Mock repositories and the real storage state model provide local
 feedback; live database and immutable-oracle evidence remain separate. Read
-`contracts/storage/nakama-http-mutations-v1.json` and the open
+`contracts/storage/nakama-http-storage-v1.json` and the open
 `DIV-STORAGE-HTTP-*` records before changing these endpoints. This tranche does
 not change DDL. Reverting routes, codec and repository bridge together preserves
 stored rows but does not authorize a production rollback.

@@ -1,4 +1,4 @@
-//! Bounded storage write/delete HTTP source candidate. The protocol and public
+//! Bounded storage read/write/delete HTTP source candidate. The protocol and public
 //! error strings are based on Apache-2.0 Nakama d4d92f93 and nakama-common
 //! 449b77ec; this Rust implementation is independent. This subset does not yet
 //! reproduce upstream acknowledgement timestamps, runtime hooks, or indexing.
@@ -14,7 +14,8 @@ use trnm_contracts::{DomainError, StableCode, UserId};
 use trnm_persistence_pg::{
     ContentVersion, ReadPermission, StorageActor as Actor, StorageBatchOperation as BatchOperation,
     StorageDeleteOperation as DeleteOperation, StorageMutationReceipt as MutationReceipt,
-    StorageObjectKey, StorageWriteOperation as WriteOperation, VersionCheck, WritePermission,
+    StorageObject, StorageObjectKey, StorageWriteOperation as WriteOperation, VersionCheck,
+    WritePermission,
 };
 
 use super::app::Repository;
@@ -27,6 +28,7 @@ const INVALID_KEYS: &str = "Invalid collection or key value supplied. They must 
 const INVALID_READ: &str = "Invalid Read permission supplied. It must be either 0, 1 or 2.";
 const INVALID_WRITE: &str = "Invalid Write permission supplied. It must be either 0 or 1.";
 const INVALID_VALUE: &str = "Value must be a JSON object.";
+const INVALID_USER: &str = "Invalid user ID - make sure user ID is a valid UUID.";
 const REJECTED_VERSION: &str = "Storage write rejected - version check failed.";
 const REJECTED_PERMISSION: &str = "Storage write rejected - permission denied.";
 const REJECTED_DELETE: &str =
@@ -111,6 +113,12 @@ pub(crate) fn handle<R: Repository>(
     user: UserId,
 ) -> Response {
     let path = request.target.split('?').next().unwrap_or("");
+    if request.method == "POST" && path == "/v2/storage" {
+        if user.is_zero() {
+            return gateway_error(401, 16, "Auth token invalid");
+        }
+        return read_objects(repository, request, user);
+    }
     let kind = match (request.method.as_str(), path) {
         ("PUT", "/v2/storage") => OperationKind::Write,
         ("PUT", "/v2/storage/delete") => OperationKind::Delete,
@@ -149,33 +157,11 @@ fn decode_operations(
     user: UserId,
     kind: OperationKind,
 ) -> Result<Vec<BatchOperation>, ApiError> {
-    // grpc-gateway's generated body decoder treats EOF as an empty message.
-    let object = if request.body.iter().all(|byte| is_json_space(*byte)) {
-        JsonObject(Vec::new())
-    } else {
-        serde_json::from_slice::<JsonObject>(&request.body)
-            .map_err(|_| ApiError("Invalid JSON storage request."))?
-    };
     let (canonical, alias) = match kind {
         OperationKind::Write => ("objects", "objects"),
         OperationKind::Delete => ("object_ids", "objectIds"),
     };
-    let fields = object.known_fields(&[(canonical, alias)])?;
-    let Some(raw) = fields.get(canonical).filter(|value| value.get() != "null") else {
-        return Ok(Vec::new());
-    };
-    let objects: Vec<Box<RawValue>> =
-        serde_json::from_str(raw.get()).map_err(|_| ApiError("Invalid storage object batch."))?;
-    if objects.len() > MAX_BATCH {
-        return Err(ApiError("Storage batch must contain at most 100 objects."));
-    }
-    let objects = objects
-        .iter()
-        .map(|raw| {
-            serde_json::from_str::<JsonObject>(raw.get())
-                .map_err(|_| ApiError("Invalid storage object."))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let objects = decode_object_batch(request, canonical, alias)?;
     match kind {
         OperationKind::Write => {
             // Match the API's ordering: validate every object before any OCC
@@ -192,6 +178,184 @@ fn decode_operations(
             .iter()
             .map(|object| decode_delete(object, user))
             .collect(),
+    }
+}
+
+fn decode_object_batch(
+    request: &Request,
+    canonical: &'static str,
+    alias: &'static str,
+) -> Result<Vec<JsonObject>, ApiError> {
+    // grpc-gateway's generated body decoder treats EOF as an empty message.
+    let object = if request.body.iter().all(|byte| is_json_space(*byte)) {
+        JsonObject(Vec::new())
+    } else {
+        serde_json::from_slice::<JsonObject>(&request.body)
+            .map_err(|_| ApiError("Invalid JSON storage request."))?
+    };
+    let fields = object.known_fields(&[(canonical, alias)])?;
+    let Some(raw) = fields.get(canonical).filter(|value| value.get() != "null") else {
+        return Ok(Vec::new());
+    };
+    let objects: Vec<Box<RawValue>> =
+        serde_json::from_str(raw.get()).map_err(|_| ApiError("Invalid storage object batch."))?;
+    if objects.len() > MAX_BATCH {
+        return Err(ApiError("Storage batch must contain at most 100 objects."));
+    }
+    objects
+        .iter()
+        .map(|raw| {
+            serde_json::from_str::<JsonObject>(raw.get())
+                .map_err(|_| ApiError("Invalid storage object."))
+        })
+        .collect()
+}
+
+fn read_objects<R: Repository>(repository: &mut R, request: &Request, user: UserId) -> Response {
+    let keys = match decode_object_batch(request, "object_ids", "objectIds").and_then(|objects| {
+        objects
+            .iter()
+            .map(decode_read_key)
+            .collect::<Result<Vec<_>, _>>()
+    }) {
+        Ok(keys) => keys,
+        Err(error) => return error.response(),
+    };
+    if keys.is_empty() {
+        return Response::json(200, b"{}".to_vec());
+    }
+    match repository.read_storage_objects(Actor::User(user), &keys) {
+        Ok(objects) => read_response(&keys, &objects, user),
+        Err(_) => gateway_error(500, 13, "Error reading storage objects."),
+    }
+}
+
+fn decode_read_key(object: &JsonObject) -> Result<StorageObjectKey, ApiError> {
+    let fields = object.known_fields(&[
+        ("collection", "collection"),
+        ("key", "key"),
+        ("user_id", "userId"),
+    ])?;
+    let collection = string_field(&fields, "collection")?;
+    let key = string_field(&fields, "key")?;
+    let owner = string_field(&fields, "user_id")?;
+    if collection.is_empty() || key.is_empty() {
+        return Err(ApiError(INVALID_KEYS));
+    }
+    let owner = if owner.is_empty() {
+        // ReadStorageObjectId's omitted owner is the global object, not caller.
+        UserId::new([0; 16])
+    } else {
+        parse_uuid(&owner)
+            .filter(|user| !user.is_zero())
+            .ok_or(ApiError(INVALID_USER))?
+    };
+    StorageObjectKey::new(collection, key, owner).map_err(|_| ApiError(INVALID_KEYS))
+}
+
+/// Independent implementation of the six text formats accepted by the pinned
+/// gofrs/uuid v5.4.0 parser. Hex digits are case insensitive; urn:uuid: is exact.
+fn parse_uuid(text: &str) -> Option<UserId> {
+    let bytes = text.as_bytes();
+    let body = match bytes.len() {
+        32 | 36 => bytes,
+        34 | 38 if bytes.first() == Some(&b'{') && bytes.last() == Some(&b'}') => {
+            &bytes[1..bytes.len() - 1]
+        }
+        41 | 45 if bytes.starts_with(b"urn:uuid:") => &bytes[9..],
+        _ => return None,
+    };
+    if body.len() == 36 && [8, 13, 18, 23].iter().any(|index| body[*index] != b'-') {
+        return None;
+    }
+    let mut output = [0_u8; 16];
+    let mut index = 0;
+    let mut nibble = 0;
+    for (position, byte) in body.iter().copied().enumerate() {
+        if body.len() == 36 && matches!(position, 8 | 13 | 18 | 23) {
+            continue;
+        }
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return None,
+        };
+        if nibble % 2 == 0 {
+            output[index] = digit << 4;
+        } else {
+            output[index] |= digit;
+            index += 1;
+        }
+        nibble += 1;
+    }
+    Some(UserId::new(output))
+}
+
+fn read_response(keys: &[StorageObjectKey], objects: &[StorageObject], user: UserId) -> Response {
+    if objects.len() > keys.len() {
+        return gateway_error(500, 13, "Error reading storage objects.");
+    }
+    let mut remaining = BTreeMap::new();
+    for key in keys {
+        *remaining.entry(key).or_insert(0_usize) += 1;
+    }
+    let mut encoded = Vec::with_capacity(objects.len().min(MAX_BATCH));
+    for object in objects {
+        let Some(count) = remaining.get_mut(&object.key).filter(|count| **count > 0) else {
+            return gateway_error(500, 13, "Error reading storage objects.");
+        };
+        *count -= 1;
+        let allowed = object.read_permission == ReadPermission::Public
+            || (object.read_permission == ReadPermission::Owner && object.key.user_id() == user);
+        if !allowed
+            || object.value.len() > MAX_VALUE_BYTES
+            || object.version != ContentVersion::from_value(&object.value)
+            || !object.integrity_digest.matches_value(&object.value)
+        {
+            return gateway_error(500, 13, "Error reading storage objects.");
+        }
+        let Ok(value) = std::str::from_utf8(&object.value) else {
+            return gateway_error(500, 13, "Error reading storage objects.");
+        };
+        let mut fields = vec![
+            format!(
+                "\"collection\":{}",
+                serde_json::Value::from(object.key.collection())
+            ),
+            format!("\"key\":{}", serde_json::Value::from(object.key.key())),
+            format!(
+                "\"user_id\":{}",
+                serde_json::Value::from(uuid_string(object.key.user_id()))
+            ),
+        ];
+        if !value.is_empty() {
+            fields.push(format!("\"value\":{}", serde_json::Value::from(value)));
+        }
+        fields.push(format!(
+            "\"version\":{}",
+            serde_json::Value::from(object.version.as_str())
+        ));
+        if object.read_permission != ReadPermission::None {
+            fields.push(format!(
+                "\"permission_read\":{}",
+                object.read_permission as u8
+            ));
+        }
+        if object.write_permission != WritePermission::None {
+            fields.push(format!(
+                "\"permission_write\":{}",
+                object.write_permission as u8
+            ));
+        }
+        // No invented create_time/update_time: the current Rust schema does not
+        // carry the upstream timestamp contract. This remains a wire gap.
+        encoded.push(format!("{{{}}}", fields.join(",")));
+    }
+    if encoded.is_empty() {
+        Response::json(200, b"{}".to_vec())
+    } else {
+        Response::json(200, format!("{{\"objects\":[{}]}}", encoded.join(",")))
     }
 }
 
@@ -539,6 +703,9 @@ mod tests {
         actor: Option<Actor>,
         operations: Vec<BatchOperation>,
         failure: Option<DomainError>,
+        read_calls: usize,
+        read_keys: Vec<StorageObjectKey>,
+        read_override: Option<Vec<StorageObject>>,
     }
 
     impl Repository for TestRepository {
@@ -570,6 +737,35 @@ mod tests {
                 return Err(error);
             }
             self.storage.apply_batch(actor, operations)
+        }
+
+        fn read_storage_objects(
+            &mut self,
+            actor: Actor,
+            keys: &[StorageObjectKey],
+        ) -> Result<Vec<StorageObject>, DomainError> {
+            self.read_calls += 1;
+            self.actor = Some(actor);
+            self.read_keys = keys.to_vec();
+            if let Some(error) = self.failure {
+                return Err(error);
+            }
+            if let Some(objects) = &self.read_override {
+                return Ok(objects.clone());
+            }
+            let mut objects = Vec::new();
+            for key in keys {
+                match self.storage.read(actor, key) {
+                    Ok(object) => objects.push(object),
+                    Err(error)
+                        if matches!(
+                            error.code(),
+                            StableCode::NotFound | StableCode::PermissionDenied
+                        ) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(objects)
         }
     }
 
@@ -1035,5 +1231,351 @@ mod tests {
         let mut changed = receipt;
         changed.previous_version = Some(ContentVersion::from_value(b"stale"));
         assert_eq!(write_response(&operations, &[changed]).status, 200);
+    }
+
+    fn read_request(body: &str) -> Request {
+        Request::new("POST", "/v2/storage", BTreeMap::new(), body.as_bytes())
+    }
+
+    fn seed_read_object(
+        repository: &mut TestRepository,
+        owner: UserId,
+        key: &str,
+        value: &[u8],
+        read_permission: ReadPermission,
+        write_permission: WritePermission,
+    ) -> StorageObject {
+        let key = StorageObjectKey::new("profile", key, owner).unwrap();
+        repository
+            .storage
+            .apply_batch(
+                Actor::Server,
+                &[BatchOperation::Write(WriteOperation {
+                    key: key.clone(),
+                    value: value.to_vec(),
+                    expected: VersionCheck::Any,
+                    read_permission,
+                    write_permission,
+                })],
+            )
+            .unwrap();
+        repository.storage.read(Actor::Server, &key).unwrap()
+    }
+
+    #[test]
+    fn read_preserves_value_bytes_uses_uuid_owner_and_calls_repository_once() {
+        let mut repository = TestRepository::default();
+        let value = b" { \"z\": 2, \"a\": 1 }\n";
+        seed_read_object(
+            &mut repository,
+            user(),
+            "k",
+            value,
+            ReadPermission::Owner,
+            WritePermission::Owner,
+        );
+        let input = serde_json::json!({"objectIds":[{
+            "collection":"profile","key":"k","userId":uuid_string(user()),
+            "unknown":"discarded"
+        }]})
+        .to_string();
+        let response = handle(&mut repository, &read_request(&input), user());
+        assert_eq!(response.status, 200);
+        assert_eq!(repository.read_calls, 1);
+        assert_eq!(repository.calls, 0);
+        assert_eq!(repository.actor, Some(Actor::User(user())));
+        assert_eq!(repository.read_keys[0].user_id(), user());
+        let result = body(&response);
+        let object = &result["objects"][0];
+        assert_eq!(object["value"].as_str().unwrap().as_bytes(), value);
+        assert_eq!(object["user_id"], uuid_string(user()));
+        assert_eq!(
+            object["version"],
+            ContentVersion::from_value(value).as_str()
+        );
+        assert_eq!(object["permission_read"], 1);
+        assert_eq!(object["permission_write"], 1);
+        assert!(object.get("create_time").is_none());
+        assert!(object.get("update_time").is_none());
+    }
+
+    #[test]
+    fn read_missing_owner_selects_global_object_and_omits_zero_scalar_permissions() {
+        let mut repository = TestRepository::default();
+        let global = UserId::new([0; 16]);
+        seed_read_object(
+            &mut repository,
+            global,
+            "k",
+            b"{\"global\":1}",
+            ReadPermission::Public,
+            WritePermission::None,
+        );
+        seed_read_object(
+            &mut repository,
+            user(),
+            "k",
+            b"{\"private\":1}",
+            ReadPermission::Owner,
+            WritePermission::Owner,
+        );
+        for owner in ["", ",\"user_id\":null", ",\"userId\":\"\""] {
+            let input =
+                format!("{{\"object_ids\":[{{\"collection\":\"profile\",\"key\":\"k\"{owner}}}]}}");
+            let response = handle(&mut repository, &read_request(&input), user());
+            assert_eq!(response.status, 200);
+            assert_eq!(repository.read_keys[0].user_id(), global);
+            let result = body(&response);
+            assert_eq!(result["objects"][0]["value"], "{\"global\":1}");
+            assert_eq!(
+                result["objects"][0]["user_id"],
+                "00000000-0000-0000-0000-000000000000"
+            );
+            assert_eq!(result["objects"][0]["permission_read"], 2);
+            assert!(result["objects"][0].get("permission_write").is_none());
+        }
+    }
+
+    #[test]
+    fn read_omits_missing_and_acl_hidden_objects() {
+        let mut repository = TestRepository::default();
+        let other = UserId::new([0x34; 16]);
+        seed_read_object(
+            &mut repository,
+            other,
+            "hidden",
+            b"{}",
+            ReadPermission::Owner,
+            WritePermission::Owner,
+        );
+        seed_read_object(
+            &mut repository,
+            user(),
+            "none",
+            b"{}",
+            ReadPermission::None,
+            WritePermission::Owner,
+        );
+        seed_read_object(
+            &mut repository,
+            other,
+            "public",
+            b"{}",
+            ReadPermission::Public,
+            WritePermission::Owner,
+        );
+        let input = serde_json::json!({"object_ids":[
+            {"collection":"profile","key":"hidden","user_id":uuid_string(other)},
+            {"collection":"profile","key":"none","user_id":uuid_string(user())},
+            {"collection":"profile","key":"missing","user_id":uuid_string(user())},
+            {"collection":"profile","key":"public","user_id":uuid_string(other)}
+        ]})
+        .to_string();
+        let response = handle(&mut repository, &read_request(&input), user());
+        assert_eq!(response.status, 200);
+        assert_eq!(body(&response)["objects"].as_array().unwrap().len(), 1);
+        assert_eq!(body(&response)["objects"][0]["key"], "public");
+        assert_eq!(repository.read_calls, 1);
+        let input = serde_json::json!({"object_ids":[{"collection":"profile","key":"missing"}]})
+            .to_string();
+        assert_eq!(
+            handle(&mut repository, &read_request(&input), user()).body,
+            b"{}"
+        );
+    }
+
+    #[test]
+    fn read_accepts_six_pinned_uuid_forms_and_rejects_invalid_or_explicit_nil() {
+        let canonical = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+        let plain = "6BA7B8109DAD11D180B400C04FD430C8";
+        let expected = parse_uuid(canonical).unwrap();
+        for uuid in [
+            canonical.to_owned(),
+            plain.to_owned(),
+            format!("{{{canonical}}}"),
+            format!("{{{plain}}}"),
+            format!("urn:uuid:{canonical}"),
+            format!("urn:uuid:{plain}"),
+        ] {
+            assert_eq!(parse_uuid(&uuid), Some(expected), "{uuid}");
+            let mut repository = TestRepository::default();
+            let input = serde_json::json!({"object_ids":[{"collection":"profile","key":"k","user_id":uuid}]}).to_string();
+            assert_eq!(
+                handle(&mut repository, &read_request(&input), user()).status,
+                200
+            );
+            assert_eq!(repository.read_keys[0].user_id(), expected);
+        }
+        for uuid in [
+            "00000000-0000-0000-0000-000000000000",
+            "{00000000000000000000000000000000}",
+            "urn:uuid:00000000000000000000000000000000",
+            "URN:UUID:6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+            "6ba7b810-9dad-11d1-80b4-00c04fd430cZ",
+            " 6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+            "6ba7b8109dad-11d1-80b4-00c04fd430c8",
+            "nonsense",
+        ] {
+            let mut repository = TestRepository::default();
+            let input = serde_json::json!({"object_ids":[{"collection":"profile","key":"k","user_id":uuid}]}).to_string();
+            let response = handle(&mut repository, &read_request(&input), user());
+            assert_eq!(response.status, 400, "{uuid}");
+            assert_eq!(body(&response)["message"], INVALID_USER);
+            assert_eq!(repository.read_calls, 0);
+        }
+    }
+
+    #[test]
+    fn read_empty_batches_do_not_access_repository() {
+        for input in [
+            "",
+            " \t\n",
+            "{}",
+            r#"{"object_ids":[]}"#,
+            r#"{"objectIds":null}"#,
+        ] {
+            let mut repository = TestRepository::default();
+            let response = handle(&mut repository, &read_request(input), user());
+            assert_eq!(response.status, 200);
+            assert_eq!(response.body, b"{}");
+            assert_eq!(repository.read_calls, 0);
+            assert_eq!(repository.calls, 0);
+        }
+    }
+
+    #[test]
+    fn read_schema_duplicates_types_and_invalid_keys_fail_before_repository() {
+        for input in [
+            r#"{"object_ids":null,"objectIds":[]}"#,
+            r#"{"object_ids":[{"collection":"c","key":"k","user_id":null,"userId":""}]}"#,
+            r#"{"object_ids":[{"collection":"c","key":"k","user_id":1}]}"#,
+            r#"{"object_ids":[{"collection":"c"}]}"#,
+            r#"{"object_ids":[null]}"#,
+            r#"{"object_ids":{}}"#,
+            r#"{"object_ids":[{"collection":"","key":"k"}]}"#,
+        ] {
+            let mut repository = TestRepository::default();
+            let response = handle(&mut repository, &read_request(input), user());
+            assert_eq!(response.status, 400, "{input}");
+            assert_eq!(body(&response)["code"], 3);
+            assert_eq!(repository.read_calls, 0);
+        }
+    }
+
+    #[test]
+    fn read_candidate_batch_limit_and_duplicate_keys_are_bounded() {
+        let mut repository = TestRepository::default();
+        seed_read_object(
+            &mut repository,
+            UserId::new([0; 16]),
+            "k",
+            b"{}",
+            ReadPermission::Public,
+            WritePermission::None,
+        );
+        let object = serde_json::json!({"collection":"profile","key":"k"});
+        let input = serde_json::json!({"object_ids":vec![object.clone(); MAX_BATCH]}).to_string();
+        let response = handle(&mut repository, &read_request(&input), user());
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            body(&response)["objects"].as_array().unwrap().len(),
+            MAX_BATCH
+        );
+        assert_eq!(repository.read_calls, 1);
+        let input = serde_json::json!({"object_ids":vec![object; MAX_BATCH+1]}).to_string();
+        let response = handle(&mut repository, &read_request(&input), user());
+        assert_eq!(response.status, 400);
+        assert_eq!(repository.read_calls, 1);
+        // Repeated output follows the candidate repository contract. Upstream
+        // deduplication/order depends on its SQL shape and remains unqualified.
+    }
+
+    #[test]
+    fn read_rejects_unrequested_hidden_and_corrupt_repository_objects() {
+        let mut repository = TestRepository::default();
+        let object = seed_read_object(
+            &mut repository,
+            user(),
+            "k",
+            b"{}",
+            ReadPermission::Owner,
+            WritePermission::Owner,
+        );
+        let input = serde_json::json!({"object_ids":[{"collection":"profile","key":"k","user_id":uuid_string(user())}]}).to_string();
+        let mut corrupt = Vec::new();
+        let mut changed = object.clone();
+        changed.key = StorageObjectKey::new("profile", "other", user()).unwrap();
+        corrupt.push(changed);
+        let mut changed = object.clone();
+        changed.read_permission = ReadPermission::None;
+        corrupt.push(changed);
+        let mut changed = object.clone();
+        changed.value = b"changed".to_vec();
+        corrupt.push(changed);
+        let mut changed = object.clone();
+        changed.version = ContentVersion::from_value(b"other");
+        corrupt.push(changed);
+        let mut changed = object.clone();
+        changed.integrity_digest = trnm_persistence_pg::IntegrityDigest::from_value(b"other");
+        corrupt.push(changed);
+        let mut changed = object.clone();
+        changed.value = vec![0xff];
+        changed.version = ContentVersion::from_value(&changed.value);
+        changed.integrity_digest = trnm_persistence_pg::IntegrityDigest::from_value(&changed.value);
+        corrupt.push(changed);
+        for changed in corrupt {
+            repository.read_override = Some(vec![changed]);
+            let response = handle(&mut repository, &read_request(&input), user());
+            assert_eq!(response.status, 500);
+            assert_eq!(body(&response)["message"], "Error reading storage objects.");
+            assert!(body(&response).get("objects").is_none());
+        }
+        repository.read_override = Some(vec![object.clone(), object]);
+        assert_eq!(
+            handle(&mut repository, &read_request(&input), user()).status,
+            500
+        );
+    }
+
+    #[test]
+    fn read_rejects_other_owner_private_objects_even_if_requested() {
+        let mut repository = TestRepository::default();
+        let other = UserId::new([0x34; 16]);
+        let object = seed_read_object(
+            &mut repository,
+            other,
+            "k",
+            b"{}",
+            ReadPermission::Owner,
+            WritePermission::Owner,
+        );
+        repository.read_override = Some(vec![object]);
+        let input = serde_json::json!({"object_ids":[{"collection":"profile","key":"k","user_id":uuid_string(other)}]}).to_string();
+        assert_eq!(
+            handle(&mut repository, &read_request(&input), user()).status,
+            500
+        );
+    }
+
+    #[test]
+    fn read_repository_failures_are_redacted_and_query_route_works() {
+        let mut repository = TestRepository {
+            failure: Some(DomainError::new(
+                StableCode::Unavailable,
+                "private SQL credentials",
+                RetryClass::SafeBackoff,
+            )),
+            ..TestRepository::default()
+        };
+        let mut input = read_request(r#"{"object_ids":[{"collection":"c","key":"k"}]}"#);
+        input.target = "/v2/storage?ignored=yes".to_owned();
+        let response = handle(&mut repository, &input, user());
+        assert_eq!(response.status, 500);
+        assert_eq!(body(&response)["code"], 13);
+        assert_eq!(body(&response)["message"], "Error reading storage objects.");
+        assert!(!String::from_utf8(response.body)
+            .unwrap()
+            .contains("private"));
+        assert_eq!(repository.read_calls, 1);
     }
 }

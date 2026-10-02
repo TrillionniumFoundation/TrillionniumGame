@@ -7,6 +7,7 @@ use trnm_persistence_pg::{
     CommitOutcome, CommitReceipt, CommitRequest, EntityHead, EntityId, EventId, EventInput,
     IntentId, IntentKind, OutboxInput, PgRepository, RefreshRotationOutcome, RotateRefreshToken,
     SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageMutationReceipt,
+    StorageObject, StorageObjectKey,
 };
 use trnm_session_core::RevocationReason;
 
@@ -47,6 +48,19 @@ pub trait Repository: std::fmt::Debug {
     ) -> Result<EntityHead, DomainError>;
 
     fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError>;
+
+    fn read_storage_objects(
+        &mut self,
+        actor: StorageActor,
+        keys: &[StorageObjectKey],
+    ) -> Result<Vec<StorageObject>, DomainError> {
+        let _ = (actor, keys);
+        Err(DomainError::new(
+            StableCode::Unimplemented,
+            "storage_repository_unavailable",
+            RetryClass::Never,
+        ))
+    }
 
     fn apply_storage_batch(
         &mut self,
@@ -109,6 +123,14 @@ impl Repository for PgRepository {
 
     fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError> {
         PgRepository::commit_command(self, request)
+    }
+
+    fn read_storage_objects(
+        &mut self,
+        actor: StorageActor,
+        keys: &[StorageObjectKey],
+    ) -> Result<Vec<StorageObject>, DomainError> {
+        PgRepository::read_storage_objects(self, actor, keys)
     }
 
     fn apply_storage_batch(
@@ -349,8 +371,13 @@ impl<R: Repository> App<R> {
             ("GET", "/v1/session/me")
             | ("POST", "/v1/session/refresh")
             | ("POST", "/v1/session/logout") => self.session_request(request),
-            ("PUT", "/v2/storage") | ("PUT", "/v2/storage/delete") => self.storage_request(request),
+            ("POST", "/v2/storage") | ("PUT", "/v2/storage") | ("PUT", "/v2/storage/delete") => {
+                self.storage_request(request)
+            }
             ("PUT", target) if storage_path(target) => self.storage_request(request),
+            ("POST", target) if target.split('?').next() == Some("/v2/storage") => {
+                self.storage_request(request)
+            }
             ("POST", "/-/drain") => self.drain(request),
             ("POST", "/v1/authority/bootstrap") => self.bootstrap(request),
             ("POST", "/v1/authority/commit") => self.commit(request),

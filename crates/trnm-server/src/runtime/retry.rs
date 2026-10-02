@@ -7,6 +7,7 @@ use trnm_contracts::{Digest32, DomainError, RetryClass, SessionFamilyId, StableC
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, EntityHead, EntityId, RefreshRotationOutcome, RotateRefreshToken,
     SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageMutationReceipt,
+    StorageObject, StorageObjectKey,
 };
 use trnm_session_core::RevocationReason;
 
@@ -115,6 +116,16 @@ impl<R: BudgetedRepository> Repository for RetryingRepository<R> {
         // even when the adapter classifies an error as safe to retry.
         self.inner
             .apply_storage_batch(actor, operations, updated_at_ms)
+    }
+
+    fn read_storage_objects(
+        &mut self,
+        actor: StorageActor,
+        keys: &[StorageObjectKey],
+    ) -> Result<Vec<StorageObject>, DomainError> {
+        // The complete read batch has one pool deadline and snapshot. Do not
+        // enter the authority-command retry supervisor implicitly.
+        self.inner.read_storage_objects(actor, keys)
     }
 
     fn verify_access_session(
@@ -297,6 +308,17 @@ mod tests {
             assert_eq!(updated_at_ms, self.updated_at_ms);
             Err(self.failure)
         }
+
+        fn read_storage_objects(
+            &mut self,
+            actor: StorageActor,
+            keys: &[StorageObjectKey],
+        ) -> Result<Vec<StorageObject>, DomainError> {
+            self.calls += 1;
+            assert_eq!(actor, self.actor);
+            assert_eq!(keys, std::slice::from_ref(self.operation.key()));
+            Err(self.failure)
+        }
     }
 
     impl BudgetedRepository for StorageMutationRepository {
@@ -403,6 +425,40 @@ mod tests {
             .unwrap_err();
             assert_eq!(calls, 1);
             assert_eq!(returned.retry(), retry);
+        }
+    }
+
+    #[test]
+    fn storage_reads_do_not_enter_implicit_retry_supervision() {
+        let actor = StorageActor::User(UserId::new([1; 16]));
+        let key = StorageObjectKey::new("system", "global", UserId::new([0; 16])).unwrap();
+        for retry in [
+            RetryClass::Never,
+            RetryClass::SafeImmediate,
+            RetryClass::SafeBackoff,
+            RetryClass::ResyncRequired,
+        ] {
+            let failure = error(retry);
+            let mut repository = RetryingRepository::new(
+                StorageMutationRepository {
+                    calls: 0,
+                    actor,
+                    operation: StorageBatchOperation::Delete(StorageDeleteOperation {
+                        key: key.clone(),
+                        expected_version: None,
+                    }),
+                    updated_at_ms: 0,
+                    failure,
+                },
+                immediate_policy(3),
+            )
+            .unwrap();
+            let returned = repository
+                .read_storage_objects(actor, std::slice::from_ref(&key))
+                .unwrap_err();
+            assert_eq!(returned, failure);
+            assert_eq!(repository.inner.calls, 1);
+            assert_eq!(repository.operational_metrics().retry_attempts, 0);
         }
     }
 

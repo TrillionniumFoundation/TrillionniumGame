@@ -40,7 +40,7 @@ The independently implemented Rust storage HTTP mutation adapter studies
 pinned server/api_storage.go, server/core_storage.go, server/api.go and
 apigrpc/apigrpc.proto plus nakama-common api/api.proto. Its protocol and public
 storage rejection strings follow those Apache-2.0 definitions; exact blobs and
-remaining differences are registered in contracts/storage/nakama-http-mutations-v1.json.
+remaining differences are registered in contracts/storage/nakama-http-storage-v1.json.
 No upstream Go implementation is compiled or copied by this adapter.
 
 "Nakama", "Heroic Labs", and related names and marks are the property of their

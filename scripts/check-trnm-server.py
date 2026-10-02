@@ -461,20 +461,24 @@ def main() -> int:
         (ROOT / "docs/status/TRNM_SERVER_STATUS.json").read_text(encoding="utf-8")
     )
     storage_contract = json.loads(
-        (ROOT / "contracts/storage/nakama-http-mutations-v1.json").read_text(encoding="utf-8")
+        (ROOT / "contracts/storage/nakama-http-storage-v1.json").read_text(encoding="utf-8")
     )
     if storage_contract.get("composition") != "crates/trnm-server::trnm-server":
-        fail("storage HTTP mutations must use the canonical process authority")
-    expected_storage_routes = {("PUT", "/v2/storage"), ("PUT", "/v2/storage/delete")}
+        fail("storage HTTP API must use the canonical process authority")
+    expected_storage_routes = {
+        ("POST", "/v2/storage"), ("PUT", "/v2/storage"), ("PUT", "/v2/storage/delete")
+    }
     if {
         (row.get("method"), row.get("path"))
         for row in storage_contract.get("routes", [])
     } != expected_storage_routes:
-        fail("storage mutation contract routes differ from the pinned source subset")
+        fail("storage API contract routes differ from the pinned source subset")
     if not storage_contract.get("limitations") or any(storage_contract.get("claims", {}).values()):
-        fail("storage mutation contract must retain limitations and no-credit claims")
+        fail("storage API contract must retain limitations and no-credit claims")
     if status.get("claims", {}).get("storage_http_mutation_source_candidate") is not True:
         fail("storage mutation component state is missing")
+    if status.get("claims", {}).get("storage_http_read_source_candidate") is not True:
+        fail("storage read component state is missing")
     if status.get("stage") != "canonical-http-grpc-websocket-session-database-source-candidate":
         fail("unexpected server status stage")
     claims = status.get("claims", {})
