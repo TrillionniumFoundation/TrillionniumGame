@@ -2,9 +2,36 @@ fn decode_storage_object(key: StorageObjectKey, row: &Row) -> Result<StorageObje
     decode_storage_object_at(key, row, 0)
 }
 
+fn decode_stored_storage_object(
+    key: StorageObjectKey,
+    row: &Row,
+) -> Result<StoredStorageObject, DomainError> {
+    Ok(StoredStorageObject {
+        object: decode_storage_object(key, row)?,
+        times: decode_storage_times(row, 4)?,
+    })
+}
+
+fn decode_storage_times(row: &Row, offset: usize) -> Result<StorageTimes, DomainError> {
+    let times = StorageTimes {
+        create: row
+            .try_get(offset)
+            .map_err(|_| data_loss("invalid_storage_timestamp"))?,
+        update: row
+            .try_get(offset + 1)
+            .map_err(|_| data_loss("invalid_storage_timestamp"))?,
+    };
+    times.validate()?;
+    Ok(times)
+}
+
 fn decode_listed_storage_object(collection: &str, row: &Row) -> Result<StorageObject, DomainError> {
-    let object_key: String = row.get(0);
-    let user_bytes: Vec<u8> = row.get(1);
+    let object_key: String = row
+        .try_get(0)
+        .map_err(|_| data_loss("invalid_storage_key_material"))?;
+    let user_bytes: Vec<u8> = row
+        .try_get(1)
+        .map_err(|_| data_loss("invalid_storage_user_id"))?;
     let key = decode_storage_key(collection.to_owned(), object_key, user_bytes)?;
     decode_storage_object_at(key, row, 2)
 }
@@ -13,11 +40,26 @@ fn decode_nakama_listed_storage_object(
     collection: &str,
     row: &Row,
 ) -> Result<StorageObject, DomainError> {
-    let object_key: String = row.get(0);
-    let user = decode_id16(row.get(1), UserId::new, "invalid_storage_user_id")?;
+    let object_key: String = row
+        .try_get(0)
+        .map_err(|_| data_loss("invalid_storage_key_material"))?;
+    let user_bytes = row
+        .try_get(1)
+        .map_err(|_| data_loss("invalid_storage_user_id"))?;
+    let user = decode_id16(user_bytes, UserId::new, "invalid_storage_user_id")?;
     let key = StorageObjectKey::new_nakama(collection.to_owned(), object_key, user)
         .map_err(|_| data_loss("invalid_storage_key_material"))?;
     decode_storage_object_at(key, row, 2)
+}
+
+fn decode_nakama_listed_storage_object_with_metadata(
+    collection: &str,
+    row: &Row,
+) -> Result<StoredStorageObject, DomainError> {
+    Ok(StoredStorageObject {
+        object: decode_nakama_listed_storage_object(collection, row)?,
+        times: decode_storage_times(row, 6)?,
+    })
 }
 
 fn decode_storage_object_at(
@@ -25,23 +67,32 @@ fn decode_storage_object_at(
     row: &Row,
     offset: usize,
 ) -> Result<StorageObject, DomainError> {
-    let value: Vec<u8> = row.get(offset);
+    let value: Vec<u8> = row
+        .try_get(offset)
+        .map_err(|_| data_loss("invalid_storage_value_bytes"))?;
     if value.len() > MAX_VALUE_BYTES {
         return Err(data_loss("invalid_storage_value_bytes"));
     }
     let integrity_digest = IntegrityDigest::new(decode_digest(
-        row.get(offset + 1),
+        row.try_get(offset + 1)
+            .map_err(|_| data_loss("invalid_storage_integrity_digest"))?,
         "invalid_storage_integrity_digest",
     )?)
     .map_err(|_| data_loss("invalid_storage_integrity_digest"))?;
     verify_storage_integrity(&value, integrity_digest)?;
-    let read_permission = match row.get::<_, i16>(offset + 2) {
+    let read_permission = match row
+        .try_get::<_, i16>(offset + 2)
+        .map_err(|_| data_loss("invalid_storage_read_permission"))?
+    {
         0 => ReadPermission::None,
         1 => ReadPermission::Owner,
         2 => ReadPermission::Public,
         _ => return Err(data_loss("invalid_storage_read_permission")),
     };
-    let write_permission = match row.get::<_, i16>(offset + 3) {
+    let write_permission = match row
+        .try_get::<_, i16>(offset + 3)
+        .map_err(|_| data_loss("invalid_storage_write_permission"))?
+    {
         0 => WritePermission::None,
         1 => WritePermission::Owner,
         _ => return Err(data_loss("invalid_storage_write_permission")),

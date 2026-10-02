@@ -5,6 +5,15 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 : "${TRNM_REQUIRE_LIVE_DATABASE:?TRNM_REQUIRE_LIVE_DATABASE must be explicit}"
 test "$TRNM_REQUIRE_LIVE_DATABASE" = 1
 : "${POSTGRES_IMAGE:?POSTGRES_IMAGE is required}"
+expected_image=$(python3 - "$ROOT/config/database-test-images.json" <<'PY_IMAGE'
+import json,sys
+print(json.load(open(sys.argv[1]))['profiles']['postgresql']['image'])
+PY_IMAGE
+)
+if [[ "$POSTGRES_IMAGE" != "$expected_image" ]]; then
+  echo 'postgresql image must match config/database-test-images.json' >&2
+  exit 64
+fi
 EVIDENCE_DIR=${EVIDENCE_DIR:-$ROOT/.artifacts/postgresql-connection-faults}
 CONTAINER=${POSTGRES_CONTAINER_NAME:-trnm-connection-fault-pg}
 PORT=${POSTGRES_PORT:-55435}
@@ -28,10 +37,13 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 docker exec "$CONTAINER" pg_isready -U trnm -d trnm >/dev/null
-mapfile -t migrations < <(find "$ROOT/migrations/postgresql" -maxdepth 1 -type f -name '*_up.sql' | sort)
-test "${#migrations[@]}" -gt 0
-cat "${migrations[@]}" | docker exec -i "$CONTAINER" \
-  psql -v ON_ERROR_STOP=1 -U trnm -d trnm >/dev/null
+TRNM_DATABASE_URL="postgresql://trnm:trnm@127.0.0.1:${PORT}/trnm" TRNM_DATABASE_PROFILE=postgresql \
+  bash "$ROOT/scripts/apply-authoritative-schema.sh" migrate \
+  > "$EVIDENCE_DIR/schema-identity.json" 2> "$EVIDENCE_DIR/schema-build.log"
+cp "$ROOT/migrations/MIGRATION_CHAIN.lock.json" "$EVIDENCE_DIR/migration-lock.json"
+python3 "$ROOT/scripts/check-migration-lock.py" > "$EVIDENCE_DIR/migration-chain-validation.json"
+python3 "$ROOT/scripts/check-authoritative-schema-identity.py" "$EVIDENCE_DIR/schema-identity.json" postgresql --mode fresh \
+  > "$EVIDENCE_DIR/schema-identity-check.json"
 
 cat <<'SQL' | docker exec -i "$CONTAINER" psql -v ON_ERROR_STOP=1 -X -q -U trnm -d trnm
 DO $$
@@ -181,6 +193,8 @@ manifest={
     "image_reference":sys.argv[3],
     "image_id":(evidence/"image-id.txt").read_text().strip(),
     "migration_lock_sha256":digest(root/"migrations/MIGRATION_CHAIN.lock.json"),
+  "schema_identity":json.loads((evidence/"schema-identity.json").read_text()),
+  "migration_chain_validation":json.loads((evidence/"migration-chain-validation.json").read_text()),
     "connection_churn_count":80,
     "pool_exhaustion_rejected":True,
     "cancel_rollback_verified":True,

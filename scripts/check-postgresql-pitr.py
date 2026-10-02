@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Validate PostgreSQL point-in-time recovery evidence source."""
 from __future__ import annotations
+
+import importlib.util
 import sys
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
@@ -29,6 +31,15 @@ REQUIRED=(
   '"production_ready": False',
 )
 class ValidationError(RuntimeError): pass
+
+SCHEMA_SPEC = importlib.util.spec_from_file_location(
+    "schema_consumer_source_contract", Path(__file__).with_name("check-schema-authority.py")
+)
+if SCHEMA_SPEC is None or SCHEMA_SPEC.loader is None:
+    raise RuntimeError("schema consumer checker unavailable")
+SCHEMA = importlib.util.module_from_spec(SCHEMA_SPEC)
+SCHEMA_SPEC.loader.exec_module(SCHEMA)
+
 def require(value:bool,message:str)->None:
   if not value: raise ValidationError(message)
 def validate_text(text:str)->None:
@@ -45,6 +56,11 @@ def validate_text(text:str)->None:
   require("DROP TABLE" not in text.upper(),"destructive schema rollback introduced")
   require("|| true" not in text,"failure suppression introduced")
   require("rm -rf /var/lib/postgresql/data/*" not in text,"live primary data deletion introduced")
+  try:
+      SCHEMA.validate_schema_consumer(text, "postgresql")
+      SCHEMA.validate_pinned_database_image(text, 'postgresql')
+  except SCHEMA.ValidationError as error:
+      raise ValidationError(str(error)) from error
 def main()->int:
   try: validate_text(HARNESS.read_text(encoding="utf-8"))
   except (OSError,ValidationError) as error:

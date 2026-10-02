@@ -2,6 +2,8 @@
 """Fail-closed source contract for CockroachDB semantic recovery evidence."""
 from __future__ import annotations
 
+import importlib.util
+
 import sys
 from pathlib import Path
 
@@ -23,6 +25,15 @@ REQUIRED_TABLES = {
 
 class ValidationError(RuntimeError):
     pass
+
+
+SCHEMA_SPEC = importlib.util.spec_from_file_location(
+    "schema_consumer_source_contract", Path(__file__).with_name("check-schema-authority.py")
+)
+if SCHEMA_SPEC is None or SCHEMA_SPEC.loader is None:
+    raise RuntimeError("schema consumer checker unavailable")
+SCHEMA = importlib.util.module_from_spec(SCHEMA_SPEC)
+SCHEMA_SPEC.loader.exec_module(SCHEMA)
 
 def require(value: bool, message: str) -> None:
     if not value:
@@ -62,6 +73,14 @@ def validate_texts(data: str, harness: str) -> None:
         require(quarantine_path not in combined, "non-authoritative schema referenced")
     require("DROP TABLE" not in combined.upper(), "destructive rollback introduced")
     require("|| true" not in harness, "failure suppression introduced")
+    try:
+        SCHEMA.validate_schema_consumer(harness, "cockroachdb", metadata_negative=True)
+        SCHEMA.validate_pinned_database_image(harness, 'cockroachdb')
+        SCHEMA.validate_storage_snapshot(data)
+        SCHEMA.validate_known_timestamp_fixtures(harness)
+        SCHEMA.validate_semantic_negative_probes(harness, "cockroachdb")
+    except SCHEMA.ValidationError as error:
+        raise ValidationError(str(error)) from error
 
 def main() -> int:
     try:

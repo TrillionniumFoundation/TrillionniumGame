@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import re
@@ -18,6 +19,13 @@ MAX_SEGMENT_GAP_SECONDS = 900
 HEX40 = re.compile(r"[0-9a-f]{40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 DIGEST_PINNED_IMAGE = re.compile(r"[^\s]+@sha256:[0-9a-f]{64}")
+IDENTITY_SPEC = importlib.util.spec_from_file_location(
+    "endurance_authoritative_schema_identity", Path(__file__).with_name("check-authoritative-schema-identity.py")
+)
+if IDENTITY_SPEC is None or IDENTITY_SPEC.loader is None:
+    raise RuntimeError("authoritative schema identity checker unavailable")
+IDENTITY = importlib.util.module_from_spec(IDENTITY_SPEC)
+IDENTITY_SPEC.loader.exec_module(IDENTITY)
 
 
 class ValidationError(RuntimeError):
@@ -65,7 +73,14 @@ def exact_commit(value: Any, label: str) -> str:
 def load_segments(paths: list[Path]) -> list[tuple[Path, dict[str, Any]]]:
     values = []
     for path in paths:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result = {}
+            for key, item in pairs:
+                require(key not in result, f"{path}: duplicate JSON key {key}")
+                result[key] = item
+            return result
+        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+        require(isinstance(value, dict), f"{path}: segment must be an object")
         require(
             value.get("schema") == "trillionnium.database-endurance-segment.v1",
             f"{path}: schema",
@@ -75,13 +90,23 @@ def load_segments(paths: list[Path]) -> list[tuple[Path, dict[str, Any]]]:
     return values
 
 
-def validate_capacity_manifest(value: Any, path: Path) -> dict[str, Any]:
+def validate_capacity_manifest(value: Any, path: Path,
+                               schema_source: tuple[dict[str, Any], int, int] | None = None) -> dict[str, Any]:
     require(isinstance(value, dict), f"{path}: capacity manifest")
     require(
         value.get("schema") == "trillionnium.database-capacity-segment.v1",
         f"{path}: capacity schema",
     )
     require(value.get("profile") in PROFILES, f"{path}: profile")
+    chains, version, tables = IDENTITY.validated_source() if schema_source is None else schema_source
+    try:
+        IDENTITY.validate_identity(value.get("schema_identity"), profile=value["profile"], chains=chains,
+                                   schema_version=version, table_count=tables, mode="verify")
+    except IDENTITY.ValidationError as error:
+        raise ValidationError(f"{path}: schema identity: {error}") from error
+    exact_digest(value.get("migration_lock_sha256"), f"{path}: migration lock digest")
+    require(value["migration_lock_sha256"] == sha(IDENTITY.ROOT / "migrations/MIGRATION_CHAIN.lock.json"),
+            f"{path}: migration lock digest differs from current source")
     exact_commit(value.get("candidate_commit"), f"{path}: candidate commit")
     exact_commit(value.get("candidate_tree"), f"{path}: candidate tree")
     exact_digest(value.get("workload_sha256"), f"{path}: workload digest")
@@ -142,8 +167,9 @@ def validate(paths: list[Path], target: str) -> dict[str, Any]:
     values = load_segments(paths)
     require(values, "empty endurance ledger")
 
+    schema_source = IDENTITY.validated_source()
     first_manifest = validate_capacity_manifest(
-        values[0][1].get("capacity_manifest"), values[0][0]
+        values[0][1].get("capacity_manifest"), values[0][0], schema_source
     )
     profile = first_manifest["profile"]
     candidate_commit = first_manifest["candidate_commit"]
@@ -153,6 +179,8 @@ def validate(paths: list[Path], target: str) -> dict[str, Any]:
     client_image = first_manifest["client_image_reference"]
     clients = first_manifest["clients"]
     threads = first_manifest["threads"]
+    schema_identity = first_manifest["schema_identity"]
+    migration_lock = first_manifest["migration_lock_sha256"]
 
     previous_digest = "GENESIS"
     previous_finished: int | None = None
@@ -173,7 +201,7 @@ def validate(paths: list[Path], target: str) -> dict[str, Any]:
             segment.get("previous_segment_sha256") == previous_digest,
             f"{path}: previous digest",
         )
-        capacity = validate_capacity_manifest(segment.get("capacity_manifest"), path)
+        capacity = validate_capacity_manifest(segment.get("capacity_manifest"), path, schema_source)
         require(
             segment.get("capacity_manifest_sha256")
             == hashlib.sha256(canonical(capacity)).hexdigest(),
@@ -196,6 +224,8 @@ def validate(paths: list[Path], target: str) -> dict[str, Any]:
         )
         require(capacity["clients"] == clients, f"{path}: client count changed")
         require(capacity["threads"] == threads, f"{path}: thread count changed")
+        require(capacity["schema_identity"] == schema_identity, f"{path}: schema identity changed")
+        require(capacity["migration_lock_sha256"] == migration_lock, f"{path}: migration lock changed")
 
         started = capacity["started_epoch_seconds"]
         finished = capacity["finished_epoch_seconds"]
@@ -234,6 +264,8 @@ def validate(paths: list[Path], target: str) -> dict[str, Any]:
         "candidate_commit": candidate_commit,
         "candidate_tree": candidate_tree,
         "workload_sha256": workload,
+        "schema_identity": schema_identity,
+        "migration_lock_sha256": migration_lock,
         "database_logical_id_sha256": database_identity,
         "client_image_reference": client_image,
         "clients": clients,

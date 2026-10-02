@@ -3,6 +3,15 @@ set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 : "${POSTGRES_IMAGE:?POSTGRES_IMAGE is required}"
+expected_image=$(python3 - "$ROOT/config/database-test-images.json" <<'PY_IMAGE'
+import json,sys
+print(json.load(open(sys.argv[1]))['profiles']['postgresql']['image'])
+PY_IMAGE
+)
+if [[ "$POSTGRES_IMAGE" != "$expected_image" ]]; then
+  echo 'postgresql image must match config/database-test-images.json' >&2
+  exit 64
+fi
 EVIDENCE_DIR=${EVIDENCE_DIR:-$ROOT/.artifacts/postgresql-recovery-barrier}
 CONTAINER=${POSTGRES_CONTAINER_NAME:-trnm-recovery-barrier-pg}
 PORT=${POSTGRES_PORT:-55434}
@@ -22,10 +31,13 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 docker exec "$CONTAINER" pg_isready -U trnm -d trnm_source >/dev/null
-mapfile -t migrations < <(find "$ROOT/migrations/postgresql" -maxdepth 1 -type f -name '*_up.sql' | sort)
-test "${#migrations[@]}" -gt 0
-cat "${migrations[@]}" | docker exec -i "$CONTAINER" \
-  psql -v ON_ERROR_STOP=1 -U trnm -d trnm_source >/dev/null
+TRNM_DATABASE_URL="postgresql://trnm:trnm@127.0.0.1:${PORT}/trnm_source" TRNM_DATABASE_PROFILE=postgresql \
+  bash "$ROOT/scripts/apply-authoritative-schema.sh" migrate \
+  > "$EVIDENCE_DIR/schema-identity.json" 2> "$EVIDENCE_DIR/schema-build.log"
+cp "$ROOT/migrations/MIGRATION_CHAIN.lock.json" "$EVIDENCE_DIR/migration-lock.json"
+python3 "$ROOT/scripts/check-migration-lock.py" > "$EVIDENCE_DIR/migration-chain-validation.json"
+python3 "$ROOT/scripts/check-authoritative-schema-identity.py" "$EVIDENCE_DIR/schema-identity.json" postgresql --mode fresh \
+  > "$EVIDENCE_DIR/schema-identity-check.json"
 
 cat <<'SQL' | docker exec -i "$CONTAINER" \
   psql -v ON_ERROR_STOP=1 -X -q -U trnm -d trnm_source
@@ -95,15 +107,15 @@ runtime_read_after_fence=$(PGPASSWORD=trnm_runtime psql -X -q -tA \
   -c 'SELECT count(*) FROM trnm_outbox')
 test "$runtime_read_after_fence" = 2
 printf '%s\n' "$runtime_read_after_fence" > "$EVIDENCE_DIR/runtime-read-after-fence.txt"
-if PGPASSWORD=trnm_runtime psql -v ON_ERROR_STOP=1 -X -q \
+if PGPASSWORD=trnm_runtime psql -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -X -q \
      -h 127.0.0.1 -p "$PORT" -U trnm_runtime -d trnm_source \
-     -c "INSERT INTO trnm_storage_objects VALUES ('fence','blocked',decode(repeat('77',16),'hex'),decode('01','hex'),decode(repeat('78',32),'hex'),2,1,20)" \
+     -c "INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms) VALUES ('fence','blocked',decode(repeat('77',16),'hex'),decode('01','hex'),decode(repeat('78',32),'hex'),2,1,20)" \
      > "$EVIDENCE_DIR/runtime-write-after-fence.stdout" \
      2> "$EVIDENCE_DIR/runtime-write-after-fence.stderr"; then
   echo "read-only runtime write unexpectedly succeeded" >&2
   exit 1
 fi
-grep -Ei 'read-only|read only' "$EVIDENCE_DIR/runtime-write-after-fence.stderr" >/dev/null
+python3 "$ROOT/scripts/check-sql-error.py" --stderr "$EVIDENCE_DIR/runtime-write-after-fence.stderr" --sqlstate 25006
 
 docker inspect --format='{{.Image}}' "$CONTAINER" > "$EVIDENCE_DIR/image-id.txt"
 python3 - "$ROOT" "$EVIDENCE_DIR" "$POSTGRES_IMAGE" "$pending_before" "$quarantined" <<'PY'
@@ -121,6 +133,8 @@ manifest={
     "image_reference":sys.argv[3],
     "image_id":(evidence/"image-id.txt").read_text().strip(),
     "migration_lock_sha256":digest(root/"migrations/MIGRATION_CHAIN.lock.json"),
+  "schema_identity":json.loads((evidence/"schema-identity.json").read_text()),
+  "migration_chain_validation":json.loads((evidence/"migration-chain-validation.json").read_text()),
     "active_lease_rejected": True,
     "pending_before":int(sys.argv[4]),
     "quarantined":int(sys.argv[5]),

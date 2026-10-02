@@ -26,8 +26,48 @@ admin_token='trnm_server_live_admin_token_0123456789abcdef'
 container="trnm-server-live-${profile}-${run_id//[^A-Za-z0-9_.-]/-}"
 server_pid=''
 
-postgres_image='postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94'
-cockroach_image='cockroachdb/cockroach:v24.1.2@sha256:105b9d1e10e4845c9c59266bef3c27ff8b82eeaeb1b464c75423408c3a2968ba'
+database_image() {
+  python3 - "$1" <<'PY_IMAGE'
+import json,re,sys
+from pathlib import Path
+image=json.loads(Path('config/database-test-images.json').read_text())['profiles'][sys.argv[1]]['image']
+assert re.fullmatch(r'[^\s]+@sha256:[0-9a-f]{64}',image)
+print(image)
+PY_IMAGE
+}
+postgres_image=$(database_image postgresql)
+cockroach_image=$(database_image cockroachdb)
+
+prepare_pinned_image() {
+  local image=$1
+  docker image inspect "$image" > "$evidence/image-inspect.json"
+  image_id=$(docker image inspect --format '{{.Id}}' "$image")
+  printf '%s\n' "$image_id" > "$evidence/image-id.txt"
+  docker image inspect --format '{{json .RepoDigests}}' "$image" > "$evidence/repo-digests.json"
+  python3 - "$image" "$evidence/repo-digests.json" <<'PY_DIGEST'
+import json,sys
+from pathlib import Path
+if sys.argv[1] not in json.loads(Path(sys.argv[2]).read_text()):
+    raise SystemExit("pulled image RepoDigests does not contain the current pinned reference")
+PY_DIGEST
+}
+verify_running_image() {
+  local actual_image_id
+  actual_image_id=$(docker inspect --format '{{.Image}}' "$container")
+  [[ "$actual_image_id" == "$image_id" ]]
+  printf '%s\n' "$actual_image_id" > "$evidence/container-image.txt"
+  case "$profile" in
+    postgresql) docker exec "$container" postgres --version > "$evidence/database-version.txt" ;;
+    cockroachdb) docker exec "$container" /cockroach/cockroach version > "$evidence/database-version.txt" ;;
+  esac
+  python3 - "$profile" "$evidence/database-version.txt" <<'PY_VERSION'
+import json,sys
+from pathlib import Path
+expected=json.loads(Path('config/database-test-images.json').read_text())['profiles'][sys.argv[1]]['version_output']
+if Path(sys.argv[2]).read_text().strip() != expected.strip():
+    raise SystemExit("running database version does not match current pinned profile")
+PY_VERSION
+}
 
 cleanup() {
   status=$?
@@ -46,6 +86,7 @@ if [[ "$profile" == postgresql ]]; then
   db_port=${TRNM_POSTGRES_PORT:-55435}
   database_url="postgresql://trnm:trnm_live_password@127.0.0.1:${db_port}/trnm"
   docker pull "$postgres_image" | tee "$evidence/image-pull.log"
+  prepare_pinned_image "$postgres_image"
   docker run --rm -d \
     --name "$container" \
     -e POSTGRES_DB=trnm \
@@ -75,6 +116,7 @@ if [[ "$profile" == postgresql ]]; then
 else
   database_url='postgresql://root@127.0.0.1:26257/trnm?sslmode=disable'
   docker pull "$cockroach_image" | tee "$evidence/image-pull.log"
+  prepare_pinned_image "$cockroach_image"
   docker run --rm -d \
     --name "$container" \
     --network host \
@@ -107,6 +149,7 @@ else
   }
 fi
 
+verify_running_image
 docker inspect "$container" > "$evidence/container-inspect.json"
 printf '%s\n' "$candidate_sha" > "$evidence/candidate-commit.txt"
 printf '%s\n' "$candidate_tree" > "$evidence/candidate-tree.txt"
@@ -189,6 +232,47 @@ if grep -Fq 'nakama_client_list_projection_skipped' "$evidence/nakama-client-lis
   echo 'Nakama client list projection database lane skipped instead of executing' >&2
   exit 1
 fi
+
+# A required exact storage-clock fixture and an isolated schema lifecycle suite.
+CARGO_TERM_COLOR=never \
+TRNM_REQUIRE_LIVE_DATABASE=1 \
+TRNM_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE="$profile" \
+  cargo test -p trnm-persistence-pg --locked --test storage_timestamps \
+    storage_timestamps_database_clock_no_op_and_atomicity \
+    -- --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/storage-timestamps.log"
+storage_timestamps_test_count=$(
+  sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
+    "$evidence/storage-timestamps.log"
+)
+[[ "$storage_timestamps_test_count" =~ ^[0-9]+$ ]]
+test "$storage_timestamps_test_count" -eq 1
+grep -Fxq "storage_timestamps_live_executed profile=${profile}" "$evidence/storage-timestamps.log"
+if grep -Fq 'storage_timestamps_live_skipped' "$evidence/storage-timestamps.log"; then
+  echo 'storage timestamp database lane skipped instead of executing' >&2
+  exit 1
+fi
+CARGO_TERM_COLOR=never \
+TRNM_REQUIRE_LIVE_DATABASE=1 \
+TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE="$profile" \
+  cargo test -p trnm-persistence-pg --locked --test schema_upgrade \
+    -- --nocapture --test-threads=1 2>&1 | tee "$evidence/schema-upgrade.log"
+schema_upgrade_test_count=$(
+  sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
+    "$evidence/schema-upgrade.log"
+)
+[[ "$schema_upgrade_test_count" =~ ^[0-9]+$ ]]
+test "$schema_upgrade_test_count" -eq 6
+if grep -Fq 'developer-only live test skip' "$evidence/schema-upgrade.log"; then
+  echo 'schema lifecycle lane skipped instead of executing' >&2
+  exit 1
+fi
+TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" \
+  bash scripts/apply-authoritative-schema.sh verify > "$evidence/schema-identity.json"
+python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" --mode verify > "$evidence/schema-identity-check.json"
+cp migrations/MIGRATION_CHAIN.lock.json "$evidence/migration-lock.json"
+python3 scripts/check-migration-lock.py > "$evidence/migration-chain-validation.json"
 
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
@@ -339,7 +423,7 @@ printf 'diagnostic_total_refresh_tokens=%s\n' \
   >> "$evidence/database-assertions.txt"
 
 cat > "$evidence/summary.json" <<EOF
-{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
+{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"storage_timestamps":true,"schema_upgrade":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
 EOF
 python3 -m json.tool "$evidence/summary.json" >/dev/null
 find "$evidence" -type f ! -name SHA256SUMS -print0 \

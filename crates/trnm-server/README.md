@@ -49,6 +49,9 @@ The package consumes:
 ## Public contracts
 
 The candidate CLI exposes `check-config`, `migrate`, and `serve`.
+Migration uses the shared locked 0001/0002 schema runner; serve verifies existing
+schema version 2, chain/catalog identity and storage writer epoch 2 without
+changing metadata or schema.
 The source includes:
 
 - `GET /healthz`, `GET /readyz`, and `GET /metrics`;
@@ -68,13 +71,25 @@ Storage mutations decode bounded protobuf-JSON-shaped batches and preserve the
 original value bytes for public MD5 versions. Owners come from a verified,
 persisted candidate session principal. Calls use the bounded pool and are never
 automatically retried by the generic command supervisor. The source contract is
-`contracts/storage/nakama-http-storage-v1.json`. Official tokens, acknowledgement
-timestamps, exact list/query/gob/collation and read query/order/multiplicity,
+`contracts/storage/nakama-http-storage-v1.json`. Official tokens,
+source-bound historical timestamps, exact list/query/gob/collation and read query/order/multiplicity,
 hooks/index, ambiguous-commit reconciliation and
 exact database/oracle evidence remain open.
 The database live harness includes a canonical Rust application fixture for
 these routes, with required database configuration and a checked execution
 marker. This does not establish TCP, SDK or immutable-oracle equivalence.
+
+The canonical repository, pool and retry wrappers carry persisted timestamp
+metadata through write, read and list responses. Fresh insert acknowledgements
+require a known equal creation/update pair; Exact and changed-content receipts
+require known update time. Write acknowledgements preserve database
+microseconds; read/list project the same stored timestamps to whole seconds as
+the pinned upstream source does. Checked `prost-types` formatting produces UTC
+protobuf timestamps and rejects invalid ranges or nanoseconds as a generic 500.
+Historical NULL fields remain absent: a real update can establish update time
+while creation remains unknown, and a blind no-op preserves both original times.
+`updated_at_ms` remains a separate explicit caller clock. The storage-only
+database clock policy grants no exception for other public timestamps.
 
 `STORAGE_LIST_ROUTES` supplies the two live GET templates. The list adapter
 verifies the current principal before query and cursor parsing, then calls one
@@ -91,10 +106,15 @@ The row-key projection preserves authoritative Unicode-character bounds and
 permits dot/control identifiers. Collection and cursor key requests are bounded
 at 4096 bytes, page limits at 100, and gob nesting/type/container work is bounded.
 Unsupported gob descriptors, non-UTF8 Go strings, query alias/malformed behavior,
-concurrent pagination, timestamps and exact oracle/SDK qualification remain open.
+concurrent pagination, historical timestamp import and exact oracle/SDK qualification remain open.
 The live harness requires one exact client-list repository test, its matching
 profile marker and no skip, and seals its log with the existing artifact packet.
 These source controls do not grant live or independent acceptance.
+The same harness also requires one exact storage timestamp database test and the
+isolated schema lifecycle suite, verifies the timestamp profile marker, rejects
+developer skips and seals their logs with the artifact packet. Required schema,
+role fencing, upgrade, recovery and compatibility evidence remain independent of
+a successful local fixture.
 
 ## Operations
 

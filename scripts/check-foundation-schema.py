@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import re
 from pathlib import Path
 
@@ -9,10 +10,32 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "contracts/database/foundation-schema.v1.json"
 CREATE_TABLE = re.compile(r"CREATE\s+TABLE\s+([a-z0-9_]+)", re.IGNORECASE)
 CREATE_INDEX = re.compile(r"CREATE\s+INDEX\s+([a-z0-9_]+)", re.IGNORECASE)
+DIGEST_ALGORITHM = "ordered-path-git-blob-sha256.v1"
+UPGRADE_COLUMNS = (
+    ("metadata_chain_digest", "trnm_schema_metadata", "chain_digest", "string"),
+    ("metadata_digest_algorithm", "trnm_schema_metadata", "digest_algorithm", "string"),
+    ("metadata_storage_writer_epoch", "trnm_schema_metadata", "storage_writer_epoch", "integer"),
+    ("metadata_upgrade_source_commit", "trnm_schema_metadata", "upgrade_source_commit", "string"),
+    ("storage_create_time", "trnm_storage_objects", "create_time", "timestamp"),
+    ("storage_update_time", "trnm_storage_objects", "update_time", "timestamp"),
+)
 
 
 class SchemaError(RuntimeError):
     pass
+
+
+def locked_chain(root: Path) -> dict[str, object]:
+    script = Path(__file__).with_name("check-migration-lock.py")
+    spec = importlib.util.spec_from_file_location("foundation_migration_lock", script)
+    if spec is None or spec.loader is None:
+        raise SchemaError("migration-lock checker unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        return module.validate(root)
+    except (module.ValidationError, OSError, ValueError) as error:
+        raise SchemaError(f"authoritative migration lock: {error}") from error
 
 
 def normalize(sql: str) -> str:
@@ -95,12 +118,42 @@ def inspect_profile(
     }
 
 
+def inspect_upgrade(profile: str, path: Path) -> dict[str, object]:
+    sql = path.read_text(encoding="utf-8")
+    markers = re.findall(r"^-- trnm:action ([a-z_]+)\s*$", sql, flags=re.MULTILINE)
+    expected_markers = [row[0] for row in UPGRADE_COLUMNS]
+    if markers != expected_markers:
+        raise SchemaError(f"{profile}: upgrade action inventory/order differs")
+    clean = re.sub(r"--[^\n]*", "", sql)
+    statements = [normalize(part) for part in clean.split(";") if part.strip()]
+    if profile == "postgresql":
+        if not statements or statements[0] != "begin" or statements[-1] != "commit":
+            raise SchemaError("postgresql: timestamp upgrade must own one transaction")
+        statements = statements[1:-1]
+    kinds = {
+        "string": "text" if profile == "postgresql" else "string",
+        "integer": "bigint" if profile == "postgresql" else "int8",
+        "timestamp": "timestamptz",
+    }
+    expected = [f"alter table {table} add column {name} {kinds[kind]}"
+                for _, table, name, kind in UPGRADE_COLUMNS]
+    if statements != expected:
+        raise SchemaError(f"{profile}: timestamp upgrade must append exactly six nullable columns without defaults/backfill")
+    return {"action_count": len(statements), "historical_timestamps_remain_unknown": True}
+
+
 def validate(root: Path = ROOT) -> dict[str, object]:
     contract = json.loads(
         (root / CONTRACT.relative_to(ROOT)).read_text(encoding="utf-8")
     )
     if contract.get("schema") != "trillionnium.foundation-schema-contract.v1":
         raise SchemaError("unexpected contract schema")
+    if contract.get("schema_version") != 2 or contract.get("storage_writer_epoch") != 2:
+        raise SchemaError("current schema version and storage writer epoch must be 2")
+    if contract.get("migration_lock") != "migrations/MIGRATION_CHAIN.lock.json":
+        raise SchemaError("foundation contract must consume the authoritative migration lock")
+    if contract.get("digest_algorithm") != DIGEST_ALGORITHM:
+        raise SchemaError("foundation migration digest algorithm differs from Rust runner")
     if any(contract.get("claims", {}).values()):
         raise SchemaError("foundation schema contract overclaims maturity")
     if contract.get("security", {}).get("raw_session_token_storage_allowed") is not False:
@@ -113,10 +166,18 @@ def validate(root: Path = ROOT) -> dict[str, object]:
     ):
         raise SchemaError("automatic destructive rollback must be false")
 
+    chain = locked_chain(root)
     profiles = []
     for profile in ("postgresql", "cockroachdb"):
-        relative = Path(contract["profiles"][profile]["path"])
-        profiles.append(inspect_profile(profile, root / relative, contract, root))
+        row = chain["profiles"][profile]
+        relative = Path(contract["profiles"][profile]["foundation_path"])
+        if relative.as_posix() != row["ordered_paths"][0]:
+            raise SchemaError(f"{profile}: immutable foundation fixture differs from chain prefix")
+        result = inspect_profile(profile, root / relative, contract, root)
+        result.update(inspect_upgrade(profile, root / row["ordered_paths"][1]))
+        result.update({"ordered_paths": row["ordered_paths"], "chain_sha256": row["chain_sha256"],
+                       "digest_algorithm": row["digest_algorithm"]})
+        profiles.append(result)
     if profiles[0]["tables"] != profiles[1]["tables"]:
         raise SchemaError("logical table order differs between profiles")
 

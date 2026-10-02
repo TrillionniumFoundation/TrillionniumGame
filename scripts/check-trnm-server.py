@@ -66,9 +66,26 @@ REQUIRED_FILES = {
     ROOT / "crates/trnm-server/src/runtime/storage_cursor_tests.rs",
     ROOT / "crates/trnm-storage-core/src/lib.rs",
     STORAGE_LIVE_HARNESS,
+    PERSISTENCE_ROOT / "schema.rs",
+    PERSISTENCE_ROOT / "storage_metadata.rs",
+    SERVER_ROOT / "trnm-schema.rs",
+    ROOT / "crates/trnm-persistence-pg/tests/storage_timestamps.rs",
+    ROOT / "crates/trnm-persistence-pg/tests/schema_upgrade.rs",
 }
 REQUIRED_TESTS = {
     "canonical_storage_api_live_database",
+    "storage_timestamp_json_matches_protobuf_range_precision_and_pre_epoch",
+    "new_storage_ack_requires_both_times_and_historical_unknown_is_not_fabricated",
+    "storage_ack_rejects_missing_effective_update_time_and_unequal_insert_pair",
+    "read_projects_valid_fraction_to_seconds_omits_unknown_and_rejects_invalid_times",
+    "storage_list_projects_fraction_to_seconds_omits_unknown_and_rejects_invalid_times",
+    "storage_timestamps_database_clock_no_op_and_atomicity",
+    "authoritative_fresh_repeat_and_readonly_verification",
+    "authoritative_v1_preserves_history_and_observes_actual_legacy_writer_revocation",
+    "authoritative_populated_unbound_and_catalog_drift_fail_closed",
+    "authoritative_declared_partial_prefix_resumes_and_malformed_prefixes_reject",
+    "authoritative_existing_empty_v1_requires_a_real_unprivileged_writer_barrier",
+    "authoritative_inherited_storage_privileges_are_not_a_writer_barrier",
     "nakama_client_listing_modes_cursors_and_integrity_are_database_projected",
     "nakama_row_identifier_projection_keeps_unicode_schema_bounds_separate",
     "storage_list_default_page_and_original_gob_continuation_are_bounded",
@@ -183,7 +200,7 @@ def require_markers(label: str, text: str, markers: tuple[str, ...]) -> None:
 
 
 def validate_storage_live_harness(source: str) -> None:
-    """Check the two owned live fixture lanes, without granting execution credit.
+    """Check storage and schema live lanes, without granting execution credit.
 
     This accepts the repository's bounded shell layout rather than evaluating
     shell code. Required environment, exact selectors, count/marker/skip guards
@@ -227,6 +244,12 @@ def validate_storage_live_harness(source: str) -> None:
             "nakama-client-list-projection.log", "nakama_client_list_test_count",
             "nakama_client_list_projection_executed", "nakama_client_list_projection_skipped",
         ),
+        (
+            'cargo test -p trnm-persistence-pg --locked --test storage_timestamps '
+            'storage_timestamps_database_clock_no_op_and_atomicity',
+            "storage-timestamps.log", "storage_timestamps_test_count",
+            "storage_timestamps_live_executed", "storage_timestamps_live_skipped",
+        ),
     )
     previous_end = migration
     for cargo, logfile, counter, marker, skip in lanes:
@@ -252,6 +275,29 @@ def validate_storage_live_harness(source: str) -> None:
         if not previous_end < start < assignment < count < numeric < exact < executed < reject_skip < end:
             fail("storage live harness fixture/guard order drifted")
         previous_end = end
+    schema_start = once(
+        'CARGO_TERM_COLOR=never TRNM_REQUIRE_LIVE_DATABASE=1 '
+        'TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" '
+        'cargo test -p trnm-persistence-pg --locked --test schema_upgrade '
+        '-- --nocapture --test-threads=1 2>&1 | tee "$evidence/schema-upgrade.log"'
+    )
+    schema_assignment = once("schema_upgrade_test_count=$(")
+    schema_count = once(
+        "sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\\1/p' "
+        '"$evidence/schema-upgrade.log"'
+    )
+    schema_numeric = once('[[ "$schema_upgrade_test_count" =~ ^[0-9]+$ ]]')
+    schema_exact = once('test "$schema_upgrade_test_count" -eq 6')
+    schema_skip = once("if grep -Fq 'developer-only live test skip' \"$evidence/schema-upgrade.log\"; then")
+    try:
+        schema_end = commands.index("fi", schema_skip + 1)
+    except ValueError:
+        fail("schema live harness skip guard has no terminal block")
+    if "exit 1" not in commands[schema_skip + 1:schema_end] or "exit 0" in commands[schema_skip + 1:schema_end]:
+        fail("schema live harness must reject a developer-only skip")
+    if not previous_end < schema_start < schema_assignment < schema_count < schema_numeric < schema_exact < schema_skip < schema_end:
+        fail("schema live harness required environment/count/skip order drifted")
+    previous_end = schema_end
     summary = [index for index, command in enumerate(commands)
                if '"nakama_client_list_projection":true' in command and command.startswith("{")]
     if len(summary) != 1 or summary[0] <= previous_end:
@@ -291,6 +337,8 @@ def validate_dependency_boundary(manifest: dict[str, object]) -> None:
     if manifest.get("dependencies") != expected_dependencies:
         fail("server candidate changed the reviewed persistence dependency boundary")
     expected_build_dependencies = {
+        "openssl": "=0.10.81",
+        "serde_json": "=1.0.145",
         "prost-build": "=0.14.3",
         "prost-types": "=0.14.3",
         "protoc-bin-vendored": "=3.2.0",
@@ -480,10 +528,9 @@ def main() -> int:
             "database_cancellation_failures: snapshot.cancellation_failures",
         ),
         "crates/trnm-persistence-pg/src/bin/trnm_server/schema.rs": (
-            "migrations/postgresql/0001_foundation_up.sql",
-            "migrations/cockroachdb/0001_foundation_up.sql",
-            "trnm_schema_metadata",
-            "REQUIRED_TABLES: [&str; 10]",
+            "migrate_authoritative_schema",
+            "verify_authoritative_schema",
+            "TRNM_STORAGE_LEGACY_WRITER_ROLE",
             "PgPool::connect_plain",
             "PgPool::connect_tls",
             "PgTlsConfig::new",

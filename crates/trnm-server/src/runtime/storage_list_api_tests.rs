@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode, UserId};
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, ContentVersion, EntityHead, EntityId, IntegrityDigest,
-    ReadPermission, StorageActor, StorageClientListPage, StorageListPosition, StorageObject,
-    StorageObjectKey, WritePermission,
+    ReadPermission, StorageActor, StorageListPosition, StorageObject, StorageObjectKey,
+    StorageTimes, StorageTimestamp, StoredStorageClientListPage, StoredStorageObject,
+    WritePermission,
 };
 
 use super::app::Repository;
@@ -27,7 +28,7 @@ type ObservedQuery = (
 struct FakeRepository {
     calls: usize,
     observed: Option<ObservedQuery>,
-    page: Result<StorageClientListPage, DomainError>,
+    page: Result<StoredStorageClientListPage, DomainError>,
 }
 
 impl Repository for FakeRepository {
@@ -50,7 +51,7 @@ impl Repository for FakeRepository {
         owner: Option<UserId>,
         after: Option<&StorageListPosition>,
         limit: usize,
-    ) -> Result<StorageClientListPage, DomainError> {
+    ) -> Result<StoredStorageClientListPage, DomainError> {
         self.calls += 1;
         self.observed = Some((actor, collection.to_owned(), owner, after.cloned(), limit));
         self.page.clone()
@@ -69,7 +70,19 @@ fn repository(objects: Vec<StorageObject>, next: Option<StorageListPosition>) ->
     FakeRepository {
         calls: 0,
         observed: None,
-        page: Ok(StorageClientListPage { objects, next }),
+        page: Ok(StoredStorageClientListPage {
+            objects: objects
+                .into_iter()
+                .map(|object| StoredStorageObject {
+                    object,
+                    times: StorageTimes {
+                        create: None,
+                        update: None,
+                    },
+                })
+                .collect(),
+            next,
+        }),
     }
 }
 fn request(target: &str) -> Request {
@@ -249,6 +262,89 @@ fn storage_list_response_defends_against_acl_scope_and_integrity_violations() {
         handle(&mut repo, &request("/v2/storage/inventory"), USER).status,
         500
     );
+}
+
+#[test]
+fn storage_list_projects_fraction_to_seconds_omits_unknown_and_rejects_invalid_times() {
+    let known = StorageTimes {
+        create: Some(StorageTimestamp {
+            seconds: -1,
+            nanos: 999_999_000,
+        }),
+        update: Some(StorageTimestamp {
+            seconds: 1_700_000_000,
+            nanos: 123_456_000,
+        }),
+    };
+    for times in [
+        known,
+        StorageTimes::default(),
+        StorageTimes {
+            create: None,
+            update: known.update,
+        },
+    ] {
+        let mut repo = repository(vec![object("sword", USER, ReadPermission::Public)], None);
+        repo.page.as_mut().unwrap().objects[0].times = times;
+        let response = handle(&mut repo, &request("/v2/storage/inventory"), USER);
+        assert_eq!(response.status, 200);
+        let encoded = json(&response);
+        let object = &encoded["objects"][0];
+        for (field, timestamp, expected) in [
+            ("create_time", times.create, "1969-12-31T23:59:59Z"),
+            ("update_time", times.update, "2023-11-14T22:13:20Z"),
+        ] {
+            if let Some(timestamp) = timestamp {
+                assert_eq!(object[field], expected);
+                let projected: prost_types::Timestamp =
+                    object[field].as_str().unwrap().parse().unwrap();
+                assert_eq!(projected.seconds, timestamp.seconds);
+                assert_eq!(projected.nanos, 0);
+            } else {
+                assert!(
+                    object.get(field).is_none(),
+                    "unknown {field} must stay absent"
+                );
+            }
+        }
+        assert_eq!(repo.calls, 1);
+    }
+    for bad in [
+        StorageTimestamp {
+            seconds: 0,
+            nanos: 1_000_000_000,
+        },
+        StorageTimestamp {
+            seconds: -62_135_596_801,
+            nanos: 0,
+        },
+        StorageTimestamp {
+            seconds: 253_402_300_800,
+            nanos: 0,
+        },
+    ] {
+        for times in [
+            StorageTimes {
+                create: Some(bad),
+                update: known.update,
+            },
+            StorageTimes {
+                create: known.create,
+                update: Some(bad),
+            },
+        ] {
+            let mut repo = repository(vec![object("sword", USER, ReadPermission::Public)], None);
+            repo.page.as_mut().unwrap().objects[0].times = times;
+            let response = handle(&mut repo, &request("/v2/storage/inventory"), USER);
+            assert_eq!(response.status, 500);
+            assert_eq!(
+                json(&response),
+                serde_json::json!({"code":13,"message":"Error listing storage objects."})
+            );
+            assert!(json(&response).get("objects").is_none());
+            assert_eq!(repo.calls, 1);
+        }
+    }
 }
 
 #[test]

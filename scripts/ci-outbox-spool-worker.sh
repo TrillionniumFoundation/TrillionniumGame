@@ -20,6 +20,20 @@ for command in docker python3 cargo git sha256sum; do
   }
 done
 
+pinned_image_for() {
+  python3 - "$1" <<'PYIMAGE'
+import json,re,sys
+from pathlib import Path
+profile=sys.argv[1]
+image=json.loads(Path("config/database-test-images.json").read_text())["profiles"][profile]["image"]
+pattern={"postgresql":r"postgres@sha256:[0-9a-f]{64}","cockroachdb":r"cockroachdb/cockroach@sha256:[0-9a-f]{64}"}[profile]
+if re.fullmatch(pattern,image) is None:
+    raise SystemExit("current database image config must have a complete immutable digest")
+print(image)
+PYIMAGE
+}
+expected_image=$(pinned_image_for "$profile")
+
 case "$profile" in
   postgresql)
     image=${TRNM_POSTGRES_IMAGE:?TRNM_POSTGRES_IMAGE with immutable OCI digest is required}
@@ -30,6 +44,11 @@ case "$profile" in
     migration=migrations/cockroachdb/0001_foundation_up.sql
     ;;
 esac
+if [[ "$image" != "$expected_image" ]]; then
+  echo 'database image override does not match config/database-test-images.json' >&2
+  exit 64
+fi
+
 case "$image" in
   *@sha256:[0-9a-f][0-9a-f]*) ;;
   *)
@@ -52,6 +71,26 @@ password='trnm-local-evidence-password-0123456789'
 
 container_exists() {
   docker inspect "$container" >/dev/null 2>&1
+}
+
+verify_running_image() {
+  local profile=$1 container=$2 expected_id=$3 evidence=$4
+  actual_image_id=$(docker inspect --format '{{.Image}}' "$container") || return
+  [[ "$actual_image_id" == "$expected_id" ]] || return 1
+  printf 'container_image_id=%s\n' "$actual_image_id" >"$evidence/container-image.txt"
+  case "$profile" in
+    postgresql) docker exec "$container" postgres --version >"$evidence/database-version.txt" || return ;;
+    cockroachdb) docker exec "$container" /cockroach/cockroach version >"$evidence/database-version.txt" || return ;;
+    *) return 64 ;;
+  esac
+  python3 - "$profile" "$evidence/database-version.txt" <<'PYVERSION'
+import json,sys
+from pathlib import Path
+expected=json.loads(Path("config/database-test-images.json").read_text())["profiles"][sys.argv[1]]["version_output"]
+actual=Path(sys.argv[2]).read_text()
+if actual.strip() != expected.strip():
+    raise SystemExit("running database binary version does not match current pinned profile")
+PYVERSION
 }
 
 container_running() {
@@ -90,12 +129,13 @@ printf '%s\n' \
   "tree=$tree" \
   "profile=$profile" \
   "image=$image" \
-  "migration=$migration" \
-  "migration_sha256=$migration_sha" \
+  "foundation_migration=$migration" \
+  "foundation_migration_sha256=$migration_sha" \
   "run_id=$run_id" \
   >"$evidence/source.txt"
 
 docker pull "$image" 2>&1 | tee "$evidence/logs/image-pull.log"
+docker image inspect "$image" >"$evidence/image-inspect.json"
 image_id=$(docker image inspect --format '{{.Id}}' "$image")
 image_repo_digests=$(docker image inspect --format '{{json .RepoDigests}}' "$image")
 printf 'image_id=%s\nrepo_digests=%s\n' "$image_id" "$image_repo_digests" \
@@ -128,9 +168,6 @@ if [[ "$profile" == postgresql ]]; then
   port=$(docker port "$container" 5432/tcp | awk -F: 'NR==1 {print $NF}')
   [[ "$port" =~ ^[0-9]+$ ]]
   database_url="postgresql://postgres:${password}@127.0.0.1:${port}/trnm"
-  docker exec -i -e PGPASSWORD="$password" "$container" \
-    psql -X -v ON_ERROR_STOP=1 -U postgres -d trnm \
-    <"$migration" 2>&1 | tee "$evidence/logs/migration.log"
   sql_exec() {
     docker exec -e PGPASSWORD="$password" "$container" \
       psql -X -A -t -v ON_ERROR_STOP=1 -U postgres -d trnm -c "$1"
@@ -164,15 +201,25 @@ else
     --host=127.0.0.1:26257 --execute='CREATE DATABASE IF NOT EXISTS trnm'
   port=26257
   database_url="postgresql://root@127.0.0.1:${port}/trnm?sslmode=disable"
-  docker exec -i "$container" cockroach sql --insecure \
-    --host=127.0.0.1:26257 --database=trnm \
-    <"$migration" 2>&1 | tee "$evidence/logs/migration.log"
   sql_exec() {
     docker exec "$container" cockroach sql --insecure --format=tsv \
       --host=127.0.0.1:26257 --database=trnm --execute="$1" \
       | tail -n +2
   }
 fi
+
+verify_running_image "$profile" "$container" "$image_id" "$evidence"
+
+python3 scripts/check-migration-lock.py >"$evidence/migration-chain-validation.json"
+cp migrations/MIGRATION_CHAIN.lock.json "$evidence/migration-chain.lock.json"
+TRNM_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE="$profile" \
+TRNM_SCHEMA_SOURCE_COMMIT="$commit" \
+TRNM_SCHEMA_APPLIED_AT_MS=1 \
+  bash scripts/apply-authoritative-schema.sh migrate \
+  >"$evidence/schema-identity.json" 2>"$evidence/schema-migration.log"
+python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" \
+  --mode fresh --source-commit="$commit" >"$evidence/schema-identity-check.json"
 
 cargo build --locked --package trnm-persistence-pg \
   --bin trnm-pg-command --bin trnm-outbox-worker \
@@ -370,8 +417,10 @@ manifest = {
     "target_tree": source["tree"],
     "profile": source["profile"],
     "image": source["image"],
-    "migration": source["migration"],
-    "migration_sha256": source["migration_sha256"],
+    "foundation_migration": source["foundation_migration"],
+    "foundation_migration_sha256": source["foundation_migration_sha256"],
+    "schema_identity": json.loads((root / "schema-identity.json").read_text()),
+    "migration_chain_validation": json.loads((root / "migration-chain-validation.json").read_text()),
     "run_id": source["run_id"],
     "assertions": {
         "normal_delivery_completed": True,

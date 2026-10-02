@@ -182,7 +182,7 @@
       "status": "source-candidate",
       "required_next": [
         "exact-head build/test/Clippy and actual prospective merge",
-        "timestamp/receipt and remaining storage domain implementation",
+        "original timestamp import/policy and remaining storage domain implementation",
         "separate PostgreSQL and CockroachDB live packets",
         "immutable Nakama wire/database differential",
         "conflict-free protocol/database/security acceptance"
@@ -213,8 +213,34 @@
         "exact-head build/test/Clippy and actual prospective merge",
         "separate retained PostgreSQL and CockroachDB list packets",
         "original gateway/gob/profile-text-collation/concurrent-page immutable differential",
-        "timestamp and remaining storage domain implementation",
+        "original timestamp import/policy and remaining storage domain implementation",
         "official SDK black-box execution and conflict-free protocol/database/security acceptance"
+      ],
+      "accepted": false,
+      "gap_closed": false
+    },
+    {
+      "id": "SRC-STORAGE-TIMESTAMP-SCHEMA-V2",
+      "gap_ids": [
+        "GAP-P1-STORAGE-001",
+        "GAP-P0-DATA-001",
+        "GAP-P0-SERVER-001"
+      ],
+      "paths": [
+        "crates/trnm-persistence-pg/src/schema.rs",
+        "crates/trnm-persistence-pg/src/storage_metadata.rs",
+        "crates/trnm-persistence-pg/tests/schema_upgrade.rs",
+        "crates/trnm-persistence-pg/tests/storage_timestamps.rs",
+        "migrations/MIGRATION_CHAIN.lock.json",
+        "contracts/storage/nakama-http-storage-v1.json"
+      ],
+      "status": "source-candidate",
+      "required_next": [
+        "exact-head and prospective-merge native checks",
+        "profile-separated fresh/upgrade/old-session/fault/restore evidence",
+        "original timestamp import manifest or independently accepted unknown-history policy",
+        "immutable Nakama timestamp/SQL and official SDK differential",
+        "independent database protocol security and operations acceptance"
       ],
       "accepted": false,
       "gap_closed": false

@@ -1,24 +1,24 @@
 fn apply_delete(
     transaction: &mut Transaction<'_>,
-    staged: &mut BTreeMap<StorageObjectKey, Option<StorageObject>>,
+    staged: &mut BTreeMap<StorageObjectKey, Option<StoredStorageObject>>,
     actor: Actor,
     operation: &DeleteOperation,
-) -> Result<MutationReceipt, DomainError> {
+) -> Result<StoredStorageMutationReceipt, DomainError> {
     let previous = staged
         .get(&operation.key)
         .cloned()
         .ok_or_else(|| data_loss("storage_batch_lock_missing"))?
         .ok_or_else(storage_not_found)?;
-    authorize_write(actor, &operation.key, Some(&previous))?;
+    authorize_write(actor, &operation.key, Some(&previous.object))?;
     if operation
         .expected_version
-        .is_some_and(|expected| expected != previous.version)
+        .is_some_and(|expected| expected != previous.object.version)
     {
         return Err(version_error());
     }
     let deleted = transaction
         .execute(
-            "DELETE FROM trnm_storage_objects \
+            "DELETE FROM public.trnm_storage_objects \
              WHERE collection = $1 AND object_key = $2 AND user_id = $3",
             &[
                 &operation.key.collection(),
@@ -31,11 +31,71 @@ fn apply_delete(
         return Err(data_loss("storage_delete_row_count_mismatch"));
     }
     staged.insert(operation.key.clone(), None);
-    Ok(MutationReceipt {
-        key: operation.key.clone(),
-        previous_version: Some(previous.version),
-        current_version: None,
+    Ok(StoredStorageMutationReceipt {
+        receipt: MutationReceipt {
+            key: operation.key.clone(),
+            previous_version: Some(previous.object.version),
+            current_version: None,
+        },
+        times: previous.times,
     })
+}
+
+fn verify_storage_writer_epoch(
+    transaction: &mut Transaction<'_>,
+    profile: DatabaseProfile,
+) -> Result<(), DomainError> {
+    // This snapshot check is deliberately nonlocking. It complements a real
+    // credential/session upgrade barrier; it cannot fence already-unchecked v1 writers.
+    let row = transaction
+        .query_opt(
+            "SELECT schema_version, profile, storage_writer_epoch, chain_digest, digest_algorithm \
+         FROM public.trnm_schema_metadata WHERE singleton = 1",
+            &[],
+        )
+        .map_err(|source| {
+            let error = map_postgres_error(source);
+            if error.code() == StableCode::FailedPrecondition {
+                data_loss("storage_schema_not_ready")
+            } else {
+                error
+            }
+        })?
+        .ok_or_else(|| data_loss("storage_schema_not_ready"))?;
+    let version: i64 = row
+        .try_get(0)
+        .map_err(|_| data_loss("storage_schema_not_ready"))?;
+    let recorded_profile: String = row
+        .try_get(1)
+        .map_err(|_| data_loss("storage_schema_not_ready"))?;
+    let epoch: Option<i64> = row
+        .try_get(2)
+        .map_err(|_| data_loss("storage_schema_not_ready"))?;
+    let digest: Option<String> = row
+        .try_get(3)
+        .map_err(|_| data_loss("storage_schema_not_ready"))?;
+    let algorithm: Option<String> = row
+        .try_get(4)
+        .map_err(|_| data_loss("storage_schema_not_ready"))?;
+    if u64::try_from(version).ok() != Some(crate::AUTHORITATIVE_SCHEMA_VERSION)
+        || epoch.and_then(|value| u64::try_from(value).ok())
+            != Some(crate::AUTHORITATIVE_STORAGE_WRITER_EPOCH)
+        || recorded_profile != profile.metadata_value()
+    {
+        return Err(data_loss("storage_writer_epoch_mismatch"));
+    }
+    use std::fmt::Write as _;
+    let mut expected = String::with_capacity(64);
+    for byte in crate::authoritative_chain_digest(profile).get().as_bytes() {
+        write!(expected, "{byte:02x}")
+            .map_err(|_| data_loss("storage_schema_identity_mismatch"))?;
+    }
+    if digest.as_deref() != Some(expected.as_str())
+        || algorithm.as_deref() != Some(crate::AUTHORITATIVE_CHAIN_DIGEST_ALGORITHM)
+    {
+        return Err(data_loss("storage_schema_identity_mismatch"));
+    }
+    Ok(())
 }
 
 fn validate_batch(operations: &[BatchOperation]) -> Result<(), DomainError> {

@@ -55,6 +55,8 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
     ) -> dict:
         observed = requested if observed is None else observed
         start = 1_800_000_000 + index * 21_600 if start is None else start
+        chains, version, tables = self.finalizer.IDENTITY.validated_source()
+        schema_profile = profile if profile in chains else "postgresql"
         return {
             "schema": "trillionnium.database-capacity-segment.v1",
             "profile": profile,
@@ -64,6 +66,16 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
             "candidate_commit": commit,
             "candidate_tree": tree,
             "workload_sha256": "c" * 64,
+            "migration_lock_sha256": hashlib.sha256((ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_bytes()).hexdigest(),
+            "schema_identity": {
+                "schema": "trillionnium.authoritative-schema-report.v1", "profile": schema_profile,
+                "schema_version": version, "storage_writer_epoch": 2,
+                "chain_digest": chains[schema_profile]["chain_sha256"],
+                "digest_algorithm": "ordered-path-git-blob-sha256.v1",
+                "source_commit": "1" * 40, "upgrade_source_commit": "2" * 40,
+                "migration_applied": False, "applied_steps": 0, "table_count": tables,
+                "compatibility_credit": False,
+            },
             "requested_duration_seconds": requested,
             "observed_duration_seconds": observed,
             "started_epoch_seconds": start,
@@ -226,6 +238,61 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("capacity/endurance source contract: OK", result.stdout)
+
+    def test_mixed_or_missing_schema_identity_cannot_form_an_endurance_ledger(self):
+        for mutation in ("missing", "old_epoch", "wrong_chain", "wrong_algorithm", "mutation_claim", "changed_provenance", "wrong_lock"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                paths = self.four_segment_ledger(root)
+                capacity = self.capacity(index=1)
+                schema = capacity["schema_identity"]
+                if mutation == "missing":
+                    capacity.pop("schema_identity")
+                elif mutation == "old_epoch":
+                    schema["storage_writer_epoch"] = 1
+                elif mutation == "wrong_chain":
+                    schema["chain_digest"] = "e" * 64
+                elif mutation == "wrong_algorithm":
+                    schema["digest_algorithm"] = "raw-content-historical.v1"
+                elif mutation == "mutation_claim":
+                    schema["migration_applied"] = True
+                    schema["applied_steps"] = 2
+                elif mutation == "changed_provenance":
+                    schema["upgrade_source_commit"] = "3" * 40
+                else:
+                    capacity["migration_lock_sha256"] = "e" * 64
+                previous = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+                paths[1] = self.write_segment(root, 1, previous, capacity)
+                previous = hashlib.sha256(paths[1].read_bytes()).hexdigest()
+                for index in (2, 3):
+                    paths[index] = self.write_segment(root, index, previous)
+                    previous = hashlib.sha256(paths[index].read_bytes()).hexdigest()
+                with self.assertRaises(self.finalizer.ValidationError):
+                    self.finalizer.validate(paths, "24h")
+
+    def test_capacity_workload_preserves_create_time_and_requires_schema_verification(self):
+        plan = json.loads(self.checker.PLAN.read_text())
+        workload = self.checker.WORKLOAD.read_text()
+        smoke = self.checker.SMOKE.read_text()
+        segment = self.checker.SEGMENT.read_text()
+        finalize = self.checker.FINALIZE.read_text()
+        for candidate in (
+            workload.replace("update_time = now()", "create_time = now()"),
+            workload.replace("now(), now()", ":payload, :payload"),
+            workload.replace("create_time, update_time", "create_time"),
+        ):
+            with self.assertRaises(self.checker.ValidationError):
+                self.checker.validate(plan, candidate, smoke, segment, finalize)
+        with self.assertRaises(self.checker.ValidationError):
+            self.checker.validate(plan, workload, smoke.replace("apply-authoritative-schema.sh", "removed-schema-verifier"), segment, finalize)
+
+    def test_schema_identity_json_cannot_have_ambiguous_duplicate_fields(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self.four_segment_ledger(Path(temporary))
+            value = paths[0].read_text()
+            paths[0].write_text(value.replace('"storage_writer_epoch":2', '"storage_writer_epoch":1,"storage_writer_epoch":2'))
+            with self.assertRaisesRegex(self.finalizer.ValidationError, "duplicate JSON key storage_writer_epoch"):
+                self.finalizer.validate(paths, "24h")
 
 
 if __name__ == "__main__":

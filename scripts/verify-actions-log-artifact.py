@@ -52,6 +52,45 @@ def load_emitter() -> Any:
 EMITTER = load_emitter()
 
 
+def load_migration_checker() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "actions_log_migration_lock", ROOT / "scripts/check-migration-lock.py"
+    )
+    if spec is None or spec.loader is None:
+        raise VerificationError("cannot load authoritative migration-lock checker")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+MIGRATIONS = load_migration_checker()
+
+
+def strict_object(data: bytes, label: str) -> dict[str, Any]:
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise VerificationError(f"{label}: duplicate JSON key {key}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(data, object_pairs_hook=unique)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise VerificationError(f"{label}: invalid JSON") from error
+    if not isinstance(value, dict):
+        raise VerificationError(f"{label}: JSON object required")
+    return value
+
+
+def profile_object(document: dict[str, Any], profile: str, label: str) -> dict[str, Any]:
+    profiles = document.get("profiles")
+    if not isinstance(profiles, dict) or not isinstance(profiles.get(profile), dict):
+        raise VerificationError(f"{label}: malformed profile mapping")
+    return profiles[profile]
+
+
 def require_nonempty_string(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise VerificationError(f"{label} must be a non-empty string")
@@ -190,21 +229,16 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
 
 
 def fetch_profile_bindings(
-    token: str, repository: str, head_sha: str
-) -> dict[str, dict[str, str]]:
+    token: str, repository: str, head_sha: str, *, head_tree: str | None = None
+) -> dict[str, dict[str, Any]]:
     lock_bytes, _ = fetch_exact_file(
         token, repository, head_sha, "migrations/MIGRATION_CHAIN.lock.json"
     )
     image_bytes, _ = fetch_exact_file(
         token, repository, head_sha, "config/database-test-images.json"
     )
-    try:
-        lock = json.loads(lock_bytes)
-        images = json.loads(image_bytes)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise VerificationError("migration lock or database image lock is invalid JSON") from error
-    if lock.get("schema") != "trillionnium.migration-chain-lock.v1":
-        raise VerificationError("migration lock schema mismatch")
+    lock = strict_object(lock_bytes, "migration lock")
+    images = strict_object(image_bytes, "database image lock")
     if images.get("schema") != "trillionnium.database-test-images.v1":
         raise VerificationError("database image lock schema mismatch")
     profiles = lock.get("profiles")
@@ -212,35 +246,39 @@ def fetch_profile_bindings(
     if not isinstance(profiles, dict) or not isinstance(image_profiles, dict):
         raise VerificationError("profile lock mappings are malformed")
 
-    result: dict[str, dict[str, str]] = {}
+    tree_sha = head_tree if head_tree is not None else fetch_commit_tree(token, repository, head_sha)
+    tree = request_json(token, f"{api_base(repository)}/git/trees/{tree_sha}?recursive=1")
+    if tree.get("sha") != tree_sha or tree.get("truncated") is not False or not isinstance(tree.get("tree"), list):
+        raise VerificationError("exact-head migration tree is mismatched, truncated or malformed")
+    inventory = {profile: [] for profile in PROFILES}
+    seen: set[str] = set()
+    for entry in tree["tree"]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            raise VerificationError("Git tree entry is malformed")
+        path = entry["path"]
+        if path in seen:
+            raise VerificationError("Git tree contains duplicate paths")
+        seen.add(path)
+        for profile in PROFILES:
+            if path.startswith(f"migrations/{profile}/") and path.endswith(".sql"):
+                if entry.get("type") != "blob" or entry.get("mode") not in ("100644", "100755"):
+                    raise VerificationError("migration tree contains a non-regular SQL source")
+                inventory[profile].append(path)
+    inventory = {profile: sorted(paths) for profile, paths in inventory.items()}
+
+    def read_source(path: str) -> bytes:
+        return fetch_exact_file(token, repository, head_sha, path)[0]
+
+    try:
+        validation = MIGRATIONS.validate_source_document(lock, read_source, inventory)
+    except (MIGRATIONS.ValidationError, OSError, ValueError) as error:
+        raise VerificationError(f"exact-head authoritative migration lock: {error}") from error
+
+    result: dict[str, dict[str, Any]] = {}
     for profile in PROFILES:
         row = profiles.get(profile)
         if not isinstance(row, dict):
             raise VerificationError(f"migration profile is absent: {profile}")
-        ordered = row.get("ordered_files")
-        if not isinstance(ordered, list) or len(ordered) != 1:
-            raise VerificationError(
-                f"{profile} must have exactly one locked foundation migration"
-            )
-        entry = ordered[0]
-        if not isinstance(entry, dict):
-            raise VerificationError(f"{profile} migration entry is malformed")
-        path = require_nonempty_string(entry.get("path"), f"{profile} migration path")
-        expected_directory = f"migrations/{profile}"
-        if row.get("directory") != expected_directory:
-            raise VerificationError(f"{profile} migration directory mismatch")
-        if PurePosixPath(path).parent.as_posix() != expected_directory:
-            raise VerificationError(f"{profile} migration path escapes its locked directory")
-        locked_blob = require_nonempty_string(
-            entry.get("git_blob_sha1"), f"{profile} migration blob"
-        )
-        if SHA40.fullmatch(locked_blob) is None:
-            raise VerificationError(f"{profile} migration blob is not 40 lowercase hex")
-        _, actual_blob = fetch_exact_file(token, repository, head_sha, path)
-        if actual_blob != locked_blob:
-            raise VerificationError(
-                f"{profile} migration lock mismatch: {locked_blob} != {actual_blob}"
-            )
         image_row = image_profiles.get(profile)
         if not isinstance(image_row, dict):
             raise VerificationError(f"database image profile is absent: {profile}")
@@ -248,8 +286,13 @@ def fetch_profile_bindings(
         if "@sha256:" not in image:
             raise VerificationError(f"{profile} database image is not digest pinned")
         result[profile] = {
-            "migration": path,
-            "migration_blob_sha1": actual_blob,
+            "migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
+            "migration_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
+            "schema_version": str(validation["schema_version"]),
+            "storage_writer_epoch": "2",
+            "chain_digest": validation["profiles"][profile]["chain_sha256"],
+            "digest_algorithm": validation["digest_algorithm"],
+            "ordered_files": row["ordered_files"],
             "image": image,
         }
     return result
@@ -366,7 +409,7 @@ def validate_archive(
     run_id: str,
     run_attempt: str,
     profile: str,
-    binding: dict[str, str],
+    binding: dict[str, Any],
 ) -> dict[str, object]:
     if profile not in PROFILES:
         raise VerificationError(f"unsupported profile: {profile}")
@@ -388,11 +431,45 @@ def validate_archive(
             "workflow_path": WORKFLOW_PATH,
             "job_key": "live-profile",
             "job_name": f"live-profile ({profile})",
-            "migration": binding["migration"],
-            "migration_blob_sha1": binding["migration_blob_sha1"],
+            **{key: binding[key] for key in (
+                "migration_lock", "schema_version", "storage_writer_epoch", "chain_digest", "digest_algorithm"
+            )},
         },
         "identity.env",
     )
+    retained_lock = files.get("migration-chain.lock.json", b"")
+    if hashlib.sha256(retained_lock).hexdigest() != binding["migration_lock_sha256"]:
+        raise VerificationError("retained migration lock differs from exact-head source")
+    lock = strict_object(retained_lock, "retained migration lock")
+    if lock.get("schema_version") != 2 or profile_object(lock, profile, "retained migration lock").get("ordered_files") != binding["ordered_files"]:
+        raise VerificationError("retained migration chain is incomplete or mismatched")
+    schema = strict_object(files.get("schema-identity.json", b""), "schema identity")
+    expected_schema = {
+        "schema": "trillionnium.authoritative-schema-report.v1", "profile": profile,
+        "schema_version": 2, "storage_writer_epoch": 2,
+        "chain_digest": binding["chain_digest"], "digest_algorithm": binding["digest_algorithm"],
+        "source_commit": head_sha, "upgrade_source_commit": head_sha,
+        "table_count": 10, "applied_steps": len(binding["ordered_files"]),
+        "migration_applied": True, "compatibility_credit": False,
+    }
+    for key, value in expected_schema.items():
+        if type(schema.get(key)) is not type(value) or schema.get(key) != value:
+            raise VerificationError(f"schema identity: {key} mismatch")
+    validation = strict_object(files.get("migration-chain-validation.json", b""), "migration chain validation")
+    validation_row = profile_object(validation, profile, "migration chain validation")
+    expected_validation = {
+        "file_count": len(binding["ordered_files"]),
+        "ordered_paths": [entry["path"] for entry in binding["ordered_files"]],
+        "chain_sha256": binding["chain_digest"], "digest_algorithm": binding["digest_algorithm"],
+    }
+    if (type(validation.get("schema_version")) is not int or validation.get("schema_version") != 2
+            or validation.get("digest_algorithm") != binding["digest_algorithm"]
+            or validation.get("source_identity_verified") is not True
+            or validation.get("runtime_execution_verified") is not False
+            or validation.get("compatibility_credit") is not False
+            or any(type(validation_row.get(key)) is not type(value) or validation_row.get(key) != value
+                   for key, value in expected_validation.items())):
+        raise VerificationError("retained whole-chain validation differs from source binding")
     result = parse_env(files.get("result.env", b""), "result.env")
     require_env(
         result,
@@ -468,8 +545,13 @@ def validate_archive(
         "profile": profile,
         "archive_sha256": hashlib.sha256(data).hexdigest(),
         "archive_size": len(data),
-        "migration": binding["migration"],
-        "migration_blob_sha1": binding["migration_blob_sha1"],
+        "migration_lock": binding["migration_lock"],
+        "migration_lock_sha256": binding["migration_lock_sha256"],
+        "schema_version": 2,
+        "storage_writer_epoch": 2,
+        "chain_digest": binding["chain_digest"],
+        "digest_algorithm": binding["digest_algorithm"],
+        "ordered_files": binding["ordered_files"],
         "database_image": binding["image"],
         "file_count": len(files),
         "crash_before_publish": "passed-with-declared-possible-lost-effect",
@@ -624,7 +706,7 @@ def verify_run(
     )
     jobs = fetch_jobs(token, repository, run_id)
     by_name = validate_job_set(jobs, current=current)
-    bindings = fetch_profile_bindings(token, repository, head_sha)
+    bindings = fetch_profile_bindings(token, repository, head_sha, head_tree=head_tree)
 
     output_directory.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, object]] = []

@@ -5,7 +5,24 @@ root=$(git rev-parse --show-toplevel)
 cd "$root"
 
 run_root=${TRNM_PG_RESPONSE_LOSS_ROOT:-run/pg-server-response-loss}
-image=${TRNM_POSTGRES_IMAGE:-postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94}
+pinned_image_for() {
+  python3 - "$1" <<'PYIMAGE'
+import json,re,sys
+from pathlib import Path
+profile=sys.argv[1]
+image=json.loads(Path("config/database-test-images.json").read_text())["profiles"][profile]["image"]
+pattern={"postgresql":r"postgres@sha256:[0-9a-f]{64}","cockroachdb":r"cockroachdb/cockroach@sha256:[0-9a-f]{64}"}[profile]
+if re.fullmatch(pattern,image) is None:
+    raise SystemExit("current database image config must have a complete immutable digest")
+print(image)
+PYIMAGE
+}
+expected_image=$(pinned_image_for postgresql)
+image=${TRNM_POSTGRES_IMAGE:-$expected_image}
+if [[ "$image" != "$expected_image" ]]; then
+  echo 'database image override does not match config/database-test-images.json' >&2
+  exit 64
+fi
 container=${TRNM_POSTGRES_CONTAINER:-trnm-pg-response-loss-${GITHUB_RUN_ID:-local}-$$}
 port=${TRNM_POSTGRES_PORT:-55433}
 listen=${TRNM_SERVER_LISTEN:-127.0.0.1:17352}
@@ -18,6 +35,26 @@ source_tree=$(git rev-parse HEAD^{tree})
 rm -rf "$run_root"
 mkdir -p "$run_root"
 
+verify_running_image() {
+  local profile=$1 container=$2 expected_id=$3 evidence=$4
+  actual_image_id=$(docker inspect --format '{{.Image}}' "$container") || return
+  [[ "$actual_image_id" == "$expected_id" ]] || return 1
+  printf 'container_image_id=%s\n' "$actual_image_id" >"$evidence/container-image.txt"
+  case "$profile" in
+    postgresql) docker exec "$container" postgres --version >"$evidence/database-version.txt" || return ;;
+    cockroachdb) docker exec "$container" /cockroach/cockroach version >"$evidence/database-version.txt" || return ;;
+    *) return 64 ;;
+  esac
+  python3 - "$profile" "$evidence/database-version.txt" <<'PYVERSION'
+import json,sys
+from pathlib import Path
+expected=json.loads(Path("config/database-test-images.json").read_text())["profiles"][sys.argv[1]]["version_output"]
+actual=Path(sys.argv[2]).read_text()
+if actual.strip() != expected.strip():
+    raise SystemExit("running database binary version does not match current pinned profile")
+PYVERSION
+}
+
 capture_postgres_diagnostics() {
   docker inspect "$container" >"$run_root/container-inspect.json" 2>&1 || true
   docker logs "$container" >"$run_root/postgres.log" 2>&1 || true
@@ -27,7 +64,7 @@ cleanup() {
   status=$?
   if [[ $status -ne 0 ]]; then
     capture_postgres_diagnostics
-    [[ -f "$run_root/migration.log" ]] && cat "$run_root/migration.log" >&2 || true
+    [[ -f "$run_root/schema-migration.log" ]] && cat "$run_root/schema-migration.log" >&2 || true
     [[ -f "$run_root/postgres.log" ]] && tail -n 200 "$run_root/postgres.log" >&2 || true
   fi
   if [[ -n "${server_pid:-}" ]] && kill -0 "$server_pid" 2>/dev/null; then
@@ -55,6 +92,9 @@ docker run --rm -d \
   "$image" >"$run_root/container-id.txt"
 
 docker image inspect "$image" >"$run_root/image-inspect.json"
+image_id=$(docker image inspect --format '{{.Id}}' "$image")
+image_repo_digests=$(docker image inspect --format '{{json .RepoDigests}}' "$image")
+printf 'image_id=%s\nrepo_digests=%s\n' "$image_id" "$image_repo_digests" >"$run_root/image.txt"
 
 # The Docker image exposes a temporary postmaster during initialization.
 # Require the final PID-1 postgres process and two consecutive SQL probes so a
@@ -82,16 +122,6 @@ if [[ $stable_probes -lt 2 ]]; then
 fi
 docker exec "$container" pg_isready -U postgres -d "$database" \
   >"$run_root/pg-isready.txt"
-if ! docker exec -i "$container" psql \
-  -X \
-  -v ON_ERROR_STOP=1 \
-  -U postgres \
-  -d "$database" \
-  < migrations/postgresql/0001_foundation_up.sql \
-  >"$run_root/migration.log" 2>&1; then
-  echo 'authoritative PostgreSQL migration failed' >&2
-  exit 1
-fi
 
 database_url="postgresql://postgres:${password}@127.0.0.1:${port}/${database}"
 query() {
@@ -99,6 +129,19 @@ query() {
 }
 
 cargo build --workspace --all-targets --locked >"$run_root/build.log" 2>&1
+
+verify_running_image postgresql "$container" "$image_id" "$run_root"
+
+python3 scripts/check-migration-lock.py >"$run_root/migration-chain-validation.json"
+cp migrations/MIGRATION_CHAIN.lock.json "$run_root/migration-chain.lock.json"
+TRNM_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE=postgresql \
+TRNM_SCHEMA_SOURCE_COMMIT="$source_commit" \
+TRNM_SCHEMA_APPLIED_AT_MS=1 \
+  bash scripts/apply-authoritative-schema.sh migrate \
+  >"$run_root/schema-identity.json" 2>"$run_root/schema-migration.log"
+python3 scripts/check-authoritative-schema-identity.py "$run_root/schema-identity.json" postgresql \
+  --mode fresh --source-commit="$source_commit" >"$run_root/schema-identity-check.json"
 
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
@@ -283,6 +326,7 @@ test "$(query 'SELECT count(*) FROM trnm_outbox;')" = 1
 test "$(query 'SELECT count(*) FROM trnm_command_outbox;')" = 1
 test "$(query 'SELECT revision FROM trnm_entity_heads;')" = 1
 
+schema_identity=$(cat "$run_root/schema-identity.json")
 cat >"$run_root/result.json" <<JSON
 {
   "schema": "trillionnium.pg-response-loss-result.v1",
@@ -291,6 +335,8 @@ cat >"$run_root/result.json" <<JSON
   "tree": "$source_tree",
   "profile": "postgresql",
   "image": "$image",
+  "image_id": "$image_id",
+  "schema_identity": $schema_identity,
   "fault": "client TCP reset after complete request before response read",
   "assertions": {
     "durable_receipt_after_response_loss": true,

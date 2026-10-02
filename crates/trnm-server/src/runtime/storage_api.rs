@@ -1,7 +1,7 @@
 //! Bounded storage read/write/delete HTTP source candidate. The protocol and public
 //! error strings are based on Apache-2.0 Nakama d4d92f93 and nakama-common
 //! 449b77ec; this Rust implementation is independent. This subset does not yet
-//! reproduce upstream acknowledgement timestamps, runtime hooks, or indexing.
+//! reproduce complete historical timestamps, runtime hooks, or indexing.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -13,8 +13,9 @@ use serde_json::value::RawValue;
 use trnm_contracts::{DomainError, StableCode, UserId};
 use trnm_persistence_pg::{
     ContentVersion, ReadPermission, StorageActor as Actor, StorageBatchOperation as BatchOperation,
-    StorageDeleteOperation as DeleteOperation, StorageMutationReceipt as MutationReceipt,
-    StorageObject, StorageObjectKey, StorageWriteOperation as WriteOperation, VersionCheck,
+    StorageDeleteOperation as DeleteOperation, StorageObject, StorageObjectKey, StorageTimes,
+    StorageTimestamp, StorageWriteOperation as WriteOperation,
+    StoredStorageMutationReceipt as MutationReceipt, StoredStorageObject, VersionCheck,
     WritePermission,
 };
 
@@ -292,7 +293,11 @@ pub(super) fn parse_uuid(text: &str) -> Option<UserId> {
     Some(UserId::new(output))
 }
 
-fn read_response(keys: &[StorageObjectKey], objects: &[StorageObject], user: UserId) -> Response {
+fn read_response(
+    keys: &[StorageObjectKey],
+    objects: &[StoredStorageObject],
+    user: UserId,
+) -> Response {
     if objects.len() > keys.len() {
         return gateway_error(500, 13, "Error reading storage objects.");
     }
@@ -301,7 +306,8 @@ fn read_response(keys: &[StorageObjectKey], objects: &[StorageObject], user: Use
         *remaining.entry(key).or_insert(0_usize) += 1;
     }
     let mut encoded = Vec::with_capacity(objects.len().min(MAX_BATCH));
-    for object in objects {
+    for stored in objects {
+        let object = &stored.object;
         let Some(count) = remaining.get_mut(&object.key).filter(|count| **count > 0) else {
             return gateway_error(500, 13, "Error reading storage objects.");
         };
@@ -311,7 +317,7 @@ fn read_response(keys: &[StorageObjectKey], objects: &[StorageObject], user: Use
         if !allowed {
             return gateway_error(500, 13, "Error reading storage objects.");
         }
-        let Some(object) = encode_storage_object(object) else {
+        let Some(object) = encode_storage_object(object, &stored.times) else {
             return gateway_error(500, 13, "Error reading storage objects.");
         };
         encoded.push(object);
@@ -323,7 +329,10 @@ fn read_response(keys: &[StorageObjectKey], objects: &[StorageObject], user: Use
     }
 }
 
-pub(super) fn encode_storage_object(object: &StorageObject) -> Option<String> {
+pub(super) fn encode_storage_object(
+    object: &StorageObject,
+    times: &StorageTimes,
+) -> Option<String> {
     if object.value.len() > MAX_VALUE_BYTES
         || object.version != ContentVersion::from_value(&object.value)
         || !object.integrity_digest.matches_value(&object.value)
@@ -361,7 +370,8 @@ pub(super) fn encode_storage_object(object: &StorageObject) -> Option<String> {
             object.write_permission as u8
         ));
     }
-    // The immutable schema has no authoritative upstream timestamps yet.
+    // Pinned upstream read/list projection deliberately drops subsecond precision.
+    append_storage_times(&mut fields, times, false)?;
     Some(format!("{{{}}}", fields.join(",")))
 }
 
@@ -582,7 +592,8 @@ fn write_response(operations: &[BatchOperation], receipts: &[MutationReceipt]) -
         return gateway_error(500, 13, "Error writing storage objects.");
     }
     let mut acks = Vec::with_capacity(receipts.len());
-    for (operation, receipt) in operations.iter().zip(receipts) {
+    for (operation, stored) in operations.iter().zip(receipts) {
+        let receipt = &stored.receipt;
         let BatchOperation::Write(write) = operation else {
             return gateway_error(500, 13, "Error writing storage objects.");
         };
@@ -600,20 +611,38 @@ fn write_response(operations: &[BatchOperation], receipts: &[MutationReceipt]) -
         {
             return gateway_error(500, 13, "Error writing storage objects.");
         }
-        acks.push(format!(
-            "{{\"collection\":{},\"key\":{},\"version\":{},\"user_id\":{}}}",
-            serde_json::Value::from(receipt.key.collection()),
-            serde_json::Value::from(receipt.key.key()),
-            serde_json::Value::from(version.as_str()),
-            serde_json::Value::from(uuid_string(receipt.key.user_id())),
-        ));
+        let mut fields = vec![
+            format!(
+                "\"collection\":{}",
+                serde_json::Value::from(receipt.key.collection())
+            ),
+            format!("\"key\":{}", serde_json::Value::from(receipt.key.key())),
+            format!("\"version\":{}", serde_json::Value::from(version.as_str())),
+            format!(
+                "\"user_id\":{}",
+                serde_json::Value::from(uuid_string(receipt.key.user_id()))
+            ),
+        ];
+        if append_storage_times(&mut fields, &stored.times, true).is_none()
+            || (receipt.previous_version.is_none()
+                && (stored.times.create.is_none()
+                    || stored.times.update.is_none()
+                    || stored.times.create != stored.times.update))
+            || (stored.times.update.is_none()
+                && (matches!(write.expected, VersionCheck::Exact(_))
+                    || receipt.previous_version != Some(version)))
+        {
+            return gateway_error(500, 13, "Error writing storage objects.");
+        }
+        acks.push(format!("{{{}}}", fields.join(",")));
     }
     Response::json(200, format!("{{\"acks\":[{}]}}", acks.join(",")))
 }
 
 fn delete_response(operations: &[BatchOperation], receipts: &[MutationReceipt]) -> Response {
     if receipts.len() != operations.len()
-        || operations.iter().zip(receipts).any(|(operation, receipt)| {
+        || operations.iter().zip(receipts).any(|(operation, stored)| {
+            let receipt = &stored.receipt;
             let BatchOperation::Delete(delete) = operation else {
                 return true;
             };
@@ -628,6 +657,36 @@ fn delete_response(operations: &[BatchOperation], receipts: &[MutationReceipt]) 
         return gateway_error(500, 13, "Error deleting storage objects.");
     }
     Response::json(200, b"{}".to_vec())
+}
+
+/// Format only normalized protobuf timestamps. The reviewed prost-types codec
+/// owns Gregorian calendar conversion and RFC3339 0/3/6/9 fractional digits.
+fn append_storage_times(
+    fields: &mut Vec<String>,
+    times: &StorageTimes,
+    precise: bool,
+) -> Option<()> {
+    for (name, timestamp) in [("create_time", times.create), ("update_time", times.update)] {
+        let Some(StorageTimestamp { seconds, nanos }) = timestamp else {
+            continue;
+        };
+        if !(-62_135_596_800..=253_402_300_799).contains(&seconds) || nanos >= 1_000_000_000 {
+            return None;
+        }
+        let timestamp = prost_types::Timestamp {
+            seconds,
+            nanos: if precise {
+                i32::try_from(nanos).ok()?
+            } else {
+                0
+            },
+        };
+        fields.push(format!(
+            "\"{name}\":{}",
+            serde_json::Value::from(timestamp.to_string())
+        ));
+    }
+    Some(())
 }
 
 fn uuid_string(user: UserId) -> String {
@@ -701,6 +760,170 @@ mod tests {
     use trnm_persistence_pg::{CommitOutcome, CommitRequest, EntityHead, EntityId, StorageState};
 
     use super::*;
+    use trnm_persistence_pg::StorageMutationReceipt as CoreReceipt;
+
+    fn stored_receipt(receipt: CoreReceipt) -> MutationReceipt {
+        let timestamp = StorageTimestamp {
+            seconds: 1_700_000_000,
+            nanos: 123_456_000,
+        };
+        MutationReceipt {
+            receipt,
+            times: StorageTimes {
+                create: Some(timestamp),
+                update: Some(timestamp),
+            },
+        }
+    }
+
+    fn stored_object(object: StorageObject) -> StoredStorageObject {
+        StoredStorageObject {
+            object,
+            times: StorageTimes {
+                create: None,
+                update: None,
+            },
+        }
+    }
+
+    #[test]
+    fn storage_timestamp_json_matches_protobuf_range_precision_and_pre_epoch() {
+        for (seconds, nanos, expected) in [
+            (0, 0, "1970-01-01T00:00:00Z"),
+            (0, 123_000_000, "1970-01-01T00:00:00.123Z"),
+            (0, 123_456_000, "1970-01-01T00:00:00.123456Z"),
+            (0, 123_456_789, "1970-01-01T00:00:00.123456789Z"),
+            (-1, 999_999_000, "1969-12-31T23:59:59.999999Z"),
+            (-62_135_596_800, 0, "0001-01-01T00:00:00Z"),
+            (253_402_300_799, 999_999_000, "9999-12-31T23:59:59.999999Z"),
+            (1_709_164_800, 0, "2024-02-29T00:00:00Z"),
+        ] {
+            let times = StorageTimes {
+                create: Some(StorageTimestamp { seconds, nanos }),
+                update: None,
+            };
+            let mut fields = Vec::new();
+            assert_eq!(append_storage_times(&mut fields, &times, true), Some(()));
+            assert_eq!(fields, [format!("\"create_time\":\"{expected}\"")]);
+            let mut seconds_only = Vec::new();
+            assert_eq!(
+                append_storage_times(&mut seconds_only, &times, false),
+                Some(())
+            );
+            let expected_second = expected.split('.').next().unwrap().trim_end_matches('Z');
+            assert_eq!(
+                seconds_only,
+                [format!("\"create_time\":\"{expected_second}Z\"")]
+            );
+        }
+        let mut fields = Vec::new();
+        assert_eq!(
+            append_storage_times(
+                &mut fields,
+                &StorageTimes {
+                    create: None,
+                    update: None
+                },
+                true
+            ),
+            Some(())
+        );
+        assert!(fields.is_empty(), "unknown historical time remains absent");
+        for (seconds, nanos) in [
+            (-62_135_596_801, 0),
+            (253_402_300_800, 0),
+            (0, 1_000_000_000),
+            (i64::MIN, 0),
+            (i64::MAX, 0),
+        ] {
+            let times = StorageTimes {
+                create: Some(StorageTimestamp { seconds, nanos }),
+                update: None,
+            };
+            assert_eq!(append_storage_times(&mut Vec::new(), &times, true), None);
+            assert_eq!(append_storage_times(&mut Vec::new(), &times, false), None);
+        }
+    }
+
+    #[test]
+    fn new_storage_ack_requires_both_times_and_historical_unknown_is_not_fabricated() {
+        let operations = decode_operations(
+            &request("/v2/storage", &write("k", "{}", "")),
+            user(),
+            OperationKind::Write,
+        )
+        .unwrap();
+        let mut stored = stored_receipt(CoreReceipt {
+            key: operations[0].key().clone(),
+            previous_version: None,
+            current_version: Some(ContentVersion::from_value(b"{}")),
+        });
+        let response = write_response(&operations, std::slice::from_ref(&stored));
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            body(&response)["acks"][0]["create_time"],
+            "2023-11-14T22:13:20.123456Z"
+        );
+        stored.times.create = None;
+        assert_eq!(
+            write_response(&operations, std::slice::from_ref(&stored)).status,
+            500
+        );
+        stored.receipt.previous_version = Some(ContentVersion::from_value(b"{}"));
+        let response = write_response(&operations, &[stored]);
+        assert_eq!(response.status, 200);
+        let ack = &body(&response)["acks"][0];
+        assert!(ack.get("create_time").is_none());
+        assert_eq!(ack["update_time"], "2023-11-14T22:13:20.123456Z");
+    }
+
+    #[test]
+    fn storage_ack_rejects_missing_effective_update_time_and_unequal_insert_pair() {
+        let operations = decode_operations(
+            &request("/v2/storage", &write("k", "{}", "")),
+            user(),
+            OperationKind::Write,
+        )
+        .unwrap();
+        let version = ContentVersion::from_value(b"{}");
+        let mut stored = stored_receipt(CoreReceipt {
+            key: operations[0].key().clone(),
+            previous_version: None,
+            current_version: Some(version),
+        });
+        stored.times.update.as_mut().unwrap().nanos = 0;
+        assert_eq!(
+            write_response(&operations, std::slice::from_ref(&stored)).status,
+            500
+        );
+        stored.receipt.previous_version = Some(version);
+        stored.times = StorageTimes {
+            create: None,
+            update: None,
+        };
+        assert_eq!(
+            write_response(&operations, std::slice::from_ref(&stored)).status,
+            200,
+            "a blind legacy no-op may still have unknown history"
+        );
+        let exact = decode_operations(
+            &request("/v2/storage", &write("k", "{}", version.as_str())),
+            user(),
+            OperationKind::Write,
+        )
+        .unwrap();
+        assert_eq!(
+            write_response(&exact, std::slice::from_ref(&stored)).status,
+            500,
+            "an exact write always changes update time"
+        );
+        stored.receipt.previous_version = Some(ContentVersion::from_value(b"{\"old\":true}"));
+        assert_eq!(
+            write_response(&operations, &[stored]).status,
+            500,
+            "a changed value cannot return an unknown update time"
+        );
+    }
 
     #[derive(Debug, Default)]
     struct TestRepository {
@@ -742,14 +965,16 @@ mod tests {
             if let Some(error) = self.failure {
                 return Err(error);
             }
-            self.storage.apply_batch(actor, operations)
+            self.storage
+                .apply_batch(actor, operations)
+                .map(|receipts| receipts.into_iter().map(stored_receipt).collect())
         }
 
         fn read_storage_objects(
             &mut self,
             actor: Actor,
             keys: &[StorageObjectKey],
-        ) -> Result<Vec<StorageObject>, DomainError> {
+        ) -> Result<Vec<StoredStorageObject>, DomainError> {
             self.read_calls += 1;
             self.actor = Some(actor);
             self.read_keys = keys.to_vec();
@@ -757,7 +982,7 @@ mod tests {
                 return Err(error);
             }
             if let Some(objects) = &self.read_override {
-                return Ok(objects.clone());
+                return Ok(objects.iter().cloned().map(stored_object).collect());
             }
             let mut objects = Vec::new();
             for key in keys {
@@ -771,7 +996,7 @@ mod tests {
                     Err(error) => return Err(error),
                 }
             }
-            Ok(objects)
+            Ok(objects.into_iter().map(stored_object).collect())
         }
     }
 
@@ -1171,29 +1396,29 @@ mod tests {
             key: key.clone(),
             expected_version: None,
         });
-        let receipt = MutationReceipt {
+        let receipt = stored_receipt(CoreReceipt {
             key,
             previous_version: Some(ContentVersion::from_value(b"{}")),
             current_version: None,
-        };
+        });
         assert_eq!(
             delete_response(std::slice::from_ref(&operation), &[]).status,
             500
         );
         let mut changed = receipt.clone();
-        changed.current_version = Some(ContentVersion::from_value(b"{}"));
+        changed.receipt.current_version = Some(ContentVersion::from_value(b"{}"));
         assert_eq!(
             delete_response(std::slice::from_ref(&operation), &[changed]).status,
             500
         );
         let mut changed = receipt.clone();
-        changed.key = StorageObjectKey::new("profile", "other", user()).unwrap();
+        changed.receipt.key = StorageObjectKey::new("profile", "other", user()).unwrap();
         assert_eq!(
             delete_response(std::slice::from_ref(&operation), &[changed]).status,
             500
         );
         let mut changed = receipt.clone();
-        changed.previous_version = None;
+        changed.receipt.previous_version = None;
         assert_eq!(
             delete_response(std::slice::from_ref(&operation), &[changed]).status,
             500
@@ -1216,11 +1441,11 @@ mod tests {
     fn inconsistent_write_receipts_never_acknowledge_occ_success() {
         let request = request("/v2/storage", &write("k", "{}", "*"));
         let operations = decode_operations(&request, user(), OperationKind::Write).unwrap();
-        let receipt = MutationReceipt {
+        let receipt = stored_receipt(CoreReceipt {
             key: operations[0].key().clone(),
             previous_version: Some(ContentVersion::from_value(b"{}")),
             current_version: Some(ContentVersion::from_value(b"{}")),
-        };
+        });
         assert_eq!(
             write_response(&operations, std::slice::from_ref(&receipt)).status,
             500
@@ -1235,7 +1460,7 @@ mod tests {
             500
         );
         let mut changed = receipt;
-        changed.previous_version = Some(ContentVersion::from_value(b"stale"));
+        changed.receipt.previous_version = Some(ContentVersion::from_value(b"stale"));
         assert_eq!(write_response(&operations, &[changed]).status, 200);
     }
 

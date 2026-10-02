@@ -8,9 +8,10 @@ use trnm_contracts::{
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, ContentVersion, CreateSessionFamily, DatabaseProfile, EntityHead,
     EntityId, IntegrityDigest, PgRepository, ReadPermission, RefreshTokenCredential,
-    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageClientListPage,
-    StorageListPosition, StorageMutationReceipt, StorageObject, StorageObjectKey, StorageState,
-    StorageWriteOperation, VersionCheck, WritePermission,
+    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageListPosition,
+    StorageObjectKey, StorageState, StorageTimes, StorageTimestamp, StorageWriteOperation,
+    StoredStorageClientListPage, StoredStorageMutationReceipt, StoredStorageObject, VersionCheck,
+    WritePermission,
 };
 use trnm_session_core::RevocationReason;
 use trnm_token_jwt_adapter::json::JsonValue;
@@ -39,6 +40,7 @@ struct RepositoryState {
     storage_lists: usize,
     last_actor: Option<StorageActor>,
     last_read_keys: Vec<StorageObjectKey>,
+    read_times: StorageTimes,
 }
 
 #[derive(Clone, Debug)]
@@ -111,18 +113,38 @@ impl Repository for StorageRepository {
         actor: StorageActor,
         operations: &[StorageBatchOperation],
         _updated_at_ms: u64,
-    ) -> Result<Vec<StorageMutationReceipt>, DomainError> {
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
         let mut state = self.state();
         state.storage_batches += 1;
         state.last_actor = Some(actor);
-        state.storage.apply_batch(actor, operations)
+        state
+            .storage
+            .apply_batch(actor, operations)
+            .map(|receipts| {
+                receipts
+                    .into_iter()
+                    .map(|receipt| {
+                        let timestamp = StorageTimestamp {
+                            seconds: 1_700_000_000,
+                            nanos: 123_456_000,
+                        };
+                        StoredStorageMutationReceipt {
+                            receipt,
+                            times: StorageTimes {
+                                create: Some(timestamp),
+                                update: Some(timestamp),
+                            },
+                        }
+                    })
+                    .collect()
+            })
     }
 
     fn read_storage_objects(
         &mut self,
         actor: StorageActor,
         keys: &[StorageObjectKey],
-    ) -> Result<Vec<StorageObject>, DomainError> {
+    ) -> Result<Vec<StoredStorageObject>, DomainError> {
         let mut state = self.state();
         state.storage_reads += 1;
         state.last_actor = Some(actor);
@@ -139,7 +161,13 @@ impl Repository for StorageRepository {
                 Err(error) => return Err(error),
             }
         }
-        Ok(objects)
+        Ok(objects
+            .into_iter()
+            .map(|object| StoredStorageObject {
+                object,
+                times: state.read_times,
+            })
+            .collect())
     }
 
     fn list_storage_objects_nakama(
@@ -149,7 +177,7 @@ impl Repository for StorageRepository {
         owner: Option<UserId>,
         after: Option<&StorageListPosition>,
         limit: usize,
-    ) -> Result<StorageClientListPage, DomainError> {
+    ) -> Result<StoredStorageClientListPage, DomainError> {
         // This mock only witnesses App routing, principal and drain policy.
         // SQL ACL, ordering and pagination belong to the real DB fixtures.
         assert_eq!(actor, StorageActor::User(USER));
@@ -160,7 +188,7 @@ impl Repository for StorageRepository {
         let mut state = self.state();
         state.storage_lists += 1;
         state.last_actor = Some(actor);
-        Ok(StorageClientListPage {
+        Ok(StoredStorageClientListPage {
             objects: Vec::new(),
             next: None,
         })
@@ -193,6 +221,7 @@ fn app() -> (App<StorageRepository>, StorageRepository) {
         storage_lists: 0,
         last_actor: None,
         last_read_keys: Vec::new(),
+        read_times: StorageTimes::default(),
     })));
     let verifier = AccessTokenVerifier::from_epoch_key(
         ISSUER.to_owned(),
@@ -713,6 +742,94 @@ fn read_returns_visible_owner_and_public_objects_and_omits_the_rest() {
 }
 
 #[test]
+fn read_projects_valid_fraction_to_seconds_omits_unknown_and_rejects_invalid_times() {
+    let (mut app, repository) = app();
+    repository.seed("sword", USER, ReadPermission::Owner, "{}");
+    let body = r#"{"object_ids":[{"collection":"inventory","key":"sword","user_id":"11111111-1111-1111-1111-111111111111"}]}"#;
+    let request = read_request("/v2/storage", Some(&bearer(GENERATION)), body);
+    let known = StorageTimes {
+        create: Some(StorageTimestamp {
+            seconds: -1,
+            nanos: 999_999_000,
+        }),
+        update: Some(StorageTimestamp {
+            seconds: 1_700_000_000,
+            nanos: 123_456_000,
+        }),
+    };
+    for times in [
+        known,
+        StorageTimes::default(),
+        StorageTimes {
+            create: None,
+            update: known.update,
+        },
+    ] {
+        repository.state().read_times = times;
+        let response = app.handle(&request);
+        assert_eq!(response.status, 200);
+        let encoded = json(&response);
+        let object = &encoded["objects"][0];
+        for (field, timestamp, expected) in [
+            ("create_time", times.create, "1969-12-31T23:59:59Z"),
+            ("update_time", times.update, "2023-11-14T22:13:20Z"),
+        ] {
+            if let Some(timestamp) = timestamp {
+                assert_eq!(object[field], expected);
+                let projected: prost_types::Timestamp =
+                    object[field].as_str().unwrap().parse().unwrap();
+                assert_eq!(projected.seconds, timestamp.seconds);
+                assert_eq!(projected.nanos, 0);
+            } else {
+                assert!(
+                    object.get(field).is_none(),
+                    "unknown {field} must stay absent"
+                );
+            }
+        }
+    }
+    for bad in [
+        StorageTimestamp {
+            seconds: 0,
+            nanos: 1_000_000_000,
+        },
+        StorageTimestamp {
+            seconds: -62_135_596_801,
+            nanos: 0,
+        },
+        StorageTimestamp {
+            seconds: 253_402_300_800,
+            nanos: 0,
+        },
+    ] {
+        for times in [
+            StorageTimes {
+                create: Some(bad),
+                update: known.update,
+            },
+            StorageTimes {
+                create: known.create,
+                update: Some(bad),
+            },
+        ] {
+            repository.state().read_times = times;
+            let response = app.handle(&request);
+            assert_eq!(response.status, 500);
+            assert_eq!(
+                json(&response),
+                serde_json::json!({"code":13,"message":"Error reading storage objects."})
+            );
+            assert!(json(&response).get("objects").is_none());
+        }
+    }
+    let state = repository.state();
+    assert_eq!(state.storage_reads, 9);
+    assert_eq!(state.verified_sessions, 9);
+    assert_eq!(state.storage_batches, 0);
+    assert_eq!(state.storage.object_count(), 1);
+}
+
+#[test]
 fn missing_empty_and_null_read_owner_select_global_objects() {
     for owner_field in ["", r#", "user_id":"""#, r#", "userId":null"#] {
         let (mut app, repository) = app();
@@ -912,10 +1029,13 @@ fn storage_live_list_page(response: &Response) -> (Vec<(String, String, i32)>, O
                 object["version"],
                 ContentVersion::from_value(value.as_bytes()).as_str()
             );
-            // The schema has no genuine original times yet. This candidate
-            // must omit those fields until a real migration supplies them.
-            assert!(object.get("create_time").is_none());
-            assert!(object.get("update_time").is_none());
+            for field in ["create_time", "update_time"] {
+                let timestamp = object[field]
+                    .as_str()
+                    .expect("v2 writer supplies database time");
+                let parsed: prost_types::Timestamp = timestamp.parse().unwrap();
+                assert_eq!(parsed.nanos, 0, "upstream read/list seconds projection");
+            }
             (
                 object["key"].as_str().unwrap().to_owned(),
                 object["user_id"].as_str().unwrap().to_owned(),
@@ -1111,8 +1231,8 @@ fn canonical_storage_api_live_database() {
                     .execute(
                         "INSERT INTO trnm_storage_objects \
                          (collection, object_key, user_id, value_bytes, version_digest, \
-                          read_permission, write_permission, updated_at_ms) \
-                         VALUES ($1, $2, $3, $4, $5, $6, 1, 0)",
+                          read_permission, write_permission, updated_at_ms, create_time, update_time) \
+                         VALUES ($1, $2, $3, $4, $5, $6, 1, 0, now(), now())",
                         &[
                             &LIVE_COLLECTION,
                             &name,
@@ -1152,6 +1272,23 @@ fn canonical_storage_api_live_database() {
             .as_str()
             .to_owned();
         assert_eq!(json(&write)["acks"][0]["version"], version);
+        let persisted = control.query_one(
+            "SELECT (extract(epoch FROM create_time)*1000000)::BIGINT, (extract(epoch FROM update_time)*1000000)::BIGINT FROM trnm_storage_objects WHERE collection=$1 AND object_key='sword' AND user_id=$2",
+            &[&LIVE_COLLECTION, &LIVE_USER.as_bytes().as_slice()],
+        ).unwrap();
+        for (index, field) in ["create_time", "update_time"].into_iter().enumerate() {
+            let timestamp: prost_types::Timestamp = json(&write)["acks"][0][field]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(timestamp.nanos % 1000, 0);
+            assert_eq!(
+                timestamp.seconds * 1_000_000 + i64::from(timestamp.nanos) / 1000,
+                persisted.get::<_, i64>(index)
+            );
+        }
+
         assert_eq!(
             persisted_storage_value(&mut control, "sword", LIVE_USER),
             Some(original.as_bytes().to_vec())
@@ -1180,7 +1317,11 @@ fn canonical_storage_api_live_database() {
             &repeated.to_string(),
         ));
         assert_eq!(blind.status, 200);
-        assert_eq!(json(&blind)["acks"][0]["version"], version);
+        assert_eq!(
+            json(&blind)["acks"],
+            json(&write)["acks"],
+            "blind no-op returns original precise database times"
+        );
         let unchanged: i64 = control
             .query_one(
                 "SELECT updated_at_ms FROM trnm_storage_objects \
@@ -1237,6 +1378,32 @@ fn canonical_storage_api_live_database() {
                     ContentVersion::from_value(value.as_bytes()).as_str()
                 );
                 assert_eq!(object["collection"], LIVE_COLLECTION);
+                let name = object["key"].as_str().unwrap();
+                let owner =
+                    super::storage_api::parse_uuid(object["user_id"].as_str().unwrap()).unwrap();
+                let persisted = control
+                    .query_one(
+                        "SELECT floor(extract(epoch FROM create_time))::BIGINT, \
+                     floor(extract(epoch FROM update_time))::BIGINT \
+                     FROM trnm_storage_objects \
+                     WHERE collection = $1 AND object_key = $2 AND user_id = $3",
+                        &[&LIVE_COLLECTION, &name, &owner.as_bytes().as_slice()],
+                    )
+                    .unwrap_or_else(|_| {
+                        panic!("canonical storage fixture: read timestamp SQL comparison failed")
+                    });
+                for (index, field) in ["create_time", "update_time"].into_iter().enumerate() {
+                    let projected: prost_types::Timestamp =
+                        object[field].as_str().unwrap().parse().unwrap();
+                    assert_eq!(
+                        projected.nanos, 0,
+                        "batch-read uses upstream seconds projection"
+                    );
+                    assert_eq!(
+                        projected.seconds,
+                        persisted.try_get::<_, i64>(index).unwrap()
+                    );
+                }
                 (
                     object["key"].as_str().unwrap().to_owned(),
                     (

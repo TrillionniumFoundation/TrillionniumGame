@@ -21,4 +21,9 @@ class PostgreSqlPrimaryFailoverContractTests(unittest.TestCase):
         result=subprocess.run([sys.executable,str(CHECKER)],cwd=ROOT,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn("primary failover source contract: OK",result.stdout)
+    def test_full_chain_runner_and_retained_identity_are_required(self):
+        for marker in ("apply-authoritative-schema.sh", "migration-chain-validation.json", "schema-identity-check.json"):
+            with self.subTest(marker=marker):
+                with self.assertRaises(self.checker.ValidationError): self.checker.validate_text(self.text.replace(marker, "removed"))
+        with self.assertRaises(self.checker.ValidationError): self.checker.validate_text(self.text + "\nINSERT INTO trnm_schema_metadata VALUES (1);\n")
 if __name__=="__main__": unittest.main()

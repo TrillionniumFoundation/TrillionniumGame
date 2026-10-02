@@ -92,10 +92,10 @@
     fn list_queries_remove_ambient_text_collation_from_scope_and_keyset_order() {
         let postgresql = storage_list_query(DatabaseProfile::PostgreSql);
         assert!(postgresql.contains(
-            "convert_to(collection, 'UTF8') = convert_to($1, 'UTF8')"
+            "pg_catalog.convert_to(collection, 'UTF8') = pg_catalog.convert_to($1, 'UTF8')"
         ));
-        assert!(postgresql.contains("convert_to(object_key, 'UTF8') > convert_to($3, 'UTF8')"));
-        assert!(postgresql.contains("ORDER BY convert_to(object_key, 'UTF8') ASC, user_id ASC"));
+        assert!(postgresql.contains("pg_catalog.convert_to(object_key, 'UTF8') > pg_catalog.convert_to($3, 'UTF8')"));
+        assert!(postgresql.contains("ORDER BY pg_catalog.convert_to(object_key, 'UTF8') ASC, user_id ASC"));
         assert!(!postgresql.contains("WHERE collection = $1"));
         assert!(!postgresql.contains("ORDER BY object_key ASC"));
 

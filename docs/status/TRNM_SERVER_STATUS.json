@@ -106,7 +106,7 @@
     "authorization binding from session principals to all authority, storage and runtime domain operations",
     "independent security review and exact oracle differential for the session HTTP and realtime source candidates",
     "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
-    "Write acknowledgements and read objects omit upstream create_time/update_time because the authoritative schema and receipt/object types do not retain these timestamps. No timestamp is fabricated.",
+    "Schema v2 records genuine database transaction timestamps separately from the core content model; write acknowledgements preserve microseconds and read/list project seconds. Unknown original v1 times remain absent, so original-time import/policy and immutable differential remain open.",
     "Client-list/query/gob/SQL projection are bounded source candidates; exact gateway, unsupported gob types, profile collation and concurrent-pagination behavior still require immutable differential. Search/index and Runtime before/after hooks remain unfinished.",
     "Mutation/batch-read and internal typed-list paths retain duplicate-key, 100-operation and 128-byte/dot/control candidate restrictions. Client-list queries use 4096-byte offsets/collection budgets and decode authoritative Unicode-character-bounded rows. Bounds and exact malformed wire behavior remain unqualified.",
     "Invalid/uppercase opaque OCC versions and exact gateway decoder details still require pinned differential; error bodies and headers are not globally qualified.",
@@ -220,5 +220,13 @@
     ],
     "accepted": false,
     "gap_closed": false
+  },
+  "storage_timestamp_source_candidate": {
+    "schema_version": 2,
+    "storage_writer_epoch": 2,
+    "contract": "contracts/storage/nakama-http-storage-v1.json",
+    "accepted": false,
+    "compatibility_credit": false,
+    "namespace": "Storage objects and epoch metadata explicitly use public; transaction clock explicitly uses pg_catalog. Shared migration rejects nondefault effective schema search paths before immutable DDL."
   }
 }

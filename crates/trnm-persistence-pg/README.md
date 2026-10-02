@@ -28,6 +28,16 @@ Dependency direction is reviewed as part of package authority. This module must 
 
 The only production DDL authority is migrations/. PostgreSQL and CockroachDB are separate profiles with separate evidence and retry behavior.
 
+The shared `trnm-schema` runner consumes the locked, ordered 0001/0002 chain.
+Schema version 2 appends nullable storage `create_time`/`update_time` columns
+without defaults or historical backfill, plus chain identity and storage writer
+epoch metadata. Serve verification reads existing identity and catalog; it does
+not migrate or rebind them. Populated v1 upgrades require the declared legacy
+writer role to lose effective storage write privileges before publication.
+The epoch check supplements that barrier and does not fence an unchecked old
+writer by itself. Recovery uses a verified forward fix rather than a column drop
+or metadata downgrade.
+
 Public Rust types, serialized fields, configuration keys, database predicates, and externally observable error classes are change-controlled. A breaking change requires an explicit migration or compatibility decision and updated tests in the same candidate.
 
 ## Correctness and failure model
@@ -152,6 +162,33 @@ The adapter owns typed SQL access to all ten authoritative tables. Authority lea
 
 Storage reads and mutation batches use `trnm-storage-core` public version, integrity, OCC and ACL types. Batch keys are locked in deterministic order and every write/delete commits in one serializable transaction. The public Nakama-compatible content version is recomputed from exact value bytes while the schema stores the separate internal integrity digest.
 
+`read_storage_objects_with_metadata`, `apply_storage_batch_with_metadata` and
+`list_storage_objects_nakama_with_metadata` return stored-object/receipt/page
+wrappers with `StorageTimes`; the original core-returning methods project those
+wrappers. `StorageTimestamp { seconds, nanos }` preserves database microseconds
+with checked pgwire decoding, including pre-epoch normalization. Infinity,
+protobuf years outside 0001–9999 and invalid nanoseconds fail as `DataLoss`.
+Historical SQL NULL stays `None` and is never replaced by an epoch or the legacy
+`updated_at_ms` value.
+
+Storage inserts explicitly take the transaction database clock for both times.
+Updates retain creation, including NULL, and set update from that transaction.
+A blind identical-content/ACL write returns the locked row without UPDATE after
+ACL, OCC and integrity checks; Exact writes still update. Mutation transactions
+read schema/epoch/chain identity before writing without a global metadata row
+lock, and return receipts only after commit. The caller's `updated_at_ms` remains
+separate. This narrow storage clock policy does not alter other public times or
+assume that transaction clocks increase. Storage operations have no implicit
+retry.
+
+`storage_timestamps_database_clock_no_op_and_atomicity` requires an isolated
+fully migrated database in mandatory mode. It compares receipts with SQL rows,
+covers legacy NULL, real clock pairs, blind/Exact/ACL/content changes, OCC/ACL
+rollback, metadata faults and timestamp range rejection on each profile. It
+restores metadata and cleans its dedicated rows after success or panic before
+printing `storage_timestamps_live_executed profile=...`. The live harness rejects
+optional skips; diagnostic execution does not grant independent acceptance.
+
 These paths are source candidates. PostgreSQL/CockroachDB live execution, exact-head evidence admission, profile-specific failover/restore and independent database/storage review remain required before production credit.
 
 ## Canonical storage integrity boundary
@@ -174,7 +211,7 @@ foreign and explicit zero owners select public objects for that owner.
 One readonly serializable query applies ACL before the `limit + 1` sentinel.
 The three modes order by SQL text read/key/user ID, read/key and key respectively.
 Only returned rows are decoded, and the next offset is the last returned row.
-Hidden and sentinel rows cannot cause a value/digest decoding failure.
+Hidden and sentinel rows cannot cause a value/digest/timestamp decoding failure.
 
 The client query admits empty/dot/control collection text up to 4096 UTF-8 bytes;
 cursor key offsets have the same byte budget, and read offsets accept every int32.
@@ -182,8 +219,8 @@ Returned keys use `StorageObjectKey::new_nakama` for the authoritative 1–128
 Unicode-character constraints. The old typed API's byte ordering and identifier
 validation remain separate. This adds no DDL or writer authority and has no
 automatic retry. Pool deadlines, pagination under concurrent writes, exact
-profile collation, gateway/gob differences, timestamps and immutable-oracle
-qualification remain open.
+profile collation, gateway/gob differences, source-bound historical timestamp
+import and immutable-oracle qualification remain open.
 
 `nakama_client_listing_modes_cursors_and_integrity_are_database_projected`
 requires the selected live profile when `TRNM_REQUIRE_LIVE_DATABASE=1`, checks

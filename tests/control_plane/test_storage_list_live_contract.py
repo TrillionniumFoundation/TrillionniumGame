@@ -52,6 +52,29 @@ PROJECTION = lane(
     "nakama-client-list-projection.log", "nakama_client_list_test_count",
     "nakama_client_list_projection_executed", "nakama_client_list_projection_skipped",
 )
+TIMESTAMPS = lane(
+    "trnm-persistence-pg", "--test storage_timestamps",
+    "storage_timestamps_database_clock_no_op_and_atomicity",
+    "storage-timestamps.log", "storage_timestamps_test_count",
+    "storage_timestamps_live_executed", "storage_timestamps_live_skipped",
+)
+SCHEMA = r'''CARGO_TERM_COLOR=never \
+TRNM_REQUIRE_LIVE_DATABASE=1 \
+TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE="$profile" \
+  cargo test -p trnm-persistence-pg --locked --test schema_upgrade \
+    -- --nocapture --test-threads=1 2>&1 | tee "$evidence/schema-upgrade.log"
+schema_upgrade_test_count=$(
+  sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
+    "$evidence/schema-upgrade.log"
+)
+[[ "$schema_upgrade_test_count" =~ ^[0-9]+$ ]]
+test "$schema_upgrade_test_count" -eq 6
+if grep -Fq 'developer-only live test skip' "$evidence/schema-upgrade.log"; then
+  exit 1
+fi
+'''
+
 PREFIX = '''#!/usr/bin/env bash
 set -euo pipefail
 "$binary" migrate > "$evidence/migrate.log" 2>&1
@@ -62,7 +85,7 @@ EOF
 find "$evidence" -type f ! -name SHA256SUMS -print0 \\
   | sort -z | xargs -0 sha256sum > "$evidence/SHA256SUMS"
 '''
-FIXTURE = PREFIX + CANONICAL + PROJECTION + SUFFIX
+FIXTURE = PREFIX + CANONICAL + PROJECTION + TIMESTAMPS + SCHEMA + SUFFIX
 
 
 class StorageListLiveContractTests(unittest.TestCase):

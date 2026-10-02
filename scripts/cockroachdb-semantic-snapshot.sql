@@ -6,7 +6,11 @@ WITH rows AS (
            'schema_version', schema_version,
            'profile', profile,
            'source_commit', source_commit,
-           'applied_at_ms', applied_at_ms
+           'applied_at_ms', applied_at_ms,
+           'chain_digest', chain_digest,
+           'digest_algorithm', digest_algorithm,
+           'storage_writer_epoch', storage_writer_epoch,
+           'upgrade_source_commit', upgrade_source_commit
          ) AS value
   FROM trnm_schema_metadata
   UNION ALL
@@ -108,7 +112,9 @@ WITH rows AS (
            'version_digest', encode(version_digest, 'hex'),
            'read_permission', read_permission,
            'write_permission', write_permission,
-           'updated_at_ms', updated_at_ms
+           'updated_at_ms', updated_at_ms,
+           'create_epoch', extract(epoch FROM create_time),
+           'update_epoch', extract(epoch FROM update_time)
          )
   FROM trnm_storage_objects
 )

@@ -2,7 +2,12 @@
 
 use std::path::PathBuf;
 
+mod authoritative_schema_build {
+    include!("schema_build.rs");
+}
+
 fn main() {
+    authoritative_schema_build::generate();
     println!("cargo:rerun-if-changed=proto/nakama-healthcheck.proto");
 
     let protoc = protoc_bin_vendored::protoc_bin_path()

@@ -4,16 +4,16 @@
   "status": "ddl-candidate-unexecuted",
   "profiles": {
     "postgresql": {
-      "path": "migrations/postgresql/0001_foundation_up.sql",
       "binary_type": "BYTEA",
       "integer_64_type": "BIGINT",
-      "runtime_execution_verified": false
+      "runtime_execution_verified": false,
+      "foundation_path": "migrations/postgresql/0001_foundation_up.sql"
     },
     "cockroachdb": {
-      "path": "migrations/cockroachdb/0001_foundation_up.sql",
       "binary_type": "BYTES",
       "integer_64_type": "INT8",
-      "runtime_execution_verified": false
+      "runtime_execution_verified": false,
+      "foundation_path": "migrations/cockroachdb/0001_foundation_up.sql"
     }
   },
   "required_tables": [
@@ -49,5 +49,12 @@
     "rollback_proven": false,
     "sg4_complete": false,
     "production_ready": false
-  }
+  },
+  "schema_version": 2,
+  "storage_writer_epoch": 2,
+  "migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
+  "digest_algorithm": "ordered-path-git-blob-sha256.v1",
+  "migration_runner": "crates/trnm-persistence-pg::PgRepository::migrate_authoritative_schema",
+  "serve_schema_verification": "read-only BASE TABLE inventory and column type/nullability/default/prefix verification plus ready metadata; constraint, index, collation and typmod semantic equivalence remains unverified",
+  "historical_timestamps": "unknown create_time/update_time remain SQL NULL; updated_at_ms is legacy provenance"
 }

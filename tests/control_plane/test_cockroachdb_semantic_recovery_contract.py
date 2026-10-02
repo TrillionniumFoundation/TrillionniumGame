@@ -49,5 +49,33 @@ class CockroachDbSemanticRecoveryContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("semantic recovery source contract: OK", result.stdout)
 
+    def test_constraint_probe_must_target_expected_error(self):
+        mutations = (
+            self.harness.replace("event-foreign-key 23503", "event-foreign-key 23514"),
+            self.harness.replace('storage-collection 23514 "check_collection"',
+                                 'storage-collection 23514 "check_singleton"'),
+            self.harness.replace('--constraint "$expected_constraint"', ""),
+            self.harness.replace("--sqlstate 42P07", "--sqlstate 23514"),
+        )
+        for harness in mutations:
+            with self.subTest(harness=harness[-80:]):
+                with self.assertRaises(self.checker.ValidationError):
+                    self.checker.validate_texts(self.data, harness)
+
+    def test_full_chain_identity_noop_and_known_timestamp_restore_are_required(self):
+        for marker in ("apply-authoritative-schema.sh", "schema-identity-check.json",
+                       "migration-chain-validation.json", "1969-12-31 23:59:59.999999+00"):
+            with self.subTest(marker=marker):
+                with self.assertRaises(self.checker.ValidationError):
+                    self.checker.validate_texts(self.data, self.harness.replace(marker, "removed"))
+        for name in ("create_time", "update_time", "digest_algorithm", "upgrade_source_commit"):
+            with self.subTest(name=name):
+                with self.assertRaises(self.checker.ValidationError):
+                    self.checker.validate_texts(self.data.replace(name, "removed"), self.harness)
+        with self.assertRaises(self.checker.ValidationError):
+            self.checker.validate_texts(self.data, self.harness.replace("['migration_applied'] is False", "['migration_applied'] is True"))
+        with self.assertRaises(self.checker.ValidationError):
+            self.checker.validate_texts(self.data, self.harness + "\nINSERT INTO trnm_storage_objects VALUES ('bad');\n")
+
 if __name__ == "__main__":
     unittest.main()

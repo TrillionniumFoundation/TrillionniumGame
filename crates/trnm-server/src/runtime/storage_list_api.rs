@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use trnm_contracts::UserId;
 use trnm_persistence_pg::{
-    ReadPermission, StorageActor, StorageClientListPage, StorageListPosition,
+    ReadPermission, StorageActor, StorageListPosition, StoredStorageClientListPage,
 };
 
 use super::app::{Repository, STORAGE_LIST_ROUTES};
@@ -61,13 +61,14 @@ pub(super) fn handle<R: Repository>(
     }
 }
 
-fn encode_page(query: &ListQuery, user: UserId, page: StorageClientListPage) -> Response {
+fn encode_page(query: &ListQuery, user: UserId, page: StoredStorageClientListPage) -> Response {
     if page.objects.len() > query.limit {
         return internal_error();
     }
     let mut keys = BTreeSet::new();
     let mut objects = Vec::with_capacity(page.objects.len());
-    for object in &page.objects {
+    for stored in &page.objects {
+        let object = &stored.object;
         let visible = match query.owner {
             None => object.read_permission == ReadPermission::Public,
             Some(owner) if owner == user => {
@@ -83,7 +84,7 @@ fn encode_page(query: &ListQuery, user: UserId, page: StorageClientListPage) -> 
         {
             return internal_error();
         }
-        match encode_storage_object(object) {
+        match encode_storage_object(object, &stored.times) {
             Some(encoded) => objects.push(encoded),
             None => return internal_error(),
         }
@@ -94,7 +95,8 @@ fn encode_page(query: &ListQuery, user: UserId, page: StorageClientListPage) -> 
     }
     if let Some(next) = page.next {
         if page.objects.len() != query.limit
-            || page.objects.last().is_none_or(|object| {
+            || page.objects.last().is_none_or(|stored| {
+                let object = &stored.object;
                 next != StorageListPosition {
                     key: object.key.key().to_owned(),
                     user_id: object.key.user_id(),

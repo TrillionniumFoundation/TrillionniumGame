@@ -9,7 +9,8 @@ use trnm_storage_core::{
 
 use super::{
     data_loss, decode_digest, decode_id16, error, invalid, map_postgres_error, to_i64,
-    DatabaseProfile, PgRepository,
+    DatabaseProfile, PgRepository, StorageTimes, StoredStorageClientListPage,
+    StoredStorageMutationReceipt, StoredStorageObject,
 };
 
 const MAX_BATCH_OPERATIONS: usize = 100;

@@ -5,6 +5,15 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 : "${TRNM_REQUIRE_LIVE_DATABASE:?TRNM_REQUIRE_LIVE_DATABASE must be explicit}"
 test "$TRNM_REQUIRE_LIVE_DATABASE" = 1
 : "${COCKROACH_IMAGE:?COCKROACH_IMAGE is required}"
+expected_image=$(python3 - "$ROOT/config/database-test-images.json" <<'PY_IMAGE'
+import json,sys
+print(json.load(open(sys.argv[1]))['profiles']['cockroachdb']['image'])
+PY_IMAGE
+)
+if [[ "$COCKROACH_IMAGE" != "$expected_image" ]]; then
+  echo 'cockroachdb image must match config/database-test-images.json' >&2
+  exit 64
+fi
 EVIDENCE_DIR=${EVIDENCE_DIR:-$ROOT/.artifacts/cockroachdb-node-failover}
 NETWORK=${COCKROACH_NETWORK:-trnm-crdb-ha-network}
 N1=${COCKROACH_NODE1:-trnm-crdb1}
@@ -71,12 +80,15 @@ for node in "$N1" "$N2" "$N3"; do
   test "$(scalar "$node" defaultdb 'SELECT 1')" = 1
 done
 sql "$N1" defaultdb 'CREATE DATABASE IF NOT EXISTS trnm' >/dev/null
-mapfile -t migrations < <(find "$ROOT/migrations/cockroachdb" -maxdepth 1 -type f -name '*_up.sql' | sort)
-test "${#migrations[@]}" -gt 0
-cat "${migrations[@]}" | docker exec -i "$N1" cockroach sql --insecure \
-  --host="${N1}:26257" --database=trnm >/dev/null
+TRNM_DATABASE_URL="postgresql://root@127.0.0.1:26261/trnm?sslmode=disable" TRNM_DATABASE_PROFILE=cockroachdb \
+  bash "$ROOT/scripts/apply-authoritative-schema.sh" migrate \
+  > "$EVIDENCE_DIR/schema-identity.json" 2> "$EVIDENCE_DIR/schema-build.log"
+cp "$ROOT/migrations/MIGRATION_CHAIN.lock.json" "$EVIDENCE_DIR/migration-lock.json"
+python3 "$ROOT/scripts/check-migration-lock.py" > "$EVIDENCE_DIR/migration-chain-validation.json"
+python3 "$ROOT/scripts/check-authoritative-schema-identity.py" "$EVIDENCE_DIR/schema-identity.json" cockroachdb --mode fresh \
+  > "$EVIDENCE_DIR/schema-identity-check.json"
 cat <<'SQL' | docker exec -i "$N1" cockroach sql --insecure --host="trnm-crdb1:26257" --database=trnm >/dev/null
-INSERT INTO trnm_schema_metadata VALUES (1,1,'cockroachdb',repeat('a',40),10);
+-- Schema identity was published by the shared Rust migrator.
 INSERT INTO trnm_entity_heads VALUES
   (decode(repeat('11',16),'hex'),1,1,1,decode(repeat('12',32),'hex'),10);
 INSERT INTO trnm_command_receipts VALUES
@@ -132,7 +144,7 @@ snapshot "$N2" > "$EVIDENCE_DIR/partition-survivor-snapshot.txt"
 cmp --silent "$EVIDENCE_DIR/partition-acknowledged-snapshot.txt" \
   "$EVIDENCE_DIR/partition-survivor-snapshot.txt"
 sql "$N2" trnm \
-  "INSERT INTO trnm_storage_objects VALUES ('partition-write','accepted',decode(repeat('51',16),'hex'),decode('01','hex'),decode(repeat('52',32),'hex'),2,1,20)" \
+  "INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms) VALUES ('partition-write','accepted',decode(repeat('51',16),'hex'),decode('01','hex'),decode(repeat('52',32),'hex'),2,1,20)" \
   >/dev/null
 test "$(scalar "$N2" trnm "SELECT count(*) FROM trnm_storage_objects WHERE collection='partition-write'")" = 1
 printf '%s\n' "$partition_recovery_ms" > "$EVIDENCE_DIR/partition-recovery-ms.txt"
@@ -169,7 +181,7 @@ test "$node_available" = true
 node_stop_finished_ms=$(date +%s%3N)
 node_stop_recovery_ms=$((node_stop_finished_ms-node_stop_started_ms))
 sql "$N2" trnm \
-  "INSERT INTO trnm_storage_objects VALUES ('node-stop-write','accepted',decode(repeat('61',16),'hex'),decode('02','hex'),decode(repeat('62',32),'hex'),2,1,30)" \
+  "INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms) VALUES ('node-stop-write','accepted',decode(repeat('61',16),'hex'),decode('02','hex'),decode(repeat('62',32),'hex'),2,1,30)" \
   >/dev/null
 test "$(scalar "$N2" trnm "SELECT count(*) FROM trnm_storage_objects WHERE collection='node-stop-write'")" = 1
 printf '%s\n' "$node_stop_recovery_ms" > "$EVIDENCE_DIR/node-stop-recovery-ms.txt"
@@ -197,6 +209,8 @@ manifest={
   "image_reference":sys.argv[3],
   "node_image_ids":sorted(set((evidence/"node-image-ids.txt").read_text().splitlines())),
   "migration_lock_sha256":digest(root/"migrations/MIGRATION_CHAIN.lock.json"),
+  "schema_identity":json.loads((evidence/"schema-identity.json").read_text()),
+  "migration_chain_validation":json.loads((evidence/"migration-chain-validation.json").read_text()),
   "range_id":int(sys.argv[4]),
   "initial_lease_holder":1,
   "partition_recovery_ms":int(sys.argv[5]),

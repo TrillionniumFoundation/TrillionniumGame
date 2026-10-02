@@ -71,6 +71,28 @@ class SchemaAuthorityScopeTests(unittest.TestCase):
         CHECKER.scan_forbidden_consumers()
         CHECKER.validate_sql_abi()
 
+    def test_active_authority_digest_matches_the_complete_locked_rust_identity(self) -> None:
+        chain = CHECKER.validated_migration_chain()
+        self.assertEqual(chain["digest_algorithm"], "ordered-path-git-blob-sha256.v1")
+        for profile, row in chain["profiles"].items():
+            digest, files = CHECKER.migration_digest(f"migrations/{profile}")
+            self.assertEqual(digest, row["chain_sha256"])
+            self.assertEqual([path.relative_to(ROOT).as_posix() for path in files], row["ordered_paths"])
+            self.assertEqual(len(files), 2)
+
+    def test_native_profile_image_cannot_be_replaced_by_an_external_override(self) -> None:
+        for profile in ("postgresql", "cockroachdb"):
+            harness = (ROOT / f"scripts/ci-{profile}-semantic-recovery.sh").read_text()
+            CHECKER.validate_pinned_database_image(harness, profile)
+            variable = "POSTGRES_IMAGE" if profile == "postgresql" else "COCKROACH_IMAGE"
+            for mutation in (
+                harness.replace("config/database-test-images.json", "historical-images.json"),
+                harness.replace('"$expected_image"', '"$' + variable + '"'),
+            ):
+                with self.subTest(profile=profile):
+                    with self.assertRaises(CHECKER.ValidationError):
+                        CHECKER.validate_pinned_database_image(mutation, profile)
+
 
 if __name__ == "__main__":
     unittest.main()

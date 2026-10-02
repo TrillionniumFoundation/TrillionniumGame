@@ -6,8 +6,9 @@ use trnm_contracts::{
 use trnm_persistence_pg::{
     CommitOutcome, CommitReceipt, CommitRequest, EntityHead, EntityId, EventId, EventInput,
     IntentId, IntentKind, OutboxInput, PgRepository, RefreshRotationOutcome, RotateRefreshToken,
-    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageClientListPage,
-    StorageListPosition, StorageMutationReceipt, StorageObject, StorageObjectKey,
+    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageListPosition,
+    StorageObjectKey, StoredStorageClientListPage, StoredStorageMutationReceipt,
+    StoredStorageObject,
 };
 use trnm_session_core::RevocationReason;
 
@@ -59,7 +60,7 @@ pub trait Repository: std::fmt::Debug {
         &mut self,
         actor: StorageActor,
         keys: &[StorageObjectKey],
-    ) -> Result<Vec<StorageObject>, DomainError> {
+    ) -> Result<Vec<StoredStorageObject>, DomainError> {
         let _ = (actor, keys);
         Err(DomainError::new(
             StableCode::Unimplemented,
@@ -75,7 +76,7 @@ pub trait Repository: std::fmt::Debug {
         owner: Option<UserId>,
         after: Option<&StorageListPosition>,
         limit: usize,
-    ) -> Result<StorageClientListPage, DomainError> {
+    ) -> Result<StoredStorageClientListPage, DomainError> {
         let _ = (actor, collection, owner, after, limit);
         Err(DomainError::new(
             StableCode::Unimplemented,
@@ -89,7 +90,7 @@ pub trait Repository: std::fmt::Debug {
         actor: StorageActor,
         operations: &[StorageBatchOperation],
         updated_at_ms: u64,
-    ) -> Result<Vec<StorageMutationReceipt>, DomainError> {
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
         let _ = (actor, operations, updated_at_ms);
         Err(DomainError::new(
             StableCode::Unimplemented,
@@ -151,8 +152,8 @@ impl Repository for PgRepository {
         &mut self,
         actor: StorageActor,
         keys: &[StorageObjectKey],
-    ) -> Result<Vec<StorageObject>, DomainError> {
-        PgRepository::read_storage_objects(self, actor, keys)
+    ) -> Result<Vec<StoredStorageObject>, DomainError> {
+        PgRepository::read_storage_objects_with_metadata(self, actor, keys)
     }
 
     fn list_storage_objects_nakama(
@@ -162,8 +163,10 @@ impl Repository for PgRepository {
         owner: Option<UserId>,
         after: Option<&StorageListPosition>,
         limit: usize,
-    ) -> Result<StorageClientListPage, DomainError> {
-        PgRepository::list_storage_objects_nakama(self, actor, collection, owner, after, limit)
+    ) -> Result<StoredStorageClientListPage, DomainError> {
+        PgRepository::list_storage_objects_nakama_with_metadata(
+            self, actor, collection, owner, after, limit,
+        )
     }
 
     fn apply_storage_batch(
@@ -171,8 +174,8 @@ impl Repository for PgRepository {
         actor: StorageActor,
         operations: &[StorageBatchOperation],
         updated_at_ms: u64,
-    ) -> Result<Vec<StorageMutationReceipt>, DomainError> {
-        PgRepository::apply_storage_batch(self, actor, operations, updated_at_ms)
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
+        PgRepository::apply_storage_batch_with_metadata(self, actor, operations, updated_at_ms)
     }
 
     fn verify_access_session(

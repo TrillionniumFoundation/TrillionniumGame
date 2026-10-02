@@ -4,10 +4,12 @@ import copy
 import hashlib
 import importlib.util
 import io
+import json
 import tarfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/verify-actions-log-artifact.py"
@@ -26,12 +28,19 @@ class ActionsLogVerifierTests(unittest.TestCase):
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
 
-    @staticmethod
-    def binding(profile: str) -> dict[str, str]:
-        migration = f"migrations/{profile}/0001_foundation_up.sql"
+    @classmethod
+    def binding(cls, profile: str) -> dict[str, Any]:
+        lock_bytes = (ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_bytes()
+        lock = json.loads(lock_bytes)
+        validation = cls.module.MIGRATIONS.validate(ROOT)
         return {
-            "migration": migration,
-            "migration_blob_sha1": "c" * 40,
+            "migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
+            "migration_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
+            "schema_version": "2",
+            "storage_writer_epoch": "2",
+            "chain_digest": validation["profiles"][profile]["chain_sha256"],
+            "digest_algorithm": validation["digest_algorithm"],
+            "ordered_files": lock["profiles"][profile]["ordered_files"],
             "image": f"example.invalid/{profile}@sha256:{'d' * 64}",
         }
 
@@ -43,6 +52,9 @@ class ActionsLogVerifierTests(unittest.TestCase):
         identity_overrides: dict[str, str] | None = None,
         result_overrides: dict[str, str] | None = None,
         manifest_self_reference: bool = False,
+        schema_overrides: dict[str, Any] | None = None,
+        file_overrides: dict[str, bytes | None] | None = None,
+        legacy_identity: bool = False,
     ) -> bytes:
         binding = cls.binding(profile)
         identity = {
@@ -58,10 +70,16 @@ class ActionsLogVerifierTests(unittest.TestCase):
             "workflow_path": cls.module.WORKFLOW_PATH,
             "job_key": "live-profile",
             "job_name": f"live-profile ({profile})",
-            "migration": binding["migration"],
-            "migration_blob_sha1": binding["migration_blob_sha1"],
+            **{key: binding[key] for key in (
+                "migration_lock", "schema_version", "storage_writer_epoch", "chain_digest", "digest_algorithm"
+            )},
         }
         identity.update(identity_overrides or {})
+        if legacy_identity:
+            for key in ("migration_lock", "schema_version", "storage_writer_epoch", "chain_digest", "digest_algorithm"):
+                identity.pop(key, None)
+            identity["migration"] = f"migrations/{profile}/0001_foundation_up.sql"
+            identity["migration_blob_sha1"] = "c" * 40
         result = {
             "status": "passed",
             "profile": profile,
@@ -69,6 +87,15 @@ class ActionsLogVerifierTests(unittest.TestCase):
             "tree": TREE,
         }
         result.update(result_overrides or {})
+        schema = {
+            "schema": "trillionnium.authoritative-schema-report.v1", "profile": profile,
+            "schema_version": 2, "storage_writer_epoch": 2,
+            "chain_digest": binding["chain_digest"], "digest_algorithm": binding["digest_algorithm"],
+            "source_commit": HEAD, "upgrade_source_commit": HEAD,
+            "migration_applied": True, "table_count": 10, "applied_steps": 2,
+            "compatibility_credit": False,
+        }
+        schema.update(schema_overrides or {})
         files = {
             "identity.env": cls.env_bytes(identity),
             "result.env": cls.env_bytes(result),
@@ -96,7 +123,15 @@ class ActionsLogVerifierTests(unittest.TestCase):
             ),
             "crash-after-publish/spool/abcd.json": b'{"effect":"stable"}\n',
             "logs/database.log": b"database evidence\n",
+            "migration-chain.lock.json": (ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_bytes(),
+            "migration-chain-validation.json": json.dumps(cls.module.MIGRATIONS.validate(ROOT)).encode(),
+            "schema-identity.json": json.dumps(schema).encode(),
         }
+        for name, payload in (file_overrides or {}).items():
+            if payload is None:
+                files.pop(name, None)
+            else:
+                files[name] = payload
         manifest_lines = [
             f"{hashlib.sha256(payload).hexdigest()}  ./{name}"
             for name, payload in sorted(files.items())
@@ -224,7 +259,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
             (
                 self.archive(
                     profile,
-                    identity_overrides={"migration_blob_sha1": "e" * 40},
+                    identity_overrides={"chain_digest": "e" * 64},
                 ),
                 binding,
             ),
@@ -232,7 +267,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
                 self.archive(
                     profile,
                     identity_overrides={
-                        "migration": "migrations/cockroachdb/0001_foundation_up.sql"
+                        "migration_lock": "migrations/cockroachdb/0001_foundation_up.sql"
                     },
                 ),
                 binding,
@@ -252,6 +287,87 @@ class ActionsLogVerifierTests(unittest.TestCase):
                         profile=profile,
                         binding=case_binding,
                     )
+
+    def assert_schema_archive_rejected(self, archive: bytes) -> None:
+        with self.assertRaises(self.module.VerificationError):
+            self.module.validate_archive(
+                archive, repository=REPOSITORY, head_sha=HEAD, head_tree=TREE,
+                run_id=RUN_ID, run_attempt=RUN_ATTEMPT, profile="postgresql",
+                binding=self.binding("postgresql"),
+            )
+
+    def test_archive_rejects_v1_identity_incomplete_schema_and_forged_execution(self) -> None:
+        self.assert_schema_archive_rejected(self.archive("postgresql", legacy_identity=True))
+        for key, value in (
+            ("schema_version", 1), ("storage_writer_epoch", 1), ("applied_steps", 1),
+            ("table_count", 9), ("chain_digest", "e" * 64),
+            ("digest_algorithm", "raw-content-historical.v1"),
+            ("source_commit", "f" * 40), ("upgrade_source_commit", "f" * 40),
+            ("migration_applied", False), ("migration_applied", 1),
+            ("compatibility_credit", True),
+        ):
+            with self.subTest(key=key, value=value):
+                self.assert_schema_archive_rejected(
+                    self.archive("postgresql", schema_overrides={key: value})
+                )
+
+    def test_archive_rejects_missing_or_tampered_retained_chain_documents(self) -> None:
+        for name in ("migration-chain.lock.json", "migration-chain-validation.json", "schema-identity.json"):
+            with self.subTest(name=name):
+                self.assert_schema_archive_rejected(self.archive("postgresql", file_overrides={name: None}))
+        self.assert_schema_archive_rejected(self.archive("postgresql", file_overrides={"migration-chain.lock.json": b"{}"}))
+        validation = self.module.MIGRATIONS.validate(ROOT)
+        validation["profiles"]["postgresql"]["file_count"] = 1
+        self.assert_schema_archive_rejected(self.archive("postgresql", file_overrides={
+            "migration-chain-validation.json": json.dumps(validation).encode(),
+        }))
+        self.assert_schema_archive_rejected(self.archive("postgresql", file_overrides={
+            "schema-identity.json": b'{"schema_version":1,"schema_version":2}',
+        }))
+
+    def test_remote_binding_uses_complete_exact_head_tree_and_shared_lock_validator(self) -> None:
+        lock_path = "migrations/MIGRATION_CHAIN.lock.json"
+        files = {lock_path: (ROOT / lock_path).read_bytes(),
+                 "config/database-test-images.json": (ROOT / "config/database-test-images.json").read_bytes()}
+        lock = json.loads(files[lock_path])
+        entries = []
+        for profile in self.module.PROFILES:
+            for item in lock["profiles"][profile]["ordered_files"]:
+                files[item["path"]] = (ROOT / item["path"]).read_bytes()
+                entries.append({"path": item["path"], "mode": "100644", "type": "blob"})
+        tree = {"sha": TREE, "truncated": False, "tree": entries}
+
+        def exact(_token: str, repository: str, head: str, path: str):
+            self.assertEqual(repository, REPOSITORY)
+            self.assertEqual(head, HEAD)
+            payload = files[path]
+            return payload, self.module.git_blob_sha1(payload)
+
+        with mock.patch.object(self.module, "fetch_exact_file", side_effect=exact), \
+                mock.patch.object(self.module, "request_json", return_value=tree):
+            bindings = self.module.fetch_profile_bindings("fixture-token", REPOSITORY, HEAD, head_tree=TREE)
+            for profile, binding in bindings.items():
+                self.assertEqual(binding["chain_digest"], self.binding(profile)["chain_digest"])
+                self.assertEqual(len(binding["ordered_files"]), 2)
+                self.assertEqual(binding["digest_algorithm"], "ordered-path-git-blob-sha256.v1")
+            for mutation in ("truncated", "unlisted", "symlink", "short_lock"):
+                candidate_tree = copy.deepcopy(tree)
+                original_lock = files[lock_path]
+                if mutation == "truncated":
+                    candidate_tree["truncated"] = True
+                elif mutation == "unlisted":
+                    candidate_tree["tree"].append({"path": "migrations/postgresql/0003_unlisted_up.sql", "type": "blob", "mode": "100644"})
+                elif mutation == "symlink":
+                    candidate_tree["tree"][0]["mode"] = "120000"
+                else:
+                    candidate_lock = copy.deepcopy(lock)
+                    candidate_lock["profiles"]["postgresql"]["ordered_files"].pop()
+                    files[lock_path] = json.dumps(candidate_lock).encode()
+                with self.subTest(mutation=mutation), \
+                        mock.patch.object(self.module, "request_json", return_value=candidate_tree), \
+                        self.assertRaises(self.module.VerificationError):
+                    self.module.fetch_profile_bindings("fixture-token", REPOSITORY, HEAD, head_tree=TREE)
+                files[lock_path] = original_lock
 
     def test_workflow_identity_is_exact_and_numeric(self) -> None:
         workflow = {

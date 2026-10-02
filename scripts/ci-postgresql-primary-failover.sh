@@ -5,6 +5,15 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 : "${TRNM_REQUIRE_LIVE_DATABASE:?TRNM_REQUIRE_LIVE_DATABASE must be explicit}"
 test "$TRNM_REQUIRE_LIVE_DATABASE" = 1
 : "${POSTGRES_IMAGE:?POSTGRES_IMAGE is required}"
+expected_image=$(python3 - "$ROOT/config/database-test-images.json" <<'PY_IMAGE'
+import json,sys
+print(json.load(open(sys.argv[1]))['profiles']['postgresql']['image'])
+PY_IMAGE
+)
+if [[ "$POSTGRES_IMAGE" != "$expected_image" ]]; then
+  echo 'postgresql image must match config/database-test-images.json' >&2
+  exit 64
+fi
 EVIDENCE_DIR=${EVIDENCE_DIR:-$ROOT/.artifacts/postgresql-primary-failover}
 NETWORK=${POSTGRES_NETWORK:-trnm-pg-ha-network}
 PRIMARY=${POSTGRES_PRIMARY_NAME:-trnm-pg-primary}
@@ -51,15 +60,17 @@ snapshot() {
     -U postgres -d trnm < "$ROOT/scripts/postgresql-semantic-snapshot.sql"
 }
 
-mapfile -t migrations < <(find "$ROOT/migrations/postgresql" -maxdepth 1 -type f -name '*_up.sql' | sort)
-test "${#migrations[@]}" -gt 0
-cat "${migrations[@]}" | docker exec -i "$PRIMARY" \
-  psql -v ON_ERROR_STOP=1 -U postgres -d trnm >/dev/null
+TRNM_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:${PRIMARY_PORT}/trnm" TRNM_DATABASE_PROFILE=postgresql \
+  bash "$ROOT/scripts/apply-authoritative-schema.sh" migrate \
+  > "$EVIDENCE_DIR/schema-identity.json" 2> "$EVIDENCE_DIR/schema-build.log"
+cp "$ROOT/migrations/MIGRATION_CHAIN.lock.json" "$EVIDENCE_DIR/migration-lock.json"
+python3 "$ROOT/scripts/check-migration-lock.py" > "$EVIDENCE_DIR/migration-chain-validation.json"
+python3 "$ROOT/scripts/check-authoritative-schema-identity.py" "$EVIDENCE_DIR/schema-identity.json" postgresql --mode fresh \
+  > "$EVIDENCE_DIR/schema-identity-check.json"
 primary_sql "CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'replicator'" >/dev/null
 docker exec "$PRIMARY" sh -ceu \
   "printf '%s\\n' 'host replication replicator 0.0.0.0/0 scram-sha-256' >> \"\$PGDATA/pg_hba.conf\""
 primary_sql "SELECT pg_reload_conf()" >/dev/null
-primary_sql "INSERT INTO trnm_schema_metadata VALUES (1,1,'postgresql',repeat('a',40),10)" >/dev/null
 primary_sql "INSERT INTO trnm_entity_heads VALUES (decode(repeat('11',16),'hex'),0,0,1,decode(repeat('12',32),'hex'),10)" >/dev/null
 
 docker run --rm --network "$NETWORK" -e PGPASSWORD=replicator \
@@ -148,7 +159,7 @@ snapshot "$STANDBY" > "$EVIDENCE_DIR/promoted-snapshot.txt"
 cmp --silent "$EVIDENCE_DIR/acknowledged-snapshot.txt" \
   "$EVIDENCE_DIR/promoted-snapshot.txt"
 docker exec "$STANDBY" psql -v ON_ERROR_STOP=1 -X -q -U postgres -d trnm \
-  -c "INSERT INTO trnm_storage_objects VALUES ('post-failover-write','accepted',decode(repeat('51',16),'hex'),decode('0102','hex'),decode(repeat('52',32),'hex'),2,1,30)" \
+  -c "INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms) VALUES ('post-failover-write','accepted',decode(repeat('51',16),'hex'),decode('0102','hex'),decode(repeat('52',32),'hex'),2,1,30)" \
   >/dev/null
 post_failover_write=$(standby_scalar "SELECT count(*) FROM trnm_storage_objects WHERE collection='post-failover-write'")
 test "$post_failover_write" = 1
@@ -170,6 +181,8 @@ manifest={
   "primary_image_id":(evidence/"primary-image-id.txt").read_text().strip(),
   "standby_image_id":(evidence/"standby-image-id.txt").read_text().strip(),
   "migration_lock_sha256":digest(root/"migrations/MIGRATION_CHAIN.lock.json"),
+  "schema_identity":json.loads((evidence/"schema-identity.json").read_text()),
+  "migration_chain_validation":json.loads((evidence/"migration-chain-validation.json").read_text()),
   "acknowledged_snapshot_sha256":digest(evidence/"acknowledged-snapshot.txt"),
   "promoted_snapshot_sha256":digest(evidence/"promoted-snapshot.txt"),
   "acknowledged_lsn":(evidence/"acknowledged-lsn.txt").read_text().strip(),

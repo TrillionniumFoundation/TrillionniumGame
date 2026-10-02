@@ -2,6 +2,8 @@
 """Validate the PostgreSQL recovery barrier source contract."""
 from __future__ import annotations
 
+import importlib.util
+
 import sys
 from pathlib import Path
 
@@ -38,6 +40,15 @@ REQUIRED_HARNESS = (
 class ValidationError(RuntimeError):
     pass
 
+
+SCHEMA_SPEC = importlib.util.spec_from_file_location(
+    "schema_consumer_source_contract", Path(__file__).with_name("check-schema-authority.py")
+)
+if SCHEMA_SPEC is None or SCHEMA_SPEC.loader is None:
+    raise RuntimeError("schema consumer checker unavailable")
+SCHEMA = importlib.util.module_from_spec(SCHEMA_SPEC)
+SCHEMA_SPEC.loader.exec_module(SCHEMA)
+
 def require(value: bool, message: str) -> None:
     if not value:
         raise ValidationError(message)
@@ -60,6 +71,13 @@ def validate_texts(sql: str, harness: str) -> None:
     require("DROP TABLE" not in combined.upper(), "destructive table rollback introduced")
     require("DELETE FROM trnm_outbox" not in combined, "pending outbox deletion introduced")
     require("|| true" not in harness, "failure suppression introduced")
+    try:
+        SCHEMA.validate_schema_consumer(harness, "postgresql")
+        SCHEMA.validate_pinned_database_image(harness, 'postgresql')
+    except SCHEMA.ValidationError as error:
+        raise ValidationError(str(error)) from error
+    require("check-sql-error.py" in harness and "--sqlstate 25006" in harness,
+            "write-fence negative must prove read-only SQLSTATE 25006")
 
 def main() -> int:
     try:

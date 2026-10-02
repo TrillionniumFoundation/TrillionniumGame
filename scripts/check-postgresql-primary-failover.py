@@ -2,6 +2,8 @@
 """Validate the PostgreSQL synchronous failover source contract."""
 from __future__ import annotations
 
+import importlib.util
+
 import sys
 from pathlib import Path
 
@@ -31,6 +33,15 @@ REQUIRED = (
 class ValidationError(RuntimeError):
     pass
 
+
+SCHEMA_SPEC = importlib.util.spec_from_file_location(
+    "schema_consumer_source_contract", Path(__file__).with_name("check-schema-authority.py")
+)
+if SCHEMA_SPEC is None or SCHEMA_SPEC.loader is None:
+    raise RuntimeError("schema consumer checker unavailable")
+SCHEMA = importlib.util.module_from_spec(SCHEMA_SPEC)
+SCHEMA_SPEC.loader.exec_module(SCHEMA)
+
 def require(value: bool, message: str) -> None:
     if not value:
         raise ValidationError(message)
@@ -50,6 +61,11 @@ def validate_text(text: str) -> None:
     require("DROP TABLE" not in text.upper(), "destructive schema rollback introduced")
     require("|| true" not in text, "failure suppression introduced")
     require("docker start trnm-pg-primary" not in text, "old primary automatically reintroduced")
+    try:
+        SCHEMA.validate_schema_consumer(text, "postgresql")
+        SCHEMA.validate_pinned_database_image(text, 'postgresql')
+    except SCHEMA.ValidationError as error:
+        raise ValidationError(str(error)) from error
 
 def main() -> int:
     try:

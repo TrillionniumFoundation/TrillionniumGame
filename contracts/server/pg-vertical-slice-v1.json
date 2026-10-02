@@ -4,10 +4,10 @@
   "status": "source-candidate",
   "entrypoint": "crates/trnm-persistence-pg/examples/trnm_server_pg_slice.rs",
   "workflow": ".github/workflows/pg-server-vertical-slice.yml",
-  "authoritative_migration": "migrations/postgresql/0001_foundation_up.sql",
   "database_profile": "postgresql",
   "required_scenarios": [
     "fresh migration apply",
+    "complete ordered chain with schema v2 and storage writer epoch 2",
     "entity bootstrap",
     "first command commit",
     "one receipt, event, outbox and command-outbox link",
@@ -36,7 +36,10 @@
     "immutable Nakama differential",
     "independent database/protocol/security review"
   ],
-  "gap_ids": ["GAP-P0-SERVER-001", "GAP-P1-PG-001"],
+  "gap_ids": [
+    "GAP-P0-SERVER-001",
+    "GAP-P1-PG-001"
+  ],
   "claims": {
     "source_candidate": true,
     "live_postgresql_executed": false,
@@ -45,5 +48,11 @@
     "nakama_wire_compatible": false,
     "sg4_complete": false,
     "production_ready": false
-  }
+  },
+  "authoritative_migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
+  "authoritative_schema_version": 2,
+  "storage_writer_epoch": 2,
+  "migration_digest_algorithm": "ordered-path-git-blob-sha256.v1",
+  "migration_runner": "trnm-schema migrate --candidate-plaintext",
+  "schema_verifier": "trnm-schema verify --candidate-plaintext"
 }

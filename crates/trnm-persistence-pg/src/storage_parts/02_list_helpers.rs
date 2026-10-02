@@ -44,7 +44,7 @@ fn validate_actor_and_owner(actor: Actor, owner: Option<UserId>) -> Result<(), D
 /// Collection scope equality uses the same exact UTF-8-byte representation as
 /// the object-key continuation and ordering boundary. Rust `String::cmp` is
 /// byte-equivalent for valid UTF-8. CockroachDB uses explicit `::BYTES` casts;
-/// PostgreSQL uses `convert_to(..., 'UTF8')`. Ambient locale or collation is
+/// PostgreSQL uses `pg_catalog.convert_to(..., 'UTF8')`. Ambient locale or collation is
 /// therefore not authoritative for collection identity, page boundaries, or
 /// cursor continuation.
 fn storage_list_query(profile: DatabaseProfile) -> &'static str {
@@ -52,21 +52,21 @@ fn storage_list_query(profile: DatabaseProfile) -> &'static str {
         DatabaseProfile::PostgreSql => {
             "SELECT object_key, user_id, value_bytes, version_digest, \
                     read_permission, write_permission \
-             FROM trnm_storage_objects \
-             WHERE convert_to(collection, 'UTF8') = convert_to($1, 'UTF8') \
+             FROM public.trnm_storage_objects \
+             WHERE pg_catalog.convert_to(collection, 'UTF8') = pg_catalog.convert_to($1, 'UTF8') \
                AND ($2::bytea IS NULL OR user_id = $2) \
-               AND (convert_to(object_key, 'UTF8') > convert_to($3, 'UTF8') \
-                    OR (convert_to(object_key, 'UTF8') = convert_to($3, 'UTF8') \
+               AND (pg_catalog.convert_to(object_key, 'UTF8') > pg_catalog.convert_to($3, 'UTF8') \
+                    OR (pg_catalog.convert_to(object_key, 'UTF8') = pg_catalog.convert_to($3, 'UTF8') \
                         AND user_id > $4)) \
                AND ($5::bytea IS NULL OR read_permission = 2 \
                     OR (user_id = $5 AND read_permission = 1)) \
-             ORDER BY convert_to(object_key, 'UTF8') ASC, user_id ASC \
+             ORDER BY pg_catalog.convert_to(object_key, 'UTF8') ASC, user_id ASC \
              LIMIT $6"
         }
         DatabaseProfile::CockroachDb => {
             "SELECT object_key, user_id, value_bytes, version_digest, \
                     read_permission, write_permission \
-             FROM trnm_storage_objects \
+             FROM public.trnm_storage_objects \
              WHERE collection::BYTES = $1::STRING::BYTES \
                AND ($2::bytea IS NULL OR user_id = $2) \
                AND (object_key::BYTES > $3::STRING::BYTES \
@@ -129,8 +129,8 @@ fn validate_client_list_request(
 // client-list projection does. The existing typed list retains byte ordering.
 fn storage_client_list_public_query() -> &'static str {
     "SELECT object_key, user_id, value_bytes, version_digest, \
-            read_permission, write_permission \
-     FROM trnm_storage_objects \
+            read_permission, write_permission, create_time, update_time \
+     FROM public.trnm_storage_objects \
      WHERE collection = $1 AND read_permission = 2 \
        AND ($2::TEXT IS NULL \
             OR (collection, read_permission, object_key, user_id) > ($1, 2, $2, $3)) \
@@ -140,8 +140,8 @@ fn storage_client_list_public_query() -> &'static str {
 
 fn storage_client_list_own_query() -> &'static str {
     "SELECT object_key, user_id, value_bytes, version_digest, \
-            read_permission, write_permission \
-     FROM trnm_storage_objects \
+            read_permission, write_permission, create_time, update_time \
+     FROM public.trnm_storage_objects \
      WHERE collection = $1 AND user_id = $2 AND read_permission >= 1 \
        AND ($3::TEXT IS NULL \
             OR (collection, user_id, read_permission, object_key) > ($1, $2, $4::INT4, $3)) \
@@ -151,8 +151,8 @@ fn storage_client_list_own_query() -> &'static str {
 
 fn storage_client_list_foreign_query() -> &'static str {
     "SELECT object_key, user_id, value_bytes, version_digest, \
-            read_permission, write_permission \
-     FROM trnm_storage_objects \
+            read_permission, write_permission, create_time, update_time \
+     FROM public.trnm_storage_objects \
      WHERE collection = $1 AND user_id = $2 AND read_permission = 2 \
        AND ($3::TEXT IS NULL \
             OR (collection, read_permission, user_id, object_key) > ($1, 2, $2, $3)) \
@@ -160,14 +160,15 @@ fn storage_client_list_foreign_query() -> &'static str {
      LIMIT $4"
 }
 
-fn finish_client_storage_page(
-    objects: Vec<StorageObject>,
+fn finish_stored_client_storage_page(
+    objects: Vec<StoredStorageObject>,
     has_more: bool,
-) -> StorageClientListPage {
+) -> StoredStorageClientListPage {
     let next = has_more.then(|| {
-        let object = objects
+        let object = &objects
             .last()
-            .expect("validated positive list limit retains a last page object");
+            .expect("validated positive list limit retains a last page object")
+            .object;
         StorageListPosition {
             key: object.key.key().to_owned(),
             user_id: object.key.user_id(),
@@ -178,5 +179,5 @@ fn finish_client_storage_page(
             },
         }
     });
-    StorageClientListPage { objects, next }
+    StoredStorageClientListPage { objects, next }
 }

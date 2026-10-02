@@ -6,7 +6,7 @@
   "migration_lock": {
     "path": "migrations/MIGRATION_CHAIN.lock.json",
     "validator": "python3 scripts/check-migration-lock.py",
-    "identity": "ordered path plus Git blob SHA-1 per profile; exact chain SHA-256 emitted by validation",
+    "identity": "ordered-path-git-blob-sha256.v1: each zero-based u64 big-endian position, UTF-8 repository path, NUL, and 20-byte Git blob SHA-1; hash the concatenation with SHA-256",
     "runtime_execution_credit": false
   },
   "authority": {
@@ -42,7 +42,7 @@
       }
     ],
     "metadata_table": "trnm_schema_metadata",
-    "schema_version": 1,
+    "schema_version": 2,
     "identity_rule": "Every build, migration, adapter test, backup and restore artifact must record the complete ordered migration-chain SHA-256 and candidate commit/tree.",
     "postgresql_connection_fault_source_candidate": {
       "harness": "scripts/ci-postgresql-connection-faults.sh",
@@ -140,6 +140,21 @@
         "migration-lock backup-tree and image digests"
       ],
       "accepted": false
+    },
+    "storage_timestamp_upgrade_source_candidate": {
+      "migration": "0002_storage_timestamps_up.sql",
+      "schema_version": 2,
+      "storage_writer_epoch": 2,
+      "engine": "crates/trnm-persistence-pg/src/schema.rs",
+      "cli": "trnm-schema",
+      "catalog": "Exact expected table/column type, nullability and default catalog plus ordered partial action prefix; readonly serve verification.",
+      "upgrade_barrier": "An explicit drained legacy_writer_role must be non-admin, non-owner and lack all storage CRUD/column privileges before v1 upgrade. Existing old sessions are tested independently. Fresh databases need no old role.",
+      "history": "Original foundation source_commit/applied_at_ms are preserved; upgrade_source_commit and full-chain digest are separate. Unknown original timestamps stay NULL.",
+      "postgresql": "Append DDL and metadata publish in one serializable transaction.",
+      "cockroachdb": "Explicit ordered action blocks, catalog visibility check after each; legal completed prefix may resume, metadata publishes last.",
+      "rollback": "No drop or mixed v1/v2 writer rollback; forward repair only after re-establishing the exclusive writer barrier.",
+      "accepted": false,
+      "compatibility_credit": false
     }
   },
   "non_authoritative": [
@@ -199,7 +214,9 @@
       "crates/trnm-persistence-pg/src/authority.rs",
       "crates/trnm-persistence-pg/src/session.rs",
       "crates/trnm-persistence-pg/src/storage.rs",
-      "crates/trnm-persistence-pg/src/outbox.rs"
+      "crates/trnm-persistence-pg/src/outbox.rs",
+      "crates/trnm-persistence-pg/src/schema.rs",
+      "crates/trnm-persistence-pg/src/storage_metadata.rs"
     ],
     "source_coverage_candidate": {
       "all_required_tables_referenced": true,
@@ -222,7 +239,18 @@
       ],
       "accepted": false,
       "compatibility_credit": false
-    }
+    },
+    "explicit_profile_exceptions": [
+      {
+        "id": "NAKAMA-STORAGE-DATABASE-TIME-V2",
+        "fields": [
+          "trnm_storage_objects.create_time",
+          "trnm_storage_objects.update_time"
+        ],
+        "semantics": "Nakama storage only uses the database transaction clock, explicit INSERT/UPDATE values and RETURNING receipts. Nullable v1 history remains unknown; no defaults or backfill. Other public contract clocks remain explicit caller inputs.",
+        "accepted": false
+      }
+    ]
   },
   "change_control": {
     "required_for_semantic_change": [

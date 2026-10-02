@@ -5,6 +5,15 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 : "${TRNM_REQUIRE_LIVE_DATABASE:?TRNM_REQUIRE_LIVE_DATABASE must be explicit}"
 test "$TRNM_REQUIRE_LIVE_DATABASE" = 1
 : "${POSTGRES_IMAGE:?POSTGRES_IMAGE is required}"
+expected_image=$(python3 - "$ROOT/config/database-test-images.json" <<'PY_IMAGE'
+import json,sys
+print(json.load(open(sys.argv[1]))['profiles']['postgresql']['image'])
+PY_IMAGE
+)
+if [[ "$POSTGRES_IMAGE" != "$expected_image" ]]; then
+  echo 'postgresql image must match config/database-test-images.json' >&2
+  exit 64
+fi
 EVIDENCE_DIR=${EVIDENCE_DIR:-$ROOT/.artifacts/postgresql-pitr}
 NETWORK=${POSTGRES_NETWORK:-trnm-pitr-network}
 PRIMARY=${POSTGRES_PRIMARY_NAME:-trnm-pitr-primary}
@@ -58,15 +67,17 @@ snapshot() {
     -U postgres -d trnm < "$ROOT/scripts/postgresql-semantic-snapshot.sql"
 }
 
-mapfile -t migrations < <(find "$ROOT/migrations/postgresql" -maxdepth 1 -type f -name '*_up.sql' | sort)
-test "${#migrations[@]}" -gt 0
-cat "${migrations[@]}" | docker exec -i "$PRIMARY" psql -v ON_ERROR_STOP=1 \
-  -U postgres -d trnm >/dev/null
+TRNM_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:${PRIMARY_PORT}/trnm" TRNM_DATABASE_PROFILE=postgresql \
+  bash "$ROOT/scripts/apply-authoritative-schema.sh" migrate \
+  > "$EVIDENCE_DIR/schema-identity.json" 2> "$EVIDENCE_DIR/schema-build.log"
+cp "$ROOT/migrations/MIGRATION_CHAIN.lock.json" "$EVIDENCE_DIR/migration-lock.json"
+python3 "$ROOT/scripts/check-migration-lock.py" > "$EVIDENCE_DIR/migration-chain-validation.json"
+python3 "$ROOT/scripts/check-authoritative-schema-identity.py" "$EVIDENCE_DIR/schema-identity.json" postgresql --mode fresh \
+  > "$EVIDENCE_DIR/schema-identity-check.json"
 primary_sql "CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'replicator'" >/dev/null
 docker exec "$PRIMARY" sh -ceu \
   "printf '%s\\n' 'host replication replicator 0.0.0.0/0 scram-sha-256' >> \"\$PGDATA/pg_hba.conf\""
 primary_sql "SELECT pg_reload_conf()" >/dev/null
-primary_sql "INSERT INTO trnm_schema_metadata VALUES (1,1,'postgresql',repeat('a',40),10)" >/dev/null
 primary_sql "INSERT INTO trnm_entity_heads VALUES (decode(repeat('11',16),'hex'),0,0,1,decode(repeat('12',32),'hex'),10)" >/dev/null
 primary_sql "CHECKPOINT" >/dev/null
 
@@ -78,7 +89,7 @@ docker run --rm --network "$NETWORK" -e PGPASSWORD=replicator \
 docker run --rm -v "$BASE_VOLUME:/base:ro" --entrypoint bash "$POSTGRES_IMAGE" \
   -ceu 'test -s /base/backup_label; test -s /base/PG_VERSION'
 
-primary_sql "INSERT INTO trnm_storage_objects VALUES ('pitr-target','included',decode(repeat('51',16),'hex'),decode('0102','hex'),decode(repeat('52',32),'hex'),2,1,20)" >/dev/null
+primary_sql "INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms) VALUES ('pitr-target','included',decode(repeat('51',16),'hex'),decode('0102','hex'),decode(repeat('52',32),'hex'),2,1,20)" >/dev/null
 target_lsn=$(primary_scalar 'SELECT pg_current_wal_flush_lsn()')
 test -n "$target_lsn"
 printf '%s\n' "$target_lsn" > "$EVIDENCE_DIR/target-lsn.txt"
@@ -91,7 +102,7 @@ for _ in $(seq 1 80); do
 done
 test "$archived_count" -ge 1
 
-primary_sql "INSERT INTO trnm_storage_objects VALUES ('pitr-after-target','excluded',decode(repeat('61',16),'hex'),decode('0304','hex'),decode(repeat('62',32),'hex'),2,1,30)" >/dev/null
+primary_sql "INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms) VALUES ('pitr-after-target','excluded',decode(repeat('61',16),'hex'),decode('0304','hex'),decode(repeat('62',32),'hex'),2,1,30)" >/dev/null
 test "$(primary_scalar "SELECT count(*) FROM trnm_storage_objects WHERE collection='pitr-after-target'")" = 1
 primary_sql "SELECT pg_switch_wal()" >/dev/null
 for _ in $(seq 1 80); do
@@ -166,6 +177,8 @@ manifest={
   "primary_image_id":(evidence/"primary-image-id.txt").read_text().strip(),
   "restored_image_id":(evidence/"restored-image-id.txt").read_text().strip(),
   "migration_lock_sha256":digest(root/"migrations/MIGRATION_CHAIN.lock.json"),
+  "schema_identity":json.loads((evidence/"schema-identity.json").read_text()),
+  "migration_chain_validation":json.loads((evidence/"migration-chain-validation.json").read_text()),
   "target_lsn":sys.argv[4],
   "measured_recovery_ms":int(sys.argv[5]),
   "wal_archive_sha256":tree_digest(evidence/"archive-files"),

@@ -27,6 +27,13 @@ esac
 [[ "$CLIENTS" =~ ^[0-9]+$ ]] && test "$CLIENTS" -ge 1 && test "$CLIENTS" -le 256
 [[ "$THREADS" =~ ^[0-9]+$ ]] && test "$THREADS" -ge 1 && test "$THREADS" -le "$CLIENTS"
 
+# Verify the complete schema identity without changing the target database.
+bash "$ROOT/scripts/apply-authoritative-schema.sh" verify \
+  > "$EVIDENCE_DIR/schema-identity.json" 2> "$EVIDENCE_DIR/schema-build.log"
+python3 "$ROOT/scripts/check-authoritative-schema-identity.py" "$EVIDENCE_DIR/schema-identity.json" "$TRNM_DATABASE_PROFILE" --mode verify \
+  > "$EVIDENCE_DIR/schema-identity-check.json"
+cp "$ROOT/migrations/MIGRATION_CHAIN.lock.json" "$EVIDENCE_DIR/migration-lock.json"
+python3 "$ROOT/scripts/check-migration-lock.py" > "$EVIDENCE_DIR/migration-chain-validation.json"
 started_epoch=$(date +%s)
 docker run --rm --network host \
   -v "$ROOT/scripts/database-capacity-workload.sql:/workload.sql:ro" \
@@ -111,6 +118,8 @@ manifest = {
     "candidate_commit": candidate_commit,
     "candidate_tree": candidate_tree,
     "workload_sha256": digest(workload),
+    "schema_identity": json.loads((evidence / "schema-identity.json").read_text()),
+    "migration_lock_sha256": digest(root / "migrations/MIGRATION_CHAIN.lock.json"),
     "requested_duration_seconds": requested,
     "observed_duration_seconds": observed,
     "started_epoch_seconds": started,

@@ -132,11 +132,11 @@ This table documents the bounded HTTP application dispatcher in `crates/trnm-ser
 | `POST` | `/-/drain` | Candidate administrator-authorized drain. |
 | `POST` | `/v1/authority/bootstrap` | Candidate administrator-authorized entity bootstrap. |
 | `POST` | `/v1/authority/commit` | Candidate administrator-authorized durable command/replay. |
-| `PUT` | `/v2/storage` | Bounded candidate-session storage write batch; timestamps and complete parity remain open. |
-| `POST` | `/v2/storage` | Bounded candidate-session read batch; missing/hidden objects omitted, timestamps remain open. |
+| `PUT` | `/v2/storage` | Bounded candidate-session storage write batch; genuine database timestamps; complete parity remains open. |
+| `POST` | `/v2/storage` | Bounded candidate-session read batch; missing/hidden objects omitted, genuine timestamps projected to seconds. |
 | `PUT` | `/v2/storage/delete` | Bounded candidate-session storage delete batch. |
 | `GET` | `/v2/storage/{collection}` | Nakama client-profile public list with unsigned gob position and authenticated SQL ACL. |
-| `GET` | `/v2/storage/{collection}/{user_id}` | Nakama client-profile own/foreign/global owner list; timestamps and exact differential remain open. |
+| `GET` | `/v2/storage/{collection}/{user_id}` | Nakama client-profile own/foreign/global owner list; genuine timestamps projected to seconds; exact differential remains open. |
 <!-- trnm-server-routes:end -->
 
 A known path with an unsupported method currently returns HTTP 405; an unknown dispatcher path returns 404. These custom routes cannot inflate Nakama parity. Authentication, error precedence, headers and exact response bytes still require their native tests and oracle/profile decisions.
@@ -221,9 +221,9 @@ suppression. Read regressions cover global/default owners, pinned UUID forms,
 hidden/missing objects and defensive response validation. Mock repositories and the real storage state model provide local
 feedback; live database and immutable-oracle evidence remain separate. Read
 `contracts/storage/nakama-http-storage-v1.json` and the open
-`DIV-STORAGE-HTTP-*` records before changing these endpoints. This tranche does
-not change DDL. Reverting routes, codec and repository bridge together preserves
-stored rows but does not authorize a production rollback.
+`DIV-STORAGE-HTTP-*` records before changing these endpoints. Schema v2 appends nullable storage timestamps and a shared migration engine.
+Original v1 times stay unknown. Reverting API source does not authorize reverting
+the writer epoch, schema or storage privilege barrier.
 
 The last command requires `TRNM_DATABASE_URL`, `TRNM_DATABASE_PROFILE` and
 `TRNM_REQUIRE_LIVE_DATABASE=1` to prove actual database execution. The existing
@@ -233,7 +233,8 @@ It uses dedicated fixture rows and verifies persisted effects and revocation.
 Independent SQL sentinels verify that a blind unchanged value/ACL preserves
 legacy update time while an exact-version write still refreshes it. Repository
 regressions also cover ACL changes, authorization/OCC rejection and rollback.
-These assertions do not prove the missing upstream public timestamp fields.
+The timestamp fixtures also check persisted database times; historical NULL
+timestamps and the immutable upstream differential remain explicit gaps.
 This exercises the HTTP application and repository together; TCP ingress,
 pooled deadlines, SDK and immutable Nakama differential remain separate checks.
 
@@ -359,3 +360,5 @@ A small pure library can satisfy this with compact tables and examples. A proces
 Every PR records scope, owner, task/gap/parity/gate IDs, exact final head/tree, tests, migration/rollback/security effects, evidence or explicit no-credit boundary, residual limitations and forbidden claims. Keep the PR draft while required checks, current identity or P0 findings are unresolved.
 
 The author cannot supply independent acceptance. Automation and generated manifests are not reviewers. A requested source-defect review from an existing account does not prove that account's candidate-specific independence or specialist qualification.
+
+The timestamp schema lifecycle fixtures run with `cargo test -p trnm-persistence-pg --locked --test schema_upgrade -- --nocapture --test-threads=1`. Set the dedicated `TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL`, `TRNM_DATABASE_PROFILE` and `TRNM_REQUIRE_LIVE_DATABASE=1`; the admin URL never falls back to the ordinary database URL. Tests create isolated databases and synthetic roles, cover fresh/repeated/readonly verification, original provenance and unknown history, old-session write rejection and catalog/identity drift, then clean up their own resources. Separate PostgreSQL and CockroachDB executions are required. A success in local fixtures is source validation, not migration or production acceptance.

@@ -4,8 +4,10 @@ mod auth;
 mod authority;
 mod outbox;
 mod pool;
+mod schema;
 mod session;
 mod storage;
+mod storage_metadata;
 
 pub use auth::{
     parse_refresh_credential, AccessTokenVerifier, ParsedRefreshCredential, SessionPrincipal,
@@ -13,6 +15,11 @@ pub use auth::{
 pub use authority::AuthorityLease;
 pub use outbox::{OutboxClaimBatch, OutboxLease, OutboxRetryOutcome};
 pub use pool::{PgPool, PgPoolConfig, PgPoolSnapshot, PgTlsConfig};
+pub use schema::{
+    authoritative_chain_digest, SchemaIdentity, SchemaMigrationReport,
+    AUTHORITATIVE_CHAIN_DIGEST_ALGORITHM, AUTHORITATIVE_SCHEMA_VERSION,
+    AUTHORITATIVE_STORAGE_WRITER_EPOCH,
+};
 #[cfg(feature = "session-test-hooks")]
 pub use session::SessionMutationPoint;
 pub use session::{
@@ -20,6 +27,10 @@ pub use session::{
     SessionFamilyRecord,
 };
 pub use storage::{StorageClientListPage, StorageListPosition};
+pub use storage_metadata::{
+    StorageTimes, StorageTimestamp, StoredStorageClientListPage, StoredStorageMutationReceipt,
+    StoredStorageObject,
+};
 pub use trnm_storage_core::{
     Actor as StorageActor, BatchOperation as StorageBatchOperation, ContentVersion,
     DeleteOperation as StorageDeleteOperation, IntegrityDigest,
@@ -218,6 +229,9 @@ impl PgRepository {
             .map_err(map_postgres_error)
     }
 
+    /// Legacy adapter entry point retained for callers of the v1 API. Schema
+    /// provenance belongs to the ordered migrator; opening an adapter verifies
+    /// the current catalog and identity without rewriting the creating commit.
     pub fn bind_schema_metadata(
         &mut self,
         source_commit: &str,
@@ -227,38 +241,8 @@ impl PgRepository {
         {
             return Err(invalid("invalid_schema_source_commit"));
         }
-        let applied_at_ms = to_i64(applied_at_ms)?;
-        self.client
-            .execute(
-                "INSERT INTO trnm_schema_metadata \
-                 (singleton, schema_version, profile, source_commit, applied_at_ms) \
-                 VALUES (1, 1, $1, $2, $3) ON CONFLICT (singleton) DO NOTHING",
-                &[
-                    &self.profile.metadata_value(),
-                    &source_commit,
-                    &applied_at_ms,
-                ],
-            )
-            .map_err(map_postgres_error)?;
-        let row = self
-            .client
-            .query_opt(
-                "SELECT schema_version, profile, source_commit \
-                 FROM trnm_schema_metadata WHERE singleton = 1",
-                &[],
-            )
-            .map_err(map_postgres_error)?
-            .ok_or_else(|| failed_precondition("schema_metadata_missing"))?;
-        let version: i64 = row.get(0);
-        let profile: String = row.get(1);
-        let recorded_commit: String = row.get(2);
-        if version != 1
-            || profile != self.profile.metadata_value()
-            || recorded_commit != source_commit
-        {
-            return Err(failed_precondition("schema_metadata_mismatch"));
-        }
-        Ok(())
+        let _ = to_i64(applied_at_ms)?;
+        self.verify_authoritative_schema().map(|_| ())
     }
 
     pub fn bootstrap_entity(

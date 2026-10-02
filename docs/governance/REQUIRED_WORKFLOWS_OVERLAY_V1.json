@@ -35,7 +35,7 @@
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
-  "overlay_sha256": "24292721c6154625f7232229ae226f2bee52fcfac089cf1d181c648fc6be4b35",
+  "overlay_sha256": "aab319bb1f8c334155e0271d3918d661026accb86869c2c20af5d0a0aef56d5f",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -482,7 +482,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "7c7d01894e3de41f414be7fde0818853a57f903e",
+      "git_blob_sha1": "e92ea5bfeab870d488ff965e823ae041d31b37bd",
       "minimum_successful_execution_jobs": 1,
       "name": "outbox-final-attempt-reaper",
       "path": ".github/workflows/outbox-final-attempt-reaper.yml",

@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
-from pathlib import Path
+import importlib.util
 
-POSTGRES_IMAGE = (
-    "postgres:17.6-alpine3.22@sha256:"
-    "ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94"
-)
-COCKROACH_IMAGE = (
-    "cockroachdb/cockroach:v24.1.2@sha256:"
-    "105b9d1e10e4845c9c59266bef3c27ff8b82eeaeb1b464c75423408c3a2968ba"
-)
+import argparse
+import json
+import re
+from pathlib import Path
 EXPECTED_TABLES = {
     "trnm_schema_metadata",
     "trnm_entity_heads",
@@ -26,12 +21,31 @@ EXPECTED_TABLES = {
 }
 
 
-def check(root: Path) -> None:
-    script_path = root / "scripts/ci-pgwire-backup-restore.sh"
-    script = script_path.read_text(encoding="utf-8")
-    for image in (POSTGRES_IMAGE, COCKROACH_IMAGE):
-        if script.count(image) != 1:
-            raise SystemExit(f"exact image identity missing or duplicated: {image}")
+
+SCHEMA_SPEC = importlib.util.spec_from_file_location(
+    "schema_consumer_source_contract", Path(__file__).with_name("check-schema-authority.py")
+)
+if SCHEMA_SPEC is None or SCHEMA_SPEC.loader is None:
+    raise RuntimeError("schema consumer checker unavailable")
+SCHEMA = importlib.util.module_from_spec(SCHEMA_SPEC)
+SCHEMA_SPEC.loader.exec_module(SCHEMA)
+
+def validate_text(script: str, image_config: dict) -> None:
+    profiles = image_config.get("profiles")
+    if not isinstance(profiles, dict) or set(profiles) != {"postgresql", "cockroachdb"}:
+        raise SystemExit("current database image profiles are invalid")
+    images = set()
+    for profile in ("postgresql", "cockroachdb"):
+        row = profiles[profile]
+        image = row.get("image") if isinstance(row, dict) else None
+        if not isinstance(image, str) or re.fullmatch(r"[^\s]+@sha256:[0-9a-f]{64}", image) is None:
+            raise SystemExit(f"current {profile} image lacks an immutable OCI digest")
+        images.add(image)
+    if "config/database-test-images.json" not in script or not re.search(r"\[['\"]image['\"]\]", script):
+        raise SystemExit("backup profiles must read their image identity from the current configuration")
+    for image in re.findall(r"(?:postgres|cockroachdb/cockroach)(?::[^\s'\"@]+)?@sha256:[0-9a-f]{64}", script):
+        if image not in images:
+            raise SystemExit(f"backup image differs from current configuration: {image}")
     for forbidden in (":latest", "production_pitr\":true", "multi_node_restore\":true"):
         if forbidden in script:
             raise SystemExit(f"forbidden overclaim or floating input: {forbidden}")
@@ -51,6 +65,21 @@ def check(root: Path) -> None:
         raise SystemExit(f"semantic snapshot omits tables: {missing_tables}")
     if script.count("semantic_snapshot_equal\":true") != 1:
         raise SystemExit("semantic equality claim must be emitted exactly once after cmp")
+    try:
+        SCHEMA.validate_schema_consumer(script, None)
+        SCHEMA.validate_known_timestamp_fixtures(script)
+    except SCHEMA.ValidationError as error:
+        raise SystemExit(str(error)) from error
+    if script.count("apply-authoritative-schema.sh") < 2:
+        raise SystemExit("both backup profiles must consume the complete Rust schema chain")
+    if script.count("apply-authoritative-schema.sh verify") != 2 or script.count("--mode verify") != 2:
+        raise SystemExit("both restored profiles must verify the retained complete schema identity")
+
+
+def check(root: Path) -> None:
+    script = (root / "scripts/ci-pgwire-backup-restore.sh").read_text(encoding="utf-8")
+    config = json.loads((root / "config/database-test-images.json").read_text(encoding="utf-8"))
+    validate_text(script, config)
     print(
         "backup/restore source contract passed: "
         f"tables={len(EXPECTED_TABLES)} profiles=2 production_pitr=false multi_node=false"

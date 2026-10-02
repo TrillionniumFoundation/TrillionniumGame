@@ -8,6 +8,18 @@ impl PgRepository {
         actor: Actor,
         keys: &[StorageObjectKey],
     ) -> Result<Vec<StorageObject>, DomainError> {
+        Ok(self
+            .read_storage_objects_with_metadata(actor, keys)?
+            .into_iter()
+            .map(|stored| stored.object)
+            .collect())
+    }
+
+    pub fn read_storage_objects_with_metadata(
+        &mut self,
+        actor: Actor,
+        keys: &[StorageObjectKey],
+    ) -> Result<Vec<StoredStorageObject>, DomainError> {
         validate_read_batch(actor, keys)?;
         if keys.is_empty() {
             return Ok(Vec::new());
@@ -27,8 +39,8 @@ impl PgRepository {
         for key in keys {
             let row = transaction
                 .query_opt(
-                    "SELECT value_bytes, version_digest, read_permission, write_permission \
-                     FROM trnm_storage_objects \
+                    "SELECT value_bytes, version_digest, read_permission, write_permission, create_time, update_time \
+                     FROM public.trnm_storage_objects \
                      WHERE collection = $1 AND object_key = $2 AND user_id = $3 \
                        AND ($4::bytea IS NULL OR read_permission = 2 \
                             OR (user_id = $4 AND read_permission = 1))",
@@ -41,7 +53,7 @@ impl PgRepository {
                 )
                 .map_err(map_postgres_error)?;
             if let Some(row) = row {
-                objects.push(decode_storage_object(key.clone(), &row)?);
+                objects.push(decode_stored_storage_object(key.clone(), &row)?);
             }
         }
         transaction.commit().map_err(map_postgres_error)?;
@@ -53,11 +65,19 @@ impl PgRepository {
         actor: Actor,
         key: &StorageObjectKey,
     ) -> Result<StorageObject, DomainError> {
+        Ok(self.read_storage_object_with_metadata(actor, key)?.object)
+    }
+
+    pub fn read_storage_object_with_metadata(
+        &mut self,
+        actor: Actor,
+        key: &StorageObjectKey,
+    ) -> Result<StoredStorageObject, DomainError> {
         let row = self
             .client
             .query_opt(
-                "SELECT value_bytes, version_digest, read_permission, write_permission \
-                 FROM trnm_storage_objects \
+                "SELECT value_bytes, version_digest, read_permission, write_permission, create_time, update_time \
+                 FROM public.trnm_storage_objects \
                  WHERE collection = $1 AND object_key = $2 AND user_id = $3",
                 &[
                     &key.collection(),
@@ -67,8 +87,8 @@ impl PgRepository {
             )
             .map_err(map_postgres_error)?
             .ok_or_else(storage_not_found)?;
-        let object = decode_storage_object(key.clone(), &row)?;
-        authorize_read(actor, &object)?;
+        let object = decode_stored_storage_object(key.clone(), &row)?;
+        authorize_read(actor, &object.object)?;
         Ok(object)
     }
 
@@ -144,6 +164,26 @@ impl PgRepository {
         after: Option<&StorageListPosition>,
         limit: usize,
     ) -> Result<StorageClientListPage, DomainError> {
+        let page =
+            self.list_storage_objects_nakama_with_metadata(actor, collection, owner, after, limit)?;
+        Ok(StorageClientListPage {
+            objects: page
+                .objects
+                .into_iter()
+                .map(|stored| stored.object)
+                .collect(),
+            next: page.next,
+        })
+    }
+
+    pub fn list_storage_objects_nakama_with_metadata(
+        &mut self,
+        actor: Actor,
+        collection: &str,
+        owner: Option<UserId>,
+        after: Option<&StorageListPosition>,
+        limit: usize,
+    ) -> Result<StoredStorageClientListPage, DomainError> {
         let user = validate_client_list_request(actor, collection, after, limit)?;
         let fetch_limit =
             i64::try_from(limit + 1).map_err(|_| invalid("invalid_storage_list_limit"))?;
@@ -196,9 +236,9 @@ impl PgRepository {
         let objects = rows
             .iter()
             .take(limit)
-            .map(|row| decode_nakama_listed_storage_object(collection, row))
+            .map(|row| decode_nakama_listed_storage_object_with_metadata(collection, row))
             .collect::<Result<Vec<_>, _>>()?;
-        let page = finish_client_storage_page(objects, rows.len() > limit);
+        let page = finish_stored_client_storage_page(objects, rows.len() > limit);
         transaction.commit().map_err(map_postgres_error)?;
         Ok(page)
     }
@@ -209,6 +249,19 @@ impl PgRepository {
         operations: &[BatchOperation],
         updated_at_ms: u64,
     ) -> Result<Vec<MutationReceipt>, DomainError> {
+        Ok(self
+            .apply_storage_batch_with_metadata(actor, operations, updated_at_ms)?
+            .into_iter()
+            .map(|stored| stored.receipt)
+            .collect())
+    }
+
+    pub fn apply_storage_batch_with_metadata(
+        &mut self,
+        actor: Actor,
+        operations: &[BatchOperation],
+        updated_at_ms: u64,
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
         validate_batch(operations)?;
         let updated_at_i64 = to_i64(updated_at_ms)?;
         let mut transaction = self
@@ -217,6 +270,7 @@ impl PgRepository {
             .isolation_level(IsolationLevel::Serializable)
             .start()
             .map_err(map_postgres_error)?;
+        verify_storage_writer_epoch(&mut transaction, self.profile)?;
 
         let mut staged = BTreeMap::new();
         for key in sorted_keys(operations) {

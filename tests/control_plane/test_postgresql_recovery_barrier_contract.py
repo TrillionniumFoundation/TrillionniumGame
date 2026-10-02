@@ -48,5 +48,15 @@ class PostgreSqlRecoveryBarrierContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("recovery barrier source contract: OK", result.stdout)
 
+    def test_readonly_error_and_full_chain_identity_are_required(self):
+        for old, new in (("--sqlstate 25006", "--sqlstate 42501"),
+                         ("apply-authoritative-schema.sh", "removed-runner"),
+                         ("schema-identity-check.json", "removed-identity-check")):
+            with self.subTest(old=old):
+                with self.assertRaises(self.checker.ValidationError):
+                    self.checker.validate_texts(self.sql, self.harness.replace(old, new))
+        with self.assertRaises(self.checker.ValidationError):
+            self.checker.validate_texts(self.sql, self.harness + "\nINSERT INTO trnm_schema_metadata VALUES (1);\n")
+
 if __name__ == "__main__":
     unittest.main()

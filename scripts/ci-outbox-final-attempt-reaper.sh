@@ -9,6 +9,29 @@ esac
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
+
+image_for() {
+  python3 - "$profile" <<'PYIMAGE'
+import json,re,sys
+from pathlib import Path
+profile=sys.argv[1]
+image=json.loads(Path("config/database-test-images.json").read_text())["profiles"][profile]["image"]
+pattern={"postgresql":r"postgres@sha256:[0-9a-f]{64}","cockroachdb":r"cockroachdb/cockroach@sha256:[0-9a-f]{64}"}[profile]
+if re.fullmatch(pattern,image) is None:
+    raise SystemExit("current database image config must have a complete immutable digest")
+print(image)
+PYIMAGE
+}
+
+image=$(image_for)
+case "$profile" in
+  postgresql) requested_image=${TRNM_POSTGRES_IMAGE:-$image} ;;
+  cockroachdb) requested_image=${TRNM_COCKROACH_IMAGE:-$image} ;;
+esac
+if [[ "$requested_image" != "$image" ]]; then
+  echo 'database image override does not match config/database-test-images.json' >&2
+  exit 64
+fi
 commit=$(git rev-parse HEAD)
 run_id=${TRNM_RUN_ID:-local}
 evidence_root=${TRNM_EVIDENCE_ROOT:-run/outbox-final-attempt-reaper}
@@ -29,85 +52,40 @@ cleanup() {
 trap cleanup EXIT
 trap 'status=$?; printf "status=failed\nexit_code=%s\n" "$status" >"$evidence/result.env"; exit "$status"' ERR
 
-image_for() {
-  python3 - "$profile" <<'PY'
-import json
-import sys
-from pathlib import Path
-profile = sys.argv[1]
-value = json.loads(Path('config/database-test-images.json').read_text(encoding='utf-8'))['profiles'][profile]['image']
-if '@sha256:' not in value:
-    raise SystemExit(f'image is not digest-pinned: {value}')
-print(value)
-PY
-}
-
-migration_for() {
-  python3 - "$profile" <<'PY'
-import json
-import subprocess
-import sys
-from pathlib import Path
-
-profile = sys.argv[1]
-lock_path = Path('migrations/MIGRATION_CHAIN.lock.json')
-lock = json.loads(lock_path.read_text(encoding='utf-8'))
-if lock.get('schema') != 'trillionnium.migration-chain-lock.v1':
-    raise SystemExit('migration lock schema mismatch')
-profiles = lock.get('profiles')
-if not isinstance(profiles, dict) or profile not in profiles:
-    raise SystemExit(f'migration lock profile missing: {profile}')
-row = profiles[profile]
-ordered = row.get('ordered_files')
-if not isinstance(ordered, list) or len(ordered) != 1:
-    raise SystemExit(
-        f'final-attempt lane requires exactly one locked migration for {profile}'
-    )
-entry = ordered[0]
-path_value = entry.get('path')
-expected_blob = entry.get('git_blob_sha1')
-if not isinstance(path_value, str) or not path_value:
-    raise SystemExit(f'locked migration path is invalid for {profile}')
-if not isinstance(expected_blob, str) or len(expected_blob) != 40:
-    raise SystemExit(f'locked migration blob is invalid for {profile}')
-path = Path(path_value)
-if not path.is_file():
-    raise SystemExit(f'locked migration file is absent: {path_value}')
-expected_directory = row.get('directory')
-if expected_directory != path.parent.as_posix():
-    raise SystemExit(
-        f'locked migration directory mismatch: {expected_directory!r} != {path.parent.as_posix()!r}'
-    )
-actual_blob = subprocess.check_output(
-    ['git', 'hash-object', path_value], text=True
-).strip()
-if actual_blob != expected_blob:
-    raise SystemExit(
-        f'locked migration blob mismatch for {path_value}: '
-        f'expected={expected_blob} actual={actual_blob}'
-    )
-print(path_value)
-print(expected_blob)
-PY
-}
-
-image=$(image_for)
-mapfile -t migration_identity < <(migration_for)
-test "${#migration_identity[@]}" -eq 2
-migration=${migration_identity[0]}
-migration_blob=${migration_identity[1]}
-printf 'repository=TrillionniumFoundation/TrillionniumGame\ncommit=%s\nprofile=%s\nimage=%s\nrun_id=%s\nmigration=%s\nmigration_blob_sha1=%s\n' \
-  "$commit" "$profile" "$image" "$run_id" "$migration" "$migration_blob" \
-  >"$evidence/identity.env"
+printf 'repository=TrillionniumFoundation/TrillionniumGame\ncommit=%s\nprofile=%s\nimage=%s\nrun_id=%s\nmigration_lock=migrations/MIGRATION_CHAIN.lock.json\n' \
+  "$commit" "$profile" "$image" "$run_id" >"$evidence/identity.env"
 docker pull "$image" 2>&1 | tee "$evidence/logs/docker-pull.log"
+docker image inspect "$image" >"$evidence/image-inspect.json"
+image_id=$(docker image inspect --format '{{.Id}}' "$image")
+image_repo_digests=$(docker image inspect --format '{{json .RepoDigests}}' "$image")
+printf 'image_id=%s\nrepo_digests=%s\n' "$image_id" "$image_repo_digests" >"$evidence/image.txt"
+printf 'image_id=%s\n' "$image_id" >>"$evidence/identity.env"
+
+verify_running_image() {
+  local profile=$1 container=$2 expected_id=$3 evidence=$4
+  actual_image_id=$(docker inspect --format '{{.Image}}' "$container") || return
+  [[ "$actual_image_id" == "$expected_id" ]] || return 1
+  printf 'container_image_id=%s\n' "$actual_image_id" >"$evidence/container-image.txt"
+  case "$profile" in
+    postgresql) docker exec "$container" postgres --version >"$evidence/database-version.txt" || return ;;
+    cockroachdb) docker exec "$container" /cockroach/cockroach version >"$evidence/database-version.txt" || return ;;
+    *) return 64 ;;
+  esac
+  python3 - "$profile" "$evidence/database-version.txt" <<'PYVERSION'
+import json,sys
+from pathlib import Path
+expected=json.loads(Path("config/database-test-images.json").read_text())["profiles"][sys.argv[1]]["version_output"]
+actual=Path(sys.argv[2]).read_text()
+if actual.strip() != expected.strip():
+    raise SystemExit("running database binary version does not match current pinned profile")
+PYVERSION
+}
 
 container_running() {
   [[ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true)" == true ]]
 }
 
 if [[ "$profile" == postgresql ]]; then
-  expected="${TRNM_POSTGRES_IMAGE:-$image}"
-  [[ "$expected" == "$image" ]]
   docker run -d --name "$container" --network host \
     -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
     -e POSTGRES_DB=trnm "$image" -c fsync=on -c synchronous_commit=on \
@@ -124,16 +102,11 @@ if [[ "$profile" == postgresql ]]; then
   done
   [[ "$ready" == true ]]
   database_url='postgresql://postgres:postgres@127.0.0.1:5432/trnm?sslmode=disable'
-  docker exec -e PGPASSWORD=postgres -i "$container" psql \
-    -h 127.0.0.1 -U postgres -d trnm -v ON_ERROR_STOP=1 <"$migration" \
-    2>&1 | tee "$evidence/logs/migration.log"
   sql_exec() {
     docker exec -e PGPASSWORD=postgres "$container" psql -At \
       -h 127.0.0.1 -U postgres -d trnm -v ON_ERROR_STOP=1 -c "$1"
   }
 else
-  expected="${TRNM_COCKROACH_IMAGE:-$image}"
-  [[ "$expected" == "$image" ]]
   docker run -d --name "$container" --network host "$image" start-single-node \
     --insecure --listen-addr=127.0.0.1:26257 --advertise-addr=127.0.0.1:26257 \
     --http-addr=127.0.0.1:8080 --store=type=mem,size=1GiB \
@@ -152,14 +125,31 @@ else
   docker exec "$container" cockroach sql --insecure \
     --host=127.0.0.1:26257 --execute='CREATE DATABASE IF NOT EXISTS trnm'
   database_url='postgresql://root@127.0.0.1:26257/trnm?sslmode=disable'
-  docker exec -i "$container" cockroach sql --insecure \
-    --host=127.0.0.1:26257 --database=trnm <"$migration" \
-    2>&1 | tee "$evidence/logs/migration.log"
   sql_exec() {
     docker exec "$container" cockroach sql --insecure --format=tsv \
       --host=127.0.0.1:26257 --database=trnm --execute="$1" | tail -n +2
   }
 fi
+
+verify_running_image "$profile" "$container" "$image_id" "$evidence"
+
+python3 scripts/check-migration-lock.py >"$evidence/migration-chain-validation.json"
+cp migrations/MIGRATION_CHAIN.lock.json "$evidence/migration-chain.lock.json"
+TRNM_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE="$profile" \
+TRNM_SCHEMA_SOURCE_COMMIT="$commit" \
+TRNM_SCHEMA_APPLIED_AT_MS=1 \
+  bash scripts/apply-authoritative-schema.sh migrate \
+  >"$evidence/schema-identity.json" 2>"$evidence/schema-migration.log"
+python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" \
+  --mode fresh --source-commit="$commit" >"$evidence/schema-identity-check.json"
+python3 - "$evidence/schema-identity.json" >>"$evidence/identity.env" <<'PYIDENTITY'
+import json,sys
+from pathlib import Path
+identity=json.loads(Path(sys.argv[1]).read_text())
+for key in ["schema_version","chain_digest","digest_algorithm","storage_writer_epoch"]:
+    print(f"{key}={identity[key]}")
+PYIDENTITY
 
 cargo build --locked --package trnm-persistence-pg \
   --bin trnm-pg-command --bin trnm-outbox-worker \

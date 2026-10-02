@@ -1580,6 +1580,7 @@ dependencies = [
  "protoc-bin-vendored",
  "r2d2",
  "r2d2_postgres",
+ "serde_json",
  "tokio",
  "tonic",
  "tonic-build",

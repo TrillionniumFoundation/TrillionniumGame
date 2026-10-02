@@ -4,8 +4,8 @@ use trnm_contracts::{Digest32, DomainError, SessionFamilyId, UserId};
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, EntityHead, EntityId, PgPool, RefreshRotationOutcome,
     RotateRefreshToken, SessionFamilyRecord, StorageActor, StorageBatchOperation,
-    StorageClientListPage, StorageListPosition, StorageMutationReceipt, StorageObject,
-    StorageObjectKey,
+    StorageListPosition, StorageObjectKey, StoredStorageClientListPage,
+    StoredStorageMutationReceipt, StoredStorageObject,
 };
 use trnm_session_core::RevocationReason;
 
@@ -71,8 +71,8 @@ impl Repository for PooledRepository {
         &mut self,
         actor: StorageActor,
         keys: &[StorageObjectKey],
-    ) -> Result<Vec<StorageObject>, DomainError> {
-        self.run(|repository| repository.read_storage_objects(actor, keys))
+    ) -> Result<Vec<StoredStorageObject>, DomainError> {
+        self.run(|repository| repository.read_storage_objects_with_metadata(actor, keys))
     }
 
     fn list_storage_objects_nakama(
@@ -82,9 +82,10 @@ impl Repository for PooledRepository {
         owner: Option<UserId>,
         after: Option<&StorageListPosition>,
         limit: usize,
-    ) -> Result<StorageClientListPage, DomainError> {
+    ) -> Result<StoredStorageClientListPage, DomainError> {
         self.run(|repository| {
-            repository.list_storage_objects_nakama(actor, collection, owner, after, limit)
+            repository
+                .list_storage_objects_nakama_with_metadata(actor, collection, owner, after, limit)
         })
     }
 
@@ -93,8 +94,10 @@ impl Repository for PooledRepository {
         actor: StorageActor,
         operations: &[StorageBatchOperation],
         updated_at_ms: u64,
-    ) -> Result<Vec<StorageMutationReceipt>, DomainError> {
-        self.run(|repository| repository.apply_storage_batch(actor, operations, updated_at_ms))
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
+        self.run(|repository| {
+            repository.apply_storage_batch_with_metadata(actor, operations, updated_at_ms)
+        })
     }
 
     fn verify_access_session(

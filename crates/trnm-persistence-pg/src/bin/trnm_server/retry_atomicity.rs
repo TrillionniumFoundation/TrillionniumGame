@@ -20,11 +20,6 @@ use super::super::pool::PooledRepository;
 use super::super::retry::{BudgetedRepository, RetryPolicy, RetryingRepository};
 
 const BUDGET: Duration = Duration::from_secs(10);
-const MIGRATION: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../migrations/cockroachdb/0001_foundation_up.sql"
-));
-
 struct InjectedRepository {
     inner: PooledRepository,
     pool: PgPool,
@@ -192,7 +187,6 @@ pub fn prove(database_url: &str) {
         .unwrap();
     config.dbname(&database);
     let mut inspector = config.connect(NoTls).unwrap();
-    inspector.batch_execute(MIGRATION).unwrap();
     let port = config.get_ports().first().copied().unwrap_or(26257);
     // Preserve credentials/options from the caller for real connections. The
     // lab only accepts its existing insecure root loopback profile.
@@ -201,6 +195,14 @@ pub fn prove(database_url: &str) {
     let url = format!("postgresql://root@127.0.0.1:{port}/{database}?sslmode=disable");
     assert_eq!(host, "127.0.0.1");
     let pool = PgPool::connect_plain(&url, DatabaseProfile::CockroachDb, pool_config()).unwrap();
+    {
+        let mut migrator = pool.acquire().unwrap();
+        let source_commit = std::env::var("TRNM_SCHEMA_SOURCE_COMMIT")
+            .expect("atomicity fixture requires actual schema apply source commit");
+        migrator
+            .migrate_authoritative_schema(&source_commit, 1, None)
+            .unwrap();
+    }
     let original = request(0x61);
     let mut actual = PooledRepository::new(pool.clone());
     actual

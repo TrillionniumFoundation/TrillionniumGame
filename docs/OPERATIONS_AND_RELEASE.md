@@ -1,7 +1,7 @@
 # Operations and release
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-11
+Revision: 2026-10-02
 
 ## 1. Operational status
 
@@ -69,6 +69,8 @@ PostgreSQL and CockroachDB are separate operational products. Each requires its 
 - capacity and failover profile;
 - upgrade/downgrade support matrix;
 - incident runbook and evidence.
+
+The schema CLI requires the effective default namespace: `pg_catalog,public` for PostgreSQL and `pg_catalog,pg_extension,public` for CockroachDB. A custom role or URI search path fails migration before DDL; configure the isolated migration connection explicitly rather than allowing schema names to redirect historical statements.
 
 `migrations/postgresql/` and `migrations/cockroachdb/` are the only production DDL chains. An adapter that does not match the migration ABI fails readiness.
 
@@ -247,3 +249,11 @@ PostgreSQL evidence is not inherited. This packet does not establish node or lea
 The repository currently has no trusted cutover-authority receipt verifier or durable nonce/replay store. `materialize_transition` therefore fails closed. Reviewer logins, conflict attestations, local signatures, blocker booleans, claimed protected admission, matching digests, administrator power and replayed proposal files cannot authorize shadow, canary, production or retirement.
 
 `scripts/derive-cutover-blocker-packet.py` derives a diagnostic blocker packet from the gap register and marks it `may_authorize_transition=false`. Real transition authority requires an externally authenticated stable principal, qualified role and conflict decision, exact candidate/evidence binding, issued-at/expiry, unique nonce, durable anti-replay verification, platform-native protected-admission readback and the applicable operational decision. Source code or CI success cannot manufacture those facts.
+
+## Storage schema v2 upgrade candidate
+
+`trnm-schema migrate --candidate-plaintext` invokes the same locked migration engine used by the canonical server. Set `TRNM_DATABASE_URL`, `TRNM_DATABASE_PROFILE` and a 40-character `TRNM_SCHEMA_SOURCE_COMMIT`; the optional audit input is `TRNM_SCHEMA_APPLIED_AT_MS`. This candidate plaintext CLI is for isolated development and migration tests; production TLS/secret custody and operator acceptance remain separate. Database URLs are not printed. Output binds schema version, full-chain digest algorithm and value, writer epoch, original foundation commit and upgrade commit.
+
+Fresh databases apply the complete ordered chain. An existing v1 database additionally requires `TRNM_STORAGE_LEGACY_WRITER_ROLE`: drain that role's writer process, revoke all direct/inherited storage INSERT/UPDATE/DELETE and column write privileges, then verify old-session writes are rejected before invoking migration. The engine refuses an owner, superuser/admin or an unfenced role and does not revoke privileges or terminate production sessions. A role check cannot replace an operator-controlled inventory of other writers. Read-only startup verification preserves the original metadata provenance and rejects partial, future or incompatible schema identities.
+
+PostgreSQL publishes the append DDL and identity atomically. CockroachDB schema changes are not claimed as one atomic multi-statement transaction: each declared action must become visible, only a valid completed prefix may resume, and identity is published last. Preserve the lock, metadata and catalog report for interruption recovery. Original rows keep unknown timestamps as NULL; backups, semantic snapshots and restore tests must preserve both known microsecond values and NULL rather than converting them to epoch or upgrade time. No DROP-based rollback or return to a v1 writer is authorized. A forward fix needs the same exclusive writer barrier, profile-specific recovery validation and independent review.

@@ -2,7 +2,10 @@
 """Source contract for database capacity and endurance evidence."""
 from __future__ import annotations
 
+import importlib.util
+
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -36,12 +39,25 @@ REQUIRED = (
     "requested endurance duration",
     "observed endurance duration",
     "segment gap too large",
+    "schema_identity",
+    "migration_lock_sha256",
+    "schema identity changed",
+    "migration lock changed",
 )
 
 
 class ValidationError(RuntimeError):
     pass
 
+
+
+SCHEMA_SPEC = importlib.util.spec_from_file_location(
+    "schema_consumer_source_contract", Path(__file__).with_name("check-schema-authority.py")
+)
+if SCHEMA_SPEC is None or SCHEMA_SPEC.loader is None:
+    raise RuntimeError("schema consumer checker unavailable")
+SCHEMA = importlib.util.module_from_spec(SCHEMA_SPEC)
+SCHEMA_SPEC.loader.exec_module(SCHEMA)
 
 def require(value: bool, message: str) -> None:
     if not value:
@@ -55,6 +71,21 @@ def validate(
     for marker in REQUIRED:
         require(marker in combined, f"capacity/endurance source missing {marker}")
     require("trnm_storage_objects" in workload, "workload misses authoritative storage")
+    compact = re.sub(r"\s+", " ", workload).lower()
+    require("updated_at_ms, create_time, update_time)" in compact,
+            "capacity INSERT must supply both real timestamp columns explicitly")
+    require("now(), now()" in compact, "capacity insert timestamps must share the transaction clock")
+    conflict = compact.split("do update set", 1)
+    require(len(conflict) == 2 and "update_time = now()" in conflict[1],
+            "capacity conflict must advance the real update time")
+    require(re.search(r"\bcreate_time\s*=", conflict[1]) is None,
+            "capacity conflict must preserve original create time")
+    try:
+        SCHEMA.validate_schema_consumer(smoke, None, mode="verify")
+    except SCHEMA.ValidationError as error:
+        raise ValidationError(str(error)) from error
+    require("IDENTITY.validate_identity" in finalize and 'mode="verify"' in finalize,
+            "endurance finalizer must validate actual read-only schema identity")
     require(
         plan.get("schema") == "trillionnium.database-endurance-plan.v1",
         "plan schema",

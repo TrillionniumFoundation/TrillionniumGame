@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 use trnm_contracts::{Digest32, DomainError, RetryClass, SessionFamilyId, StableCode, UserId};
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, EntityHead, EntityId, RefreshRotationOutcome, RotateRefreshToken,
-    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageClientListPage,
-    StorageListPosition, StorageMutationReceipt, StorageObject, StorageObjectKey,
+    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageListPosition,
+    StorageObjectKey, StoredStorageClientListPage, StoredStorageMutationReceipt,
+    StoredStorageObject,
 };
 use trnm_session_core::RevocationReason;
 
@@ -112,7 +113,7 @@ impl<R: BudgetedRepository> Repository for RetryingRepository<R> {
         owner: Option<UserId>,
         after: Option<&StorageListPosition>,
         limit: usize,
-    ) -> Result<StorageClientListPage, DomainError> {
+    ) -> Result<StoredStorageClientListPage, DomainError> {
         // Preserve the complete readonly page snapshot and its one pool
         // deadline. No implicit authority-command retry or cursor replay.
         self.inner
@@ -124,7 +125,7 @@ impl<R: BudgetedRepository> Repository for RetryingRepository<R> {
         actor: StorageActor,
         operations: &[StorageBatchOperation],
         updated_at_ms: u64,
-    ) -> Result<Vec<StorageMutationReceipt>, DomainError> {
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
         // Storage write/delete receipts have no durable command identity or
         // exact replay lookup. An ambiguous commit must not repeat implicitly,
         // even when the adapter classifies an error as safe to retry.
@@ -136,7 +137,7 @@ impl<R: BudgetedRepository> Repository for RetryingRepository<R> {
         &mut self,
         actor: StorageActor,
         keys: &[StorageObjectKey],
-    ) -> Result<Vec<StorageObject>, DomainError> {
+    ) -> Result<Vec<StoredStorageObject>, DomainError> {
         // The complete read batch has one pool deadline and snapshot. Do not
         // enter the authority-command retry supervisor implicitly.
         self.inner.read_storage_objects(actor, keys)
@@ -315,7 +316,7 @@ mod tests {
             actor: StorageActor,
             operations: &[StorageBatchOperation],
             updated_at_ms: u64,
-        ) -> Result<Vec<StorageMutationReceipt>, DomainError> {
+        ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
             self.calls += 1;
             assert_eq!(actor, self.actor);
             assert_eq!(operations, std::slice::from_ref(&self.operation));
@@ -330,7 +331,7 @@ mod tests {
             owner: Option<UserId>,
             after: Option<&StorageListPosition>,
             limit: usize,
-        ) -> Result<StorageClientListPage, DomainError> {
+        ) -> Result<StoredStorageClientListPage, DomainError> {
             self.calls += 1;
             assert_eq!(actor, self.actor);
             assert_eq!(collection, self.operation.key().collection());
@@ -347,7 +348,7 @@ mod tests {
             &mut self,
             actor: StorageActor,
             keys: &[StorageObjectKey],
-        ) -> Result<Vec<StorageObject>, DomainError> {
+        ) -> Result<Vec<StoredStorageObject>, DomainError> {
             self.calls += 1;
             assert_eq!(actor, self.actor);
             assert_eq!(keys, std::slice::from_ref(self.operation.key()));

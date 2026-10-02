@@ -10,16 +10,55 @@ esac
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 
-for command in docker cargo sha256sum cmp; do
+for command in docker cargo python3 sha256sum cmp; do
   command -v "$command" >/dev/null || {
     echo "missing required command: $command" >&2
     exit 69
   }
 done
 
-postgres_image='postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94'
-cockroach_image='cockroachdb/cockroach:v24.1.2@sha256:105b9d1e10e4845c9c59266bef3c27ff8b82eeaeb1b464c75423408c3a2968ba'
-cockroach_image_id='sha256:13156f587d7c94e0d32a3adb9793d06bcbd92a90bfe2b88440d6f74fd6b110ba'
+database_image() {
+  python3 - "$1" <<'PY_IMAGE'
+import json,re,sys
+from pathlib import Path
+image=json.loads(Path('config/database-test-images.json').read_text())['profiles'][sys.argv[1]]['image']
+assert re.fullmatch(r'[^\s]+@sha256:[0-9a-f]{64}',image)
+print(image)
+PY_IMAGE
+}
+postgres_image=$(database_image postgresql)
+cockroach_image=$(database_image cockroachdb)
+
+prepare_pinned_image() {
+  local image=$1
+  docker image inspect "$image" > "$evidence/image-inspect.json"
+  image_id=$(docker image inspect --format '{{.Id}}' "$image")
+  printf '%s\n' "$image_id" > "$evidence/image-id.txt"
+  docker image inspect --format '{{json .RepoDigests}}' "$image" > "$evidence/repo-digests.json"
+  python3 - "$image" "$evidence/repo-digests.json" <<'PY_DIGEST'
+import json,sys
+from pathlib import Path
+if sys.argv[1] not in json.loads(Path(sys.argv[2]).read_text()):
+    raise SystemExit("pulled image RepoDigests does not contain the current pinned reference")
+PY_DIGEST
+}
+verify_running_image() {
+  local actual_image_id
+  actual_image_id=$(docker inspect --format '{{.Image}}' "$container")
+  [[ "$actual_image_id" == "$image_id" ]]
+  printf '%s\n' "$actual_image_id" > "$evidence/container-image.txt"
+  case "$profile" in
+    postgresql) docker exec "$container" postgres --version > "$evidence/database-version.txt" ;;
+    cockroachdb) docker exec "$container" /cockroach/cockroach version > "$evidence/database-version.txt" ;;
+  esac
+  python3 - "$profile" "$evidence/database-version.txt" <<'PY_VERSION'
+import json,sys
+from pathlib import Path
+expected=json.loads(Path('config/database-test-images.json').read_text())['profiles'][sys.argv[1]]['version_output']
+if Path(sys.argv[2]).read_text().strip() != expected.strip():
+    raise SystemExit("running database version does not match current pinned profile")
+PY_VERSION
+}
 
 evidence_root=${TRNM_EVIDENCE_ROOT:-run/pgwire-backup-restore}
 evidence="$evidence_root/$profile"
@@ -74,8 +113,8 @@ seed_rust_contracts() {
 if [[ "$profile" == postgresql ]]; then
   port=${TRNM_POSTGRES_PORT:-55434}
   database_url="postgres://trnm:trnm-pass@127.0.0.1:${port}/trnm"
-  migration=migrations/postgresql/0001_foundation_up.sql
   docker pull "$postgres_image" | tee "$evidence/image-pull.log"
+  prepare_pinned_image "$postgres_image"
   docker run -d --name "$container" -p "${port}:5432" \
     -e POSTGRES_USER=trnm \
     -e POSTGRES_PASSWORD=trnm-pass \
@@ -99,8 +138,12 @@ if [[ "$profile" == postgresql ]]; then
     exit 1
   }
 
-  docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U trnm -d trnm \
-    < "$migration" > "$evidence/migration.log" 2>&1
+  verify_running_image
+  TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" \
+    bash scripts/apply-authoritative-schema.sh migrate \
+    > "$evidence/schema-identity.json" 2> "$evidence/migration.log"
+  python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" --mode fresh \
+    > "$evidence/schema-identity-check.json"
   seed_rust_contracts "$database_url"
 
   docker exec "$container" psql -v ON_ERROR_STOP=1 -U trnm -d trnm -c "
@@ -110,9 +153,14 @@ if [[ "$profile" == postgresql ]]; then
     INSERT INTO trnm_refresh_tokens VALUES
       (decode(repeat('a1',16),'hex'),decode(repeat('a3',16),'hex'),
        decode(repeat('a4',32),'hex'),0,0,10,NULL);
-    INSERT INTO trnm_storage_objects VALUES
+    INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms) VALUES
       ('restore','fixture',decode(repeat('a5',16),'hex'),decode('010203','hex'),
        decode(repeat('a6',32),'hex'),2,1,10);
+    INSERT INTO trnm_storage_objects
+      (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms, create_time, update_time)
+      SELECT collection, 'known-time', user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms,
+        '1969-12-31 23:59:59.999999+00'::TIMESTAMPTZ, '2024-02-29 00:00:00.123456+00'::TIMESTAMPTZ
+      FROM trnm_storage_objects WHERE collection='restore' AND object_key='fixture';
     INSERT INTO trnm_authority_leases
       SELECT entity_id,decode(repeat('a7',16),'hex'),1,authority_generation,999999,10
       FROM trnm_entity_heads ORDER BY entity_id LIMIT 1;
@@ -124,7 +172,7 @@ if [[ "$profile" == postgresql ]]; then
     for index in "${!tables[@]}"; do
       printf 'TABLE|%s\n' "${tables[$index]}" >> "$output"
       docker exec "$container" psql -X --csv -U trnm -d "$database" \
-        -c "SELECT * FROM ${tables[$index]} ORDER BY ${orders[$index]}" \
+        -c "SET TIME ZONE 'UTC'; SELECT * FROM ${tables[$index]} ORDER BY ${orders[$index]}" \
         >> "$output"
     done
   }
@@ -137,16 +185,17 @@ if [[ "$profile" == postgresql ]]; then
   docker exec -i "$container" pg_restore --no-owner --no-privileges \
     -U trnm -d trnm_restore < "$evidence/backup.dump" \
     > "$evidence/restore.log" 2>&1
+  restored_url="${database_url/\/trnm/\/trnm_restore}"
+  TRNM_DATABASE_URL="$restored_url" TRNM_DATABASE_PROFILE="$profile" \
+    bash scripts/apply-authoritative-schema.sh verify \
+    > "$evidence/restored-schema-identity.json" 2> "$evidence/restored-schema-build.log"
+  python3 scripts/check-authoritative-schema-identity.py "$evidence/restored-schema-identity.json" "$profile" --mode verify \
+    > "$evidence/restored-schema-identity-check.json"
   snapshot trnm_restore "$evidence/restored.csv"
 else
   database_url='postgres://root@127.0.0.1:26257/trnm?sslmode=disable'
-  migration=migrations/cockroachdb/0001_foundation_up.sql
   docker pull "$cockroach_image" | tee "$evidence/image-pull.log"
-  actual_image_id=$(docker image inspect --format '{{.Id}}' "$cockroach_image")
-  test "$actual_image_id" = "$cockroach_image_id"
-  printf '%s\n' "$actual_image_id" > "$evidence/image-id.txt"
-  docker image inspect --format '{{json .RepoDigests}}' "$cockroach_image" \
-    > "$evidence/repo-digests.json"
+  prepare_pinned_image "$cockroach_image"
   docker run -d --name "$container" --network host \
     "$cockroach_image" start-single-node --insecure \
     --store=/cockroach/cockroach-data \
@@ -173,9 +222,12 @@ else
 
   docker exec "$container" /cockroach/cockroach sql --insecure \
     --host=127.0.0.1:26257 --execute='CREATE DATABASE trnm' >/dev/null
-  docker exec -i "$container" /cockroach/cockroach sql --insecure \
-    --host=127.0.0.1:26257 --database=trnm --set=errexit=true \
-    < "$migration" > "$evidence/migration.log" 2>&1
+  verify_running_image
+  TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" \
+    bash scripts/apply-authoritative-schema.sh migrate \
+    > "$evidence/schema-identity.json" 2> "$evidence/migration.log"
+  python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" --mode fresh \
+    > "$evidence/schema-identity-check.json"
   seed_rust_contracts "$database_url"
 
   docker exec "$container" /cockroach/cockroach sql --insecure \
@@ -186,9 +238,14 @@ else
     INSERT INTO trnm_refresh_tokens VALUES
       (decode(repeat('a1',16),'hex'),decode(repeat('a3',16),'hex'),
        decode(repeat('a4',32),'hex'),0,0,10,NULL);
-    INSERT INTO trnm_storage_objects VALUES
+    INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms) VALUES
       ('restore','fixture',decode(repeat('a5',16),'hex'),decode('010203','hex'),
        decode(repeat('a6',32),'hex'),2,1,10);
+    INSERT INTO trnm_storage_objects
+      (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms, create_time, update_time)
+      SELECT collection, 'known-time', user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms,
+        '1969-12-31 23:59:59.999999+00'::TIMESTAMPTZ, '2024-02-29 00:00:00.123456+00'::TIMESTAMPTZ
+      FROM trnm_storage_objects WHERE collection='restore' AND object_key='fixture';
     INSERT INTO trnm_authority_leases
       SELECT entity_id,decode(repeat('a7',16),'hex'),1,authority_generation,999999,10
       FROM trnm_entity_heads ORDER BY entity_id LIMIT 1;
@@ -221,9 +278,17 @@ else
     --execute="RESTORE DATABASE trnm FROM LATEST IN 'nodelocal://1/trnm-backup' \
                WITH new_db_name='trnm_restore'" \
     > "$evidence/restore.log" 2>&1
+  restored_url="${database_url/\/trnm/\/trnm_restore}"
+  TRNM_DATABASE_URL="$restored_url" TRNM_DATABASE_PROFILE="$profile" \
+    bash scripts/apply-authoritative-schema.sh verify \
+    > "$evidence/restored-schema-identity.json" 2> "$evidence/restored-schema-build.log"
+  python3 scripts/check-authoritative-schema-identity.py "$evidence/restored-schema-identity.json" "$profile" --mode verify \
+    > "$evidence/restored-schema-identity-check.json"
   snapshot trnm_restore "$evidence/restored.csv"
 fi
 
+cp migrations/MIGRATION_CHAIN.lock.json "$evidence/migration-lock.json"
+python3 scripts/check-migration-lock.py > "$evidence/migration-chain-validation.json"
 sha256sum "$evidence/source.csv" "$evidence/restored.csv" \
   > "$evidence/snapshot-sha256.txt"
 cmp "$evidence/source.csv" "$evidence/restored.csv"

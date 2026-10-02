@@ -40,6 +40,7 @@ EXPECTED_RUNTIME_FILES = {
 EXPECTED_DEPENDENCIES: dict[str, object] = {
     "postgres": "=0.19.14",
     "prost": "=0.14.3",
+    "prost-types": "=0.14.3",
     "serde": "=1.0.229",
     "serde_json": {"version": "=1.0.145", "features": ["raw_value"]},
     "tokio": {"version": "=1.53.1", "features": ["rt", "time"]},

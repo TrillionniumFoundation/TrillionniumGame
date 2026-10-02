@@ -143,11 +143,11 @@
     "list_owner": "Omitted or empty owner selects publicly readable objects across all owners, including global UUID zero. Own owner selects read >= 1. Foreign and explicit zero UUID owners select read = 2. Nonempty owner uses pinned gofrs UUID string formats."
   },
   "response_contract": {
-    "write": "Nonempty acks preserve request order and include collection,key,version,user_id as a dashed UUID. Timestamp divergence remains explicit.",
+    "write": "Nonempty acks preserve request order and include collection,key,version,user_id; genuine database create_time/update_time use RFC3339 UTC 0/3/6/9 fractional digits. Unknown historical fields remain absent.",
     "delete": "{}",
     "empty": "{}",
     "rejection": "storage-specific code 3 / HTTP 400 for OCC, write permission or delete notfound/version/permission rejection; internal repository details redacted",
-    "read": "Return requested visible objects only; include collection,key,user_id,value,version and nonzero permission scalars. Timestamp, duplicate multiplicity and ordering differences remain unqualified.",
+    "read": "Requested visible objects preserve original bytes, public MD5 and ACL fields; genuine create_time/update_time are projected to seconds by the pinned upstream behavior. Unknown original times remain absent. Ordering and duplicate multiplicity require immutable differential.",
     "list": "Return one bounded visible page with original value bytes, public MD5 version, dashed owner UUID and nonzero permission scalars. A next cursor identifies the last returned object only when a visible limit+1 sentinel exists. Empty objects and terminal cursor are omitted. No create_time/update_time is fabricated."
   },
   "resource_limits": {
@@ -169,11 +169,11 @@
     "cursor_maximum_items": 1024
   },
   "durability": "Construct mutation success only after atomic committed receipts; construct read/list success after the bounded readonly repository transaction completes. Do not retry storage mutations or this client-list projection through the generic command supervisor.",
-  "migration_impact": "No DDL or migration digest change in this tranche. Blind no-op handling preserves the existing legacy updated_at_ms; upstream database timestamp precision and historical created-time gaps remain open.",
+  "migration_impact": "Append-only 0002 adds nullable TIMESTAMPTZ without defaults or historical backfill to both authoritative profiles. Shared validated full-chain migration publishes schema/writer epoch2; existing v1 requires an independently drained and privilege-fenced legacy role. Legacy updated_at_ms remains caller time. Production rolling upgrade, original timestamp import and rollback acceptance remain open.",
   "rollback": "Revert this route/codec/bridge tranche together; existing persisted storage remains readable by the prior repository. Removing routes is not an accepted production cutover/rollback.",
   "limitations": [
     "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
-    "Write acknowledgements and read objects omit upstream create_time/update_time because the authoritative schema and receipt/object types do not retain these timestamps. No timestamp is fabricated.",
+    "Historical v1 rows have unknown original timestamps. An original-time import manifest or independently accepted unknown-history policy is required before replacement; no epoch or migration time is fabricated.",
     "List route/query/gob cursor and SQL client projection are bounded source candidates; exact gateway, gob, collation, pagination under concurrent changes and oracle/SDK qualification remain open. Search/index and Runtime before/after hooks remain unfinished.",
     "Mutation/batch-read and internal typed-list paths retain duplicate-key, 100-operation and 128-byte/dot/control candidate restrictions. The separate client-list request accepts empty/dot/control collection text up to 4096 bytes and decodes authoritative Unicode-character-bounded rows. Budgets and path/query restrictions still differ from upstream.",
     "Invalid/uppercase opaque OCC versions and exact gateway decoder details still require pinned differential; error bodies and headers are not globally qualified.",
@@ -182,7 +182,7 @@
     "Strict trailing-JSON rejection and malformed protobuf-JSON decoder error wording differ from the single-Decode upstream gateway and need immutable-oracle qualification.",
     "Batch read uses bounded per-key statements in one readonly transaction, while upstream chooses a single query shape. Duplicate multiplicity, returned ordering and concurrency behavior require immutable differential.",
     "Quoted integer trailing-token forms such as permissionRead:\"1 true\" are rejected; the pinned decoder can consume the first number token. Exact malformed decoder parity remains open.",
-    "Blind no-op selection is implemented, but legacy updated_at_ms is an explicit caller time rather than the pinned upstream database create_time/update_time contract.",
+    "Storage metadata source now records database transaction time independently from legacy caller-clock updated_at_ms. Full precision and no-op/update behavior still require immutable upstream differential.",
     "Unsigned Nakama cursor offsets deliberately differ from the internal authenticated scope-bound cursor profile. Independent security/protocol review and immutable differential remain required; malformed gob and query errors are not globally qualified."
   ],
   "claims": {
@@ -217,5 +217,16 @@
     "scope": "Explicit Nakama client-profile exception: cursor is an unsigned untrusted position without actor, owner, collection, profile or project binding. SQL always applies the current authenticated principal ACL. The internal typed list keeps its scope-bound cursor contract.",
     "ignored_fields": "Public-all ignores cursor Read; own-owner ignores cursor UserID; foreign/global-owner ignores both Read and UserID. Arbitrary int32 Read and empty Key are positions rather than identities. Clear the next cursor when its literal encoding equals the supplied cursor.",
     "qualification": "Ordinary source vectors and scratch Go observations are diagnostic inputs only. Interface values, reserved metadata value types, multi-kind or unknown wire descriptors, invalid UTF-8 Go strings, stronger budgets and exact encoder/wire behavior remain unqualified."
+  },
+  "timestamp_source_candidate": {
+    "migration_version": 2,
+    "dto": "trnm-persistence-pg::StoredStorageObject/StoredStorageMutationReceipt",
+    "database_clock": "explicit transaction now() for insert and effective/exact/ACL-changing update; no default or fake history",
+    "acknowledgement": "RETURNING normalized protobuf seconds/nanos, microsecond database precision; publish after commit only",
+    "read_and_list": "upstream seconds-only timestamp projection",
+    "no_op": "blind identical bytes/MD5 plus ACL preserves stored timestamps and does not UPDATE",
+    "historical": "NULL stays unknown, effective update may supply update_time while original creation stays NULL",
+    "writer_barrier": "mutation transaction checks full chain, schema/profile and writer epoch; old role upgrade barrier is separate from startup version checks",
+    "accepted": false
   }
 }

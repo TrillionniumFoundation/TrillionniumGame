@@ -210,12 +210,13 @@ success marker prevents optional no-database skips from becoming live results.
 
 `contracts/storage/nakama-http-storage-v1.json` records pinned source
 identities, request/response boundaries and residual differences. The routes
-use candidate session credentials; write acknowledgements and read objects omit upstream
-timestamps because the authoritative schema does not retain `create_time`.
-Blind writes with identical value and ACLs preserve the stored legacy update time
-after authorization, OCC and integrity checks. Exact-version writes still update
-it. This does not supply the missing upstream database timestamp contract.
-Timestamp origin/precision, bounds, exact list/query/gob/collation behavior,
+use candidate session credentials and emit persisted storage timestamps when
+known. Historical rows retain unknown timestamps as NULL and omit those fields.
+Blind writes with identical value and ACLs preserve stored timestamps after
+authorization, OCC and integrity checks. Exact-version writes refresh the
+database update time. The append-only timestamp migration and writer barrier are
+described below; their exact upstream differential remains open.
+Timestamp origin/precision and bounds under independent differential, exact list/query/gob/collation behavior,
 read query shape/order/multiplicity, hooks, index,
 ambiguous-commit reconciliation and official token differences remain blockers.
 This wiring does not grant a storage or repository-wide compatibility claim.
@@ -282,3 +283,15 @@ The following are implementation obligations, not claims that the adapters alrea
 | Process to operators | Distinguish liveness from mandatory dependency readiness; signal/drain propagation reaches all listeners/workers/pools. | Stop admission before drain acknowledgement; do not hang forever on a stalled synchronous child. |
 
 For each row retain the precise request/result types, sequence, state/error table, numerical budget, schema ownership, named test targets, upstream leaves and evidence output in the applicable existing module document. A table of intentions alone does not make the work Ready or Accepted.
+
+## Storage timestamp schema decision
+
+ADR NAKAMA-STORAGE-DATABASE-TIME-V2 adopts the upstream database transaction clock only for storage `create_time` and `update_time`. It is an explicit compatibility exception to the general prohibition on implicit public database clocks. Domain core values remain clock-free; persistence metadata DTOs carry normalized protobuf seconds/nanoseconds separately from storage content and ACLs. The legacy `updated_at_ms` input remains explicit and does not stand in for an upstream timestamp.
+
+Both profiles append `0002_storage_timestamps_up.sql` to the immutable foundation. Nullable TIMESTAMPTZ columns have no defaults and receive no historical backfill. New inserts set both times from the same database transaction; an effective or exact-version update preserves creation and records transaction time. Blind unchanged value/ACL returns the locked row without an UPDATE. Receipts carry actual RETURNING values and leave the repository only after commit. HTTP write acknowledgements retain subsecond precision, while the pinned read/list projection uses seconds. Infinity, out-of-protobuf-range and malformed timestamp values fail closed.
+
+The shared persistence migration engine embeds and verifies the complete ordered lock. The tagged chain algorithm hashes each zero-based big-endian u64 position, UTF-8 path, NUL and Git blob SHA-1 bytes. Read-only startup checks the actual catalog and version/profile/chain/writer identity without rewriting original foundation provenance for a new binary. `trnm-schema` is an operational client of this engine; it is not another server composition root. PostgreSQL append DDL and identity publication share a transaction. CockroachDB executes declared actions and resumes only an exact permitted catalog prefix, publishing metadata after catalog convergence. These profile-specific source paths still require independent database review.
+
+Storage reads, lists, writes, deletes and writer-epoch checks explicitly address `public` tables; public transaction time calls address `pg_catalog.now()`. The migrator rejects an effective schema namespace other than the pinned profile default before executing historical unqualified DDL. Read-only schema verification remains bound to `public` even when the connection has a different search path.
+
+The expand phase requires exclusive storage ownership. Before upgrading an existing foundation, operators must drain the old writer and revoke its direct and inherited storage write privileges. The engine requires an explicit non-owner, non-admin old role and verifies that privilege barrier; a new startup version check alone cannot fence an already-connected old writer. Every v2 mutation also verifies its schema and writer epoch in the transaction. No production privilege changes are automatic. After publication, a v1 binary or a destructive column rollback is forbidden; repair must proceed forward under a restored writer barrier. Contracting the legacy clock or importing known original timestamps is separate work. Unknown creation history remains NULL and blocks complete replacement until a proven import or an independently accepted policy resolves it.

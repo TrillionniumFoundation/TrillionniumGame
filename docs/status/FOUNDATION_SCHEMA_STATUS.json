@@ -58,5 +58,23 @@
     "sg4_complete": false,
     "production_ready": false,
     "public_online": false
+  },
+  "current_chain_source_candidate": {
+    "schema_version": 2,
+    "storage_writer_epoch": 2,
+    "migrations": [
+      "0001_foundation_up.sql",
+      "0002_storage_timestamps_up.sql"
+    ],
+    "legacy_verified_record_scope": "Existing profile records above identify immutable v1 foundation only; they grant no v2 migration or full-chain execution credit.",
+    "new_semantics": [
+      "nullable original create/update timestamps",
+      "transaction-clock storage write receipts",
+      "ordered migration identity and readonly startup catalog verification",
+      "explicit old-writer privilege barrier and unknown-history policy"
+    ],
+    "accepted": false,
+    "migration_compatible": false,
+    "rollback_proven": false
   }
 }
