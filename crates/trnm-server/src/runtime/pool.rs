@@ -3,7 +3,8 @@ use std::time::Duration;
 use trnm_contracts::{Digest32, DomainError, SessionFamilyId, UserId};
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, EntityHead, EntityId, PgPool, RefreshRotationOutcome,
-    RotateRefreshToken, SessionFamilyRecord,
+    RotateRefreshToken, SessionFamilyRecord, StorageActor, StorageBatchOperation,
+    StorageMutationReceipt,
 };
 use trnm_session_core::RevocationReason;
 
@@ -63,6 +64,15 @@ impl Repository for PooledRepository {
 
     fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError> {
         self.run(|repository| repository.commit_command(request))
+    }
+
+    fn apply_storage_batch(
+        &mut self,
+        actor: StorageActor,
+        operations: &[StorageBatchOperation],
+        updated_at_ms: u64,
+    ) -> Result<Vec<StorageMutationReceipt>, DomainError> {
+        self.run(|repository| repository.apply_storage_batch(actor, operations, updated_at_ms))
     }
 
     fn verify_access_session(

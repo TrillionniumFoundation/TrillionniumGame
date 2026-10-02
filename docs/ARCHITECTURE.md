@@ -175,6 +175,22 @@ The current source includes a bounded worker and fault profiles for crash-before
 
 ## 9. Protocol adapters
 
+The canonical process includes bounded storage mutation source adapters for
+`PUT /v2/storage` and `PUT /v2/storage/delete`. They verify the existing signed
+access principal and persisted session family before decoding business input,
+bind every object owner to that principal, and invoke the serializable batch
+repository through the deadline-aware pool. The generic retry supervisor
+forwards these mutations once because they have no durable replay receipt.
+Success is constructed only after the batch repository returns.
+
+`contracts/storage/nakama-http-mutations-v1.json` records pinned source
+identities, request/response boundaries and residual differences. The routes
+use candidate session credentials; write acknowledgements omit upstream
+timestamps because the authoritative schema does not retain `create_time`.
+Timestamp, no-op update, bounds, remaining read/list/cursor, hooks, index,
+ambiguous-commit reconciliation and official token differences remain blockers.
+This wiring does not grant a storage or repository-wide compatibility claim.
+
 Adapters own:
 
 - path, method and service selection;

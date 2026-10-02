@@ -28,11 +28,15 @@ EXPECTED_RUNTIME_FILES = {
     "schema.rs",
     "server.rs",
     "session_api.rs",
+    "storage_api.rs",
+    "storage_api_tests.rs",
     "websocket.rs",
 }
 EXPECTED_DEPENDENCIES: dict[str, object] = {
     "postgres": "=0.19.14",
     "prost": "=0.14.3",
+    "serde": "=1.0.229",
+    "serde_json": {"version": "=1.0.145", "features": ["raw_value"]},
     "tokio": {"version": "=1.53.1", "features": ["rt", "time"]},
     "tonic": {"version": "=0.14.5", "features": ["transport"]},
     "tonic-prost": "=0.14.5",

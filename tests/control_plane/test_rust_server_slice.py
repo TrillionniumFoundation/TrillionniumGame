@@ -51,7 +51,7 @@ class RustServerSliceContractTests(unittest.TestCase):
         self.assertEqual(result["schema"], "trillionnium.server-source-check.v3")
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["binary"], "trnm-server")
-        self.assertEqual(result["runtime_module_count"], 17)
+        self.assertEqual(result["runtime_module_count"], 19)
         self.assertGreaterEqual(result["source_marker_count"], 20)
         self.assertFalse(result["claims"]["compiled"])
         self.assertFalse(result["claims"]["live_process_executed"])

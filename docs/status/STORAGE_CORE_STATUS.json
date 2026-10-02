@@ -16,7 +16,8 @@
     "public ContentVersion derived as lowercase hexadecimal MD5 of exact value bytes",
     "separate internal IntegrityDigest type",
     "conditional delete by exact ContentVersion",
-    "public-version collision or integrity mismatch fails as data loss"
+    "public-version collision or integrity mismatch fails as data loss",
+    "canonical server HTTP write/delete source adapter validates JSON-object strings before repository mutation"
   ],
   "not_verified": [
     "exact API validation that value is a JSON object",
@@ -25,7 +26,15 @@
     "database effect differential",
     "cursor and search compatibility",
     "exact-head Rust format/test/strict Clippy",
-    "independent storage compatibility review"
+    "independent storage compatibility review",
+    "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
+    "Write acknowledgements do not contain upstream create_time/update_time because the authoritative schema and mutation receipt do not yet retain create_time. No timestamp is fabricated.",
+    "Read/list routes, original gob cursor, owner-list ordering and visibility, search/index and Runtime before/after hooks remain unfinished.",
+    "The existing repository rejects duplicate keys, more than 100 operations, collection/key over 128 UTF-8 bytes and dot/control identifiers. These candidate restrictions differ from upstream.",
+    "Invalid/uppercase opaque OCC versions and exact gateway decoder details still require pinned differential; error bodies and headers are not globally qualified.",
+    "The current database always updates updated_at_ms for a successful blind same-value write; upstream may preserve update_time.",
+    "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
+    "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance."
   ],
   "gap_ids": ["GAP-P1-STORAGE-001"],
   "claims": {
@@ -36,5 +45,6 @@
     "search_compatible": false,
     "production_ready": false,
     "public_online": false
-  }
+  },
+  "storage_http_mutations": {"contract":"contracts/storage/nakama-http-mutations-v1.json","source":"crates/trnm-server/src/runtime/storage_api.rs","tests":"crates/trnm-server/src/runtime/storage_api_tests.rs","status":"source-candidate","parity_ids":["TG-D1-2940D4CEAACA4051","TG-D1-7A7BFBFD85579A6A"],"accepted":false,"gap_closed":false}
 }

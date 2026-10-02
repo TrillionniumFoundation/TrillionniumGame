@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use trnm_contracts::{Digest32, DomainError, RetryClass, SessionFamilyId, StableCode, UserId};
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, EntityHead, EntityId, RefreshRotationOutcome, RotateRefreshToken,
-    SessionFamilyRecord,
+    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageMutationReceipt,
 };
 use trnm_session_core::RevocationReason;
 
@@ -102,6 +102,19 @@ impl<R: BudgetedRepository> Repository for RetryingRepository<R> {
         execute_with_metrics(policy, metrics.as_ref(), |remaining| {
             self.inner.commit_command_with_budget(request, remaining)
         })
+    }
+
+    fn apply_storage_batch(
+        &mut self,
+        actor: StorageActor,
+        operations: &[StorageBatchOperation],
+        updated_at_ms: u64,
+    ) -> Result<Vec<StorageMutationReceipt>, DomainError> {
+        // Storage write/delete receipts have no durable command identity or
+        // exact replay lookup. An ambiguous commit must not repeat implicitly,
+        // even when the adapter classifies an error as safe to retry.
+        self.inner
+            .apply_storage_batch(actor, operations, updated_at_ms)
     }
 
     fn verify_access_session(
@@ -240,6 +253,61 @@ const fn retry_budget_exhausted() -> DomainError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use trnm_persistence_pg::{
+        ContentVersion, ReadPermission, StorageDeleteOperation, StorageObjectKey,
+        StorageWriteOperation, VersionCheck, WritePermission,
+    };
+
+    #[derive(Debug)]
+    struct StorageMutationRepository {
+        calls: usize,
+        actor: StorageActor,
+        operation: StorageBatchOperation,
+        updated_at_ms: u64,
+        failure: DomainError,
+    }
+
+    impl Repository for StorageMutationRepository {
+        fn bootstrap_entity(
+            &mut self,
+            _entity: EntityId,
+            _authority_generation: u64,
+            _state: Digest32,
+            _updated_at_ms: u64,
+        ) -> Result<EntityHead, DomainError> {
+            panic!("storage mutation must not bootstrap an entity")
+        }
+
+        fn commit_command(
+            &mut self,
+            _request: &CommitRequest,
+        ) -> Result<CommitOutcome, DomainError> {
+            panic!("storage mutation must not commit an authority command")
+        }
+
+        fn apply_storage_batch(
+            &mut self,
+            actor: StorageActor,
+            operations: &[StorageBatchOperation],
+            updated_at_ms: u64,
+        ) -> Result<Vec<StorageMutationReceipt>, DomainError> {
+            self.calls += 1;
+            assert_eq!(actor, self.actor);
+            assert_eq!(operations, std::slice::from_ref(&self.operation));
+            assert_eq!(updated_at_ms, self.updated_at_ms);
+            Err(self.failure)
+        }
+    }
+
+    impl BudgetedRepository for StorageMutationRepository {
+        fn commit_command_with_budget(
+            &mut self,
+            _request: &CommitRequest,
+            _operation_budget: Duration,
+        ) -> Result<CommitOutcome, DomainError> {
+            panic!("storage mutation must not enter command retry supervision")
+        }
+    }
 
     fn error(retry: RetryClass) -> DomainError {
         DomainError::new(StableCode::Aborted, "synthetic", retry)
@@ -268,6 +336,60 @@ mod tests {
         .unwrap();
         assert_eq!(result, "committed");
         assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn storage_write_and_delete_are_never_automatically_retried() {
+        let owner = UserId::new([1; 16]);
+        let key = StorageObjectKey::new("profile", "main", owner).unwrap();
+        let operations = [
+            StorageBatchOperation::Write(StorageWriteOperation {
+                key: key.clone(),
+                value: br#"{"score":1}"#.to_vec(),
+                expected: VersionCheck::MustNotExist,
+                read_permission: ReadPermission::Owner,
+                write_permission: WritePermission::Owner,
+            }),
+            StorageBatchOperation::Delete(StorageDeleteOperation {
+                key,
+                expected_version: Some(ContentVersion::from_value(br#"{"score":0}"#)),
+            }),
+        ];
+        for operation in operations {
+            for retry in [
+                RetryClass::Never,
+                RetryClass::SafeImmediate,
+                RetryClass::SafeBackoff,
+                RetryClass::ResyncRequired,
+            ] {
+                let failure = error(retry);
+                let mut repository = RetryingRepository::new(
+                    StorageMutationRepository {
+                        calls: 0,
+                        actor: StorageActor::User(owner),
+                        operation: operation.clone(),
+                        updated_at_ms: 123,
+                        failure,
+                    },
+                    immediate_policy(3),
+                )
+                .unwrap();
+                let returned = repository
+                    .apply_storage_batch(
+                        StorageActor::User(owner),
+                        std::slice::from_ref(&operation),
+                        123,
+                    )
+                    .unwrap_err();
+                assert_eq!(returned, failure);
+                assert_eq!(repository.inner.calls, 1);
+                let metrics = repository.operational_metrics();
+                assert_eq!(metrics.retry_attempts, 0);
+                assert_eq!(metrics.retries, 0);
+                assert_eq!(metrics.retry_exhausted, 0);
+                assert_eq!(metrics.retry_sleep_milliseconds, 0);
+            }
+        }
     }
 
     #[test]

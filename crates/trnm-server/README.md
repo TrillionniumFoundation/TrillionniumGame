@@ -55,11 +55,20 @@ The source includes:
 - authenticated `POST /-/drain`;
 - authenticated `POST /v1/authority/bootstrap` and `POST /v1/authority/commit`;
 - `GET /v1/session/me`, `POST /v1/session/refresh`, and `POST /v1/session/logout`;
+- session-bound `PUT /v2/storage` and `PUT /v2/storage/delete` source adapters;
 - generated Nakama Healthcheck gRPC service on a separately configured listener;
 - bounded WebSocket JSON and schema-bound protobuf-envelope candidate subprotocols.
 
 These are narrow source contracts, not a claim of complete Nakama API, RTAPI, Runtime, Console, provider, IAP, social, leaderboard, tournament, matchmaker, party, or multiplayer parity.
 Public errors remain typed and redact database, credential, token, and cryptographic detail.
+
+Storage mutations decode bounded protobuf-JSON-shaped batches and preserve the
+original value bytes for public MD5 versions. Owners come from a verified,
+persisted candidate session principal. Calls use the bounded pool and are never
+automatically retried by the generic command supervisor. The source contract is
+`contracts/storage/nakama-http-mutations-v1.json`. Official tokens, acknowledgement
+timestamps, read/list/cursors, hooks/index, ambiguous-commit reconciliation and
+exact database/oracle evidence remain open.
 
 ## Operations
 

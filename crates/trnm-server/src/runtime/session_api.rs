@@ -143,7 +143,7 @@ impl SessionApi {
         Ok(session_record_response(200, "revoked", record))
     }
 
-    fn authenticate<R: Repository>(
+    pub(crate) fn authenticate<R: Repository>(
         &mut self,
         repository: &mut R,
         request: &Request,

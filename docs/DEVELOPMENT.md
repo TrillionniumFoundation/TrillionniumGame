@@ -132,6 +132,8 @@ This table documents the bounded HTTP application dispatcher in `crates/trnm-ser
 | `POST` | `/-/drain` | Candidate administrator-authorized drain. |
 | `POST` | `/v1/authority/bootstrap` | Candidate administrator-authorized entity bootstrap. |
 | `POST` | `/v1/authority/commit` | Candidate administrator-authorized durable command/replay. |
+| `PUT` | `/v2/storage` | Bounded candidate-session storage write batch; timestamps and complete parity remain open. |
+| `PUT` | `/v2/storage/delete` | Bounded candidate-session storage delete batch. |
 <!-- trnm-server-routes:end -->
 
 A known path with an unsupported method currently returns HTTP 405; an unknown dispatcher path returns 404. These custom routes cannot inflate Nakama parity. Authentication, error precedence, headers and exact response bytes still require their native tests and oracle/profile decisions.
@@ -196,6 +198,24 @@ The live lane sets `TRNM_REQUIRE_LIVE_PG_DEADLINE=1` and provides `TRNM_TEST_DAT
 The change does not alter DDL, receipt identity or public error codes. Reverting cancellation hardening would reopen stale-callback and backend-reuse hazards; such a revert is not an approved production rollback. Cancellation transport success must never be recorded as confirmed rollback. Preserve ambiguous-commit reconciliation, distinct PostgreSQL/CockroachDB and TLS evidence, exact-head compilation, independent review and the unresolved stalled-transport deadline requirements.
 
 ## 6. Change workflow
+
+The canonical storage HTTP mutation candidate has native codec, application and
+retry-wrapper regressions:
+
+```bash
+cargo test -p trnm-server --locked storage_api
+cargo test -p trnm-server --locked storage_write_and_delete_are_never_automatically_retried
+```
+
+They exercise original value bytes, default/zero permissions, duplicate known
+fields and aliases, exact integer parsing, empty batches, ownership, persisted
+revocation, authentication precedence, atomic failure, drain and retry
+suppression. Mock repositories and the real storage state model provide local
+feedback; live database and immutable-oracle evidence remain separate. Read
+`contracts/storage/nakama-http-mutations-v1.json` and the open
+`DIV-STORAGE-HTTP-*` records before changing these endpoints. This tranche does
+not change DDL. Reverting routes, codec and repository bridge together preserves
+stored rows but does not authorize a production rollback.
 
 [`roadmap/ENGINEERING_EXIT_CONTRACTS.json`](roadmap/ENGINEERING_EXIT_CONTRACTS.json) supplies concrete implementation steps, checks and external obligations for every registered gap, plus the full eleven domain work packages. It is subordinate engineering detail, not an alternate queue or a reduced proof obligation. `NEXT_MILESTONE.json` and the approved architecture overlay still control dependency readiness. No advisory priority can bypass their acceptance conditions. The read-only inventory rejects a missing gap or omitted work package.
 

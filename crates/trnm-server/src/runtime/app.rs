@@ -6,7 +6,7 @@ use trnm_contracts::{
 use trnm_persistence_pg::{
     CommitOutcome, CommitReceipt, CommitRequest, EntityHead, EntityId, EventId, EventInput,
     IntentId, IntentKind, OutboxInput, PgRepository, RefreshRotationOutcome, RotateRefreshToken,
-    SessionFamilyRecord,
+    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageMutationReceipt,
 };
 use trnm_session_core::RevocationReason;
 
@@ -16,6 +16,7 @@ use super::error::InputError;
 use super::http::{Request, Response};
 use super::json::Object;
 use super::session_api::{SessionApi, SessionError};
+use super::storage_api;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RepositoryOperationalMetrics {
@@ -46,6 +47,20 @@ pub trait Repository: std::fmt::Debug {
     ) -> Result<EntityHead, DomainError>;
 
     fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError>;
+
+    fn apply_storage_batch(
+        &mut self,
+        actor: StorageActor,
+        operations: &[StorageBatchOperation],
+        updated_at_ms: u64,
+    ) -> Result<Vec<StorageMutationReceipt>, DomainError> {
+        let _ = (actor, operations, updated_at_ms);
+        Err(DomainError::new(
+            StableCode::Unimplemented,
+            "storage_repository_unavailable",
+            RetryClass::Never,
+        ))
+    }
 
     fn verify_access_session(
         &mut self,
@@ -94,6 +109,15 @@ impl Repository for PgRepository {
 
     fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError> {
         PgRepository::commit_command(self, request)
+    }
+
+    fn apply_storage_batch(
+        &mut self,
+        actor: StorageActor,
+        operations: &[StorageBatchOperation],
+        updated_at_ms: u64,
+    ) -> Result<Vec<StorageMutationReceipt>, DomainError> {
+        PgRepository::apply_storage_batch(self, actor, operations, updated_at_ms)
     }
 
     fn verify_access_session(
@@ -292,6 +316,9 @@ impl<R: Repository> App<R> {
             match self.drain.try_admit() {
                 Some(permit) => Some(permit),
                 None => {
+                    if storage_path(&request.target) {
+                        return storage_api::gateway_error(503, 14, "Service is draining.");
+                    }
                     return error_response(503, "unavailable", "Service is draining.", "backoff");
                 }
             }
@@ -322,6 +349,8 @@ impl<R: Repository> App<R> {
             ("GET", "/v1/session/me")
             | ("POST", "/v1/session/refresh")
             | ("POST", "/v1/session/logout") => self.session_request(request),
+            ("PUT", "/v2/storage") | ("PUT", "/v2/storage/delete") => self.storage_request(request),
+            ("PUT", target) if storage_path(target) => self.storage_request(request),
             ("POST", "/-/drain") => self.drain(request),
             ("POST", "/v1/authority/bootstrap") => self.bootstrap(request),
             ("POST", "/v1/authority/commit") => self.commit(request),
@@ -463,6 +492,18 @@ trnm_server_session_logout_revoked_total {}\n",
         }
     }
 
+    fn storage_request(&mut self, request: &Request) -> Response {
+        // Session verification and persisted revocation precede all business
+        // decoding. The operator credential cannot act as a storage owner.
+        match self.sessions.authenticate(&mut self.repository, request) {
+            Ok(principal) => storage_api::handle(&mut self.repository, request, principal.user),
+            Err(SessionError::Domain(error)) => storage_api::authentication_error(error),
+            Err(SessionError::Input(_)) => {
+                storage_api::gateway_error(401, 16, "Auth token invalid")
+            }
+        }
+    }
+
     fn drain(&mut self, request: &Request) -> Response {
         if !self.authorized(request) {
             return unauthenticated();
@@ -565,12 +606,17 @@ trnm_server_session_logout_revoked_total {}\n",
 }
 
 fn is_mutating_request(request: &Request) -> bool {
+    if request.method == "PUT" && storage_path(&request.target) {
+        return true;
+    }
     matches!(
         (request.method.as_str(), request.target.as_str()),
         ("POST", "/v1/authority/bootstrap")
             | ("POST", "/v1/authority/commit")
             | ("POST", "/v1/session/refresh")
             | ("POST", "/v1/session/logout")
+            | ("PUT", "/v2/storage")
+            | ("PUT", "/v2/storage/delete")
     )
 }
 
@@ -586,6 +632,15 @@ fn known_path(path: &str) -> bool {
             | "/-/drain"
             | "/v1/authority/bootstrap"
             | "/v1/authority/commit"
+            | "/v2/storage"
+            | "/v2/storage/delete"
+    )
+}
+
+fn storage_path(path: &str) -> bool {
+    matches!(
+        path.split('?').next(),
+        Some("/v2/storage" | "/v2/storage/delete")
     )
 }
 

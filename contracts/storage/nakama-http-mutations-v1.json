@@ -1,0 +1,121 @@
+{
+  "schema": "trillionnium.storage-http-mutations.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-candidate",
+  "composition": "crates/trnm-server::trnm-server",
+  "upstream_sources": [
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "server/api_storage.go",
+      "blob": "698cccf47c6ba4e9cdd461a8d93ea8094edf9ab7"
+    },
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "server/core_storage.go",
+      "blob": "23cb77e991124629c9c780ac981e6393313f0769"
+    },
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "server/api.go",
+      "blob": "61d1b8763f7b7fcf6ed0bc5cd720ff2314c7dacb"
+    },
+    {
+      "repository": "heroiclabs/nakama-common",
+      "commit": "449b77ecc8789aa466c36b67f6e498033dfcd9c5",
+      "path": "api/api.proto",
+      "blob": "ddd2744739a252c268b2be004ff0e45c498adb35"
+    },
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "apigrpc/apigrpc.proto",
+      "blob": "1cc63aae1aaa5dc56ede9c9d0b6f9a95ff91361c"
+    }
+  ],
+  "task_ids": [
+    "TG-W4-002",
+    "TG-V3-010"
+  ],
+  "gap_ids": [
+    "GAP-P1-STORAGE-001",
+    "GAP-P0-SERVER-001",
+    "GAP-P0-DATA-001"
+  ],
+  "parity_ids": [
+    "TG-D1-2940D4CEAACA4051",
+    "TG-D1-7A7BFBFD85579A6A"
+  ],
+  "routes": [
+    {
+      "method": "PUT",
+      "path": "/v2/storage",
+      "request": "WriteStorageObjectsRequest",
+      "response": "StorageObjectAcks"
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/storage/delete",
+      "request": "DeleteStorageObjectsRequest",
+      "response": "google.protobuf.Empty"
+    }
+  ],
+  "authentication": "Verify signed candidate access principal and persisted active family before decoding storage business input; bind every mutation owner to that principal. Operator credentials do not substitute.",
+  "request_contract": {
+    "top_level": "write: objects array; delete: object_ids (objectIds) array; omitted/null/empty is successful empty operation",
+    "write_fields": [
+      "collection",
+      "key",
+      "value",
+      "version",
+      "permission_read",
+      "permission_write"
+    ],
+    "delete_fields": [
+      "collection",
+      "key",
+      "version"
+    ],
+    "permission_defaults": {
+      "permission_read": 1,
+      "permission_write": 1
+    },
+    "value": "JSON-encoded object string; retain its exact bytes for public MD5 version",
+    "aliases": "proto snake_case and lowerCamelCase; duplicate known fields/aliases fail closed; unknown fields ignored"
+  },
+  "response_contract": {
+    "write": "Nonempty acks preserve request order and include collection,key,version,user_id as a dashed UUID. Timestamp divergence remains explicit.",
+    "delete": "{}",
+    "empty": "{}",
+    "rejection": "storage-specific code 3 / HTTP 400 for OCC, write permission or delete notfound/version/permission rejection; internal repository details redacted"
+  },
+  "resource_limits": {
+    "maximum_operations": 100,
+    "maximum_value_bytes": 1048576,
+    "json_recursion": "RawValue uses an iterative scanner bounded by request/value byte budgets; no 128-level recursion claim is made.",
+    "database_budget": "PooledRepository::run_with_deadline",
+    "http_body": "ServerConfig max_request_bytes"
+  },
+  "durability": "Build success only after the atomic repository call returns committed receipts; do not retry storage mutations through the generic command supervisor.",
+  "migration_impact": "No DDL or migration digest change in this tranche. Existing created-time and no-op-update schema gaps remain open.",
+  "rollback": "Revert this route/codec/bridge tranche together; existing persisted storage remains readable by the prior repository. Removing routes is not an accepted production cutover/rollback.",
+  "limitations": [
+    "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
+    "Write acknowledgements do not contain upstream create_time/update_time because the authoritative schema and mutation receipt do not yet retain create_time. No timestamp is fabricated.",
+    "Read/list routes, original gob cursor, owner-list ordering and visibility, search/index and Runtime before/after hooks remain unfinished.",
+    "The existing repository rejects duplicate keys, more than 100 operations, collection/key over 128 UTF-8 bytes and dot/control identifiers. These candidate restrictions differ from upstream.",
+    "Invalid/uppercase opaque OCC versions and exact gateway decoder details still require pinned differential; error bodies and headers are not globally qualified.",
+    "The current database always updates updated_at_ms for a successful blind same-value write; upstream may preserve update_time.",
+    "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
+    "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance.",
+    "Strict trailing-JSON rejection and malformed protobuf-JSON decoder error wording differ from the single-Decode upstream gateway and need immutable-oracle qualification."
+  ],
+  "claims": {
+    "compatibility_credit": false,
+    "accepted_evidence": false,
+    "gap_closed": false,
+    "production_ready": false
+  }
+}

@@ -23,7 +23,7 @@ pub use trnm_storage_core::{
     Actor as StorageActor, BatchOperation as StorageBatchOperation, ContentVersion,
     DeleteOperation as StorageDeleteOperation, IntegrityDigest,
     MutationReceipt as StorageMutationReceipt, ReadPermission, StorageObject, StorageObjectKey,
-    VersionCheck, WriteOperation as StorageWriteOperation, WritePermission,
+    StorageState, VersionCheck, WriteOperation as StorageWriteOperation, WritePermission,
 };
 
 use std::collections::BTreeSet;

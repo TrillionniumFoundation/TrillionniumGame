@@ -76,6 +76,8 @@ EXPECTED_DEPENDENCIES: dict[str, dict[str, Any]] = {'crates/trnm-authority-core'
  'crates/trnm-realtime-wire': {},
  'crates/trnm-server': {'postgres': '=0.19.14',
                         'prost': '=0.14.3',
+                        'serde': '=1.0.229',
+                        'serde_json': {'version': '=1.0.145', 'features': ['raw_value']},
                         'tokio': {'features': ['rt', 'time'], 'version': '=1.53.1'},
                         'tonic': {'features': ['transport'], 'version': '=0.14.5'},
                         'tonic-prost': '=0.14.5',

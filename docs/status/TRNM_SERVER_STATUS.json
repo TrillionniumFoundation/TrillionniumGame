@@ -14,7 +14,10 @@
     "crates/trnm-persistence-pg/src/authority.rs",
     "crates/trnm-persistence-pg/src/storage.rs",
     "crates/trnm-realtime-wire",
-    "contracts/realtime/trnm-authority-envelope-v1.proto"
+    "contracts/realtime/trnm-authority-envelope-v1.proto",
+    "crates/trnm-server/src/runtime/storage_api.rs",
+    "crates/trnm-server/src/runtime/storage_api_tests.rs",
+    "contracts/storage/nakama-http-mutations-v1.json"
   ],
   "implemented_source": [
     "explicit check-config, migrate and serve commands",
@@ -68,7 +71,9 @@
     "Rust regression sources cover stale snapshots, sender/cleanup ordering, panic accounting, duplicate completion and actual r2d2 retirement",
     "single-connection PostgreSQL live test sources assert changed backend PID and replacement-pool usability after deadline and shutdown cancellation",
     "deadline workflow covers split pool parts on pull requests and main pushes and rejects zero matching live tests",
-    "Python structural regression and finite interleaving model distinguish lifecycle locking from physical backend eviction without granting runtime credit"
+    "Python structural regression and finite interleaving model distinguish lifecycle locking from physical backend eviction without granting runtime credit",
+    "Nakama-shaped PUT storage write/delete adapters with bounded JSON object decoding, default permissions and principal-owned mutations",
+    "storage-specific gateway errors, atomic committed acknowledgements and no generic storage mutation retry"
   ],
   "not_implemented_or_verified": [
     "final exact-head Rust formatting, compile, tests and strict Clippy after this source synchronization",
@@ -89,7 +94,15 @@
     "load, failover, endurance, security and independent review",
     "access-token issuance and complete Nakama session endpoint compatibility",
     "authorization binding from session principals to all authority, storage and runtime domain operations",
-    "independent security review and exact oracle differential for the session HTTP and realtime source candidates"
+    "independent security review and exact oracle differential for the session HTTP and realtime source candidates",
+    "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
+    "Write acknowledgements do not contain upstream create_time/update_time because the authoritative schema and mutation receipt do not yet retain create_time. No timestamp is fabricated.",
+    "Read/list routes, original gob cursor, owner-list ordering and visibility, search/index and Runtime before/after hooks remain unfinished.",
+    "The existing repository rejects duplicate keys, more than 100 operations, collection/key over 128 UTF-8 bytes and dot/control identifiers. These candidate restrictions differ from upstream.",
+    "Invalid/uppercase opaque OCC versions and exact gateway decoder details still require pinned differential; error bodies and headers are not globally qualified.",
+    "The current database always updates updated_at_ms for a successful blind same-value write; upstream may preserve update_time.",
+    "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
+    "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance."
   ],
   "gap_ids": [
     "GAP-P0-SERVER-001",
@@ -126,7 +139,8 @@
     "grpc_healthcheck_source_candidate": true,
     "cancellation_lifecycle_source_candidate": true,
     "cancelled_backend_retirement_source_candidate": true,
-    "nonempty_cancellation_live_tests_source_candidate": true
+    "nonempty_cancellation_live_tests_source_candidate": true,
+    "storage_http_mutation_source_candidate": true
   },
   "dependency_contract_source_candidate": {
     "policy_source": "scripts/check-rust-foundation.py::EXPECTED_DEPENDENCIES",
@@ -160,5 +174,6 @@
     "native_verified": false,
     "accepted": false,
     "gap_closed": false
-  }
+  },
+  "storage_http_mutations": {"contract":"contracts/storage/nakama-http-mutations-v1.json","source":"crates/trnm-server/src/runtime/storage_api.rs","tests":"crates/trnm-server/src/runtime/storage_api_tests.rs","status":"source-candidate","parity_ids":["TG-D1-2940D4CEAACA4051","TG-D1-7A7BFBFD85579A6A"],"accepted":false,"gap_closed":false}
 }

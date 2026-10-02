@@ -13,6 +13,9 @@ pub(crate) mod retry_live_tests;
 pub(crate) mod schema;
 pub(crate) mod server;
 pub(crate) mod session_api;
+pub(crate) mod storage_api;
+#[cfg(test)]
+mod storage_api_tests;
 pub(crate) mod websocket;
 
 use std::env;
