@@ -891,6 +891,7 @@ fn nakama_duplicate_batches_preserve_step_receipts_and_native_atomicity() {
         assert_eq!(snapshot(&mut control, &collection), before_lock);
         println!("nakama_duplicate_occurrence_locks_executed profile={} missing_delete_rejected_before_late_lock=true fields=15", profile.metadata_value());
 
+        write_tail_drain::exercise(&url, profile, &collection);
         imported_history::exercise(profile);
         println!(
             "nakama_duplicate_success_full_tuple_executed profile={} fields=15",
@@ -1521,5 +1522,664 @@ mod imported_history {
         drop(control);
         drop(native_source);
         // Success cleanup owns only the newly generated source/target/role.
+    }
+}
+
+// Source candidate only until the complete native fixture executes. The lock
+// observations below are causal evidence; polling duration and query phase are
+// never substituted for a lock observation. No production telemetry is added.
+mod write_tail_drain {
+    use super::*;
+    use postgres::Transaction;
+    use std::{
+        sync::mpsc::{self, Receiver, TryRecvError},
+        thread::JoinHandle,
+        time::Instant,
+    };
+    use trnm_contracts::DomainError;
+
+    const CAUSAL_BUDGET: Duration = Duration::from_secs(4);
+    const SETTLING_BUDGET: Duration = Duration::from_secs(6);
+    const BAD_JSON: &[u8] = b"{invalid-json";
+    const ACCESS_SQL: &str = "SELECT public_version::TEXT, write_permission FROM public.trnm_storage_objects WHERE collection = $1 AND object_key = $2 AND user_id = $3 FOR UPDATE";
+
+    #[derive(Clone, Copy)]
+    enum Case {
+        AclWait,
+        ExactWait,
+        CreateOnlyStops,
+        AclNativeStops,
+        NativeStops,
+    }
+    impl Case {
+        const fn name(self) -> &'static str {
+            match self {
+                Self::AclWait => "acl_wait",
+                Self::ExactWait => "exact_wait",
+                Self::CreateOnlyStops => "create_only_stops",
+                Self::AclNativeStops => "acl_native_stops",
+                Self::NativeStops => "native_stops",
+            }
+        }
+        const fn error(self) -> DomainError {
+            match self {
+                Self::AclWait | Self::AclNativeStops => DomainError::new(
+                    StableCode::PermissionDenied,
+                    "storage_write_permission_denied",
+                    RetryClass::Never,
+                ),
+                Self::ExactWait => DomainError::new(
+                    StableCode::FailedPrecondition,
+                    "storage_version_mismatch",
+                    RetryClass::ResyncRequired,
+                ),
+                Self::CreateOnlyStops => DomainError::new(
+                    StableCode::AlreadyExists,
+                    "storage_object_already_exists",
+                    RetryClass::Never,
+                ),
+                Self::NativeStops => DomainError::new(
+                    StableCode::InvalidArgument,
+                    "database_constraint_violation",
+                    RetryClass::Never,
+                ),
+            }
+        }
+    }
+
+    struct Outcome {
+        batch: Result<Vec<StoredStorageMutationReceipt>, DomainError>,
+        reused: Result<bool, DomainError>,
+        completed_at: Instant,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum Holder {
+        PostgreSql { pid: i32, xid: String },
+        CockroachDb { txn: String, keys: Vec<String> },
+    }
+    struct WaitProof {
+        worker: String,
+        blocker: String,
+        query_sha256: String,
+    }
+    fn query_digest(query: &str) -> String {
+        assert!(
+            query.len() <= 8192,
+            "native observer query exceeded fixture bound"
+        );
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let digest = IntegrityDigest::from_value(query.as_bytes()).get();
+        let mut encoded = String::with_capacity(64);
+        for byte in digest.as_bytes() {
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 15)]));
+        }
+        encoded
+    }
+    fn sqlstate(error: &postgres::Error) -> &str {
+        error.code().map_or("unavailable", |code| code.code())
+    }
+    fn application(case: Case, role: &str, stamp: u128) -> String {
+        let name = format!("tail_{}_{}_{stamp:x}", case.name(), role);
+        assert!(name.len() < 64);
+        assert!(name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+        name
+    }
+    fn control_application(control: &mut Client, application: &str) {
+        control
+            .batch_execute(&format!("SET application_name='{application}'"))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "tail control application failed sqlstate={}",
+                    sqlstate(&error)
+                )
+            });
+    }
+    fn hold(transaction: &mut Transaction<'_>, key: &StorageObjectKey) {
+        let row = transaction
+            .query_one(
+                "SELECT object_key FROM public.trnm_storage_objects WHERE collection=$1 AND object_key=$2 AND user_id=$3 FOR UPDATE",
+                &[&key.collection(), &key.key(), &key.user_id().as_bytes().as_slice()],
+            )
+            .unwrap_or_else(|error| panic!("tail owned native row lock failed sqlstate={}", sqlstate(&error)));
+        assert_eq!(row.get::<_, String>(0), key.key());
+    }
+    fn cr_holder(observer: &mut Client, key: &StorageObjectKey) -> Holder {
+        // Capture the native pretty keys rather than inventing an encoding.
+        // The generated collection/key identify only this fixture's exclusive
+        // held row. If the native view cannot expose it, the fixture fails.
+        let rows = observer
+            .query(
+                "SELECT txn_id::TEXT, lock_key_pretty::TEXT FROM crdb_internal.cluster_locks WHERE database_name=current_database() AND table_name='trnm_storage_objects' AND granted AND strpos(lock_key_pretty, $1::TEXT)>0 AND strpos(lock_key_pretty, $2::TEXT)>0 ORDER BY txn_id::TEXT, lock_key_pretty LIMIT 64",
+                &[&key.collection(), &key.key()],
+            )
+            .unwrap_or_else(|error| panic!("tail CR holder observation failed sqlstate={}", sqlstate(&error)));
+        assert!(
+            !rows.is_empty() && rows.len() < 64,
+            "CR native held key was absent or ambiguous"
+        );
+        let txn: String = rows[0].get(0);
+        assert!(!txn.is_empty() && txn.len() <= 128);
+        let mut keys = Vec::new();
+        for row in rows {
+            assert_eq!(
+                row.get::<_, String>(0),
+                txn,
+                "owned CR key had multiple holders"
+            );
+            let pretty: String = row.get(1);
+            assert!(pretty.len() <= 8192);
+            keys.push(pretty);
+        }
+        keys.sort();
+        keys.dedup();
+        Holder::CockroachDb { txn, keys }
+    }
+    fn capture_holder(
+        transaction: &mut Transaction<'_>,
+        observer: &mut Client,
+        profile: DatabaseProfile,
+        key: &StorageObjectKey,
+    ) -> Holder {
+        match profile {
+            DatabaseProfile::PostgreSql => {
+                let row = transaction
+                    .query_one("SELECT pg_backend_pid(), pg_current_xact_id()::TEXT", &[])
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "tail PG holder identity failed sqlstate={}",
+                            sqlstate(&error)
+                        )
+                    });
+                Holder::PostgreSql {
+                    pid: row.get(0),
+                    xid: row.get(1),
+                }
+            }
+            DatabaseProfile::CockroachDb => cr_holder(observer, key),
+        }
+    }
+    fn holder_still_open(observer: &mut Client, key: &StorageObjectKey, holder: &Holder) {
+        match holder {
+            Holder::PostgreSql { pid, xid } => {
+                let row = observer
+                    .query_one(
+                        "SELECT backend_xid::TEXT, state FROM pg_stat_activity WHERE datname=current_database() AND pid=$1::INTEGER",
+                        &[pid],
+                    )
+                    .unwrap_or_else(|error| panic!("tail PG held identity readback failed sqlstate={}", sqlstate(&error)));
+                assert_eq!(row.get::<_, Option<String>>(0).as_ref(), Some(xid));
+                assert_eq!(row.get::<_, String>(1), "idle in transaction");
+            }
+            Holder::CockroachDb { .. } => assert_eq!(cr_holder(observer, key), *holder),
+        }
+    }
+    fn observe_wait(
+        observer: &mut Client,
+        application: &str,
+        holder: &Holder,
+    ) -> Option<WaitProof> {
+        match holder {
+            Holder::PostgreSql { pid, .. } => {
+                let rows = observer
+                    .query(
+                        "SELECT pid::INTEGER, query, wait_event_type, pg_blocking_pids(pid) FROM pg_stat_activity WHERE datname=current_database() AND application_name=$1",
+                        &[&application],
+                    )
+                    .unwrap_or_else(|error| panic!("tail PG wait observer failed sqlstate={}", sqlstate(&error)));
+                assert!(
+                    rows.len() <= 1,
+                    "worker native application identity was ambiguous"
+                );
+                let row = rows.first()?;
+                let query: String = row.get(1);
+                let blocked_by: Vec<i32> = row.get(3);
+                if row.get::<_, Option<String>>(2).as_deref() != Some("Lock")
+                    || !blocked_by.contains(pid)
+                    || query != ACCESS_SQL
+                {
+                    return None;
+                }
+                Some(WaitProof {
+                    worker: row.get::<_, i32>(0).to_string(),
+                    blocker: pid.to_string(),
+                    query_sha256: query_digest(&query),
+                })
+            }
+            Holder::CockroachDb { txn, keys } => {
+                // Neither query.phase nor elapsed time establishes a lock wait.
+                // Join the actual worker transaction to an ungranted, contended
+                // lock whose exact native pretty key has this distinct holder.
+                let rows = observer
+                    .query(
+                        "SELECT q.query_id::TEXT, q.txn_id::TEXT, q.query::TEXT, q.phase::TEXT, l.lock_key_pretty::TEXT, l.granted, l.contended FROM crdb_internal.cluster_queries q JOIN crdb_internal.cluster_locks l ON q.txn_id::TEXT=l.txn_id::TEXT WHERE q.application_name=$1 AND l.database_name=current_database() AND l.table_name='trnm_storage_objects' AND l.lock_key_pretty=ANY($2::TEXT[]) AND NOT l.granted AND l.contended AND l.txn_id::TEXT<>$3 AND EXISTS(SELECT 1 FROM crdb_internal.cluster_locks h WHERE h.database_name=l.database_name AND h.table_name=l.table_name AND h.lock_key_pretty=l.lock_key_pretty AND h.txn_id::TEXT=$3 AND h.granted) ORDER BY q.query_id::TEXT, l.lock_key_pretty LIMIT 64",
+                        &[&application, keys, txn],
+                    )
+                    .unwrap_or_else(|error| panic!("tail CR wait observer failed sqlstate={}", sqlstate(&error)));
+                if rows.is_empty() {
+                    return None;
+                }
+                assert!(
+                    rows.len() < 64,
+                    "CR native wait observation exceeded fixture bound"
+                );
+                let worker_txn: String = rows[0].get(1);
+                assert!(!worker_txn.is_empty() && worker_txn.len() <= 128);
+                assert_ne!(worker_txn, *txn);
+                for row in &rows {
+                    assert_eq!(row.get::<_, String>(1), worker_txn);
+                    assert!(keys.contains(&row.get::<_, String>(4)));
+                    assert!(!row.get::<_, bool>(5));
+                    assert!(row.get::<_, bool>(6));
+                }
+                let query: String = rows[0].get(2);
+                assert!(query.contains("trnm_storage_objects") && query.contains("FOR UPDATE"));
+                // phase is read from the real view but does not grant wait credit.
+                let phase: String = rows[0].get(3);
+                assert!(phase.len() <= 128);
+                let query_id: String = rows[0].get(0);
+                assert!(!query_id.is_empty() && query_id.len() <= 128);
+                Some(WaitProof {
+                    worker: worker_txn,
+                    blocker: txn.clone(),
+                    query_sha256: query_digest(&query),
+                })
+            }
+        }
+    }
+    fn log_outcome(profile: DatabaseProfile, case: Case, outcome: &Outcome, late: bool) {
+        match &outcome.batch {
+            Err(error) => println!(
+                "nakama_write_tail_drain_actual_result profile={} case={} actual_batch_domain_code={:?} actual_batch_reason={} actual_batch_retry={:?} actual_batch_sqlstate=null late={late}",
+                profile.metadata_value(), case.name(), error.code(), error.reason(), error.retry()
+            ),
+            Ok(receipts) => eprintln!(
+                "nakama_write_tail_drain_unexpected_receipts profile={} case={} receipt_count={} late={late}",
+                profile.metadata_value(), case.name(), receipts.len()
+            ),
+        }
+    }
+    fn wait_for_lock(
+        observer: &mut Client,
+        application: &str,
+        holder: &Holder,
+        receive: &Receiver<Outcome>,
+        outcome: &mut Option<Outcome>,
+        started: Instant,
+    ) -> WaitProof {
+        loop {
+            assert!(
+                started.elapsed() < CAUSAL_BUDGET,
+                "actual held-row wait was not observed within causal budget"
+            );
+            if let Some(proof) = observe_wait(observer, application, holder) {
+                assert!(
+                    started.elapsed() < CAUSAL_BUDGET,
+                    "native wait observation completed after causal budget"
+                );
+                return proof;
+            }
+            match receive.try_recv() {
+                Ok(actual) => {
+                    *outcome = Some(actual);
+                    panic!("worker completed before native held-row wait observation");
+                }
+                Err(TryRecvError::Disconnected) => {
+                    panic!("tail worker disconnected before native wait observation")
+                }
+                Err(TryRecvError::Empty) => std::thread::yield_now(),
+            }
+        }
+    }
+    fn release(
+        transaction: &mut Option<Transaction<'_>>,
+        profile: DatabaseProfile,
+        case: Case,
+        role: &str,
+    ) -> bool {
+        let Some(transaction) = transaction.take() else {
+            return true;
+        };
+        match transaction.rollback() {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!(
+                    "nakama_write_tail_drain_secondary_rollback_failed profile={} case={} role={role} sqlstate={} primary_trace_preserved=true",
+                    profile.metadata_value(), case.name(), sqlstate(&error)
+                );
+                false
+            }
+        }
+    }
+    fn settle(
+        worker: JoinHandle<()>,
+        receive: &Receiver<Outcome>,
+        outcome: &mut Option<Outcome>,
+        started: Instant,
+        profile: DatabaseProfile,
+        case: Case,
+    ) -> Option<std::thread::Result<()>> {
+        if outcome.is_none() {
+            match receive.recv_timeout(SETTLING_BUDGET.saturating_sub(started.elapsed())) {
+                Ok(actual) => {
+                    log_outcome(profile, case, &actual, true);
+                    *outcome = Some(actual);
+                }
+                Err(_) => eprintln!(
+                    "nakama_write_tail_drain_late_result_unavailable profile={} case={} original_result_preserved=true",
+                    profile.metadata_value(), case.name()
+                ),
+            }
+        }
+        // Only post-release settling parks; no sleep grants causal evidence.
+        while !worker.is_finished() && started.elapsed() < SETTLING_BUDGET {
+            std::thread::park_timeout(
+                SETTLING_BUDGET
+                    .saturating_sub(started.elapsed())
+                    .min(Duration::from_millis(5)),
+            );
+        }
+        if worker.is_finished() {
+            Some(worker.join())
+        } else {
+            eprintln!(
+                "nakama_write_tail_drain_worker_unsettled profile={} case={} cleanup_budget_seconds=6 outer_process_group_deadline_required=true original_result_preserved=true",
+                profile.metadata_value(), case.name()
+            );
+            None
+        }
+    }
+
+    fn exercise_case(url: &str, profile: DatabaseProfile, collection: &str, case: Case) {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let key = |suffix: &str| {
+            StorageObjectKey::new(collection, format!("tail-{}-{suffix}", case.name()), OWNER)
+                .unwrap()
+        };
+        let prelude = key("0-prelude");
+        let rejected = key("a-rejected");
+        let bad = key("b-invalid");
+        let probe = key("y-readable");
+        let later = key("z-held");
+        let mut control = bounded_control(url);
+        let mut repository = bounded_repository(url, profile);
+        let rejected_acl = if matches!(case, Case::AclWait | Case::AclNativeStops) {
+            WritePermission::NONE
+        } else {
+            WritePermission::OWNER
+        };
+        let seeds = [
+            write(&prelude, A, VersionCheck::Any, WritePermission::OWNER),
+            write(&rejected, A, VersionCheck::Any, rejected_acl),
+            write(&bad, A, VersionCheck::Any, WritePermission::OWNER),
+            write(&probe, A, VersionCheck::Any, WritePermission::OWNER),
+            write(&later, A, VersionCheck::Any, WritePermission::OWNER),
+        ];
+        let seeds_receipts = repository
+            .apply_storage_batch_nakama_with_metadata(
+                StorageActor::Server,
+                &seeds,
+                201,
+                StorageNakamaBatchKind::Write,
+            )
+            .unwrap();
+        assert_eq!(seeds_receipts.len(), seeds.len());
+        for (index, seeded_key) in [&prelude, &rejected, &bad, &probe, &later]
+            .into_iter()
+            .enumerate()
+        {
+            assert_known_row(
+                &mut control,
+                seeded_key,
+                A,
+                ReadPermission::OWNER,
+                if index == 1 {
+                    rejected_acl
+                } else {
+                    WritePermission::OWNER
+                },
+                201,
+                seeds_receipts[index].times,
+            );
+        }
+        if matches!(case, Case::AclNativeStops | Case::NativeStops) {
+            let independent = control
+                .query_one(
+                    "SELECT $1::TEXT::JSONB::TEXT",
+                    &[&std::str::from_utf8(BAD_JSON).unwrap()],
+                )
+                .unwrap_err();
+            assert_eq!(independent.code().map(|code| code.code()), Some("22P02"));
+            println!(
+                "nakama_write_tail_drain_native_probe profile={} case={} independent_probe_sqlstate=22P02 hidden_tail_sqlstate=null",
+                profile.metadata_value(), case.name()
+            );
+        }
+        let before = snapshot(&mut control, collection);
+        let mut worker_repository = bounded_repository(url, profile);
+        let probe_before = worker_repository
+            .read_storage_object_with_metadata(StorageActor::User(OWNER), &probe)
+            .unwrap();
+        let worker_application = application(case, "worker", stamp);
+        worker_repository
+            .execute_migration_batch(&format!("SET application_name='{worker_application}'"))
+            .unwrap();
+        let rejection = match case {
+            Case::ExactWait => write(
+                &rejected,
+                B,
+                VersionCheck::Exact("opaque-literal-that-does-not-match".into()),
+                WritePermission::OWNER,
+            ),
+            Case::CreateOnlyStops => write(
+                &rejected,
+                B,
+                VersionCheck::MustNotExist,
+                WritePermission::OWNER,
+            ),
+            Case::NativeStops => write(
+                &rejected,
+                BAD_JSON,
+                VersionCheck::Any,
+                WritePermission::OWNER,
+            ),
+            Case::AclWait | Case::AclNativeStops => {
+                write(&rejected, B, VersionCheck::Any, WritePermission::OWNER)
+            }
+        };
+        // Deliberately present the late key first. The canonical Go occurrence
+        // plan must still execute the earlier transient write before rejection.
+        let mut operations = vec![
+            write(&later, B, VersionCheck::Any, WritePermission::OWNER),
+            rejection,
+            write(&prelude, C, VersionCheck::Any, WritePermission::OWNER),
+        ];
+        if matches!(case, Case::AclNativeStops) {
+            operations.push(write(
+                &bad,
+                BAD_JSON,
+                VersionCheck::Any,
+                WritePermission::OWNER,
+            ));
+        }
+        let mut z_control = bounded_control(url);
+        control_application(&mut z_control, &application(case, "z", stamp));
+        let mut b_control = bounded_control(url);
+        control_application(&mut b_control, &application(case, "b", stamp));
+        // All connection setup and seeds precede the causal interval. The
+        // interval includes acquiring/capturing both owned held locks, native
+        // wait observation, release (if required), actual result and readback.
+        let started = Instant::now();
+        let mut z = Some(z_control.transaction().unwrap());
+        hold(z.as_mut().unwrap(), &later);
+        let z_holder = capture_holder(z.as_mut().unwrap(), &mut control, profile, &later);
+        let mut b = if matches!(case, Case::AclNativeStops) {
+            Some(b_control.transaction().unwrap())
+        } else {
+            None
+        };
+        let b_holder = b.as_mut().map(|transaction| {
+            hold(transaction, &bad);
+            capture_holder(transaction, &mut control, profile, &bad)
+        });
+        if let Some(holder) = &b_holder {
+            match (holder, &z_holder) {
+                (
+                    Holder::PostgreSql { pid: b, xid: bx },
+                    Holder::PostgreSql { pid: z, xid: zx },
+                ) => {
+                    assert_ne!(b, z);
+                    assert_ne!(bx, zx);
+                }
+                (Holder::CockroachDb { txn: b, .. }, Holder::CockroachDb { txn: z, .. }) => {
+                    assert_ne!(b, z)
+                }
+                _ => panic!("tail blocker profile identities disagreed"),
+            }
+        }
+        assert!(
+            started.elapsed() < CAUSAL_BUDGET,
+            "tail owned held-lock capture exceeded original causal budget"
+        );
+        let (send, receive) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let batch = worker_repository.apply_storage_batch_nakama_with_metadata(
+                StorageActor::User(OWNER),
+                &operations,
+                202,
+                StorageNakamaBatchKind::Write,
+            );
+            let completed_at = Instant::now();
+            // Read a separate unlocked owned row through the same live lease.
+            // Do not reconnect or implicitly retry an aborted transaction.
+            let reused = worker_repository
+                .read_storage_object_with_metadata(StorageActor::User(OWNER), &probe)
+                .map(|actual| actual == probe_before);
+            send.send(Outcome {
+                batch,
+                reused,
+                completed_at,
+            })
+            .expect("tail actual result receiver unavailable");
+        });
+        let mut outcome = None;
+        let mut rollback_ok = true;
+        let primary = catch_unwind(AssertUnwindSafe(|| {
+            let waited_holder = match case {
+                Case::AclWait | Case::ExactWait => Some(&z_holder),
+                Case::AclNativeStops => b_holder.as_ref(),
+                Case::CreateOnlyStops | Case::NativeStops => None,
+            };
+            if let Some(holder) = waited_holder {
+                let proof = wait_for_lock(
+                    &mut control,
+                    &worker_application,
+                    holder,
+                    &receive,
+                    &mut outcome,
+                    started,
+                );
+                println!(
+                    "nakama_write_tail_drain_lock_observed profile={} case={} worker={} blocker={} query_sha256={} proof=native-lock-view",
+                    profile.metadata_value(), case.name(), proof.worker, proof.blocker, proof.query_sha256
+                );
+                if matches!(case, Case::AclNativeStops) {
+                    rollback_ok &= release(&mut b, profile, case, "b");
+                } else {
+                    rollback_ok &= release(&mut z, profile, case, "z");
+                }
+                assert!(rollback_ok, "tail causal lock release failed");
+            }
+            let actual = receive
+                .recv_timeout(CAUSAL_BUDGET.saturating_sub(started.elapsed()))
+                .expect("tail actual result was unavailable within original causal budget");
+            log_outcome(profile, case, &actual, false);
+            outcome = Some(actual);
+            let actual = outcome.as_ref().unwrap();
+            assert!(actual.completed_at.duration_since(started) < CAUSAL_BUDGET);
+            assert_eq!(actual.batch.as_ref().err().copied(), Some(case.error()), "tail batch did not preserve the expected actual DomainError; successful receipts forbidden");
+            assert_eq!(
+                actual.reused,
+                Ok(true),
+                "tail failure left the same native lease unreadable or changed its probe"
+            );
+            if !matches!(case, Case::AclWait | Case::ExactWait) {
+                // Actual completion and held-transaction readback establish
+                // early rejection; a short channel timeout never does.
+                holder_still_open(&mut control, &later, &z_holder);
+            }
+            assert!(
+                started.elapsed() < CAUSAL_BUDGET,
+                "tail causal readback exceeded original budget"
+            );
+        }));
+        let settling_started = Instant::now();
+        rollback_ok &= release(&mut b, profile, case, "b-cleanup");
+        rollback_ok &= release(&mut z, profile, case, "z-cleanup");
+        // SQL rollback/observation is bounded by its own five-second control
+        // timeout. These synchronous calls are not hard-interrupted by the
+        // four-second causal or six-second settling clock; the outer runner
+        // must retain its process-group deadline and any original timeout.
+        let joined = settle(
+            worker,
+            &receive,
+            &mut outcome,
+            settling_started,
+            profile,
+            case,
+        );
+        let state_check = if rollback_ok && joined.as_ref().is_some_and(Result::is_ok) {
+            Some(catch_unwind(AssertUnwindSafe(|| {
+                assert_eq!(
+                    snapshot(&mut control, collection),
+                    before,
+                    "tail failed batch changed full15field native state"
+                );
+            })))
+        } else {
+            None
+        };
+        if let Err(payload) = primary {
+            if state_check.as_ref().is_some_and(Result::is_err) {
+                eprintln!("nakama_write_tail_drain_secondary_snapshot_failure profile={} case={} primary_panic_preserved=true", profile.metadata_value(), case.name());
+            }
+            if let Some(actual) = &outcome {
+                log_outcome(profile, case, actual, true);
+            }
+            if joined.as_ref().is_some_and(Result::is_err) {
+                eprintln!("nakama_write_tail_drain_secondary_worker_panic profile={} case={} primary_panic_preserved=true", profile.metadata_value(), case.name());
+            }
+            resume_unwind(payload);
+        }
+        match joined {
+            Some(Ok(())) => {}
+            Some(Err(payload)) => resume_unwind(payload),
+            None => panic!("tail worker did not settle; actual primary result retained; outer process-group deadline required"),
+        }
+        assert!(
+            rollback_ok,
+            "tail owned blocker cleanup failed after successful causal body"
+        );
+        match state_check {
+            Some(Ok(())) => {}
+            Some(Err(payload)) => resume_unwind(payload),
+            None => panic!("tail full15field snapshot was unavailable after cleanup"),
+        }
+        println!("nakama_write_tail_drain_case_executed profile={} case={} fields=15 no_receipts=true same_lease_readable=true", profile.metadata_value(), case.name());
+    }
+    pub(super) fn exercise(url: &str, profile: DatabaseProfile, collection: &str) {
+        for case in [
+            Case::AclWait,
+            Case::ExactWait,
+            Case::CreateOnlyStops,
+            Case::AclNativeStops,
+            Case::NativeStops,
+        ] {
+            exercise_case(url, profile, collection, case);
+        }
+        println!("nakama_write_tail_drain_executed profile={} held_wait_cases=2 early_reject_cases=3 fields=15", profile.metadata_value());
     }
 }

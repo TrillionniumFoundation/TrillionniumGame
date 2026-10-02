@@ -209,7 +209,7 @@ EOF
 find "$evidence" -type f ! -name SHA256SUMS -print0 \\
   | sort -z | xargs -0 sha256sum > "$evidence/SHA256SUMS"
 '''
-SUFFIX = SUFFIX.replace('"storage_v4_acl":true,', '"storage_v4_acl":true,"storage_v4_import":true,"storage_homogeneous_batches":true,"storage_homogeneous_app":true,')
+SUFFIX = SUFFIX.replace('"storage_v4_acl":true,', '"storage_v4_acl":true,"storage_v4_import":true,"storage_homogeneous_batches":true,"storage_homogeneous_app":true,"storage_write_tail_drain":true,')
 FIXTURE = PREFIX + CANONICAL + PROJECTION + OCC + TIMESTAMPS + NATIVE_JSONB + V4_ACL + IMPORT_ANNEX + V4_IMPORT + DUPLICATES + SCHEMA + SCHEMA_V3 + SUFFIX
 
 
@@ -507,6 +507,86 @@ class StorageListLiveContractTests(unittest.TestCase):
         with self.assertRaises(SystemExit): MODULE.validate_homogeneous_storage_source(*changed)
 
 
+    def test_write_tail_seventh_marker_and_five_case_guard_are_required(self) -> None:
+        self.assertEqual(len(MODULE.STORAGE_DUPLICATE_MARKERS), 7)
+        self.assertEqual(MODULE.STORAGE_DUPLICATE_MARKERS[-1], (
+            "nakama_write_tail_drain_executed",
+            " held_wait_cases=2 early_reject_cases=3 fields=15",
+        ))
+        guard = ('grep -Fxq "nakama_write_tail_drain_executed profile=${profile} '
+                 'held_wait_cases=2 early_reject_cases=3 fields=15" '
+                 '"$evidence/storage-duplicate-batches.log"\n')
+        unique = ('test "$(grep -Ec \'^nakama_write_tail_drain_executed \' '
+                  '"$evidence/storage-duplicate-batches.log")" -eq 1\n')
+        for changed in (
+            FIXTURE.replace(guard, ""), FIXTURE.replace(unique, ""),
+            FIXTURE.replace(guard, guard + guard),
+            FIXTURE.replace("held_wait_cases=2", "held_wait_cases=1"),
+            FIXTURE.replace("early_reject_cases=3", "early_reject_cases=4"),
+            FIXTURE.replace('"storage_write_tail_drain":true', '"storage_write_tail_drain":false'),
+            FIXTURE.replace('"storage_write_tail_drain":true,', ""),
+        ):
+            self.assertNotEqual(changed, FIXTURE)
+            self.reject(changed)
+
+    def test_write_tail_candidate_scope_and_typed_error_source_cannot_drift(self) -> None:
+        repository = (ROOT / "crates/trnm-persistence-pg/src/storage_parts/01_repository.rs").read_text()
+        pool_base = (ROOT / "crates/trnm-persistence-pg/src/pool_parts/base.rs").read_text()
+        fixture = (ROOT / "crates/trnm-persistence-pg/tests/storage_duplicate_batches.rs").read_text()
+        MODULE.validate_nakama_write_tail_source(repository, pool_base, fixture)
+        for before, after in (
+            ("first_write_rejection.get_or_insert(rejection)", "first_write_rejection = Some(rejection)"),
+            ("if kind == Some(NakamaBatchKind::Write)", "if kind.is_some()"),
+            ("Err(rejection) if rejection == write_permission_error()", "Err(rejection)"),
+            ("VersionCheck::MustNotExist => Err(error(", "VersionCheck::MustNotExist => Ok(WriteStepValidation::Semantic(error("),
+            ("validate_native_condition(", "removed_native_condition("),
+            ("transaction.rollback().err().map(map_postgres_error)", "None"),
+            ("if rollback_error.is_some() {", "if false {"),
+            ("self.client.retire();", ""),
+        ):
+            self.assertIn(before, repository)
+            with self.subTest(marker=before), self.assertRaises(SystemExit):
+                MODULE.validate_nakama_write_tail_source(repository.replace(before, after), pool_base, fixture)
+        for before in (
+            "pub(crate) fn retire(&self)", "retired.store(true, Ordering::Release)",
+            "connection.retired.load(Ordering::Acquire) || self.inner.has_broken(&mut connection.client)",
+            "Self::Direct(_) => None",
+        ):
+            self.assertIn(before, pool_base)
+            with self.subTest(pool_marker=before), self.assertRaises(SystemExit):
+                MODULE.validate_nakama_write_tail_source(repository, pool_base.replace(before, "removed_retirement_seam"), fixture)
+        for before in (
+            "write_tail_drain::exercise(&url, profile, &collection);",
+            "Case::AclWait,", "Case::ExactWait,", "Case::CreateOnlyStops,",
+            "Case::AclNativeStops,", "Case::NativeStops,",
+            "held_wait_cases=2 early_reject_cases=3 fields=15",
+        ):
+            self.assertIn(before, fixture)
+            with self.subTest(fixture_marker=before), self.assertRaises(SystemExit):
+                MODULE.validate_nakama_write_tail_source(repository, pool_base, fixture.replace(before, "removed_five_case_seam"))
+        contract = json.loads((ROOT / "contracts/storage/nakama-http-storage-v1.json").read_text())
+        lock = json.loads((ROOT / "contracts/storage/nakama-sort-source-lock-v1.json").read_text())
+        license_data = (ROOT / "third_party/go-sort/LICENSE").read_bytes()
+        notice = (ROOT / "NOTICE").read_text()
+        sorter = (ROOT / "crates/trnm-storage-core/src/nakama_sort.rs").read_text()
+        for field, value in (
+            ("write_tail_semantic_conditions", ["all-storage-domain-errors"]),
+            ("write_tail_primary_error", "always-overrides-outer-deadline"),
+            ("write_tail_hard_errors", "continue-after-any-native-error"),
+            ("write_tail_cleanup", "rollback-always-confirmed"),
+            ("write_tail_rollback_failure", "direct-client-disabled"),
+            ("native_write_prequeue_qualified", True),
+            ("native_preparation_query_group_qualified", True),
+            ("native_failing_occurrence_jsonb_bind_priority_qualified", True),
+            ("conditional_exact_lock_footprint_qualified", True),
+            ("native_isolation_retry_qualified", True),
+        ):
+            changed = json.loads(json.dumps(contract))
+            changed["homogeneous_mutation_batches"][field] = value
+            with self.subTest(field=field), self.assertRaises(SystemExit):
+                MODULE.validate_homogeneous_storage_contract(changed, lock, license_data, notice, sorter)
+
+
 class ActualNativeLaneShellTests(unittest.TestCase):
     """Run production shell guards with mock Cargo logs, never a database."""
 
@@ -678,6 +758,8 @@ cargo() { cat "$MOCK_ROOT/input.log"; return "$MOCK_CARGO_STATUS"; }
             [line.replace("0 failed", "1 failed") for line in lines],
             [line.replace("0 ignored", "1 ignored") for line in lines],
             [line.replace("profile=postgresql", "profile=cockroachdb") for line in lines],
+            [line.replace("held_wait_cases=2", "held_wait_cases=1") for line in lines],
+            [line.replace("early_reject_cases=3", "early_reject_cases=2") for line in lines],
         ):
             with self.subTest(lines=changed):
                 self.assertNotEqual(self.run_block(block, changed).returncode, 0)
@@ -729,7 +811,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
                 "check_config", "fresh_migration", "nakama_client_list_projection", "storage_occ_precedence",
                 "raw_version_conditions", "storage_timestamps", "schema_upgrade", "storage_jsonb_v3_projection",
                 "storage_native_jsonb", "storage_v4_acl", "storage_v4_import",
-                "storage_homogeneous_batches", "storage_homogeneous_app",
+                "storage_homogeneous_batches", "storage_homogeneous_app", "storage_write_tail_drain",
                 "health_ready", "unauthenticated_mutation_rejected", "http_bootstrap_commit_duplicate_conflict",
                 "websocket_json_commit", "response_loss_exact_receipt_replay", "authenticated_drain",
                 "process_restart_exact_receipt_replay",
@@ -1487,7 +1569,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
         (self.root / "storage-v4-acl.log").unlink()
         self.reject()
 
-    def test_homogeneous_packet_requires_six_unique_profile_markers_one_result_no_skip_and_truthful_summary(self) -> None:
+    def test_homogeneous_packet_requires_seven_unique_profile_markers_one_result_no_skip_and_truthful_summary(self) -> None:
         for marker in self.duplicate_lines[:-1]:
             for changed in (
                 [line for line in self.duplicate_lines if line != marker], self.duplicate_lines + [marker],
@@ -1504,10 +1586,13 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
             [line.replace("0 ignored", "1 ignored") for line in self.duplicate_lines],
             [line.replace("profile=postgresql", "profile=cockroachdb") for line in self.duplicate_lines],
             [line.replace("actual_batch_domain_code=InvalidArgument", "actual_batch_domain_code=Internal") for line in self.duplicate_lines],
+            [line.replace("held_wait_cases=2", "held_wait_cases=1") for line in self.duplicate_lines],
+            [line.replace("early_reject_cases=3", "early_reject_cases=2") for line in self.duplicate_lines],
+            [line.replace("early_reject_cases=3 fields=15", "early_reject_cases=3 fields=14") for line in self.duplicate_lines],
         ):
             self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, changed); self.reject()
         self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, self.duplicate_lines)
-        for field in ("storage_homogeneous_batches", "storage_homogeneous_app"):
+        for field in ("storage_homogeneous_batches", "storage_homogeneous_app", "storage_write_tail_drain"):
             for value in (False, 1):
                 self.write_json("summary.json", {**self.summary, field: value}); self.reject()
         self.write_json("summary.json", self.summary)

@@ -369,55 +369,101 @@ impl PgRepository {
         }
         let mut staged = BTreeMap::new();
         let mut receipts = vec![None; operations.len()];
+        let mut first_write_rejection = None;
         for ordinal in order {
             let operation = &operations[ordinal];
-            // The canonical occurrence plan already orders every key. Lock and
-            // validate only this occurrence before advancing to a later key;
-            // never reuse an initial ACL/version as later occurrence authority.
-            let refreshed_access = if kind.is_some() {
-                lock_storage_access(&mut transaction, operation.key())?
-            } else {
-                None
-            };
-            let access = if kind.is_some() {
-                refreshed_access.as_ref()
-            } else {
-                locked
-                    .get(operation.key())
-                    .ok_or_else(|| data_loss("storage_batch_lock_missing"))?
-                    .as_ref()
-            };
-            let authoritative_missing_delete = matches!(operation,
+            let occurrence = (|| -> Result<Option<StoredStorageMutationReceipt>, DomainError> {
+                // The canonical occurrence plan already orders every key. Lock and
+                // validate only this occurrence before advancing to a later key;
+                // never reuse an initial ACL/version as later occurrence authority.
+                let refreshed_access = if kind.is_some() {
+                    lock_storage_access(&mut transaction, operation.key())?
+                } else {
+                    None
+                };
+                let access = if kind.is_some() {
+                    refreshed_access.as_ref()
+                } else {
+                    locked
+                        .get(operation.key())
+                        .ok_or_else(|| data_loss("storage_batch_lock_missing"))?
+                        .as_ref()
+                };
+                let authoritative_missing_delete = matches!(operation,
                 BatchOperation::Delete(delete) if actor == Actor::Server
                     && delete.expected_version.is_none() && access.is_none())
-                && kind == Some(NakamaBatchKind::Delete);
-            if !authoritative_missing_delete {
-                validate_locked_operation(&mut transaction, actor, operation, access)?;
-            }
-            staged.insert(
-                operation.key().clone(),
-                load_for_update(&mut transaction, operation.key(), self.profile)?,
-            );
-            verify_storage_staged_budget(&staged)?;
-            let receipt = match operation {
-                BatchOperation::Write(write) => apply_write(
-                    &mut transaction,
-                    &mut staged,
-                    actor,
-                    write,
-                    updated_at_i64,
-                    self.profile,
-                )?,
-                BatchOperation::Delete(delete) => {
-                    if kind == Some(NakamaBatchKind::Delete) {
-                        apply_nakama_delete(&mut transaction, &mut staged, actor, delete)?
-                    } else {
-                        apply_delete(&mut transaction, &mut staged, actor, delete)?
+                    && kind == Some(NakamaBatchKind::Delete);
+                if kind == Some(NakamaBatchKind::Write) {
+                    let BatchOperation::Write(write) = operation else {
+                        return Err(data_loss("storage_nakama_write_plan_mismatch"));
+                    };
+                    match validate_nakama_write_step(&mut transaction, actor, write, access)? {
+                        WriteStepValidation::Ready => {}
+                        WriteStepValidation::Semantic(rejection) => {
+                            first_write_rejection.get_or_insert(rejection);
+                            // This occurrence was rejected without a database error.
+                            // Later occurrences still perform their real work; this
+                            // transaction will never produce receipts or commit.
+                            return Ok(None);
+                        }
                     }
+                } else if !authoritative_missing_delete {
+                    validate_locked_operation(&mut transaction, actor, operation, access)?;
                 }
-            };
-            verify_storage_staged_budget(&staged)?;
-            receipts[ordinal] = Some(receipt);
+                staged.insert(
+                    operation.key().clone(),
+                    load_for_update(&mut transaction, operation.key(), self.profile)?,
+                );
+                verify_storage_staged_budget(&staged)?;
+                let receipt = match operation {
+                    BatchOperation::Write(write) => apply_write(
+                        &mut transaction,
+                        &mut staged,
+                        actor,
+                        write,
+                        updated_at_i64,
+                        self.profile,
+                    )?,
+                    BatchOperation::Delete(delete) => {
+                        if kind == Some(NakamaBatchKind::Delete) {
+                            apply_nakama_delete(&mut transaction, &mut staged, actor, delete)?
+                        } else {
+                            apply_delete(&mut transaction, &mut staged, actor, delete)?
+                        }
+                    }
+                };
+                verify_storage_staged_budget(&staged)?;
+                Ok(Some(receipt))
+            })();
+            match occurrence {
+                Ok(Some(receipt)) => receipts[ordinal] = Some(receipt),
+                Ok(None) => {}
+                Err(hard_error) => {
+                    if let Some(primary) = first_write_rejection {
+                        // This hard tail error stops all new work, including a
+                        // native SQL error which may already have aborted the
+                        // transaction. It cannot replace the selected semantic
+                        // rejection or turn it into a retryable database error.
+                        let _tail_stop_error = hard_error;
+                        let (primary, rollback_error) =
+                            rollback_nakama_write_rejection(transaction, primary);
+                        if rollback_error.is_some() {
+                            self.client.retire();
+                        }
+                        return Err(primary);
+                    }
+                    // Typed mixed batches and deletes retain their immediate
+                    // failure and Transaction drop cleanup policy.
+                    return Err(hard_error);
+                }
+            }
+        }
+        if let Some(primary) = first_write_rejection {
+            let (primary, rollback_error) = rollback_nakama_write_rejection(transaction, primary);
+            if rollback_error.is_some() {
+                self.client.retire();
+            }
+            return Err(primary);
         }
         let receipts = receipts
             .into_iter()
@@ -426,6 +472,72 @@ impl PgRepository {
         transaction.commit().map_err(map_postgres_error)?;
         Ok(receipts)
     }
+}
+
+enum WriteStepValidation {
+    Ready,
+    Semantic(DomainError),
+}
+
+fn validate_nakama_write_step(
+    transaction: &mut Transaction<'_>,
+    actor: Actor,
+    write: &WriteOperation,
+    access: Option<&LockedStorageAccess>,
+) -> Result<WriteStepValidation, DomainError> {
+    // Keep the same order and byte authority as validate_locked_operation:
+    // owner/ACL, native raw TEXT condition, then raw public token comparison.
+    // The whole-request owner precheck must already have succeeded. Mark only
+    // these host decisions as semantic; never infer origin from a generic
+    // projection, native SQL, decoding, resource or RETURNING error.
+    let acl = if write.expected == VersionCheck::MustNotExist {
+        None
+    } else {
+        access.map(|row| row.write)
+    };
+    match authorize_write_permission(actor, &write.key, acl) {
+        Ok(()) => {}
+        Err(rejection) if rejection == write_permission_error() => {
+            return Ok(WriteStepValidation::Semantic(rejection));
+        }
+        Err(hard_error) => return Err(hard_error),
+    }
+    validate_native_condition(
+        transaction,
+        match &write.expected {
+            VersionCheck::Exact(token) => Some(token.as_str()),
+            _ => None,
+        },
+    )?;
+    match &write.expected {
+        VersionCheck::Any => Ok(WriteStepValidation::Ready),
+        VersionCheck::MustNotExist if access.is_none() => Ok(WriteStepValidation::Ready),
+        VersionCheck::MustNotExist => Err(error(
+            StableCode::AlreadyExists,
+            "storage_object_already_exists",
+            RetryClass::Never,
+        )),
+        VersionCheck::Exact(token)
+            if access.is_some_and(|row| row.version.as_str() == token.as_str()) =>
+        {
+            Ok(WriteStepValidation::Ready)
+        }
+        VersionCheck::Exact(_) => Ok(WriteStepValidation::Semantic(version_error())),
+    }
+}
+
+fn rollback_nakama_write_rejection(
+    transaction: Transaction<'_>,
+    primary: DomainError,
+) -> (DomainError, Option<DomainError>) {
+    // Consume the transaction without commit. The unchanged public error API
+    // can return only the selected primary error. A rollback failure is a
+    // secondary cleanup failure, not evidence of a confirmed rollback and not
+    // permission to ACK or retry the batch. The caller marks an unconfirmed
+    // pooled lease retired so it cannot be recycled. This rollback is not a
+    // hard wall-clock bound on cleanup after an outer operation deadline.
+    let rollback_error = transaction.rollback().err().map(map_postgres_error);
+    (primary, rollback_error)
 }
 
 fn validate_read_batch(actor: Actor, keys: &[StorageObjectKey]) -> Result<(), DomainError> {

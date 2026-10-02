@@ -142,6 +142,10 @@ STORAGE_DUPLICATE_MARKERS = (
         "nakama_duplicate_occurrence_locks_executed",
         " missing_delete_rejected_before_late_lock=true fields=15",
     ),
+    (
+        "nakama_write_tail_drain_executed",
+        " held_wait_cases=2 early_reject_cases=3 fields=15",
+    ),
 )
 STORAGE_HOMOGENEOUS_POLICY = {
     "status": "source-candidate",
@@ -163,7 +167,18 @@ STORAGE_HOMOGENEOUS_POLICY = {
     "compatibility_credit": False,
     "production_ready": False,
     "full_nakama_replacement": False,
-    "row_lock_policy": "nakama-per-occurrence-only-typed-unique-locks-unchanged"
+    "row_lock_policy": "nakama-per-occurrence-only-typed-unique-locks-unchanged",
+    'write_tail_policy': 'some-write-first-acl-or-exact-rejection-real-tail-until-hard-error',
+    'write_tail_semantic_conditions': ['write-acl-rejection', 'exact-mismatch-after-native-text-validation'],
+    'write_tail_hard_errors': 'must-not-exist-existing-native-data-loss-resource-stop',
+    'write_tail_primary_error': 'first-inner-semantic-rejection-existing-outer-pool-budget-may-override',
+    'write_tail_cleanup': 'explicit-rollback-before-error-no-confirmation-on-rollback-failure',
+    'write_tail_rollback_failure': 'retire-pooled-lease-before-return-recycling-direct-client-unchanged',
+    'native_write_prequeue_qualified': False,
+    'native_preparation_query_group_qualified': False,
+    'native_failing_occurrence_jsonb_bind_priority_qualified': False,
+    'conditional_exact_lock_footprint_qualified': False,
+    'native_isolation_retry_qualified': False,
 }
 
 REQUIRED_TESTS = {
@@ -602,7 +617,7 @@ def validate_storage_live_harness(source: str) -> None:
                     f'"$evidence/{logfile}")" -eq 1'
                 )
                 if not previous_marker < marker_position < unique_position < reject_skip:
-                    fail("storage duplicate fixture requires six unique whole-line profile markers")
+                    fail("storage duplicate fixture requires seven unique whole-line profile markers")
                 previous_marker = unique_position
         previous_end = end
     schema_start = once(
@@ -688,7 +703,7 @@ def validate_storage_live_harness(source: str) -> None:
     require_markers("storage v3 fixture summary", commands[summary[0]], (
         '"storage_jsonb_v3_projection":true',
         '"storage_native_jsonb":true', '"storage_v4_acl":true', '"schema_v3_extra_cases":41',
-        '"storage_v4_import":true', '"storage_homogeneous_batches":true', '"storage_homogeneous_app":true',
+        '"storage_v4_import":true', '"storage_homogeneous_batches":true', '"storage_homogeneous_app":true', '"storage_write_tail_drain":true',
         '"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6}',
         '"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3}',
         '"schema_version":${schema_version}', '"storage_writer_epoch":${storage_writer_epoch}',
@@ -1283,7 +1298,7 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
         "check_config", "fresh_migration", "nakama_client_list_projection", "storage_occ_precedence",
         "raw_version_conditions", "storage_timestamps", "schema_upgrade", "storage_jsonb_v3_projection",
         "storage_native_jsonb", "storage_v4_acl", "storage_v4_import",
-        "storage_homogeneous_batches", "storage_homogeneous_app",
+        "storage_homogeneous_batches", "storage_homogeneous_app", "storage_write_tail_drain",
         "health_ready", "unauthenticated_mutation_rejected", "http_bootstrap_commit_duplicate_conflict",
         "websocket_json_commit", "response_loss_exact_receipt_replay", "authenticated_drain",
         "process_restart_exact_receipt_replay",
@@ -1457,7 +1472,7 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
     return {"status": "trnm-server-live-packet-validated", "profile": profile,
             "schema_version": 4, "storage_writer_epoch": 4, "authoritative_migrations_count": 4,
             "storage_jsonb_v3_cases": cases, "storage_native_jsonb": True, "storage_v4_acl": True,
-            "storage_v4_import": True, "storage_homogeneous_batches": True, "storage_homogeneous_app": True,
+            "storage_v4_import": True, "storage_homogeneous_batches": True, "storage_homogeneous_app": True, "storage_write_tail_drain": True,
             "schema_v3_extra_cases": 41, "schema_v3_case_families": SCHEMA_V3_CASE_FAMILIES.copy(),
             "compatibility_credit": False, "accepted": False,
             "production_ready": False}
@@ -1564,6 +1579,53 @@ def validate_homogeneous_storage_source(core: str, repository: str, wire: str,
     require_markers("homogeneous storage retry", retry, (
         "fn apply_storage_batch_nakama(", "self.inner", "apply_storage_batch_nakama(actor, operations, updated_at_ms, kind)",
         "fn nakama_homogeneous_storage_batches_are_not_implicitly_retried()",
+    ))
+
+
+def validate_nakama_write_tail_source(repository: str, pool_base: str, fixture: str) -> None:
+    """Bind the narrow real-tail seam; no preparation/lock-schedule acceptance."""
+    require_markers("Nakama write tail repository", repository, (
+        "let mut first_write_rejection = None;",
+        "if kind == Some(NakamaBatchKind::Write)",
+        "match validate_nakama_write_step(&mut transaction, actor, write, access)?",
+        "WriteStepValidation::Semantic(rejection)",
+        "first_write_rejection.get_or_insert(rejection)",
+        "Err(hard_error) => {", "let _tail_stop_error = hard_error;",
+        "rollback_nakama_write_rejection(transaction, primary)",
+        "if rollback_error.is_some() {", "self.client.retire();",
+        "enum WriteStepValidation {", "Semantic(DomainError)",
+        "fn validate_nakama_write_step(", "fn rollback_nakama_write_rejection(",
+        "transaction.rollback().err().map(map_postgres_error)",
+    ))
+    step = repository.split("fn validate_nakama_write_step(", 1)[1].split(
+        "fn rollback_nakama_write_rejection(", 1)[0]
+    require_markers("Nakama write semantic classification", step, (
+        "Err(rejection) if rejection == write_permission_error()",
+        "Err(hard_error) => return Err(hard_error)",
+        "validate_native_condition(", "VersionCheck::Any => Ok(WriteStepValidation::Ready)",
+        "VersionCheck::MustNotExist => Err(error(",
+        "VersionCheck::Exact(_) => Ok(WriteStepValidation::Semantic(version_error()))",
+    ))
+    if step.index("validate_native_condition(") > step.index(
+        "VersionCheck::Exact(_) => Ok(WriteStepValidation::Semantic(version_error()))"
+    ):
+        fail("write tail Exact rejection must follow successful native TEXT validation")
+    if repository.index("let receipts = receipts") < repository.index(
+        "if let Some(primary) = first_write_rejection {\n"
+    ):
+        fail("write tail semantic rejection must roll back before receipt assembly")
+    require_markers("Nakama write tail native fixture", fixture, (
+        "write_tail_drain::exercise(&url, profile, &collection);",
+        "mod write_tail_drain {", "Case::AclWait,", "Case::ExactWait,",
+        "Case::CreateOnlyStops,", "Case::AclNativeStops,", "Case::NativeStops,",
+        "exercise_case(url, profile, collection, case);",
+        "nakama_write_tail_drain_executed profile={} held_wait_cases=2 early_reject_cases=3 fields=15",
+    ))
+    require_markers("Nakama write rollback pooled retirement", pool_base, (
+        "pub(crate) fn retire(&self)", "if let Some(retired) = self.retirement_flag()",
+        "retired.store(true, Ordering::Release)",
+        "connection.retired.load(Ordering::Acquire) || self.inner.has_broken(&mut connection.client)",
+        "Self::Direct(_) => None",
     ))
 
 
@@ -2031,6 +2093,11 @@ def main(arguments: list[str] | None = None) -> int:
         sources[Path("crates/trnm-server/src/runtime/storage_api.rs")],
         sources[Path("crates/trnm-server/src/runtime/pool.rs")],
         sources[Path("crates/trnm-server/src/runtime/retry.rs")],
+    )
+    validate_nakama_write_tail_source(
+        sources[Path("crates/trnm-persistence-pg/src/storage_parts/01_repository.rs")],
+        (ROOT / "crates/trnm-persistence-pg/src/pool_parts/base.rs").read_text(encoding="utf-8"),
+        sources[Path("crates/trnm-persistence-pg/tests/storage_duplicate_batches.rs")],
     )
     if storage_contract.get("composition") != "crates/trnm-server::trnm-server":
         fail("storage HTTP API must use the canonical process authority")

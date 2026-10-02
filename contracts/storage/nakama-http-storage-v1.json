@@ -190,7 +190,7 @@
     "Storage metadata source now records database transaction time independently from legacy caller-clock updated_at_ms. Full precision and no-op/update behavior still require immutable upstream differential.",
     "Unsigned Nakama cursor offsets deliberately differ from the internal authenticated scope-bound cursor profile. Independent security/protocol review and immutable differential remain required; malformed gob and query errors are not globally qualified.",
     "The bounded Go 1.26.5 ordinal sorter is translated from pinned BSD source. Raw Runtime owner-string representations, hook/index positional behavior, native conditional-SQL lock/error timing, ambiguous commit reconciliation and official SDK/immutable-oracle qualification remain open. No identity, ACL, occurrence, version, error or durable-effect difference is normalized.",
-    "Pinned Go write pgx.Batch can wait on a later locked key before returning an earlier write-permission rejection, while the Rust occurrence path rejects the earlier occurrence before reaching that key. Sequential delete has no all-key prelock. This write failure-timing difference remains open and cannot be normalized; target-native CI does not grant immutable-oracle or independent acceptance."
+    "The narrow SomeWrite candidate remembers the first ACL rejection or Exact mismatch after successful native TEXT validation, then performs real later occurrence work until a hard error stops further SQL. An existing insert-only conflict, native error, DataLoss or resource rejection remains an immediate hard stop; sequential delete is unchanged. Explicit rollback precedes the inner error return. Rollback failure does not confirm rollback: it retires a pooled lease to prevent recycling after return, without disabling a direct repository. Existing outer pool deadline/shutdown policy can override the inner first error. Two held-tail and three early-stop cases are required source-execution observations. Full pgx prequeue/preparation/query-group and failing-occurrence native JSONB binding priority remain open. Controlled official Nakama PostgreSQL observations show a stale late Exact or token-matching/write0 Exact returning the first ACL rejection while the later tuple remains locked; Rust SELECT FOR UPDATE acquires that tuple lock. This observed conditional-lock countervector remains open alongside native isolation/retries, raw Runtime owners, hooks/index and full parity. No difference is normalized and no immutable-oracle or independent acceptance is granted."
   ],
   "claims": {
     "compatibility_credit": false,
@@ -214,7 +214,7 @@
     "jsonb_v3_fixture": "crates/trnm-server/src/runtime/storage_api_v3_live.rs::prove_storage_jsonb_v3_app",
     "jsonb_v3_execution_required": "The same single canonical App test must emit an exact profile marker with history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3, plus exactly one actual native-input accepted/rejected observation with compatibility_credit=false. Preserve the previous write_cases=15/delete_cases=18/batch_cases=2 marker. Retained packet validation checks the actual four profile SQL bytes, sizes and hashes, schema4/epoch4 and fresh prior-v2/prior-v3 publishers; source and local tests grant no acceptance.",
     "homogeneous_repository_test": "crates/trnm-persistence-pg/tests/storage_duplicate_batches.rs::nakama_duplicate_batches_preserve_step_receipts_and_native_atomicity",
-    "homogeneous_execution_required": "Separate required single-test lane with one successful terminal result, six exact unique profile markers, explicit skip rejection and sealed storage-duplicate-batches.log. Three source-DDL rows/pages with actual exporter/importer custody and complete fifteen-field assertions are separate from the existing eight-row/four-page/nine-JSON import fixture; source-DDL is not a running Nakama oracle or production issuer trust. The occurrence-lock marker checks an earlier missing delete rejects while a later native row remains externally locked; it does not qualify pgx write-pipeline timing or the complete upstream concurrency/error schedule.",
+    "homogeneous_execution_required": "Separate required single-test lane with one successful terminal result, seven exact unique profile markers, explicit skip rejection and sealed storage-duplicate-batches.log. Three source-DDL rows/pages with actual exporter/importer custody and complete fifteen-field assertions are separate from the existing eight-row/four-page/nine-JSON import fixture; source-DDL is not a running Nakama oracle or production issuer trust. The occurrence-lock marker checks an earlier missing delete rejects while a later native row remains externally locked; the seventh nakama_write_tail_drain_executed marker requires held_wait_cases=2 early_reject_cases=3 fields=15. This narrow actual-tail observation does not qualify pgx prequeue/preparation/query-group, native failing-occurrence JSONB binding, conditional-lock footprint or the complete upstream concurrency/error schedule.",
     "homogeneous_application_execution_required": "The existing single canonical App fixture additionally requires storage_homogeneous_app_executed profile marker with write_occurrences=13 rollback_cases=3. Preserve previous write_cases=15/delete_cases=18/batch_cases=2 and JSONB/schema families unchanged."
   },
   "mutation_repository": "Authorization, native TEXT input binding, OCC and stored projection/witness integrity checks precede no-op selection. Native incoming JSONB admission also precedes a blind no-op; an unknown matching token cannot bypass a native JSONB rejection. A blind write with stored public token equal to generated request MD5 and equal ACLs preserves native payload, provenance and times; known request fingerprints must match, while unknown original requests are not fabricated. Exact writes always project request bytes through the actual database JSONB cast, update known request witness and transaction update_time, preserving nullable original creation. Atomic batch commit still precedes ACK. Insert-only binds actor to owner and rejects an existing valid row as a version conflict regardless of its write ACL; blind/exact retain permission-first rejection. Profile SQL/NUL behavior remains distinct from immutable Nakama compatibility.",
@@ -281,6 +281,20 @@
     "compatibility_credit": false,
     "production_ready": false,
     "full_nakama_replacement": false,
-    "row_lock_policy": "nakama-per-occurrence-only-typed-unique-locks-unchanged"
+    "row_lock_policy": "nakama-per-occurrence-only-typed-unique-locks-unchanged",
+    "write_tail_policy": "some-write-first-acl-or-exact-rejection-real-tail-until-hard-error",
+    "write_tail_semantic_conditions": [
+      "write-acl-rejection",
+      "exact-mismatch-after-native-text-validation"
+    ],
+    "write_tail_hard_errors": "must-not-exist-existing-native-data-loss-resource-stop",
+    "write_tail_primary_error": "first-inner-semantic-rejection-existing-outer-pool-budget-may-override",
+    "write_tail_cleanup": "explicit-rollback-before-error-no-confirmation-on-rollback-failure",
+    "write_tail_rollback_failure": "retire-pooled-lease-before-return-recycling-direct-client-unchanged",
+    "native_write_prequeue_qualified": false,
+    "native_preparation_query_group_qualified": false,
+    "native_failing_occurrence_jsonb_bind_priority_qualified": false,
+    "conditional_exact_lock_footprint_qualified": false,
+    "native_isolation_retry_qualified": false
   }
 }

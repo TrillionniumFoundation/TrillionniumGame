@@ -346,6 +346,20 @@
     "scope": "Canonical principal UUID subset; source-DDL export/import and pure Go ordering observations are separate from immutable Nakama, SDK, production and independent acceptance.",
     "gap_closed": false,
     "row_lock_policy": "nakama-per-occurrence-only-typed-unique-locks-unchanged",
-    "write_failure_timing_boundary": "Pinned Go write pgx.Batch can wait on a later locked key before returning an earlier write-permission rejection, while the Rust occurrence path rejects the earlier occurrence before reaching that key. Sequential delete has no all-key prelock. This write failure-timing difference remains open and cannot be normalized; target-native CI does not grant immutable-oracle or independent acceptance."
+    "write_failure_timing_boundary": "The narrow SomeWrite candidate remembers the first ACL rejection or Exact mismatch after successful native TEXT validation, then performs real later occurrence work until a hard error stops further SQL. An existing insert-only conflict, native error, DataLoss or resource rejection remains an immediate hard stop; sequential delete is unchanged. Explicit rollback precedes the inner error return. Rollback failure does not confirm rollback: it retires a pooled lease to prevent recycling after return, without disabling a direct repository. Existing outer pool deadline/shutdown policy can override the inner first error. Two held-tail and three early-stop cases are required source-execution observations. Full pgx prequeue/preparation/query-group and failing-occurrence native JSONB binding priority remain open. Controlled official Nakama PostgreSQL observations show a stale late Exact or token-matching/write0 Exact returning the first ACL rejection while the later tuple remains locked; Rust SELECT FOR UPDATE acquires that tuple lock. This observed conditional-lock countervector remains open alongside native isolation/retries, raw Runtime owners, hooks/index and full parity. No difference is normalized and no immutable-oracle or independent acceptance is granted.",
+    "write_tail_policy": "some-write-first-acl-or-exact-rejection-real-tail-until-hard-error",
+    "write_tail_semantic_conditions": [
+      "write-acl-rejection",
+      "exact-mismatch-after-native-text-validation"
+    ],
+    "write_tail_hard_errors": "must-not-exist-existing-native-data-loss-resource-stop",
+    "write_tail_primary_error": "first-inner-semantic-rejection-existing-outer-pool-budget-may-override",
+    "write_tail_cleanup": "explicit-rollback-before-error-no-confirmation-on-rollback-failure",
+    "write_tail_rollback_failure": "retire-pooled-lease-before-return-recycling-direct-client-unchanged",
+    "native_write_prequeue_qualified": false,
+    "native_preparation_query_group_qualified": false,
+    "native_failing_occurrence_jsonb_bind_priority_qualified": false,
+    "conditional_exact_lock_footprint_qualified": false,
+    "native_isolation_retry_qualified": false
   }
 }
