@@ -406,6 +406,97 @@ fn assert_permission_denied(result: Result<u64, postgres::Error>) {
     );
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct LegacyStorageRow {
+    collection: String,
+    object_key: String,
+    user_id: Vec<u8>,
+    value_bytes: Vec<u8>,
+    version_digest: Vec<u8>,
+    read_permission: i16,
+    write_permission: i16,
+    updated_at_ms: i64,
+}
+
+fn legacy_storage_snapshot(client: &mut Client) -> Vec<LegacyStorageRow> {
+    client
+        .query(
+            "SELECT collection, object_key, user_id, value_bytes, version_digest, \
+             read_permission, write_permission, updated_at_ms FROM public.trnm_storage_objects \
+             ORDER BY collection, object_key, user_id",
+            &[],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| LegacyStorageRow {
+            collection: row.get(0),
+            object_key: row.get(1),
+            user_id: row.get(2),
+            value_bytes: row.get(3),
+            version_digest: row.get(4),
+            read_permission: row.get(5),
+            write_permission: row.get(6),
+            updated_at_ms: row.get(7),
+        })
+        .collect()
+}
+
+fn v1_metadata_snapshot(client: &mut Client) -> (i64, String, String, i64) {
+    let row = client
+        .query_one(
+            "SELECT schema_version, profile, source_commit, applied_at_ms \
+             FROM public.trnm_schema_metadata WHERE singleton = 1",
+            &[],
+        )
+        .unwrap();
+    (row.get(0), row.get(1), row.get(2), row.get(3))
+}
+
+fn assert_barrier_rejects_without_mutation(
+    repository: &mut PgRepository,
+    inspector: &mut Client,
+    legacy: &str,
+) {
+    let metadata_before = v1_metadata_snapshot(inspector);
+    assert_eq!(metadata_before.0, 1);
+    let storage_before = legacy_storage_snapshot(inspector);
+    assert_eq!(storage_before.len(), 1);
+    let error = repository
+        .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(legacy))
+        .unwrap_err();
+    assert_eq!(error.code(), StableCode::FailedPrecondition);
+    assert_eq!(error.reason(), "legacy_storage_writer_not_fenced");
+    assert_eq!(v1_metadata_snapshot(inspector), metadata_before);
+    assert_eq!(legacy_storage_snapshot(inspector), storage_before);
+    let appended_columns: i64 = inspector
+        .query_one(
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' \
+             AND ((table_name = 'trnm_schema_metadata' AND column_name IN \
+                  ('chain_digest', 'digest_algorithm', 'storage_writer_epoch', 'upgrade_source_commit')) \
+               OR (table_name = 'trnm_storage_objects' AND column_name IN ('create_time', 'update_time')))",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(appended_columns, 0, "unfenced upgrade executed append DDL");
+}
+
+fn assert_role_has_no_current_crud(client: &mut Client, role: &str) {
+    let row = client
+        .query_one(
+            "SELECT pg_catalog.has_table_privilege($1, 'public.trnm_storage_objects', 'INSERT'), \
+             pg_catalog.has_table_privilege($1, 'public.trnm_storage_objects', 'UPDATE'), \
+             pg_catalog.has_table_privilege($1, 'public.trnm_storage_objects', 'DELETE'), \
+             pg_catalog.has_any_column_privilege($1, 'public.trnm_storage_objects', 'INSERT'), \
+             pg_catalog.has_any_column_privilege($1, 'public.trnm_storage_objects', 'UPDATE')",
+            &[&role],
+        )
+        .unwrap();
+    for column in 0..5 {
+        assert!(!row.get::<_, bool>(column));
+    }
+}
+
 #[test]
 fn authoritative_fresh_repeat_and_readonly_verification() {
     let Some(environment) = live_environment() else {
@@ -921,4 +1012,336 @@ fn authoritative_inherited_storage_privileges_are_not_a_writer_barrier() {
             .batch_execute(&format!("REVOKE {ancestor} FROM {legacy}"))
             .unwrap();
     });
+
+    // A real old session can clear storage with no INSERT/UPDATE/DELETE grants.
+    // PostgreSQL requires TRUNCATE; CockroachDB 26.2 requires DROP, and its
+    // has_table_privilege('TRUNCATE') inquiry misleadingly checks DELETE.
+    for inherited in [false, true] {
+        with_database(&environment, |fixture| {
+            install_v1(fixture, true);
+            let legacy = fixture.create_role("clear_legacy");
+            fixture.grant_reads(&legacy);
+            let ancestor = if inherited {
+                Some(fixture.create_role("clear_ancestor"))
+            } else {
+                None
+            };
+            let grantee = ancestor.as_deref().unwrap_or(&legacy);
+            let privilege = match fixture.profile {
+                DatabaseProfile::PostgreSql => "TRUNCATE",
+                DatabaseProfile::CockroachDb => "DROP",
+            };
+            let mut inspector = fixture.client();
+            inspector
+                .batch_execute(&format!(
+                    "GRANT {privilege} ON TABLE public.trnm_storage_objects TO {grantee}"
+                ))
+                .unwrap();
+            if let Some(ancestor) = &ancestor {
+                inspector
+                    .batch_execute(&format!("GRANT {ancestor} TO {legacy}"))
+                    .unwrap();
+            }
+            assert_role_has_no_current_crud(&mut inspector, &legacy);
+            let truncate_inquiry: bool = inspector
+                .query_one(
+                    "SELECT pg_catalog.has_table_privilege($1, 'public.trnm_storage_objects', 'TRUNCATE')",
+                    &[&legacy],
+                )
+                .unwrap()
+                .get(0);
+            assert_eq!(
+                truncate_inquiry,
+                fixture.profile == DatabaseProfile::PostgreSql,
+                "CockroachDB's TRUNCATE inquiry must not stand in for its actual DROP requirement"
+            );
+            seed_legacy_storage(&mut inspector);
+            let mut old_session = fixture.role_client(&legacy);
+            old_session
+                .execute("TRUNCATE TABLE public.trnm_storage_objects", &[])
+                .expect("fixture grant must actually permit storage truncation");
+            assert!(legacy_storage_snapshot(&mut inspector).is_empty());
+            seed_legacy_storage(&mut inspector);
+            let before = legacy_storage_snapshot(&mut inspector);
+            let mut repository = fixture.repository();
+            assert_barrier_rejects_without_mutation(&mut repository, &mut inspector, &legacy);
+            inspector
+                .batch_execute(&format!(
+                    "REVOKE {privilege} ON TABLE public.trnm_storage_objects FROM {grantee}"
+                ))
+                .unwrap();
+            let report = repository
+                .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
+                .unwrap();
+            assert_eq!(report.applied_steps, 1);
+            assert_identity(
+                &report.identity,
+                fixture.profile,
+                ORIGINAL_SOURCE,
+                UPGRADE_SOURCE,
+            );
+            assert_permission_denied(
+                old_session.execute("TRUNCATE TABLE public.trnm_storage_objects", &[]),
+            );
+            assert_eq!(legacy_storage_snapshot(&mut inspector), before);
+            if let Some(ancestor) = &ancestor {
+                inspector
+                    .batch_execute(&format!("REVOKE {ancestor} FROM {legacy}"))
+                    .unwrap();
+            }
+            eprintln!(
+                "schema_writer_destructive_barrier_executed profile={} inherited={inherited} privilege={privilege}",
+                fixture.profile.metadata_value()
+            );
+        });
+    }
+
+    if environment.profile == DatabaseProfile::PostgreSql {
+        // An ordinary NOINHERIT login may SET ROLE to a table/column writer or
+        // truncator. Neither role is an owner or administrator, so the former
+        // owner/admin-only membership check could falsely admit this upgrade.
+        for privilege in ["UPDATE", "UPDATE (value_bytes)", "TRUNCATE"] {
+            with_database(&environment, |fixture| {
+                install_v1(fixture, true);
+                let legacy = fixture.create_role("set_legacy");
+                let ancestor = fixture.create_role("set_ancestor");
+                fixture.grant_reads(&legacy);
+                fixture.grant_reads(&ancestor);
+                let mut inspector = fixture.client();
+                inspector
+                    .batch_execute(&format!(
+                        "ALTER ROLE {legacy} NOINHERIT; \
+                         GRANT {privilege} ON TABLE public.trnm_storage_objects TO {ancestor}; \
+                         GRANT {ancestor} TO {legacy} WITH INHERIT FALSE, SET TRUE"
+                    ))
+                    .unwrap();
+                assert_role_has_no_current_crud(&mut inspector, &legacy);
+                let can_set: bool = inspector
+                    .query_one(
+                        "SELECT pg_catalog.pg_has_role($1, $2, 'SET')",
+                        &[&legacy, &ancestor],
+                    )
+                    .unwrap()
+                    .get(0);
+                assert!(can_set);
+                seed_legacy_storage(&mut inspector);
+                let mut old_session = fixture.role_client(&legacy);
+                old_session
+                    .batch_execute(&format!("SET ROLE {ancestor}"))
+                    .unwrap();
+                let actual: String = old_session
+                    .query_one("SELECT current_user", &[])
+                    .unwrap()
+                    .get(0);
+                assert_eq!(actual, ancestor);
+                let mutation = if privilege == "TRUNCATE" {
+                    "TRUNCATE TABLE public.trnm_storage_objects"
+                } else {
+                    "UPDATE public.trnm_storage_objects SET value_bytes = value_bytes \
+                     WHERE collection = 'schema-upgrade'"
+                };
+                let affected = old_session
+                    .execute(mutation, &[])
+                    .expect("SET-only grant must actually permit storage mutation");
+                if privilege == "TRUNCATE" {
+                    assert!(legacy_storage_snapshot(&mut inspector).is_empty());
+                    seed_legacy_storage(&mut inspector);
+                } else {
+                    assert_eq!(affected, 1);
+                }
+                old_session.batch_execute("RESET ROLE").unwrap();
+                let before = legacy_storage_snapshot(&mut inspector);
+                let mut repository = fixture.repository();
+                assert_barrier_rejects_without_mutation(&mut repository, &mut inspector, &legacy);
+                inspector
+                    .batch_execute(&format!(
+                        "REVOKE {privilege} ON TABLE public.trnm_storage_objects FROM {ancestor}"
+                    ))
+                    .unwrap();
+                let report = repository
+                    .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
+                    .unwrap();
+                assert_eq!(report.applied_steps, 1);
+                assert_identity(
+                    &report.identity,
+                    fixture.profile,
+                    ORIGINAL_SOURCE,
+                    UPGRADE_SOURCE,
+                );
+                // Membership still allows SET ROLE. The original connection
+                // must observe revoked table/column/TRUNCATE grants after it.
+                old_session
+                    .batch_execute(&format!("SET ROLE {ancestor}"))
+                    .unwrap();
+                assert_permission_denied(old_session.execute(mutation, &[]));
+                old_session.batch_execute("RESET ROLE").unwrap();
+                assert_eq!(legacy_storage_snapshot(&mut inspector), before);
+                inspector
+                    .batch_execute(&format!("REVOKE {ancestor} FROM {legacy}"))
+                    .unwrap();
+                eprintln!(
+                    "schema_writer_set_only_barrier_executed profile=postgresql privilege={privilege}"
+                );
+            });
+        }
+
+        // ADMIN OPTION is enough to self-grant SET, even with SET FALSE and
+        // INHERIT FALSE initially. The administered role below has no current
+        // storage grants, but can SET ROLE to a separate ordinary writer.
+        for privilege in ["UPDATE", "TRUNCATE"] {
+            with_database(&environment, |fixture| {
+                install_v1(fixture, true);
+                let legacy = fixture.create_role("admin_legacy");
+                let control = fixture.create_role("admin_control");
+                let writer = fixture.create_role("admin_writer");
+                fixture.grant_reads(&legacy);
+                fixture.grant_reads(&writer);
+                let mut inspector = fixture.client();
+                inspector
+                    .batch_execute(&format!(
+                        "ALTER ROLE {legacy} NOINHERIT; \
+                         ALTER ROLE {control} NOINHERIT; \
+                         GRANT {privilege} ON TABLE public.trnm_storage_objects TO {writer}; \
+                         GRANT {writer} TO {control} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE; \
+                         GRANT {control} TO {legacy} WITH ADMIN TRUE, INHERIT FALSE, SET FALSE"
+                    ))
+                    .unwrap();
+                // A superuser may record the bootstrap superuser as grantor,
+                // rather than current_user. Revoke precisely the fixture grant.
+                let original_grantor: String = inspector
+                    .query_one(
+                        "SELECT grantor.rolname::TEXT FROM pg_catalog.pg_auth_members membership \
+                         JOIN pg_catalog.pg_roles granted ON granted.oid = membership.roleid \
+                         JOIN pg_catalog.pg_roles member_role ON member_role.oid = membership.member \
+                         JOIN pg_catalog.pg_roles grantor ON grantor.oid = membership.grantor \
+                         WHERE granted.rolname = $1 AND member_role.rolname = $2 \
+                           AND membership.admin_option AND NOT membership.inherit_option \
+                           AND NOT membership.set_option",
+                        &[&control, &legacy],
+                    )
+                    .unwrap()
+                    .get(0);
+                let quoted_grantor = format!("\"{}\"", original_grantor.replace('"', "\"\""));
+                assert_role_has_no_current_crud(&mut inspector, &legacy);
+                assert_role_has_no_current_crud(&mut inspector, &control);
+                let reachability = inspector
+                    .query_one(
+                        "SELECT pg_catalog.pg_has_role($1, $2, 'MEMBER WITH ADMIN OPTION'), \
+                                pg_catalog.pg_has_role($1, $2, 'SET'), \
+                                pg_catalog.pg_has_role($1, $3, 'SET'), \
+                                pg_catalog.pg_has_role($1, $3, 'MEMBER WITH ADMIN OPTION')",
+                        &[&legacy, &control, &writer],
+                    )
+                    .unwrap();
+                assert!(reachability.get::<_, bool>(0));
+                assert!(!reachability.get::<_, bool>(1));
+                assert!(!reachability.get::<_, bool>(2));
+                assert!(!reachability.get::<_, bool>(3));
+                seed_legacy_storage(&mut inspector);
+                let mutation = if privilege == "TRUNCATE" {
+                    "TRUNCATE TABLE public.trnm_storage_objects"
+                } else {
+                    "UPDATE public.trnm_storage_objects SET value_bytes = value_bytes \
+                     WHERE collection = 'schema-upgrade'"
+                };
+                let self_grant = format!(
+                    "GRANT {control} TO {legacy} WITH ADMIN FALSE, INHERIT FALSE, SET TRUE \
+                     GRANTED BY {legacy}"
+                );
+                let set_writer = format!("SET ROLE {writer}");
+                let mut old_session = fixture.role_client(&legacy);
+                assert_permission_denied(old_session.execute(&set_writer, &[]));
+                assert_permission_denied(old_session.execute(mutation, &[]));
+                old_session
+                    .execute(&self_grant, &[])
+                    .expect("ADMIN OPTION must actually permit a self-granted SET membership");
+                old_session.execute(&set_writer, &[]).unwrap();
+                let actual: String = old_session
+                    .query_one("SELECT current_user", &[])
+                    .unwrap()
+                    .get(0);
+                assert_eq!(actual, writer);
+                let affected = old_session
+                    .execute(mutation, &[])
+                    .expect("self-granted SET chain must actually permit storage mutation");
+                if privilege == "TRUNCATE" {
+                    assert!(legacy_storage_snapshot(&mut inspector).is_empty());
+                    seed_legacy_storage(&mut inspector);
+                } else {
+                    assert_eq!(affected, 1);
+                }
+                old_session.batch_execute("RESET ROLE").unwrap();
+                inspector
+                    .batch_execute(&format!(
+                        "REVOKE {control} FROM {legacy} GRANTED BY {legacy} CASCADE"
+                    ))
+                    .unwrap();
+                // Remove the self-issued SET grant, retaining the original
+                // ADMIN-only membership. The barrier must still reject it.
+                let remaining = inspector
+                    .query_one(
+                        "SELECT membership.admin_option, membership.inherit_option, \
+                                membership.set_option, grantor.rolname::TEXT \
+                         FROM pg_catalog.pg_auth_members membership \
+                         JOIN pg_catalog.pg_roles granted ON granted.oid = membership.roleid \
+                         JOIN pg_catalog.pg_roles member_role ON member_role.oid = membership.member \
+                         JOIN pg_catalog.pg_roles grantor ON grantor.oid = membership.grantor \
+                         WHERE granted.rolname = $1 AND member_role.rolname = $2",
+                        &[&control, &legacy],
+                    )
+                    .unwrap();
+                assert!(remaining.get::<_, bool>(0));
+                assert!(!remaining.get::<_, bool>(1));
+                assert!(!remaining.get::<_, bool>(2));
+                assert_eq!(remaining.get::<_, String>(3), original_grantor);
+                assert_role_has_no_current_crud(&mut inspector, &legacy);
+                assert_permission_denied(old_session.execute(&set_writer, &[]));
+                let before = legacy_storage_snapshot(&mut inspector);
+                let mut repository = fixture.repository();
+                assert_barrier_rejects_without_mutation(&mut repository, &mut inspector, &legacy);
+                inspector
+                    .batch_execute(&format!(
+                        "REVOKE ADMIN OPTION FOR {control} FROM {legacy} \
+                         GRANTED BY {quoted_grantor} CASCADE"
+                    ))
+                    .unwrap();
+                let can_admin: bool = inspector
+                    .query_one(
+                        "SELECT pg_catalog.pg_has_role($1, $2, 'MEMBER WITH ADMIN OPTION')",
+                        &[&legacy, &control],
+                    )
+                    .unwrap()
+                    .get(0);
+                assert!(!can_admin);
+                assert_permission_denied(old_session.execute(&self_grant, &[]));
+                assert_permission_denied(old_session.execute(&set_writer, &[]));
+                assert_permission_denied(old_session.execute(mutation, &[]));
+                let report = repository
+                    .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
+                    .unwrap();
+                assert_eq!(report.applied_steps, 1);
+                assert_identity(
+                    &report.identity,
+                    fixture.profile,
+                    ORIGINAL_SOURCE,
+                    UPGRADE_SOURCE,
+                );
+                // The original login must observe the revocation both before
+                // and after the migration, including attempts to restore SET.
+                assert_permission_denied(old_session.execute(&self_grant, &[]));
+                assert_permission_denied(old_session.execute(&set_writer, &[]));
+                assert_permission_denied(old_session.execute(mutation, &[]));
+                assert_eq!(legacy_storage_snapshot(&mut inspector), before);
+                inspector
+                    .batch_execute(&format!(
+                        "REVOKE {control} FROM {legacy} GRANTED BY {quoted_grantor} CASCADE; \
+                         REVOKE {writer} FROM {control} CASCADE"
+                    ))
+                    .unwrap();
+                eprintln!(
+                    "schema_writer_admin_barrier_executed profile=postgresql privilege={privilege}"
+                );
+            });
+        }
+    }
 }

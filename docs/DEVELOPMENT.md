@@ -231,8 +231,10 @@ live harness runs this canonical Rust application fixture for each database
 profile and rejects zero tests, optional skips and missing execution markers.
 It uses dedicated fixture rows and verifies persisted effects and revocation.
 Independent SQL sentinels verify that a blind unchanged value/ACL preserves
-legacy update time while an exact-version write still refreshes it. Repository
-regressions also cover ACL changes, authorization/OCC rejection and rollback.
+legacy update time while an exact-version write still refreshes it. The live harness also requires the exact repository ACL/OCC fixture once per
+profile, retaining its log and rejecting empty or skipped execution. It checks
+insert-only version conflicts separately from blind/exact permission rejection,
+prior-write rollback and unchanged persisted values, ACLs and both timestamps.
 The timestamp fixtures also check persisted database times; historical NULL
 timestamps and the immutable upstream differential remain explicit gaps.
 This exercises the HTTP application and repository together; TCP ingress,
@@ -362,5 +364,14 @@ Every PR records scope, owner, task/gap/parity/gate IDs, exact final head/tree, 
 The author cannot supply independent acceptance. Automation and generated manifests are not reviewers. A requested source-defect review from an existing account does not prove that account's candidate-specific independence or specialist qualification.
 
 The timestamp schema lifecycle fixtures run with `cargo test -p trnm-persistence-pg --locked --test schema_upgrade -- --nocapture --test-threads=1`. Set the dedicated `TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL`, `TRNM_DATABASE_PROFILE` and `TRNM_REQUIRE_LIVE_DATABASE=1`; the admin URL never falls back to the ordinary database URL. Tests create isolated databases and synthetic roles, cover fresh/repeated/readonly verification, original provenance and unknown history, old-session write rejection and catalog/identity drift, then clean up their own resources. Separate PostgreSQL and CockroachDB executions are required. A success in local fixtures is source validation, not migration or production acceptance.
+
+The embedded registry records each reviewed revision's migration-prefix digest,
+explicit writer epoch and half-open range in the append-only action inventory.
+Historical v1 and v2 digests remain distinct and immutable; unknown revisions
+are rejected. Publication compares all previous metadata fields with NULL-safe
+predicates, preserves foundation provenance and counts the revisions actually
+published. A historical digest does not grant current serve readiness. The engine still supports only the locked two-file v1-to-v2 chain.
+This registry preparation does not implement schema v3, native JSONB storage or
+historical data import, and does not make an older revision ready to serve.
 
 Backup/restore and Cockroach retry CI retain actual execution packets through the repository's local upload action. Packets bind the source commit/tree, workflow/run/attempt/job/profile, complete profile SQL chain and real schema reports; retry captures its fresh and read-only reports before deleting its owned test database. Shared archive checks enforce 512 retained entries, 32 MiB payload and 2 MiB compressed/per-file diagnostic limits, then the workflow verifies the uploaded artifact ID, byte count and SHA. These bounded CI fixtures do not qualify production backup volume, multi-node recovery or independent acceptance.

@@ -40,11 +40,14 @@ fn apply_write(
         .get(&operation.key)
         .cloned()
         .ok_or_else(|| data_loss("storage_batch_lock_missing"))?;
-    authorize_write(
-        actor,
-        &operation.key,
-        previous.as_ref().map(|stored| &stored.object),
-    )?;
+    // Insert-only retains actor/owner binding, but an existing key rejects the
+    // version independently of its write ACL, matching the upstream INSERT path.
+    let acl_object = if operation.expected == VersionCheck::MustNotExist {
+        None
+    } else {
+        previous.as_ref().map(|stored| &stored.object)
+    };
+    authorize_write(actor, &operation.key, acl_object)?;
     validate_version(
         previous.as_ref().map(|stored| &stored.object),
         operation.expected,

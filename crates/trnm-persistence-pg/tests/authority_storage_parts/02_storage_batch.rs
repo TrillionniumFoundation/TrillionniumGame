@@ -237,6 +237,26 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                 .unwrap_or_else(|_| panic!("storage timestamp fixture: timestamp query failed"))
                 .get::<_, i64>(0)
         };
+        let snapshot = |control: &mut postgres::Client| {
+            let row = control
+                .query_one(
+                    "SELECT value_bytes, version_digest, read_permission, write_permission, \
+                     updated_at_ms, create_time::TEXT, update_time::TEXT \
+                     FROM public.trnm_storage_objects \
+                     WHERE collection = $1 AND object_key = $2 AND user_id = $3",
+                    &[&collection, &key.key(), &owner.as_bytes().as_slice()],
+                )
+                .unwrap_or_else(|_| panic!("storage timestamp fixture: row snapshot failed"));
+            (
+                row.get::<_, Vec<u8>>(0),
+                row.get::<_, Vec<u8>>(1),
+                row.get::<_, i16>(2),
+                row.get::<_, i16>(3),
+                row.get::<_, i64>(4),
+                row.get::<_, Option<String>>(5),
+                row.get::<_, Option<String>>(6),
+            )
+        };
         let created = repository
             .apply_storage_batch(
                 StorageActor::User(owner),
@@ -343,21 +363,118 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
             assert_eq!(object.read_permission, read_permission);
             assert_eq!(object.write_permission, write_permission);
         }
-        for expected in [VersionCheck::Any, VersionCheck::Exact(version)] {
+        let before_rejection = snapshot(&mut control);
+        for (actor, expected, code, reason) in [
+            (
+                StorageActor::User(owner),
+                VersionCheck::Any,
+                StableCode::PermissionDenied,
+                "storage_write_permission_denied",
+            ),
+            (
+                StorageActor::User(owner),
+                VersionCheck::Exact(version),
+                StableCode::PermissionDenied,
+                "storage_write_permission_denied",
+            ),
+            (
+                StorageActor::User(owner),
+                VersionCheck::Exact(stale),
+                StableCode::PermissionDenied,
+                "storage_write_permission_denied",
+            ),
+            (
+                StorageActor::User(owner),
+                VersionCheck::MustNotExist,
+                StableCode::AlreadyExists,
+                "storage_object_already_exists",
+            ),
+            (
+                StorageActor::User(other),
+                VersionCheck::MustNotExist,
+                StableCode::PermissionDenied,
+                "storage_write_permission_denied",
+            ),
+            (
+                StorageActor::Server,
+                VersionCheck::MustNotExist,
+                StableCode::AlreadyExists,
+                "storage_object_already_exists",
+            ),
+        ] {
             let error = repository
                 .apply_storage_batch(
-                    StorageActor::User(owner),
+                    actor,
                     &[write(
                         &key,
                         expected,
-                        ReadPermission::Public,
-                        WritePermission::None,
+                        ReadPermission::Owner,
+                        WritePermission::Owner,
                     )],
                     70,
                 )
                 .unwrap_err();
-            assert_eq!(error.code(), StableCode::PermissionDenied);
-            assert_eq!(timestamp(&mut control), 60);
+            assert_eq!((error.code(), error.reason()), (code, reason));
+            assert_eq!(snapshot(&mut control), before_rejection);
+            if actor == StorageActor::User(owner) || actor == StorageActor::Server {
+                let error = repository
+                    .apply_storage_batch(
+                        actor,
+                        &[
+                            write(
+                                &staged_key,
+                                VersionCheck::MustNotExist,
+                                ReadPermission::Owner,
+                                WritePermission::Owner,
+                            ),
+                            write(
+                                &key,
+                                expected,
+                                ReadPermission::Owner,
+                                WritePermission::Owner,
+                            ),
+                        ],
+                        75,
+                    )
+                    .unwrap_err();
+                assert_eq!((error.code(), error.reason()), (code, reason));
+                assert_eq!(snapshot(&mut control), before_rejection);
+                assert_eq!(
+                    repository
+                        .read_storage_object(StorageActor::Server, &staged_key)
+                        .unwrap_err()
+                        .code(),
+                    StableCode::NotFound
+                );
+            }
+        }
+        for actor in [
+            StorageActor::User(other),
+            StorageActor::User(UserId::new([0; 16])),
+        ] {
+            for target in [&key, &missing] {
+                let error = repository
+                    .apply_storage_batch(
+                        actor,
+                        &[write(
+                            target,
+                            VersionCheck::MustNotExist,
+                            ReadPermission::Owner,
+                            WritePermission::Owner,
+                        )],
+                        76,
+                    )
+                    .unwrap_err();
+                assert_eq!(error.code(), StableCode::PermissionDenied);
+                assert_eq!(snapshot(&mut control), before_rejection);
+                assert_eq!(
+                    repository
+                        .read_storage_object(StorageActor::Server, &missing)
+                        .unwrap_err()
+                        .code(),
+                    StableCode::NotFound
+                );
+            }
         }
         repository
             .apply_storage_batch(
@@ -433,21 +550,23 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                 ],
             )
             .unwrap_or_else(|_| panic!("storage timestamp fixture: integrity corruption failed"));
-        let corrupt = repository
-            .apply_storage_batch(
-                StorageActor::Server,
-                &[write(
-                    &key,
-                    VersionCheck::Any,
-                    ReadPermission::Public,
-                    WritePermission::None,
-                )],
-                110,
-            )
-            .unwrap_err();
-        assert_eq!(corrupt.code(), StableCode::DataLoss);
-        assert_eq!(corrupt.reason(), "storage_integrity_digest_mismatch");
-        assert_eq!(timestamp(&mut control), 90);
+        for expected in [VersionCheck::Any, VersionCheck::MustNotExist] {
+            let corrupt = repository
+                .apply_storage_batch(
+                    StorageActor::Server,
+                    &[write(
+                        &key,
+                        expected,
+                        ReadPermission::Public,
+                        WritePermission::None,
+                    )],
+                    110,
+                )
+                .unwrap_err();
+            assert_eq!(corrupt.code(), StableCode::DataLoss);
+            assert_eq!(corrupt.reason(), "storage_integrity_digest_mismatch");
+            assert_eq!(timestamp(&mut control), 90);
+        }
     }));
     cleanup(&mut control);
     if let Err(panic) = outcome {

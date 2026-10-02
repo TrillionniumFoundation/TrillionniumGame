@@ -71,7 +71,10 @@
       "nullable original create/update timestamps",
       "transaction-clock storage write receipts",
       "ordered migration identity and readonly startup catalog verification",
-      "explicit old-writer privilege barrier and unknown-history policy"
+      "explicit old-writer privilege barrier and unknown-history policy",
+      "per-revision prefix digests, explicit writer epochs and append-only action ranges; the current chain remains v2",
+      "metadata publication compares every field of the previous revision and preserves original foundation provenance",
+      "profile-aware destructive privilege and reachable-role checks; a declared role does not prove an inventory or drain of all writers"
     ],
     "accepted": false,
     "migration_compatible": false,

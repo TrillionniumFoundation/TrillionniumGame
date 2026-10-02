@@ -97,29 +97,117 @@ fn validate_legacy_role(role: &str) -> Result<(), DomainError> {
     Ok(())
 }
 
-fn verify_legacy_writer_barrier(client: &mut impl GenericClient, role: &str) -> Result<(), DomainError> {
+fn verify_legacy_writer_barrier(
+    client: &mut impl GenericClient,
+    role: &str,
+    profile: DatabaseProfile,
+) -> Result<(), DomainError> {
     validate_legacy_role(role)?;
+    // PostgreSQL distinguishes immediately inherited privileges from SET ROLE
+    // reachability. CockroachDB 26.2 does not implement the SET inquiry: MEMBER
+    // conservatively includes every reachable member identity instead.
+    let reachability = match profile {
+        DatabaseProfile::PostgreSql => "SET",
+        DatabaseProfile::CockroachDb => "MEMBER",
+    };
     let row = client.query_opt(
         "SELECT r.rolsuper, r.rolcreaterole, r.rolcreatedb, \
            EXISTS (SELECT 1 FROM pg_catalog.pg_roles elevated \
              WHERE (elevated.rolsuper OR elevated.rolcreaterole) \
-             AND pg_has_role(r.rolname, elevated.rolname, 'MEMBER')), \
+             AND (pg_catalog.pg_has_role(r.rolname, elevated.rolname, $2) \
+                  OR pg_catalog.pg_has_role(r.rolname, elevated.rolname, 'USAGE'))), \
            EXISTS (SELECT 1 FROM pg_catalog.pg_class c \
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
              JOIN pg_catalog.pg_roles owner_role ON owner_role.oid = c.relowner \
+             JOIN pg_catalog.pg_roles target ON (target.rolname = r.rolname \
+                OR pg_catalog.pg_has_role(r.rolname, target.rolname, $2)) \
              WHERE n.nspname = 'public' AND c.relname = 'trnm_storage_objects' \
-             AND pg_has_role(r.rolname, owner_role.rolname, 'MEMBER')), \
-           has_table_privilege(r.rolname, 'public.trnm_storage_objects', 'INSERT'), \
-           has_table_privilege(r.rolname, 'public.trnm_storage_objects', 'UPDATE'), \
-           has_table_privilege(r.rolname, 'public.trnm_storage_objects', 'DELETE'), \
-           has_any_column_privilege(r.rolname, 'public.trnm_storage_objects', 'INSERT'), \
-           has_any_column_privilege(r.rolname, 'public.trnm_storage_objects', 'UPDATE') \
-         FROM pg_catalog.pg_roles r WHERE r.rolname = $1", &[&role])
+             AND (pg_catalog.pg_has_role(target.rolname, owner_role.rolname, $2) \
+                  OR pg_catalog.pg_has_role(target.rolname, owner_role.rolname, 'USAGE'))), \
+           pg_catalog.has_table_privilege(r.rolname, 'public.trnm_storage_objects', 'INSERT'), \
+           pg_catalog.has_table_privilege(r.rolname, 'public.trnm_storage_objects', 'UPDATE'), \
+           pg_catalog.has_table_privilege(r.rolname, 'public.trnm_storage_objects', 'DELETE'), \
+           pg_catalog.has_any_column_privilege(r.rolname, 'public.trnm_storage_objects', 'INSERT'), \
+           pg_catalog.has_any_column_privilege(r.rolname, 'public.trnm_storage_objects', 'UPDATE') \
+         FROM pg_catalog.pg_roles r WHERE r.rolname = $1", &[&role, &reachability])
         .map_err(map_postgres_error)?.ok_or_else(|| failed_precondition("legacy_storage_writer_role_missing"))?;
     for index in 0..10 {
         if row.try_get::<_, bool>(index).map_err(map_postgres_error)? {
             return Err(failed_precondition("legacy_storage_writer_not_fenced"));
         }
+    }
+    if profile == DatabaseProfile::PostgreSql {
+        // ADMIN OPTION can authorize a new SET/INHERIT grant even when the
+        // existing membership permits neither. Reject it for every reachable
+        // role: an otherwise unprivileged role may itself SET ROLE to a writer.
+        // CockroachDB does not implement this PostgreSQL inquiry.
+        let administration = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles target \
+                 WHERE pg_catalog.pg_has_role($1, target.rolname, 'MEMBER WITH ADMIN OPTION'))",
+                &[&role],
+            )
+            .map_err(map_postgres_error)?;
+        if administration
+            .try_get::<_, bool>(0)
+            .map_err(map_postgres_error)?
+        {
+            return Err(failed_precondition("legacy_storage_writer_not_fenced"));
+        }
+    }
+    // A NOINHERIT login may have no current CRUD privileges yet SET ROLE to an
+    // ordinary writer. Inspect each target's effective grants, including the
+    // target's own inherited and column privileges, rather than role membership
+    // alone. This observes the supplied identity; draining all writers and
+    // privileged routines remains an independent operator prerequisite.
+    let mutation_query = match profile {
+        DatabaseProfile::PostgreSql =>
+            "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles target \
+             WHERE (target.rolname = $1 OR pg_catalog.pg_has_role($1, target.rolname, 'SET')) \
+             AND (pg_catalog.has_table_privilege(target.rolname, 'public.trnm_storage_objects', 'INSERT') \
+               OR pg_catalog.has_table_privilege(target.rolname, 'public.trnm_storage_objects', 'UPDATE') \
+               OR pg_catalog.has_table_privilege(target.rolname, 'public.trnm_storage_objects', 'DELETE') \
+               OR pg_catalog.has_table_privilege(target.rolname, 'public.trnm_storage_objects', 'TRUNCATE') \
+               OR pg_catalog.has_any_column_privilege(target.rolname, 'public.trnm_storage_objects', 'INSERT') \
+               OR pg_catalog.has_any_column_privilege(target.rolname, 'public.trnm_storage_objects', 'UPDATE')))",
+        DatabaseProfile::CockroachDb =>
+            // CR's has_table_privilege('TRUNCATE') maps to DELETE, whereas
+            // actual TRUNCATE checks DROP. DROP is not a supported inquiry
+            // string, so observe the actual descriptor grants instead.
+            "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles target \
+             WHERE (target.rolname = $1 OR pg_catalog.pg_has_role($1, target.rolname, 'MEMBER')) \
+             AND (pg_catalog.has_table_privilege(target.rolname, 'public.trnm_storage_objects', 'INSERT') \
+               OR pg_catalog.has_table_privilege(target.rolname, 'public.trnm_storage_objects', 'UPDATE') \
+               OR pg_catalog.has_table_privilege(target.rolname, 'public.trnm_storage_objects', 'DELETE') \
+               OR pg_catalog.has_any_column_privilege(target.rolname, 'public.trnm_storage_objects', 'INSERT') \
+               OR pg_catalog.has_any_column_privilege(target.rolname, 'public.trnm_storage_objects', 'UPDATE'))) \
+             OR EXISTS (SELECT 1 FROM information_schema.table_privileges grant_row \
+                WHERE grant_row.table_catalog = pg_catalog.current_database() \
+                  AND grant_row.table_schema = 'public' AND grant_row.table_name = 'trnm_storage_objects' \
+                  AND grant_row.privilege_type IN ('DROP', 'ALL') \
+                  AND (grant_row.grantee = 'public' OR grant_row.grantee = $1 \
+                    OR pg_catalog.pg_has_role($1, grant_row.grantee, 'MEMBER')))",
+    };
+    if profile == DatabaseProfile::CockroachDb {
+        let visible = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.table_privileges \
+             WHERE table_catalog = pg_catalog.current_database() \
+               AND table_schema = 'public' AND table_name = 'trnm_storage_objects')",
+                &[],
+            )
+            .map_err(map_postgres_error)?;
+        if !visible.try_get::<_, bool>(0).map_err(map_postgres_error)? {
+            return Err(failed_precondition(
+                "legacy_storage_writer_privilege_catalog_missing",
+            ));
+        }
+    }
+    let mutation = client
+        .query_one(mutation_query, &[&role])
+        .map_err(map_postgres_error)?;
+    if mutation.try_get::<_, bool>(0).map_err(map_postgres_error)? {
+        return Err(failed_precondition("legacy_storage_writer_not_fenced"));
     }
     Ok(())
 }

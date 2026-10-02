@@ -17,7 +17,8 @@
     "separate internal IntegrityDigest type",
     "conditional delete by exact ContentVersion",
     "public-version collision or integrity mismatch fails as data loss",
-    "canonical server HTTP write/delete source adapter validates JSON-object strings before repository mutation"
+    "canonical server HTTP write/delete source adapter validates JSON-object strings before repository mutation",
+    "insert-only conflicts ignore an existing row write ACL after actor-owner binding; blind/exact writes retain permission-first rejection"
   ],
   "not_verified": [
     "exact API validation that value is a JSON object",
@@ -32,7 +33,7 @@
     "List route, original gob cursor, owner-list ordering and visibility, search/index and Runtime before/after hooks remain unfinished.",
     "The existing repository rejects duplicate keys, more than 100 operations, collection/key over 128 UTF-8 bytes and dot/control identifiers. These candidate restrictions differ from upstream.",
     "Invalid/uppercase opaque OCC versions and exact gateway decoder details still require pinned differential; error bodies and headers are not globally qualified.",
-    "The current database always updates updated_at_ms for a successful blind same-value write; upstream may preserve update_time.",
+    "Blind writes with unchanged value/version and ACL preserve database timestamps; exact upstream differential and independent acceptance remain open.",
     "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
     "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance."
   ],

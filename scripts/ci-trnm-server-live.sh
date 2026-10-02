@@ -233,6 +233,26 @@ if grep -Fq 'nakama_client_list_projection_skipped' "$evidence/nakama-client-lis
   exit 1
 fi
 
+# Execute the actual ACL/OCC precedence and rollback fixture once per profile.
+CARGO_TERM_COLOR=never \
+TRNM_REQUIRE_LIVE_DATABASE=1 \
+TRNM_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE="$profile" \
+  cargo test -p trnm-persistence-pg --locked --test authority_storage \
+    blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks \
+    -- --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/storage-occ-precedence.log"
+storage_occ_test_count=$(
+  sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
+    "$evidence/storage-occ-precedence.log"
+)
+[[ "$storage_occ_test_count" =~ ^[0-9]+$ ]]
+test "$storage_occ_test_count" -eq 1
+grep -Fxq "storage_blind_write_timestamps_executed profile=${profile}" "$evidence/storage-occ-precedence.log"
+if grep -Fq 'storage_blind_write_timestamps_skipped' "$evidence/storage-occ-precedence.log"; then
+  echo 'storage OCC precedence database lane skipped instead of executing' >&2
+  exit 1
+fi
+
 # A required exact storage-clock fixture and an isolated schema lifecycle suite.
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
@@ -423,7 +443,7 @@ printf 'diagnostic_total_refresh_tokens=%s\n' \
   >> "$evidence/database-assertions.txt"
 
 cat > "$evidence/summary.json" <<EOF
-{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"storage_timestamps":true,"schema_upgrade":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
+{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"storage_timestamps":true,"storage_occ_precedence":true,"schema_upgrade":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
 EOF
 python3 -m json.tool "$evidence/summary.json" >/dev/null
 find "$evidence" -type f ! -name SHA256SUMS -print0 \

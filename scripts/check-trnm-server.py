@@ -245,6 +245,12 @@ def validate_storage_live_harness(source: str) -> None:
             "nakama_client_list_projection_executed", "nakama_client_list_projection_skipped",
         ),
         (
+            'cargo test -p trnm-persistence-pg --locked --test authority_storage '
+            'blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks',
+            "storage-occ-precedence.log", "storage_occ_test_count",
+            "storage_blind_write_timestamps_executed", "storage_blind_write_timestamps_skipped",
+        ),
+        (
             'cargo test -p trnm-persistence-pg --locked --test storage_timestamps '
             'storage_timestamps_database_clock_no_op_and_atomicity',
             "storage-timestamps.log", "storage_timestamps_test_count",
@@ -302,6 +308,8 @@ def validate_storage_live_harness(source: str) -> None:
                if '"nakama_client_list_projection":true' in command and command.startswith("{")]
     if len(summary) != 1 or summary[0] <= previous_end:
         fail("storage live summary must follow the checked client-list execution")
+    if '"storage_occ_precedence":true' not in commands[summary[0]]:
+        fail("storage live summary must bind the checked ACL/OCC execution")
     seal = once(
         'find "$evidence" -type f ! -name SHA256SUMS -print0 '
         '| sort -z | xargs -0 sha256sum > "$evidence/SHA256SUMS"'

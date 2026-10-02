@@ -387,7 +387,14 @@ fn apply_write(
     let version = ContentVersion::from_value(&operation.value);
     let integrity_digest = IntegrityDigest::from_value(&operation.value);
     let previous = objects.get(&operation.key).cloned();
-    validate_write_actor(actor, &operation.key, previous.as_ref())?;
+    // Insert-only checks owner authority without consulting an existing row's
+    // write ACL. An existing key rejects the version even when write is disabled.
+    let acl_object = if operation.expected == VersionCheck::MustNotExist {
+        None
+    } else {
+        previous.as_ref()
+    };
+    validate_write_actor(actor, &operation.key, acl_object)?;
     validate_version_check(previous.as_ref(), operation.expected)?;
 
     if let Some(object) = previous.as_ref() {
@@ -1030,5 +1037,192 @@ mod tests {
                 .reason(),
             "storage_object_already_exists"
         );
+    }
+
+    #[test]
+    fn create_only_occ_precedence_preserves_owner_authority_and_batch_state() {
+        let current = ContentVersion::from_value(b"v1");
+        let stale = ContentVersion::from_value(b"stale");
+        for acl in [WritePermission::None, WritePermission::Owner] {
+            let mut seeded = StorageState::default();
+            seeded
+                .apply_batch(
+                    Actor::Server,
+                    &[write(
+                        1,
+                        "main",
+                        b"v1",
+                        VersionCheck::Any,
+                        ReadPermission::Owner,
+                        acl,
+                    )],
+                )
+                .unwrap();
+            let permission_failure = (
+                StableCode::PermissionDenied,
+                "storage_write_permission_denied",
+            );
+            let denied = Some(permission_failure);
+            let exists = Some((StableCode::AlreadyExists, "storage_object_already_exists"));
+            let stale_error = Some((StableCode::FailedPrecondition, "storage_version_mismatch"));
+            for (actor, expected, failure) in [
+                (Actor::User(user(1)), VersionCheck::MustNotExist, exists),
+                (Actor::Server, VersionCheck::MustNotExist, exists),
+                (
+                    Actor::User(user(1)),
+                    VersionCheck::Any,
+                    if acl == WritePermission::None {
+                        denied
+                    } else {
+                        None
+                    },
+                ),
+                (
+                    Actor::User(user(1)),
+                    VersionCheck::Exact(current),
+                    if acl == WritePermission::None {
+                        denied
+                    } else {
+                        None
+                    },
+                ),
+                (
+                    Actor::User(user(1)),
+                    VersionCheck::Exact(stale),
+                    if acl == WritePermission::None {
+                        denied
+                    } else {
+                        stale_error
+                    },
+                ),
+                (Actor::Server, VersionCheck::Any, None),
+                (Actor::Server, VersionCheck::Exact(current), None),
+                (Actor::Server, VersionCheck::Exact(stale), stale_error),
+            ] {
+                let mut state = seeded.clone();
+                let attempted = write(
+                    1,
+                    "main",
+                    b"v2",
+                    expected,
+                    ReadPermission::Public,
+                    WritePermission::Owner,
+                );
+                let outcome = state.apply_batch(actor, std::slice::from_ref(&attempted));
+                if let Some((code, reason)) = failure {
+                    let error = outcome.unwrap_err();
+                    assert_eq!((error.code(), error.reason()), (code, reason));
+                    assert_eq!(state, seeded);
+                    // A preceding permitted insert must roll back with the rejection.
+                    let error = state
+                        .apply_batch(
+                            actor,
+                            &[
+                                write(
+                                    1,
+                                    "staged",
+                                    b"new",
+                                    VersionCheck::MustNotExist,
+                                    ReadPermission::Owner,
+                                    WritePermission::Owner,
+                                ),
+                                attempted,
+                            ],
+                        )
+                        .unwrap_err();
+                    assert_eq!((error.code(), error.reason()), (code, reason));
+                    assert_eq!(state, seeded);
+                } else {
+                    let receipt = outcome.unwrap();
+                    assert_eq!(receipt[0].previous_version, Some(current));
+                    assert_eq!(
+                        receipt[0].current_version,
+                        Some(ContentVersion::from_value(b"v2"))
+                    );
+                    let object = state.read(Actor::Server, &key(1, "main")).unwrap();
+                    assert_eq!(object.value, b"v2");
+                    assert_eq!(object.read_permission, ReadPermission::Public);
+                    assert_eq!(object.write_permission, WritePermission::Owner);
+                }
+            }
+            for actor in [Actor::User(user(2)), Actor::User(user(0))] {
+                for expected in [
+                    VersionCheck::Any,
+                    VersionCheck::MustNotExist,
+                    VersionCheck::Exact(current),
+                    VersionCheck::Exact(stale),
+                ] {
+                    for name in ["main", "missing"] {
+                        let mut state = seeded.clone();
+                        let error = state
+                            .apply_batch(
+                                actor,
+                                &[write(
+                                    1,
+                                    name,
+                                    b"v2",
+                                    expected,
+                                    ReadPermission::Public,
+                                    WritePermission::Owner,
+                                )],
+                            )
+                            .unwrap_err();
+                        assert_eq!((error.code(), error.reason()), permission_failure);
+                        assert_eq!(state, seeded);
+                    }
+                }
+            }
+        }
+
+        // Global rows remain server-owned, including the create-only condition.
+        let mut global = StorageState::default();
+        global
+            .apply_batch(
+                Actor::Server,
+                &[write(
+                    0,
+                    "global",
+                    b"v1",
+                    VersionCheck::MustNotExist,
+                    ReadPermission::Public,
+                    WritePermission::None,
+                )],
+            )
+            .unwrap();
+        let before = global.clone();
+        for actor in [Actor::User(user(1)), Actor::User(user(0))] {
+            for name in ["global", "missing"] {
+                let error = global
+                    .apply_batch(
+                        actor,
+                        &[write(
+                            0,
+                            name,
+                            b"v2",
+                            VersionCheck::MustNotExist,
+                            ReadPermission::Public,
+                            WritePermission::Owner,
+                        )],
+                    )
+                    .unwrap_err();
+                assert_eq!(error.code(), StableCode::PermissionDenied);
+                assert_eq!(global, before);
+            }
+        }
+        let error = global
+            .apply_batch(
+                Actor::Server,
+                &[write(
+                    0,
+                    "global",
+                    b"v2",
+                    VersionCheck::MustNotExist,
+                    ReadPermission::Public,
+                    WritePermission::Owner,
+                )],
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), StableCode::AlreadyExists);
+        assert_eq!(global, before);
     }
 }

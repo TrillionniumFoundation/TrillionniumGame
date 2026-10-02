@@ -18,6 +18,7 @@ REQUIRED_TESTS = {
     "server_owned_object_cannot_be_mutated_by_user",
     "delete_requires_exact_version_when_supplied",
     "identical_version_cannot_name_different_value",
+    "create_only_occ_precedence_preserves_owner_authority_and_batch_state",
 }
 FORBIDDEN = ("unsafe {", "std::net", "std::time", "tokio", "sqlx", "postgres", "rand::")
 FALSE_CLAIMS = ("storage_behavior_compatible", "database_durable", "production_ready")

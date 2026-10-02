@@ -52,6 +52,12 @@ PROJECTION = lane(
     "nakama-client-list-projection.log", "nakama_client_list_test_count",
     "nakama_client_list_projection_executed", "nakama_client_list_projection_skipped",
 )
+OCC = lane(
+    "trnm-persistence-pg", "--test authority_storage",
+    "blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks",
+    "storage-occ-precedence.log", "storage_occ_test_count",
+    "storage_blind_write_timestamps_executed", "storage_blind_write_timestamps_skipped",
+)
 TIMESTAMPS = lane(
     "trnm-persistence-pg", "--test storage_timestamps",
     "storage_timestamps_database_clock_no_op_and_atomicity",
@@ -80,12 +86,12 @@ set -euo pipefail
 "$binary" migrate > "$evidence/migrate.log" 2>&1
 '''
 SUFFIX = '''cat > "$evidence/summary.json" <<EOF
-{"schema":"synthetic-only","nakama_client_list_projection":true,"wire_compatible":false,"production_ready":false}
+{"schema":"synthetic-only","nakama_client_list_projection":true,"storage_occ_precedence":true,"wire_compatible":false,"production_ready":false}
 EOF
 find "$evidence" -type f ! -name SHA256SUMS -print0 \\
   | sort -z | xargs -0 sha256sum > "$evidence/SHA256SUMS"
 '''
-FIXTURE = PREFIX + CANONICAL + PROJECTION + TIMESTAMPS + SCHEMA + SUFFIX
+FIXTURE = PREFIX + CANONICAL + PROJECTION + OCC + TIMESTAMPS + SCHEMA + SUFFIX
 
 
 class StorageListLiveContractTests(unittest.TestCase):
@@ -119,7 +125,8 @@ class StorageListLiveContractTests(unittest.TestCase):
         ))
 
     def test_zero_multiple_failed_or_ignored_results_cannot_be_counted(self) -> None:
-        for counter in ["canonical_storage_test_count", "nakama_client_list_test_count"]:
+        for counter in ["canonical_storage_test_count", "nakama_client_list_test_count",
+                        "storage_occ_test_count", "storage_timestamps_test_count"]:
             with self.subTest(counter=counter):
                 self.reject(FIXTURE.replace(f'test "${counter}" -eq 1', f'test "${counter}" -ge 0'))
                 self.reject(FIXTURE.replace(f'test "${counter}" -eq 1', f'test "${counter}" -ge 1'))
@@ -155,6 +162,21 @@ class StorageListLiveContractTests(unittest.TestCase):
     def test_missing_pipefail_or_incomplete_command_is_rejected(self) -> None:
         self.reject(FIXTURE.replace("set -euo pipefail", "set -eu"))
         self.reject(FIXTURE + "continued \\\n")
+
+    def test_occ_precedence_lane_cannot_be_omitted_skipped_or_relabelled(self) -> None:
+        for changed in [
+            FIXTURE.replace(OCC, ""),
+            FIXTURE.replace(OCC, OCC + OCC),
+            FIXTURE.replace(OCC, "\n".join("# " + line for line in OCC.splitlines()) + "\n"),
+            FIXTURE.replace("blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks",
+                            "a_filter_that_discovers_zero_tests"),
+            FIXTURE.replace("storage_blind_write_timestamps_executed", "unrelated_marker"),
+            FIXTURE.replace("storage_blind_write_timestamps_skipped", "unchecked_skip"),
+            FIXTURE.replace('"$evidence/storage-occ-precedence.log"', '"$evidence/unrelated.log"', 1),
+            FIXTURE.replace('"storage_occ_precedence":true', '"storage_occ_precedence":false'),
+        ]:
+            with self.subTest(changed=changed):
+                self.reject(changed)
 
 
 if __name__ == "__main__":

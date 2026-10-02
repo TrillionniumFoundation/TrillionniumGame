@@ -37,6 +37,20 @@
       "expect": {"objects":{"system/config/00":{"value":"v1","version":"6654c734ccab8f440ff0825eb443dc7f"}}}
     },
     {
+      "id": "create-only-existing-disabled-write-acl",
+      "seed": [{"key":"profile/main/01","value":"v1","version":"6654c734ccab8f440ff0825eb443dc7f","read":1,"write":0}],
+      "operations": [{"op":"write","actor":"user:01","key":"profile/main/01","value":"v2","expected":"*","read":2,"write":1}],
+      "expect_error": "storage_object_already_exists",
+      "expect": {"objects":{"profile/main/01":{"value":"v1","version":"6654c734ccab8f440ff0825eb443dc7f","read":1,"write":0}}}
+    },
+    {
+      "id": "exact-stale-disabled-write-acl-permission-first",
+      "seed": [{"key":"profile/main/01","value":"v1","version":"6654c734ccab8f440ff0825eb443dc7f","read":1,"write":0}],
+      "operations": [{"op":"write","actor":"user:01","key":"profile/main/01","value":"v2","expected":"900150983cd24fb0d6963f7d28e17f72","read":2,"write":1}],
+      "expect_error": "storage_write_permission_denied",
+      "expect": {"objects":{"profile/main/01":{"value":"v1","version":"6654c734ccab8f440ff0825eb443dc7f","read":1,"write":0}}}
+    },
+    {
       "id": "last-write-wins",
       "seed": [{"key":"profile/main/01","value":"v1","version":"6654c734ccab8f440ff0825eb443dc7f","read":1,"write":1}],
       "operations": [{"op":"write","actor":"user:01","key":"profile/main/01","value":"v2","expected":"","read":1,"write":1}],
