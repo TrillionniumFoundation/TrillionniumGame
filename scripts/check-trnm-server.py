@@ -2,6 +2,7 @@
 """Validate the first-party Rust server vertical-slice source candidate."""
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 from copy import deepcopy
@@ -32,6 +33,7 @@ STORAGE_PARTS = tuple(
     )
 )
 STORAGE_LIVE_HARNESS = ROOT / "scripts/ci-trnm-server-live.sh"
+LIVE_FAILURE_HELPER = ROOT / "scripts/print-server-live-failure.py"
 REQUIRED_FILES = {
     POOL_ROOT,
     *POOL_PARTS,
@@ -64,8 +66,11 @@ REQUIRED_FILES = {
     ROOT / "crates/trnm-server/src/runtime/storage_list_api_tests.rs",
     ROOT / "crates/trnm-server/src/runtime/storage_cursor.rs",
     ROOT / "crates/trnm-server/src/runtime/storage_cursor_tests.rs",
+    ROOT / "crates/trnm-server/src/runtime/error.rs",
+    ROOT / "crates/trnm-server/src/runtime/schema.rs",
     ROOT / "crates/trnm-storage-core/src/lib.rs",
     STORAGE_LIVE_HARNESS,
+    LIVE_FAILURE_HELPER,
     PERSISTENCE_ROOT / "schema.rs",
     PERSISTENCE_ROOT / "storage_metadata.rs",
     SERVER_ROOT / "trnm-schema.rs",
@@ -73,6 +78,12 @@ REQUIRED_FILES = {
     ROOT / "crates/trnm-persistence-pg/tests/schema_upgrade.rs",
 }
 REQUIRED_TESTS = {
+    "migration_diagnostic_unknown_reasons_and_other_variants_do_not_leak_secrets",
+    "migration_diagnostic_never_reconstructs_sqlstate_from_domain_reason",
+    "migration_sqlstate_projection_rejects_non_code_or_unsafe_driver_values",
+    "migration_diagnostic_profile_phase_and_output_are_bounded",
+    "migration_diagnostic_success_preserves_value_without_output",
+    "migration_diagnostic_sink_failure_preserves_original_error",
     "canonical_storage_api_live_database",
     "opaque_write_conditions_reach_storage_occ_and_acl_after_authentication",
     "opaque_delete_conditions_including_star_are_literal_and_reach_storage",
@@ -200,6 +211,92 @@ def require_markers(label: str, text: str, markers: tuple[str, ...]) -> None:
     for marker in markers:
         if marker not in text:
             fail(f"{label}: missing marker {marker!r}")
+
+
+def validate_live_failure_diagnostics(harness: str, helper: str) -> None:
+    """Bind the bounded failure path without treating diagnostics as success."""
+    def bound_value(node: ast.expr) -> int:
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+            return bound_value(node.left) * bound_value(node.right)
+        raise ValueError("resource bound is not a constant integer product")
+
+    try:
+        syntax = ast.parse(helper)
+        constants = {
+            node.targets[0].id: bound_value(node.value)
+            for node in syntax.body
+            if isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id.startswith("MAX_")
+        }
+    except (SyntaxError, ValueError, TypeError):
+        fail("server live failure helper has invalid resource declarations")
+    if constants != {
+        "MAX_LOGS": 2, "MAX_READ_BYTES": 64 * 1024,
+        "MAX_LINES": 80, "MAX_OUTPUT_BYTES": 1024 * 1024,
+    }:
+        fail("server live failure diagnostics changed their resource bounds")
+    require_markers("server live failure helper", helper, (
+        "secret_literals(dict(os.environ))", "urlsplit(value).password",
+        "re.escape(literal) for literal in literals", "pattern.sub(REDACTED, text)",
+        "URI.sub(", "CREDENTIAL.sub(",
+        "os.O_NONBLOCK", 'getattr(os, "O_NOFOLLOW", 0)',
+        "stat.S_ISREG(metadata.st_mode)", "os.lseek(fd, offset, os.SEEK_SET)",
+        "os.read(fd, MAX_READ_BYTES)", 'data.partition(b"\\n")[2]',
+        'data.rpartition(b"\\n")[0]', '"partial_last_line_discarded"',
+        'data.decode("utf-8", errors="replace")', "lines[-MAX_LINES:]",
+        "len(args.logs) > MAX_LOGS", 'report["logs"] =',
+        '"trillionnium.server-live-failure.v1"', "ensure_ascii=True",
+        '.replace("::", "\\\\u003a\\\\u003a")', "print(output, file=sys.stderr)",
+    ))
+    cleanup = re.search(r"^cleanup\(\) \{\n(.*?)^\}", harness, re.MULTILINE | re.DOTALL)
+    if cleanup is None:
+        fail("server live harness has no failure-preserving cleanup")
+    body = cleanup.group(1)
+    guards = (
+        "local status=$?", "trap - EXIT INT TERM", "if (( status != 0 )); then",
+        'report_failure "$status" || true', 'exit "$status"',
+    )
+    positions = [body.find(guard) for guard in guards]
+    if any(position < 0 for position in positions) or positions != sorted(positions):
+        fail("server live cleanup must preserve the original failure even if diagnostics fail")
+    if body.strip().splitlines()[0].strip() != "local status=$?":
+        fail("server live cleanup must capture the failure before executing another command")
+    require_markers("server live harness diagnostic traps", harness, (
+        "trap cleanup EXIT", "trap 'exit 130' INT", "trap 'exit 143' TERM",
+        'test "${#diagnostic_logs[@]}" -le 2',
+    ))
+    reporter = re.search(r"^report_failure\(\) \{\n(.*?)^\}", harness, re.MULTILINE | re.DOTALL)
+    if reporter is None:
+        fail("server live harness has no bounded failure reporter")
+    require_markers("server live failure reporter", reporter.group(1), (
+        'TRNM_SERVER_ADMIN_TOKEN="$admin_token"',
+        'TRNM_SERVER_DATABASE_URL="${database_url:-}"',
+        'python3 "$root/scripts/print-server-live-failure.py"',
+        '--profile "$profile" --stage "$stage" --status "$status" -- "${diagnostic_logs[@]}"',
+    ))
+    commands = [line.strip() for line in harness.splitlines()
+                if line.strip() and not line.lstrip().startswith("#")]
+    ordered = (
+        'begin_stage check-config "$evidence/check-config.log"',
+        '"$binary" check-config > "$evidence/check-config.log" 2>&1',
+        'begin_stage check-config-output "$evidence/check-config.log"',
+        "grep -qx 'trnm-server configuration valid' \"$evidence/check-config.log\"",
+        'begin_stage credential-check "$evidence/check-config.log"',
+        "if grep -Fq 'trnm_live_password' \"$evidence/check-config.log\"; then",
+        'if grep -Fq "$admin_token" "$evidence/check-config.log"; then',
+        'begin_stage migrate "$evidence/check-config.log" "$evidence/migrate.log"',
+        '"$binary" migrate > "$evidence/migrate.log" 2>&1',
+        'begin_stage migrate-output "$evidence/migrate.log"',
+        "grep -qx 'trnm-server migration completed' \"$evidence/migrate.log\"",
+    )
+    if any(commands.count(command) != 1 for command in ordered):
+        fail("server live early diagnostics must identify the failing command and avoid echoing secrets")
+    positions = [commands.index(command) for command in ordered]
+    if positions != sorted(positions):
+        fail("server live early diagnostic stages must precede the failing operation")
 
 
 def validate_storage_live_harness(source: str) -> None:
@@ -385,6 +482,10 @@ def main() -> int:
         for path in sorted(REQUIRED_FILES)
     }
     validate_storage_live_harness(sources[STORAGE_LIVE_HARNESS.relative_to(ROOT)])
+    validate_live_failure_diagnostics(
+        sources[STORAGE_LIVE_HARNESS.relative_to(ROOT)],
+        sources[LIVE_FAILURE_HELPER.relative_to(ROOT)],
+    )
     pool_root_key = POOL_ROOT.relative_to(ROOT)
     expected_pool_root = "\n".join(
         f'include!("pool_parts/{part.name}");' for part in POOL_PARTS
@@ -650,6 +751,19 @@ def main() -> int:
     for relative, markers in marker_groups.items():
         require_markers(relative, sources[Path(relative)], markers)
 
+    for process_root in (MODULE_ROOT.relative_to(ROOT), Path("crates/trnm-server/src/runtime")):
+        require_markers("migration operator source", sources[process_root / "error.rs"], (
+            "enum MigrationPhase", "const MIGRATION_DIAGNOSTIC_MAX_BYTES: usize = 512;",
+            "MIGRATION_REASONS", 'unwrap_or("unclassified")',
+            "trillionnium.server-migration-failure.v1", "result.inspect_err(|error|",
+            "let _ = writer.write_all(", "allowlisted_migration_reason(error.reason())",
+            "migration_sqlstate(error.code())",
+        ))
+        require_markers("migration operator stage source", sources[process_root / "schema.rs"], (
+            "MigrationPhase::BuildPool", "MigrationPhase::AcquireSession",
+            "MigrationPhase::ApplyAuthoritativeChain", "diagnose_migration_result(",
+        ))
+
     server_source = sources[Path("crates/trnm-persistence-pg/src/bin/trnm_server/server.rs")]
     cancel_position = server_source.find("let cancelled_operations = repository.cancel_inflight();")
     drop_position = server_source.find("drop(sender);")
@@ -694,6 +808,21 @@ def main() -> int:
     status = json.loads(
         (ROOT / "docs/status/TRNM_SERVER_STATUS.json").read_text(encoding="utf-8")
     )
+    diagnostics = status.get("live_failure_diagnostics_source_candidate", {})
+    if diagnostics.get("helper") != str(LIVE_FAILURE_HELPER.relative_to(ROOT)) or (
+        diagnostics.get("limits") != {
+            "max_logs": 2, "read_bytes_per_log": 65536,
+            "lines_per_log": 80, "output_bytes": 1048576,
+        }
+    ) or diagnostics.get("preserves_original_exit_status") is not True or any(
+        diagnostics.get(field) is not False for field in ("accepted", "gap_closed", "compatibility_credit")
+    ):
+        fail("server live failure diagnostic state must retain bounds, original failure and no-credit claims")
+    operator = status.get("migration_operator_diagnostics_source_candidate", {})
+    if operator.get("max_record_bytes") != 512 or operator.get("domain_sqlstate_retained") is not False or any(
+        operator.get(field) is not False for field in ("accepted", "gap_closed", "compatibility_credit")
+    ):
+        fail("migration operator diagnostics must retain their bound and truthful no-credit state")
     storage_contract = json.loads(
         (ROOT / "contracts/storage/nakama-http-storage-v1.json").read_text(encoding="utf-8")
     )

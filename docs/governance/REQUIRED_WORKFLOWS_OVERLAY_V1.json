@@ -321,7 +321,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "8f4661edda6425c9ccfd6d044053c7062d55b13c",
+      "git_blob_sha1": "96699faf5c1f0cc54d1f7b19b2b4af925798e333",
       "minimum_successful_execution_jobs": 1,
       "name": "trnm-server-live",
       "path": ".github/workflows/trnm-server-live.yml",
@@ -510,5 +510,5 @@
   ],
   "repository": "TrillionniumFoundation/TrillionniumGame",
   "schema": "trnm_required_workflow_overlay_v1",
-  "overlay_sha256": "e2e4f1b9db5ca92bd69ff2728eca3aadad51369bf1d145e1631125e60400b62b"
+  "overlay_sha256": "5626b53592d6bf4f33bd6fb9a01dcf4d85d3779583d89e0ef6254c58a0710d1e"
 }

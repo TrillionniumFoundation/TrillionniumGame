@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use trnm_persistence_pg::{DatabaseProfile, IntegrityDigest, PgPool, PgTlsConfig, SchemaIdentity};
 
 use super::config::{DatabaseTlsMode, ServerConfig};
-use super::error::ServerError;
+use super::error::{diagnose_migration_result, MigrationPhase, ServerError};
 use super::pool::PooledRepository;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -19,22 +19,33 @@ pub struct MigrationReport {
 }
 
 pub fn migrate(config: &ServerConfig) -> Result<MigrationReport, ServerError> {
-    let pool = build_pool(config)?;
-    let mut repository = pool.acquire()?;
-    let legacy_writer_role = match std::env::var("TRNM_STORAGE_LEGACY_WRITER_ROLE") {
-        Ok(value) => Some(value),
-        Err(std::env::VarError::NotPresent) => None,
-        Err(_) => {
-            return Err(ServerError::Configuration(
-                "invalid_legacy_storage_writer_role",
-            ))
-        }
-    };
-    let report = repository.migrate_authoritative_schema(
-        &config.schema_source_commit,
-        now_millis()?,
-        legacy_writer_role.as_deref(),
+    let profile = config.database_profile;
+    let pool = diagnose_migration_result(profile, MigrationPhase::BuildPool, build_pool(config))?;
+    let mut repository = diagnose_migration_result(
+        profile,
+        MigrationPhase::AcquireSession,
+        pool.acquire().map_err(ServerError::from),
     )?;
+    let applied = (|| {
+        let legacy_writer_role = match std::env::var("TRNM_STORAGE_LEGACY_WRITER_ROLE") {
+            Ok(value) => Some(value),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(_) => {
+                return Err(ServerError::Configuration(
+                    "invalid_legacy_storage_writer_role",
+                ))
+            }
+        };
+        repository
+            .migrate_authoritative_schema(
+                &config.schema_source_commit,
+                now_millis()?,
+                legacy_writer_role.as_deref(),
+            )
+            .map_err(ServerError::from)
+    })();
+    let report =
+        diagnose_migration_result(profile, MigrationPhase::ApplyAuthoritativeChain, applied)?;
     Ok(MigrationReport {
         profile: config.database_profile,
         migration_applied: report.migration_applied,

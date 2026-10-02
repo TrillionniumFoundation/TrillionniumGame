@@ -209,6 +209,19 @@ separately from its retained diagnostic process. A required profile-specific
 success marker prevents optional no-database skips from becoming live results.
 The same harness separately executes and retains the repository ACL/OCC rollback
 fixture once per profile, including insert-only rejection and persisted times. The canonical application fixture also requires a profile-specific marker for original-string condition inputs and rollback checks.
+The harness identifies each execution stage. On failure, a separate diagnostic
+helper prints one redacted JSON record from at most two regular logs, reading
+only the last 64 KiB and retaining at most 80 lines per log. Partial first and
+unterminated last lines are discarded; credentials and workflow command delimiters are escaped or
+redacted. Cleanup preserves the original exit status even if diagnostics fail.
+These failure records grant no execution credit and cannot replace a successful
+summary, checksum seal or retained profile packet.
+The migration CLI also identifies pool setup, session acquisition and schema
+application failures using fixed operator fields and a closed reason allowlist.
+It never publishes arbitrary domain reasons or database details. A domain error
+does not retain the original SQLSTATE and reports it as unknown; a real database
+error may report its validated SQLSTATE. Public protocol errors retain their
+existing mapping.
 
 `contracts/storage/nakama-http-storage-v1.json` records pinned source
 identities, request/response boundaries and residual differences. The routes

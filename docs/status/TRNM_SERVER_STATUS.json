@@ -22,7 +22,9 @@
     "crates/trnm-server/src/runtime/storage_list_query.rs",
     "crates/trnm-server/src/runtime/storage_list_api_tests.rs",
     "crates/trnm-server/src/runtime/storage_cursor.rs",
-    "crates/trnm-server/src/runtime/storage_cursor_tests.rs"
+    "crates/trnm-server/src/runtime/storage_cursor_tests.rs",
+    "scripts/ci-trnm-server-live.sh",
+    "scripts/print-server-live-failure.py"
   ],
   "implemented_source": [
     "explicit check-config, migrate and serve commands",
@@ -83,7 +85,8 @@
     "blind writes with identical content and ACL preserve legacy update time after authorization and integrity checks; exact-version writes still update",
     "two canonical GET storage list templates with authenticated client-profile owner modes, bounded query parsing and original unsigned gob offset subset",
     "readonly serializable client-list SQL projection with text ordering, ACL before limit+1 and returned-row-only integrity decoding",
-    "separate authoritative Unicode-character row-key factory for client-list decoding; existing typed list contract retained"
+    "separate authoritative Unicode-character row-key factory for client-list decoding; existing typed list contract retained",
+    "bounded redacted live CI failure diagnostics with stages and original exit status preservation"
   ],
   "not_implemented_or_verified": [
     "final exact-head Rust formatting, compile, tests and strict Clippy after this source synchronization",
@@ -229,5 +232,42 @@
     "accepted": false,
     "compatibility_credit": false,
     "namespace": "Storage objects and epoch metadata explicitly use public; transaction clock explicitly uses pg_catalog. Shared migration rejects nondefault effective schema search paths before immutable DDL. Embedded revision descriptors retain historical prefix identity. Existing-schema migration checks the declared old role for reachable writes and profile-specific destructive privileges; inventory and drain of all writers remain operational requirements. The required live harness executes the exact repository ACL/OCC rollback fixture once per profile and retains its checked execution log."
+  },
+  "live_failure_diagnostics_source_candidate": {
+    "harness": "scripts/ci-trnm-server-live.sh",
+    "helper": "scripts/print-server-live-failure.py",
+    "regression_suite": "tests/control_plane/test_storage_list_live_contract.py",
+    "limits": {
+      "max_logs": 2,
+      "read_bytes_per_log": 65536,
+      "lines_per_log": 80,
+      "output_bytes": 1048576
+    },
+    "preserves_original_exit_status": true,
+    "success_packet_requirements_unchanged": true,
+    "accepted": false,
+    "gap_closed": false,
+    "compatibility_credit": false
+  },
+  "migration_operator_diagnostics_source_candidate": {
+    "source_paths": [
+      "crates/trnm-server/src/runtime/error.rs",
+      "crates/trnm-server/src/runtime/schema.rs",
+      "crates/trnm-persistence-pg/src/bin/trnm_server/error.rs",
+      "crates/trnm-persistence-pg/src/bin/trnm_server/schema.rs"
+    ],
+    "phases": [
+      "build-pool",
+      "acquire-session",
+      "apply-authoritative-chain"
+    ],
+    "reason_policy": "Closed fixed allowlist; unknown reasons are unclassified; arbitrary error Display and Debug are excluded from this record.",
+    "max_record_bytes": 512,
+    "domain_sqlstate_retained": false,
+    "http_error_mapping_changed": false,
+    "schema_changed": false,
+    "accepted": false,
+    "gap_closed": false,
+    "compatibility_credit": false
   }
 }

@@ -210,7 +210,7 @@ cargo test -p trnm-server --locked storage_api
 cargo test -p trnm-server --locked storage_list
 cargo test -p trnm-server --locked storage_cursor
 cargo test -p trnm-server --locked storage_write_and_delete_are_never_automatically_retried
-cargo test -p trnm-server --lib --locked runtime::storage_api_tests::canonical_storage_api_live_database -- --exact --nocapture
+cargo test -p trnm-server --lib --locked runtime::storage_api_tests::canonical_storage_api_live_database -- --exact --nocapture --test-threads=1
 cargo test -p trnm-persistence-pg --test authority_storage --locked nakama_client_listing_modes_cursors_and_integrity_are_database_projected -- --exact --nocapture --test-threads=1
 ```
 
@@ -339,6 +339,26 @@ conditionals that make a required job empty
 ```
 
 Any quarantine is time-bounded, owned and cannot close a gate.
+
+`scripts/ci-trnm-server-live.sh` records stages before configuration, migration,
+required native suites and process assertions. A failed stage invokes
+`scripts/print-server-live-failure.py` with public stage metadata and at most two
+known log paths. Credentials pass through the environment. The helper emits a
+single redacted JSON record capped at 1 MiB, reads at most 64 KiB per regular log,
+discards partial first and unterminated last lines and keeps at most 80 lines. Missing logs, symlinks
+and FIFOs are not followed. The original shell failure remains the exit status
+even if the helper fails. Configuration leak checks use quiet grep so the check
+cannot echo the leaked credential. Run
+`python3 -m unittest tests.control_plane.test_storage_list_live_contract -v`
+for real shell-trap, redaction, resource-bound and unchanged success checks.
+Failure diagnostics do not authorize a rerun or satisfy a successful evidence
+packet; use the actual error to select the correction.
+Both Rust process paths keep their existing CLI success messages and public
+error mappings. A failed migration emits bounded operator JSON for pool setup,
+session acquisition or schema application. Its reason comes from a closed
+allowlist; unknown reasons, private I/O paths and credentials are omitted.
+The domain adapter has already discarded raw SQLSTATE, so that field is null
+rather than reconstructed from a generic error code.
 
 ## 11. Documentation rules and depth
 

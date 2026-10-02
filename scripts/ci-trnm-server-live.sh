@@ -25,6 +25,24 @@ server_port=${TRNM_SERVER_PORT:-17350}
 admin_token='trnm_server_live_admin_token_0123456789abcdef'
 container="trnm-server-live-${profile}-${run_id//[^A-Za-z0-9_.-]/-}"
 server_pid=''
+stage=initialize
+diagnostic_logs=()
+
+begin_stage() {
+  stage=$1
+  shift
+  diagnostic_logs=("$@")
+  test "${#diagnostic_logs[@]}" -le 2
+  printf 'trnm-server live stage: profile=%s stage=%s\n' "$profile" "$stage"
+}
+
+report_failure() {
+  local status=$1
+  TRNM_SERVER_ADMIN_TOKEN="$admin_token" \
+  TRNM_SERVER_DATABASE_URL="${database_url:-}" \
+    python3 "$root/scripts/print-server-live-failure.py" \
+      --profile "$profile" --stage "$stage" --status "$status" -- "${diagnostic_logs[@]}"
+}
 
 database_image() {
   python3 - "$1" <<'PY_IMAGE'
@@ -70,7 +88,11 @@ PY_VERSION
 }
 
 cleanup() {
-  status=$?
+  local status=$?
+  trap - EXIT INT TERM
+  if (( status != 0 )); then
+    report_failure "$status" || true
+  fi
   if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
@@ -78,8 +100,11 @@ cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
   exit "$status"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
+begin_stage database-start "$evidence/image-pull.log"
 docker rm -f "$container" >/dev/null 2>&1 || true
 
 if [[ "$profile" == postgresql ]]; then
@@ -149,6 +174,7 @@ else
   }
 fi
 
+begin_stage database-identity "$evidence/database-version.txt"
 verify_running_image
 docker inspect "$container" > "$evidence/container-inspect.json"
 printf '%s\n' "$candidate_sha" > "$evidence/candidate-commit.txt"
@@ -160,6 +186,7 @@ cargo --version --verbose > "$evidence/cargo-version.txt"
 docker version > "$evidence/docker-version.txt"
 python3 --version > "$evidence/python-version.txt" 2>&1
 
+begin_stage build "$evidence/cargo-build.log"
 cargo build --locked -p trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server \
   2>&1 | tee "$evidence/cargo-build.log"
 binary=target/debug/trnm-pg-compat-server
@@ -176,21 +203,27 @@ export TRNM_SERVER_MAX_REQUEST_BYTES=131072
 export TRNM_SERVER_READ_TIMEOUT_MS=5000
 export TRNM_SERVER_WRITE_TIMEOUT_MS=10000
 
+begin_stage check-config "$evidence/check-config.log"
 "$binary" check-config > "$evidence/check-config.log" 2>&1
+begin_stage check-config-output "$evidence/check-config.log"
 grep -qx 'trnm-server configuration valid' "$evidence/check-config.log"
-if grep -F 'trnm_live_password' "$evidence/check-config.log"; then
+begin_stage credential-check "$evidence/check-config.log"
+if grep -Fq 'trnm_live_password' "$evidence/check-config.log"; then
   echo 'database credential leaked by check-config' >&2
   exit 1
 fi
-if grep -F "$admin_token" "$evidence/check-config.log"; then
+if grep -Fq "$admin_token" "$evidence/check-config.log"; then
   echo 'admin token leaked by check-config' >&2
   exit 1
 fi
+begin_stage migrate "$evidence/check-config.log" "$evidence/migrate.log"
 "$binary" migrate > "$evidence/migrate.log" 2>&1
+begin_stage migrate-output "$evidence/migrate.log"
 grep -qx 'trnm-server migration completed' "$evidence/migrate.log"
 
 # This lane executes the canonical App against the migrated database. The
 # existing diagnostic process phases below retain their separate scope.
+begin_stage canonical-storage-app "$evidence/canonical-storage-app.log"
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_DATABASE_URL="$database_url" \
@@ -215,6 +248,7 @@ fi
 
 # Execute the dedicated client list projection once, without replaying the
 # other authority_storage fixtures or their independently owned identities.
+begin_stage nakama-client-list-projection "$evidence/nakama-client-list-projection.log"
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_DATABASE_URL="$database_url" \
@@ -236,6 +270,7 @@ if grep -Fq 'nakama_client_list_projection_skipped' "$evidence/nakama-client-lis
 fi
 
 # Execute the actual ACL/OCC precedence and rollback fixture once per profile.
+begin_stage storage-occ-precedence "$evidence/storage-occ-precedence.log"
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_DATABASE_URL="$database_url" \
@@ -256,6 +291,7 @@ if grep -Fq 'storage_blind_write_timestamps_skipped' "$evidence/storage-occ-prec
 fi
 
 # A required exact storage-clock fixture and an isolated schema lifecycle suite.
+begin_stage storage-timestamps "$evidence/storage-timestamps.log"
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_DATABASE_URL="$database_url" \
@@ -274,6 +310,7 @@ if grep -Fq 'storage_timestamps_live_skipped' "$evidence/storage-timestamps.log"
   echo 'storage timestamp database lane skipped instead of executing' >&2
   exit 1
 fi
+begin_stage schema-upgrade "$evidence/schema-upgrade.log"
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL="$database_url" \
@@ -290,12 +327,14 @@ if grep -Fq 'developer-only live test skip' "$evidence/schema-upgrade.log"; then
   echo 'schema lifecycle lane skipped instead of executing' >&2
   exit 1
 fi
+begin_stage schema-verification "$evidence/schema-identity.json" "$evidence/schema-identity-check.json"
 TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" \
   bash scripts/apply-authoritative-schema.sh verify > "$evidence/schema-identity.json"
 python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" --mode verify > "$evidence/schema-identity-check.json"
 cp migrations/MIGRATION_CHAIN.lock.json "$evidence/migration-lock.json"
 python3 scripts/check-migration-lock.py > "$evidence/migration-chain-validation.json"
 
+begin_stage session-response-loss "$evidence/session-response-loss.log"
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_DATABASE_URL="$database_url" \
@@ -356,6 +395,7 @@ interleaving_family_count=5
 
 start_server() {
   phase=$1
+  begin_stage "server-${phase}" "$evidence/server-${phase}.log" "$evidence/client-${phase}.log"
   "$binary" serve > "$evidence/server-${phase}.log" 2>&1 &
   server_pid=$!
   printf '%s\n' "$server_pid" > "$evidence/server-${phase}.pid"
@@ -393,15 +433,17 @@ python3 scripts/trnm-server-live-client.py \
   2>&1 | tee "$evidence/client-restart.log"
 wait_for_server_exit restart
 
-if grep -F 'trnm_live_password' "$evidence"/server-*.log; then
+begin_stage server-credential-check "$evidence/server-primary.log" "$evidence/server-restart.log"
+if grep -Fq 'trnm_live_password' "$evidence"/server-*.log; then
   echo 'database credential leaked by server log' >&2
   exit 1
 fi
-if grep -F "$admin_token" "$evidence"/server-*.log; then
+if grep -Fq "$admin_token" "$evidence"/server-*.log; then
   echo 'admin token leaked by server log' >&2
   exit 1
 fi
 
+begin_stage database-assertions "$evidence/database-assertions.txt"
 entity_hex=$(printf '01%.0s' {1..16})
 state=$(db_scalar "SELECT revision || '|' || last_event_sequence FROM trnm_entity_heads WHERE entity_id = decode('${entity_hex}', 'hex')")
 test "$state" = '3|3'
@@ -444,6 +486,7 @@ printf 'diagnostic_total_refresh_tokens=%s\n' \
   "$(db_scalar 'SELECT count(*) FROM trnm_refresh_tokens')" \
   >> "$evidence/database-assertions.txt"
 
+begin_stage seal "$evidence/summary.json" "$evidence/database-assertions.txt"
 cat > "$evidence/summary.json" <<EOF
 {"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"storage_timestamps":true,"storage_occ_precedence":true,"raw_version_conditions":true,"schema_upgrade":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
 EOF

@@ -15,9 +15,11 @@ on:
       - 'migrations/**'
       - 'scripts/check-trnm-server.py'
       - 'scripts/ci-trnm-server-live.sh'
+      - 'scripts/print-server-live-failure.py'
       - 'scripts/trnm-server-live-client.py'
       - 'scripts/wait-postgres-final-ready.py'
       - 'tests/control_plane/test_postgres_final_ready.py'
+      - 'tests/control_plane/test_storage_list_live_contract.py'
       - 'docs/ARCHITECTURE.md'
       - 'docs/DEVELOPMENT.md'
       - 'docs/OPERATIONS_AND_RELEASE.md'
@@ -66,9 +68,12 @@ jobs:
           python3 scripts/check-trnm-server.py
           python3 -m py_compile \
             scripts/check-trnm-server.py \
+            scripts/print-server-live-failure.py \
             scripts/trnm-server-live-client.py \
             scripts/wait-postgres-final-ready.py
-          python3 -m unittest tests.control_plane.test_postgres_final_ready -v
+          python3 -m unittest \
+            tests.control_plane.test_postgres_final_ready \
+            tests.control_plane.test_storage_list_live_contract -v
           bash -n scripts/ci-trnm-server-live.sh
 
   live-profile:
@@ -125,6 +130,11 @@ jobs:
           for field in (
               'check_config',
               'fresh_migration',
+              'nakama_client_list_projection',
+              'storage_occ_precedence',
+              'raw_version_conditions',
+              'storage_timestamps',
+              'schema_upgrade',
               'health_ready',
               'unauthenticated_mutation_rejected',
               'http_bootstrap_commit_duplicate_conflict',
